@@ -7,7 +7,7 @@ publish = false
 
 [features]
 default = []
-test-support = ["crucible/test-double"]
+test-support = ["crucible/test-double", "crucible-shmem/test-support"]
 
 [lints]
 workspace = true
@@ -30,5 +30,6 @@ tempfile = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+crucible-shmem = { path = "../crucible-shmem", features = ["test-support"] }
 crucible = { path = "../crucible", features = ["test-double"] }
 rustix = { workspace = true, features = ["time"] }

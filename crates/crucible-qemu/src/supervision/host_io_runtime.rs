@@ -39,7 +39,6 @@ use super::block_io_servicer::{
     BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoServicer,
 };
 use super::ninep_io_servicer::{NinepIoDiagnostics, QemuLive9pIoServicer};
-use crate::console_observation::QemuConsoleObservationReader;
 use crate::quantum::idle_state_from_snapshot;
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::supervision::HostSupervisionDeadline;
@@ -59,6 +58,10 @@ mod publication;
 mod wait_observation;
 use boundary::*;
 
+// Owns the one-shot test rendezvous at an actual unavailable publication attempt.
+#[cfg(test)]
+type ControlPublicationUnavailableHook = Box<dyn FnOnce(&HostSupervisionDeadline) + Send>;
+
 /// A production host-I/O runtime backed by an independently mapped shared-memory view.
 ///
 /// The runtime reads the guest node slot and owns the global coordinated-pause
@@ -69,12 +72,21 @@ use boundary::*;
 /// is driven once per advance poll so a guest blocked on real block I/O can make
 /// progress.
 pub struct QemuLiveHostIoRuntime {
+    #[cfg(target_os = "linux")]
+    console_custody: Option<crate::native_console_owner::ConsoleLaunchCustody>,
+    #[cfg(target_os = "linux")]
+    console_stop: Option<crate::native_console_owner::ConsoleStoppedOperation>,
     region: MappedSetupRegion,
     wake: Arc<File>,
     vm_slot: u32,
     poll_interval: Duration,
     #[cfg(feature = "test-support")]
     slow_clamp_ack_poll: bool,
+    // Rendezvous only after actual native-claim admission refused, outside custody.
+    #[cfg(test)]
+    control_publication_unavailable_seen_for_test: bool,
+    #[cfg(test)]
+    control_publication_unavailable_for_test: Option<ControlPublicationUnavailableHook>,
     performance: performance::PerformanceDiagnostics,
     wait_observation: wait_observation::WaitObservation,
     advance_wait_deadline: AdvanceWaitDeadline,
@@ -101,7 +113,6 @@ pub struct QemuLiveHostIoRuntime {
     block: Option<BlockIoServicing>,
     ninep: Option<NinepIoServicing>,
     accelerator: Option<QemuLiveAcceleratorServicer>,
-    console: Option<QemuConsoleObservationReader>,
     /// Events physically consumed to release a fault-pump control fence.
     staged_fault_events: Vec<DequeuedFaultEvent>,
     /// Plan-authored remaining aggregate capacity for staged events.
@@ -249,12 +260,20 @@ impl QemuLiveHostIoRuntime {
             .map(File::from)
             .map_err(|source| QemuLiveHostIoRuntimeError::CloneWakeFd { source })?;
         Ok(Self {
+            #[cfg(target_os = "linux")]
+            console_custody: None,
+            #[cfg(target_os = "linux")]
+            console_stop: None,
             region,
             wake: Arc::new(wake),
             vm_slot,
             poll_interval,
             #[cfg(feature = "test-support")]
             slow_clamp_ack_poll: false,
+            #[cfg(test)]
+            control_publication_unavailable_seen_for_test: false,
+            #[cfg(test)]
+            control_publication_unavailable_for_test: None,
             performance: performance::PerformanceDiagnostics::from_environment(shmem_fd),
             wait_observation: wait_observation::WaitObservation::from_environment(shmem_fd),
             advance_wait_deadline: AdvanceWaitDeadline::default(),
@@ -271,7 +290,6 @@ impl QemuLiveHostIoRuntime {
             block: None,
             ninep: None,
             accelerator: None,
-            console: None,
             staged_fault_events: Vec::new(),
             fault_event_staging_limit: HARD_FAULT_EVENT_CAPACITY as usize,
             fault_event_canonical_current_offset: 0,
@@ -404,9 +422,6 @@ impl QemuLiveHostIoRuntime {
             if remaining.is_zero() {
                 return Ok(QemuAsyncWaitOutcome::TimedOut);
             }
-            if !self.initial_advance_wake_pending {
-                self.service_console_output()?;
-            }
             let Some(mut snapshot) = self
                 .region
                 .node_slot(self.vm_slot)
@@ -436,15 +451,18 @@ impl QemuLiveHostIoRuntime {
                 }
                 self.wait_observation
                     .retain_initial_advance(&snapshot, self.checkpoint_idle_coordinate);
-                if self.checkpoint_idle_coordinate.is_some() {
-                    // Preserve the original tokenized checkpoint handoff; a
-                    // bare doorbell cannot re-arm its completed idle edge.
+                if self.checkpoint_idle_coordinate.is_some()
+                    && !self.native_console_run_report_pending()
+                {
+                    // Ordinary profiles retain the tokenized checkpoint wake.
                     let _request = self.signal_wake(None)?;
                 } else {
+                    // Native RUN already published its full AUTH and advance.
+                    // Its first report, not an Observation of the old pause,
+                    // must release the inherited checkpoint-idle coordinate.
                     self.write_wake_doorbell()?;
                 }
                 self.initial_advance_wake_pending = false;
-                self.service_console_output()?;
                 let Some(after_wake) = self.try_node_snapshot()? else {
                     self.wait_for_poll_interval(remaining);
                     continue;
@@ -455,6 +473,12 @@ impl QemuLiveHostIoRuntime {
                 .scheduler_input_publish_generation
                 .is_some_and(|generation| snapshot.publish_gen != generation)
             {
+                if self.native_console_run_report_pending() {
+                    // Only a genuine new node publication releases this marker.
+                    // The fresh report still goes through the original timer,
+                    // output-stop, device and full-body Acceptance checks.
+                    self.checkpoint_idle_coordinate = None;
+                }
                 self.scheduler_input_publish_generation = None;
             }
             if self
@@ -464,7 +488,12 @@ impl QemuLiveHostIoRuntime {
                 self.device_wake_publish_generation = None;
             }
             let output_stop = self.network_output_stop_write_index(&snapshot)?;
+            #[cfg(target_os = "linux")]
+            let console_output_stop = self.observe_console_operation_stop(&snapshot)?;
+            #[cfg(not(target_os = "linux"))]
+            let console_output_stop = false;
             let checkpoint_idle_unreleased = output_stop.is_none()
+                && !console_output_stop
                 && checkpoint_idle_publication_is_unreleased(
                     self.checkpoint_idle_coordinate,
                     &snapshot,
@@ -494,7 +523,15 @@ impl QemuLiveHostIoRuntime {
                 self.scheduler_input_publish_generation,
                 &snapshot,
             );
-            let boundary = if checkpoint_idle_unreleased {
+            // Original device settlement still runs while the native stopped
+            // owner retries its publication. Queued console bytes cannot be
+            // accepted through an ordinary idle edge without that discovery.
+            #[cfg(target_os = "linux")]
+            let console_discovery_pending =
+                self.console_operation_discovery_pending(console_output_stop)?;
+            #[cfg(not(target_os = "linux"))]
+            let console_discovery_pending = false;
+            let boundary = if checkpoint_idle_unreleased || console_discovery_pending {
                 QuantumBoundary::Pending
             } else {
                 classify_after_scheduler_and_host_wake(
@@ -511,7 +548,6 @@ impl QemuLiveHostIoRuntime {
                     self.checkpoint_idle_coordinate = None;
                     self.clamp_completed_quantum(&snapshot, timeout)?;
                     self.completed_outbound_write_index = self.outbound_write_index()?;
-                    self.service_console_output()?;
                     return Ok(QemuAsyncWaitOutcome::Completed);
                 }
                 QuantumBoundary::Pending => {
@@ -529,7 +565,7 @@ impl QemuLiveHostIoRuntime {
                         return Ok(QemuAsyncWaitOutcome::Pending);
                     }
                     if self.device_wake_publish_generation.is_none() && attempt % 16 == 15 {
-                        if checkpoint_idle_unreleased {
+                        if checkpoint_idle_unreleased && !self.native_console_run_report_pending() {
                             let _request = self.signal_wake(None)?;
                         } else {
                             self.write_wake_doorbell()?;
@@ -633,14 +669,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         shmem_fd: BorrowedFd<'_>,
         wake_fd: BorrowedFd<'_>,
         region_len: u64,
-        console: Option<crate::QemuHotForkChildConsoleObservation>,
     ) -> Result<Box<dyn QemuHostIoRuntime>, QemuAsyncDriverRuntimeError> {
-        if self.console.is_some() != console.is_some() {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "clone hot-fork host-I/O continuation",
-                "source and child console observation capabilities differ",
-            ));
-        }
         if self.scheduler_input_publish_generation.is_some()
             || self.device_wake_publish_generation.is_some()
         {
@@ -726,7 +755,6 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         continuation.fault_event_canonical_current_offset =
             self.fault_event_canonical_current_offset;
         continuation.fault_event_configured_limit = self.fault_event_configured_limit;
-        continuation.console = console.map(crate::QemuHotForkChildConsoleObservation::into_reader);
         if let Some((servicer, coordinator_required)) = block {
             servicer
                 .shared_device()
@@ -761,6 +789,38 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         }
         continuation.accelerator = accelerator;
         Ok(Box::new(continuation))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn attach_hot_fork_console_restore(
+        &mut self,
+        restored: &crate::QemuHotForkConsoleRestore,
+        node: &crucible::NodeId,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let operation = "attach child console host-I/O custody";
+        if restored.node() != node {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                operation,
+                "logical node differs from the accepted child Restore",
+            ));
+        }
+        let custody = restored
+            .accepted_custody()
+            .map_err(|source| QemuAsyncDriverRuntimeError::new(operation, source.to_string()))?;
+        custody
+            .validate_mapping(&self.region, self.vm_slot)
+            .map_err(|source| QemuAsyncDriverRuntimeError::new(operation, source.to_string()))?;
+        if let Some(installed) = &self.console_custody {
+            if !installed.same_launch(&custody) {
+                return Err(QemuAsyncDriverRuntimeError::new(
+                    operation,
+                    "different child custody was already attached",
+                ));
+            }
+            return Ok(());
+        }
+        self.console_custody = Some(custody);
+        Ok(())
     }
 
     fn set_fault_event_staging_limit(
@@ -798,6 +858,10 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         fence: Option<QemuAdvanceCompletionFence>,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         self.completed_boundary = None;
+        #[cfg(target_os = "linux")]
+        {
+            self.console_stop = None;
+        }
         self.scheduler_input_publish_generation =
             fence.map(|fence| fence.initial_publish_generation);
         self.advance_stop_condition = fence
@@ -842,7 +906,6 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 timeout,
                 "probe checkpoint device boundary",
             )?;
-            self.service_console_output()?;
             let Some(snapshot) = self.wait_node_snapshot(|| deadline.remaining())? else {
                 break;
             };
@@ -914,7 +977,6 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 timeout,
                 "publish current execution fingerprint",
             )?;
-            self.service_console_output()?;
             let Some(snapshot) = self.wait_node_snapshot(|| deadline.remaining())? else {
                 break;
             };
@@ -1067,8 +1129,17 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         let zero_length_idle_control_wake = device_servicers_attached
             && initial_snapshot.status == STATUS_IDLE
             && initial_snapshot.idle_wake_icount == initial_snapshot.current_icount;
-        let tokenized_checkpoint_control_wake =
-            reached_boundary_control_wake || zero_length_idle_control_wake;
+        #[cfg(target_os = "linux")]
+        let console_checkpoint_fence = self.console_custody.is_some();
+        #[cfg(not(target_os = "linux"))]
+        let console_checkpoint_fence = false;
+        // A new advance invalidates the prior native console observation, even
+        // at the same coordinate. Pair a fresh control-only observation before
+        // considering the newly published pause ready for VMState capture.
+        let tokenized_checkpoint_control_wake = reached_boundary_control_wake
+            || zero_length_idle_control_wake
+            || console_checkpoint_fence;
+        let mut checkpoint_request = None;
         if tokenized_checkpoint_control_wake
             || checkpoint_pause_requires_control_doorbell(
                 &initial_snapshot,
@@ -1084,13 +1155,17 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             // attached: QEMU's two-pass control boundary orders any resulting
             // device bottom half before it publishes quiescence. An originally
             // idle device VM with a future deadline retains the stricter
-            // no-doorbell path to avoid admitting a latent waiter. A zero-length
+            // no-doorbell path to avoid admitting a latent waiter, except when
+            // console custody requires the exact new control-only observation.
+            // A zero-length
             // idle publication has no futex edge left to observe pause and uses
             // the same tokenized two-pass handoff as a reached boundary.
             let wake = if tokenized_checkpoint_control_wake {
                 // The paired token makes a vCPU resume callback yield without
                 // interpreting this control edge as guest authorization.
-                self.signal_wake(None).map(|_request| ())
+                self.signal_wake(None).map(|request| {
+                    checkpoint_request = Some(request);
+                })
             } else {
                 self.write_wake_doorbell()
             };
@@ -1153,7 +1228,31 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 settled_snapshot.control_boundary_ack,
                 self.region.header().pause_requested(),
             ));
+            #[cfg(target_os = "linux")]
+            let console_settled = if let Some(custody) = &self.console_custody {
+                match custody.checkpoint_observation_is_settled(&self.region, &settled_snapshot) {
+                    Ok(paired) => {
+                        paired
+                            && checkpoint_request.is_some_and(|request| {
+                                control_boundary_request_is_acknowledged(request, &settled_snapshot)
+                                    && settled_snapshot.control_boundary_ack
+                                        == request.generation.wrapping_add(1)
+                            })
+                    }
+                    Err(source) => {
+                        return self.fail_checkpoint_pause(QemuAsyncDriverRuntimeError::new(
+                            "settle checkpoint console observation",
+                            source.to_string(),
+                        ));
+                    }
+                }
+            } else {
+                true
+            };
+            #[cfg(not(target_os = "linux"))]
+            let console_settled = true;
             if settled_snapshot.publish_gen != initial_publish_gen
+                && console_settled
                 && !device_progress
                 && settled_snapshot.status == crucible_shmem::STATUS_IDLE
                 && settled_snapshot.idle_wake_icount == settled_snapshot.current_icount
@@ -1180,11 +1279,11 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 // consumed the coalesced callback token just before the pause
                 // request. Re-publish its acknowledged token periodically so
                 // coalescing cannot lose the required handoff.
-                if tokenized_checkpoint_control_wake
-                    && attempt % 16 == 15
-                    && let Err(source) = self.signal_wake(None)
-                {
-                    return self.fail_checkpoint_pause(source);
+                if tokenized_checkpoint_control_wake && attempt % 16 == 15 {
+                    match self.signal_wake(None) {
+                        Ok(request) => checkpoint_request = Some(request),
+                        Err(source) => return self.fail_checkpoint_pause(source),
+                    }
                 }
                 self.wait_for_poll_interval(remaining);
             }

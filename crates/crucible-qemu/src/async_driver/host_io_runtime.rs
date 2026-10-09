@@ -122,6 +122,28 @@ pub trait QemuHostIoRuntime: Send {
         None
     }
 
+    /// Attaches accepted child console custody before any restored host request.
+    ///
+    /// The opaque receipt must retain the exact child's accepted Restore and
+    /// logical node. Implementations must reject foreign or unaccepted custody;
+    /// attachment grants no guest execution or new console authorization.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unsupported runtimes, an unaccepted Restore, a different logical
+    /// node or mapping, or replacement of an already attached child owner.
+    #[cfg(target_os = "linux")]
+    fn attach_hot_fork_console_restore(
+        &mut self,
+        _restored: &crate::QemuHotForkConsoleRestore,
+        _node: &crucible::NodeId,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "attach child console host-I/O custody",
+            "this host-I/O runtime does not retain accepted child console custody",
+        ))
+    }
+
     /// Clones the complete host-I/O continuation onto one branch-private ring.
     ///
     /// The source runtime must remain unchanged. Implementations must clone
@@ -142,7 +164,6 @@ pub trait QemuHostIoRuntime: Send {
         _shmem_fd: std::os::fd::BorrowedFd<'_>,
         _wake_fd: std::os::fd::BorrowedFd<'_>,
         _region_len: u64,
-        _console: Option<crate::QemuHotForkChildConsoleObservation>,
     ) -> Result<Box<dyn QemuHostIoRuntime>, QemuAsyncDriverRuntimeError> {
         Err(QemuAsyncDriverRuntimeError::new(
             "clone hot-fork host-I/O continuation",

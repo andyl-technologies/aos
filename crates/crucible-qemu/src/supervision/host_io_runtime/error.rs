@@ -34,7 +34,4 @@ pub enum QemuLiveHostIoRuntimeError {
     /// The configured poll interval was zero.
     #[error("host-I/O runtime poll interval must be nonzero")]
     ZeroPollInterval,
-    /// More than one console stream was attached to one node runtime.
-    #[error("QEMU host-I/O runtime already has a console stream")]
-    DuplicateConsole,
 }

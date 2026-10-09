@@ -114,11 +114,11 @@ pub(super) fn report_failure(node: &mut QemuNode) {
         let _ = writeln!(output, "linux probe host-mirrored catalog: unavailable");
     }
 
-    match node.console_diagnostic_tail() {
+    match node.accepted_native_console_tail() {
         Some(bytes) => {
             let _ = writeln!(
                 output,
-                "linux probe untimed advisory console tail since last successful observation drain: retained_tail_bytes={}; escaped={}",
+                "linux probe untimed advisory accepted native console tail since last successful observation drain: retained_tail_bytes={}; escaped={}",
                 bytes.len(),
                 escaped_console_tail(&bytes)
             );

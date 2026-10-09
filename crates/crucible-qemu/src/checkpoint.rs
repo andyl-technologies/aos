@@ -10,6 +10,20 @@ use crucible_device::{BlockSnapshot, NinepRequestOpportunity, NinepSnapshot};
 use crucible_shmem::{RegionHeaderSnapshot, SpscRingSnapshot};
 
 pub(crate) mod bounded_cbor;
+
+fn validate_console_checkpoint(bytes: &[u8]) -> Result<(), QemuNodeCheckpointCodecError> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::native_console_owner::ConsoleOriginContinuation::decode(bytes)
+            .map_err(|_| QemuNodeCheckpointCodecError::Malformed("native console custody"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = bytes;
+        Err(QemuNodeCheckpointCodecError::Unsupported)
+    }
+}
 mod host_io_accessors;
 mod host_io_codec;
 pub use host_io_codec::QemuHostIoCheckpointCodecError;
@@ -140,7 +154,7 @@ pub struct QemuNodeContinuationCheckpoint {
     pub(crate) execution_binding: ContentHash,
     pub(crate) last_observed_time: VirtualTime,
     pub(crate) logical_time_calibration: crate::QemuLogicalTimeCalibration,
-    pub(crate) console_observation_boundary: VirtualTime,
+    pub(crate) native_console_continuation: Option<Vec<u8>>,
     pub(crate) pending_preemption: Option<PreemptionDecision>,
     pub(crate) pending_network_outputs: Vec<crate::QemuNodeEmittedFrame>,
     pub(crate) network_transport: QemuNetworkTransportCheckpoint,
@@ -264,6 +278,9 @@ impl QemuNodeContinuationCheckpoint {
             .pending_preemption
             .as_ref()
             .map(PreemptionDecision::to_compact_binary);
+        if let Some(console) = &self.native_console_continuation {
+            validate_console_checkpoint(console)?;
+        }
         if let Some(preemption) = preemption.as_deref() {
             admit_node_resource(
                 "preemption",
@@ -287,7 +304,7 @@ impl QemuNodeContinuationCheckpoint {
         })?;
         write_node_continuation_bytes(
             &mut bytes,
-            b"crucible.qemu-node-continuation.v7\0",
+            b"crucible.qemu-node-continuation.v9\0",
             "node continuation",
         )?;
         write_node_continuation_bytes(
@@ -310,11 +327,13 @@ impl QemuNodeContinuationCheckpoint {
             &self.logical_time_calibration.raw_icount.to_le_bytes(),
             "raw icount",
         )?;
-        write_node_continuation_bytes(
-            &mut bytes,
-            &self.console_observation_boundary.ticks.to_le_bytes(),
-            "console boundary",
-        )?;
+        match &self.native_console_continuation {
+            Some(console) => {
+                write_node_continuation_bytes(&mut bytes, &[1], "native console tag")?;
+                write_node_continuation_blob(&mut bytes, console, "native console custody")?;
+            }
+            None => write_node_continuation_bytes(&mut bytes, &[0], "native console tag")?,
+        }
         match preemption {
             Some(preemption) => {
                 write_node_continuation_bytes(&mut bytes, &[1], "preemption tag")?;
@@ -410,7 +429,10 @@ impl QemuNodeContinuationCheckpoint {
         inbound_len: usize,
         outbound_len: usize,
     ) -> Result<usize, QemuNodeCheckpointCodecError> {
-        let mut length = b"crucible.qemu-node-continuation.v7\0".len() + 32 + 32 + 1 + 8;
+        let mut length = b"crucible.qemu-node-continuation.v9\0".len() + 32 + 24 + 1 + 8 + 1;
+        if let Some(console) = &self.native_console_continuation {
+            length = checked_node_encoded_len(length, 8 + console.len(), "native console custody")?;
+        }
         if let Some(preemption) = preemption {
             length = checked_node_encoded_len(length, 8 + preemption.len(), "preemption")?;
         }
@@ -461,7 +483,7 @@ impl QemuNodeContinuationCheckpoint {
         execution_binding: ContentHash,
         maximum: u64,
     ) -> Result<Self, QemuNodeCheckpointCodecError> {
-        const MAGIC: &[u8] = b"crucible.qemu-node-continuation.v7\0";
+        const MAGIC: &[u8] = b"crucible.qemu-node-continuation.v9\0";
         let maximum = maximum.min(MAX_NODE_CONTINUATION_BYTES);
         admit_node_resource("node continuation", 0, bytes.len(), maximum)?;
         let mut reader = NodeContinuationReader::new(bytes, MAGIC)?;
@@ -481,8 +503,19 @@ impl QemuNodeContinuationCheckpoint {
         if logical_time_calibration.offset().is_err() {
             return Err(QemuNodeCheckpointCodecError::LogicalTime);
         }
-        let console_observation_boundary = VirtualTime {
-            ticks: reader.u64("console boundary")?,
+        let native_console_continuation = match reader.byte("native console tag")? {
+            0 => None,
+            1 => {
+                let console = reader
+                    .owned_blob_bounded("native console custody", MAX_NODE_CONTINUATION_BYTES)?;
+                validate_console_checkpoint(&console)?;
+                Some(console)
+            }
+            _ => {
+                return Err(QemuNodeCheckpointCodecError::Malformed(
+                    "native console tag",
+                ));
+            }
         };
         let pending_preemption = match reader.byte("preemption tag")? {
             0 => None,
@@ -562,7 +595,7 @@ impl QemuNodeContinuationCheckpoint {
             execution_binding: observed_binding,
             last_observed_time,
             logical_time_calibration,
-            console_observation_boundary,
+            native_console_continuation,
             pending_preemption,
             pending_network_outputs,
             network_transport,

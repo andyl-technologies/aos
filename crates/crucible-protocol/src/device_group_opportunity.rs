@@ -212,7 +212,10 @@ mod tests {
         for count in [1, 2, DEVICE_GROUP_OPPORTUNITY_MAX_MEMBERS] {
             let original = descriptor(count);
             let payload = original.encode();
-            assert_eq!(DeviceGroupOpportunity::decode(&payload), Ok(original.clone()));
+            assert_eq!(
+                DeviceGroupOpportunity::decode(&payload),
+                Ok(original.clone())
+            );
             assert_eq!(&payload[48..160], original.actor());
             assert_eq!(payload[40..44], 6_u32.to_le_bytes());
             assert!(payload[160 + count * 144..].iter().all(|byte| *byte == 0));

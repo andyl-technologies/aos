@@ -315,6 +315,7 @@ pub struct QemuHotForkChildDiagnosticStageProof {
     descriptor_name: crate::QmpDescriptorName,
     socket_cookie: u64,
     template_generation: u64,
+    diagnostic_generation: u64,
     replacement_plan_bound: bool,
 }
 
@@ -343,6 +344,12 @@ impl QemuHotForkChildDiagnosticStageProof {
         self.template_generation
     }
 
+    /// Returns the exact QEMU mutation generation acknowledged at installation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.diagnostic_generation
+    }
+
     /// Returns whether the stream is present in the sealed child resource plan.
     #[must_use]
     pub const fn replacement_plan_bound(&self) -> bool {
@@ -358,6 +365,7 @@ pub(super) struct QemuHotForkChildDiagnosticPair {
     descriptor_name: crate::QmpDescriptorName,
     socket_cookie: u64,
     template_generation: u64,
+    diagnostic_generation: u64,
     replacement_plan_bound: bool,
     consumer: Option<QemuHotForkChildDiagnosticConsumer>,
 }
@@ -384,6 +392,7 @@ impl QemuHotForkChildDiagnosticPair {
             descriptor_name: self.descriptor_name.clone(),
             socket_cookie: self.socket_cookie,
             template_generation: self.template_generation,
+            diagnostic_generation: self.diagnostic_generation,
             replacement_plan_bound: self.replacement_plan_bound,
         }
     }
@@ -422,6 +431,14 @@ impl QemuHotForkChildDiagnosticStage {
             }
             Self::TransferUncertain(endpoint) => {
                 endpoint.proof(QemuHotForkChildDiagnosticStageState::TransferUncertain)
+            }
+        }
+    }
+
+    pub(super) const fn generation(&self) -> u64 {
+        match self {
+            Self::Installed(endpoint) | Self::TransferUncertain(endpoint) => {
+                endpoint.diagnostic_generation
             }
         }
     }
@@ -552,6 +569,7 @@ fn create_diagnostic_pair(
         descriptor_name: descriptor_name.clone(),
         socket_cookie,
         template_generation,
+        diagnostic_generation: 0,
         replacement_plan_bound: false,
         consumer: Some(QemuHotForkChildDiagnosticConsumer {
             host,

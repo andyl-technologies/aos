@@ -783,7 +783,6 @@ fn hot_fork_rejects_pending_on_demand_fingerprint_request() -> Result<(), Box<dy
         child_region.as_fd(),
         child_wake.as_fd(),
         region_len,
-        None,
     ) {
         Ok(_) => return Err("pending fingerprint request must reject hot fork".into()),
         Err(error) => error,
@@ -844,7 +843,6 @@ fn assert_private_host_device_clone(slow_baseline: bool) -> Result<(), Box<dyn s
         child_region.as_fd(),
         child_wake.as_fd(),
         region_len,
-        None,
     )?;
 
     let expected_ack_interval = if slow_baseline {
@@ -892,7 +890,6 @@ fn hot_fork_clone_does_not_fall_back_to_uncoordinated_ninep_service()
         child_region.as_fd(),
         child_wake.as_fd(),
         region_len,
-        None,
     )?;
     let snapshot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM).snapshot();
 
@@ -916,52 +913,30 @@ fn hot_fork_clone_does_not_fall_back_to_uncoordinated_ninep_service()
 
 #[cfg(target_os = "linux")]
 #[test]
-fn hot_fork_clone_requires_and_accepts_fresh_child_console()
--> Result<(), Box<dyn std::error::Error>> {
-    use std::io::Write;
+fn hot_fork_clone_accepts_native_none() -> Result<(), Box<dyn std::error::Error>> {
     use std::os::fd::AsFd;
-    use std::os::unix::net::UnixStream;
 
     let (source_region, child_region, region_len) = private_region_pair()?;
     let source_wake = tempfile::tempfile()?;
     let child_wake = tempfile::tempfile()?;
-    let (mut source_writer, reader) = UnixStream::pair()?;
-    let console = crate::console_observation::QemuConsoleObservationReader::new(
-        reader,
-        crate::console_observation::QemuConsoleObservationSpool::new(),
-    )?;
     let mut source = QemuLiveHostIoRuntime::from_shmem_fd(
         source_region.as_fd(),
         source_wake.as_fd(),
         region_len,
         0,
-    )?
-    .with_console_observation(console)?;
-
-    let missing = source.clone_hot_fork_host_io_continuation(
-        ContentHash::from_bytes(b"unsupported-console"),
-        child_region.as_fd(),
-        child_wake.as_fd(),
-        region_len,
-        None,
-    );
-    assert!(missing.is_err());
-
-    let (mut child_writer, child_reader) = UnixStream::pair()?;
-    let child_console = crate::QemuHotForkChildConsoleObservation::from_stream(child_reader)?;
-    let child_spool = child_console.spool();
-    let mut child = source.clone_hot_fork_host_io_continuation(
-        ContentHash::from_bytes(b"branch-private-console"),
-        child_region.as_fd(),
-        child_wake.as_fd(),
-        region_len,
-        Some(child_console),
     )?;
-    source_writer.write_all(b"source-only")?;
-    child_writer.write_all(b"child-only")?;
+    let mut child = source.clone_hot_fork_host_io_continuation(
+        ContentHash::from_bytes(b"branch-private-native-none"),
+        child_region.as_fd(),
+        child_wake.as_fd(),
+        region_len,
+    )?;
     let _completion =
         child.await_child(QemuAsyncWait::AdvanceCompletion, Duration::from_millis(100));
-    assert_eq!(child_spool.take()?, b"child-only");
     drop(child);
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+#[path = "host_io_runtime_tests/console_custody.rs"]
+mod console_custody;

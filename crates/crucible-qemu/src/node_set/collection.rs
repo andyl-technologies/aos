@@ -16,6 +16,8 @@ impl QemuNodeSet {
             parked_campaign_markers: BTreeMap::new(),
             retained_observable_events: Vec::new(),
             last_host_parallelism: None,
+            #[cfg(test)]
+            console_sentinel_probe: None,
         }
     }
 

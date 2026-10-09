@@ -16,12 +16,6 @@ trait HotForkHostContinuationTestExt {
     fn shmem_hot_path_mut(&mut self) -> &mut dyn QemuShmemHotPathChannel;
     fn host_io_binding(&self) -> ContentHash;
     fn node_state(&self) -> &QemuHotForkNodeStateContinuation;
-    fn console_observation_available(&self) -> bool;
-    fn attach_console_observation(
-        &mut self,
-        child: &mut QemuNode,
-        node: NodeId,
-    ) -> Result<(), QemuNodeChannelError>;
 }
 
 impl HotForkHostContinuationTestExt for QemuHotForkHostContinuation {
@@ -51,31 +45,6 @@ impl HotForkHostContinuationTestExt for QemuHotForkHostContinuation {
 
     fn node_state(&self) -> &QemuHotForkNodeStateContinuation {
         &self.node_state
-    }
-
-    fn console_observation_available(&self) -> bool {
-        self.console_spool.is_some()
-    }
-
-    fn attach_console_observation(
-        &mut self,
-        child: &mut QemuNode,
-        node: NodeId,
-    ) -> Result<(), QemuNodeChannelError> {
-        if child.console_observation.is_some() {
-            return Err(QemuNodeChannelError::new(
-                "attach hot-fork child console observation",
-                "child node already owns a console observation",
-            ));
-        }
-        let spool = self.console_spool.take().ok_or_else(|| {
-            QemuNodeChannelError::new(
-                "attach hot-fork child console observation",
-                "child console observation was already transferred",
-            )
-        })?;
-        child.console_observation = Some(QemuConsoleObservation { node, spool });
-        Ok(())
     }
 }
 
@@ -164,24 +133,17 @@ fn hot_fork_success_transfers_child_qmp_and_private_host_continuation() -> Resul
     assert!(calls.contains(&ChannelCall::QmpHotForkChildProcessContract));
     assert!(calls.contains(&ChannelCall::QmpHotFork));
     assert!(node.take_hot_fork_child_qmp_host_endpoint().is_err());
-    let (_parent, _process, child_qmp, mut diagnostics, mut continuation) = launch.into_parts();
+    let (_parent, _process, child_qmp, mut diagnostics, continuation) = launch.into_parts();
     assert_eq!(diagnostics.template_generation(), 1);
     let drain = diagnostics.drain_available()?;
     assert_eq!(drain.bytes_read(), 26);
     assert_eq!(drain.total_retained(), 26);
     assert!(!drain.eof());
-    assert!(continuation.console_observation_available());
-    continuation.attach_console_observation(&mut node, node_id("fork-child"))?;
-    assert!(!continuation.console_observation_available());
-    assert!(
-        continuation
-            .attach_console_observation(&mut node, node_id("second-child"))
-            .is_err()
-    );
+    assert!(continuation.node_state().has_no_native_console());
+    assert!(node.native_console.is_none());
     drop(continuation);
     drop(child_qmp);
     node.release_hot_fork_plugin_endpoints()?;
-    node.release_hot_fork_child_console()?;
     node.release_hot_fork_child_qmp()?;
     let capture = node.release_hot_fork_child_diagnostics_with_consumer(&mut diagnostics)?;
     assert_eq!(capture.bytes(), b"scripted child diagnostics");
@@ -294,7 +256,6 @@ fn hot_fork_scheduler_continuation_owns_exact_private_planes() -> Result<(), Box
 
     drop(installed);
     node.release_hot_fork_plugin_endpoints()?;
-    node.release_hot_fork_child_console()?;
     node.release_hot_fork_child_qmp()?;
     let _capture = node.release_hot_fork_child_diagnostics_with_consumer(&mut diagnostics)?;
     drop(node.release_hot_fork_private_ring_mapping()?);
@@ -354,7 +315,6 @@ fn hot_fork_first_advance_retains_activation_after_resume_rejection() -> Result<
 
     drop(installed);
     node.release_hot_fork_plugin_endpoints()?;
-    node.release_hot_fork_child_console()?;
     node.release_hot_fork_child_qmp()?;
     let _capture = node.release_hot_fork_child_diagnostics_with_consumer(&mut diagnostics)?;
     drop(node.release_hot_fork_private_ring_mapping()?);
@@ -412,10 +372,10 @@ fn hot_fork_rejects_host_io_clone_failure_before_qmp_or_process_retention()
 #[cfg(target_os = "linux")]
 fn hot_fork_rejects_a_foreign_private_ring_before_consuming_host_continuation()
 -> Result<(), Box<dyn Error>> {
-    let mut node = sealed_hot_fork_node(DescriptorScript::Success)?;
+    let (mut node, log) = sealed_hot_fork_node_with_log(DescriptorScript::Success)?;
     let mut process_owner = ScriptedHotForkChildOwner::default();
     let foreign_ring =
-        crate::QmpHotForkRequest::for_test(1, 2, 3, 4, 1, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0);
+        crate::QmpHotForkRequest::for_test(1, 2, 1, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13, 0);
 
     let error = node
         .fork_hot_fork_template(foreign_ring, &mut process_owner)
@@ -427,17 +387,21 @@ fn hot_fork_rejects_a_foreign_private_ring_before_consuming_host_continuation()
     assert!(process_owner.retained.is_empty());
     assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
 
-    let foreign_console =
-        crate::QmpHotForkRequest::for_test(1, 1, 3, 4, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0);
+    let foreign_diagnostics =
+        crate::QmpHotForkRequest::for_test(1, 1, 2, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13, 0);
     let error = node
-        .fork_hot_fork_template(foreign_console, &mut process_owner)
-        .expect_err("a foreign child console must fail before the fork command");
+        .fork_hot_fork_template(foreign_diagnostics, &mut process_owner)
+        .expect_err("foreign diagnostics must fail before the fork command");
     assert!(matches!(
         error,
         crate::QemuHotForkLaunchError::Rejected { .. }
     ));
     assert!(process_owner.retained.is_empty());
     assert_eq!(node.lifecycle_state(), QemuNodeLifecycleState::Running);
+
+    let calls = recorded(&log);
+    assert!(!calls.contains(&ChannelCall::QmpHotFork));
+    assert!(!calls.contains(&ChannelCall::HostHotForkContinuationClone));
 
     let launch = node.fork_hot_fork_template(exact_hot_fork_request(), &mut process_owner)?;
     assert_eq!(launch.host_continuation().private_ring_generation(), 1);
@@ -612,8 +576,6 @@ fn hot_fork_child_resources_are_prepared_in_one_authenticated_order() -> Result<
     assert!(prepared.diagnostics().replacement_plan_bound());
     assert_eq!(prepared.child_qmp().template_generation(), 1);
     assert!(prepared.child_qmp().resource_plan_bound());
-    assert_eq!(prepared.child_console().template_generation(), 1);
-    assert!(prepared.child_console().resource_plan_bound());
     assert_eq!(prepared.plugin_endpoints().template_generation(), 1);
     assert!(node.hot_fork_child_process_contract_stage().is_none());
 
@@ -634,10 +596,6 @@ fn hot_fork_child_resources_are_prepared_in_one_authenticated_order() -> Result<
         .iter()
         .position(|call| matches!(call, ChannelCall::QmpHotForkInstallChildQmp { .. }))
         .ok_or("child-QMP install was not recorded")?;
-    let child_console = calls
-        .iter()
-        .position(|call| matches!(call, ChannelCall::QmpHotForkInstallChildConsole { .. }))
-        .ok_or("child-console install was not recorded")?;
     let plugin_endpoints = calls
         .iter()
         .position(|call| matches!(call, ChannelCall::QmpHotForkInstallPluginEndpoints { .. }))
@@ -650,8 +608,7 @@ fn hot_fork_child_resources_are_prepared_in_one_authenticated_order() -> Result<
         first_template < private_ring
             && private_ring < diagnostics
             && diagnostics < child_qmp
-            && child_qmp < child_console
-            && child_console < plugin_endpoints
+            && child_qmp < plugin_endpoints
             && plugin_endpoints < final_template
     );
 
@@ -856,7 +813,6 @@ fn hot_fork_plugin_endpoint_transfer_failure_retains_and_quarantines_owner()
     node.stage_hot_fork_private_ring_mapping(private)?;
     node.stage_hot_fork_child_diagnostics()?;
     node.stage_hot_fork_child_qmp()?;
-    node.stage_hot_fork_child_console()?;
 
     let error = node
         .stage_hot_fork_plugin_endpoints()
@@ -897,7 +853,6 @@ fn hot_fork_plugin_endpoint_worker_disposition_mismatch_quarantines_owner()
     node.stage_hot_fork_private_ring_mapping(private)?;
     node.stage_hot_fork_child_diagnostics()?;
     node.stage_hot_fork_child_qmp()?;
-    node.stage_hot_fork_child_console()?;
 
     let error = node
         .stage_hot_fork_plugin_endpoints()

@@ -40,7 +40,6 @@ mod async_driver;
 #[cfg(target_os = "linux")]
 mod block_realization_gate;
 mod checkpoint;
-mod console_observation;
 mod coverage;
 mod crash_detection;
 #[cfg(target_os = "linux")]
@@ -71,6 +70,10 @@ mod live_plugin_gate;
 mod live_plugin_gate;
 #[cfg(unix)]
 mod mapped_quantum;
+#[cfg(target_os = "linux")]
+mod native_console_owner;
+#[cfg(target_os = "linux")]
+pub use native_console_owner::ConsoleOwnerError as QemuNativeConsoleCustodyError;
 mod node;
 #[cfg(target_os = "linux")]
 mod node_factory;
@@ -149,14 +152,14 @@ pub use launch::{
     DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
     GuestEntropySeed, GuestEntropySeedFile, InputPolicy, LaunchProfileCandidate,
     LaunchProfileError, LivePluginGuestArchitecture, MachineResetMode, QEMU_CONSOLE_CHARDEV_ID,
-    QEMU_CONSOLE_SOCKET_FILE_NAME, QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
-    QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME, QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME,
-    QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID, QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD,
-    QEMU_PLUGIN_WAKE_FD, QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
-    QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME, QemuGdbstubChannelConfig, QemuLaunchAppRandomConfig,
-    QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder, QemuLaunchCommandError,
-    QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
-    QemuLaunchResourceError, QemuLaunchResourceRequirements, QemuPreSpawnLaunchValidation,
+    QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID, QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME,
+    QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME, QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID,
+    QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD, QEMU_PLUGIN_WAKE_FD,
+    QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME, QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+    QemuGdbstubChannelConfig, QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchCommand,
+    QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchInheritedFds,
+    QemuLaunchPluginConfig, QemuLaunchPluginSwitch, QemuLaunchResourceError,
+    QemuLaunchResourceRequirements, QemuPreSpawnLaunchValidation,
     QemuPreSpawnLaunchValidationError, QemuQmpChannelConfig, QemuRootImageFormat,
     QemuVmLaunchConfig, QemuWhiteboxSetupError, QemuWhiteboxSetupValidation, ROOT_DRIVE_ID,
     ROOT_OVERLAY_NODE_NAME, qemu_fault_target_hash, validate_aarch64_whitebox_setup,
@@ -190,9 +193,7 @@ pub(crate) use node::QemuQmpMachineControlChannel;
 pub use node::{
     MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES, QemuExactCheckpointCaptureAdmission,
     QemuExactCheckpointCaptureBoundary, QemuExactCheckpointCaptureOutputs,
-    QemuExactCheckpointCaptureResult, QemuHotForkChildConsoleObservation,
-    QemuHotForkChildConsoleStageError, QemuHotForkChildConsoleStageProof,
-    QemuHotForkChildConsoleStageState, QemuHotForkChildDiagnosticCapture,
+    QemuExactCheckpointCaptureResult, QemuHotForkChildDiagnosticCapture,
     QemuHotForkChildDiagnosticConsumer, QemuHotForkChildDiagnosticDrain,
     QemuHotForkChildDiagnosticStageError, QemuHotForkChildDiagnosticStageProof,
     QemuHotForkChildDiagnosticStageState, QemuHotForkChildFileDestination,
@@ -200,9 +201,9 @@ pub use node::{
     QemuHotForkChildProcessContractStageProof, QemuHotForkChildProcessOwner,
     QemuHotForkChildQmpHandshakeError, QemuHotForkChildQmpHostEndpoint,
     QemuHotForkChildQmpStageError, QemuHotForkChildQmpStageProof, QemuHotForkChildQmpStageState,
-    QemuHotForkChildResourcePreparationError, QemuHotForkCommandError,
-    QemuHotForkDetachedChildResources, QemuHotForkHostContinuation, QemuHotForkLaunchError,
-    QemuHotForkNodeStateContinuation, QemuHotForkPluginEndpointStageError,
+    QemuHotForkChildResourcePreparationError, QemuHotForkCommandError, QemuHotForkConsoleAdmission,
+    QemuHotForkConsoleRestore, QemuHotForkDetachedChildResources, QemuHotForkHostContinuation,
+    QemuHotForkLaunchError, QemuHotForkNodeStateContinuation, QemuHotForkPluginEndpointStageError,
     QemuHotForkPluginEndpointStageProof, QemuHotForkPluginEndpointStageState,
     QemuHotForkPluginHostEndpoint, QemuHotForkPreparedChildResources,
     QemuHotForkPrivateRingMapping, QemuHotForkPrivateRingStageError,
@@ -261,8 +262,7 @@ pub use qmp::{
     QMP_HOT_FORK_ASYNC_WORKER_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
     QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES,
     QMP_HOT_FORK_BLOCK_SEAL_COMMAND, QMP_HOT_FORK_BLOCK_SEAL_SCHEMA_VERSION,
-    QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_CONSOLE_COMMAND,
-    QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
+    QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
     QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD,
     QMP_HOT_FORK_CHILD_FILES_COMMAND, QMP_HOT_FORK_CHILD_FILES_MAX,
     QMP_HOT_FORK_CHILD_FILES_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_PROCESS_COMMAND,
@@ -287,13 +287,12 @@ pub use qmp::{
     QmpError, QmpGreeting, QmpHotForkBlockBarrierState, QmpHotForkBlockSealCandidate,
     QmpHotForkBlockSealRequest, QmpHotForkBlockSealState, QmpHotForkBlockSealedRoot,
     QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
-    QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof, QmpHotForkChildConsoleState,
-    QmpHotForkChildDiagnosticState, QmpHotForkChildFile, QmpHotForkChildFileRoot,
-    QmpHotForkChildFilesState, QmpHotForkChildProcessContractIdentity,
-    QmpHotForkChildProcessContractNames, QmpHotForkChildProcessContractState,
-    QmpHotForkChildProcessPhase, QmpHotForkChildProcessState, QmpHotForkChildQmpState,
-    QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState, QmpHotForkOutcome,
-    QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointDescriptorPlan,
+    QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof, QmpHotForkChildDiagnosticState,
+    QmpHotForkChildFile, QmpHotForkChildFileRoot, QmpHotForkChildFilesState,
+    QmpHotForkChildProcessContractIdentity, QmpHotForkChildProcessContractNames,
+    QmpHotForkChildProcessContractState, QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
+    QmpHotForkChildQmpState, QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState,
+    QmpHotForkOutcome, QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointDescriptorPlan,
     QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
     QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
     QmpHotForkRcuBarrierState, QmpHotForkRequest, QmpHotForkRequestError,

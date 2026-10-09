@@ -164,6 +164,9 @@ impl QemuPluginIpcControlChannel for QemuHotForkPluginHostEndpoint {
             QemuNodeChannelError::new("send hot-fork plugin control Quit", source.to_string())
         })
     }
+    fn signal_stopped_control(&self) -> Result<(), QemuNodeChannelError> {
+        crate::host_setup::signal_plugin_wake_fd(self.wake_as_fd())
+    }
 }
 
 pub(super) struct QemuHotForkPluginEndpointPair {
@@ -412,26 +415,6 @@ impl QemuNode {
                 ));
             }
         }
-        match self.hot_fork_child_console_stage.as_ref() {
-            Some(stage @ QemuHotForkChildConsoleStage::Installed(_))
-                if !stage.resource_plan_bound() => {}
-            Some(QemuHotForkChildConsoleStage::Installed(_)) => {
-                return Err(endpoint_rejected(
-                    "child console is already bound to another sealed plan",
-                ));
-            }
-            Some(QemuHotForkChildConsoleStage::TransferUncertain(_)) => {
-                return Err(endpoint_rejected(
-                    "child console transfer ownership is uncertain",
-                ));
-            }
-            None => {
-                return Err(endpoint_rejected(
-                    "plugin endpoints require a branch-private child console",
-                ));
-            }
-        }
-
         let ring = match self.hot_fork_private_ring_stage.as_ref() {
             Some(QemuHotForkPrivateRingStage::Installed(ring)) => ring,
             Some(QemuHotForkPrivateRingStage::TransferUncertain(_)) => {
@@ -558,19 +541,6 @@ impl QemuNode {
                 return Err(QemuHotForkPluginEndpointStageError::TransferUncertain { source });
             }
         };
-        let qemu_child_console = match self
-            .channels
-            .qmp_machine_control
-            .query_hot_fork_child_console()
-        {
-            Ok(state) => state,
-            Err(source) => {
-                self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
-                self.hot_fork_plugin_endpoint_stage =
-                    Some(QemuHotForkPluginEndpointStage::TransferUncertain(endpoints));
-                return Err(QemuHotForkPluginEndpointStageError::TransferUncertain { source });
-            }
-        };
         let diagnostic_bind = self
             .hot_fork_child_diagnostic_stage
             .as_mut()
@@ -596,21 +566,6 @@ impl QemuNode {
                     .map_err(endpoint_rejected_source)
             });
         if let Err(QemuHotForkPluginEndpointStageError::Rejected { source }) = child_qmp_bind {
-            self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
-            self.hot_fork_plugin_endpoint_stage =
-                Some(QemuHotForkPluginEndpointStage::TransferUncertain(endpoints));
-            return Err(QemuHotForkPluginEndpointStageError::TransferUncertain { source });
-        }
-        let child_console_bind = self
-            .hot_fork_child_console_stage
-            .as_mut()
-            .ok_or_else(|| endpoint_rejected("child console stage disappeared"))
-            .and_then(|stage| {
-                stage
-                    .bind_resource_plan(&qemu_child_console)
-                    .map_err(endpoint_rejected_source)
-            });
-        if let Err(QemuHotForkPluginEndpointStageError::Rejected { source }) = child_console_bind {
             self.lifecycle_state = crate::QemuNodeLifecycleState::Quarantined;
             self.hot_fork_plugin_endpoint_stage =
                 Some(QemuHotForkPluginEndpointStage::TransferUncertain(endpoints));
@@ -689,9 +644,6 @@ impl QemuNode {
                 }
                 if let Some(child_qmp) = self.hot_fork_child_qmp_stage.as_mut() {
                     child_qmp.unbind_resource_plan();
-                }
-                if let Some(child_console) = self.hot_fork_child_console_stage.as_mut() {
-                    child_console.unbind_resource_plan();
                 }
                 Ok(())
             }

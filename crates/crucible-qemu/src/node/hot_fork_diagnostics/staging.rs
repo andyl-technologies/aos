@@ -104,6 +104,7 @@ impl QemuNode {
             }
         };
         let exact = qemu_state.staged()
+            && qemu_state.generation() != 0
             && qemu_state.descriptor_name() == Some(&endpoint.descriptor_name)
             && qemu_state.socket_cookie() == Some(endpoint.socket_cookie)
             && qemu_state.template_generation() == template_generation
@@ -120,6 +121,7 @@ impl QemuNode {
                 Some(QemuHotForkChildDiagnosticStage::TransferUncertain(endpoint));
             return Err(QemuHotForkChildDiagnosticStageError::TransferUncertain { source });
         }
+        endpoint.diagnostic_generation = qemu_state.generation();
         endpoint.replacement_plan_bound = false;
         let proof = endpoint.proof(QemuHotForkChildDiagnosticStageState::Installed);
         self.hot_fork_child_diagnostic_stage =

@@ -1889,6 +1889,19 @@ fn encode_observation(
             node.name,
             bytes_hex(bytes)
         )),
+        ObservableEventPayload::NativeConsoleByte { node, origin } => Ok(format!(
+            "native-console-byte|{}|{}|{}",
+            observation.at().ticks,
+            node.name,
+            bytes_hex(
+                &origin
+                    .to_canonical_bytes()
+                    .map_err(|_| invalid_replay_schedule(
+                        scenario_name,
+                        "invalid native console origin"
+                    ))?
+            ),
+        )),
         ObservableEventPayload::CoverageBlock {
             execution_icount,
             node,
@@ -1951,6 +1964,19 @@ fn decode_observation(
             node(node_name),
             bytes_from_hex(scenario_name, bytes)?,
         )),
+        ["native-console-byte", ticks, node_name, origin] => {
+            let origin = crate::NativeConsoleByteOrigin::from_canonical_bytes(&bytes_from_hex(
+                scenario_name,
+                origin,
+            )?)
+            .map_err(|_| invalid_replay_schedule(scenario_name, "invalid native console origin"))?;
+            ObservableEvent::native_console_byte(
+                decode_ticks(scenario_name, ticks)?,
+                node(node_name),
+                origin,
+            )
+            .map_err(|_| invalid_replay_schedule(scenario_name, "invalid native console origin"))
+        }
         ["node-state", ticks, node_name, state] => Ok(ObservableEvent::node_state(
             decode_ticks(scenario_name, ticks)?,
             node(node_name),

@@ -217,6 +217,8 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
         }
         self.arm_concurrent_fault_event_staging(&runs)?;
 
+        #[cfg(test)]
+        let console_sentinel_probe = self.console_sentinel_probe.clone();
         let active = Arc::new(AtomicUsize::new(0));
         let peak = Arc::new(AtomicUsize::new(0));
         let mut outcomes = Vec::with_capacity(runs.len());
@@ -243,14 +245,23 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
                     .map(|(run, backend)| {
                         let active = Arc::clone(&active);
                         let peak = Arc::clone(&peak);
+                        #[cfg(test)]
+                        let console_sentinel_probe = console_sentinel_probe.clone();
                         scope.spawn(move || {
                             let mut one = QemuNodeSet::new();
                             one.nodes.insert(run.node().clone(), backend);
                             let operation = catch_unwind(AssertUnwindSafe(|| {
+                                #[cfg(target_os = "linux")]
+                                one.nodes
+                                    .get(run.node())
+                                    .ok_or_else(|| BackendError::Rejected {
+                                        message: String::from("native console RUN lost its node"),
+                                    })?
+                                    .retain_native_console_run(&run.admission)?;
                                 let concurrent = active.fetch_add(1, Ordering::SeqCst) + 1;
                                 peak.fetch_max(concurrent, Ordering::SeqCst);
                                 // The sealed record binds actor planning only.
-                                // The installed control-3 channels and genuine
+                                // The installed bounded-control channels and genuine
                                 // host-I/O runtime own this bounded execution.
                                 let result = one.step_node_to(run.node(), run.ceiling());
                                 active.fetch_sub(1, Ordering::SeqCst);
@@ -258,15 +269,24 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
                                 let rng_evidence = one.drain_rng_evidence()?;
                                 let network_outputs = one.drain_network_outputs()?;
                                 let observations = one.drain_observable_events()?;
-                                Ok(ConcurrentBackendRunResult::Completed(
-                                    ConcurrentBackendRunOutcome {
-                                        node: run.node().clone(),
-                                        step,
-                                        rng_evidence,
-                                        network_outputs,
-                                        observations,
-                                    },
-                                ))
+                                let outcome = ConcurrentBackendRunOutcome {
+                                    node: run.node().clone(),
+                                    step,
+                                    rng_evidence,
+                                    network_outputs,
+                                    observations,
+                                };
+                                #[cfg(test)]
+                                if let Some(probe) = &console_sentinel_probe {
+                                    // Core may regrant immediately after this worker returns.
+                                    // Inspect the real stopped VM before returning its evidence.
+                                    probe.observe(
+                                        one.node_mut(run.node())?,
+                                        &run.admission,
+                                        &outcome,
+                                    )?;
+                                }
+                                Ok(ConcurrentBackendRunResult::Completed(outcome))
                             }));
                             let backend = one.nodes.remove(run.node());
                             let pending = one.pending_selectable_requests.remove(run.node());

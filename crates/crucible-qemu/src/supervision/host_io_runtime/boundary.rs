@@ -86,6 +86,53 @@ impl QemuLiveHostIoRuntime {
         Ok(Some(write_index))
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn observe_console_operation_stop(
+        &mut self,
+        snapshot: &crucible_shmem::NodeSlotSnapshot,
+    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        let Some(custody) = &self.console_custody else {
+            // Ordinary profiles perform no console table or ring reads.
+            return Ok(false);
+        };
+        if self.console_stop.is_none() {
+            self.console_stop = custody
+                .observe_operation_stop(&self.region, *snapshot)
+                .map_err(|source| {
+                    QemuAsyncDriverRuntimeError::new(
+                        "observe accounted console stop",
+                        source.to_string(),
+                    )
+                })?;
+        }
+        Ok(self.console_stop.is_some_and(|stop| {
+            snapshot.status == STATUS_IDLE
+                && stop
+                    .matches_coordinate(snapshot.current_icount, snapshot.logical_time_raw_icount)
+        }))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn console_operation_discovery_pending(
+        &self,
+        discovered: bool,
+    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        let Some(custody) = &self.console_custody else {
+            return Ok(false);
+        };
+        if discovered {
+            return Ok(false);
+        }
+        custody
+            .has_unconsumed_operation(&self.region)
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new(
+                    "await accounted console stop discovery",
+                    source.to_string(),
+                )
+            })
+    }
+
     /// Publishes the earliest exact completion across every attached host device.
     pub(super) fn publish_device_completion_deadline(
         &self,

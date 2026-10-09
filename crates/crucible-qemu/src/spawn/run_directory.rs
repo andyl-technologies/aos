@@ -25,6 +25,11 @@ use crate::launch::{
     MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES, MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES,
 };
 
+#[cfg(test)]
+mod console_sentinel;
+#[cfg(test)]
+pub(crate) use console_sentinel::ConsoleSentinelOutput;
+
 const MAXIMUM_RUNTIME_LIVENESS_TRACE_TAIL_BYTES: u64 = 60 * 1024;
 const MAXIMUM_RUNTIME_LIVENESS_TRACE_TAIL_LINES: usize = 512;
 const MAXIMUM_RR_STREAM_TRACE_BYTES: u64 = 32 * 1024 * 1024;

@@ -520,11 +520,25 @@ impl LiveVcpuTimeCallbackState {
             token
         });
 
-        let result = self.on_control_boundary_with_stages(
-            raw_icount,
-            witness.enabled.then_some(callback),
-            &mut emit_stage,
-        );
+        let result = match self.native_console {
+            Some(installed) => {
+                let mut owner = installed.control_owner();
+                let mut effect = super::console_effect::ConsoleControlEffect::new(&mut owner);
+                self.on_control_boundary_with_console(
+                    raw_icount,
+                    witness.enabled.then_some(callback),
+                    &mut emit_stage,
+                    Some(&mut effect),
+                )
+                // Effect's writer guard clears custody before ACK. This
+                // invocation storage drops before original error handling.
+            }
+            None => self.on_control_boundary_with_stages(
+                raw_icount,
+                witness.enabled.then_some(callback),
+                &mut emit_stage,
+            ),
+        };
         if let Some(token_before) = token_before {
             let token_after = PluginShmemOrdering::control_boundary_token(self.slot.get());
             let event = if result.is_err() {

@@ -61,6 +61,11 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-stop-context.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-tcg-fast-paths.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-mutex-owner-cache.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-mutex-waiter-counters.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-tcg-page-collection.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-tcg-crossing-membership.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-tsc-source-index.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/tcg/x86_64/system/self-modifying-code.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-snapshot-fast-path.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-settle-prepark.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-cold-fault-predicates.py` | GPL-2.0-or-later | Explicit SPDX identifier |
@@ -69,6 +74,9 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-fault-rule-presence.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-rr-sim-barriers.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-control-deferred.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-device-load-console.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-console-seal.py` | GPL-2.0-only | Explicit SPDX identifier |
+| `tests/unit/test-crucible-console-seal-fixture.c` | GPL-2.0-only | Explicit SPDX identifier |
 | `tests/unit/test-crucible-control-observer.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-control-delivery.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-stopped-control-rearm.py` | GPL-2.0-or-later | Explicit SPDX identifier |
@@ -145,6 +153,21 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-serial-kbd-timer-wide-clock.c` | MIT | Explicit SPDX identifier; literal UART and keyboard timer fixtures preserve their MIT scope |
 | `tests/unit/test-crucible-acpi-pm-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-ich9-aux-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `accel/tcg/crucible-control-delivery-summary.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `chardev/char-crucible-console.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `chardev/console-control-provider.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `chardev/console-dispatch-owner.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `chardev/console-hot-fork-owner.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `chardev/console-installed-node.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `chardev/console-node-writer.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `chardev/console-node-writer.h` | GPL-2.0-only | Explicit SPDX identifier |
+| `include/chardev/char-crucible-console.h` | GPL-2.0-only | Explicit SPDX identifier |
+| `include/chardev/console-control-provider.h` | GPL-2.0-only | Explicit SPDX identifier |
+| `include/chardev/console-dispatch-owner.h` | GPL-2.0-only | Explicit SPDX identifier |
+| `include/chardev/console-installed-node.h` | GPL-2.0-only | Explicit SPDX identifier |
+| `include/chardev/console-native-owner.h` | GPL-2.0-only | Explicit SPDX identifier |
+| `include/aos/crucible/crucible_shmem_abi.h` | MIT OR Apache-2.0 | Explicit SPDX identifier |
+| `include/crucible_native_console_draft.h` | MIT OR Apache-2.0 | Explicit SPDX identifier |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated
@@ -204,19 +227,25 @@ it does not qualify a physical guest or the complete TCG loop. This unit is not
 a publication root. Any distributed binary must retain the matching complete
 corresponding-source artifact, including these fixtures and builder.
 
-## Inactive bounded control-delivery diagnostic overlay
+## Bounded control-delivery diagnostic controls
 
-`tests/crucible/native/control-delivery-summary/native-body.patch` preserves
-selected QEMU file notices and creates
-`accel/tcg/crucible-control-delivery-summary.c` with GPL-2.0-or-later licensing.
-The included implementation belongs to the GPL-compatible native process;
-its private RR helper declarations do not change the public shared-memory or
-control protocol. This inactive overlay does not change the selected atomic
-patch inventory or publish an emulator. Any later distributed native union
-must inventory the created file and retain matching complete source.
+The atomic integration includes
+`accel/tcg/crucible-control-delivery-summary.c` with GPL-2.0-or-later licensing,
+as inventoried above. Its private RR helper declarations do not change the
+public shared-memory or control protocol. The matching complete corresponding
+source retains this implementation; no separate diagnostic overlay is applied.
 
 The private controls `control-delivery-summary.c` and
-`control-delivery-summary.py` in that directory are GPL-2.0-or-later. They
-compile the actual diagnostic and selected cancellation bodies with explicit
-CPU, BQL and trace providers. They do not authenticate a physical guest,
-active-at-deadline state or the complete native delivery topology.
+`control-delivery-summary.py` under `tests/crucible/native/control-delivery-summary/`
+are GPL-2.0-or-later. The driver reuses the GPL-2.0-only
+`tests/crucible/native/block-wait-completion-bodies.py` extractor. The native
+Crucible check phase in `pkgs/emulation/qemu.nix` invokes all thirteen controls
+against the selected diagnostic and cancellation bodies, using their matching
+configured AOS compiler and headers. It retains the results, extracted bodies,
+source bindings and case output, without installing the private test executable.
+The corresponding-source package retains the C fixture, Python driver, shared
+extractor and build recipe in their original relative layout.
+
+CPU, BQL, trace and final-write endpoints remain explicit test providers. These
+controls do not authenticate a physical guest, active-at-deadline state or the
+complete native delivery topology, and do not publish an emulator.

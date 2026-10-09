@@ -42,6 +42,7 @@ use crate::{
 };
 
 mod admission;
+pub(crate) mod native_console;
 
 use admission::{
     accept_accelerator_manifest, accept_capability_result, accept_clock_manifest,
@@ -52,6 +53,8 @@ use admission::{
 /// Completed host-side setup state for one QEMU plugin node.
 #[derive(Debug)]
 pub struct QemuHostPluginSetup {
+    #[cfg(target_os = "linux")]
+    pub(crate) console_custody: Option<crate::native_console_owner::ConsoleLaunchCustody>,
     control: ControlLifecycleStream<UnixStream>,
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
@@ -216,35 +219,7 @@ impl QemuHostPluginSetup {
     /// Returns [`QemuNodeChannelError`] when the retained eventfd rejects the
     /// exact eight-byte counter write.
     pub fn signal_plugin_wake(&self) -> Result<(), QemuNodeChannelError> {
-        let bytes = 1_u64.to_ne_bytes();
-        loop {
-            // SAFETY: setup retains a live eventfd and `bytes` is the exact
-            // eight-byte counter representation required by eventfd writes.
-            let result = unsafe {
-                libc::write(
-                    self.wake_fd(),
-                    bytes.as_ptr().cast::<libc::c_void>(),
-                    bytes.len(),
-                )
-            };
-            if result == bytes.len() as isize {
-                return Ok(());
-            }
-            if result >= 0 {
-                return Err(QemuNodeChannelError::new(
-                    "signal plugin wake eventfd",
-                    format!("short eventfd write: expected 8 bytes, wrote {result}"),
-                ));
-            }
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(QemuNodeChannelError::new(
-                "signal plugin wake eventfd",
-                error.to_string(),
-            ));
-        }
+        signal_plugin_wake_fd(self.wake_as_fd())
     }
 
     /// Proves that the plugin sent no unsolicited run-phase control bytes.
@@ -346,7 +321,7 @@ pub fn complete_qemu_host_plugin_setup(
 
 /// Completes setup with one current-version composite plugin plan.
 ///
-/// Control protocol v3 sends the complete composite setup plan in the third
+/// Control protocol v4 sends the complete composite setup plan in the third
 /// descriptor.
 ///
 /// # Errors
@@ -361,6 +336,11 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
     required_capabilities: &QemuFaultCapabilityRequirement,
     plugin_setup_plan: &PluginSetupPlan,
 ) -> Result<QemuHostPluginSetup, QemuHostPluginSetupError> {
+    let expected_process_generation = resources.plugin_process_generation();
+    let console_plan_bytes = native_console::encoded_console_plan_if_bound(
+        plugin_setup_plan,
+        resources.plugin_setup_plan_digest(),
+    )?;
     let allocation = RegionAllocation::new(config)
         .map_err(|source| QemuHostPluginSetupError::RegionLayout { source })?;
     let layout = allocation.layout();
@@ -453,9 +433,12 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
             node_count: layout.node_count,
         })
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
-    let setup_plan_bytes = plugin_setup_plan
-        .encode()
-        .map_err(|source| QemuHostPluginSetupError::PluginSetupPlan { source })?;
+    let setup_plan_bytes = match console_plan_bytes {
+        Some(bytes) => bytes,
+        None => plugin_setup_plan
+            .encode()
+            .map_err(|source| QemuHostPluginSetupError::PluginSetupPlan { source })?,
+    };
     let plugin_setup_plan_fd = sealed_plugin_setup_plan_fd(&setup_plan_bytes)?;
     control
         .host_send_setup_with_descriptors(
@@ -543,11 +526,20 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
     }
     let admitted_capability_digest = fault_capability_manifest_digest(&fault_capabilities)
         .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
+    let native_console_admission = native_console::accept_installation(
+        &admission_region,
+        slot_index,
+        expected_process_generation,
+        plugin_setup_plan.native_console_plan(),
+    )
+    .map_err(|source| QemuHostPluginSetupError::NativeConsoleAdmission { source })?;
     control
         .enter_run_via_shared_memory()
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
 
-    Ok(QemuHostPluginSetup {
+    let mut setup = QemuHostPluginSetup {
+        #[cfg(target_os = "linux")]
+        console_custody: None,
         control,
         shmem_fd,
         wake_fd,
@@ -565,7 +557,16 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
         system_manifest,
         ready_markers: required_capabilities.ready_markers().clone(),
         selectable_catalog_plan: plugin_setup_plan.selectable_catalog_plan().clone(),
-    })
+    };
+    if let Some(installed) = native_console_admission {
+        setup.console_custody = Some(
+            crate::native_console_owner::ConsoleLaunchCustody::from_installed_setup(
+                &setup, &installed,
+            )
+            .map_err(|source| QemuHostPluginSetupError::NativeConsoleCustody { source })?,
+        );
+    }
+    Ok(setup)
 }
 
 fn sealed_plugin_setup_plan_fd(bytes: &[u8]) -> Result<OwnedFd, QemuHostPluginSetupError> {
@@ -679,6 +680,39 @@ fn setup_io_error(operation: &'static str, source: io::Error) -> QemuHostPluginS
     QemuHostPluginSetupError::Io { operation, source }
 }
 
+/// Writes the original eventfd counter through a retained setup or child owner.
+pub(crate) fn signal_plugin_wake_fd(fd: BorrowedFd<'_>) -> Result<(), QemuNodeChannelError> {
+    let bytes = 1_u64.to_ne_bytes();
+    loop {
+        // SAFETY: the borrowed owner retains a live eventfd and `bytes` is the exact
+        // eight-byte counter representation required by eventfd writes.
+        let result = unsafe {
+            libc::write(
+                fd.as_raw_fd(),
+                bytes.as_ptr().cast::<libc::c_void>(),
+                bytes.len(),
+            )
+        };
+        if result == bytes.len() as isize {
+            return Ok(());
+        }
+        if result >= 0 {
+            return Err(QemuNodeChannelError::new(
+                "signal plugin wake eventfd",
+                format!("short eventfd write: expected 8 bytes, wrote {result}"),
+            ));
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(QemuNodeChannelError::new(
+            "signal plugin wake eventfd",
+            error.to_string(),
+        ));
+    }
+}
+
 /// An error produced while running host-side plugin setup.
 #[derive(Debug, Error)]
 pub enum QemuHostPluginSetupError {
@@ -715,6 +749,26 @@ pub enum QemuHostPluginSetupError {
     PluginSetupPlan {
         /// Canonical composite-plan failure.
         source: PluginSetupPlanError,
+    },
+    /// The console-bearing setup body differs from its original command.
+    #[error("native console setup plan is not bound to the original launch")]
+    NativeConsoleLaunchPlan {
+        /// Digest retained by the real command/spawn owner, if present.
+        expected: Option<[u8; 32]>,
+        /// Digest of the body requested for this completion.
+        observed: [u8; 32],
+    },
+    /// The installed console did not match its original launch and sealed plan.
+    #[error("native console setup admission failed: {source}")]
+    NativeConsoleAdmission {
+        /// Exact bounded framing, projection or physical-owner refusal.
+        source: crucible_protocol::native_console::NativeConsoleError,
+    },
+    /// The installed launch could not reserve its bounded issuance custody.
+    #[error("native console launch custody failed: {source}")]
+    NativeConsoleCustody {
+        /// Original setup-owned custody failure.
+        source: crate::QemuNativeConsoleCustodyError,
     },
     /// A host-side descriptor or memfd write operation failed.
     #[error("{operation} failed: {source}")]
@@ -861,7 +915,7 @@ pub(crate) mod tests {
 
     #[test]
     fn qemu_host_rejects_an_unsupported_plugin_abi() {
-        assert_eq!(ABI_VERSION, 30);
+        assert_eq!(ABI_VERSION, 31);
         let unsupported_abi = u32::MAX;
         let config = HostHandshakeConfig {
             proto_version: CONTROL_PROTOCOL_VERSION,
@@ -1130,7 +1184,7 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    fn plugin_peer_complete_setup(
+    pub(crate) fn plugin_peer_complete_setup(
         plugin_socket: UnixStream,
     ) -> Result<ValidatedSetupRegion, String> {
         let requirement = QemuFaultCapabilityRequirement::abi_boundary_v1();

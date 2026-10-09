@@ -294,6 +294,7 @@ fn materialization_capture_preserves_one_shot_record_outside_the_recent_tail()
         #[cfg(feature = "packaged-midpoint-flight")]
         daemon_url: String::new(),
         stderr: NamedTempFile::new()?,
+        live_progress: None,
         kill_on_drop: false,
     };
     use std::os::unix::fs::MetadataExt as _;

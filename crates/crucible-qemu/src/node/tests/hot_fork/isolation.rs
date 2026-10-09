@@ -134,12 +134,6 @@ fn gate_hot_fork_isolation_keeps_two_resource_generations_physically_private()
     );
     assert_eq!(recorded(&first_log).len(), first_log_before + 1);
     assert_eq!(recorded(&second_log), second_log_before);
-    assert!(first_continuation.console_observation_available());
-    assert!(second_continuation.console_observation_available());
-    first_continuation.attach_console_observation(&mut first_source, node_id("first-child"))?;
-    assert!(!first_continuation.console_observation_available());
-    assert!(second_continuation.console_observation_available());
-
     let first_drain = first_diagnostics.drain_available()?;
     assert_eq!(first_drain.bytes_read(), 26);
     assert!(second_diagnostics.retained().is_empty());
@@ -155,13 +149,11 @@ fn gate_hot_fork_isolation_keeps_two_resource_generations_physically_private()
         second_continuation,
     ));
     first_source.release_hot_fork_plugin_endpoints()?;
-    first_source.release_hot_fork_child_console()?;
     first_source.release_hot_fork_child_qmp()?;
     let _first_capture =
         first_source.release_hot_fork_child_diagnostics_with_consumer(&mut first_diagnostics)?;
     drop(first_source.release_hot_fork_private_ring_mapping()?);
     second_source.release_hot_fork_plugin_endpoints()?;
-    second_source.release_hot_fork_child_console()?;
     second_source.release_hot_fork_child_qmp()?;
     let _second_capture =
         second_source.release_hot_fork_child_diagnostics_with_consumer(&mut second_diagnostics)?;

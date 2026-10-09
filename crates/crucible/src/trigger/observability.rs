@@ -920,6 +920,7 @@ pub(super) fn resolve_network_idle_ready_point(
             } if link_ids.contains(link) => Some(event.at()),
             ObservableEventPayload::NetworkDelivered { .. }
             | ObservableEventPayload::ConsoleOutput { .. }
+            | ObservableEventPayload::NativeConsoleByte { .. }
             | ObservableEventPayload::CoverageBlock { .. }
             | ObservableEventPayload::CoverageMarker { .. }
             | ObservableEventPayload::AssertionProximity { .. }
@@ -981,30 +982,27 @@ pub(super) fn resolve_console_marker_ready_point(
             if event.at() > observed_until {
                 return None;
             }
-            match event.payload() {
-                ObservableEventPayload::ConsoleOutput {
-                    node: source,
-                    bytes,
-                } if source == node => Some((event.at(), bytes.as_slice())),
-                ObservableEventPayload::ConsoleOutput { .. }
-                | ObservableEventPayload::NetworkDelivered { .. }
-                | ObservableEventPayload::CoverageBlock { .. }
-                | ObservableEventPayload::CoverageMarker { .. }
-                | ObservableEventPayload::AssertionProximity { .. }
-                | ObservableEventPayload::MemorySample { .. }
-                | ObservableEventPayload::IoCompletion { .. }
-                | ObservableEventPayload::NodeState { .. }
-                | ObservableEventPayload::AssertionStateChanged { .. }
-                | ObservableEventPayload::AssertionEvaluated { .. }
-                | ObservableEventPayload::GuestMarker { .. }
-                | ObservableEventPayload::GuestMeasurement { .. }
-                | ObservableEventPayload::GuestSemanticMarker { .. }
-                | ObservableEventPayload::GuestAssertionMarker { .. } => None,
-            }
+            event
+                .console_bytes()
+                .and_then(|(source, bytes)| (source == node).then_some((event.at(), event, bytes)))
         })
         .collect::<Vec<_>>();
-    ordered.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)));
-    for (at, bytes) in ordered {
+    ordered.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| match (left.1.payload(), right.1.payload()) {
+                (
+                    ObservableEventPayload::NativeConsoleByte { origin: left, .. },
+                    ObservableEventPayload::NativeConsoleByte { origin: right, .. },
+                ) => left.node_sequence.cmp(&right.node_sequence),
+                (ObservableEventPayload::NativeConsoleByte { .. }, _) => {
+                    std::cmp::Ordering::Greater
+                }
+                (_, ObservableEventPayload::NativeConsoleByte { .. }) => std::cmp::Ordering::Less,
+                _ => left.2.cmp(right.2),
+            })
+    });
+    for (at, _, bytes) in ordered {
         console.extend_from_slice(bytes);
         if contains_subsequence(&console, marker) {
             return Ok(at);

@@ -8,8 +8,8 @@
 use super::held_stop::HeldHostStopController;
 use super::*;
 
-// An actor refuses before a further effect when its private evidence budget is
-// exhausted. Retention cannot grow without bound under repeated physical waves.
+// Each immutable segment is bounded. A live actor checkpoints only certified
+// surviving RUN origins before another effect, never its whole publication history.
 const MAX_CANONICAL_EXTENSIONS: u64 = 1024;
 
 #[derive(Debug)]
@@ -26,6 +26,8 @@ pub(in crate::scheduler) struct HeldRunLineage {
     controller: HeldHostStopController,
     union: Arc<()>,
     actor_generation: u64,
+    checkpoint: Arc<()>,
+    certified_origins: Arc<Vec<Arc<RetainedRunContext>>>,
     root: Arc<RetainedRunContext>,
     tip: Option<Arc<CanonicalExtension>>,
 }
@@ -80,6 +82,15 @@ impl RetainedRunContext {
     }
 }
 
+fn checkpoint_interval(node_count: usize) -> Result<u64, SchedulerError> {
+    let live_inventory_bound = node_count
+        .checked_mul(3)
+        .ok_or_else(|| rejected("canonical checkpoint owner cardinality overflowed"))?;
+    let live_inventory_bound = u64::try_from(live_inventory_bound)
+        .map_err(|_| rejected("canonical checkpoint owner cardinality overflowed"))?;
+    Ok(live_inventory_bound.clamp(1, MAX_CANONICAL_EXTENSIONS))
+}
+
 impl HeldRunLineage {
     pub(super) fn begin(
         controller: HeldHostStopController,
@@ -90,6 +101,8 @@ impl HeldRunLineage {
             controller,
             union: Arc::new(()),
             actor_generation,
+            checkpoint: Arc::new(()),
+            certified_origins: Arc::new(Vec::new()),
             root: Arc::new(RetainedRunContext::capture(scheduler)),
             tip: None,
         }
@@ -122,6 +135,7 @@ impl HeldRunLineage {
         if self.controller != *controller
             || self.actor_generation != actor_generation
             || !Arc::ptr_eq(&self.union, &retained.union)
+            || !Arc::ptr_eq(&self.checkpoint, &retained.checkpoint)
             || !same_tip
             || !self.current_context().matches(scheduler)
         {
@@ -181,6 +195,108 @@ impl HeldRunLineage {
         Ok(())
     }
 
+    fn checkpoint_due(&self, scheduler: &SingleScheduler) -> Result<bool, SchedulerError> {
+        // Amortize checkpoint authentication over at most one bounded live-map
+        // inventory's worth of publications. Long-held peers do not force
+        // repeatedly rewalking hundreds of retired origins. The original
+        // segment ceiling remains independently enforced by extend_commit.
+        let interval = checkpoint_interval(scheduler.nodes.len())?;
+        Ok(self
+            .tip
+            .as_ref()
+            .is_some_and(|tip| tip.generation >= interval))
+    }
+
+    fn checkpoint_live_origins<'a>(
+        &mut self,
+        scheduler: &SingleScheduler,
+        controller: &HeldHostStopController,
+        actor_generation: u64,
+        runs: impl IntoIterator<Item = &'a PreparedHostRun>,
+    ) -> Result<(), SchedulerError> {
+        if !self.checkpoint_due(scheduler)? {
+            return Ok(());
+        }
+        if self.controller != *controller || self.actor_generation != actor_generation {
+            return Err(rejected("canonical checkpoint changed its owning actor"));
+        }
+        // This verifies the complete old segment before any certificate is
+        // issued. Exact typed projections, not a generation or final digest,
+        // establish membership in that authenticated history.
+        if !self.validate_context(scheduler, scheduler) {
+            return Err(rejected(
+                "canonical checkpoint changed its authenticated context",
+            ));
+        }
+        let maximum = scheduler
+            .nodes
+            .len()
+            .checked_mul(3)
+            .ok_or_else(|| rejected("canonical checkpoint owner cardinality overflowed"))?;
+        let mut origins: Vec<Arc<RetainedRunContext>> = Vec::new();
+        let mut count = 0_usize;
+        for run in runs {
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| rejected("canonical checkpoint owner cardinality overflowed"))?;
+            if count > maximum
+                || scheduler.nodes.get(run.plan.index).map(|node| &node.id) != Some(&run.plan.node)
+                || run.admission.node() != &run.plan.node.node
+            {
+                return Err(rejected(
+                    "canonical checkpoint changed its actual RUN inventory",
+                ));
+            }
+            self.authenticate(controller, actor_generation, run, scheduler)?;
+            let original = run.admission.original_source();
+            let mut context = self
+                .certified_origins
+                .iter()
+                .find(|context| context.matches(original))
+                .cloned();
+            if context.is_none() && self.root.matches(original) {
+                context = Some(self.root.clone());
+            }
+            let mut cursor = self.tip.as_ref();
+            while context.is_none() {
+                let Some(extension) = cursor else { break };
+                if extension.after.matches(original) {
+                    context = Some(extension.after.clone());
+                }
+                cursor = extension.previous.as_ref();
+            }
+            let context = context.ok_or_else(|| {
+                rejected("canonical checkpoint RUN has no authenticated original context")
+            })?;
+            if !origins
+                .iter()
+                .any(|retained| retained.as_ref() == context.as_ref())
+            {
+                origins.push(context);
+            }
+        }
+        if count == 0 {
+            return Err(rejected(
+                "canonical checkpoint has no surviving RUN authority",
+            ));
+        }
+        let current = self
+            .tip
+            .as_ref()
+            .ok_or_else(|| rejected("canonical checkpoint lost its full segment"))?
+            .after
+            .clone();
+
+        // All construction is private and fallible work finishes above. This
+        // immutable checkpoint certifies only real surviving origins. A fresh
+        // allocation makes every older checkpoint/tip fail actor authentication.
+        self.certified_origins = Arc::new(origins);
+        self.root = current;
+        self.checkpoint = Arc::new(());
+        self.tip = None;
+        Ok(())
+    }
+
     pub(super) fn ensure_extension_room(&self) -> Result<(), SchedulerError> {
         if self
             .tip
@@ -200,14 +316,41 @@ impl HeldRunLineage {
         // Rewalk the retained chain rather than accepting a matching final
         // hash or numeric generation as authority for an unrelated mutation.
         let mut cursor = self.tip.as_ref();
-        let mut origin_bound = self.root.matches(original);
+        let mut origin_bound = self.root.matches(original)
+            || self
+                .certified_origins
+                .iter()
+                .any(|context| context.matches(original));
         while let Some(extension) = cursor {
             origin_bound |= extension.after.matches(original);
             let previous = extension
                 .previous
                 .as_ref()
                 .map_or(&self.root, |tip| &tip.after);
-            if previous.as_ref() != extension.before.as_ref()
+            let expected_generation = extension
+                .previous
+                .as_ref()
+                .map_or(Some(1), |previous| previous.generation.checked_add(1));
+            if Some(extension.generation) != expected_generation
+                || extension.generation > MAX_CANONICAL_EXTENSIONS
+                || previous.as_ref() != extension.before.as_ref()
+                || extension.before.configuration.def != extension.after.configuration.def
+                || extension.before.effective_topology != extension.after.effective_topology
+                || extension.before.topology_epoch != extension.after.topology_epoch
+                || extension.before.nodes != extension.after.nodes
+                || extension.after.event_log_offset.events
+                    < extension.before.event_log_offset.events
+                || extension.after.event_log_offset.bytes < extension.before.event_log_offset.bytes
+                || extension
+                    .before
+                    .preemption_requests
+                    .iter()
+                    .filter(|command| command.node != extension.affected_node)
+                    .ne(extension
+                        .after
+                        .preemption_requests
+                        .iter()
+                        .filter(|command| command.node != extension.affected_node))
                 || !extension
                     .after
                     .nodes
@@ -222,11 +365,82 @@ impl HeldRunLineage {
     }
 }
 
+// The owning actor supplies its exact bounded maps; callers cannot mint an
+// origin from a matching configuration or replace a sealed RUN owner.
+pub(super) fn prepare_canonical_extension(
+    lineage: &mut HeldRunLineage,
+    scheduler: &SingleScheduler,
+    controller: &HeldHostStopController,
+    actor_generation: u64,
+    runs: &mut BTreeMap<NodeId, super::host_concurrent::HeldHostRun>,
+    boundaries: &mut BTreeMap<NodeId, super::held_boundary::HeldBoundaryRun>,
+    originals: &mut BTreeMap<NodeId, PreparedHostRun>,
+) -> Result<(), SchedulerError> {
+    if !lineage.checkpoint_due(scheduler)? {
+        return Ok(());
+    }
+    if runs.len() > scheduler.nodes.len()
+        || boundaries.len() > scheduler.nodes.len()
+        || originals.len() > scheduler.nodes.len()
+        || runs
+            .iter()
+            .any(|(node, held)| node != &held.run.plan.node.node)
+        || boundaries
+            .iter()
+            .any(|(node, held)| node != &held.run.plan.node.node)
+        || originals
+            .iter()
+            .any(|(node, run)| node != &run.plan.node.node)
+    {
+        return Err(rejected(
+            "canonical checkpoint changed its named RUN inventory",
+        ));
+    }
+    lineage.checkpoint_live_origins(
+        scheduler,
+        controller,
+        actor_generation,
+        runs.values()
+            .map(|held| &held.run)
+            .chain(boundaries.values().map(|held| &held.run))
+            .chain(originals.values()),
+    )?;
+    for run in originals.values_mut() {
+        run.canonical_lineage = Some(lineage.clone());
+    }
+    for held in runs.values_mut() {
+        held.run.canonical_lineage = Some(lineage.clone());
+    }
+    for held in boundaries.values_mut() {
+        held.run.canonical_lineage = Some(lineage.clone());
+    }
+    Ok(())
+}
+
+impl super::host_concurrent::HeldHostContinuation {
+    pub(super) fn prepare_canonical_extension(
+        &mut self,
+        scheduler: &SingleScheduler,
+        controller: &HeldHostStopController,
+        actor_generation: u64,
+    ) -> Result<(), SchedulerError> {
+        prepare_canonical_extension(
+            &mut self.lineage,
+            scheduler,
+            controller,
+            actor_generation,
+            &mut self.runs,
+            &mut self.boundary_runs,
+            &mut self.original_runs,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn prepared_peer_commit() -> (
+    pub(super) fn prepared_peer_commit() -> (
         SingleScheduler,
         PreparedHostRun,
         HeldRunLineage,
@@ -721,3 +935,11 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "held_lineage/compaction_tests.rs"]
+mod compaction_tests;
+
+#[cfg(test)]
+#[path = "held_lineage/long_actor_tests.rs"]
+mod long_actor_tests;

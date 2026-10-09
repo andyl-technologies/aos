@@ -44,6 +44,7 @@ pub(super) struct QemuLiveNodeStepQuantum {
 struct PrimeDeviceServicers<'a> {
     block: Option<&'a mut QemuLiveBlockIoServicer>,
     ninep: Option<&'a mut QemuLive9pIoServicer>,
+    runtime: &'a mut QemuLiveHostIoRuntime,
 }
 
 pub(super) fn advance_to_busy_ceiling(
@@ -119,8 +120,7 @@ fn drive_mapped_prime_chain(
     deadline: &HostSupervisionDeadline,
     hot_path: &mut QemuMappedQuantumShmemHotPath,
     prime_ceiling: u64,
-    block: Option<&mut QemuLiveBlockIoServicer>,
-    ninep: Option<&mut QemuLive9pIoServicer>,
+    servicers: PrimeDeviceServicers<'_>,
     report_progress: bool,
 ) -> Result<Vec<crate::QemuNodeEmittedFrame>, QemuLiveNodeStepGateError> {
     let horizon = crucible::ExecutionHorizon {
@@ -147,7 +147,7 @@ fn drive_mapped_prime_chain(
         hot_path,
         pending,
         prime_ceiling,
-        PrimeDeviceServicers { block, ninep },
+        servicers,
         report_progress,
     )
 }
@@ -218,6 +218,20 @@ fn poll_mapped_prime_chain(
             }
         };
         if let Some(completion) = completion {
+            if completion.final_state.current_icount.retired < prime_ceiling {
+                // Retain the exact early completion before a regrant can replace
+                // its authorization or reuse its ring slots. The final ceiling
+                // still uses the original post-device priming handoff below.
+                servicers
+                    .runtime
+                    .fence_priming_console_completion(
+                        completion.final_state.current_icount,
+                        deadline,
+                        servicers.block.as_deref_mut(),
+                        servicers.ninep.as_deref_mut(),
+                    )
+                    .map_err(|source| QemuLiveNodeStepGateError::PrimeHandoff { source })?;
+            }
             emitted_frames.extend(completion.emitted_frames);
             drop(pending.take());
             // The completion and drained frames remain owned here while a
@@ -479,3 +493,7 @@ mod tests;
 #[cfg(all(test, target_os = "linux"))]
 #[path = "support/publication_tests.rs"]
 mod publication_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "support/console_tests.rs"]
+mod console_tests;

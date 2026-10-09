@@ -102,6 +102,12 @@ pub struct PreparedRunAdmission {
 }
 
 impl PreparedRunAdmission {
+    // Only scheduler-private evidence maintenance may inspect this sealed
+    // original source; refreshed input inventories never replace it.
+    pub(super) fn original_source(&self) -> &SingleScheduler {
+        &self.owner._source
+    }
+
     pub(super) fn shares_semantic_owner(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.owner, &other.owner)
     }
@@ -122,6 +128,33 @@ impl PreparedRunAdmission {
     #[must_use]
     pub fn context(&self) -> [u64; 4] {
         self.owner.context
+    }
+
+    /// Retains the original RUN and ready-point maps for native console origins.
+    ///
+    /// Logical generation zero is valid for a cold installation. The caller
+    /// must authenticate that generation through its installed native owner;
+    /// this lease supplies scheduler projection, never execution permission.
+    /// Both maps come from this semantic RUN's retained scheduler, so later
+    /// backend rebasing cannot move an already retained origin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] if the original RUN does not name one VM in
+    /// its retained scheduler inventory.
+    pub fn retain_native_console_mapping(
+        &self,
+        logical_generation: u64,
+    ) -> Result<crate::NativeConsoleMappingLease, SchedulerError> {
+        let source = &self.owner._source;
+        let index = source.vm_node_index(self.node())?;
+        let node = &source.nodes[index];
+        Ok(crate::NativeConsoleMappingLease::from_admitted_run(
+            self.node().clone(),
+            logical_generation,
+            node.time_mapping,
+            node.ready_point_mapping,
+        ))
     }
 
     /// Returns the complete input enumeration for the current dispatch revision.
@@ -451,9 +484,12 @@ impl SingleScheduler {
         }
         // The planner's device horizon must still match the actual complete
         // device/link enumeration. A stale cache cannot mint known absence.
-        let mut checked = self.clone();
-        checked.refresh_device_horizons()?;
-        if checked.device_horizons != self.device_horizons {
+        let complete_horizons = self.complete_device_horizons()?;
+        if !complete_horizons
+            .iter()
+            .map(|(target, instant)| (target, instant))
+            .eq(self.device_horizons.iter())
+        {
             return Err(admission_error(
                 "RUN input inventory has stale device horizons",
             ));

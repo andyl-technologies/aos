@@ -7,6 +7,9 @@ macro_rules! accepted_step {
     };
 }
 
+#[path = "tests/device_horizons.rs"]
+mod device_horizons;
+
 use super::*;
 use crate::model::{
     BindingSearchCandidateSemantics, BindingSearchChoice, SearchChoiceId, SearchOverride,

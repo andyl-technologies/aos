@@ -448,3 +448,354 @@ fn preemption_at_ten_ps_before_first_retirement_is_forwarded_exactly() {
         );
     });
 }
+
+// These controls exercise the real GPL budget path and mapped publication
+// effects. The returned AUTH/phase disposition is explicitly modeled; native
+// READY/inventory/RR ownership still requires the configured native callers.
+fn native_result(raw: u64, logical: u64) -> crate::runtime::installed_console::DispatchResult {
+    crate::runtime::installed_console::DispatchResult {
+        raw_ceiling: u64::MAX,
+        raw_start: raw,
+        logical_start: logical,
+        logical_ceiling: u64::MAX,
+        authorization: [0; 128],
+        publication_unavailable: false,
+    }
+}
+
+#[test]
+fn native_busy_advance_returns_before_original_pause_or_budget_effects()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::runtime::installed_console::DispatchAdvance;
+
+    TEST_ICOUNT_RAW.set(0);
+    TEST_REQUEST_VMSTOP_CALLS.set(0);
+    let slot = NodeSlot::new(KIND_VM);
+    let state = test_live_state(316, 1, 0, &slot)?;
+    state.header.get().request_pause([&slot])?;
+    let before = slot.snapshot();
+    let reads = Cell::new(0);
+    let mut result = native_result(0, 0);
+    let mut outcome = None;
+
+    slot.publish_scheduler_advance_with_effect(
+        authorize_advance_ceiling(0, 500, None)?,
+        crucible_shmem::AdvanceStopCondition::Ceiling,
+        |_advance| {
+            outcome = Some(state.console_dispatch_budget(&mut result, || {
+                reads.set(reads.get() + 1);
+                assert!(slot.try_snapshot().is_none());
+                Ok(DispatchAdvance::Unavailable)
+            }));
+        },
+    )?;
+    match outcome {
+        Some(result) => result?,
+        None => return Err("original writer did not invoke its effect".into()),
+    }
+
+    let after = slot.snapshot();
+    assert_eq!(reads.get(), 1);
+    assert!(result.publication_unavailable);
+    assert_eq!(result.raw_ceiling, result.raw_start);
+    assert_eq!(result.authorization, [0; 128]);
+    assert_eq!(after.publish_gen, before.publish_gen);
+    assert_eq!(after.status, before.status);
+    assert_eq!(after.current_icount, before.current_icount);
+    assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 0);
+    Ok(())
+}
+
+#[test]
+fn native_budget_retains_original_body_and_ceiling_across_later_regrant()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::runtime::installed_console::DispatchAdvance;
+
+    TEST_ICOUNT_RAW.set(0);
+    let slot = NodeSlot::new(KIND_VM);
+    slot.publish_scheduler_advance(
+        authorize_advance_ceiling(0, 500, None)?,
+        crucible_shmem::AdvanceStopCondition::Ceiling,
+    )?;
+    let state = test_live_state(316, 1, 0, &slot)?;
+    let reads = Cell::new(0);
+    // Deliberately modeled authority bytes: only immutable custody is tested.
+    let original_body = [0xA5; 128];
+    let mut result = native_result(0, 0);
+
+    state.console_dispatch_budget(&mut result, || {
+        reads.set(reads.get() + 1);
+        let ceiling = slot
+            .load_scheduler_advance_publication()
+            .unwrap_or_else(|error| panic!("original coherent read failed: {error}"))
+            .ceiling();
+        slot.publish_scheduler_advance(
+            authorize_advance_ceiling(0, 1000, None)
+                .unwrap_or_else(|error| panic!("later ceiling failed: {error}")),
+            crucible_shmem::AdvanceStopCondition::Ceiling,
+        )
+        .unwrap_or_else(|error| panic!("later publication failed: {error}"));
+        Ok(DispatchAdvance::Owned {
+            ceiling,
+            authorization: original_body,
+        })
+    })?;
+
+    assert_eq!(reads.get(), 1);
+    assert_eq!(result.raw_ceiling, 10);
+    assert_eq!(result.logical_ceiling, 500);
+    assert_eq!(result.authorization, original_body);
+    assert!(!result.publication_unavailable);
+    assert_eq!(state.max_advance_icount()?, 20);
+    Ok(())
+}
+
+#[test]
+fn native_unowned_positive_budget_and_clock_drift_refuse_without_receipt()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::runtime::installed_console::DispatchAdvance;
+    use crucible_protocol::native_console::NativeConsoleError;
+
+    TEST_ICOUNT_RAW.set(0);
+    let slot = NodeSlot::new(KIND_VM);
+    let state = test_live_state(316, 1, 0, &slot)?;
+    let before = slot.snapshot();
+
+    for ceiling in [0, 1, 49, 50] {
+        let mut result = native_result(0, 0);
+        let outcome =
+            state.console_dispatch_budget(&mut result, || Ok(DispatchAdvance::Unowned { ceiling }));
+        if ceiling == 0 {
+            outcome?;
+            assert_eq!(result.raw_ceiling, 0);
+            assert_eq!(result.authorization, [0; 128]);
+        } else {
+            assert_eq!(
+                outcome,
+                Err(LiveVcpuTimeCallbackError::ConsoleDispatch {
+                    source: NativeConsoleError::Binding,
+                })
+            );
+            assert_eq!(result.raw_ceiling, u64::MAX);
+            assert_eq!(result.authorization, [0; 128]);
+        }
+    }
+    let mut drifted = native_result(0, 1);
+    assert_eq!(
+        state.console_dispatch_budget(&mut drifted, || {
+            Ok(DispatchAdvance::Owned {
+                ceiling: 500,
+                authorization: [0xA5; 128],
+            })
+        }),
+        Err(LiveVcpuTimeCallbackError::ConsoleDispatch {
+            source: NativeConsoleError::Binding,
+        })
+    );
+    assert_eq!(drifted.raw_ceiling, u64::MAX);
+    assert_eq!(drifted.authorization, [0; 128]);
+    assert_eq!(slot.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn native_joined_budget_preserves_original_device_and_fractional_clamps()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::runtime::installed_console::DispatchAdvance;
+
+    TEST_ICOUNT_RAW.set(20);
+    let slot = NodeSlot::new(KIND_VM);
+    slot.publish_scheduler_advance(
+        authorize_advance_ceiling(0, 5000, None)?,
+        crucible_shmem::AdvanceStopCondition::Ceiling,
+    )?;
+    let state = test_live_state(316, 1, 0, &slot)?;
+    state.publish_current_icount(20)?;
+    slot.mark_device_io_active();
+    let mut result = native_result(20, 1000);
+    let original_body = [0xA5; 128];
+
+    state.console_dispatch_budget(&mut result, || {
+        Ok(DispatchAdvance::Owned {
+            ceiling: 5000,
+            authorization: original_body,
+        })
+    })?;
+    assert_eq!(result.raw_ceiling, 20);
+    assert_eq!(result.logical_ceiling, 1000);
+    slot.store_device_completion_deadline_tick(1501);
+    state.console_dispatch_budget(&mut result, || {
+        Ok(DispatchAdvance::Owned {
+            ceiling: 5000,
+            authorization: original_body,
+        })
+    })?;
+
+    assert_eq!(result.raw_ceiling, 30);
+    assert_eq!(result.logical_ceiling, 1501);
+    assert_eq!(result.authorization, original_body);
+    assert_eq!(state.max_advance_icount()?, 30);
+    Ok(())
+}
+
+#[test]
+fn native_missing_authorization_refuses_before_pending_preemption_admission()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::runtime::installed_console::DispatchAdvance;
+    use crucible_protocol::native_console::NativeConsoleError;
+
+    TEST_ICOUNT_RAW.set(0);
+    TEST_PREEMPTION_COMMAND.with_borrow_mut(|command| *command = None);
+    let slot = NodeSlot::new(KIND_VM);
+    slot.publish_scheduler_advance(
+        authorize_advance_ceiling(0, 5000, None)?,
+        crucible_shmem::AdvanceStopCondition::Ceiling,
+    )?;
+    let sequence = slot.publish_preemption_command(test_preemption_command())?;
+    let mut state = test_live_state(316, 1, 0, &slot)?;
+    state.preemption_injector = PluginPreemptionInjector::require(Some(capture_preemption))?;
+    let before = slot.snapshot();
+
+    for authorization in [None, Some([0; 128])] {
+        let mut result = native_result(0, 0);
+        let reads = Cell::new(0);
+        assert_eq!(
+            state.console_dispatch_budget(&mut result, || {
+                reads.set(reads.get() + 1);
+                Ok(match authorization {
+                    None => DispatchAdvance::Unowned { ceiling: 5000 },
+                    Some(authorization) => DispatchAdvance::Owned {
+                        ceiling: 5000,
+                        authorization,
+                    },
+                })
+            }),
+            Err(LiveVcpuTimeCallbackError::ConsoleDispatch {
+                source: NativeConsoleError::Binding,
+            })
+        );
+        assert_eq!(reads.get(), 1);
+        assert_eq!(slot.consumed_preemption_sequence(), sequence - 1);
+        assert!(!state.preemption_enqueue_active.load(Ordering::Acquire));
+        TEST_PREEMPTION_COMMAND.with_borrow(|command| assert_eq!(*command, None));
+        assert_eq!(slot.snapshot(), before);
+        assert_eq!(result.raw_ceiling, u64::MAX);
+        assert_eq!(result.authorization, [0; 128]);
+    }
+
+    // The exact pending command is still consumed by the original None path.
+    assert_eq!(state.max_advance_icount()?, 100);
+    assert_eq!(slot.consumed_preemption_sequence(), sequence);
+    TEST_PREEMPTION_COMMAND.with_borrow(|command| assert!(command.is_some()));
+    Ok(())
+}
+
+#[test]
+fn native_owned_fractional_budget_retains_logical_span_without_raw_retirement()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::runtime::installed_console::DispatchAdvance;
+
+    TEST_ICOUNT_RAW.set(0);
+    let slot = NodeSlot::new(KIND_VM);
+    let mut state = test_live_state(316, 1, 0, &slot)?;
+    state.sim_tick_observed = Some(super::test_sim_tick_observed);
+    super::TEST_SIM_TICK.set(0);
+    let before = slot.snapshot();
+    let mut result = native_result(0, 0);
+    // This callback control models phase ownership. Native idle controls
+    // separately join the actual retained writer/READY/closed-Grant bodies.
+    let body = [0xA5; 128];
+
+    state.console_dispatch_budget(&mut result, || {
+        Ok(DispatchAdvance::Owned {
+            ceiling: 49,
+            authorization: body,
+        })
+    })?;
+
+    assert_eq!(result.raw_start, 0);
+    assert_eq!(result.raw_ceiling, 0);
+    assert_eq!(result.logical_ceiling, 49);
+    assert_eq!(result.authorization, body);
+    assert_eq!(slot.snapshot(), before);
+    assert_eq!(TEST_ICOUNT_RAW.get(), 0);
+
+    // The C bias control accounts 49ps without an instruction. The next
+    // original SIM callback reconstructs that same offset before budget math.
+    super::TEST_SIM_TICK.set(49);
+    let mut next = native_result(0, 49);
+    state.console_dispatch_budget(&mut next, || {
+        Ok(DispatchAdvance::Owned {
+            ceiling: 49,
+            authorization: body,
+        })
+    })?;
+    assert_eq!(next.raw_start, 0);
+    assert_eq!(next.raw_ceiling, 0);
+    assert_eq!(next.logical_start, 49);
+    assert_eq!(next.logical_ceiling, 49);
+    assert_eq!(state.logical_icount_offset.load(Ordering::Acquire), 49);
+    assert_eq!(next.authorization, body);
+    assert_eq!(slot.snapshot(), before);
+    assert_eq!(TEST_ICOUNT_RAW.get(), 0);
+    Ok(())
+}
+
+#[test]
+fn native_pending_idle_keeps_original_logical_coordinate() -> Result<(), Box<dyn std::error::Error>>
+{
+    use crate::runtime::installed_console::DispatchAdvance;
+
+    TEST_ICOUNT_RAW.set(0);
+    let slot = NodeSlot::new(KIND_VM);
+    let state = test_live_state(316, 1, 0, &slot)?;
+    state
+        .pending_idle_advance_raw_icount
+        .store(0, Ordering::Relaxed);
+    state
+        .pending_idle_advance_active
+        .store(true, Ordering::Release);
+    let before = slot.snapshot();
+    let mut result = native_result(0, 0);
+
+    state.console_dispatch_budget(&mut result, || {
+        Ok(DispatchAdvance::Owned {
+            ceiling: 49,
+            authorization: [0xA5; 128],
+        })
+    })?;
+
+    assert_eq!(result.raw_ceiling, 0);
+    assert_eq!(result.logical_ceiling, 0);
+    assert!(state.pending_idle_advance_active.load(Ordering::Acquire));
+    assert_eq!(slot.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn native_deferred_pause_keeps_original_logical_coordinate()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::runtime::installed_console::DispatchAdvance;
+
+    TEST_ICOUNT_RAW.set(0);
+    TEST_REQUEST_VMSTOP_CALLS.set(0);
+    let slot = NodeSlot::new(KIND_VM);
+    let state = test_live_state(316, 1, 0, &slot)?;
+    slot.mark_device_io_active();
+    state.header.get().request_pause([&slot])?;
+    let before = slot.snapshot();
+    let mut result = native_result(0, 0);
+
+    state.console_dispatch_budget(&mut result, || {
+        Ok(DispatchAdvance::Owned {
+            ceiling: 49,
+            authorization: [0xA5; 128],
+        })
+    })?;
+
+    assert_eq!(result.raw_ceiling, 0);
+    assert_eq!(result.logical_ceiling, 0);
+    assert_eq!(slot.snapshot(), before);
+    assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 0);
+    Ok(())
+}

@@ -6,6 +6,11 @@ use crate::{TICKS_PER_INSTRUCTION, TICKS_PER_NS};
 pub(super) fn emit_constants(out: &mut String) {
     emit_define_u64_hex(out, "CRUCIBLE_SHMEM_REGION_MAGIC", REGION_MAGIC);
     emit_define_u32(out, "CRUCIBLE_SHMEM_ABI_VERSION", ABI_VERSION);
+    emit_define_usize(
+        out,
+        "CRUCIBLE_SHMEM_NATIVE_CONSOLE_SEGMENT_BYTES",
+        crate::native_console::NATIVE_CONSOLE_SEGMENT_BYTES,
+    );
     emit_define_u32(out, "CRUCIBLE_SHMEM_TICKS_PER_NS", TICKS_PER_NS as u32);
     emit_define_u32(
         out,
@@ -204,10 +209,7 @@ pub(super) fn emit_constants(out: &mut String) {
                 "DEVICE_COMPLETION_DEADLINE_TICK",
                 NODE_SLOT_DEVICE_COMPLETION_DEADLINE_TICK_OFFSET,
             ),
-            (
-                "PREEMPTION_AT_TICK",
-                NODE_SLOT_PREEMPTION_AT_TICK_OFFSET,
-            ),
+            ("PREEMPTION_AT_TICK", NODE_SLOT_PREEMPTION_AT_TICK_OFFSET),
             (
                 "PREEMPTION_DEADLINE_TICK",
                 NODE_SLOT_PREEMPTION_DEADLINE_TICK_OFFSET,
@@ -252,7 +254,10 @@ pub(super) fn emit_constants(out: &mut String) {
                 "CONTROL_BOUNDARY_CAPTURE_REQUEST",
                 NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET,
             ),
-            ("PAD3", NODE_SLOT_PAD3_OFFSET),
+            (
+                "CONTROL_BOUNDARY_PUBLICATION_CLAIM",
+                NODE_SLOT_CONTROL_BOUNDARY_PUBLICATION_CLAIM_OFFSET,
+            ),
             (
                 "TIMER_WITNESS_GENERATION",
                 NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET,

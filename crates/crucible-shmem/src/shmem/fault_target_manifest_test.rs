@@ -386,7 +386,10 @@ fn clock_manifest_round_trips_and_rejects_noncanonical_sources() {
 
     let mut non_calendar_epoch = manifest.clone();
     non_calendar_epoch.rows[0].epoch_ns = 1;
-    assert_eq!(non_calendar_epoch.encode(), Err(FaultAbiError::CapabilityInvariant));
+    assert_eq!(
+        non_calendar_epoch.encode(),
+        Err(FaultAbiError::CapabilityInvariant)
+    );
 
     let mut duplicate = manifest.clone();
     duplicate.rows.push(row("x86-tsc"));

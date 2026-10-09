@@ -2,6 +2,37 @@
 
 use super::*;
 
+/// Even sequence supplied only inside an original scheduler publication writer.
+///
+/// This local transaction receipt identifies ordering, not execution permission
+/// or a native console phase. It is never stored as a Rust object in shared memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SchedulerAdvanceSequence(u64);
+
+impl SchedulerAdvanceSequence {
+    /// Returns the exact even sequence released by this publication.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Even request proposed inside its original host publication transaction.
+///
+/// This local value is not yet visible to the node and confers no control or
+/// phase authority. Native fields prepared with it must also match the actual
+/// subsequently acquired request and its complete authenticated binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreparedControlBoundaryRequest(u32);
+
+impl PreparedControlBoundaryRequest {
+    /// Returns the exact even successor proposed by this original publisher.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
 #[path = "frame_node/frame_entry.rs"]
 mod frame_entry;
 #[path = "frame_node/futex.rs"]
@@ -25,8 +56,22 @@ pub use preemption_mailbox::{
     SchedulerPreemptionKind,
 };
 
+#[path = "frame_node/control_effect.rs"]
+mod control_effect;
+pub use control_effect::{
+    NodeBoundaryPublication, NodeBoundaryPublicationError, SchedulerAdvancePublication,
+};
+
+#[path = "frame_node/control_publication.rs"]
+mod control_publication;
+pub use control_publication::HostControlBoundaryPublication;
+#[cfg(feature = "test-support")]
+pub use control_publication::ModeledControlBoundaryPublication;
+
 #[path = "frame_node/layout.rs"]
 mod layout;
+#[path = "frame_node/restore_publication.rs"]
+mod restore_publication;
 #[path = "frame_node/runtime.rs"]
 mod runtime;
 #[path = "frame_node/snapshot.rs"]
@@ -260,3 +305,7 @@ mod advance_publication_tests {
         assert!(!slot.is_runnable_after_idle_publish());
     }
 }
+
+#[cfg(test)]
+#[path = "frame_node/advance_effect_tests.rs"]
+mod advance_effect_tests;

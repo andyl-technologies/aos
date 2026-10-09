@@ -18,6 +18,8 @@ pub(super) fn emit_guest_introspection_geometry_helpers(out: &mut String) {
     uint64_t selectable_reply_ring_hdr_off;
     uint64_t selectable_reply_ring_data_off;
     uint64_t selectable_reply_entry_stride;
+    uint64_t native_console_off;
+    uint64_t native_console_stride;
     uint64_t region_size;
 } crucible_shmem_guest_introspection_layout;
 
@@ -109,6 +111,8 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
     uint64_t accelerator_data_end;
     uint64_t selectable_reply_hdr_off;
     uint64_t selectable_reply_data_off;
+    uint64_t selectable_reply_data_end;
+    uint64_t native_console_off;
     uint64_t computed_region_size;
     uint32_t guest_ring_count;
     uint32_t accelerator_ring_count;
@@ -200,7 +204,10 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
         || crucible_shmem_u64_checked_add(selectable_reply_hdr_off, byte_len, &selectable_reply_data_off) != 0
         || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY, &count) != 0
         || crucible_shmem_u64_checked_mul(count, CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE, &byte_len) != 0
-        || crucible_shmem_u64_checked_add(selectable_reply_data_off, byte_len, &computed_region_size) != 0
+        || crucible_shmem_u64_checked_add(selectable_reply_data_off, byte_len, &selectable_reply_data_end) != 0
+        || crucible_shmem_u64_checked_align_up(selectable_reply_data_end, 128u, &native_console_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_NATIVE_CONSOLE_SEGMENT_BYTES, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(native_console_off, byte_len, &computed_region_size) != 0
         || computed_region_size != advertised_region_size) {
         return -1;
     }
@@ -220,6 +227,8 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
     out->selectable_reply_ring_hdr_off = selectable_reply_hdr_off;
     out->selectable_reply_ring_data_off = selectable_reply_data_off;
     out->selectable_reply_entry_stride = CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE;
+    out->native_console_off = native_console_off;
+    out->native_console_stride = CRUCIBLE_SHMEM_NATIVE_CONSOLE_SEGMENT_BYTES;
     out->region_size = computed_region_size;
     return 0;
 }

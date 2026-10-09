@@ -55,6 +55,9 @@ use super::{
 };
 
 mod checkpoint_stop_witness;
+mod console_control;
+pub(super) mod console_effect;
+pub(super) mod console_output;
 mod control_callback_stage;
 mod control_callback_witness;
 pub(super) use control_callback_witness::ControlCallbackWitness;
@@ -864,6 +867,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     devices: Option<Mutex<LiveDeviceCallbackState>>,
     fingerprint: Option<LiveFingerprintCallbackState>,
     fault_commands: Mutex<Box<dyn LiveFaultCommandControl>>,
+    native_console: Option<super::installed_console::InstalledConsoleCallbacks>,
 }
 
 pub(super) trait LiveFaultCommandControl {
@@ -1139,6 +1143,42 @@ impl Drop for IdleAdvanceCompletionGuard<'_> {
 }
 
 impl LiveVcpuTimeCallbackState {
+    pub(super) fn install_native_console(
+        &mut self,
+        callbacks: super::installed_console::InstalledConsoleCallbacks,
+    ) -> Result<(), super::PluginRuntimeInstallError> {
+        if self.native_console.is_some() {
+            return Err(super::PluginRuntimeInstallError::NativeConsoleInstall {
+                diagnostic: "native console callback owner is already installed".to_owned(),
+            });
+        }
+        self.native_console = Some(callbacks);
+        // The original registered state is already pinned/process-retained.
+        // Registration refusal keeps that allocation alive on the existing
+        // fatal installation path; it cannot leave a moved callback userdata.
+        callbacks
+            .register_dispatch(
+                preemption::crucible_qemu_plugin_live_console_dispatch_cb,
+                std::ptr::from_mut(self).cast(),
+            )
+            .map_err(
+                |error| super::PluginRuntimeInstallError::NativeConsoleInstall {
+                    diagnostic: error.to_string(),
+                },
+            )?;
+        callbacks
+            .register_stopped(
+                console_output::crucible_qemu_plugin_live_console_stopped_cb,
+                std::ptr::from_mut(self).cast(),
+            )
+            .map_err(
+                |error| super::PluginRuntimeInstallError::NativeConsoleInstall {
+                    diagnostic: error.to_string(),
+                },
+            )?;
+        Ok(())
+    }
+
     fn scheduler_advance(&self) -> Result<(u64, AdvanceStopCondition), LiveVcpuTimeCallbackError> {
         PluginShmemOrdering::load_scheduler_advance(self.slot.get()).map_err(|source| {
             LiveVcpuTimeCallbackError::IdleHotLoop {
@@ -1278,6 +1318,7 @@ impl LiveVcpuTimeCallbackState {
             devices: None,
             fingerprint: None,
             fault_commands: Mutex::new(fault_commands),
+            native_console: None,
         })
     }
 
@@ -1407,8 +1448,24 @@ impl LiveVcpuTimeCallbackState {
         boundary: &'static str,
         capture_request: u32,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
+        if let Some(captured) = self.capture_fingerprint_sample(icount, boundary)? {
+            self.submit_fingerprint_sample(captured, capture_request)?;
+        }
+        Ok(())
+    }
+
+    /// Copies unpublished material before any native inventory lease is held.
+    ///
+    /// Dropping this private capture closes its owned files without submitting
+    /// work or touching the shared sample/capture acknowledgement. Native busy
+    /// preparation therefore leaves the original capture request pending.
+    fn capture_fingerprint_sample(
+        &self,
+        icount: u64,
+        boundary: &'static str,
+    ) -> Result<Option<CapturedFingerprintSample>, LiveVcpuTimeCallbackError> {
         let Some(fingerprint) = self.fingerprint.as_ref() else {
-            return Ok(());
+            return Ok(None);
         };
         if PluginShmemOrdering::device_io_active(self.slot.get()) {
             return Err(LiveVcpuTimeCallbackError::FingerprintSample {
@@ -1416,13 +1473,26 @@ impl LiveVcpuTimeCallbackState {
                 message: String::from("device projection requested before device I/O quiesced"),
             });
         }
-        let captured = fingerprint
+        fingerprint
             .sampling
             .capture(icount, self.vcpu_count)
+            .map(Some)
             .map_err(|source| LiveVcpuTimeCallbackError::FingerprintSample {
                 boundary,
                 message: source.to_string(),
-            })?;
+            })
+    }
+
+    /// Submits already detached material only after native custody is released.
+    fn submit_fingerprint_sample(
+        &self,
+        captured: CapturedFingerprintSample,
+        capture_request: u32,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let fingerprint = self
+            .fingerprint
+            .as_ref()
+            .ok_or(LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?;
         fingerprint.worker.submit(captured, capture_request)
     }
 
@@ -1753,74 +1823,6 @@ impl LiveVcpuTimeCallbackState {
         self.last_raw_icount.store(raw_icount, Ordering::Release);
         self.last_icount.store(current_icount, Ordering::Release);
         Ok(())
-    }
-
-    fn publish_pause_for_boundary(
-        &self,
-        raw_icount: u64,
-        checkpoint_handoff: bool,
-        control_boundary_dispatch: bool,
-        fingerprint_capture_request: Option<u32>,
-        boundary: &'static str,
-    ) -> Result<bool, LiveVcpuTimeCallbackError> {
-        self.restore_logical_time_if_requested(raw_icount, true)?;
-        match PluginShmemOrdering::observe_control_action(self.header.get()) {
-            RegionControlAction::Shutdown => {
-                self.signal_shared_shutdown()?;
-                Ok(true)
-            }
-            RegionControlAction::Pause => {
-                self.require_network_rx_commit_certain()?;
-
-                // A paired control request owns checkpoint ordering. Its
-                // eventfd callback first resumes device waiters, then invokes
-                // the two-pass control boundary after their bottom halves are
-                // visible. Futex, vCPU, and device callbacks must fence guest
-                // progress but defer publication and native stop to that final
-                // callback; stopping here can strand a newly active coroutine.
-                if PluginShmemOrdering::control_boundary_is_requested(self.slot.get())
-                    && !control_boundary_dispatch
-                {
-                    return Ok(true);
-                }
-                if PluginShmemOrdering::device_io_active(self.slot.get()) {
-                    return Ok(true);
-                }
-                let previous_raw_icount = self.last_raw_icount.load(Ordering::Acquire);
-                if raw_icount < previous_raw_icount {
-                    return Err(LiveVcpuTimeCallbackError::IcountRegressed {
-                        previous_icount: previous_raw_icount,
-                        current_icount: raw_icount,
-                    });
-                }
-                let current_icount = self.logical_icount_for_raw(raw_icount)?;
-                let (ceiling_icount, _) = self.scheduler_advance()?;
-                if current_icount > ceiling_icount {
-                    return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
-                        current_icount,
-                        ceiling_icount,
-                    });
-                }
-                if self.fingerprint.is_some()
-                    && let Some(capture_request) = fingerprint_capture_request
-                {
-                    self.publish_fingerprint_sample(current_icount, boundary, capture_request)?;
-                }
-                PluginShmemOrdering::publish_pause_quiesced(
-                    self.slot.get(),
-                    current_icount,
-                    raw_icount,
-                )
-                .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
-                self.last_raw_icount.store(raw_icount, Ordering::Release);
-                self.last_icount.store(current_icount, Ordering::Release);
-                if checkpoint_handoff {
-                    self.request_checkpoint_vmstop(boundary)?;
-                }
-                Ok(true)
-            }
-            RegionControlAction::Continue => Ok(false),
-        }
     }
 
     /// Publishes and admits a doorbell-deferred stop from this exact callback.

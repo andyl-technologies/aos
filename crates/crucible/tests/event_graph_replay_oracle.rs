@@ -243,6 +243,20 @@ fn observable_event_material(event: &ObservableEvent) -> String {
             node.name,
             bytes_hex(bytes)
         ),
+        ObservableEventPayload::NativeConsoleByte { node, origin } => format!(
+            "observable:native-console-byte:at={}:node={}:device={}:stream={}:generation={}:node_seq={}:stream_seq={}:emitted_ps={}:raw={}:vcpu={}:byte={}",
+            event.at().ticks,
+            node.name,
+            bytes_hex(&origin.device.bytes),
+            origin.stream,
+            origin.logical_generation,
+            origin.node_sequence,
+            origin.stream_sequence,
+            origin.emitted_ps,
+            origin.raw_prefix,
+            origin.vcpu,
+            origin.byte,
+        ),
         ObservableEventPayload::CoverageBlock {
             execution_icount,
             node,

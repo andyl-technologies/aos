@@ -19,6 +19,8 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::OnceLock;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -66,6 +68,9 @@ mod midpoint_debug;
 mod packaged;
 #[path = "campaign_store_process/service_diagnostics.rs"]
 mod service_diagnostics;
+#[cfg(test)]
+#[path = "campaign_store_process/service_progress.rs"]
+mod service_progress;
 
 use service_diagnostics::{
     append_process_diagnostics, descendant_process_commands, matching_lines_bounded,
@@ -631,6 +636,8 @@ struct FlightFixture {
     tls_cert: PathBuf,
     tls_key: PathBuf,
     service_mode: FlightServiceMode,
+    #[cfg(test)]
+    live_progress: OnceLock<Option<Arc<service_progress::ProgressOutput>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -1091,6 +1098,8 @@ root = {objects:?}
             tls_cert,
             tls_key,
             service_mode: FlightServiceMode::Campaign,
+            #[cfg(test)]
+            live_progress: OnceLock::new(),
         })
     }
 
@@ -1146,7 +1155,31 @@ root = {objects:?}
             daemon_url: String::new(),
             stderr,
             kill_on_drop: true,
+            #[cfg(test)]
+            live_progress: None,
         };
+        #[cfg(test)]
+        {
+            let output = self.live_progress.get_or_init(|| {
+                service_progress::ProgressOutput::from_environment().unwrap_or_else(|error| {
+                    eprintln!("advisory live progress unavailable: {error}");
+                    None
+                })
+            });
+            if let Some(output) = output {
+                child.live_progress = child
+                    .stderr
+                    .reopen()
+                    .and_then(|source| {
+                        service_progress::OwnedProgressObserver::start(
+                            source,
+                            child.child.id(),
+                            Arc::clone(output),
+                        )
+                    })
+                    .ok();
+            }
+        }
         let stdout = child
             .child
             .stdout
@@ -1224,6 +1257,8 @@ struct CampaignServiceChild {
     daemon_url: String,
     stderr: NamedTempFile,
     kill_on_drop: bool,
+    #[cfg(test)]
+    live_progress: Option<service_progress::OwnedProgressObserver>,
 }
 
 impl CampaignServiceChild {
@@ -1242,6 +1277,10 @@ impl CampaignServiceChild {
         }
         signal.map_err(|error| format!("{error}; stderr={stderr}"))?;
         let status = status.map_err(|error| format!("{error}; stderr={stderr}"))?;
+        #[cfg(test)]
+        if let Some(observer) = &mut self.live_progress {
+            observer.stop(&format!("owned-service-exit={status}"));
+        }
         if !status.success() {
             return Err(format!("campaign service failed: {status}; stderr={stderr}").into());
         }
@@ -1323,6 +1362,15 @@ impl Drop for CampaignServiceChild {
                     "campaign service failure cleanup: signal={signal:?} graceful={graceful:?} forced={forced:?} stderr={stderr}"
                 );
             }
+        }
+        #[cfg(test)]
+        if let Some(observer) = &mut self.live_progress {
+            let reason = match self.child.try_wait() {
+                Ok(Some(status)) => format!("owned-service-exit={status}"),
+                Ok(None) => "owned-service-status=still-running-after-original-cleanup".into(),
+                Err(error) => format!("owned-service-status-unavailable={error}"),
+            };
+            observer.stop(&reason);
         }
     }
 }
@@ -1530,6 +1578,8 @@ fn campaign_socket_wait_reports_exited_service_without_waiting_for_deadline()
         daemon_url: String::new(),
         stderr: NamedTempFile::new_in(temporary.path())?,
         kill_on_drop: true,
+        #[cfg(test)]
+        live_progress: None,
     };
     let error = wait_for_campaign_socket(
         &temporary.path().join("unbound.sock"),
@@ -1576,6 +1626,8 @@ fn campaign_socket_wait_rejects_a_stale_socket_inode() -> Result<(), Box<dyn Err
         daemon_url: String::new(),
         stderr: NamedTempFile::new_in(temporary.path())?,
         kill_on_drop: true,
+        #[cfg(test)]
+        live_progress: None,
     };
 
     let child_deadline = Instant::now() + Duration::from_secs(5);
@@ -1674,6 +1726,8 @@ fn campaign_service_stop_accepts_an_already_reaped_child() -> Result<(), Box<dyn
         daemon_url: String::new(),
         stderr: NamedTempFile::new()?,
         kill_on_drop: true,
+        #[cfg(test)]
+        live_progress: None,
     };
     service.stop()?;
 

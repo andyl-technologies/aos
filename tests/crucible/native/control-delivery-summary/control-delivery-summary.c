@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Private actual-body diagnostic controls; no guest or full RR owner proof. */
-#include "config-host.h"
+#include "qemu/osdep.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <glib.h>

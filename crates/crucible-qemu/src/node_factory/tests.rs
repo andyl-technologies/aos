@@ -180,7 +180,7 @@ fn exact_ram_restore_rejects_a_foreign_host_checkpoint_before_qmp_stop()
             logical_icount: checkpoint.virtual_time.ticks,
             raw_icount: checkpoint.virtual_time.ticks / crucible::SIM_TICKS_PER_INSTRUCTION,
         },
-        console_observation_boundary: checkpoint.virtual_time,
+        native_console_continuation: None,
         pending_preemption: None,
         pending_network_outputs: Vec::new(),
         network_transport,

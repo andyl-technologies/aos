@@ -140,6 +140,8 @@ pub(super) struct RuntimeSchedulerNode {
     pub(super) id: SchedulerNodeId,
     pub(super) counter: NodeCounter,
     pub(super) time_mapping: NodeTimeMapping,
+    // Original scenario visibility survives later backend-counter rebases.
+    pub(super) ready_point_mapping: NodeTimeMapping,
     pub(super) last_checkpoint: Option<SchedulerNodeCheckpoint>,
     pub(super) activity: SchedulerNodeActivity,
     pub(super) network_lookahead: NetworkLookahead,
@@ -153,6 +155,7 @@ impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
             id: node.id,
             counter: node.counter,
             time_mapping: NodeTimeMapping::default(),
+            ready_point_mapping: NodeTimeMapping::default(),
             last_checkpoint: None,
             activity: node.activity,
             network_lookahead: node.network_lookahead,

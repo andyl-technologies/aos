@@ -14,7 +14,6 @@ use std::time::Duration;
 use std::path::Path;
 
 use crate::async_driver::run_bounded_qemu_node_step_with_start_hook;
-use crate::console_observation::QemuConsoleObservationSpool;
 use crate::shutdown::{
     QemuChildWait, QemuReap, QemuShutdownPolicy, QemuShutdownReport, QemuShutdownRung,
     QemuShutdownTarget, QemuShutdownTargetError, shutdown_qemu_child, signal_child, wait_child,
@@ -55,9 +54,6 @@ pub use exact_snapshot::{
 };
 mod fault_events;
 #[cfg(target_os = "linux")]
-#[path = "node/hot_fork_child_console.rs"]
-mod hot_fork_child_console;
-#[cfg(target_os = "linux")]
 #[path = "node/hot_fork_child_files.rs"]
 mod hot_fork_child_files;
 #[cfg(target_os = "linux")]
@@ -76,9 +72,13 @@ mod hot_fork_operation;
 #[path = "node/hot_fork_plugin_endpoints.rs"]
 mod hot_fork_plugin_endpoints;
 #[cfg(target_os = "linux")]
+mod native_console;
+#[cfg(target_os = "linux")]
 #[cfg(test)]
 pub(crate) use hot_fork_plugin_endpoints::create_nonblocking_eventfd;
 pub(crate) use hot_fork_plugin_endpoints::eventfd_id;
+#[cfg(target_os = "linux")]
+mod hot_fork_native_console;
 #[cfg(target_os = "linux")]
 #[path = "node/hot_fork_preparation.rs"]
 mod hot_fork_preparation;
@@ -94,6 +94,8 @@ mod hot_fork_ring_image;
 #[cfg(target_os = "linux")]
 #[path = "node/hot_fork_scheduler_continuation.rs"]
 mod hot_fork_scheduler_continuation;
+#[cfg(target_os = "linux")]
+pub use hot_fork_native_console::{QemuHotForkConsoleAdmission, QemuHotForkConsoleRestore};
 #[path = "node/process_control.rs"]
 mod process_control;
 #[cfg(target_os = "linux")]
@@ -101,13 +103,6 @@ mod process_identity;
 pub use error::{
     QemuBoundedSchedulerPreemptionTargetError, QemuNodeChannelError, QemuNodeChannelPlane,
     QemuNodeError,
-};
-#[cfg(target_os = "linux")]
-use hot_fork_child_console::QemuHotForkChildConsoleStage;
-#[cfg(target_os = "linux")]
-pub use hot_fork_child_console::{
-    QemuHotForkChildConsoleObservation, QemuHotForkChildConsoleStageError,
-    QemuHotForkChildConsoleStageProof, QemuHotForkChildConsoleStageState,
 };
 #[cfg(target_os = "linux")]
 use hot_fork_child_files::QemuHotForkChildFilesStage;
@@ -517,12 +512,6 @@ impl QemuNodeChannels {
     }
 }
 
-/// Reader for QEMU's output-only per-node console stream.
-struct QemuConsoleObservation {
-    node: NodeId,
-    spool: QemuConsoleObservationSpool,
-}
-
 /// Host-side wrapper exposing one QEMU child as a synchronous scheduler node.
 pub struct QemuNode {
     child: QemuNodeProcessControl,
@@ -535,8 +524,6 @@ pub struct QemuNode {
     hot_fork_child_diagnostic_stage: Option<QemuHotForkChildDiagnosticStage>,
     #[cfg(target_os = "linux")]
     hot_fork_child_qmp_stage: Option<QemuHotForkChildQmpStage>,
-    #[cfg(target_os = "linux")]
-    hot_fork_child_console_stage: Option<QemuHotForkChildConsoleStage>,
     #[cfg(target_os = "linux")]
     hot_fork_child_process_contract_stage: Option<QemuHotForkChildProcessContractStage>,
     #[cfg(target_os = "linux")]
@@ -555,19 +542,20 @@ pub struct QemuNode {
     last_step_final_state: Option<QemuNodeIdleState>,
     last_step_completed_boundary: Option<crate::QemuCompletedQuantumBoundary>,
     last_step_inbound_frames_consumed: usize,
-    // Console polling proves availability only at the scheduler-requested boundary.
-    console_observation_boundary: VirtualTime,
     gdbstub: Option<QemuGdbstubChannelConfig>,
     pending_preemption: Option<crucible::PreemptionDecision>,
     bounded_scheduler_preemption: Option<crate::BoundedSchedulerPreemptionEvidenceClaim>,
     selectable_resume_pending: bool,
     network_output_resume_pending: bool,
+    // Only an accepted discovered console operation retains this native stop.
+    console_output_resume_pending: bool,
     // A fork child inherits the stopped template until its first ceiling is published.
     hot_fork_resume_pending: bool,
     pending_network_outputs: Vec<QemuNodeEmittedFrame>,
     pending_priming_observations: Vec<ObservableEvent>,
     next_network_output_sequence: u64,
-    console_observation: Option<QemuConsoleObservation>,
+    #[cfg(target_os = "linux")]
+    native_console: Option<native_console::QemuNativeConsoleObservation>,
     fault_capabilities: Vec<FaultCapabilityRowV1>,
     ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
     exact_fault_manifests: Option<crate::fault_capability::QemuExactFaultManifests>,
@@ -682,6 +670,16 @@ impl QemuNode {
             })
     }
 
+    #[cfg(test)]
+    pub(crate) fn read_console_sentinel_for_test(
+        &mut self,
+        output: &crate::spawn::ConsoleSentinelOutput,
+    ) -> Result<u8, QemuNodeChannelError> {
+        self.channels
+            .qmp_machine_control
+            .read_console_sentinel_for_test(output)
+    }
+
     /// Activates the dormant guest-introspection bootstrap after a non-canonical fork.
     ///
     /// # Errors
@@ -794,7 +792,6 @@ impl QemuNode {
             #[cfg(target_os = "linux")]
             hot_fork_child_qmp_stage: None,
             #[cfg(target_os = "linux")]
-            hot_fork_child_console_stage: None,
             #[cfg(target_os = "linux")]
             hot_fork_child_process_contract_stage: None,
             #[cfg(target_os = "linux")]
@@ -813,17 +810,18 @@ impl QemuNode {
             last_step_final_state: None,
             last_step_completed_boundary: None,
             last_step_inbound_frames_consumed: 0,
-            console_observation_boundary: VirtualTime::default(),
             gdbstub: None,
             pending_preemption: None,
             bounded_scheduler_preemption: None,
             selectable_resume_pending: false,
             network_output_resume_pending: false,
+            console_output_resume_pending: false,
             hot_fork_resume_pending: false,
             pending_network_outputs: Vec::new(),
             pending_priming_observations: Vec::new(),
             next_network_output_sequence: 0,
-            console_observation: None,
+            #[cfg(target_os = "linux")]
+            native_console: None,
             fault_capabilities: Vec::new(),
             ready_markers: std::collections::BTreeSet::new(),
             exact_fault_manifests: None,
@@ -1181,31 +1179,6 @@ impl QemuNode {
         Ok(result)
     }
 
-    /// Returns this node with staged console bytes exposed as observations.
-    pub(crate) fn with_console_observation(
-        mut self,
-        node: NodeId,
-        spool: QemuConsoleObservationSpool,
-    ) -> Self {
-        self.console_observation = Some(QemuConsoleObservation { node, spool });
-        self
-    }
-
-    /// Copies at most 4096 staged console bytes for untimed diagnosis.
-    ///
-    /// The tail covers bytes retained since the last successful observation
-    /// drain. It is advisory, incomplete, and has no scheduler timestamp or
-    /// canonical evidence authority. Reading it neither drains the spool nor
-    /// reads the console socket. Returns `None` when capture is absent or the
-    /// spool is busy or poisoned; it never waits for the spool lock.
-    #[must_use]
-    pub fn console_diagnostic_tail(&self) -> Option<Vec<u8>> {
-        self.console_observation
-            .as_ref()?
-            .spool
-            .try_diagnostic_tail()
-    }
-
     /// Retains setup-time observations for the first authoritative scheduler drain.
     #[must_use]
     pub(crate) fn with_priming_observable_events(
@@ -1263,6 +1236,23 @@ impl QemuNode {
     /// released.
     pub(crate) fn into_direct_child_for_quarantine(self) -> Option<QemuNodeChild> {
         self.child.into_direct_child()
+    }
+
+    /// Copies up to 4,096 accepted native console bytes awaiting observation drain.
+    ///
+    /// This advisory suffix preserves byte order without consuming origins,
+    /// reading the native ring or issuing authorization. It returns `None` when
+    /// native custody is absent, busy or poisoned, or on an unsupported platform.
+    #[must_use]
+    pub fn accepted_native_console_tail(&self) -> Option<Vec<u8>> {
+        #[cfg(target_os = "linux")]
+        {
+            self.native_console.as_ref()?.accepted_byte_tail()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
     }
 
     /// Returns the operating-system process identifier of this QEMU generation.
@@ -1827,6 +1817,7 @@ impl QemuNode {
         let mut pending_quantum_certified = false;
         let resume_stopped_boundary = self.selectable_resume_pending
             || self.network_output_resume_pending
+            || self.console_output_resume_pending
             || self.hot_fork_resume_pending;
         let mut target = QemuNodeAsyncStepTarget {
             child: &mut self.child,
@@ -1835,6 +1826,7 @@ impl QemuNode {
             shutdown_policy: self.shutdown_policy,
             stop_condition,
         };
+        let mut resume_acknowledged = false;
         let step = run_bounded_qemu_node_step_with_start_hook(
             &mut target,
             self.host_io_runtime.as_mut(),
@@ -1847,6 +1839,7 @@ impl QemuNode {
                         .channels
                         .qmp_machine_control
                         .resume_after_checkpoint()?;
+                    resume_acknowledged = true;
                 }
                 pending_quantum_certified = crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemption::certify_async_quantum_pending(
                     &mut adversary,
@@ -1865,6 +1858,9 @@ impl QemuNode {
         let preemption = crate::supervision::bounded_scheduler_preemption::BoundedSchedulerPreemption::finish_if_present(
             &mut adversary,
         );
+        if resume_acknowledged {
+            self.console_output_resume_pending = false;
+        }
         let report = step.map_err(QemuNodeError::from_async_driver)?;
         let preemption = preemption.map_err(QemuNodeError::from_bounded_scheduler_preemption)?;
         let preemption = preemption.ok_or_else(|| {
@@ -1900,8 +1896,10 @@ impl QemuNode {
         let horizon = ExecutionHorizon { icount: ceiling };
         let resume_stopped_boundary = self.selectable_resume_pending
             || self.network_output_resume_pending
+            || self.console_output_resume_pending
             || self.hot_fork_resume_pending;
-        let report = if resume_stopped_boundary {
+        let mut resume_acknowledged = false;
+        let step = if resume_stopped_boundary {
             run_bounded_qemu_node_step_with_start_hook(
                 &mut target,
                 self.host_io_runtime.as_mut(),
@@ -1912,7 +1910,9 @@ impl QemuNode {
                     target
                         .channels
                         .qmp_machine_control
-                        .resume_after_checkpoint()
+                        .resume_after_checkpoint()?;
+                    resume_acknowledged = true;
+                    Ok(())
                 },
             )
         } else {
@@ -1923,8 +1923,11 @@ impl QemuNode {
                 &self.crash_detector,
                 horizon,
             )
+        };
+        if resume_acknowledged {
+            self.console_output_resume_pending = false;
         }
-        .map_err(QemuNodeError::from_async_driver)?;
+        let report = step.map_err(QemuNodeError::from_async_driver)?;
         if resume_stopped_boundary {
             self.selectable_resume_pending = false;
             self.network_output_resume_pending = false;
@@ -1950,6 +1953,17 @@ impl QemuNode {
                     QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
                 })?;
             self.network_output_resume_pending = true;
+        }
+        if matches!(&report.outcome, QemuAsyncNodeStepOutcome::Completed { .. })
+            && report
+                .completed_boundary
+                .is_some_and(|boundary| boundary.console_output_sequence().is_some())
+        {
+            // This reason exists only after native operation discovery, exact
+            // frontier acceptance and byte consumption. A control-only clamp
+            // cannot retain a guest resume; the next RUN publishes fresh AUTH
+            // and its ceiling before either start hook releases this stop.
+            self.console_output_resume_pending = true;
         }
         self.last_step_ceiling = report.ceiling;
         self.last_step_final_state = report.final_state;
@@ -2261,6 +2275,19 @@ impl QemuNode {
         &mut self,
         checkpoint: &crate::QemuNodeContinuationCheckpoint,
     ) -> Result<(), QemuNodeError> {
+        #[cfg(target_os = "linux")]
+        match (
+            &mut self.native_console,
+            &checkpoint.native_console_continuation,
+        ) {
+            (Some(console), Some(saved)) => console.restore(saved)?,
+            (None, None) => {}
+            _ => {
+                return Err(QemuNodeError::checkpoint(
+                    "restored native console profile differs",
+                ));
+            }
+        }
         if checkpoint.next_fault_command_sequence < 2 {
             return Err(QemuNodeError::checkpoint(
                 "restored fault-command sequence precedes setup capability admission",
@@ -2276,7 +2303,6 @@ impl QemuNode {
         self.last_step_final_state = None;
         self.last_step_completed_boundary = None;
         self.last_step_inbound_frames_consumed = 0;
-        self.console_observation_boundary = checkpoint.console_observation_boundary;
         self.pending_preemption = checkpoint.pending_preemption.clone();
         self.channels
             .shmem_hot_path
@@ -2323,6 +2349,7 @@ impl QemuNode {
         // Its native fence is now released; the next step needs only its new
         // ceiling, just like a freshly reconstructed restored generation.
         self.network_output_resume_pending = false;
+        self.console_output_resume_pending = false;
         self.hot_fork_resume_pending = false;
         Ok(())
     }
@@ -2575,10 +2602,14 @@ impl SimulationBackend for QemuNode {
             .finish_advance_report(icount_ceiling, report)
             .map_err(BackendError::from)?;
         let mut observation = StepObservation::from_advance_outcome(ceiling, outcome);
-        if emitted_network_output {
+        if let Some(sequence) = self
+            .last_step_completed_boundary
+            .and_then(crate::QemuCompletedQuantumBoundary::console_output_sequence)
+        {
+            observation.physical_stop = BackendPhysicalStop::ConsoleOutput { sequence };
+        } else if emitted_network_output {
             observation.physical_stop = BackendPhysicalStop::NetworkOutput;
         }
-        self.console_observation_boundary = observation.reached;
         Ok(observation)
     }
 
@@ -2586,20 +2617,10 @@ impl SimulationBackend for QemuNode {
         let mut events = self
             .drain_scheduler_observable_events()
             .map_err(BackendError::from)?;
-        if let Some(console) = self.console_observation.as_mut() {
-            let bytes = console
-                .spool
-                .take()
-                .map_err(|error| BackendError::Rejected {
-                    message: format!("take staged QEMU console output: {error}"),
-                })?;
-            if !bytes.is_empty() {
-                events.push(ObservableEvent::console_output(
-                    self.console_observation_boundary,
-                    console.node.clone(),
-                    bytes,
-                ));
-            }
+        #[cfg(target_os = "linux")]
+        if let Some(console) = &self.native_console {
+            events.extend(console.drain_observations()?);
+            return Ok(events);
         }
         Ok(events)
     }

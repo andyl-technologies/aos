@@ -202,7 +202,6 @@ struct ScriptedQmpMachineControl {
     diagnostics: Option<RetainedStream>,
     child_qmp: Option<RetainedStream>,
     child_qmp_endpoint: Option<std::os::unix::net::UnixStream>,
-    child_console: Option<RetainedStream>,
     process_contract: Option<ScriptedProcessContract>,
     child_files: Option<ScriptedChildFiles>,
     retained_children: BTreeMap<u64, ScriptedRetainedChild>,
@@ -312,7 +311,6 @@ pub fn scripted_hot_fork_source_with_script_for_test(
             diagnostics: None,
             child_qmp: None,
             child_qmp_endpoint: None,
-            child_console: None,
             process_contract: None,
             child_files: None,
             retained_children: BTreeMap::new(),
@@ -815,7 +813,6 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
         _shmem_fd: BorrowedFd<'_>,
         _wake_fd: BorrowedFd<'_>,
         _region_len: u64,
-        _console: Option<crate::QemuHotForkChildConsoleObservation>,
     ) -> Result<Box<dyn QemuHostIoRuntime>, QemuAsyncDriverRuntimeError> {
         Ok(Box::new(self.clone()))
     }
@@ -959,7 +956,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         &mut self,
     ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
         let resources_are_sealed = self
-            .child_console
+            .child_qmp
             .as_ref()
             .is_some_and(|(_name, _cookie, bound)| *bound);
         Ok(if self.aborted {
@@ -1133,59 +1130,6 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
             true,
         ))
     }
-
-    fn install_hot_fork_child_console(
-        &mut self,
-        name: &crate::QmpDescriptorName,
-        _descriptor: BorrowedFd<'_>,
-        socket_cookie: u64,
-        template_generation: u64,
-    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError> {
-        self.child_console = Some((name.clone(), socket_cookie, false));
-        Ok(crate::QmpHotForkChildConsoleState::one_template_staged(
-            1,
-            template_generation,
-            name.clone(),
-            socket_cookie,
-            34,
-            false,
-        ))
-    }
-
-    fn close_hot_fork_child_console(
-        &mut self,
-        _name: &crate::QmpDescriptorName,
-        _socket_cookie: u64,
-    ) -> Result<(), QemuNodeChannelError> {
-        if self.child_qmp.is_none() {
-            return Err(QemuNodeChannelError::new(
-                "close scripted hot-fork child console",
-                "child QMP stage was released out of order",
-            ));
-        }
-        self.child_console = None;
-        Ok(())
-    }
-
-    fn query_hot_fork_child_console(
-        &mut self,
-    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError> {
-        let (name, socket_cookie, bound) = self.child_console.as_ref().ok_or_else(|| {
-            QemuNodeChannelError::new(
-                "query scripted hot-fork child console",
-                "scripted child-console stage is absent",
-            )
-        })?;
-        Ok(crate::QmpHotForkChildConsoleState::one_template_staged(
-            1,
-            TEMPLATE_GENERATION,
-            name.clone(),
-            *socket_cookie,
-            34,
-            *bound,
-        ))
-    }
-
     fn install_hot_fork_plugin_endpoints(
         &mut self,
         control_name: &crate::QmpDescriptorName,
@@ -1203,7 +1147,6 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         })?;
         mark_stream_bound(&mut self.diagnostics, "child diagnostics")?;
         mark_stream_bound(&mut self.child_qmp, "child QMP")?;
-        mark_stream_bound(&mut self.child_console, "child console")?;
 
         Ok(crate::QmpHotForkPluginEndpointState::one_template_staged(
             1,
@@ -1222,11 +1165,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
         _wake_name: &crate::QmpDescriptorName,
         _identity: crate::QmpHotForkPluginEndpointIdentity,
     ) -> Result<(), QemuNodeChannelError> {
-        for stream in [
-            &mut self.diagnostics,
-            &mut self.child_qmp,
-            &mut self.child_console,
-        ] {
+        for stream in [&mut self.diagnostics, &mut self.child_qmp] {
             if let Some((_name, _cookie, bound)) = stream.as_mut() {
                 *bound = false;
             }
@@ -1599,7 +1538,6 @@ use scripted_child::*;
 
 fn exact_hot_fork_request() -> crate::QmpHotForkRequest {
     crate::QmpHotForkRequest::for_test(
-        1,
         1,
         1,
         1,

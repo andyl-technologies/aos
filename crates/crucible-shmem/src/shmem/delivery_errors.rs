@@ -206,6 +206,12 @@ pub enum RegionLayoutError {
 /// An error produced while serializing an initialized region for setup handoff.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum RegionSerializationError {
+    /// A node writer is in progress or cannot provide one coherent snapshot.
+    #[error("shared-memory node slot {index} has an unfinished publication")]
+    NodeSlotPublicationBusy {
+        /// Physical slot whose writer cannot be serialized as completed.
+        index: usize,
+    },
     /// The region size cannot fit in a process-local byte vector.
     #[error("shared-memory region size {region_size} cannot fit in usize")]
     RegionSizeTooLarge {
@@ -241,6 +247,17 @@ pub enum RegionSerializationError {
 /// An error produced by SPSC ring operations.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SpscRingError {
+    /// Stopped cursor rebinding cannot steal an existing admission or barrier.
+    #[error("SPSC restore cursor admission is busy")]
+    RestoreCursorBusy,
+    /// Cursor rebinding would discard bytes still owned by the old transport.
+    #[error("SPSC restore cursor is not drained: read {read}, write {write}")]
+    RestoreCursorNotDrained {
+        /// Original consumer endpoint.
+        read: u64,
+        /// Original producer endpoint.
+        write: u64,
+    },
     /// The reversible hot-fork barrier rejects a new producer publication.
     #[error("SPSC ring producer admission is held for hot fork")]
     ProducerBarrierHeld,
@@ -477,6 +494,19 @@ pub enum NodeSlotError {
         /// Capture generation supplied by the competing request.
         observed_capture_request: u32,
     },
+    /// Another host publisher owns the request and all of its paired fields.
+    #[error("control boundary publication is owned by another host request publisher")]
+    ControlBoundaryPublicationBusy,
+    /// A competing request won after additional fields were prepared.
+    #[error(
+        "control boundary proposed request {expected}, observed competing publication {observed}"
+    )]
+    ControlBoundaryPublicationRaced {
+        /// Exact even successor proposed by the original publisher.
+        expected: u32,
+        /// Request or acknowledgement observed after the losing CAS.
+        observed: u32,
+    },
     /// A scheduler attempted to publish a ceiling behind the node's current icount.
     #[error(
         "max advance icount {max_advance_icount} is before published current icount {current_icount}"
@@ -502,6 +532,20 @@ pub enum NodeSlotError {
         current_icount: u64,
         /// The rejected idle wake icount.
         idle_wake_icount: u64,
+    },
+    /// A stopped restore's prepared pair no longer matches its original ceiling.
+    #[error("restore ceiling changed from {expected} to {observed}")]
+    RestoreCeilingChanged {
+        /// Ceiling retained during stopped pair preflight.
+        expected: u64,
+        /// Coherent ceiling observed under the common request claim.
+        observed: u64,
+    },
+    /// A stopped restore cannot reuse an already pending control request.
+    #[error("control boundary request {request} is already pending before restore")]
+    RestoreControlBoundaryAlreadyPending {
+        /// The original even request that must finish first.
+        request: u32,
     },
     /// A host attempted to arm a second logical-time restore request.
     #[error("logical-time restore request {request} is still pending acknowledgement {ack}")]

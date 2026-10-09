@@ -74,6 +74,108 @@ impl TraceRetentionFixture {
     }
 }
 
+#[test]
+fn console_sentinel_reads_only_the_pinned_child_owned_inode() -> Result<(), Box<dyn Error>> {
+    let fixture = TraceRetentionFixture::new()?;
+    let output = fixture.prepared.prepare_console_sentinel_for_test()?;
+    assert_eq!(output.filename(), "console-sentinel.bin");
+    let path = fixture.directory.path().join(output.filename());
+    let metadata = std::fs::metadata(&path)?;
+    use std::os::unix::fs::MetadataExt as _;
+    assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
+    assert_eq!(metadata.gid(), rustix::process::getegid().as_raw());
+    assert_eq!(metadata.mode() & 0o7777, 0o600);
+    assert_eq!(metadata.nlink(), 1);
+    assert!(output.read_byte().is_err());
+
+    std::fs::write(&path, [0])?;
+    assert_eq!(output.read_byte()?, 0);
+    let moved = fixture.directory.path().with_extension("moved");
+    std::fs::rename(fixture.directory.path(), &moved)?;
+    let result = output.read_byte();
+    std::fs::rename(&moved, fixture.directory.path())?;
+    assert_eq!(result?, 0);
+    Ok(())
+}
+
+#[test]
+fn console_sentinel_refuses_duplicate_allocation_and_substitution() -> Result<(), Box<dyn Error>> {
+    let mut missing = TraceRetentionFixture::new()?;
+    missing.prepared.child_credentials = None;
+    assert!(
+        missing
+            .prepared
+            .prepare_console_sentinel_for_test()
+            .is_err()
+    );
+    assert!(
+        !missing
+            .directory
+            .path()
+            .join("console-sentinel.bin")
+            .exists()
+    );
+
+    let fixture = TraceRetentionFixture::new()?;
+    let output = fixture.prepared.prepare_console_sentinel_for_test()?;
+    let path = fixture.directory.path().join(output.filename());
+    std::fs::write(&path, [0])?;
+    assert!(
+        fixture
+            .prepared
+            .prepare_console_sentinel_for_test()
+            .is_err()
+    );
+    assert_eq!(output.read_byte()?, 0);
+
+    std::fs::remove_file(&path)?;
+    std::fs::write(&path, [0])?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    assert!(matches!(
+        output.read_byte(),
+        Err(QemuSpawnError::DiagnosticTraceChanged { .. })
+    ));
+    std::fs::remove_file(&path)?;
+    symlink(
+        fixture
+            .directory
+            .path()
+            .join(crate::DEFAULT_VMSTATE_FILE_NAME),
+        &path,
+    )?;
+    assert!(output.read_byte().is_err());
+    Ok(())
+}
+
+#[test]
+fn console_sentinel_refuses_extra_bytes_links_and_permissions() -> Result<(), Box<dyn Error>> {
+    let fixture = TraceRetentionFixture::new()?;
+    let output = fixture.prepared.prepare_console_sentinel_for_test()?;
+    let path = fixture.directory.path().join(output.filename());
+    std::fs::write(&path, [0, 1])?;
+    assert!(matches!(
+        output.read_byte(),
+        Err(QemuSpawnError::DiagnosticTraceChanged { .. })
+    ));
+
+    std::fs::write(&path, [0])?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
+    assert!(matches!(
+        output.read_byte(),
+        Err(QemuSpawnError::DiagnosticTraceMetadata { .. })
+    ));
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    let linked = fixture.directory.path().join("sample-link");
+    std::fs::hard_link(&path, &linked)?;
+    assert!(matches!(
+        output.read_byte(),
+        Err(QemuSpawnError::DiagnosticTraceMetadata { .. })
+    ));
+    std::fs::remove_file(linked)?;
+    assert_eq!(output.read_byte()?, 0);
+    Ok(())
+}
+
 fn write_sparse_trace(path: &std::path::Path, bytes: u64) -> Result<(), Box<dyn Error>> {
     let mut trace = std::fs::OpenOptions::new().write(true).open(path)?;
     trace.set_len(bytes)?;
@@ -1734,6 +1836,12 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
             env::var_os("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY"),
             (native_summary == "1").then(|| std::ffi::OsString::from("1")),
         );
+        let barrier_expected = env::var("CRUCIBLE_QEMU_TEST_BARRIER_DIAGNOSTIC_EXPECTED")
+            .unwrap_or_else(|_| String::from("absent"));
+        assert_eq!(
+            env::var_os("CRUCIBLE_CONSOLE_BARRIER_DIAGNOSTIC"),
+            (barrier_expected == "1").then(|| std::ffi::OsString::from("1")),
+        );
         assert!(env::var_os("CRUCIBLE_CONTROL_CALLBACK_WITNESS").is_none());
         child_probe_fixed_fds()?;
         return Ok(());
@@ -1778,6 +1886,11 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
                 (
                     "CRUCIBLE_QEMU_TEST_NATIVE_SUMMARY_EXPECTED",
                     &env::var("CRUCIBLE_QEMU_TEST_NATIVE_SUMMARY_EXPECTED")
+                        .unwrap_or_else(|_| String::from("absent")),
+                ),
+                (
+                    "CRUCIBLE_QEMU_TEST_BARRIER_DIAGNOSTIC_EXPECTED",
+                    &env::var("CRUCIBLE_QEMU_TEST_BARRIER_DIAGNOSTIC_EXPECTED")
                         .unwrap_or_else(|_| String::from("absent")),
                 ),
                 (SOURCE_FDS_ENV, &source_fds),

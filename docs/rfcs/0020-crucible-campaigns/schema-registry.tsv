@@ -37,7 +37,7 @@ crucible.guest-selectable.request	1	crucible-protocol::selectable	process-protoc
 crucible.guest-selectable.reply	1	crucible-protocol::selectable	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.guest-selectable.catalog-plan	4	crucible-protocol::selectable_catalog_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.guest-selectable.pending-request	2	crucible-protocol::selectable_transport	process-protocol-message	gate:typed-choice,gate:abi-conformance
-crucible.qemu-plugin.setup-plan	2	crucible-protocol::plugin_setup_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
+crucible.qemu-plugin.setup-plan	3	crucible-protocol::plugin_setup_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.qemu.hot-fork.template	29	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-equivalence,gate:hot-fork-isolation
 crucible.qemu.hot-fork.template-resource-stage	13	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.fork	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-equivalence,gate:hot-fork-isolation
@@ -56,7 +56,6 @@ crucible.qemu.hot-fork.child-process	2	crucible-qemu::qmp::hot_fork	process-prot
 crucible.qemu.hot-fork.child-process-contract	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.child-files	1	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.child-qmp	8	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
-crucible.qemu.hot-fork.child-console	1	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.child-diagnostics	1	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.campaign.merkle-node	1	crucible-campaign::merkle	merkle-node	gate:campaign-model,gate:content-address
 crucible.campaign.candidate-generator-spec	1	crucible-campaign::object	policy	gate:lazy-frontier,gate:content-address
@@ -227,7 +226,7 @@ crucible.campaign.query-campaign-request-attempts-request	2	crucible-campaign::c
 crucible.campaign.query-campaign-request-attempts-response	2	crucible-campaign::campaign_service::request_attempts	component-message	gate:campaign-component-contract
 crucible.campaign.state-identity	1	crucible-daemon::campaign_bootstrap	administrative-record	gate:campaign-component-contract
 crucible.execution.dequeued-fault-event	1	crucible-shmem::fault_event::checkpoint	checkpoint	gate:campaign-replay
-crucible.execution.event-log-segment	5	crucible::scheduler::event_codec	trace	gate:campaign-replay,gate:exact-closure-streaming
+crucible.execution.event-log-segment	6	crucible::scheduler::event_codec	trace	gate:campaign-replay,gate:exact-closure-streaming
 crucible.execution.backend-network-output	2	crucible::backend::io::network_checkpoint	device-state	gate:exact-closure-streaming
 crucible.execution.device-scheduling-subnode	1	crucible::device_subnode::checkpoint	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
 crucible.execution.scheduler-network	2	crucible::scheduler::runtime_state::network_checkpoint	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
@@ -247,7 +246,7 @@ crucible.failure-triage.cluster-report	1	crucible::model::failure::reporting	cli
 crucible.failure-triage.cluster-report-set	1	crucible::model::failure::reporting	cli-output	gate:campaign-replay
 crucible.execution.host-assertion-continuation	2	crucible::trigger::assertions	checkpoint	gate:campaign-replay
 crucible.execution.host-fault-action-state	3	crucible::model::fault_signal::host_action_sink::checkpoint_codec	checkpoint	gate:campaign-replay
-crucible.execution.single-scheduler-continuation	6	crucible::scheduler::checkpoint	checkpoint	gate:campaign-replay
+crucible.execution.single-scheduler-continuation	7	crucible::scheduler::checkpoint	checkpoint	gate:campaign-replay
 crucible.executor.production-checkpoint-manifest	4	crucible-daemon::exact_checkpoint_store::production	exact-manifest	gate:exact-closure-streaming
 crucible.executor.production-promotion-evidence	1	crucible-daemon::exact_checkpoint_store::production	observation	gate:exact-closure-streaming
 crucible.executor.production-replay-oracle	1	crucible-daemon::exact_checkpoint_store::production	trace	gate:campaign-replay
@@ -335,7 +334,7 @@ crucible.reduction-fingerprint	1	crucible-cas::cas::campaign_codec	physical-reco
 # Crucible guest, control, and shared-memory process protocols
 crucible.api.rpc	8	crucible-api::rpc_abi	process-protocol-message	gate:abi-conformance
 crucible.app-random.branch-plan	1	crucible-protocol::app_random_branch_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
-crucible.control.frame	3	crucible-protocol::control	process-protocol-message	gate:abi-conformance
+crucible.control.frame	4	crucible-protocol::control	process-protocol-message	gate:abi-conformance
 crucible.debug-gateway.frame	1	crucible-protocol::debug_gateway	process-protocol-message	gate:abi-conformance
 crucible.guest-choice.domain	2	crucible-protocol::choice	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.guest-introspection.doorbell	1	crucible-protocol::guest_introspection_doorbell	process-protocol-message	gate:abi-conformance
@@ -358,7 +357,7 @@ crucible.shmem.fault-register-manifest	1	crucible-shmem::fault_target_manifest	p
 crucible.shmem.fault-resource-terminal-evidence	1	crucible-shmem::fault_terminal_evidence	process-protocol-message	gate:abi-conformance
 crucible.shmem.fault-system-manifest	1	crucible-shmem::fault_target_manifest	process-protocol-message	gate:abi-conformance
 crucible.shmem.fault-target-manifest-query	1	crucible-shmem::fault_target_manifest	process-protocol-message	gate:abi-conformance
-crucible.shmem.hot-fork-ring-image	2	crucible-shmem::mapped_setup_region::hot_fork	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
+crucible.shmem.hot-fork-ring-image	3	crucible-shmem::mapped_setup_region::hot_fork	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
 crucible.shmem.memory-mutation-batch	1	crucible-shmem::fault_memory_batch	process-protocol-message	gate:abi-conformance
 crucible.shmem.memory-mutation-batch-evidence	1	crucible-shmem::fault_memory_batch	process-protocol-message	gate:abi-conformance
 crucible.shmem.memory-mutation-evidence	1	crucible-shmem::fault_memory_evidence	process-protocol-message	gate:abi-conformance
@@ -367,7 +366,7 @@ crucible.shmem.node-event-envelope	1	crucible-qemu-plugin::fault_command::event_
 crucible.shmem.node-fault-evidence	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
 crucible.shmem.node-fault-payload	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
 crucible.shmem.node-fault-policy-json	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
-crucible.shmem.region	30	crucible-shmem::region	process-protocol-message	gate:abi-conformance
+crucible.shmem.region	31	crucible-shmem::region	process-protocol-message	gate:abi-conformance
 crucible.whitebox-doorbell.frame	3	crucible-protocol::doorbell_frame	process-protocol-message	gate:abi-conformance
 crucible.whitebox-doorbell.instruction	4	crucible-protocol::doorbell_abi	process-protocol-message	gate:abi-conformance
 
@@ -391,7 +390,8 @@ crucible.qemu.hot-fork.console-child-reinitializer	1	qemu-patch::hot-fork-consol
 crucible.qemu.hot-fork.plugin-child-plan	3	qemu-patch::hot-fork-plugin	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
 crucible.qemu.hot-fork.plugin-child-status	3	qemu-patch::hot-fork-plugin	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
 crucible.qemu.hot-fork.qmp-child-reinitializer	2	qemu-patch::hot-fork-qmp	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
-crucible.qemu.node-continuation	7	crucible-qemu::checkpoint	device-state	gate:exact-closure-streaming
+crucible.qemu.node-continuation	9	crucible-qemu::checkpoint	device-state	gate:exact-closure-streaming
+crucible.qemu.native-console-continuation	1	crucible-qemu::native_console_owner::continuation	device-state	gate:exact-closure-streaming,gate:hot-fork-isolation
 crucible.qemu.production-fault-runtime	7	crucible-qemu::production_fault_runtime::checkpoint_codec	device-state	gate:exact-closure-streaming
 crucible.qemu.selectable-reply-status	1	qemu-patch::selectable-reply-status	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.qemu.virtio-accelerator-config	1	qemu-patch::virtio-accelerator	process-protocol-message	gate:abi-conformance

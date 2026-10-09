@@ -98,7 +98,7 @@ pub struct NodeSlot {
     pub(crate) logical_time_restore_ack: AtomicU32,
     pub(crate) control_boundary_fault_command_frontier: AtomicU64,
     pub(crate) control_boundary_capture_request: AtomicU32,
-    pub(crate) _pad3: [u8; 4],
+    pub(crate) control_boundary_publication_claim: AtomicU32,
     pub(crate) timer_witness_generation: AtomicU64,
     pub(crate) timer_witness_deadline_ps: AtomicU64,
     pub(crate) timer_witness_deadline_tick: AtomicU64,
@@ -130,8 +130,7 @@ impl Clone for NodeSlot {
             publish_gen: AtomicU32::new(self.publish_gen.load(Ordering::Acquire)),
             control_boundary_ack: AtomicU32::new(self.control_boundary_ack.load(Ordering::Acquire)),
             device_completion_deadline_tick: AtomicU64::new(
-                self.device_completion_deadline_tick
-                    .load(Ordering::Acquire),
+                self.device_completion_deadline_tick.load(Ordering::Acquire),
             ),
             preemption_at_tick: AtomicU64::new(self.preemption_at_tick.load(Ordering::Acquire)),
             preemption_deadline_tick: AtomicU64::new(
@@ -170,7 +169,10 @@ impl Clone for NodeSlot {
                 self.control_boundary_capture_request
                     .load(Ordering::Acquire),
             ),
-            _pad3: [0; 4],
+            control_boundary_publication_claim: AtomicU32::new(
+                self.control_boundary_publication_claim
+                    .load(Ordering::Acquire),
+            ),
             timer_witness_generation: AtomicU64::new(
                 self.timer_witness_generation.load(Ordering::Acquire),
             ),
@@ -278,8 +280,9 @@ pub const NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET: usize =
 /// Byte offset of the fingerprint request generation bound to the control request.
 pub const NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET: usize =
     core::mem::offset_of!(NodeSlot, control_boundary_capture_request);
-/// Byte offset of the trailing reserved bytes.
-pub const NODE_SLOT_PAD3_OFFSET: usize = core::mem::offset_of!(NodeSlot, _pad3);
+/// Byte offset of the host-only control request publication claim.
+pub const NODE_SLOT_CONTROL_BOUNDARY_PUBLICATION_CLAIM_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, control_boundary_publication_claim);
 /// Byte offset of the completed virtual-timer witness generation.
 pub const NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET: usize =
     core::mem::offset_of!(NodeSlot, timer_witness_generation);
@@ -344,7 +347,7 @@ const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET == 120);
 const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET == 124);
 const _: () = assert!(NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET == 128);
 const _: () = assert!(NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET == 136);
-const _: () = assert!(NODE_SLOT_PAD3_OFFSET == 140);
+const _: () = assert!(NODE_SLOT_CONTROL_BOUNDARY_PUBLICATION_CLAIM_OFFSET == 140);
 const _: () = assert!(NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET == 144);
 const _: () = assert!(NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET == 152);
 const _: () = assert!(NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET == 160);

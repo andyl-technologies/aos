@@ -27,7 +27,8 @@ The untagged-writer review found these independently versioned contracts:
 | Production run ownership lock | `crucible-api::vm_lifecycle` writes and rereads `active-run.lock` across process lifetimes. Its record requires version 1, and the reader rejects unversioned or unsupported records. | `crucible.production-run-lock` |
 | Production network adapter continuation | `crucible-api::vm_lifecycle::network_faults` serializes opaque JSON `adapter_state` with `NETWORK_ADAPTER_CHECKPOINT_VERSION = 11` and validates that version on restore. | `crucible.production-network-adapter-checkpoint` |
 | Pending network output | `crucible::backend::io::network_checkpoint` independently encodes and decodes canonical CBOR for each routed frame, with `BACKEND_NETWORK_OUTPUT_VERSION = 2`. | `crucible.execution.backend-network-output` |
-| Scheduler event-log segment | `crucible::scheduler` writes a binary segment with `EVENT_LOG_SEGMENT_BINARY_VERSION = 4`; the exact checkpoint store retains and authenticates segment bytes for resume. | `crucible.execution.event-log-segment` |
+| Scheduler event-log segment | `crucible::scheduler` writes a binary segment with `EVENT_LOG_SEGMENT_BINARY_VERSION = 6`; the exact checkpoint store retains and authenticates segment bytes for resume. | `crucible.execution.event-log-segment` |
+| Single-scheduler continuation | `crucible::scheduler::checkpoint` encodes and checks `crucible.single-scheduler-continuation.v7`, retaining the original ready-point map alongside the current backend-counter map. | `crucible.execution.single-scheduler-continuation` |
 | Scheduler-owned nested continuations | `crucible::device_subnode::checkpoint` encodes and checks `crucible.device-scheduling-subnode.v1`; `crucible::scheduler::runtime_state::network_checkpoint` independently encodes and checks `crucible.scheduler-network.v2`. Both are decoded from the registered single-scheduler continuation. | `crucible.execution.device-scheduling-subnode`, `crucible.execution.scheduler-network` |
 | Event-graph continuation | `crucible::trigger::event_graph` encodes and checks `crucible.event-graph-state.v2`; production checkpoint restore reads it as a separate object. | `crucible.execution.event-graph-state` |
 | Scenario selectable component and fault-signal plan | `crucible::model::scenario_selectables` uses an independent binary magic and version 1; `crucible::model::fault_signal::wire` decodes separately versioned JSON plan bytes at version 2. | `crucible.execution.scenario-selectable-component`, `crucible.execution.fault-signal-plan` |
@@ -92,9 +93,12 @@ rows. They do not create an additional wire or durable schema:
 - The lifecycle manifest and journal are fields of `run-state.json`, and the
   campaign runtime identity is a hash of the emitted configuration. Neither
   is a separately decoded format.
-- `crucible.scheduler.event-log.segment-text.v5` is a text projection generated
+- `crucible.scheduler.event-log.segment-text.v6` is a text projection generated
   from a decoded binary event-log segment; it is not independently stored or
   decoded for resume.
+- `event_kind_catalog.version=8` identifies the engine's canonical event-kind
+  catalog material, including `native_console_byte`. The catalog is derived
+  from `crucible::event_catalog`; it has no independent record decoder.
 - `crucible-cas::cas::campaign_codec` also emits
   `crucible.campaign-replay-input.v1` as replay-hash input; it is never stored
   as a standalone record. Its provenance and lineage material likewise feeds
@@ -202,7 +206,8 @@ serialization paths were reviewed as a bounded source family:
 | --- | --- |
 | `crucible-qemu::checkpoint::{host_io_codec,node_codec}`, `realization::snapshot_codec`, `production_fault_runtime::checkpoint_codec`, and `supervision::accelerator_io_servicer` | Independently decoded host continuations and snapshot envelopes with existing QEMU registry rows. Nested device, ring, network-output, scheduler, and fault-runtime blobs use their separately registered codecs. The bounded CBOR helper only writes the caller's format. |
 | `crucible-qemu::qmp`, `fault_action_sink::node_payload::encoding`, `mapped_quantum`, and `supervision::device_host_work` | QMP uses its standard envelope and registered Crucible command payloads; node-fault JSON carries the registered `crucible.shmem.node-fault-policy-json` magic inside a registered node-fault payload. The remaining encoders write registered shared-memory control or data messages. |
-| `crucible-qemu::launch::entropy`, `qmp::vmstate_control`, `shutdown`, `console_observation`, `linux_cgroup`, and `spawn::materialization` | The fw_cfg entropy file is a fixed raw seed; the debug activation token and QMP quit are fixed control bytes. Console bytes and checkpoint materialization are opaque pass-through data. Cgroup writes use the kernel interface. None has an independent Crucible decoder or version. |
+| `crucible-qemu::launch::entropy`, `qmp::vmstate_control`, `shutdown`, `linux_cgroup`, and `spawn::materialization` | The fw_cfg entropy file is a fixed raw seed; the debug activation token and QMP quit are fixed control bytes. Checkpoint materialization carries opaque artifacts, and cgroup writes use the kernel interface. None has an independent Crucible decoder or version. |
+| `crucible-qemu::native_console_owner::continuation` | The independently decoded `crucible.native-console-continuation.v1` envelope retains accepted byte origins and their original logical RUN or boot projections. It carries no issued native authorization, process identity or runnable credit. Restored physical custody is admitted separately. | `crucible.qemu.native-console-continuation`, version 1. |
 | `crucible-harness::reproduction` | Its canonical tab-separated reproduction artifact is version 4 and shares the existing `crucible.reproduction-artifact` row with the CLI codec. The fresh-lineage baseline event is independently stored and strictly parsed by `crucible-cas`, where its version-1 row already exists. Campaign provenance material and fresh-lineage identity material only feed hashes. |
 | `crucible-harness::{e2e,adversarial,replay_oracle,fingerprint}` | The `crucible.e2e.*`, `crucible.adversarial.*`, replay-oracle sampling, and fingerprint-definition tags delimit mock evidence or hash algorithms; no separate durable or wire decoder consumes them. |
 

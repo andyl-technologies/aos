@@ -17,6 +17,10 @@ use thiserror::Error;
 use super::*;
 use crate::QemuQmpVmStateControlChannel;
 
+#[cfg(test)]
+#[path = "hot_fork_scheduler_continuation/retry_tests.rs"]
+mod retry_tests;
+
 /// Exact scheduler-owned node state copied at one retained-template fork.
 ///
 /// The value contains no process handle, mutable-ref capability, or host path.
@@ -28,7 +32,6 @@ pub struct QemuHotForkNodeStateContinuation {
     last_step_ceiling: Option<Icount>,
     last_step_final_state: Option<QemuNodeIdleState>,
     last_step_inbound_frames_consumed: usize,
-    console_observation_boundary: VirtualTime,
     pending_preemption: Option<crucible::PreemptionDecision>,
     next_network_output_sequence: u64,
     fault_capabilities: Vec<FaultCapabilityRowV1>,
@@ -37,10 +40,12 @@ pub struct QemuHotForkNodeStateContinuation {
     next_fault_command_sequence: u64,
     setup_fault_command_sequence_floor: u64,
     next_fault_event_sequence: u64,
+    native_console: Option<crate::native_console_owner::ConsoleOriginContinuation>,
+    console_calibration: Option<QemuLogicalTimeCalibration>,
 }
 
 impl QemuHotForkNodeStateContinuation {
-    pub(super) fn capture(source: &QemuNode) -> Result<Self, QemuNodeChannelError> {
+    pub(super) fn capture(source: &mut QemuNode) -> Result<Self, QemuNodeChannelError> {
         if source.lifecycle_state != QemuNodeLifecycleState::Running {
             return Err(invalid_node_continuation(
                 "source node is not in its running lifecycle state",
@@ -67,12 +72,26 @@ impl QemuHotForkNodeStateContinuation {
             ));
         }
 
+        let native_console = source
+            .native_console
+            .as_ref()
+            .map(super::native_console::QemuNativeConsoleObservation::capture_origins)
+            .transpose()?;
+        // None keeps its original capture operations. Console-enabled capture
+        // retains the actual stopped raw/logical pair, separately from origins.
+        let console_calibration = if native_console.is_some() {
+            Some(source.logical_time_calibration().map_err(|source| {
+                QemuNodeChannelError::new("capture child console calibration", source.to_string())
+            })?)
+        } else {
+            None
+        };
+
         Ok(Self {
             last_observed_time: source.last_observed_time,
             last_step_ceiling: source.last_step_ceiling,
             last_step_final_state: source.last_step_final_state,
             last_step_inbound_frames_consumed: source.last_step_inbound_frames_consumed,
-            console_observation_boundary: source.console_observation_boundary,
             pending_preemption: source.pending_preemption.clone(),
             next_network_output_sequence: source.next_network_output_sequence,
             fault_capabilities: source.fault_capabilities.clone(),
@@ -81,7 +100,15 @@ impl QemuHotForkNodeStateContinuation {
             next_fault_command_sequence: source.next_fault_command_sequence,
             setup_fault_command_sequence_floor: source.setup_fault_command_sequence_floor,
             next_fault_event_sequence: source.next_fault_event_sequence,
+            native_console,
+            console_calibration,
         })
+    }
+
+    /// Reports whether capture retained neither native origins nor calibration.
+    #[cfg(test)]
+    pub(super) fn has_no_native_console(&self) -> bool {
+        self.native_console.is_none() && self.console_calibration.is_none()
     }
 
     /// Returns the exact scheduler time last observed for the source node.
@@ -112,7 +139,7 @@ impl QemuHotForkNodeStateContinuation {
 /// Linear branch-private scheduler-node continuation.
 ///
 /// This value owns all three modeled channel planes, the reconstructed host-I/O
-/// runtime, the exact private-ring descriptor, the cloned console spool, and
+/// runtime, the exact private-ring descriptor, native console origins, and
 /// the scheduler mirror captured at the same fork boundary. It deliberately
 /// has no constructor from raw public parts. Turning it into a live
 /// [`QemuNode`] additionally requires an externally reaped process authority,
@@ -123,13 +150,14 @@ pub struct QemuHotForkSchedulerNodeContinuation {
     request: crate::QmpHotForkRequest,
     channels: QemuNodeChannels,
     host_io_runtime: Box<dyn QemuHostIoRuntime>,
-    console_spool: Option<QemuConsoleObservationSpool>,
     state: QemuHotForkNodeStateContinuation,
     ring_descriptor: OwnedFd,
     ring: QemuHotForkPrivateRingStageProof,
     endpoint_stage: QemuHotForkPluginEndpointStageProof,
     host_io_binding: crucible::model::ContentHash,
     checkpoint_cancellation: OwnedFd,
+    child_ceiling_armed: bool,
+    pub(super) console_restore: Option<QemuHotForkConsoleRestore>,
 }
 
 impl std::fmt::Debug for QemuHotForkSchedulerNodeContinuation {
@@ -158,7 +186,6 @@ impl QemuHotForkSchedulerNodeContinuation {
             shmem_hot_path,
             host_io_binding,
             host_io_runtime,
-            console_spool,
             node_state,
             checkpoint_cancellation,
         } = continuation;
@@ -173,13 +200,14 @@ impl QemuHotForkSchedulerNodeContinuation {
             request,
             channels,
             host_io_runtime,
-            console_spool,
             state: node_state,
             ring_descriptor,
             ring,
             endpoint_stage,
             host_io_binding,
             checkpoint_cancellation,
+            child_ceiling_armed: false,
+            console_restore: None,
         }
     }
 
@@ -250,39 +278,80 @@ impl QemuHotForkSchedulerNodeContinuation {
             ));
         }
 
-        // The private ring's fresh slot must carry the counter the child
-        // inherited before any host request reaches the plugin; the larger of
-        // the observed time and the last step ceiling is where the source
-        // stopped.
-        let inherited_icount = self
-            .state
-            .last_step_ceiling
-            .map_or(self.state.last_observed_time.ticks, |ceiling| {
-                ceiling.retired.max(self.state.last_observed_time.ticks)
-            });
-        if let Err(source) = self
-            .channels
-            .shmem_hot_path
-            .arm_hot_fork_child_ceiling(inherited_icount)
-        {
-            return Err(QemuHotForkSchedulerNodeInstallError::new(
-                self, process, source,
-            ));
+        // The source's last ceiling is an upper bound, not its stopped
+        // coordinate. Arm that inherited bound once before any child request;
+        // publishing it again would replace a retained Restore's exact advance.
+        if !self.child_ceiling_armed {
+            let inherited_icount = self
+                .state
+                .last_step_ceiling
+                .map_or(self.state.last_observed_time.ticks, |ceiling| {
+                    ceiling.retired.max(self.state.last_observed_time.ticks)
+                });
+            if let Err(source) = self
+                .channels
+                .shmem_hot_path
+                .arm_hot_fork_child_ceiling(inherited_icount)
+            {
+                return Err(QemuHotForkSchedulerNodeInstallError::new(
+                    self, process, source,
+                ));
+            }
+            self.child_ceiling_armed = true;
         }
+
+        let restored = match (&self.state.native_console, self.state.console_calibration) {
+            (Some(saved), Some(calibration)) => {
+                if saved.node() != &node {
+                    Err(QemuNodeChannelError::new(
+                        "install child console",
+                        "logical node differs from captured origins",
+                    ))
+                } else {
+                    super::hot_fork_native_console::complete_restore(
+                        &mut self.channels,
+                        self.host_io_runtime.as_mut(),
+                        super::hot_fork_native_console::StoppedChildRestore {
+                            request: self.request,
+                            descriptor: &self.ring_descriptor,
+                            endpoint: &self.endpoint_stage,
+                            saved,
+                            calibration,
+                            policy: async_policy,
+                        },
+                        &mut self.console_restore,
+                    )
+                    .map(Some)
+                }
+            }
+            (None, None) => Ok(None),
+            _ => Err(QemuNodeChannelError::new(
+                "install child console",
+                "captured console calibration is absent",
+            )),
+        };
+        let native_console = match restored {
+            Ok(console) => console,
+            Err(source) => {
+                return Err(QemuHotForkSchedulerNodeInstallError::new(
+                    self, process, source,
+                ));
+            }
+        };
 
         let Self {
             request,
             channels,
             host_io_runtime,
-            console_spool,
             state,
             ring_descriptor,
             ring,
             endpoint_stage,
             host_io_binding,
             checkpoint_cancellation,
+            child_ceiling_armed: _,
+            console_restore: _,
         } = self;
-        let console_observation = console_spool.map(|spool| QemuConsoleObservation { node, spool });
         let authority = QemuHotForkInstalledNodeAuthority {
             request,
             _ring_descriptor: ring_descriptor,
@@ -297,7 +366,6 @@ impl QemuHotForkSchedulerNodeContinuation {
             hot_fork_private_ring_stage: None,
             hot_fork_child_diagnostic_stage: None,
             hot_fork_child_qmp_stage: None,
-            hot_fork_child_console_stage: None,
             hot_fork_child_process_contract_stage: None,
             #[cfg(target_os = "linux")]
             hot_fork_child_files_stage: None,
@@ -313,17 +381,17 @@ impl QemuHotForkSchedulerNodeContinuation {
             last_step_final_state: state.last_step_final_state,
             last_step_completed_boundary: None,
             last_step_inbound_frames_consumed: state.last_step_inbound_frames_consumed,
-            console_observation_boundary: state.console_observation_boundary,
             gdbstub: None,
             pending_preemption: state.pending_preemption,
             bounded_scheduler_preemption: None,
             selectable_resume_pending: false,
             network_output_resume_pending: false,
+            console_output_resume_pending: false,
             hot_fork_resume_pending: true,
             pending_network_outputs: Vec::new(),
             pending_priming_observations: Vec::new(),
             next_network_output_sequence: state.next_network_output_sequence,
-            console_observation,
+            native_console,
             fault_capabilities: state.fault_capabilities,
             ready_markers: state.ready_markers,
             exact_fault_manifests: state.exact_fault_manifests,

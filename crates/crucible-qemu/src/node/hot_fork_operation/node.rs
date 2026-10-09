@@ -31,10 +31,6 @@ impl QemuNode {
                 .channels
                 .qmp_machine_control
                 .query_hot_fork_child_qmp()?,
-            child_console: self
-                .channels
-                .qmp_machine_control
-                .query_hot_fork_child_console()?,
             process_contract: self
                 .channels
                 .qmp_machine_control
@@ -57,7 +53,6 @@ impl QemuNode {
         let request = crate::QmpHotForkRequest::from_prepared_template(
             &retained.template,
             &retained.child_qmp,
-            &retained.child_console,
             &retained.process_contract,
             &retained.child_files,
         )
@@ -115,6 +110,7 @@ impl QemuNode {
         let diagnostics_match = diagnostics.state()
             == QemuHotForkChildDiagnosticStageState::Installed
             && retained.diagnostics.staged()
+            && retained.diagnostics.generation() == diagnostics.generation()
             && retained.diagnostics.generation() == request.diagnostic_generation()
             && retained.diagnostics.template_generation() == request.template_generation()
             && retained.diagnostics.descriptor_name() == Some(diagnostics.descriptor_name())
@@ -142,23 +138,6 @@ impl QemuNode {
         if !child_qmp_matches {
             return Err(hot_fork_request_basis_mismatch(
                 "QEMU child-QMP state does not match the node-owned stream",
-            ));
-        }
-
-        let child_console = self.hot_fork_child_console_stage().ok_or_else(|| {
-            hot_fork_request_basis_mismatch("source node retains no child-console authority")
-        })?;
-        let child_console_matches = child_console.state()
-            == QemuHotForkChildConsoleStageState::Installed
-            && retained.child_console.descriptor_name() == Some(child_console.descriptor_name())
-            && retained.child_console.socket_cookie() == Some(child_console.socket_cookie())
-            && retained.child_console.template_generation() == child_console.template_generation()
-            && retained.child_console.generation() == child_console.console_generation()
-            && retained.child_console.resource_plan_bound() == child_console.resource_plan_bound()
-            && resource.console_staged();
-        if !child_console_matches {
-            return Err(hot_fork_request_basis_mismatch(
-                "QEMU child-console state does not match the node-owned stream",
             ));
         }
 
@@ -306,38 +285,6 @@ impl QemuNode {
                 ),
             });
         }
-        let console_stage = self.hot_fork_child_console_stage().ok_or_else(|| {
-            QemuHotForkLaunchError::Rejected {
-                source: QemuNodeChannelError::new(
-                    "fork retained hot-fork template",
-                    "source node retains no child console stage",
-                ),
-            }
-        })?;
-        if console_stage.state() != QemuHotForkChildConsoleStageState::Installed
-            || !console_stage.resource_plan_bound()
-            || console_stage.template_generation() != request.template_generation()
-            || console_stage.console_generation() != request.console_generation()
-        {
-            return Err(QemuHotForkLaunchError::Rejected {
-                source: QemuNodeChannelError::new(
-                    "fork retained hot-fork template",
-                    "child console endpoint does not match the sealed fork request",
-                ),
-            });
-        }
-        if !self
-            .hot_fork_child_console_stage
-            .as_ref()
-            .is_some_and(QemuHotForkChildConsoleStage::host_endpoint_available)
-        {
-            return Err(QemuHotForkLaunchError::Rejected {
-                source: QemuNodeChannelError::new(
-                    "fork retained hot-fork template",
-                    "branch-private child console endpoint was already transferred",
-                ),
-            });
-        }
         let process_contract = self
             .hot_fork_child_process_contract_stage()
             .ok_or_else(|| QemuHotForkLaunchError::Rejected {
@@ -417,12 +364,13 @@ impl QemuNode {
                 diagnostics.consumer_available()
                     && diagnostics.replacement_plan_bound()
                     && diagnostics.template_generation() == request.template_generation()
+                    && diagnostics.generation() == request.diagnostic_generation()
             })
         {
             return Err(QemuHotForkLaunchError::Rejected {
                 source: QemuNodeChannelError::new(
                     "fork retained hot-fork template",
-                    "branch-private child diagnostics consumer was already transferred",
+                    "branch-private child diagnostics consumer is unavailable or its generation differs",
                 ),
             });
         }
@@ -459,10 +407,6 @@ impl QemuNode {
             .clone_hot_fork_host_continuation(mapping)
             .map_err(|source| QemuHotForkLaunchError::Rejected { source })?;
         let host_io_binding = hot_fork_host_io_binding(request, mapping.backing_identity());
-        let child_console = self
-            .clone_hot_fork_child_console_observation()
-            .map_err(|source| QemuHotForkLaunchError::Rejected { source })?;
-        let console_spool = child_console.spool();
         let host_io_runtime = self
             .host_io_runtime
             .clone_hot_fork_host_io_continuation(
@@ -470,7 +414,6 @@ impl QemuNode {
                 mapping.descriptor(),
                 host_wake.as_fd(),
                 mapping.backing_identity().length(),
-                Some(child_console),
             )
             .map_err(|source| QemuHotForkLaunchError::Rejected {
                 source: QemuNodeChannelError::new(
@@ -545,14 +488,6 @@ impl QemuNode {
                     source,
                 }
             })?;
-        self.consume_hot_fork_child_console_host_endpoint()
-            .map_err(|source| {
-                self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
-                QemuHotForkLaunchError::EndpointTransfer {
-                    parent_state: Box::new(parent_state),
-                    source,
-                }
-            })?;
         let child_process_id = u32::try_from(parent_state.child_pid()).map_err(|_source| {
             self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
             QemuHotForkLaunchError::ProcessRetention {
@@ -595,7 +530,6 @@ impl QemuNode {
             shmem_hot_path,
             host_io_binding,
             host_io_runtime,
-            console_spool: Some(console_spool),
             node_state,
             checkpoint_cancellation,
         };

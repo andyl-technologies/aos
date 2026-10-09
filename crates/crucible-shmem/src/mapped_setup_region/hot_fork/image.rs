@@ -1,16 +1,15 @@
 //! Bounded canonical images of held hot-fork ring storage.
 
-use super::{MappedSetupRegionAccessError, RegionLayout, ring_image_header_segments};
+use super::{MappedSetupRegionAccessError, RegionLayout, rings::ring_header_segments};
 use crate::{
     ABI_VERSION, RING_HEADER_CONSUMER_STATE_OFFSET, RING_HEADER_PRODUCER_STATE_OFFSET,
     RING_HEADER_READ_IDX_OFFSET, RING_HEADER_WRITE_IDX_OFFSET, RegionConfig,
 };
 use thiserror::Error;
 
-const HOT_FORK_RING_IMAGE_MAGIC: [u8; 8] = *b"CRHFRI02";
+const HOT_FORK_RING_IMAGE_MAGIC: [u8; 8] = *b"CRHFRI03";
 /// Current canonical hot-fork ring-image schema version.
-pub const HOT_FORK_RING_IMAGE_SCHEMA_VERSION: u32 = 2;
-pub(super) const HOT_FORK_RING_IMAGE_SEGMENT_COUNT: usize = 3;
+pub const HOT_FORK_RING_IMAGE_SCHEMA_VERSION: u32 = 3;
 const HOT_FORK_RING_IMAGE_FIXED_BYTES: usize = 8 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 32;
 const HOT_FORK_RING_IMAGE_SEGMENT_METADATA_BYTES: usize = 16;
 const HOT_FORK_RING_IMAGE_HELD_STATE: u64 = 1_u64 << 63;
@@ -20,7 +19,10 @@ const HOT_FORK_RING_IMAGE_HELD_STATE: u64 = 1_u64 << 63;
 /// The image is operational transfer material, not configuration identity. It
 /// retains complete ring backing ranges, including inactive slots, so a later
 /// branch-private mapping can preserve exact cursors and queued bytes without
-/// interpreting a queue between capture and restore.
+/// interpreting a queue between capture and restore. Console queue headers and
+/// records are retained separately from their physical capability, authorization
+/// and completion tables. Restoring a HELD header transfers admission state,
+/// never native execution permission. Schema 3 rejects all older image grammars.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HotForkRingImage {
     pub(super) abi_version: u32,
@@ -29,7 +31,7 @@ pub struct HotForkRingImage {
     pub(super) queue_capacity: u32,
     pub(super) ticks_per_ns: u32,
     pub(super) fault_payload_arena_bytes: u32,
-    pub(super) segments: [HotForkRingImageSegment; HOT_FORK_RING_IMAGE_SEGMENT_COUNT],
+    pub(super) segments: Vec<HotForkRingImageSegment>,
     pub(super) digest: [u8; 32],
 }
 
@@ -167,9 +169,9 @@ impl HotForkRingImage {
 
         let mut segments = Vec::new();
         segments
-            .try_reserve_exact(HOT_FORK_RING_IMAGE_SEGMENT_COUNT)
+            .try_reserve_exact(expected_ranges.len())
             .map_err(|_error| HotForkRingImageError::AllocationFailed {
-                len: HOT_FORK_RING_IMAGE_SEGMENT_COUNT,
+                len: expected_ranges.len(),
             })?;
         for expected in expected_ranges {
             let offset = reader.u64()?;
@@ -198,11 +200,6 @@ impl HotForkRingImage {
                 reason: "hot-fork-ring-image-trailing-bytes",
             });
         }
-        let segments: [HotForkRingImageSegment; HOT_FORK_RING_IMAGE_SEGMENT_COUNT] = segments
-            .try_into()
-            .map_err(|_segments| HotForkRingImageError::InvalidCanonicalImage {
-                reason: "hot-fork-ring-image-segment-count",
-            })?;
         let image = Self {
             abi_version,
             region_size,
@@ -227,6 +224,11 @@ impl HotForkRingImage {
             self.fault_payload_arena_bytes,
         )?;
         let expected = ring_image_ranges(layout)?;
+        if self.segments.len() != expected.len() {
+            return Err(HotForkRingImageError::InvalidCanonicalImage {
+                reason: "hot-fork-ring-image-segment-count",
+            });
+        }
         for (segment, (offset, length)) in self.segments.iter().zip(expected) {
             let actual_length = u64::try_from(segment.bytes.len())
                 .map_err(|_error| HotForkRingImageError::LengthOverflow)?;
@@ -300,27 +302,53 @@ pub enum HotForkRingImageError {
 
 pub(super) fn ring_image_ranges(
     layout: RegionLayout,
-) -> Result<[(u64, u64); HOT_FORK_RING_IMAGE_SEGMENT_COUNT], HotForkRingImageError> {
-    let bounds = [
+) -> Result<Vec<(u64, u64)>, HotForkRingImageError> {
+    let count = usize::try_from(layout.vm_node_count)
+        .ok()
+        .and_then(|count| count.checked_add(3))
+        .ok_or(HotForkRingImageError::LengthOverflow)?;
+    let mut ranges = Vec::new();
+    ranges
+        .try_reserve_exact(count)
+        .map_err(|_error| HotForkRingImageError::AllocationFailed { len: count })?;
+
+    // Preserve the original three queue ranges, stopping before console
+    // capability/authorization storage. Console queues are sparse within each
+    // per-node segment; their physical permission tables are never copied.
+    for (start, end) in [
         (layout.ring_hdr_off, layout.coverage_ring_hdr_off),
         (layout.coverage_ring_hdr_off, layout.fingerprint_sample_off),
-        (layout.whitebox_marker_ring_hdr_off, layout.region_size),
-    ];
-    bounds
-        .map(|(start, end)| {
-            let length =
-                end.checked_sub(start)
-                    .ok_or(HotForkRingImageError::InvalidCanonicalImage {
-                        reason: "hot-fork-ring-image-range-order",
-                    })?;
-            Ok((start, length))
-        })
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?
-        .try_into()
-        .map_err(|_ranges| HotForkRingImageError::InvalidCanonicalImage {
-            reason: "hot-fork-ring-image-segment-count",
-        })
+        (
+            layout.whitebox_marker_ring_hdr_off,
+            layout.native_console_off,
+        ),
+    ] {
+        let length =
+            end.checked_sub(start)
+                .ok_or(HotForkRingImageError::InvalidCanonicalImage {
+                    reason: "hot-fork-ring-image-range-order",
+                })?;
+        ranges.push((start, length));
+    }
+
+    let region_len = usize::try_from(layout.region_size)
+        .map_err(|_error| HotForkRingImageError::LengthOverflow)?;
+    for index in 0..layout.vm_node_count {
+        let base = u64::from(index)
+            .checked_mul(layout.native_console_stride)
+            .and_then(|offset| layout.native_console_off.checked_add(offset))
+            .and_then(|base| usize::try_from(base).ok())
+            .ok_or(HotForkRingImageError::LengthOverflow)?;
+        let segment = crate::native_console::NativeConsoleSegmentLayout::new(base, region_len)
+            .map_err(|_error| HotForkRingImageError::InvalidCanonicalImage {
+                reason: "hot-fork-ring-image-console-layout",
+            })?;
+        ranges.push((
+            segment.ring_header as u64,
+            (segment.frontier - segment.ring_header) as u64,
+        ));
+    }
+    Ok(ranges)
 }
 
 pub(super) fn canonical_image_len(
@@ -367,7 +395,7 @@ fn image_layout(
 }
 
 pub(super) fn image_digest(image: &HotForkRingImage) -> Result<[u8; 32], HotForkRingImageError> {
-    let mut hasher = blake3::Hasher::new_derive_key("crucible.shmem.hot-fork-ring-image.v2");
+    let mut hasher = blake3::Hasher::new_derive_key("crucible.shmem.hot-fork-ring-image.v3");
     hasher.update(&HOT_FORK_RING_IMAGE_SCHEMA_VERSION.to_le_bytes());
     hasher.update(&image.abi_version.to_le_bytes());
     hasher.update(&image.region_size.to_le_bytes());
@@ -389,14 +417,13 @@ fn validate_image_ring_headers(
     image: &HotForkRingImage,
     layout: RegionLayout,
 ) -> Result<(), HotForkRingImageError> {
-    for (_name, count, base, capacity) in ring_image_header_segments(layout) {
-        for index in 0..count {
-            let header = base
-                .checked_add(
-                    u64::from(index)
-                        .checked_mul(crate::RING_HEADER_SIZE as u64)
-                        .ok_or(HotForkRingImageError::LengthOverflow)?,
-                )
+    let segments = ring_header_segments(layout)
+        .map_err(|source| HotForkRingImageError::RegionAccess { source })?;
+    for segment in segments {
+        for index in 0..segment.count {
+            let header = u64::from(index)
+                .checked_mul(segment.stride)
+                .and_then(|offset| segment.base.checked_add(offset))
                 .ok_or(HotForkRingImageError::LengthOverflow)?;
             let read = image_u64(image, header, RING_HEADER_READ_IDX_OFFSET)?;
             let consumer = image_u64(image, header, RING_HEADER_CONSUMER_STATE_OFFSET)?;
@@ -409,7 +436,7 @@ fn validate_image_ring_headers(
                     reason: "hot-fork-ring-image-open-or-active-header",
                 });
             }
-            if write.wrapping_sub(read) > u64::from(capacity) {
+            if write.wrapping_sub(read) > u64::from(segment.capacity) {
                 return Err(HotForkRingImageError::InvalidCanonicalImage {
                     reason: "hot-fork-ring-image-cursor-capacity",
                 });

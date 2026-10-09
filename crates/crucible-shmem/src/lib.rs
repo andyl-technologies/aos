@@ -205,8 +205,9 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// hot-fork admission, coverage reset, timer witnesses, and advance-stop
 /// publication. Version 30 binds selectable marker and reply coordinates to
 /// picosecond ticks; raw retirement remains in the versioned pending payload.
-/// The generated C view and golden vectors pin every offset.
-pub const ABI_VERSION: u32 = 30;
+/// Version 31 adds per-VM native-console storage and a paired host-control
+/// publication claim. The generated C view and golden vectors pin every offset.
+pub const ABI_VERSION: u32 = 31;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of simulation ticks in one QEMU virtual nanosecond.
 pub const TICKS_PER_NS: u64 = 1_000;
@@ -320,3 +321,6 @@ pub use ring_accelerator::*;
 pub use ring_coverage::*;
 pub use ring_guest_introspection::*;
 pub use ring_whitebox_marker::*;
+
+/// Native-console storage for the coordinated ABI-31 process boundary.
+pub mod native_console;

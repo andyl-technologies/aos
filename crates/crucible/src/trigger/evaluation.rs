@@ -485,6 +485,7 @@ pub(super) fn black_box_observation_icount_stamp(
     match payload {
         ObservableEventPayload::NetworkDelivered { .. } => black_box_boundary_icount(at),
         ObservableEventPayload::ConsoleOutput { node, .. }
+        | ObservableEventPayload::NativeConsoleByte { node, .. }
         | ObservableEventPayload::IoCompletion {
             kind:
                 IoEventKind::BlockRead
@@ -703,7 +704,7 @@ pub(super) fn console_stream_matches(
     let mut stream = Vec::new();
     let mut current_start = None;
     for event in events {
-        let ObservableEventPayload::ConsoleOutput { node, bytes } = event.payload() else {
+        let Some((node, bytes)) = event.console_bytes() else {
             continue;
         };
         if node != expected_node {
@@ -890,6 +891,7 @@ where
         ObservableEventPayload::GuestAssertionMarker { .. } => false,
         ObservableEventPayload::NetworkDelivered { .. }
         | ObservableEventPayload::ConsoleOutput { .. }
+        | ObservableEventPayload::NativeConsoleByte { .. }
         | ObservableEventPayload::CoverageBlock { .. }
         | ObservableEventPayload::CoverageMarker { .. }
         | ObservableEventPayload::MemorySample { .. }

@@ -20,9 +20,115 @@ pub struct QemuCompletedQuantumBoundary {
     discovery: NodeSlotSnapshot,
     request_generation: u32,
     snapshot: NodeSlotSnapshot,
+    console_output_sequence: Option<u64>,
 }
 
 impl QemuCompletedQuantumBoundary {
+    /// Returns the final byte sequence of an accepted discovered UART operation.
+    ///
+    /// The reason becomes visible only after complete origin custody and ring
+    /// consumption. It does not authorize a new grant or replace byte origins.
+    #[must_use]
+    pub const fn console_output_sequence(self) -> Option<u64> {
+        self.console_output_sequence
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_console_output(
+        mut self,
+        discovery: crate::native_console_owner::ConsoleStoppedOperation,
+    ) -> Self {
+        // The sole caller has joined this opaque discovery to the accepted
+        // frontier before consumption; no caller-supplied bool can mint it.
+        self.console_output_sequence = Some(discovery.node_sequence());
+        self
+    }
+
+    /// Joins console storage to this runtime's original accepted publication.
+    ///
+    /// The caller retains the original issuance fence and takes one coherent
+    /// slot view on each side of the frontier copy. Neither frontier shape nor
+    /// a later odd ACK can substitute for this exact completed cache.
+    pub(crate) fn validate_console_frontier(
+        self,
+        backing: SetupRegionBackingIdentity,
+        slot: u32,
+        frontier: crucible_protocol::native_console::NativeConsoleFrontier,
+        paired: crucible_protocol::native_console::NativeConsoleClamp,
+        live: NodeSlotSnapshot,
+    ) -> Result<(), crucible_protocol::native_console::NativeConsoleError> {
+        use crucible_protocol::native_console::NativeConsoleError;
+
+        let request = paired.request;
+        let advance = paired.advance;
+        let command_frontier = paired.fault_frontier;
+        let ceiling = paired.ceiling;
+        if self.backing != backing
+            || self.vm_slot != slot
+            || self.request_generation != request
+            || self.snapshot.advance_publication_sequence != advance
+            || self.snapshot.control_boundary_fault_command_frontier != command_frontier
+            || self.snapshot.current_icount != ceiling
+            || live.publish_gen & 1 != 0
+            || live.device_io_active != 0
+            || live.control_boundary_ack != request.wrapping_add(1)
+            || live.control_boundary_capture_request != 0
+            || live.control_boundary_fault_command_frontier != command_frontier
+            || live.advance_publication_sequence != advance
+            || live.current_icount != self.snapshot.current_icount
+            || live.logical_time_raw_icount != self.snapshot.logical_time_raw_icount
+            || live.max_advance_icount != ceiling
+            || frontier.request != request
+            || frontier.accepted_advance != advance
+            || frontier.logical_ps != self.snapshot.current_icount
+            || frontier.raw_prefix != self.snapshot.logical_time_raw_icount
+        {
+            return Err(NativeConsoleError::Binding);
+        }
+        Ok(())
+    }
+
+    /// Joins a current observation pair without replacing its old accepted frontier.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a foreign backing or slot, a different pair or capture, pending
+    /// device work, or a live publication without the original exact ACK and clock.
+    pub(crate) fn validate_console_observation(
+        self,
+        backing: SetupRegionBackingIdentity,
+        slot: u32,
+        paired: crucible_protocol::native_console::NativeConsoleClamp,
+        live: NodeSlotSnapshot,
+    ) -> Result<(), crucible_protocol::native_console::NativeConsoleError> {
+        use crucible_protocol::native_console::{NativeConsoleControlKind, NativeConsoleError};
+
+        if paired.kind != NativeConsoleControlKind::Observation
+            || paired.last_issued.is_some()
+            || paired.capture != 0
+            || paired.stop != crucible_shmem::ADVANCE_STOP_CONDITION_CEILING
+            || self.backing != backing
+            || self.vm_slot != slot
+            || self.request_generation != paired.request
+            || self.snapshot.advance_publication_sequence != paired.advance
+            || self.snapshot.control_boundary_fault_command_frontier != paired.fault_frontier
+            || self.snapshot.current_icount != paired.ceiling
+            || live.publish_gen & 1 != 0
+            || live.device_io_active != 0
+            || live.control_boundary_ack != paired.request.wrapping_add(1)
+            || live.control_boundary_capture_request != 0
+            || live.control_boundary_fault_command_frontier != paired.fault_frontier
+            || live.advance_publication_sequence != paired.advance
+            || live.advance_stop_condition != paired.stop
+            || live.current_icount != self.snapshot.current_icount
+            || live.logical_time_raw_icount != self.snapshot.logical_time_raw_icount
+            || live.max_advance_icount != paired.ceiling
+        {
+            return Err(NativeConsoleError::Binding);
+        }
+        Ok(())
+    }
+
     pub(crate) fn accepted(
         backing: SetupRegionBackingIdentity,
         vm_slot: u32,
@@ -46,6 +152,7 @@ impl QemuCompletedQuantumBoundary {
             discovery,
             request_generation,
             snapshot,
+            console_output_sequence: None,
         })
     }
 

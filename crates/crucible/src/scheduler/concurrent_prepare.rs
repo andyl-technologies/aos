@@ -665,7 +665,7 @@ impl SingleScheduler {
         mut candidate: AdvanceCandidate,
         dispatch_contract: crate::BackendDispatchContract,
     ) -> Result<AdvanceCandidate, SchedulerError> {
-        if dispatch_contract != crate::BackendDispatchContract::ControlV3 {
+        if dispatch_contract != crate::BackendDispatchContract::BoundedControl {
             return Ok(candidate);
         }
         let consumer = &self.nodes[candidate.index];

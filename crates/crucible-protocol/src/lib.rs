@@ -2849,3 +2849,6 @@ fn read_u64_be(bytes: &[u8], offset: usize) -> u64 {
     out.copy_from_slice(&bytes[offset..offset + 8]);
     u64::from_be_bytes(out)
 }
+
+/// Native-console codecs for the ABI-31/control-4/setup-3 process boundary.
+pub mod native_console;

@@ -46,6 +46,40 @@ impl ObservableEvent {
         }
     }
 
+    /// Builds one native byte at an explicitly projected evaluation coordinate.
+    ///
+    /// The origin keeps its original emission time. This coordinate is supplied
+    /// by the original scheduler admission owner, never derived from a socket
+    /// read or an implicit backend poll floor. Construction validates shape,
+    /// not native operation custody or deterministic evaluation projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::NativeConsoleOriginError`] for a malformed origin.
+    pub fn native_console_byte(
+        evaluation_at: VirtualTime,
+        node: NodeId,
+        origin: crate::NativeConsoleByteOrigin,
+    ) -> Result<Self, crate::NativeConsoleOriginError> {
+        origin.validate()?;
+        Ok(Self {
+            at: evaluation_at,
+            payload: ObservableEventPayload::NativeConsoleByte { node, origin },
+        })
+    }
+
+    /// Returns the byte view used by console conditions without erasing origin.
+    #[must_use]
+    pub fn console_bytes(&self) -> Option<(&NodeId, &[u8])> {
+        match &self.payload {
+            ObservableEventPayload::ConsoleOutput { node, bytes } => Some((node, bytes)),
+            ObservableEventPayload::NativeConsoleByte { node, origin } => {
+                Some((node, std::slice::from_ref(&origin.byte)))
+            }
+            _ => None,
+        }
+    }
+
     /// Builds a TCG-exec basic-block coverage observation.
     #[must_use]
     pub fn coverage_block(
@@ -260,7 +294,10 @@ impl ObservableEvent {
         }
     }
 
-    /// Returns the deterministic virtual-time coordinate of the observation.
+    /// Returns the condition-evaluation coordinate of the observation.
+    ///
+    /// A native console byte retains its distinct original emission coordinate
+    /// in the logical origin; this value is its explicit scheduler placement.
     #[must_use]
     pub fn at(&self) -> VirtualTime {
         self.at
@@ -270,6 +307,7 @@ impl ObservableEvent {
     pub(crate) fn backend_node(&self) -> Option<&NodeId> {
         match &self.payload {
             ObservableEventPayload::ConsoleOutput { node, .. }
+            | ObservableEventPayload::NativeConsoleByte { node, .. }
             | ObservableEventPayload::CoverageBlock { node, .. }
             | ObservableEventPayload::CoverageMarker { node, .. }
             | ObservableEventPayload::MemorySample { node, .. }
@@ -421,6 +459,17 @@ pub enum ObservableEventPayload {
         /// Captured console bytes.
         bytes: Vec<u8>,
     },
+    /// One authenticated native architectural byte became evaluable.
+    ///
+    /// Its complete logical origin is distinct from the event's explicitly
+    /// projected condition-evaluation coordinate. Physical transport and
+    /// accepted clamp identities are not canonical payload fields.
+    NativeConsoleByte {
+        /// Stable logical node owning the admitted stream.
+        node: NodeId,
+        /// Original logical byte origin, including its unchanged raw prefix.
+        origin: crate::NativeConsoleByteOrigin,
+    },
     /// A TCG-exec basic-block coverage observation became visible.
     CoverageBlock {
         /// Exact guest instruction count at which the block executed.
@@ -547,7 +596,9 @@ impl ObservableEventPayload {
     pub fn black_box_observation_kind(&self) -> Option<BlackBoxObservationKind> {
         match self {
             Self::NetworkDelivered { .. } => Some(BlackBoxObservationKind::NetworkTraffic),
-            Self::ConsoleOutput { .. } => Some(BlackBoxObservationKind::ConsoleSerialOutput),
+            Self::ConsoleOutput { .. } | Self::NativeConsoleByte { .. } => {
+                Some(BlackBoxObservationKind::ConsoleSerialOutput)
+            }
             Self::CoverageBlock { .. } => Some(BlackBoxObservationKind::BasicBlockCoverage),
             Self::MemorySample { .. } => Some(BlackBoxObservationKind::ArchitecturalStateSample),
             Self::IoCompletion {

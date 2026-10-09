@@ -17,6 +17,8 @@ mod host_concurrent;
 mod host_run_validation;
 mod input_boundary;
 mod io_inventory;
+#[cfg(test)]
+mod native_console_tests;
 mod preselection;
 mod settlement;
 use crate::scheduler::device_group_selection::DeviceGroupSelectionController;
@@ -166,6 +168,7 @@ fn observation_kind(payload: &ObservableEventPayload) -> &'static str {
     match payload {
         ObservableEventPayload::NetworkDelivered { .. } => "network-delivered",
         ObservableEventPayload::ConsoleOutput { .. } => "console-output",
+        ObservableEventPayload::NativeConsoleByte { .. } => "native-console-byte",
         ObservableEventPayload::CoverageBlock { .. } => "coverage-block",
         ObservableEventPayload::CoverageMarker { .. } => "coverage-marker",
         ObservableEventPayload::AssertionProximity { .. } => "assertion-proximity",
@@ -190,6 +193,16 @@ fn normalize_backend_observations(
     events
         .into_iter()
         .map(|event| {
+            // Native origins and evaluation placement were joined explicitly by
+            // the acceptance adapter. Neither counter rebasing nor the generic
+            // poll floor may rewrite that placement. Activation still requires
+            // genuine operation-stop and deterministic projection proof.
+            if matches!(
+                event.payload(),
+                ObservableEventPayload::NativeConsoleByte { .. }
+            ) {
+                return Ok(event);
+            }
             let Some(node) = event.backend_node() else {
                 return Ok(event.normalize_backend_poll_boundary(poll_boundary));
             };

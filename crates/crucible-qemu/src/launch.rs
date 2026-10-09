@@ -17,6 +17,7 @@ mod error;
 mod fingerprint_projection;
 mod helpers;
 mod modes;
+mod native_console;
 mod plugin_config;
 #[cfg(test)]
 mod profile_tests;
@@ -77,8 +78,6 @@ pub use whitebox_setup::{
 
 /// Stable QEMU chardev identifier for output-only guest console capture.
 pub const QEMU_CONSOLE_CHARDEV_ID: &str = "crucible-console";
-/// Stable run-directory Unix socket carrying output-only guest console bytes.
-pub const QEMU_CONSOLE_SOCKET_FILE_NAME: &str = "crucible-console.sock";
 /// Run-directory file containing the RR control-boundary trace when enabled.
 pub const QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME: &str = "crucible-rr-control-boundary.trace";
 pub(crate) const QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION: &str =
@@ -390,6 +389,7 @@ pub struct QemuLaunchCommand {
     qmp: Option<QemuQmpChannelConfig>,
     plugin_coverage: QemuLaunchPluginSwitch,
     plugin_fault_node_hash: [u8; 32],
+    plugin_process_generation: u64,
     fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
     resource_requirements: QemuLaunchResourceRequirements,
     plugin_setup_plan: crucible_protocol::plugin_setup_plan::PluginSetupPlan,
@@ -554,6 +554,17 @@ impl QemuLaunchCommand {
         self.plugin_fault_node_hash
     }
 
+    /// Returns the process incarnation encoded in this validated launch.
+    #[must_use]
+    pub(crate) const fn plugin_process_generation(&self) -> u64 {
+        self.plugin_process_generation
+    }
+
+    /// Returns the exact encoded composite plan retained by command construction.
+    pub(crate) const fn plugin_setup_plan_digest(&self) -> [u8; 32] {
+        self.plugin_setup_plan_digest
+    }
+
     /// Returns the exact fault manifest bound to this launch identity.
     #[must_use]
     pub const fn fault_capability_requirement(&self) -> &crate::QemuFaultCapabilityRequirement {
@@ -714,10 +725,10 @@ impl QemuLaunchCommandBuilder {
         self
     }
 
-    /// Returns a builder that captures guest serial output in the node run directory.
+    /// Returns a builder that captures guest serial output through native origins.
     ///
-    /// The character device is an output sink only from Crucible's perspective:
-    /// no host-to-guest write operation is exposed by the runtime.
+    /// The fixed native backend accepts no host input. Its closed UART plan and
+    /// bounded admission policy are part of the sealed setup descriptor.
     #[must_use]
     pub const fn with_console_capture(mut self) -> Self {
         self.console_capture = true;
@@ -893,9 +904,7 @@ impl QemuLaunchCommandBuilder {
             )?;
             args.extend([
                 "-chardev".to_owned(),
-                format!(
-                    "socket,id={QEMU_CONSOLE_CHARDEV_ID},path={QEMU_CONSOLE_SOCKET_FILE_NAME},server=on,wait=off"
-                ),
+                native_console::NATIVE_CONSOLE_CHARDEV_ARGUMENT.to_owned(),
             ]);
         }
         args.extend(self.vm.qemu_args());
@@ -968,7 +977,15 @@ impl QemuLaunchCommandBuilder {
         validate_pre_spawn_qemu_launch_args(&args)
             .map_err(|source| QemuLaunchCommandError::PreSpawnValidation { source })?;
 
-        let plugin_setup_plan = self.plugin.plugin_setup_plan();
+        let mut plugin_setup_plan = self.plugin.plugin_setup_plan();
+        if self.console_capture {
+            let console = native_console::closed_launch_plan(
+                executable_architecture,
+                self.profile.smp_vcpus,
+                self.plugin.slot(),
+            )?;
+            plugin_setup_plan = plugin_setup_plan.with_native_console(console);
+        }
         let plugin_setup_plan_bytes = plugin_setup_plan
             .encode()
             .map_err(|_source| QemuLaunchCommandError::InvalidPluginSetupPlan)?;
@@ -983,6 +1000,7 @@ impl QemuLaunchCommandBuilder {
             qmp: self.qmp,
             plugin_coverage: self.plugin.coverage(),
             plugin_fault_node_hash: self.plugin.fault_node_hash(),
+            plugin_process_generation: self.plugin.process_generation(),
             fault_capability_requirement,
             resource_requirements,
             plugin_setup_plan,

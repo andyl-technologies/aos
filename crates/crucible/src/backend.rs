@@ -23,15 +23,17 @@ pub use io_inventory::{
 pub enum BackendDispatchContract {
     /// Requires independently retained native Source admission and inventory.
     PhysicalSource,
-    /// Executes exact scheduler ceilings through control protocol version 3.
+    /// Executes exact scheduler ceilings through the bounded control transport.
     ///
+    /// This local contract does not select a wire version or grant PhysicalSource
+    /// admission. The concrete adapter still validates its negotiated versions.
     /// The installed backend retains and services its real queues. Scheduler
     /// admissions bind actor planning only and do not grant native Source
     /// authority. Each completed RUN ends at its published bounded ceiling or
     /// an authenticated earlier physical stop. Incoming producer lookahead
     /// bounds completed ceilings strictly before possible delivery; windows
     /// without a positive representable safe tick are refused.
-    ControlV3,
+    BoundedControl,
 }
 
 /// A VM backend boundary declared by the engine.
@@ -591,10 +593,25 @@ pub enum BackendPhysicalStop {
     Idle,
     /// A fresh network output ended the RUN before further guest execution.
     NetworkOutput,
+    /// A complete native UART operation ended RUN at its accounted stop.
+    ///
+    /// Byte observations retain their earlier architectural emission origins.
+    ConsoleOutput {
+        /// Cumulative final byte sequence of the consumed complete operation.
+        sequence: u64,
+    },
     /// A guest selectable request remains paused until an explicit host reply.
     GuestSelectable,
     /// A campaign marker retains the guest at its exact physical boundary.
     CampaignMarker,
+}
+
+impl BackendPhysicalStop {
+    /// Returns whether an owned output batch ended the physical RUN.
+    #[must_use]
+    pub const fn is_output(self) -> bool {
+        matches!(self, Self::NetworkOutput | Self::ConsoleOutput { .. })
+    }
 }
 
 /// Observation returned by [`SimulationBackend::step_to`].

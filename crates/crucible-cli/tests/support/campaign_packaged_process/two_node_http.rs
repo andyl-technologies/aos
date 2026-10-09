@@ -22,6 +22,13 @@ const HTTP_APPLICATION_WATCHDOG: Duration = Duration::from_secs(180);
 const HTTP_MARKER: &str = "http.request-response";
 const HTTP_MARKER_INSTANCE: &str = "instance-1";
 
+/// Selects printk verbosity without changing guest protocol or HTTP assertions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KernelConsole {
+    Verbose,
+    Quiet,
+}
+
 /// Selects the real guest service without changing the exchange contract.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HttpServer {
@@ -110,15 +117,29 @@ fn public_two_node_envoy_direct_response_is_authenticated() -> Result<(), Box<dy
 
 #[test]
 #[ignore = "requires packaged QEMU and isolated cgroup-v2/project-quota roots"]
+fn public_two_node_envoy_direct_quiet_kernel_response_is_authenticated()
+-> Result<(), Box<dyn Error>> {
+    run_http_exchange_with_console(HttpServer::EnvoyDirect, KernelConsole::Quiet)
+}
+
+#[test]
+#[ignore = "requires packaged QEMU and isolated cgroup-v2/project-quota roots"]
 fn public_three_node_envoy_proxy_response_is_authenticated() -> Result<(), Box<dyn Error>> {
     run_http_exchange(HttpServer::EnvoyProxy)
 }
 
 fn run_http_exchange(server: HttpServer) -> Result<(), Box<dyn Error>> {
+    run_http_exchange_with_console(server, KernelConsole::Verbose)
+}
+
+fn run_http_exchange_with_console(
+    server: HttpServer,
+    console: KernelConsole,
+) -> Result<(), Box<dyn Error>> {
     let prefix = server.evidence_prefix();
     let fixture = FlightFixture::new()?;
     println!("{prefix}_stage=compile");
-    let compiled = compile_http_scenario(&fixture, server)?;
+    let compiled = compile_http_scenario(&fixture, server, console)?;
     println!("{prefix}_stage=import");
     guest_choice::create_guest_choice_campaign_with_timeout(
         &fixture,
@@ -204,6 +225,7 @@ fn run_http_exchange(server: HttpServer) -> Result<(), Box<dyn Error>> {
 fn compile_http_scenario(
     fixture: &FlightFixture,
     server: HttpServer,
+    console: KernelConsole,
 ) -> Result<Value, Box<dyn Error>> {
     let kernel = ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(&fs::read(
         required_path("CRUCIBLE_KERNEL")?,
@@ -211,7 +233,7 @@ fn compile_http_scenario(
     let root_image = ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(&fs::read(
         required_path("CRUCIBLE_ROOT_IMAGE")?,
     )?));
-    let scenario = http_scenario(server, kernel, root_image)?;
+    let scenario = http_scenario_with_console(server, kernel, root_image, console)?;
     let source = fixture
         ._temporary
         .path()
@@ -231,12 +253,33 @@ fn http_scenario(
     kernel: ContentAddressedBlobRef,
     root_image: ContentAddressedBlobRef,
 ) -> Result<ScenarioDefForm, Box<dyn Error>> {
+    http_scenario_with_console(server, kernel, root_image, KernelConsole::Verbose)
+}
+
+fn http_scenario_with_console(
+    server: HttpServer,
+    kernel: ContentAddressedBlobRef,
+    root_image: ContentAddressedBlobRef,
+    console: KernelConsole,
+) -> Result<ScenarioDefForm, Box<dyn Error>> {
+    // printk uses a strict threshold: level 4 retains KERN_ERR and more severe
+    // messages. Guest setup receipts and application output are not printk.
+    let console_args = match console {
+        KernelConsole::Verbose => "console=ttyS0",
+        KernelConsole::Quiet => "console=ttyS0 quiet loglevel=4",
+    };
     let client = WorldNode {
-        id: NodeId { name: "curl".into() },
+        id: NodeId {
+            name: "curl".into(),
+        },
         arch: VmArchitecture::X86_64,
         memory_mib: 256,
-        cmdline: "console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init nokaslr norandmaps random.trust_cpu=off crucible.workload=httpget".into(),
-        ready_point: ReadyPoint::FixedIcount { icount: Icount { retired: 0 } },
+        cmdline: format!(
+            "{console_args} net.ifnames=0 root=/dev/vda rw init=/init nokaslr norandmaps random.trust_cpu=off crucible.workload=httpget"
+        ),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 0 },
+        },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: 1,
         kernel: Some(kernel),
@@ -534,6 +577,40 @@ fn http_profiles_roundtrip_with_only_two_world_routed_guests() -> Result<(), Box
         HttpServer::Nginx.response(),
         HttpServer::EnvoyDirect.response()
     );
+    Ok(())
+}
+
+#[test]
+fn quiet_envoy_profile_changes_only_kernel_console_arguments() -> Result<(), Box<dyn Error>> {
+    let asset = ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(b"asset"));
+    let verbose = http_scenario(HttpServer::EnvoyDirect, asset, asset)?;
+    let quiet =
+        http_scenario_with_console(HttpServer::EnvoyDirect, asset, asset, KernelConsole::Quiet)?;
+    let quiet_toml = quiet.to_canonical_toml()?;
+    assert_eq!(quiet_toml.matches(" quiet loglevel=4").count(), 2);
+    assert_eq!(ScenarioDefForm::from_canonical_toml(&quiet_toml)?, quiet);
+    assert_eq!(quiet.selectables(), verbose.selectables());
+    let mut nodes = quiet.world().vm_nodes().to_vec();
+    assert_eq!(quiet.world().nodes().len(), 2);
+    assert_eq!(nodes.len(), 2);
+    assert!(nodes[0].cmdline.ends_with("crucible.workload=httpget"));
+    assert!(nodes[1].cmdline.ends_with("crucible.workload=httpd"));
+
+    // Command lines participate in canonical identities. Rebuild through the
+    // checked constructors instead of comparing TOML with stale embedded IDs.
+    for node in &mut nodes {
+        node.cmdline = node.cmdline.replace(" quiet loglevel=4", "");
+    }
+    let normalized_world = World::from_nodes_and_links(nodes, quiet.world().links().to_vec())?;
+    let normalized = ScenarioDefForm::from_components_with_measurements_and_app_random_draw_cap(
+        &normalized_world,
+        quiet.plan(),
+        quiet.properties(),
+        quiet.measurements(),
+        quiet.seed(),
+        quiet.app_random_draw_cap(),
+    )?;
+    assert_eq!(normalized, verbose);
     Ok(())
 }
 

@@ -29,7 +29,6 @@ pub enum LinuxQemuHotForkReconciliationError {
 enum LinuxSourceReleasePhase {
     CloseChildChannel,
     PluginEndpoints,
-    ChildConsole,
     ChildQmp,
     Diagnostics,
     PrivateRing,
@@ -57,10 +56,6 @@ impl LinuxQemuHotForkSourceLoan<'_> {
 
     fn release_plugin_endpoints(&mut self) -> Result<(), QemuNodeChannelError> {
         self.0.release_plugin_endpoints()
-    }
-
-    fn release_child_console(&mut self) -> Result<(), QemuNodeChannelError> {
-        self.0.release_child_console()
     }
 
     fn release_child_qmp(&mut self) -> Result<(), QemuNodeChannelError> {

@@ -62,9 +62,9 @@ impl Context {
         };
         let pid = node.process_id();
 
-        // Copy staged inner-QEMU bytes first. This neither drains observations
+        // Copy accepted native bytes first. This neither drains observations
         // nor reads a socket, and contention returns unavailable immediately.
-        let console = console_row(&label, pid, node.console_diagnostic_tail().as_deref());
+        let console = console_row(&label, pid, node.accepted_native_console_tail().as_deref());
         let _ = output.write_all(console.as_bytes());
 
         let accepted = node.completed_quantum_boundary().map(|boundary| {

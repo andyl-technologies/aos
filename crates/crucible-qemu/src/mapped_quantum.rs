@@ -52,12 +52,16 @@ mod marker_drain;
 #[path = "mapped_quantum/preemption.rs"]
 mod preemption;
 #[path = "mapped_quantum/restore.rs"]
-mod restore;
+pub(crate) mod restore;
 pub use error::QemuMappedQuantumShmemHotPathError;
 pub(crate) use fingerprint::black_box_execution_fingerprint;
 
 /// An owned, mapped shared-memory hot-path channel for one QEMU node.
 pub struct QemuMappedQuantumShmemHotPath {
+    #[cfg(target_os = "linux")]
+    console_custody: Option<crate::native_console_owner::ConsoleLaunchCustody>,
+    #[cfg(target_os = "linux")]
+    console_parent: Option<crate::native_console_owner::ConsoleLaunchCustody>,
     config: QemuQuantumShmemConfig,
     region: MappedSetupRegion,
     next_router_inbound_sequence: u64,
@@ -80,6 +84,22 @@ pub struct QemuMappedQuantumShmemHotPath {
 }
 
 impl QemuMappedQuantumShmemHotPath {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retain_console_launch(
+        &mut self,
+        setup: &crate::QemuHostPluginSetup,
+    ) -> Result<(), QemuMappedQuantumShmemHotPathError> {
+        if let Some(custody) = &setup.console_custody {
+            custody
+                .validate_mapping(&self.region, self.config.vm_slot)
+                .map_err(|_| QemuMappedQuantumShmemHotPathError::Quantum {
+                    source: QemuQuantumError::ConsoleCustodyUnavailable,
+                })?;
+        }
+        self.console_custody = setup.console_custody.clone();
+        Ok(())
+    }
+
     /// Returns this VM's most recent plugin-published fingerprint sample.
     ///
     /// Reads the per-node fingerprint sample slot after the host requests a
@@ -216,6 +236,10 @@ impl QemuMappedQuantumShmemHotPath {
             .into_iter()
             .collect();
         Ok(Self {
+            #[cfg(target_os = "linux")]
+            console_custody: None,
+            #[cfg(target_os = "linux")]
+            console_parent: None,
             config,
             region,
             next_router_inbound_sequence: 0,
@@ -257,7 +281,14 @@ impl QemuMappedQuantumShmemHotPath {
             let _view = mapped_view(&mut region, &self.config)?;
         }
 
+        // Retain only the original sealed launch owner here. The child cannot
+        // publish an AUTH until actual resource commit/capability admission and
+        // its stopped Restore handoff replace this parent physical custody.
         Ok(Self {
+            #[cfg(target_os = "linux")]
+            console_custody: None,
+            #[cfg(target_os = "linux")]
+            console_parent: self.console_custody.clone(),
             config: self.config.clone(),
             region,
             next_router_inbound_sequence: self.next_router_inbound_sequence,
@@ -302,7 +333,13 @@ impl QemuMappedQuantumShmemHotPath {
             send_authorizer.as_ref(),
         )
         .map_err(QemuNodeChannelError::from)
-        .and_then(|mut hot_path| run(&mut hot_path))
+        .and_then(|mut hot_path| {
+            #[cfg(target_os = "linux")]
+            {
+                hot_path.console_custody = self.console_custody.clone();
+            }
+            run(&mut hot_path)
+        })
         .map_err(|mut source| {
             // Preserve the typed cause while identifying this mapped acquisition.
             if source.is_publication_unavailable() {
@@ -542,6 +579,69 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
         // the child is a stopped executor whose first published counter is
         // ahead of its fresh slot.
         self.arm_vmstate_restore_ceiling(inherited_icount)
+    }
+
+    fn prepare_hot_fork_console_restore(
+        &mut self,
+        admission: &crate::QemuHotForkConsoleAdmission,
+    ) -> Result<crate::QemuHotForkConsoleRestore, QemuNodeChannelError> {
+        use std::os::fd::AsFd;
+
+        let parent = self.console_parent.as_ref().ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "prepare child console restore",
+                "original console setup custody is absent",
+            )
+        })?;
+        if self.console_custody.is_some() || &self.config.node != admission.saved.node() {
+            return Err(QemuNodeChannelError::new(
+                "prepare child console restore",
+                "child custody or logical node differs",
+            ));
+        }
+        let backing = self.region.backing_identity();
+        let region =
+            crucible_shmem::mmap_setup_region(admission.descriptor.as_fd(), backing.length())
+                .map_err(|source| {
+                    QemuNodeChannelError::new("map child console custody", source.to_string())
+                })?;
+        if region.backing_identity() != backing {
+            return Err(QemuNodeChannelError::new(
+                "prepare child console restore",
+                "private descriptor differs from the actual child channel",
+            ));
+        }
+        crate::QemuHotForkConsoleRestore::prepare(parent, region, admission)
+    }
+
+    fn attach_hot_fork_console_restore(
+        &mut self,
+        restored: &crate::QemuHotForkConsoleRestore,
+    ) -> Result<(), QemuNodeChannelError> {
+        let custody = restored.accepted_custody()?;
+        custody
+            .validate_mapping(&self.region, self.config.vm_slot)
+            .map_err(|source| {
+                QemuNodeChannelError::new("attach child console custody", source.to_string())
+            })?;
+        if let Some(installed) = &self.console_custody {
+            if !installed.same_launch(&custody) {
+                return Err(QemuNodeChannelError::new(
+                    "attach child console custody",
+                    "different child custody was already attached",
+                ));
+            }
+            return Ok(());
+        }
+        if self.console_parent.is_none() {
+            return Err(QemuNodeChannelError::new(
+                "attach child console custody",
+                "original parent setup custody is absent",
+            ));
+        }
+        self.console_custody = Some(custody);
+        self.console_parent = None;
+        Ok(())
     }
 
     fn checkpoint_network_transport(

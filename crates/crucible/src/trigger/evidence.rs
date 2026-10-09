@@ -236,6 +236,7 @@ pub(super) fn observable_event_violation_site(
             ..
         } => Some((Some(*retired_icount), Some(node.clone()))),
         ObservableEventPayload::ConsoleOutput { node, .. }
+        | ObservableEventPayload::NativeConsoleByte { node, .. }
         | ObservableEventPayload::IoCompletion { node, .. }
         | ObservableEventPayload::NodeState { node, .. } => Some((None, Some(node.clone()))),
         ObservableEventPayload::NetworkDelivered { .. }
@@ -431,13 +432,9 @@ pub(super) fn condition_observed_evidence(
             .iter()
             .find(|event| {
                 event.at() == prefix.point().at()
-                    && matches!(
-                        event.payload(),
-                        ObservableEventPayload::ConsoleOutput {
-                            node: observed_node,
-                            ..
-                        } if observed_node == node
-                    )
+                    && event
+                        .console_bytes()
+                        .is_some_and(|(observed, _)| observed == node)
             })
             .map(|event| {
                 observable_event_evidence(
@@ -646,6 +643,7 @@ pub(super) fn guest_marker_event_matches_policies(
         | ObservableEventPayload::GuestMeasurement { .. }
         | ObservableEventPayload::NetworkDelivered { .. }
         | ObservableEventPayload::ConsoleOutput { .. }
+        | ObservableEventPayload::NativeConsoleByte { .. }
         | ObservableEventPayload::CoverageBlock { .. }
         | ObservableEventPayload::CoverageMarker { .. }
         | ObservableEventPayload::MemorySample { .. }
@@ -1130,6 +1128,26 @@ pub(super) fn external_observable_event_payload_material(
             lines.push(String::from("observable=console-output"));
             lines.push(external_node_id_material("observable.node", node));
             lines.push(format!("observable.bytes={}", external_hex_bytes(bytes)));
+        }
+        ObservableEventPayload::NativeConsoleByte { node, origin } => {
+            lines.push(String::from("observable=native-console-byte"));
+            lines.push(external_node_id_material("observable.node", node));
+            lines.push(format!(
+                "observable.device={}",
+                external_hex_bytes(&origin.device.bytes)
+            ));
+            for (key, value) in [
+                ("stream", u64::from(origin.stream)),
+                ("logical_generation", origin.logical_generation),
+                ("node_sequence", origin.node_sequence),
+                ("stream_sequence", origin.stream_sequence),
+                ("emitted_ps", origin.emitted_ps),
+                ("raw_prefix", origin.raw_prefix),
+                ("vcpu", u64::from(origin.vcpu)),
+                ("byte", u64::from(origin.byte)),
+            ] {
+                lines.push(format!("observable.{key}={value}"));
+            }
         }
         ObservableEventPayload::CoverageBlock {
             execution_icount,

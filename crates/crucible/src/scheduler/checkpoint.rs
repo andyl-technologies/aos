@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 
-const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v6\0";
+const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v7\0";
 /// Maximum canonical byte length of one complete single-scheduler continuation.
 pub const MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES: usize =
     MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES + MAGIC.len();
@@ -62,6 +62,7 @@ struct RuntimeNodeWire {
     id: SchedulerNodeId,
     counter: u64,
     time_mapping: NodeTimeMapping,
+    ready_point_mapping: NodeTimeMapping,
     last_checkpoint: Option<SchedulerNodeCheckpoint>,
     activity: SchedulerNodeActivity,
     network_lookahead: NetworkLookahead,
@@ -199,6 +200,7 @@ impl From<&RuntimeSchedulerNode> for RuntimeNodeWire {
             id: node.id.clone(),
             counter: node.counter.ticks,
             time_mapping: node.time_mapping,
+            ready_point_mapping: node.ready_point_mapping,
             last_checkpoint: node.last_checkpoint.clone(),
             activity: node.activity,
             network_lookahead: node.network_lookahead,
@@ -645,7 +647,7 @@ fn restore_nodes(
         return Err(SingleSchedulerCheckpointError::Node);
     }
     for (node, restored) in scheduler.nodes.iter_mut().zip(checkpoint) {
-        if node.id != restored.id {
+        if node.id != restored.id || node.ready_point_mapping != restored.ready_point_mapping {
             return Err(SingleSchedulerCheckpointError::Node);
         }
         node.counter = NodeCounter {

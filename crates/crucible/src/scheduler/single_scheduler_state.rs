@@ -120,6 +120,7 @@ impl SingleScheduler {
                 })?;
             runtime.time_mapping.anchor_counter = counter;
             runtime.time_mapping.anchor_time = SimInstant::EPOCH;
+            runtime.ready_point_mapping = runtime.time_mapping;
         }
         nodes.sort_by(|left, right| left.id.cmp(&right.id));
         let mut run_subdivision_policies = scenario.run_subdivision_policies;
@@ -485,6 +486,37 @@ impl SingleScheduler {
     /// Returns [`SchedulerError::TimeConversion`] when a completion delivery
     /// icount cannot be converted under the timeline shift.
     pub fn refresh_device_horizons(&mut self) -> Result<(), SchedulerError> {
+        let earliest_by_target = self.complete_device_horizons()?;
+
+        self.device_horizons.clear();
+        for (target, instant) in earliest_by_target {
+            self.device_horizons.insert(target.clone(), instant);
+            // Re-activate a parked requester so the next sequential completion is
+            // observed ([SCHED-29]); a `Runnable` node is left as-is.
+            if let Some(runtime) = self
+                .nodes
+                .iter_mut()
+                .find(|runtime| runtime.id.node == target)
+                && runtime.activity == SchedulerNodeActivity::Idle
+            {
+                runtime.activity = SchedulerNodeActivity::Runnable;
+            }
+        }
+        Ok(())
+    }
+
+    /// Enumerates the complete device/link horizons without copying scheduler history.
+    ///
+    /// Device conversions finish in the original order before links are merged.
+    /// Callers retain responsibility for cache installation and node activation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original missing-target or time-conversion error before any
+    /// caller installs horizons or reactivates nodes.
+    pub(super) fn complete_device_horizons(
+        &self,
+    ) -> Result<Vec<(NodeId, SimInstant)>, SchedulerError> {
         // Recompute the earliest undelivered completion per target; the in-flight
         // queues are the single source of truth. Ordered by `NodeId` (BTreeMap
         // iteration) so the refresh is deterministic.
@@ -526,21 +558,7 @@ impl SingleScheduler {
         }
         earliest_by_target.sort_by(|left, right| left.0.cmp(&right.0));
 
-        self.device_horizons.clear();
-        for (target, instant) in earliest_by_target {
-            self.device_horizons.insert(target.clone(), instant);
-            // Re-activate a parked requester so the next sequential completion is
-            // observed ([SCHED-29]); a `Runnable` node is left as-is.
-            if let Some(runtime) = self
-                .nodes
-                .iter_mut()
-                .find(|runtime| runtime.id.node == target)
-                && runtime.activity == SchedulerNodeActivity::Idle
-            {
-                runtime.activity = SchedulerNodeActivity::Runnable;
-            }
-        }
-        Ok(())
+        Ok(earliest_by_target)
     }
 
     /// Drops every resolved network frame on one exact directed World route.

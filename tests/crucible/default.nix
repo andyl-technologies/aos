@@ -888,6 +888,7 @@ in rec {
     singleGuestDeliveryDiagnosticsVm = import ./phase4-single-guest-delivery-diagnostics-vm.nix {inherit pkgs lib;};
     twoNodeHttpVm = import ./phase4-two-node-http-vm.nix {inherit pkgs lib;};
     packagedCampaignEnvoyDirectVm = import ./phase4-packaged-campaign-envoy-direct-vm.nix {inherit pkgs lib;};
+    packagedCampaignEnvoyDirectQuietVm = import ./phase4-packaged-campaign-envoy-direct-quiet-vm.nix {inherit pkgs lib;};
     packagedCampaignEnvoyProxyVm = import ./phase4-packaged-campaign-envoy-proxy-vm.nix {inherit pkgs lib;};
     packagedCampaignChoiceVm = import ./phase4-packaged-campaign-choice-vm.nix {inherit pkgs lib;};
     packagedCampaignLifecycleVm = import ./phase4-packaged-campaign-lifecycle-vm.nix {inherit pkgs lib;};

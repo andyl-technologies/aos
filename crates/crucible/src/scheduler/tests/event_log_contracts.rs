@@ -101,7 +101,7 @@ fn event_log_segment_binary_round_trips_to_same_bytes() {
 }
 
 #[test]
-fn event_log_v4_rejects_v3_and_missing_or_wrong_backend_input_stamp() {
+fn event_log_v6_rejects_prior_versions_and_missing_or_wrong_backend_input_stamp() {
     let consumer = SchedulerNodeId {
         node: NodeId {
             name: String::from("consumer"),
@@ -149,12 +149,15 @@ fn event_log_v4_rejects_v3_and_missing_or_wrong_backend_input_stamp() {
     let material =
         scheduler_event_log_segment_material(scheduler_event_log_empty_prefix(), &[entry]);
 
-    let mut old_version = material.encode();
-    old_version[16..20].copy_from_slice(&3_u32.to_le_bytes());
-    assert!(matches!(
-        decode_scheduler_event_log_segment(&old_version),
-        Err(SchedulerEventLogSegmentDecodeError::UnsupportedVersion { version: 3 })
-    ));
+    for version in [3_u32, 5] {
+        let mut old_version = material.encode();
+        old_version[16..20].copy_from_slice(&version.to_le_bytes());
+        assert!(matches!(
+            decode_scheduler_event_log_segment(&old_version),
+            Err(SchedulerEventLogSegmentDecodeError::UnsupportedVersion { version: rejected })
+                if rejected == version
+        ));
+    }
 
     for stamp_node in [None, Some(String::from("wrong-node"))] {
         let mut malformed = material.clone();

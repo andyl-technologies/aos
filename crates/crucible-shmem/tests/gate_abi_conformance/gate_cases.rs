@@ -257,6 +257,26 @@ fn assert_structure_aware_fuzz_corpus(fixture: &Fixture, decoded: &GoldenState) 
     assert_eq!(decoded.region.node_count, 32);
     assert_eq!(decoded.region.queue_capacity, GOLDEN_QUEUE_CAPACITY);
     assert_eq!(decoded.region.ring_count, 12);
+    assert_eq!(decoded.region.region_size, 43_076_480);
+
+    let layout = RegionLayout::for_config(RegionConfig::new(
+        GOLDEN_VM_NODE_COUNT,
+        GOLDEN_QUEUE_CAPACITY,
+    ))
+    .unwrap_or_else(|error| panic!("golden region geometry is invalid: {error}"));
+    assert_eq!(layout.native_console_off, 42_026_112);
+    assert_eq!(layout.native_console_stride, 525_184);
+    assert_eq!(layout.region_size, decoded.region.region_size);
+    for vm_slot in 0..GOLDEN_VM_NODE_COUNT {
+        let base = layout.native_console_off + u64::from(vm_slot) * layout.native_console_stride;
+        let segment = crucible_shmem::native_console::NativeConsoleSegmentLayout::new(
+            base as usize,
+            layout.region_size as usize,
+        )
+        .unwrap_or_else(|error| panic!("golden console segment is invalid: {error}"));
+        assert_eq!(segment.end as u64, base + layout.native_console_stride);
+    }
+
     assert_eq!(decoded.node.status, STATUS_IDLE);
     assert_eq!(decoded.node.kind, 0);
     assert_eq!(decoded.node.logical_time_raw_icount, 96);

@@ -207,15 +207,6 @@ fn initial_busy_publication_does_not_wake_and_recovers_original_checkpoint_choic
     mapped.producer.node_slot(0)?.publish_idle(0, 0)?;
     let before = mapped.producer.node_slot(0)?.snapshot();
     mapped.set_producer_sequence(before.publish_gen + 1)?;
-    let (mut console_writer, console_output) = UnixStream::pair()?;
-    let console_spool = crate::console_observation::QemuConsoleObservationSpool::new();
-    mapped.runtime = mapped.runtime.with_console_observation(
-        crate::console_observation::QemuConsoleObservationReader::new(
-            console_output,
-            console_spool.clone(),
-        )?,
-    )?;
-    console_writer.write_all(b"original console publication")?;
     mapped
         .runtime
         .set_advance_completion_poll_slice(Some(Duration::from_millis(5)))?;
@@ -238,7 +229,6 @@ fn initial_busy_publication_does_not_wake_and_recovers_original_checkpoint_choic
         std::io::ErrorKind::WouldBlock
     );
     assert!(mapped.runtime.initial_advance_wake_pending);
-    assert_eq!(console_spool.try_diagnostic_tail(), Some(Vec::new()));
     assert_eq!(mapped.runtime.checkpoint_idle_coordinate, None);
     assert_eq!(mapped.runtime.completed_boundary, None);
 
@@ -250,10 +240,6 @@ fn initial_busy_publication_does_not_wake_and_recovers_original_checkpoint_choic
         QemuAsyncWaitOutcome::Pending
     );
     assert!(!mapped.runtime.initial_advance_wake_pending);
-    assert_eq!(
-        console_spool.try_diagnostic_tail(),
-        Some(b"original console publication".to_vec())
-    );
     assert_eq!(mapped.notifications.read(&mut notification)?, 8);
     assert_eq!(u64::from_ne_bytes(notification), 1);
     assert_eq!(

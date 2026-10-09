@@ -155,6 +155,10 @@ pub(super) fn quantum_outcome(
 /// An error produced by the QEMU quantum shared-memory hot path.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuQuantumError {
+    /// Unactivated console custody could not retain this original transaction.
+    #[cfg(target_os = "linux")]
+    #[error("QEMU console publication custody is unavailable")]
+    ConsoleCustodyUnavailable,
     /// Either shared publication is busy or changed during one coherent read.
     #[error("QEMU node publication is temporarily unavailable")]
     PublicationUnavailable,

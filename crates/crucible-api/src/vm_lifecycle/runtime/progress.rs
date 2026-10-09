@@ -52,17 +52,26 @@ impl GuestBootProgress {
                 return true;
             }
             ObservableEventPayload::ConsoleOutput { bytes, .. } => {
-                self.console_bytes = self.console_bytes.saturating_add(bytes.len());
-                let retained = bytes.len().min(CONSOLE_TAIL_BYTES);
-                let keep_prior = CONSOLE_TAIL_BYTES.saturating_sub(retained);
-                let remove_prior = self.console_tail.len().saturating_sub(keep_prior);
-                self.console_tail.drain(..remove_prior);
-                self.console_tail
-                    .extend_from_slice(&bytes[bytes.len() - retained..]);
+                self.retain_console_bytes(bytes);
+            }
+            ObservableEventPayload::NativeConsoleByte { origin, .. } => {
+                // The scheduler's completed outcome owns admission. Retaining
+                // its byte does not decode markers or create setup evidence.
+                self.retain_console_bytes(std::slice::from_ref(&origin.byte));
             }
             _ => {}
         }
         false
+    }
+
+    fn retain_console_bytes(&mut self, bytes: &[u8]) {
+        self.console_bytes = self.console_bytes.saturating_add(bytes.len());
+        let retained = bytes.len().min(CONSOLE_TAIL_BYTES);
+        let keep_prior = CONSOLE_TAIL_BYTES.saturating_sub(retained);
+        let remove_prior = self.console_tail.len().saturating_sub(keep_prior);
+        self.console_tail.drain(..remove_prior);
+        self.console_tail
+            .extend_from_slice(&bytes[bytes.len() - retained..]);
     }
 }
 
@@ -123,6 +132,7 @@ impl RuntimeProgress {
             };
             let node = match event {
                 ObservableEventPayload::ConsoleOutput { node, .. }
+                | ObservableEventPayload::NativeConsoleByte { node, .. }
                 | ObservableEventPayload::GuestMarker { node, .. } => node,
                 _ => continue,
             };
@@ -270,6 +280,137 @@ mod tests {
         );
         assert_eq!(progress.setup_receipts, 0);
         assert_eq!(progress.stage, None);
+    }
+
+    #[test]
+    fn native_console_progress_keeps_origin_bytes_and_never_attests_setup()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let scenario = crucible::crash_restart_scenario()?.scenario;
+        let node = scenario
+            .world()
+            .vm_nodes()
+            .iter()
+            .next()
+            .ok_or("missing fixture node")?
+            .id
+            .clone();
+        let scheduler = crucible::SingleScheduler::new(
+            crucible::SchedulerLivenessScenario::from_runnable_world(
+                "native-console-progress",
+                4,
+                crucible::SimInstant { ticks: 100 },
+                0,
+                scenario.world(),
+            )
+            .with_scenario_def(scenario.scenario_def()),
+        )?;
+        let checkpoint_before = scheduler.checkpoint()?.canonical_bytes()?;
+        let mut entries = Vec::new();
+        // These source-owned constructors model already admitted outcome
+        // entries. They do not stand in for a physical native receipt test.
+        for (sequence, byte) in b"lifecycle.setup_complete\n"
+            .iter()
+            .copied()
+            .cycle()
+            .take(CONSOLE_TAIL_BYTES + 17)
+            .enumerate()
+        {
+            let event = crucible::ObservableEvent::native_console_byte(
+                crucible::VirtualTime { ticks: 100 },
+                node.clone(),
+                crucible::NativeConsoleByteOrigin {
+                    device: crucible::ContentHash { bytes: [9; 32] },
+                    stream: 7,
+                    logical_generation: 3,
+                    node_sequence: sequence as u64 + 1,
+                    stream_sequence: sequence as u64 + 1,
+                    emitted_ps: 50,
+                    raw_prefix: 1,
+                    vcpu: 0,
+                    byte,
+                },
+            )?;
+            entries.push(
+                crucible::test_support::condition_observation_entry_for_test(
+                    sequence as u64,
+                    &event,
+                ),
+            );
+        }
+        let foreign_event = crucible::ObservableEvent::native_console_byte(
+            crucible::VirtualTime { ticks: 100 },
+            crucible::NodeId {
+                name: "unknown-node".into(),
+            },
+            crucible::NativeConsoleByteOrigin {
+                device: crucible::ContentHash { bytes: [9; 32] },
+                stream: 7,
+                logical_generation: 3,
+                node_sequence: 1,
+                stream_sequence: 1,
+                emitted_ps: 50,
+                raw_prefix: 1,
+                vcpu: 0,
+                byte: b'?',
+            },
+        )?;
+        let foreign = crucible::test_support::condition_observation_entry_for_test(
+            entries.len() as u64,
+            &foreign_event,
+        );
+        entries.push(foreign);
+        let append = crucible::EventLog::new().append_entries(entries)?;
+        let outcome = QuantumOutcome {
+            configuration: crucible::Configuration::genesis(scenario.scenario_def()),
+            frontier: crucible::VirtualTime { ticks: 100 },
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: Vec::new(),
+            discovered_choices: Vec::new(),
+            event_log_entries: append.entries,
+            event_log_segment_bytes: append.segment_bytes,
+            event_log_segment_text: append.segment_text,
+            event_log_segment_hash: append.segment_hash,
+            event_log_offset: append.offset,
+            scheduler_quiescence: None,
+        };
+        let event_bytes_before = serde_json::to_vec(&outcome.event_log_entries)?;
+        let mut enabled = RuntimeProgress::with_report_limit(256);
+        assert!(!enabled.observe(&outcome, scenario.world().vm_nodes()));
+        assert_eq!(enabled.guest_boot.len(), 1);
+        let boot = enabled
+            .guest_boot
+            .get_mut(&node.name)
+            .ok_or("missing node")?;
+        assert_eq!(boot.console_bytes, CONSOLE_TAIL_BYTES + 17);
+        assert_eq!(boot.console_tail.len(), CONSOLE_TAIL_BYTES);
+        assert_eq!(boot.stage, None);
+        assert_eq!(boot.setup_receipts, 0);
+        boot.console_bytes = usize::MAX;
+        let SchedulerEventLogPayload::Observable(event) = outcome.event_log_entries[0].payload()
+        else {
+            return Err("missing native observation".into());
+        };
+        assert!(!boot.observe(event));
+        assert_eq!(boot.console_bytes, usize::MAX);
+
+        let mut disabled = RuntimeProgress::default();
+        assert!(!disabled.observe(&outcome, scenario.world().vm_nodes()));
+        assert!(disabled.guest_boot.is_empty());
+        assert!(disabled.next_report.is_none());
+        assert_eq!(
+            serde_json::to_vec(&outcome.event_log_entries)?,
+            event_bytes_before
+        );
+        let after = crucible::EventLog::new().append_entries(outcome.event_log_entries.clone())?;
+        assert_eq!(after.segment_bytes, outcome.event_log_segment_bytes);
+        assert_eq!(after.segment_hash, outcome.event_log_segment_hash);
+        assert_eq!(after.offset, outcome.event_log_offset);
+        assert_eq!(
+            scheduler.checkpoint()?.canonical_bytes()?,
+            checkpoint_before
+        );
+        Ok(())
     }
 
     #[test]

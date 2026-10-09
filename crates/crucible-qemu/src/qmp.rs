@@ -29,16 +29,17 @@ use crucible_shmem::SetupRegionBackingIdentity;
 use crate::QemuNodeChannelError;
 
 mod command;
+#[cfg(test)]
+mod console_sentinel;
 mod fingerprint_projection;
 mod hot_fork;
 mod hot_fork_coordinator;
 mod hot_fork_stages;
 mod ram_delta;
 use command::{
-    HotForkAsyncWorkerBarrierAction, HotForkBlockBarrierAction, HotForkChildConsoleAction,
-    HotForkChildDiagnosticAction, HotForkChildQmpAction, HotForkPluginBarrierAction,
-    HotForkPluginEndpointAction, HotForkPrivateRingAction, HotForkRcuBarrierAction,
-    HotForkTemplateAction, QmpCommand,
+    HotForkAsyncWorkerBarrierAction, HotForkBlockBarrierAction, HotForkChildDiagnosticAction,
+    HotForkChildQmpAction, HotForkPluginBarrierAction, HotForkPluginEndpointAction,
+    HotForkPrivateRingAction, HotForkRcuBarrierAction, HotForkTemplateAction, QmpCommand,
 };
 use fingerprint_projection::{
     QMP_QUERY_FINGERPRINT_PROJECTION_MANIFEST_COMMAND, parse_fingerprint_projection_manifest,
@@ -58,21 +59,19 @@ pub(crate) use hot_fork::source_mapping_extent;
 use hot_fork::{
     HotForkChildFilesAction, HotForkChildProcessAction, HotForkChildProcessContractAction,
     parse_hot_fork_async_worker_barrier_state, parse_hot_fork_block_barrier_state,
-    parse_hot_fork_block_seal_state, parse_hot_fork_child_console_state,
-    parse_hot_fork_child_diagnostic_state, parse_hot_fork_child_files_state,
-    parse_hot_fork_child_process_contract_state, parse_hot_fork_child_process_state,
-    parse_hot_fork_child_qmp_state, parse_hot_fork_child_runtime_state,
-    parse_hot_fork_plugin_barrier_state, parse_hot_fork_plugin_endpoint_state,
-    parse_hot_fork_plugin_resource_inventory, parse_hot_fork_private_ring_state,
-    parse_hot_fork_rcu_barrier_state, parse_hot_fork_source_graph, parse_hot_fork_state,
-    parse_hot_fork_template_state,
+    parse_hot_fork_block_seal_state, parse_hot_fork_child_diagnostic_state,
+    parse_hot_fork_child_files_state, parse_hot_fork_child_process_contract_state,
+    parse_hot_fork_child_process_state, parse_hot_fork_child_qmp_state,
+    parse_hot_fork_child_runtime_state, parse_hot_fork_plugin_barrier_state,
+    parse_hot_fork_plugin_endpoint_state, parse_hot_fork_plugin_resource_inventory,
+    parse_hot_fork_private_ring_state, parse_hot_fork_rcu_barrier_state,
+    parse_hot_fork_source_graph, parse_hot_fork_state, parse_hot_fork_template_state,
 };
 pub use hot_fork::{
     QMP_HOT_FORK_ASYNC_WORKER_BARRIER_COMMAND, QMP_HOT_FORK_ASYNC_WORKER_BARRIER_SCHEMA_VERSION,
     QMP_HOT_FORK_BLOCK_BARRIER_COMMAND, QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION,
     QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_SEAL_COMMAND,
     QMP_HOT_FORK_BLOCK_SEAL_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION,
-    QMP_HOT_FORK_CHILD_CONSOLE_COMMAND, QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND, QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD, QMP_HOT_FORK_CHILD_FILES_COMMAND,
     QMP_HOT_FORK_CHILD_FILES_MAX, QMP_HOT_FORK_CHILD_FILES_SCHEMA_VERSION,
@@ -92,8 +91,8 @@ pub use hot_fork::{
     QmpHotForkBlockBarrierState, QmpHotForkBlockSealCandidate, QmpHotForkBlockSealRequest,
     QmpHotForkBlockSealState, QmpHotForkBlockSealedRoot, QmpHotForkBlockSnapshotBinding,
     QmpHotForkBlockSnapshotBindingError, QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof,
-    QmpHotForkChildConsoleState, QmpHotForkChildDiagnosticState, QmpHotForkChildFile,
-    QmpHotForkChildFileRoot, QmpHotForkChildFilesState, QmpHotForkChildProcessContractIdentity,
+    QmpHotForkChildDiagnosticState, QmpHotForkChildFile, QmpHotForkChildFileRoot,
+    QmpHotForkChildFilesState, QmpHotForkChildProcessContractIdentity,
     QmpHotForkChildProcessContractNames, QmpHotForkChildProcessContractState,
     QmpHotForkChildProcessPhase, QmpHotForkChildProcessState, QmpHotForkChildQmpState,
     QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState, QmpHotForkOutcome,
@@ -1355,6 +1354,9 @@ pub enum QmpCommandKind {
     Stop,
     /// Resume guest execution.
     Cont,
+    /// Fixed-address memory observation used only by the real console fixture.
+    #[cfg(test)]
+    ConsoleSentinel,
     /// Authenticated terminal lifecycle completion.
     CompleteTerminalLifecycle,
     /// QEMU-owned sealed plugin-resource inventory query.
@@ -1395,8 +1397,6 @@ pub enum QmpCommandKind {
     HotForkChildDiagnostics,
     /// QEMU-owned branch-private child QMP retention operation.
     HotForkChildQmp,
-    /// QEMU-owned branch-private child console retention operation.
-    HotForkChildConsole,
     /// Graceful QEMU quit.
     Quit,
     /// Import one Unix descriptor under a stable name.
@@ -1426,6 +1426,8 @@ impl QmpCommandKind {
             Self::QueryStatus => QMP_QUERY_STATUS_COMMAND,
             Self::Stop => QMP_STOP_COMMAND,
             Self::Cont => QMP_CONT_COMMAND,
+            #[cfg(test)]
+            Self::ConsoleSentinel => "pmemsave",
             Self::CompleteTerminalLifecycle => QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND,
             Self::QueryHotForkPluginResourceInventory => {
                 QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND
@@ -1448,7 +1450,6 @@ impl QmpCommandKind {
             Self::HotForkPluginEndpoints => QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
             Self::HotForkChildDiagnostics => QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
             Self::HotForkChildQmp => QMP_HOT_FORK_CHILD_QMP_COMMAND,
-            Self::HotForkChildConsole => QMP_HOT_FORK_CHILD_CONSOLE_COMMAND,
             Self::Quit => QMP_QUIT_COMMAND_NAME,
             Self::GetFd => QMP_GETFD_COMMAND,
             Self::CloseFd => QMP_CLOSEFD_COMMAND,
@@ -1575,7 +1576,7 @@ mod tests {
     }
 
     fn hot_fork_request() -> QmpHotForkRequest {
-        QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
+        QmpHotForkRequest::for_test(1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
     }
 
     #[test]
@@ -1626,7 +1627,7 @@ mod tests {
     fn hot_fork_response(qmp_generation: u64) -> String {
         json!({
             "return": {
-                "schema-version": 3,
+                "schema-version": 4,
                 "outcome": "forked",
                 "parent-status": 0,
                 "child-pid": 321,
@@ -1634,7 +1635,6 @@ mod tests {
                 "private-ring-generation": 2,
                 "diagnostic-generation": 3,
                 "qmp-generation": qmp_generation,
-                "console-generation": 5,
                 "monitor-generation": 6,
                 "plugin-endpoint-generation": 7,
                 "plugin-barrier-generation": 8,
@@ -1726,7 +1726,6 @@ mod tests {
                     "private-ring-generation": 2,
                     "diagnostic-generation": 3,
                     "qmp-generation": 4,
-                    "console-generation": 5,
                     "monitor-generation": 6,
                     "plugin-endpoint-generation": 7,
                     "plugin-barrier-generation": 8,

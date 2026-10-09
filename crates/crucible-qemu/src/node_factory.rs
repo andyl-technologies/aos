@@ -51,6 +51,14 @@ impl<S> QemuQmpMachineControlChannel for QemuQmpExactSnapshotControlChannel<S>
 where
     S: QmpTimeoutStream,
 {
+    #[cfg(test)]
+    fn read_console_sentinel_for_test(
+        &mut self,
+        output: &crate::spawn::ConsoleSentinelOutput,
+    ) -> Result<u8, QemuNodeChannelError> {
+        self.vmstate.read_console_sentinel_for_test(output)
+    }
+
     fn is_paused_for_hot_fork_template(&mut self) -> Result<bool, QemuNodeChannelError> {
         self.vmstate.is_paused_for_hot_fork_template()
     }
@@ -406,39 +414,6 @@ where
     ) -> Result<crate::QmpHotForkChildQmpState, QemuNodeChannelError> {
         self.vmstate.query_hot_fork_child_qmp()
     }
-
-    #[cfg(target_os = "linux")]
-    fn install_hot_fork_child_console(
-        &mut self,
-        name: &crate::QmpDescriptorName,
-        descriptor: std::os::fd::BorrowedFd<'_>,
-        socket_cookie: u64,
-        template_generation: u64,
-    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError> {
-        self.vmstate.install_hot_fork_child_console(
-            name,
-            descriptor,
-            socket_cookie,
-            template_generation,
-        )
-    }
-
-    #[cfg(target_os = "linux")]
-    fn close_hot_fork_child_console(
-        &mut self,
-        name: &crate::QmpDescriptorName,
-        socket_cookie: u64,
-    ) -> Result<(), QemuNodeChannelError> {
-        self.vmstate
-            .close_hot_fork_child_console(name, socket_cookie)
-    }
-
-    fn query_hot_fork_child_console(
-        &mut self,
-    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError> {
-        self.vmstate.query_hot_fork_child_console()
-    }
-
     fn complete_terminal_lifecycle_exit(
         &mut self,
         action: crucible::ContentHash,
@@ -602,6 +577,10 @@ impl QemuNodeFactoryError {
 }
 
 struct PreparedQemuNodeSetup {
+    #[cfg(target_os = "linux")]
+    console_custody: Option<crate::native_console_owner::ConsoleLaunchCustody>,
+    #[cfg(target_os = "linux")]
+    console_node: crucible::NodeId,
     plugin_control: QemuHostPluginSetup,
     shmem_hot_path: QemuMappedQuantumShmemHotPath,
     next_fault_command_sequence: u64,
@@ -889,7 +868,7 @@ where
             .shmem_hot_path
             .arm_vmstate_restore_ceiling(restore_ceiling)
             .map_err(|source| QemuNodeFactoryError::VmStateRestoreCeiling { source })?;
-        {
+        let restored = {
             if exact_checkpoint.request.layers().len() != exact_checkpoint.descriptors.ram.len() {
                 return Err(QemuNodeFactoryError::VmStateRestore {
                     source: QemuNodeChannelError::new(
@@ -928,27 +907,58 @@ where
                     ),
                 });
             }
-        }
+            restored
+        };
         host_io_runtime
             .restore_host_io_checkpoint(checkpoint.id, host_io_checkpoint)
-            .map_err(|source| QemuNodeFactoryError::HostIoCheckpointRestore { source })
+            .map_err(|source| QemuNodeFactoryError::HostIoCheckpointRestore { source })?;
+        Ok(restored)
     })();
-    if let Err(error) = restore_result {
-        // A post-load error may not return until the fresh child is killed and
-        // synchronously reaped; destructor cleanup has a bounded fallback and
-        // is deliberately insufficient for this realization transaction.
-        return Err(reap_failed_restore_child(child, error));
-    }
+    let loaded = match restore_result {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            // A post-load error must kill and synchronously reap the fresh
+            // child; destructor cleanup cannot close this transaction.
+            return Err(reap_failed_restore_child(child, error));
+        }
+    };
 
     let restored_calibration = node_continuation.logical_time_calibration();
     let restored_icount = restored_calibration.logical_icount;
-    let restore_boundary = prepared_setup
-        .shmem_hot_path
-        .arm_logical_time_restore_boundary(restored_icount)
-        .map_err(|source| QemuNodeFactoryError::LogicalTimeRestoreBoundary {
-            stage: "arm",
-            message: source.to_string(),
-        });
+    let restore_boundary = match (
+        &prepared_setup.console_custody,
+        &node_continuation.native_console_continuation,
+    ) {
+        (Some(_), Some(bytes)) => {
+            let saved = crate::native_console_owner::ConsoleOriginContinuation::decode(bytes)
+                .map_err(|source| QemuNodeFactoryError::NodeContinuationRestore {
+                    message: source.to_string(),
+                });
+            let saved = match saved {
+                Ok(saved) => saved,
+                Err(error) => return Err(reap_failed_restore_child(child, error)),
+            };
+            prepared_setup
+                .shmem_hot_path
+                .arm_console_logical_time_restore_boundary(
+                    restored_icount,
+                    &saved,
+                    loaded,
+                    exact_checkpoint.request.identity(),
+                )
+        }
+        (None, None) => prepared_setup
+            .shmem_hot_path
+            .arm_logical_time_restore_boundary(restored_icount),
+        _ => Err(QemuNodeChannelError::new(
+            "arm logical-time restore",
+            "console checkpoint and installed console setup differ",
+        )),
+    }
+    .map_err(|source| QemuNodeFactoryError::LogicalTimeRestoreBoundary {
+        stage: "arm",
+        message: source.to_string(),
+    });
     let restore_boundary = match restore_boundary {
         Ok(boundary) => boundary,
         Err(error) => return Err(reap_failed_restore_child(child, error)),
@@ -1015,6 +1025,19 @@ where
             },
         ));
     }
+    if prepared_setup.console_custody.is_some()
+        && let Err(source) = prepared_setup
+            .shmem_hot_path
+            .accept_console_logical_time_restore(restore_boundary, restored_calibration)
+    {
+        return Err(reap_failed_restore_child(
+            child,
+            QemuNodeFactoryError::LogicalTimeRestoreBoundary {
+                stage: "accept restored native console prefix",
+                message: source.to_string(),
+            },
+        ));
+    }
     if let Err(source) = prepared_setup
         .shmem_hot_path
         .commit_coverage_restore_generation(restore_boundary.logical_generation())
@@ -1073,6 +1096,8 @@ where
 
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| QemuNodeFactoryError::SetupRegionMap { source })?;
+    #[cfg(target_os = "linux")]
+    let console_node = shmem_config.node.clone();
     let shmem_hot_path = QemuMappedQuantumShmemHotPath::new_with_selectable_catalog_plan(
         shmem_config,
         region,
@@ -1081,7 +1106,18 @@ where
     )
     .map_err(|source| QemuNodeFactoryError::MappedHotPath { source })?;
 
+    #[cfg(target_os = "linux")]
+    let mut shmem_hot_path = shmem_hot_path;
+    #[cfg(target_os = "linux")]
+    shmem_hot_path
+        .retain_console_launch(&setup)
+        .map_err(|source| QemuNodeFactoryError::MappedHotPath { source })?;
+
     Ok(PreparedQemuNodeSetup {
+        #[cfg(target_os = "linux")]
+        console_custody: setup.console_custody.clone(),
+        #[cfg(target_os = "linux")]
+        console_node,
         plugin_control: setup,
         shmem_hot_path,
         next_fault_command_sequence,
@@ -1111,7 +1147,7 @@ where
         qmp_machine_control,
     );
 
-    QemuNode::new(
+    let node = QemuNode::new(
         child,
         channels,
         shutdown_policy,
@@ -1122,7 +1158,11 @@ where
     )
     .with_fault_capabilities(prepared_setup.fault_capabilities)
     .with_ready_markers(prepared_setup.ready_markers)
-    .with_exact_fault_manifests(prepared_setup.exact_fault_manifests)
+    .with_exact_fault_manifests(prepared_setup.exact_fault_manifests);
+    #[cfg(target_os = "linux")]
+    let node = node
+        .with_native_console_custody(prepared_setup.console_custody, prepared_setup.console_node);
+    node
 }
 
 mod validation;

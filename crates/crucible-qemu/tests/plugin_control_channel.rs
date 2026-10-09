@@ -17,12 +17,14 @@ use std::os::unix::net::UnixStream;
 
 #[cfg(unix)]
 use crucible_protocol::{
-    ControlLifecycleState, ControlLifecycleStream, HostHandshakeConfig, HostMsg, PluginMsg,
-    SETUP_ACK_STATUS_READY, SetupDescriptorFds, control_decode_host_msg, control_encode_plugin_msg,
-    read_control_frame,
+    CONTROL_PROTOCOL_VERSION, ControlLifecycleState, ControlLifecycleStream, HostHandshakeConfig,
+    HostMsg, PluginMsg, SETUP_ACK_STATUS_READY, SetupDescriptorFds, control_decode_host_msg,
+    control_encode_plugin_msg, read_control_frame,
 };
 #[cfg(unix)]
 use crucible_qemu::QemuPluginIpcControlChannel;
+#[cfg(unix)]
+use crucible_shmem::ABI_VERSION;
 
 #[cfg(unix)]
 #[test]
@@ -65,12 +67,12 @@ fn running_host_lifecycle_stream(
     let mut host = ControlLifecycleStream::connected_unix_stream(stream)?;
 
     peer.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
-        proto_version: 3,
-        abi_version: 25,
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: ABI_VERSION,
     }))?;
     host.host_accept_handshake(HostHandshakeConfig {
-        proto_version: 3,
-        abi_version: 25,
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: ABI_VERSION,
         slot_index: 0,
         node_count: 1,
     })?;

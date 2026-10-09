@@ -92,7 +92,17 @@ in
       done < crucible-shmem/src/lib.rs
       test -n "$shmem_abi_version"
 
+      # The native-console cutover is one exact process-protocol family.
+      test "$shmem_abi_version" -eq 31
+      test "$(cat crucible-protocol/src/control_protocol_version.in)" -eq 4
+      grep -Fxq 'pub const PLUGIN_SETUP_PLAN_VERSION: u32 = 3;' \
+        crucible-protocol/src/plugin_setup_plan.rs
+
+      native_console_header="${qemu-crucible}/include/crucible_native_console_draft.h"
+      cmp "$native_console_header" crucible-shmem/include/crucible_native_console_draft.h
+
       shmem_header="${qemu-crucible}/include/aos/crucible/crucible_shmem_abi.h"
+      cmp "$shmem_header" crucible-shmem/include/crucible_shmem_abi.h
       test -f "$shmem_header"
       grep -q "#define CRUCIBLE_SHMEM_ABI_VERSION ''${shmem_abi_version}u" \
         "$shmem_header"
@@ -100,6 +110,7 @@ in
       cat > "$TMPDIR/crucible-qemu-plugin-header-probe.c" <<'EOF'
       #include <stdint.h>
       #include <aos/crucible/crucible_shmem_abi.h>
+      #include <crucible_native_console_draft.h>
       #include <qemu-plugin.h>
 
       #ifndef QEMU_PLUGIN_VERSION
@@ -187,11 +198,15 @@ in
       qemu_plugin_header=${qemu-crucible}/include/qemu/qemu-plugin.h
       qemu_plugin_api_version=$qemu_plugin_api_version
       qemu_plugin_abi=qemu-plugin-api-v$qemu_plugin_api_version
+      control_protocol_version=4
+      plugin_setup_plan_version=3
       shmem_abi_version=$shmem_abi_version
       shmem_abi=crucible-shmem-abi-v$shmem_abi_version
       qemu_shmem_abi=${qemu-crucible.passthru.shmemAbi}
       shmem_generated_header=${qemu-crucible}/include/aos/crucible/crucible_shmem_abi.h
       shmem_generated_header_hash=${qemu-crucible.passthru.shmemHeaderHash}
+      native_console_generated_header=${qemu-crucible}/include/crucible_native_console_draft.h
+      native_console_generated_header_hash=${qemu-crucible.passthru.nativeConsoleHeaderHash}
       plugin_abi=crucible-shmem-abi-v$shmem_abi_version
       component=qemu-in-process-adapter
       component_license=GPL-2.0-only

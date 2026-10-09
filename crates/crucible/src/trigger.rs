@@ -47,6 +47,8 @@ mod event_graph;
 mod evidence;
 mod guest_assertion_declarations;
 mod guest_assertion_observation;
+#[cfg(test)]
+mod native_console_tests;
 mod observability;
 mod observation_time;
 

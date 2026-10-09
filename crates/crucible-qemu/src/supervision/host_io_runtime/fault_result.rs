@@ -154,7 +154,6 @@ impl QemuLiveHostIoRuntime {
                 timeout,
                 "await fault result publication fence",
             )?;
-            self.service_console_output()?;
             let Some(snapshot) = self.wait_node_snapshot(|| deadline.remaining())? else {
                 break;
             };

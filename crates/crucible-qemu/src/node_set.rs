@@ -40,6 +40,11 @@ use crate::{QemuLogicalTimeCalibration, QemuNode, QemuNodeError, QemuNodeIdleSta
 mod block_boundary;
 #[path = "node_set/collection.rs"]
 mod collection;
+#[cfg(test)]
+#[path = "node_set/console_sentinel.rs"]
+mod console_sentinel;
+#[cfg(test)]
+pub(crate) use console_sentinel::ConsoleSentinelProbe;
 #[path = "node_set/concurrent.rs"]
 mod concurrent;
 #[cfg(target_os = "linux")]
@@ -278,17 +283,6 @@ impl QemuNodeSetPreparedHotForkSource<'_> {
         self.source.release_hot_fork_plugin_endpoints()
     }
 
-    /// Releases the source-owned child-console stage.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::QemuNodeChannelError`] when source authentication or
-    /// the ordered console release fails.
-    pub fn release_child_console(&mut self) -> Result<(), crate::QemuNodeChannelError> {
-        self.validate_retained_transaction()?;
-        self.source.release_hot_fork_child_console()
-    }
-
     /// Releases the source-owned child QMP stage.
     ///
     /// # Errors
@@ -468,6 +462,8 @@ pub struct QemuNodeSet {
     parked_campaign_markers: BTreeMap<NodeId, QemuParkedCampaignMarker>,
     retained_observable_events: Vec<ObservableEvent>,
     last_host_parallelism: Option<QemuHostParallelismEvidence>,
+    #[cfg(test)]
+    console_sentinel_probe: Option<std::sync::Arc<console_sentinel::ConsoleSentinelProbe>>,
 }
 
 /// One QEMU VMStop bound to a campaign marker and its exact retired count.
@@ -612,108 +608,8 @@ fn campaign_marker_parked_at(
 }
 
 #[cfg(test)]
-mod campaign_marker_parking_tests {
-    use super::*;
-    use crucible::MarkerId;
-
-    #[test]
-    fn only_exact_campaign_marker_stop_is_retained() {
-        let node = NodeId {
-            name: "west".to_owned(),
-        };
-        let marker_at = Icount { retired: 41 };
-        let event = ObservableEvent::guest_marker(
-            marker_at,
-            node.clone(),
-            MarkerId::from_name("fault.transport.ready"),
-        );
-        let stopped_at = Icount { retired: 2_100 };
-        let calibration = QemuLogicalTimeCalibration {
-            logical_icount: 2_100,
-            raw_icount: 42,
-        };
-
-        assert_eq!(
-            campaign_marker_parked_at(&node, stopped_at, calibration, std::slice::from_ref(&event),),
-            Ok(Some(QemuParkedCampaignMarker {
-                marker: "fault.transport.ready".to_owned(),
-                marker_icount: marker_at,
-                physical_raw_icount: Icount { retired: 42 },
-                physical_icount: stopped_at,
-            }))
-        );
-        let projected_stop = Icount { retired: 2_158 };
-        let projected_calibration = QemuLogicalTimeCalibration {
-            logical_icount: 2_158,
-            raw_icount: 42,
-        };
-        assert_eq!(
-            campaign_marker_parked_at(
-                &node,
-                projected_stop,
-                projected_calibration,
-                std::slice::from_ref(&event),
-            ),
-            Ok(Some(QemuParkedCampaignMarker {
-                marker: "fault.transport.ready".to_owned(),
-                marker_icount: marker_at,
-                physical_raw_icount: Icount { retired: 42 },
-                physical_icount: projected_stop,
-            }))
-        );
-
-        let mismatched_calibration = QemuLogicalTimeCalibration {
-            logical_icount: 2_158,
-            raw_icount: 43,
-        };
-        let error = match campaign_marker_parked_at(
-            &node,
-            projected_stop,
-            mismatched_calibration,
-            std::slice::from_ref(&event),
-        ) {
-            Err(error) => error,
-            Ok(marker) => {
-                panic!("the stopped raw count must be exactly one beyond the marker: {marker:?}")
-            }
-        };
-        assert!(error.to_string().contains(
-            "CRUCIBLE-QEMU-CAMPAIGN-MARKER-BOUNDARY-V2 node=west marker=fault.transport.ready pre_raw=41 post_raw=42 observed_tick=2108 logical_offset_picoseconds=8 marker_event_raw=41 physical_stop_raw=43 physical_stop_tick=2158"
-        ));
-        let mismatched_logical_calibration = QemuLogicalTimeCalibration {
-            logical_icount: 2_159,
-            raw_icount: 42,
-        };
-        assert!(
-            campaign_marker_parked_at(
-                &node,
-                projected_stop,
-                mismatched_logical_calibration,
-                std::slice::from_ref(&event),
-            )
-            .is_err()
-        );
-        assert!(
-            campaign_marker_parked_at(
-                &node,
-                projected_stop,
-                projected_calibration,
-                &[event.clone(), event],
-            )
-            .is_err()
-        );
-
-        let unrelated = ObservableEvent::guest_marker(
-            marker_at,
-            node.clone(),
-            MarkerId::from_name("setup.complete"),
-        );
-        assert_eq!(
-            campaign_marker_parked_at(&node, stopped_at, calibration, &[unrelated]),
-            Ok(None)
-        );
-    }
-}
+#[path = "node_set/campaign_marker_parking_tests.rs"]
+mod campaign_marker_parking_tests;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct QemuFaultEventStagingBudget {
@@ -988,7 +884,6 @@ impl QemuNodeSet {
             });
         }
         let host_stages_present = backend.hot_fork_plugin_endpoint_stage().is_some()
-            || backend.hot_fork_child_console_stage().is_some()
             || backend.hot_fork_child_qmp_stage().is_some()
             || backend.hot_fork_child_diagnostic_stage().is_some()
             || backend.hot_fork_private_ring_stage().is_some();
@@ -1012,13 +907,6 @@ impl QemuNodeSet {
                 .release_hot_fork_plugin_endpoints()
                 .map_err(|error| BackendError::Rejected {
                     message: format!("release retained hot-fork plugin endpoints: {error}"),
-                })?;
-        }
-        if backend.hot_fork_child_console_stage().is_some() {
-            backend
-                .release_hot_fork_child_console()
-                .map_err(|error| BackendError::Rejected {
-                    message: format!("release retained hot-fork child console: {error}"),
                 })?;
         }
         if backend.hot_fork_child_qmp_stage().is_some() {
@@ -2031,11 +1919,11 @@ fn parked_selectable_step(
 
 impl SimulationBackend for QemuNodeSet {
     fn dispatch_contract(&self) -> crucible::BackendDispatchContract {
-        // This adapter implements the selected installed protocol, not the
+        // This adapter requires its exact protocol/ABI pairing, not the
         // unimplemented native Source admission contract.
-        const _: () = assert!(crucible_protocol::CONTROL_PROTOCOL_VERSION == 3);
-        const _: () = assert!(crucible_shmem::ABI_VERSION == 30);
-        crucible::BackendDispatchContract::ControlV3
+        const _: () = assert!(crucible_protocol::CONTROL_PROTOCOL_VERSION == 4);
+        const _: () = assert!(crucible_shmem::ABI_VERSION == 31);
+        crucible::BackendDispatchContract::BoundedControl
     }
 
     fn step_node_with_admission(
@@ -2174,9 +2062,7 @@ impl SimulationBackend for QemuNodeSet {
                     return Ok(observation);
                 }
             }
-            if observation.physical_stop == BackendPhysicalStop::NetworkOutput
-                || observation.reached == ceiling
-            {
+            if observation.physical_stop.is_output() || observation.reached == ceiling {
                 return Ok(observation);
             }
             if let crucible::AdvanceOutcome::Paused { .. } = observation.outcome
@@ -2569,7 +2455,7 @@ mod tests {
             ),
         };
         let replacement = crate::QmpHotForkTemplateState::one_prepared(
-            crate::QmpHotForkRequest::for_test(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2),
+            crate::QmpHotForkRequest::for_test(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2),
         );
 
         let error = validate_prepared_hot_fork_token(&token, &process, &replacement)
@@ -2603,8 +2489,7 @@ mod tests {
                 QemuLaunchResourceRequirements::from_vm_shape(128, 1, true),
             ),
         };
-        let request =
-            crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+        let request = crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
         let draining = crate::QmpHotForkTemplateState::one_draining_without_resources(request);
 
         assert!(validate_retained_hot_fork_token(&token, &process, &draining).is_ok());
@@ -2617,7 +2502,7 @@ mod tests {
         assert!(validate_retained_hot_fork_token(&token, &reused_process, &draining).is_err());
 
         let next_generation = crate::QmpHotForkTemplateState::one_draining_without_resources(
-            crate::QmpHotForkRequest::for_test(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2),
+            crate::QmpHotForkRequest::for_test(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2),
         );
         assert!(validate_retained_hot_fork_token(&token, &process, &next_generation).is_err());
 
@@ -2652,7 +2537,7 @@ mod tests {
             ),
         };
         let prepared = crate::QmpHotForkTemplateState::one_prepared(
-            crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1),
+            crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1),
         );
 
         let error = validate_prepared_hot_fork_token(&token, &replacement_process, &prepared)
@@ -2846,7 +2731,6 @@ mod tests {
             assert!(source.hot_fork_private_ring_stage().is_none());
             assert!(source.hot_fork_child_diagnostic_stage().is_none());
             assert!(source.hot_fork_child_qmp_stage().is_none());
-            assert!(source.hot_fork_child_console_stage().is_none());
             assert!(source.hot_fork_plugin_endpoint_stage().is_none());
         }
     }
@@ -2910,7 +2794,6 @@ mod tests {
             assert!(source.hot_fork_private_ring_stage().is_none());
             assert!(source.hot_fork_child_diagnostic_stage().is_none());
             assert!(source.hot_fork_child_qmp_stage().is_none());
-            assert!(source.hot_fork_child_console_stage().is_none());
             assert!(source.hot_fork_plugin_endpoint_stage().is_none());
         }
     }
@@ -2953,7 +2836,6 @@ mod tests {
         assert!(source.hot_fork_private_ring_stage().is_none());
         assert!(source.hot_fork_child_diagnostic_stage().is_none());
         assert!(source.hot_fork_child_qmp_stage().is_none());
-        assert!(source.hot_fork_child_console_stage().is_none());
         assert!(source.hot_fork_plugin_endpoint_stage().is_none());
     }
 
@@ -2994,7 +2876,6 @@ mod tests {
         assert!(source.hot_fork_private_ring_stage().is_some());
         assert!(source.hot_fork_child_diagnostic_stage().is_some());
         assert!(source.hot_fork_child_qmp_stage().is_some());
-        assert!(source.hot_fork_child_console_stage().is_some());
         assert!(source.hot_fork_plugin_endpoint_stage().is_some());
     }
 }

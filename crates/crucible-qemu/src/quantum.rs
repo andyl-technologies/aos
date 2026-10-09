@@ -356,6 +356,8 @@ pub struct QemuQuantumReport {
 pub struct QemuQuantumShmemHotPath<'a> {
     config: QemuQuantumShmemConfig,
     view: QemuQuantumShmemView<'a>,
+    #[cfg(target_os = "linux")]
+    pub(crate) console_custody: Option<crate::native_console_owner::ConsoleLaunchCustody>,
     operation_log: Vec<QemuQuantumOperation>,
     next_router_inbound_sequence: u64,
     inbound_delivery_ledger: QemuInboundDeliveryLedger<'a>,
@@ -378,6 +380,8 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         Ok(Self {
             config,
             view,
+            #[cfg(target_os = "linux")]
+            console_custody: None,
             operation_log: Vec::new(),
             next_router_inbound_sequence: 0,
             inbound_delivery_ledger: QemuInboundDeliveryLedger::Owned(inbound_delivery_ledger),
@@ -394,6 +398,8 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         Ok(Self {
             config,
             view,
+            #[cfg(target_os = "linux")]
+            console_custody: None,
             operation_log: Vec::new(),
             next_router_inbound_sequence: 0,
             inbound_delivery_ledger: QemuInboundDeliveryLedger::Borrowed(inbound_delivery_ledger),
@@ -524,21 +530,20 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
 
         self.record(QemuQuantumOperation::StoreSchedulerCeiling);
         self.record(QemuQuantumOperation::FutexWake);
-        self.view
-            .node_slot
-            .publish_scheduler_inbox_and_advance(
-                self.config.vm_slot,
-                self.config.router_slot,
-                self.view.inbound_ring,
-                self.view.inbound_entries,
-                &[],
-                ceiling,
-                stop_condition,
-            )
-            .map_err(|source| QemuQuantumError::SchedulerWakePublication {
-                operation: "publish scheduler inbox and ceiling",
-                source,
-            })?;
+        self.publish_scheduler_inputs(
+            self.config.router_slot,
+            &[],
+            ceiling,
+            stop_condition,
+            "publish scheduler inbox and ceiling",
+        )?;
+
+        // A console RUN must distinguish its first native report from the
+        // preceding stopped report, including ordinary ceiling quanta.
+        #[cfg(target_os = "linux")]
+        let console_report_required = self.console_custody.is_some();
+        #[cfg(not(target_os = "linux"))]
+        let console_report_required = false;
 
         Ok(QemuPendingQuantum {
             initial_state,
@@ -549,7 +554,8 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
             initial_device_io_freeze,
             report_generation: initial_snapshot.publish_gen,
             initial_control_boundary_ack: initial_snapshot.control_boundary_ack,
-            completion_fence: (stop_condition == QemuQuantumStopCondition::NextAuthenticatedIdle
+            completion_fence: (console_report_required
+                || stop_condition == QemuQuantumStopCondition::NextAuthenticatedIdle
                 || earliest_delivery
                     .is_some_and(|delivery_icount| delivery_icount <= horizon.icount.retired))
             .then_some(QemuAdvanceCompletionFence {
@@ -776,21 +782,53 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         })?;
         let ceiling = authorize_advance_ceiling(current_icount, max_advance_icount, None)
             .map_err(|source| QemuQuantumError::Lookahead { source })?;
+        self.publish_scheduler_inputs(
+            entry.src_node,
+            std::slice::from_ref(entry),
+            ceiling,
+            stop_condition,
+            "publish inbound frame and scheduler ceiling",
+        )?;
+        Ok(())
+    }
+
+    /// Keeps start and inbound regrant on the same original publisher.
+    fn publish_scheduler_inputs(
+        &mut self,
+        source: u32,
+        inputs: &[FrameEntry],
+        ceiling: AdvanceCeiling,
+        stop: QemuQuantumStopCondition,
+        operation: &'static str,
+    ) -> Result<(), QemuQuantumError> {
+        #[cfg(target_os = "linux")]
+        if let Some(custody) = &self.console_custody {
+            custody
+                .publish_inputs(crate::native_console_owner::ConsoleInputPublication {
+                    slot: self.view.node_slot,
+                    dst_slot: self.config.vm_slot,
+                    src_slot: source,
+                    inbox: self.view.inbound_ring,
+                    entries: self.view.inbound_entries,
+                    inputs,
+                    ceiling,
+                    stop,
+                })
+                .map_err(|_| QemuQuantumError::ConsoleCustodyUnavailable)?;
+            return Ok(());
+        }
         self.view
             .node_slot
             .publish_scheduler_inbox_and_advance(
                 self.config.vm_slot,
-                entry.src_node,
+                source,
                 self.view.inbound_ring,
                 self.view.inbound_entries,
-                std::slice::from_ref(entry),
+                inputs,
                 ceiling,
-                stop_condition,
+                stop,
             )
-            .map_err(|source| QemuQuantumError::SchedulerWakePublication {
-                operation: "publish inbound frame and scheduler ceiling",
-                source,
-            })?;
+            .map_err(|source| QemuQuantumError::SchedulerWakePublication { operation, source })?;
         Ok(())
     }
 

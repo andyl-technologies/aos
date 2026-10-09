@@ -11,7 +11,6 @@ use std::os::fd::OwnedFd;
 use thiserror::Error;
 
 use super::*;
-use crate::console_observation::QemuConsoleObservationSpool;
 
 /// Exact QMP command failure classification across the process-creation boundary.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -99,7 +98,6 @@ pub struct QemuHotForkHostContinuation {
     pub(super) shmem_hot_path: Box<dyn QemuShmemHotPathChannel>,
     pub(super) host_io_binding: crucible::model::ContentHash,
     pub(super) host_io_runtime: Box<dyn QemuHostIoRuntime>,
-    pub(super) console_spool: Option<QemuConsoleObservationSpool>,
     pub(super) node_state: QemuHotForkNodeStateContinuation,
     pub(super) checkpoint_cancellation: OwnedFd,
 }
@@ -226,12 +224,11 @@ fn hot_fork_host_io_binding(
     ring: crucible_shmem::SetupRegionBackingIdentity,
 ) -> crucible::model::ContentHash {
     let material = format!(
-        "template={};private-ring={};diagnostic={};qmp={};console={};monitor={};plugin-endpoint={};plugin-barrier={};rcu-barrier={};async-worker-barrier={};block-barrier={};parent-process={};child-process={};child-contract={};child-files={};ring-device={};ring-inode={};ring-length={}",
+        "template={};private-ring={};diagnostic={};qmp={};monitor={};plugin-endpoint={};plugin-barrier={};rcu-barrier={};async-worker-barrier={};block-barrier={};parent-process={};child-process={};child-contract={};child-files={};ring-device={};ring-inode={};ring-length={}",
         request.template_generation(),
         request.private_ring_generation(),
         request.diagnostic_generation(),
         request.qmp_generation(),
-        request.console_generation(),
         request.monitor_generation(),
         request.plugin_endpoint_generation(),
         request.plugin_barrier_generation(),
@@ -257,7 +254,6 @@ struct QemuHotForkRetainedState {
     private_ring: crate::QmpHotForkPrivateRingState,
     diagnostics: crate::QmpHotForkChildDiagnosticState,
     child_qmp: crate::QmpHotForkChildQmpState,
-    child_console: crate::QmpHotForkChildConsoleState,
     process_contract: crate::QmpHotForkChildProcessContractState,
     child_files: crate::QmpHotForkChildFilesState,
 }

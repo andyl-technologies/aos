@@ -333,6 +333,16 @@ where
         let mut staged_frontier = self.committed_frontier;
         let mut published = Vec::with_capacity(held_limit);
         while !held_runs.is_empty() || !boundary_runs.is_empty() {
+            super::held_lineage::prepare_canonical_extension(
+                &mut lineage,
+                &staged_scheduler,
+                &self.held_stop_controller,
+                self.held_union_generation,
+                &mut held_runs,
+                &mut boundary_runs,
+                &mut original_runs,
+            )
+            .map_err(|error| self.poison_continuation(error))?;
             if staged_scheduler.effective_topology != initial_topology {
                 return Err(self.poison_continuation(SchedulerError::BoundaryViolation {
                     message: String::from(
@@ -980,10 +990,13 @@ where
             .preselection
             .as_ref()
             .map(|pending| pending.choice.output.source.clone());
-        if let Some(state) = self.held_host_continuation.as_ref() {
+        if let Some(state) = self.held_host_continuation.as_mut() {
             state
-                .lineage
-                .ensure_extension_room()
+                .prepare_canonical_extension(
+                    &before_settlement,
+                    &self.held_stop_controller,
+                    self.held_union_generation,
+                )
                 .map_err(|error| self.poison_continuation(error))?;
         }
         let continuation = self.held_host_continuation.take();

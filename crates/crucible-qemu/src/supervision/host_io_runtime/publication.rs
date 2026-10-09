@@ -13,6 +13,18 @@ impl QemuLiveHostIoRuntime {
             .try_snapshot())
     }
 
+    /// Keeps an inherited stopped report outside the new RUN's completion.
+    pub(super) fn native_console_run_report_pending(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.console_custody.is_some() && self.scheduler_input_publish_generation.is_some()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+
     /// Retries only under a caller's already-existing control deadline.
     pub(super) fn wait_node_snapshot(
         &mut self,

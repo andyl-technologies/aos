@@ -485,6 +485,29 @@ pub(super) fn observable_event_payload(observable: &ObservableEventPayload) -> E
             );
             EventPayload::new("console_output", attributes)
         }
+        ObservableEventPayload::NativeConsoleByte { node, origin } => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(node.clone()),
+            );
+            attributes.insert(
+                String::from("device"),
+                EventAttributeValue::Bytes(origin.device.bytes.to_vec()),
+            );
+            for (key, value) in [
+                ("stream", u64::from(origin.stream)),
+                ("logical_generation", origin.logical_generation),
+                ("node_sequence", origin.node_sequence),
+                ("stream_sequence", origin.stream_sequence),
+                ("emitted_ps", origin.emitted_ps),
+                ("raw_prefix", origin.raw_prefix),
+                ("vcpu", u64::from(origin.vcpu)),
+                ("byte", u64::from(origin.byte)),
+            ] {
+                attributes.insert(String::from(key), EventAttributeValue::U64(value));
+            }
+            EventPayload::new("native_console_byte", attributes)
+        }
         ObservableEventPayload::CoverageBlock {
             execution_icount,
             node,
@@ -1031,6 +1054,7 @@ pub(super) fn observable_payload_stamp(
 ) -> EventLogTickStamp {
     match observable {
         ObservableEventPayload::ConsoleOutput { node, .. }
+        | ObservableEventPayload::NativeConsoleByte { node, .. }
         | ObservableEventPayload::IoCompletion { node, .. }
         | ObservableEventPayload::NodeState { node, .. } => node_boundary_stamp(at, node),
         ObservableEventPayload::CoverageBlock {
@@ -1160,6 +1184,7 @@ pub(super) fn decision_source(decision: &Decision) -> EventSource {
 pub(super) fn observable_payload_source(observable: &ObservableEventPayload) -> EventSource {
     match observable {
         ObservableEventPayload::ConsoleOutput { node, .. }
+        | ObservableEventPayload::NativeConsoleByte { node, .. }
         | ObservableEventPayload::MemorySample { node, .. }
         | ObservableEventPayload::IoCompletion { node, .. }
         | ObservableEventPayload::NodeState { node, .. } => {
@@ -1204,6 +1229,7 @@ pub(super) fn observable_payload_level(observable: &ObservableEventPayload) -> E
         ObservableEventPayload::MemorySample { .. } => EventLevel::Debug,
         ObservableEventPayload::AssertionProximity { .. } => EventLevel::Debug,
         ObservableEventPayload::ConsoleOutput { .. }
+        | ObservableEventPayload::NativeConsoleByte { .. }
         | ObservableEventPayload::NetworkDelivered { .. }
         | ObservableEventPayload::IoCompletion { .. }
         | ObservableEventPayload::NodeState { .. }
@@ -1921,10 +1947,10 @@ impl SchedulerEventLogSegmentMaterial {
     pub(super) fn text_view(&self) -> String {
         let mut lines = Vec::new();
         lines.push(String::from(
-            "format=crucible.scheduler.event-log.segment-text.v5",
+            "format=crucible.scheduler.event-log.segment-text.v6",
         ));
         lines.push(String::from(
-            "canonical_format=crucible.scheduler.event-log.segment.v5",
+            "canonical_format=crucible.scheduler.event-log.segment.v6",
         ));
         lines.push(format!("schema_version={EVENT_LOG_SEGMENT_BINARY_VERSION}"));
         lines.push(format!("previous_prefix={}", self.previous_prefix.to_hex()));

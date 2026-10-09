@@ -73,13 +73,6 @@ pub(super) enum HotForkChildQmpAction {
     Release,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum HotForkChildConsoleAction {
-    Stage,
-    Query,
-    Release,
-}
-
 impl HotForkTemplateAction {
     const fn wire_name(self) -> &'static str {
         match self {
@@ -122,16 +115,6 @@ impl HotForkChildDiagnosticAction {
 }
 
 impl HotForkChildQmpAction {
-    const fn wire_name(self) -> &'static str {
-        match self {
-            Self::Stage => "stage",
-            Self::Query => "query",
-            Self::Release => "release",
-        }
-    }
-}
-
-impl HotForkChildConsoleAction {
     const fn wire_name(self) -> &'static str {
         match self {
             Self::Stage => "stage",
@@ -212,6 +195,10 @@ pub(super) enum QmpCommand<'a> {
     QueryStatus,
     Stop,
     Cont,
+    #[cfg(test)]
+    ConsoleSentinel {
+        filename: &'a str,
+    },
     CompleteTerminalLifecycle {
         action: crucible::ContentHash,
         evidence: crucible::ContentHash,
@@ -291,11 +278,6 @@ pub(super) enum QmpCommand<'a> {
         name: Option<&'a QmpDescriptorName>,
         socket_cookie: Option<u64>,
     },
-    HotForkChildConsole {
-        action: HotForkChildConsoleAction,
-        name: Option<&'a QmpDescriptorName>,
-        socket_cookie: Option<u64>,
-    },
     Quit,
     GetFd {
         name: &'a QmpDescriptorName,
@@ -327,6 +309,8 @@ impl QmpCommand<'_> {
             Self::QueryStatus => QmpCommandKind::QueryStatus,
             Self::Stop => QmpCommandKind::Stop,
             Self::Cont => QmpCommandKind::Cont,
+            #[cfg(test)]
+            Self::ConsoleSentinel { .. } => QmpCommandKind::ConsoleSentinel,
             Self::CompleteTerminalLifecycle { .. } => QmpCommandKind::CompleteTerminalLifecycle,
             Self::QueryHotForkPluginResourceInventory => {
                 QmpCommandKind::QueryHotForkPluginResourceInventory
@@ -349,7 +333,6 @@ impl QmpCommand<'_> {
             Self::HotForkPluginEndpoints { .. } => QmpCommandKind::HotForkPluginEndpoints,
             Self::HotForkChildDiagnostics { .. } => QmpCommandKind::HotForkChildDiagnostics,
             Self::HotForkChildQmp { .. } => QmpCommandKind::HotForkChildQmp,
-            Self::HotForkChildConsole { .. } => QmpCommandKind::HotForkChildConsole,
             Self::Quit => QmpCommandKind::Quit,
             Self::GetFd { .. } => QmpCommandKind::GetFd,
             Self::CloseFd { .. } => QmpCommandKind::CloseFd,
@@ -413,6 +396,11 @@ impl QmpCommand<'_> {
             }),
             Self::Cont => json!({
                 "execute": QMP_CONT_COMMAND,
+            }),
+            #[cfg(test)]
+            Self::ConsoleSentinel { filename } => json!({
+                "execute": "pmemsave",
+                "arguments": { "val": 0x500, "size": 1, "filename": filename },
             }),
             Self::CompleteTerminalLifecycle {
                 action,
@@ -748,33 +736,6 @@ impl QmpCommand<'_> {
                 }
                 json!({
                     "exec-oob": QMP_HOT_FORK_CHILD_QMP_COMMAND,
-                    "arguments": Value::Object(arguments),
-                })
-            }
-            Self::HotForkChildConsole {
-                action,
-                name,
-                socket_cookie,
-            } => {
-                let mut arguments = serde_json::Map::new();
-                arguments.insert(
-                    String::from("action"),
-                    Value::String(action.wire_name().to_owned()),
-                );
-                if let Some(name) = name {
-                    arguments.insert(
-                        String::from("fdname"),
-                        Value::String(name.as_str().to_owned()),
-                    );
-                }
-                if let Some(socket_cookie) = socket_cookie {
-                    arguments.insert(
-                        String::from("expected-socket-cookie"),
-                        Value::from(*socket_cookie),
-                    );
-                }
-                json!({
-                    "exec-oob": QMP_HOT_FORK_CHILD_CONSOLE_COMMAND,
                     "arguments": Value::Object(arguments),
                 })
             }

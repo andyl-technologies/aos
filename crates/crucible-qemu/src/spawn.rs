@@ -42,6 +42,8 @@ pub(crate) use materialization::SealedAtomicExactRestoreInputs;
 pub(crate) use materialization::{
     QemuExactDeviceStateBinding, QemuGuardedExactRamInput, require_exact_restore_not_canceled,
 };
+#[cfg(test)]
+pub(crate) use run_directory::ConsoleSentinelOutput;
 pub use run_directory::QemuPreparedRunDirectory;
 use run_directory::{PinnedFileIdentity, open_prepared_root_overlay};
 
@@ -512,6 +514,8 @@ pub struct QemuSpawnHostResources {
     wake_fd: OwnedFd,
     region_len: u64,
     fault_node_hash: [u8; 32],
+    plugin_process_generation: u64,
+    plugin_setup_plan_digest: Option<[u8; 32]>,
 }
 
 impl QemuSpawnHostResources {
@@ -548,6 +552,8 @@ impl QemuSpawnHostResources {
             wake_fd: self.wake_fd,
             region_len: self.region_len,
             fault_node_hash: self.fault_node_hash,
+            plugin_process_generation: self.plugin_process_generation,
+            plugin_setup_plan_digest: self.plugin_setup_plan_digest,
         }
     }
 }
@@ -560,6 +566,8 @@ pub struct QemuSpawnSetupResources {
     wake_fd: OwnedFd,
     region_len: u64,
     fault_node_hash: [u8; 32],
+    plugin_process_generation: u64,
+    plugin_setup_plan_digest: Option<[u8; 32]>,
 }
 
 impl QemuSpawnSetupResources {
@@ -591,6 +599,18 @@ impl QemuSpawnSetupResources {
     #[must_use]
     pub const fn fault_node_hash(&self) -> [u8; 32] {
         self.fault_node_hash
+    }
+
+    /// Returns the process incarnation retained from the actual launch command.
+    pub(crate) const fn plugin_process_generation(&self) -> u64 {
+        self.plugin_process_generation
+    }
+
+    /// Retains the original console-bearing command's complete setup digest.
+    ///
+    /// Ordinary no-console commands and bare descriptor fixtures carry none.
+    pub(crate) const fn plugin_setup_plan_digest(&self) -> Option<[u8; 32]> {
+        self.plugin_setup_plan_digest
     }
 
     /// Consumes the setup resources into their owned parts.
@@ -951,6 +971,11 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     )?;
     let (mut resources, child_resources) = create_spawn_resources(region_len)?;
     resources.fault_node_hash = command.plugin_fault_node_hash();
+    resources.plugin_process_generation = command.plugin_process_generation();
+    resources.plugin_setup_plan_digest = command
+        .plugin_setup_plan()
+        .native_console_plan()
+        .map(|_console| command.plugin_setup_plan_digest());
     let child = spawn_process_with_resources(
         command.executable(),
         &launch_args,
@@ -1014,6 +1039,9 @@ fn create_spawn_resources(
             wake_fd: host_wake,
             region_len,
             fault_node_hash: [0; 32],
+            // No actual launch command has yet supplied a process owner.
+            plugin_process_generation: 0,
+            plugin_setup_plan_digest: None,
         },
         QemuSpawnChildResources {
             control_socket: child_control,
@@ -1116,6 +1144,7 @@ pub(crate) fn guarded_qemu_process_command(
     for (key, value) in envs {
         command.env(key, value);
     }
+
     // Aggregate diagnostics retain fixed failure observations without enabling
     // the legacy callback stream or native trace selections.
     const AGGREGATE_DIAGNOSTICS: &str = "CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS";

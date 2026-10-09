@@ -78,7 +78,6 @@ fn hot_fork_clone_requires_fresh_branch_local_fault_coordinator()
         child_region.as_fd(),
         child_wake.as_fd(),
         region_len,
-        None,
     )?;
     let coordinate = crucible::model::FaultCoordinate {
         virtual_ticks: 0,

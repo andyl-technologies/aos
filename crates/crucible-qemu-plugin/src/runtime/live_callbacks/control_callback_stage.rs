@@ -295,6 +295,21 @@ impl LiveVcpuTimeCallbackState {
         callback: Option<u64>,
         emit: &mut impl FnMut(StageRecord),
     ) -> Result<(), LiveVcpuTimeCallbackError> {
+        self.on_control_boundary_with_console(raw_icount, callback, emit, None)
+    }
+
+    /// Borrows one installed native effect during the original settled callback.
+    ///
+    /// # Errors
+    ///
+    /// Returns original callback errors or native refusal before the odd ACK.
+    pub(super) fn on_control_boundary_with_console(
+        &self,
+        raw_icount: u64,
+        callback: Option<u64>,
+        emit: &mut impl FnMut(StageRecord),
+        mut console: Option<&mut super::console_effect::ConsoleControlEffect<'_>>,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
         // A stopped boundary permits the host to save VMState. RX poison is not
         // serialized, so no checkpoint may acknowledge ambiguous ownership.
         self.require_network_rx_commit_certain()?;
@@ -304,7 +319,15 @@ impl LiveVcpuTimeCallbackState {
         // a host acquire-load of the odd successor orders every boundary field.
         // Halt tracking and idle publication remain owned by the real
         // idle/resume callbacks.
-        let control_boundary = self.slot.get().snapshot();
+        let control_boundary = if let Some(console) = &mut console {
+            let Some(snapshot) = self.slot.get().try_snapshot() else {
+                console.retain_pending();
+                return Ok(());
+            };
+            snapshot
+        } else {
+            self.slot.get().snapshot()
+        };
         if control_boundary.control_boundary_ack & 1 != 0 {
             let _fault_pump_drained = self.pump_fault_commands(raw_icount)?;
             return Ok(());
@@ -374,18 +397,24 @@ impl LiveVcpuTimeCallbackState {
         if !settled {
             return Ok(());
         }
+        if let Some(console) = &mut console {
+            console
+                .bind_settled(control_boundary, raw_icount)
+                .map_err(|source| LiveVcpuTimeCallbackError::ConsoleControl { source })?;
+        }
         let paused = self.control_callback_witness.stages.observe_work(
             invocation,
             StagePhase::PauseEnter,
             StagePhase::PauseReturn,
             emit,
             || {
-                self.publish_pause_for_boundary(
+                self.publish_pause_for_boundary_with_console(
                     raw_icount,
                     true,
                     true,
                     fingerprint_capture_request,
                     "control-boundary",
+                    console.as_deref_mut(),
                 )
             },
         )?;
@@ -399,24 +428,51 @@ impl LiveVcpuTimeCallbackState {
                     ceiling_icount,
                 });
             }
-            if self.fingerprint.is_some()
-                && let Some(capture_request) = fingerprint_capture_request
-            {
-                // The main-loop callback holds the BQL after every vCPU has
-                // quiesced, making cross-vCPU register capture safe even when
-                // the serialized RR owner is intentionally absent at idle.
-                self.publish_fingerprint_sample(
+            // Private capture precedes any native inventory lease. The worker
+            // cannot publish/ACK it until successful writer-close and release.
+            let private_capture = if console.is_some() {
+                if let Some(capture_request) = fingerprint_capture_request {
+                    self.capture_fingerprint_sample(current_icount, "requested-control-boundary")?
+                        .map(|captured| (captured, capture_request))
+                } else {
+                    None
+                }
+            } else {
+                if let Some(capture_request) = fingerprint_capture_request {
+                    // Preserve the original no-console capture/enqueue order.
+                    self.publish_fingerprint_sample(
+                        current_icount,
+                        "requested-control-boundary",
+                        capture_request,
+                    )?;
+                }
+                None
+            };
+            if let Some(console) = &mut console {
+                let published = console
+                    .publish_ordinary(self.slot.get(), current_icount, raw_icount)
+                    .map_err(|error| match error {
+                        crucible_shmem::NodeBoundaryPublicationError::Slot(source) => {
+                            LiveVcpuTimeCallbackError::PublishIcount { source }
+                        }
+                        crucible_shmem::NodeBoundaryPublicationError::Effect(source) => {
+                            LiveVcpuTimeCallbackError::ConsoleControl { source }
+                        }
+                    })?;
+                if !published {
+                    return Ok(());
+                }
+            } else {
+                PluginShmemOrdering::publish_control_boundary(
+                    self.slot.get(),
                     current_icount,
-                    "requested-control-boundary",
-                    capture_request,
-                )?;
+                    raw_icount,
+                )
+                .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
             }
-            PluginShmemOrdering::publish_control_boundary(
-                self.slot.get(),
-                current_icount,
-                raw_icount,
-            )
-            .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
+            if let Some((captured, capture_request)) = private_capture {
+                self.submit_fingerprint_sample(captured, capture_request)?;
+            }
             self.last_raw_icount.store(raw_icount, Ordering::Release);
             self.last_icount.store(current_icount, Ordering::Release);
 
@@ -427,6 +483,17 @@ impl LiveVcpuTimeCallbackState {
             // pause deliberately remains armed until QEMU is resumed through
             // the lifecycle control path.
             self.all_halted_idle_handled.store(false, Ordering::Release);
+        }
+        if let Some(console) = console {
+            // Original pause/device/shutdown deferral has no boundary writer.
+            // A busy native preparation likewise has no accepted mutation;
+            // neither may turn an even request into a completed frontier/ACK.
+            if console.is_pending() || (paused && !console.is_committed()) {
+                return Ok(());
+            }
+            console
+                .require_committed()
+                .map_err(|source| LiveVcpuTimeCallbackError::ConsoleControl { source })?;
         }
         PluginShmemOrdering::acknowledge_control_boundary(self.slot.get());
         self.control_boundary_dispatch_generation

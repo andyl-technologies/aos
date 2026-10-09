@@ -22,7 +22,13 @@
   singleGuest ? null,
   twoNodeHttp ? false,
   twoNodeHttpServer ? "nginx",
+  quietKernelBoot ? false,
+  liveProgressDiagnostics ? false,
 }:
+assert builtins.isBool quietKernelBoot;
+assert !quietKernelBoot || (twoNodeHttp && twoNodeHttpServer == "envoy-direct");
+assert builtins.isBool liveProgressDiagnostics;
+assert !liveProgressDiagnostics || twoNodeHttp;
 assert builtins.isBool nativeControlSummary;
 assert !nativeControlSummary
 || (
@@ -130,7 +136,7 @@ assert !interruptedTransfer
     if envoyProxy
     then "three-node-envoy-proxy"
     else if envoyDirect
-    then "two-node-envoy-direct"
+    then "two-node-envoy-direct${lib.optionalString quietKernelBoot "-quiet-kernel"}"
     else "two-node-http";
   envoyProduct = envoyNetwork || envoyKnownFinding;
   source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
@@ -563,7 +569,10 @@ assert !interruptedTransfer
             if envoyProxy
             then "public_three_node_envoy_proxy_response_is_authenticated"
             else if envoyDirect
-            then "public_two_node_envoy_direct_response_is_authenticated"
+            then
+              if quietKernelBoot
+              then "public_two_node_envoy_direct_quiet_kernel_response_is_authenticated"
+              else "public_two_node_envoy_direct_response_is_authenticated"
             else "public_two_node_http_request_and_response_are_authenticated"
           }
           http_log=/tmp/${httpFlightName}.log
@@ -576,12 +585,20 @@ assert !interruptedTransfer
           # Leave time for the finite 1800s startup and 180s application panic
           # fallbacks, plus owned-process cleanup and the retained diagnostics.
           : > "$http_log"
+          http_live_log="$http_log"
+          ${lib.optionalString liveProgressDiagnostics ''
+            export CRUCIBLE_TEST_LIVE_PROGRESS=1
+            export CRUCIBLE_TEST_LIVE_PROGRESS_FILE=/tmp/${httpFlightName}-live-progress.jsonl
+            http_live_log="$CRUCIBLE_TEST_LIVE_PROGRESS_FILE"
+          ''}
           ${pkgs.coreutils}/bin/timeout -k 5 2100 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
             "$http_selector" --nocapture > "$http_log" 2>&1 &
           http_test=$!
           (
-            ${pkgs.coreutils}/bin/tail --pid="$http_test" -n +1 -F "$http_log" \
+            # Passive diagnostic frames replace only the live tail. The raw
+            # test log and every original result assertion remain retained.
+            ${pkgs.coreutils}/bin/tail --pid="$http_test" -n +1 -F "$http_live_log" \
               | ${pkgs.coreutils}/bin/head -c 2097152
           ) &
           http_tail=$!

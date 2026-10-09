@@ -134,7 +134,7 @@ crucible.execution.signal-trace-manifest|crates/crucible/src/model/fault_signal/
 crucible.execution.signal-trace-chunk|crates/crucible/src/model/fault_signal/trace.rs|magic|CHUNK_MAGIC
 crucible.execution.failure-triage-replay-evidence|crates/crucible/src/model/failure/replay_evidence.rs|number|FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION
 crucible.execution.host-assertion-continuation|crates/crucible/src/trigger/assertions.rs|magic|HOST_ASSERTION_CHECKPOINT_MAGIC
-crucible.execution.single-scheduler-continuation|crates/crucible/src/scheduler/checkpoint.rs|magic|crucible.single-scheduler-continuation.v6
+crucible.execution.single-scheduler-continuation|crates/crucible/src/scheduler/checkpoint.rs|magic|crucible.single-scheduler-continuation.v7
 crucible.execution.device-scheduling-subnode|crates/crucible/src/device_subnode/checkpoint.rs|magic|crucible.device-scheduling-subnode.v1
 crucible.execution.scenario-selectable-component|crates/crucible/src/model/scenario_selectables.rs|number|SCENARIO_SELECTABLE_VERSION
 crucible.execution.fault-adapter-checkpoint|crates/crucible/src/model/fault_signal/adapter_runtime.rs|number|ADAPTER_CHECKPOINT_VERSION
@@ -151,7 +151,8 @@ crucible.device.ninep-snapshot|crates/crucible-device/src/ninep/device/snapshot.
 crucible.qemu.checkpoint-qmp|crates/crucible-qemu/src/qmp/ram_delta.rs|number|QMP_CHECKPOINT_SCHEMA_VERSION
 crucible.qemu.host-io-checkpoint|crates/crucible-qemu/src/checkpoint/host_io_codec.rs|magic|crucible.qemu-host-io-checkpoint.v6
 crucible.qemu.production-fault-runtime|crates/crucible-qemu/src/production_fault_runtime/checkpoint_codec.rs|magic|crucible.production-fault-runtime.v7
-crucible.qemu.node-continuation|crates/crucible-qemu/src/checkpoint.rs|magic|crucible.qemu-node-continuation.v7
+crucible.qemu.node-continuation|crates/crucible-qemu/src/checkpoint.rs|magic|crucible.qemu-node-continuation.v9
+crucible.qemu.native-console-continuation|crates/crucible-qemu/src/native_console_owner/continuation.rs|magic|MAGIC
 crucible.qemu.accelerator-checkpoint|crates/crucible-qemu/src/supervision/accelerator_io_servicer.rs|magic|ACCELERATOR_CHECKPOINT_MAGIC
 crucible.live-qemu-replay-contract|crates/crucible-cli/src/cli/artifact/live_qemu.rs|magic|LIVE_QEMU_REPLAY_CONTRACT_SCHEMA
 crucible.qemu.hot-fork.template|crates/crucible-qemu/src/qmp/hot_fork/template.rs|number|QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION
@@ -167,7 +168,6 @@ crucible.qemu.hot-fork.child-process|crates/crucible-qemu/src/qmp/hot_fork/child
 crucible.qemu.hot-fork.child-process-contract|crates/crucible-qemu/src/qmp/hot_fork/child_process_contract.rs|number|QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION
 crucible.qemu.hot-fork.child-files|crates/crucible-qemu/src/qmp/hot_fork/child_files.rs|number|QMP_HOT_FORK_CHILD_FILES_SCHEMA_VERSION
 crucible.qemu.hot-fork.child-qmp|crates/crucible-qemu/src/qmp/hot_fork/child_qmp.rs|number|QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION
-crucible.qemu.hot-fork.child-console|crates/crucible-qemu/src/qmp/hot_fork/child_console.rs|number|QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION
 crucible.qemu.hot-fork.child-diagnostics|crates/crucible-qemu/src/qmp/hot_fork/diagnostics.rs|number|QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION
 "#;
 
