@@ -22,6 +22,7 @@
 use std::os::fd::OwnedFd;
 use std::path::Path;
 
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity, NamespaceKind};
@@ -128,16 +129,16 @@ impl NetworkWorkerReadyV1 {
         {
             return protocol("ready record has an invalid length");
         }
-        let mut decoder = Decoder::new(bytes);
-        if decoder.take::<8>()? != *READY_MAGIC
+        let mut decoder = BoundedReader::new(bytes, read_error);
+        if decoder.array::<8>()? != *READY_MAGIC
             || decoder.u16()? != WIRE_VERSION
-            || decoder.byte()? != MUTATION_ROLE
-            || decoder.byte()? != 0
+            || decoder.u8()? != MUTATION_ROLE
+            || decoder.u8()? != 0
         {
             return protocol("ready header is invalid");
         }
         let cgroup_length = usize::from(decoder.u16()?);
-        if decoder.take::<2>()? != [0; 2]
+        if decoder.array::<2>()? != [0; 2]
             || cgroup_length == 0
             || cgroup_length > MAXIMUM_CGROUP_BYTES
             || bytes.len() != READY_FIXED_BYTES + cgroup_length
@@ -224,20 +225,20 @@ impl NetworkWorkerResultV1 {
         if bytes.len() != RESULT_BYTES {
             return protocol("result length is invalid");
         }
-        let mut decoder = Decoder::new(bytes);
-        if decoder.take::<8>()? != *RESULT_MAGIC
+        let mut decoder = BoundedReader::new(bytes, read_error);
+        if decoder.array::<8>()? != *RESULT_MAGIC
             || decoder.u16()? != WIRE_VERSION
-            || decoder.byte()? != SUCCESS_RESULT
-            || decoder.byte()? != 0
+            || decoder.u8()? != SUCCESS_RESULT
+            || decoder.u8()? != 0
             || decoder.u32()? != RESULT_BYTES as u32
         {
             return protocol("result header is invalid");
         }
         let result = Self::new(
-            decoder.take()?,
-            ObjectDigest::from_bytes(decoder.take()?),
-            ObjectDigest::from_bytes(decoder.take()?),
-            decoder.take()?,
+            decoder.array()?,
+            ObjectDigest::from_bytes(decoder.array()?),
+            ObjectDigest::from_bytes(decoder.array()?),
+            decoder.array()?,
             NamespaceIdentity {
                 device: decoder.u64()?,
                 inode: decoder.u64()?,
@@ -466,71 +467,13 @@ fn protocol<T>(message: &'static str) -> Result<T, NetworkWorkerProcessError> {
     Err(NetworkWorkerProcessError::Protocol(message))
 }
 
-struct Decoder<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> Decoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    fn byte(&mut self) -> Result<u8, NetworkWorkerProcessError> {
-        Ok(self.take::<1>()?[0])
-    }
-
-    fn u16(&mut self) -> Result<u16, NetworkWorkerProcessError> {
-        Ok(u16::from_be_bytes(self.take()?))
-    }
-
-    fn u32(&mut self) -> Result<u32, NetworkWorkerProcessError> {
-        Ok(u32::from_be_bytes(self.take()?))
-    }
-
-    fn u64(&mut self) -> Result<u64, NetworkWorkerProcessError> {
-        Ok(u64::from_be_bytes(self.take()?))
-    }
-
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], NetworkWorkerProcessError> {
-        let end = self
-            .offset
-            .checked_add(N)
-            .ok_or(NetworkWorkerProcessError::Protocol(
-                "record offset overflowed",
-            ))?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(NetworkWorkerProcessError::Protocol("record is truncated"))?;
-        self.offset = end;
-        value
-            .try_into()
-            .map_err(|_| NetworkWorkerProcessError::Protocol("record is truncated"))
-    }
-
-    fn bytes(&mut self, length: usize) -> Result<&'a [u8], NetworkWorkerProcessError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(NetworkWorkerProcessError::Protocol(
-                "record offset overflowed",
-            ))?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(NetworkWorkerProcessError::Protocol("record is truncated"))?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn finish(self) -> Result<(), NetworkWorkerProcessError> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
-            protocol("record has trailing bytes")
-        }
-    }
+fn read_error(error: ReadError) -> NetworkWorkerProcessError {
+    let message = match error {
+        ReadError::LengthOverflow => "record offset overflowed",
+        ReadError::TrailingBytes => "record has trailing bytes",
+        ReadError::Truncated | ReadError::NonzeroReserved => "record is truncated",
+    };
+    NetworkWorkerProcessError::Protocol(message)
 }
 
 #[cfg(test)]

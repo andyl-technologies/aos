@@ -12,6 +12,7 @@ use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, Rec
 use aos_sandbox_broker::{
     BrokerAuthorizationFenceV1, BrokerEffectStatusV1, BrokerLocalRecordDomain,
 };
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{BrokerGrantTarget, BrokerResourceHandle, BrokerVerb, ObjectDigest};
 use sha2::{Digest as _, Sha256};
 
@@ -1091,52 +1092,52 @@ fn decode_record(
     if bytes.len() > MAXIMUM_RECORD_BYTES {
         return Err(NetworkLifecycleStateError::CorruptRecord);
     }
-    let mut decoder = Decoder::new(bytes);
-    if decoder.take::<8>()? != *MAGIC {
+    let mut decoder = BoundedReader::new(bytes, |_| NetworkLifecycleStateError::CorruptRecord);
+    if decoder.array::<8>()? != *MAGIC {
         return Err(NetworkLifecycleStateError::CorruptRecord);
     }
-    let version = u16::from_be_bytes(decoder.take()?);
+    let version = u16::from_be_bytes(decoder.array()?);
     if version != VERSION {
         return Err(NetworkLifecycleStateError::CorruptRecord);
     }
-    let phase = decode_phase(decoder.byte()?)?;
-    let request_id = decoder.take()?;
-    let sandbox_id = decoder.take()?;
-    let transport_digest = ObjectDigest::from_bytes(decoder.take()?);
-    let semantic_digest = ObjectDigest::from_bytes(decoder.take()?);
-    let verb = decode_verb(decoder.byte()?)?;
-    let action = decode_action(decoder.byte()?)?;
-    let preparation_generation = u64::from_be_bytes(decoder.take()?);
-    let preparation_digest = ObjectDigest::from_bytes(decoder.take()?);
-    let kernel_plan_digest = ObjectDigest::from_bytes(decoder.take()?);
+    let phase = decode_phase(decoder.u8()?)?;
+    let request_id = decoder.array()?;
+    let sandbox_id = decoder.array()?;
+    let transport_digest = ObjectDigest::from_bytes(decoder.array()?);
+    let semantic_digest = ObjectDigest::from_bytes(decoder.array()?);
+    let verb = decode_verb(decoder.u8()?)?;
+    let action = decode_action(decoder.u8()?)?;
+    let preparation_generation = u64::from_be_bytes(decoder.array()?);
+    let preparation_digest = ObjectDigest::from_bytes(decoder.array()?);
+    let kernel_plan_digest = ObjectDigest::from_bytes(decoder.array()?);
     let identity = NetworkNamespaceIdentityV1::new(
-        decoder.take()?,
-        decoder.take()?,
-        u64::from_be_bytes(decoder.take()?),
-        u64::from_be_bytes(decoder.take()?),
+        decoder.array()?,
+        decoder.array()?,
+        u64::from_be_bytes(decoder.array()?),
+        u64::from_be_bytes(decoder.array()?),
     )
     .map_err(|_| NetworkLifecycleStateError::CorruptRecord)?;
-    let resource_digest = ObjectDigest::from_bytes(decoder.take()?);
-    let highest_lease_generation = u64::from_be_bytes(decoder.take()?);
-    let highest_lease_digest = ObjectDigest::from_bytes(decoder.take()?);
+    let resource_digest = ObjectDigest::from_bytes(decoder.array()?);
+    let highest_lease_generation = u64::from_be_bytes(decoder.array()?);
+    let highest_lease_digest = ObjectDigest::from_bytes(decoder.array()?);
     let observed_state = decode_state(&mut decoder)?;
     let desired_state = decode_state(&mut decoder)?;
-    let effect_digest = ObjectDigest::from_bytes(decoder.take()?);
-    let current_fence = decoder.blob()?.to_vec();
-    let operation_fence = decoder.blob()?.to_vec();
-    let effect = decoder.blob()?.to_vec();
+    let effect_digest = ObjectDigest::from_bytes(decoder.array()?);
+    let current_fence = decode_blob(&mut decoder)?.to_vec();
+    let operation_fence = decode_blob(&mut decoder)?.to_vec();
+    let effect = decode_blob(&mut decoder)?.to_vec();
     let result = if phase == DurableNetworkLifecyclePhase::Committed {
         Some(CommittedNetworkLifecycleResultV1 {
             request_id,
             network_handle: identity.network_handle(),
             action,
-            transition_digest: ObjectDigest::from_bytes(decoder.take()?),
-            observation_digest: ObjectDigest::from_bytes(decoder.take()?),
+            transition_digest: ObjectDigest::from_bytes(decoder.array()?),
+            observation_digest: ObjectDigest::from_bytes(decoder.array()?),
         })
     } else {
         None
     };
-    if !decoder.finished() {
+    if !decoder.is_empty() {
         return Err(NetworkLifecycleStateError::CorruptRecord);
     }
     let record = DurableNetworkLifecycleRecord {
@@ -1245,12 +1246,12 @@ fn encode_state_hash(hasher: &mut Sha256, state: NetworkNamespaceObservedStateV1
 }
 
 fn decode_state(
-    decoder: &mut Decoder<'_>,
+    decoder: &mut BoundedReader<'_, NetworkLifecycleStateError>,
 ) -> Result<NetworkNamespaceObservedStateV1, NetworkLifecycleStateError> {
-    let kind = decoder.byte()?;
-    let digest = ObjectDigest::from_bytes(decoder.take()?);
-    let generation = u64::from_be_bytes(decoder.take()?);
-    let deadline = u64::from_be_bytes(decoder.take()?);
+    let kind = decoder.u8()?;
+    let digest = ObjectDigest::from_bytes(decoder.array()?);
+    let generation = u64::from_be_bytes(decoder.array()?);
+    let deadline = u64::from_be_bytes(decoder.array()?);
     match kind {
         1 if digest.as_bytes() == &[0; 32] && generation == 0 && deadline == 0 => {
             Ok(NetworkNamespaceObservedStateV1::default_drop())
@@ -1353,52 +1354,11 @@ fn transaction_id(label: &[u8], request_id: &[u8; 16]) -> [u8; 16] {
     digest[..16].try_into().unwrap_or([1; 16])
 }
 
-struct Decoder<'a> {
-    bytes: &'a [u8],
-    cursor: usize,
-}
-
-impl<'a> Decoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, cursor: 0 }
-    }
-
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], NetworkLifecycleStateError> {
-        let end = self
-            .cursor
-            .checked_add(N)
-            .ok_or(NetworkLifecycleStateError::CorruptRecord)?;
-        let value = self
-            .bytes
-            .get(self.cursor..end)
-            .ok_or(NetworkLifecycleStateError::CorruptRecord)?;
-        self.cursor = end;
-        value
-            .try_into()
-            .map_err(|_| NetworkLifecycleStateError::CorruptRecord)
-    }
-
-    fn byte(&mut self) -> Result<u8, NetworkLifecycleStateError> {
-        Ok(self.take::<1>()?[0])
-    }
-
-    fn blob(&mut self) -> Result<&'a [u8], NetworkLifecycleStateError> {
-        let length = u32::from_be_bytes(self.take()?) as usize;
-        let end = self
-            .cursor
-            .checked_add(length)
-            .ok_or(NetworkLifecycleStateError::CorruptRecord)?;
-        let value = self
-            .bytes
-            .get(self.cursor..end)
-            .ok_or(NetworkLifecycleStateError::CorruptRecord)?;
-        self.cursor = end;
-        Ok(value)
-    }
-
-    const fn finished(&self) -> bool {
-        self.cursor == self.bytes.len()
-    }
+fn decode_blob<'a>(
+    decoder: &mut BoundedReader<'a, NetworkLifecycleStateError>,
+) -> Result<&'a [u8], NetworkLifecycleStateError> {
+    let length = u32::from_be_bytes(decoder.array()?) as usize;
+    decoder.bytes(length)
 }
 
 #[cfg(test)]

@@ -24,6 +24,7 @@ use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, Rec
 use aos_sandbox_broker::{
     BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1, BrokerLocalRecordDomain,
 };
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb, ObjectDigest};
 use sha2::{Digest as _, Sha256};
 
@@ -1649,25 +1650,25 @@ fn decode_record(bytes: &[u8]) -> Result<DurableRecord, NetworkStateError> {
     if bytes.len() > MAXIMUM_RECORD_BYTES {
         return Err(NetworkStateError::CorruptRecord);
     }
-    let mut decoder = Decoder::new(bytes);
-    if decoder.take::<8>()? != *MAGIC {
+    let mut decoder = BoundedReader::new(bytes, |_| NetworkStateError::CorruptRecord);
+    if decoder.array::<8>()? != *MAGIC {
         return Err(NetworkStateError::CorruptRecord);
     }
-    let version = u16::from_be_bytes(decoder.take()?);
+    let version = u16::from_be_bytes(decoder.array()?);
     if version != VERSION {
         return Err(NetworkStateError::CorruptRecord);
     }
-    let phase = decode_phase(decoder.byte()?)?;
-    let request_id = decoder.take()?;
-    let sandbox_id = decoder.take()?;
-    let transport_digest = ObjectDigest::from_bytes(decoder.take()?);
-    let semantic_digest = ObjectDigest::from_bytes(decoder.take()?);
-    let verb = decode_verb(decoder.byte()?)?;
+    let phase = decode_phase(decoder.u8()?)?;
+    let request_id = decoder.array()?;
+    let sandbox_id = decoder.array()?;
+    let transport_digest = ObjectDigest::from_bytes(decoder.array()?);
+    let semantic_digest = ObjectDigest::from_bytes(decoder.array()?);
+    let verb = decode_verb(decoder.u8()?)?;
     let catalog = decode_catalog(&mut decoder)?;
-    let effect_digest = ObjectDigest::from_bytes(decoder.take()?);
-    let current_fence = decoder.blob()?.to_vec();
-    let operation_fence = Some(decoder.blob()?.to_vec());
-    let effect = decoder.blob()?.to_vec();
+    let effect_digest = ObjectDigest::from_bytes(decoder.array()?);
+    let current_fence = decode_blob(&mut decoder)?.to_vec();
+    let operation_fence = Some(decode_blob(&mut decoder)?.to_vec());
+    let effect = decode_blob(&mut decoder)?.to_vec();
     let custody = decode_custody(&mut decoder)?;
     let result = if phase == DurableNetworkPhase::Committed {
         Some(decode_result(&mut decoder, catalog.binding())?)
@@ -1689,7 +1690,7 @@ fn decode_record(bytes: &[u8]) -> Result<DurableRecord, NetworkStateError> {
         custody,
         result,
     };
-    if !decoder.finished() {
+    if !decoder.is_empty() {
         return Err(NetworkStateError::CorruptRecord);
     }
     validate_record_shape(&record)?;
@@ -1772,16 +1773,16 @@ fn encode_custody(
 }
 
 fn decode_custody(
-    decoder: &mut Decoder<'_>,
+    decoder: &mut BoundedReader<'_, NetworkStateError>,
 ) -> Result<Option<NetworkNamespaceCustodyV1>, NetworkStateError> {
-    match decoder.byte()? {
+    match decoder.u8()? {
         0 => Ok(None),
         1 => {
             let custody = NetworkNamespaceCustodyV1 {
-                kernel_boot_id: decoder.take()?,
-                namespace_device: u64::from_be_bytes(decoder.take()?),
-                namespace_inode: u64::from_be_bytes(decoder.take()?),
-                kernel_plan_digest: ObjectDigest::from_bytes(decoder.take()?),
+                kernel_boot_id: decoder.array()?,
+                namespace_device: u64::from_be_bytes(decoder.array()?),
+                namespace_inode: u64::from_be_bytes(decoder.array()?),
+                kernel_plan_digest: ObjectDigest::from_bytes(decoder.array()?),
             };
             if custody.kernel_boot_id == [0; 16]
                 || custody.namespace_device == 0
@@ -1809,24 +1810,24 @@ fn encode_result(bytes: &mut Vec<u8>, result: CommittedNetworkResultV1) {
 }
 
 fn decode_result(
-    decoder: &mut Decoder<'_>,
+    decoder: &mut BoundedReader<'_, NetworkStateError>,
     expected_preparation: NetworkCatalogBindingV1,
 ) -> Result<CommittedNetworkResultV1, NetworkStateError> {
-    let request_id = decoder.take()?;
-    let generation = u64::from_be_bytes(decoder.take()?);
-    let digest = ObjectDigest::from_bytes(decoder.take()?);
+    let request_id = decoder.array()?;
+    let generation = u64::from_be_bytes(decoder.array()?);
+    let digest = ObjectDigest::from_bytes(decoder.array()?);
     if generation != expected_preparation.generation() || digest != expected_preparation.digest() {
         return Err(NetworkStateError::CorruptRecord);
     }
     Ok(CommittedNetworkResultV1 {
         request_id,
         preparation: expected_preparation,
-        network_handle: decoder.take()?,
-        kernel_boot_id: decoder.take()?,
-        namespace_device: u64::from_be_bytes(decoder.take()?),
-        namespace_inode: u64::from_be_bytes(decoder.take()?),
-        kernel_plan_digest: ObjectDigest::from_bytes(decoder.take()?),
-        result_digest: ObjectDigest::from_bytes(decoder.take()?),
+        network_handle: decoder.array()?,
+        kernel_boot_id: decoder.array()?,
+        namespace_device: u64::from_be_bytes(decoder.array()?),
+        namespace_inode: u64::from_be_bytes(decoder.array()?),
+        kernel_plan_digest: ObjectDigest::from_bytes(decoder.array()?),
+        result_digest: ObjectDigest::from_bytes(decoder.array()?),
     })
 }
 
@@ -1940,19 +1941,19 @@ fn encode_catalog(
 }
 
 fn decode_catalog(
-    decoder: &mut Decoder<'_>,
+    decoder: &mut BoundedReader<'_, NetworkStateError>,
 ) -> Result<ResolvedNetworkPreparationV1, NetworkStateError> {
-    let generation = u64::from_be_bytes(decoder.take()?);
-    let handle = decoder.take()?;
-    let policy = ObjectDigest::from_bytes(decoder.take()?);
-    let count = usize::from(u16::from_be_bytes(decoder.take()?));
+    let generation = u64::from_be_bytes(decoder.array()?);
+    let handle = decoder.array()?;
+    let policy = ObjectDigest::from_bytes(decoder.array()?);
+    let count = usize::from(u16::from_be_bytes(decoder.array()?));
     if count > 256 {
         return Err(NetworkStateError::CorruptRecord);
     }
     let mut endpoints = Vec::with_capacity(count);
     for _ in 0..count {
         endpoints.push(
-            ResolvedEndpointV1::new(decoder.take()?, ObjectDigest::from_bytes(decoder.take()?))
+            ResolvedEndpointV1::new(decoder.array()?, ObjectDigest::from_bytes(decoder.array()?))
                 .map_err(|_| NetworkStateError::CorruptRecord)?,
         );
     }
@@ -1960,53 +1961,12 @@ fn decode_catalog(
         .map_err(|_| NetworkStateError::CorruptRecord)
 }
 
-struct Decoder<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> Decoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], NetworkStateError> {
-        let end = self
-            .offset
-            .checked_add(N)
-            .ok_or(NetworkStateError::CorruptRecord)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(NetworkStateError::CorruptRecord)?;
-        self.offset = end;
-        value
-            .try_into()
-            .map_err(|_| NetworkStateError::CorruptRecord)
-    }
-
-    fn byte(&mut self) -> Result<u8, NetworkStateError> {
-        Ok(self.take::<1>()?[0])
-    }
-
-    fn blob(&mut self) -> Result<&'a [u8], NetworkStateError> {
-        let length = usize::try_from(u32::from_be_bytes(self.take()?))
-            .map_err(|_| NetworkStateError::CorruptRecord)?;
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(NetworkStateError::CorruptRecord)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(NetworkStateError::CorruptRecord)?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    const fn finished(&self) -> bool {
-        self.offset == self.bytes.len()
-    }
+fn decode_blob<'a>(
+    decoder: &mut BoundedReader<'a, NetworkStateError>,
+) -> Result<&'a [u8], NetworkStateError> {
+    let length = usize::try_from(u32::from_be_bytes(decoder.array()?))
+        .map_err(|_| NetworkStateError::CorruptRecord)?;
+    decoder.bytes(length)
 }
 
 fn transaction_id(label: &[u8], request_id: &[u8; 16]) -> [u8; 16] {
