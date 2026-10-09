@@ -11,6 +11,8 @@ use access::Access;
 mod catalog;
 mod containers;
 mod content;
+#[cfg(all(feature = "std", unix))]
+pub(crate) use crate::store::native_domain_deletion as domain_deletion;
 #[cfg(all(test, feature = "tokio", unix))]
 pub(crate) mod content_observation;
 mod files;
