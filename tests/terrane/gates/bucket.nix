@@ -184,6 +184,8 @@ in {
     cd crates
     ${focusedTests}
     run_bucket_test bucket::fault_tests::unsynced_temporary_write_never_changes_visible_ref
+    run_bucket_test store::native_effect::tests::immutable_cohort::targeted_rename_tests::targeted_manifest_rename_fault_preserves_installed_prefix_and_refuses_receipt
+    run_bucket_test store::native_effect::tests::immutable_cohort::targeted_rename_tests::targeted_manifest_rename_fault_ignores_other_destinations
     run_bucket_test bucket::fault_tests::partial_generation_is_unpublished_and_retry_uses_a_fresh_generation
     run_bucket_test store::native_effect::tests::directory::restrictive_umask_repairs_the_actual_new_directory_or_refuses_handoff
     run_bucket_test store::native_effect::tests::directory::restored_created_name_rejects_the_opened_directory_decoy
