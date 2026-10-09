@@ -2347,7 +2347,11 @@ deep-copies the same immutable candidate-body map. Private `79719bc59b` replaces
 those copies with shared immutable ownership, retaining per-cohort promotion,
 active names and conflict classification. It changes only the private scope
 implementation and preserves every fresh observation and current check. Its
-source diff is reviewed; builds and runtime qualification remain unrun.
+source diff is reviewed. Its source and metadata preflight passes; the first
+compiler invocation stops before compilation because the sandbox makes the
+prescribed shared target read-only. That result is retained while the same
+command resumes with the required filesystem access. No candidate test result
+is established by the preflight or stopped command.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
 the shared executable as fresh while it still contains the class candidate's
@@ -2366,10 +2370,23 @@ non-fresh compiler-artifact requirement retained. Every stopped invocation
 remains preserved and contains no diagnostic runtime result.
 The replacement timestamp operation and its source/stat checks pass: contents,
 inode, mode and ownership stay fixed while the new modification time exceeds
-the retained dependency timestamps. Cargo begins compiling again; terminal
-compiler identity verification and diagnostic execution remain pending.
+the retained dependency timestamps. Compilation and fresh discovery pass,
+binding the original executable and one nonignored case among 832. The single
+instrumented 1024-record test then fails in baseline publication after 66.020
+seconds. Its actual rejecting sample reports Expired at 30.004481757 seconds
+against the unchanged thirty-second writer limit, at `guard/time.rs:270` and
+the retained deadline before requests during output synchronization. Source
+and original executable checks pass before and after this execution. These
+observations identify this diagnostic only; they do not retrospectively explain
+the earlier masked denial or establish a speedup.
 The diagnostic preserves the thirty-second writer and 120-second process
 settings and cannot replace the earlier failed qualification.
+
+The allocation-change qualification now includes all six existing ordinary
+and adversarial populations in increasing order, stopping on the first failure.
+The current index gate still omits those selectors and retains an explicit
+DRV-29 qualification blocker; its prerequisite results cannot stand for those
+actual witnesses or permit removing that blocker.
 
 A read-only format audit of `7c71e91bc5` finds no concrete missing current-T1
 vector or property implementation. The actual golden gate requires twenty
