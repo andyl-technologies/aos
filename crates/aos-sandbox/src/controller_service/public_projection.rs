@@ -39,8 +39,6 @@ const PROJECTION_VERSION: u16 = 1;
 const PROJECTION_FLAGS: u8 = 0;
 const PROJECTION_KEY_PREFIX: &[u8] = b"aos.public.resource.v1\0";
 const PROJECTION_HEADER_BYTES: usize = 8 + 2 + 1 + 1 + 16 + 16 + 16 + 4 + 32;
-pub(crate) const MAXIMUM_RETAINED_PUBLIC_PROJECTION_BYTES: usize =
-    PROJECTION_HEADER_BYTES + MAXIMUM_PUBLIC_RESOURCE_BYTES;
 
 /// Identifies one durable public projection schema.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

@@ -3,12 +3,16 @@
 use std::fs;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
-use aos_sandbox_core::RevocationScopeId;
+use aos_sandbox_core::{ObjectDigest, ProjectId, RevocationScopeId, SandboxId};
+
+use crate::policy_compiler::HistoricalCreateProjectSourceHeadsV1;
 
 use super::*;
 use crate::journal::Journal;
 use crate::lifecycle::protected_journal_join::source_domain_journal_limits;
 use crate::reconciler::effect::{EffectLedgerRecord, EffectState, decode_effect, encode_effect};
+
+const FIXED_BODY_BYTES: usize = 1024;
 
 fn metadata() -> ProjectAdmissionMetadata {
     let directory = tempfile::tempdir().unwrap();
@@ -26,19 +30,19 @@ fn metadata() -> ProjectAdmissionMetadata {
     let reservation = journal
         .preview_source_project_admission_reservation_v1([1; 16], project, names)
         .unwrap();
-    ProjectAdmissionMetadata {
-        admission_revision: ObjectDigest::from_bytes([2; 32]),
-        admission_generation: 1,
-        source_commitment: ObjectDigest::from_bytes([3; 32]),
-        sandbox: SandboxId::from_bytes([4; 16]),
+    ProjectAdmissionMetadata::from_historical_fields(
+        ObjectDigest::from_bytes([2; 32]),
+        1,
+        ObjectDigest::from_bytes([3; 32]),
+        SandboxId::from_bytes([4; 16]),
         project,
         reservation,
-        capacity_id: [5; 32],
-        phase: ProjectAdmissionPhase::Prepared,
-        challenge: None,
-        terminal: None,
-        retired_floor: None,
-        source_heads: HistoricalCreateProjectSourceHeadsV1::from_historical_fields(
+        [5; 32],
+        ProjectAdmissionPhase::Prepared,
+        None,
+        None,
+        None,
+        HistoricalCreateProjectSourceHeadsV1::from_historical_fields(
             ObjectDigest::from_bytes([6; 32]),
             1,
             ObjectDigest::from_bytes([7; 32]),
@@ -49,8 +53,8 @@ fn metadata() -> ProjectAdmissionMetadata {
         ),
         // The codec retains bytes but intentionally cannot authenticate or
         // validate an original projection. The parent's full graph must do so.
-        original_projection: vec![11, 12, 13],
-    }
+        vec![11, 12, 13],
+    )
 }
 
 #[test]
@@ -79,26 +83,26 @@ fn metadata_canonical_bytes_reject_every_field_change_and_torn_row() {
 #[test]
 fn metadata_phase_cannot_substitute_terminal_or_retirement_authority() {
     let mut row = metadata();
-    row.phase = ProjectAdmissionPhase::DispatchAuthorized;
+    row.set_historical_phase(ProjectAdmissionPhase::DispatchAuthorized);
     assert!(row.encode().is_ok());
-    row.phase = ProjectAdmissionPhase::AcceptedRootTerminal;
+    row.set_historical_phase(ProjectAdmissionPhase::AcceptedRootTerminal);
     assert!(
         row.encode().is_err(),
         "accepted phase requires exact terminal bytes"
     );
     let cancellation =
-        crate::policy_compiler::test_root_project_reservation_cancellation_v1(row.reservation);
-    row.terminal = Some(RetainedRootProjectTerminal::Cancellation(cancellation));
+        crate::policy_compiler::test_root_project_reservation_cancellation_v1(row.reservation());
+    row.set_historical_terminal(Some(RetainedRootProjectTerminal::Cancellation(cancellation)));
     let accepted = row.acceptance_digest().unwrap();
-    row.phase = ProjectAdmissionPhase::RootRetired;
+    row.set_historical_phase(ProjectAdmissionPhase::RootRetired);
     assert!(
         row.encode().is_err(),
         "retired phase requires an exact floor digest"
     );
-    row.retired_floor = Some(ObjectDigest::from_bytes([14; 32]));
+    row.set_historical_retired_floor(Some(ObjectDigest::from_bytes([14; 32])));
     assert_eq!(row.acceptance_digest().unwrap(), accepted);
     assert!(row.encode().is_ok());
-    row.phase = ProjectAdmissionPhase::Prepared;
+    row.set_historical_phase(ProjectAdmissionPhase::Prepared);
     assert!(
         row.encode().is_err(),
         "prepared cannot carry a terminal or historical floor"

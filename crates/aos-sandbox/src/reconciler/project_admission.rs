@@ -22,6 +22,7 @@ pub(super) use metadata::{
 };
 
 use aos_sandbox_core::{ObjectDigest, ProjectId, SandboxId};
+use aos_sandbox_protocol::domain_ledger::project_admission_metadata::ProjectAdmissionMetadataDataErrorV1;
 use sha2::{Digest as _, Sha256};
 
 use crate::controller::ControllerRequestScopeV1;
@@ -80,20 +81,20 @@ impl RetainedControllerProjectAdmissionV1 {
     /// Returns the Source reservation retained before dispatch.
     #[must_use]
     pub const fn reservation(&self) -> SourceProjectAdmissionReservationV1 {
-        self.metadata.reservation
+        self.metadata.reservation()
     }
 
     /// Reports whether Root dispatch has not yet been authorized.
     #[must_use]
     pub const fn is_prepared(&self) -> bool {
-        matches!(self.metadata.phase, ProjectAdmissionPhase::Prepared)
+        matches!(self.metadata.phase(), ProjectAdmissionPhase::Prepared)
     }
 
     /// Reports whether an exact Root terminal was accepted locally.
     #[must_use]
     pub const fn has_accepted_terminal(&self) -> bool {
         matches!(
-            self.metadata.phase,
+            self.metadata.phase(),
             ProjectAdmissionPhase::AcceptedRootTerminal | ProjectAdmissionPhase::RootRetired
         )
     }
@@ -101,7 +102,7 @@ impl RetainedControllerProjectAdmissionV1 {
     /// Returns the historical outcome, without establishing Root transport.
     #[must_use]
     pub const fn outcome(&self) -> Option<RootProjectAdmissionOutcomeV1> {
-        match self.metadata.terminal {
+        match self.metadata.terminal() {
             Some(RetainedRootProjectTerminal::Outcome(outcome)) => Some(outcome),
             _ => None,
         }
@@ -137,8 +138,8 @@ pub fn retained_controller_project_admission_v1(
             continue;
         };
         let matches = match reservation {
-            Some(reservation) => metadata.reservation == reservation,
-            None => metadata.phase != ProjectAdmissionPhase::RootRetired,
+            Some(reservation) => metadata.reservation() == reservation,
+            None => metadata.phase() != ProjectAdmissionPhase::RootRetired,
         };
         if !matches {
             continue;
@@ -214,18 +215,18 @@ fn dispatch_readback_from_original_graph(
             .ok_or_else(invalid_metadata)?,
     )?;
     let metadata = effect.project_admission.ok_or_else(invalid_metadata)?;
-    if metadata.phase != ProjectAdmissionPhase::DispatchAuthorized {
+    if metadata.phase() != ProjectAdmissionPhase::DispatchAuthorized {
         return Err(invalid_metadata().into());
     }
     Ok(ControllerProjectDispatchReadbackV1 {
         operation,
-        sandbox: metadata.sandbox,
-        project: metadata.project,
-        source_commitment: metadata.source_commitment,
-        admission_revision: metadata.admission_revision,
-        admission_generation: metadata.admission_generation,
-        metadata: ObjectDigest::from_bytes(Sha256::digest(metadata.encode()?).into()),
-        reservation: metadata.reservation,
+        sandbox: metadata.sandbox(),
+        project: metadata.project(),
+        source_commitment: metadata.source_commitment(),
+        admission_revision: metadata.admission_revision(),
+        admission_generation: metadata.admission_generation(),
+        metadata: ObjectDigest::from_bytes(Sha256::digest(metadata.encode().map_err(ReconcilerError::from)?).into()),
+        reservation: metadata.reservation(),
     })
 }
 
@@ -244,20 +245,20 @@ pub(crate) fn accepted_controller_project_terminal_v1(
     let metadata = effect.project_admission.ok_or_else(invalid_metadata)?;
     // A previous RootRetired row is useful only for exact floor replay, never
     // to issue a new retirement carrier or nominate another historical cut.
-    if metadata.phase != ProjectAdmissionPhase::AcceptedRootTerminal {
+    if metadata.phase() != ProjectAdmissionPhase::AcceptedRootTerminal {
         return Err(invalid_metadata().into());
     }
-    let terminal = metadata.terminal.ok_or_else(invalid_metadata)?;
+    let terminal = metadata.terminal().ok_or_else(invalid_metadata)?;
     Ok(AcceptedControllerProjectTerminalV1 {
         operation,
-        sandbox: metadata.sandbox,
-        project: metadata.project,
-        source_commitment: metadata.source_commitment,
-        admission_revision: metadata.admission_revision,
-        admission_generation: metadata.admission_generation,
-        accepted_metadata: metadata.acceptance_digest()?,
-        reservation: metadata.reservation,
-        challenge: metadata.challenge,
+        sandbox: metadata.sandbox(),
+        project: metadata.project(),
+        source_commitment: metadata.source_commitment(),
+        admission_revision: metadata.admission_revision(),
+        admission_generation: metadata.admission_generation(),
+        accepted_metadata: metadata.acceptance_digest().map_err(ReconcilerError::from)?,
+        reservation: metadata.reservation(),
+        challenge: metadata.challenge(),
         root_terminal: terminal.record_digest(),
         kind: terminal.kind(),
     })
@@ -295,15 +296,15 @@ impl ControllerProjectHistoryAcceptanceV1<'_> {
         let metadata = effect
             .project_admission
             .ok_or(JournalError::ProtectedBoundary)?;
-        if metadata.phase != ProjectAdmissionPhase::RootRetired
-            || metadata.retired_floor != Some(self.floor)
+        if metadata.phase() != ProjectAdmissionPhase::RootRetired
+            || metadata.retired_floor() != Some(self.floor)
             || floor.record_digest() != self.floor
             || metadata
                 .acceptance_digest()
                 .map_err(|_| JournalError::ProtectedBoundary)?
                 != self.accepted_metadata
-            || metadata.reservation != reservation
-            || metadata.challenge != challenge
+            || metadata.reservation() != reservation
+            || metadata.challenge() != challenge
             || floor.source_terminal_digest() != source_terminal
             || !metadata.matches_floor(self.operation, floor)
         {
@@ -343,25 +344,25 @@ pub fn accept_controller_project_history_floor_v1<'controller>(
     let floor = proof.floor();
     if !prior.matches_floor(operation, floor)
         || !matches!(
-            prior.phase,
+            prior.phase(),
             ProjectAdmissionPhase::AcceptedRootTerminal | ProjectAdmissionPhase::RootRetired
         )
     {
         return Err(invalid_metadata().into());
     }
     let floor_digest = floor.record_digest();
-    let accepted_metadata = prior.acceptance_digest()?;
-    let next = ProjectAdmissionMetadata {
-        phase: ProjectAdmissionPhase::RootRetired,
-        retired_floor: Some(floor_digest),
-        ..prior.clone()
-    };
-    if prior.phase == ProjectAdmissionPhase::RootRetired {
+    let accepted_metadata = prior.acceptance_digest().map_err(ReconcilerError::from)?;
+    let next_phase = ProjectAdmissionPhase::RootRetired;
+    let next_floor = Some(floor_digest);
+    let mut next = prior.clone();
+    next.set_historical_phase(next_phase);
+    next.set_historical_retired_floor(next_floor);
+    if prior.phase() == ProjectAdmissionPhase::RootRetired {
         if prior != next {
             return Err(invalid_metadata().into());
         }
     } else {
-        let reservation = journal.recover_global_capacity_reservation_v1(prior.capacity_id)?;
+        let reservation = journal.recover_global_capacity_reservation_v1(prior.capacity_id())?;
         effect.project_admission = Some(next.clone());
         let transaction = JournalTransaction::new(
             aos_sandbox_core::OperationId::new().into_bytes(),
@@ -450,15 +451,15 @@ pub fn prepare_current_create_project_admission_v1(
     )?;
     let mut effect = load_scoped_effect(journal, source.operation(), scope, plan)?;
     if let Some(prior) = &effect.project_admission {
-        if prior.reservation == reservation
-            && prior.admission_revision == source.operation_revision()
-            && prior.admission_generation == source.accepted_generation()
-            && prior.source_commitment == source.commitment()
-            && prior.sandbox == source.sandbox()
-            && prior.project == source.project()
-            && prior.source_heads == source.historical_heads()
+        if prior.reservation() == reservation
+            && prior.admission_revision() == source.operation_revision()
+            && prior.admission_generation() == source.accepted_generation()
+            && prior.source_commitment() == source.commitment()
+            && prior.sandbox() == source.sandbox()
+            && prior.project() == source.project()
+            && prior.source_heads() == source.historical_heads()
             && matches!(
-                prior.phase,
+                prior.phase(),
                 ProjectAdmissionPhase::Prepared | ProjectAdmissionPhase::DispatchAuthorized
             )
         {
@@ -468,13 +469,13 @@ pub fn prepare_current_create_project_admission_v1(
         // Only a completely joined historical retirement may be replaced by
         // another issue of this same original request. Source preflight has
         // already required its exact retirement ACK before advancing issue.
-        if prior.phase != ProjectAdmissionPhase::RootRetired
-            || prior.reservation.issue().checked_add(1) != Some(reservation.issue())
-            || prior.admission_revision != source.operation_revision()
-            || prior.admission_generation != source.accepted_generation()
-            || prior.sandbox != source.sandbox()
-            || prior.project != source.project()
-            || matches!(prior.terminal, Some(RetainedRootProjectTerminal::Outcome(outcome))
+        if prior.phase() != ProjectAdmissionPhase::RootRetired
+            || prior.reservation().issue().checked_add(1) != Some(reservation.issue())
+            || prior.admission_revision() != source.operation_revision()
+            || prior.admission_generation() != source.accepted_generation()
+            || prior.sandbox() != source.sandbox()
+            || prior.project() != source.project()
+            || matches!(prior.terminal(), Some(RetainedRootProjectTerminal::Outcome(outcome))
                 if outcome.kind() == RootProjectAdmissionOutcomeKindV1::Committed)
         {
             return Err(invalid_metadata().into());
@@ -486,20 +487,20 @@ pub fn prepare_current_create_project_admission_v1(
         return Err(invalid_metadata().into());
     }
 
-    let mut metadata = ProjectAdmissionMetadata {
-        admission_revision: source.operation_revision(),
-        admission_generation: source.accepted_generation(),
-        source_commitment: source.commitment(),
-        sandbox: source.sandbox(),
-        project: source.project(),
+    let mut metadata = ProjectAdmissionMetadata::from_historical_fields(
+        source.operation_revision(),
+        source.accepted_generation(),
+        source.commitment(),
+        source.sandbox(),
+        source.project(),
         reservation,
-        capacity_id: [1; 32],
-        phase: ProjectAdmissionPhase::Prepared,
-        challenge: None,
-        terminal: None,
-        retired_floor: None,
-        source_heads: source.historical_heads(),
-        original_projection: PublicProjectionStoreV1::new(journal)
+        [1; 32],
+        ProjectAdmissionPhase::Prepared,
+        None,
+        None,
+        None,
+        source.historical_heads(),
+        PublicProjectionStoreV1::new(journal)
             .get(
                 PublicProjectionKindV1::Sandbox,
                 *source.sandbox().as_bytes(),
@@ -508,13 +509,13 @@ pub fn prepare_current_create_project_admission_v1(
             .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?
             .retained_record_bytes()
             .map_err(CurrentCreatePolicySourceErrorV1::from)?,
-    };
+    );
     effect.project_admission = Some(metadata.clone());
     let budget = controller_project_suffix_budget(&effect)?;
     let transaction_id = aos_sandbox_core::OperationId::new().into_bytes();
     let request = capacity_request(source.operation(), &metadata, plan, 3, 8, budget);
     let prepared = journal.prepare_global_capacity_reservation_v1(request, transaction_id)?;
-    metadata.capacity_id = prepared.reservation_id();
+    metadata.set_historical_capacity_id(prepared.reservation_id());
     effect.project_admission = Some(metadata);
     let transaction = JournalTransaction::new(
         transaction_id,
@@ -568,20 +569,22 @@ pub fn authorize_controller_project_admission_dispatch_v1(
         .project_admission
         .clone()
         .ok_or_else(invalid_metadata)?;
-    if metadata.phase == ProjectAdmissionPhase::DispatchAuthorized {
+    if metadata.phase() == ProjectAdmissionPhase::DispatchAuthorized {
         validate_all(journal)?;
         return Ok(());
     }
-    if metadata.phase != ProjectAdmissionPhase::Prepared {
+    if metadata.phase() != ProjectAdmissionPhase::Prepared {
         return Err(invalid_metadata().into());
     }
     transfer_metadata(
         journal,
         operation,
         effect,
-        ProjectAdmissionMetadata {
-            phase: ProjectAdmissionPhase::DispatchAuthorized,
-            ..metadata
+        {
+            let next_phase = ProjectAdmissionPhase::DispatchAuthorized;
+            let mut next = metadata;
+            next.set_historical_phase(next_phase);
+            next
         },
     )?;
     require_controller_writer(journal)?;
@@ -618,20 +621,21 @@ pub fn accept_controller_project_admission_outcome_v1(
         read_source_project_reservation_status_v1(owner)?.ok_or_else(invalid_metadata)?;
     let (challenge, _) =
         read_source_project_admission_status_v1(owner)?.ok_or_else(invalid_metadata)?;
-    if canceled || reservation != prior.reservation {
+    if canceled || reservation != prior.reservation() {
         return Err(invalid_metadata().into());
     }
-    let next = ProjectAdmissionMetadata {
-        phase: ProjectAdmissionPhase::AcceptedRootTerminal,
-        challenge: Some(challenge),
-        terminal: Some(RetainedRootProjectTerminal::Outcome(proof.outcome())),
-        ..prior.clone()
-    };
-    next.validate()?;
-    if prior.phase == ProjectAdmissionPhase::AcceptedRootTerminal && next == prior {
+    let next_phase = ProjectAdmissionPhase::AcceptedRootTerminal;
+    let next_challenge = Some(challenge);
+    let next_terminal = Some(RetainedRootProjectTerminal::Outcome(proof.outcome()));
+    let mut next = prior.clone();
+    next.set_historical_phase(next_phase);
+    next.set_historical_challenge(next_challenge);
+    next.set_historical_terminal(next_terminal);
+    next.validate().map_err(ReconcilerError::from)?;
+    if prior.phase() == ProjectAdmissionPhase::AcceptedRootTerminal && next == prior {
         return Ok(());
     }
-    if prior.phase != ProjectAdmissionPhase::DispatchAuthorized {
+    if prior.phase() != ProjectAdmissionPhase::DispatchAuthorized {
         return Err(invalid_metadata().into());
     }
     transfer_metadata(journal, operation, effect, next)?;
@@ -668,20 +672,20 @@ pub fn accept_controller_project_reservation_cancellation_v1(
         .ok_or_else(invalid_metadata)?;
     let (reservation, _) =
         read_source_project_reservation_status_v1(owner)?.ok_or_else(invalid_metadata)?;
-    if reservation != prior.reservation || read_source_project_admission_status_v1(owner)?.is_some()
+    if reservation != prior.reservation() || read_source_project_admission_status_v1(owner)?.is_some()
     {
         return Err(invalid_metadata().into());
     }
-    let next = ProjectAdmissionMetadata {
-        phase: ProjectAdmissionPhase::AcceptedRootTerminal,
-        terminal: Some(RetainedRootProjectTerminal::Cancellation(proof.marker())),
-        ..prior.clone()
-    };
-    next.validate()?;
-    if prior.phase == ProjectAdmissionPhase::AcceptedRootTerminal && next == prior {
+    let next_phase = ProjectAdmissionPhase::AcceptedRootTerminal;
+    let next_terminal = Some(RetainedRootProjectTerminal::Cancellation(proof.marker()));
+    let mut next = prior.clone();
+    next.set_historical_phase(next_phase);
+    next.set_historical_terminal(next_terminal);
+    next.validate().map_err(ReconcilerError::from)?;
+    if prior.phase() == ProjectAdmissionPhase::AcceptedRootTerminal && next == prior {
         return Ok(());
     }
-    if prior.phase != ProjectAdmissionPhase::DispatchAuthorized {
+    if prior.phase() != ProjectAdmissionPhase::DispatchAuthorized {
         return Err(invalid_metadata().into());
     }
     transfer_metadata(journal, operation, effect, next)?;
@@ -738,11 +742,11 @@ fn capacity_request(
             .chain_update(effect_key(operation, 0))
             .finalize()
             .into(),
-        owner_digest: *metadata.reservation.record_digest().as_bytes(),
+        owner_digest: *metadata.reservation().record_digest().as_bytes(),
         operation_id: *operation.as_bytes(),
         artifact_digest: Sha256::digest(plan.request()).into(),
-        checkpoint_digest: *metadata.admission_revision.as_bytes(),
-        chain_head_digest: *metadata.source_commitment.as_bytes(),
+        checkpoint_digest: *metadata.admission_revision().as_bytes(),
+        chain_head_digest: *metadata.source_commitment().as_bytes(),
         future_transactions,
         terminal_records: records,
         terminal_bytes: bytes,
@@ -772,7 +776,7 @@ fn transfer_metadata(
         .project_admission
         .clone()
         .ok_or_else(invalid_metadata)?;
-    let capacity = journal.recover_global_capacity_reservation_v1(prior.capacity_id)?;
+    let capacity = journal.recover_global_capacity_reservation_v1(prior.capacity_id())?;
     let old = capacity.request();
     let transaction_id = aos_sandbox_core::OperationId::new().into_bytes();
     let mut request = GlobalCapacityReservationRequestV1 {
@@ -794,7 +798,7 @@ fn transfer_metadata(
     // numeric value. Use the real prepared record twice rather than copying
     // its codec or estimating frame lengths.
     let draft = journal.prepare_global_capacity_reservation_v1(request, transaction_id)?;
-    next.capacity_id = draft.reservation_id();
+    next.set_historical_capacity_id(draft.reservation_id());
     effect.project_admission = Some(next.clone());
     let draft_transaction = JournalTransaction::new(
         transaction_id,
@@ -815,7 +819,7 @@ fn transfer_metadata(
         .checked_sub(consumed)
         .ok_or(JournalError::JournalTooLarge)?;
     let successor = journal.prepare_global_capacity_reservation_v1(request, transaction_id)?;
-    next.capacity_id = successor.reservation_id();
+    next.set_historical_capacity_id(successor.reservation_id());
     effect.project_admission = Some(next);
     let transaction = JournalTransaction::new(
         transaction_id,
@@ -833,6 +837,14 @@ fn invalid_metadata() -> ReconcilerError {
     ReconcilerError::CorruptLedger("invalid Controller project-admission metadata")
 }
 
+impl From<ProjectAdmissionMetadataDataErrorV1> for ReconcilerError {
+    fn from(error: ProjectAdmissionMetadataDataErrorV1) -> Self {
+        match error {
+            ProjectAdmissionMetadataDataErrorV1::InvalidMetadata => invalid_metadata(),
+        }
+    }
+}
+
 pub(crate) fn validate_capacity_transfer(
     journal: &Journal,
     transaction: &JournalTransaction,
@@ -841,22 +853,22 @@ pub(crate) fn validate_capacity_transfer(
     new_capacity: [u8; 32],
 ) -> Result<(), JournalError> {
     let (prior, next) = capacity_effect_transition(journal, transaction, operation)?;
-    if prior.capacity_id != old_capacity || next.capacity_id != new_capacity {
+    if prior.capacity_id() != old_capacity || next.capacity_id() != new_capacity {
         return Err(JournalError::AuthorityPreflightMismatch);
     }
     let mut expected = prior.clone();
-    expected.capacity_id = new_capacity;
-    match (prior.phase, next.phase) {
+    expected.set_historical_capacity_id(new_capacity);
+    match (prior.phase(), next.phase()) {
         (ProjectAdmissionPhase::Prepared, ProjectAdmissionPhase::DispatchAuthorized) => {
-            expected.phase = ProjectAdmissionPhase::DispatchAuthorized;
+            expected.set_historical_phase(ProjectAdmissionPhase::DispatchAuthorized);
         }
         (
             ProjectAdmissionPhase::DispatchAuthorized,
             ProjectAdmissionPhase::AcceptedRootTerminal,
         ) => {
-            expected.phase = ProjectAdmissionPhase::AcceptedRootTerminal;
-            expected.challenge = next.challenge;
-            expected.terminal = next.terminal;
+            expected.set_historical_phase(ProjectAdmissionPhase::AcceptedRootTerminal);
+            expected.set_historical_challenge(next.challenge());
+            expected.set_historical_terminal(next.terminal());
         }
         _ => return Err(JournalError::AuthorityPreflightMismatch),
     }
@@ -873,13 +885,13 @@ pub(crate) fn validate_capacity_settlement(
     capacity: [u8; 32],
 ) -> Result<(), JournalError> {
     let (prior, next) = capacity_effect_transition(journal, transaction, operation)?;
-    let expected = ProjectAdmissionMetadata {
-        phase: ProjectAdmissionPhase::RootRetired,
-        retired_floor: next.retired_floor,
-        ..prior.clone()
-    };
-    if prior.phase != ProjectAdmissionPhase::AcceptedRootTerminal
-        || prior.capacity_id != capacity
+    let expected_phase = ProjectAdmissionPhase::RootRetired;
+    let expected_floor = next.retired_floor();
+    let mut expected = prior.clone();
+    expected.set_historical_phase(expected_phase);
+    expected.set_historical_retired_floor(expected_floor);
+    if prior.phase() != ProjectAdmissionPhase::AcceptedRootTerminal
+        || prior.capacity_id() != capacity
         || next != expected
         || transaction.records().len() != 2
     {
@@ -942,25 +954,25 @@ pub(super) fn validate_all(journal: &Journal) -> Result<(), ReconcilerError> {
         let (revision, generation, request_digest) = retained_create_sandbox_admission_revision_v1(
             journal,
             operation,
-            metadata.phase == ProjectAdmissionPhase::RootRetired,
+            metadata.phase() == ProjectAdmissionPhase::RootRetired,
         )?
         .ok_or_else(invalid_metadata)?;
         if key != effect_key(operation, 0)
             || create_project_source_commitment_v1(
                 operation,
-                metadata.admission_revision,
-                metadata.admission_generation,
-                metadata.sandbox,
-                metadata.project,
-                metadata.source_heads,
-            ) != metadata.source_commitment
+                metadata.admission_revision(),
+                metadata.admission_generation(),
+                metadata.sandbox(),
+                metadata.project(),
+                metadata.source_heads(),
+            ) != metadata.source_commitment()
             || crate::policy_compiler::project_admission_client_nonce_v1(
                 operation,
-                metadata.source_commitment,
-            ) != metadata.reservation.client_nonce()
-            || revision != metadata.admission_revision
-            || generation != metadata.admission_generation
-            || metadata.terminal.is_some_and(|terminal| {
+                metadata.source_commitment(),
+            ) != metadata.reservation().client_nonce()
+            || revision != metadata.admission_revision()
+            || generation != metadata.admission_generation()
+            || metadata.terminal().is_some_and(|terminal| {
                 matches!(terminal,
                 RetainedRootProjectTerminal::Outcome(outcome)
                     if outcome.kind() == RootProjectAdmissionOutcomeKindV1::Committed
@@ -973,13 +985,13 @@ pub(super) fn validate_all(journal: &Journal) -> Result<(), ReconcilerError> {
             .plan
             .public_mutation_context()?
             .ok_or_else(invalid_metadata)?;
-        if context.project() != metadata.project {
+        if context.project() != metadata.project() {
             return Err(invalid_metadata());
         }
         validate_original_projection(journal, operation, metadata, &effect.plan, request_digest)?;
-        if metadata.phase == ProjectAdmissionPhase::RootRetired {
+        if metadata.phase() == ProjectAdmissionPhase::RootRetired {
             if journal
-                .lookup_global_capacity_reservation_v1(metadata.capacity_id)?
+                .lookup_global_capacity_reservation_v1(metadata.capacity_id())?
                 .is_some()
             {
                 return Err(invalid_metadata());
@@ -989,12 +1001,12 @@ pub(super) fn validate_all(journal: &Journal) -> Result<(), ReconcilerError> {
             if pending_flights > 1 {
                 return Err(invalid_metadata());
             }
-            if !expected_capacity.insert(metadata.capacity_id) {
+            if !expected_capacity.insert(metadata.capacity_id()) {
                 return Err(invalid_metadata());
             }
-            let retained = journal.recover_global_capacity_reservation_v1(metadata.capacity_id)?;
+            let retained = journal.recover_global_capacity_reservation_v1(metadata.capacity_id())?;
             let request = retained.request();
-            let (transactions, records) = match metadata.phase {
+            let (transactions, records) = match metadata.phase() {
                 ProjectAdmissionPhase::Prepared => (3, 8),
                 ProjectAdmissionPhase::DispatchAuthorized => (2, 5),
                 ProjectAdmissionPhase::AcceptedRootTerminal => (1, 2),
@@ -1033,8 +1045,8 @@ fn validate_original_projection(
 ) -> Result<(), ReconcilerError> {
     let projection = PublicProjectionRecordV1::from_retained_record_bytes(
         PublicProjectionKindV1::Sandbox,
-        *metadata.sandbox.as_bytes(),
-        &metadata.original_projection,
+        *metadata.sandbox().as_bytes(),
+        metadata.original_projection(),
     )
     .map_err(|_| invalid_metadata())?;
     let PublicProjectionResourceV1::Sandbox(sandbox) = projection.resource() else {
@@ -1054,17 +1066,17 @@ fn validate_original_projection(
         .as_option()
         .ok_or_else(invalid_metadata)?;
     if projection.operation() != operation
-        || projection.project() != metadata.project
-        || projection.revision() != metadata.source_heads.projection_revision()
+        || projection.project() != metadata.project()
+        || projection.revision() != metadata.source_heads().projection_revision()
         || !sandbox.parent_sandbox_id.is_empty()
         || !request.parent_sandbox_id.is_empty()
-        || sandbox.sandbox_id.as_slice() != metadata.sandbox.as_bytes()
-        || sandbox.project_id.as_slice() != metadata.project.as_bytes()
-        || request.project_id.as_slice() != metadata.project.as_bytes()
+        || sandbox.sandbox_id.as_slice() != metadata.sandbox().as_bytes()
+        || sandbox.project_id.as_slice() != metadata.project().as_bytes()
+        || request.project_id.as_slice() != metadata.project().as_bytes()
         || desired.specification.as_option() != request.specification.as_option()
         || desired.requested_policy.as_option() != request.requested_policy.as_option()
         || sandbox.effective_policy.as_option() != Some(policy)
-        || policy.sha256.as_slice() != metadata.source_heads.publisher_digest().as_bytes()
+        || policy.sha256.as_slice() != metadata.source_heads().publisher_digest().as_bytes()
         || sandbox.resource_version
             != crate::production_operation_compiler::admitted_public_resource_version_v1(
                 operation,
@@ -1078,14 +1090,14 @@ fn validate_original_projection(
     // The immutable captured projection is still the selected child while this
     // attempt is unsettled. After exact Root retirement, legitimate later
     // projection successors do not replace or invalidate its historical copy.
-    if metadata.phase != ProjectAdmissionPhase::RootRetired {
+    if metadata.phase() != ProjectAdmissionPhase::RootRetired {
         let current = PublicProjectionStoreV1::new(journal)
-            .one_parentless_create_sandbox(operation, metadata.project)
+            .one_parentless_create_sandbox(operation, metadata.project())
             .map_err(|_| invalid_metadata())?;
         if current
             != Some((
-                metadata.sandbox,
-                metadata.source_heads.projection_revision(),
+                metadata.sandbox(),
+                metadata.source_heads().projection_revision(),
             ))
         {
             return Err(invalid_metadata());

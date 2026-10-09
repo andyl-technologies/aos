@@ -1441,7 +1441,8 @@ fn encode_effect_with_q04(
         .project_admission
         .as_ref()
         .map(ProjectAdmissionMetadata::encode)
-        .transpose()?;
+        .transpose()
+        .map_err(ReconcilerError::from)?;
     let header_length = if version == RESERVED_OBSERVE_EFFECT_VERSION {
         18
     } else if version == CONTROLLER_Q04_EFFECT_VERSION {
@@ -1888,7 +1889,8 @@ fn decode_effect_with_extensions(
     let state = decode_state(state_code, attempt, receipt, diagnostic)?;
     let metadata_end = diagnostic_end + metadata_length;
     let project_admission = if metadata_length != 0 {
-        let metadata = ProjectAdmissionMetadata::decode(&bytes[diagnostic_end..metadata_end])?;
+        let metadata = ProjectAdmissionMetadata::decode(&bytes[diagnostic_end..metadata_end])
+            .map_err(ReconcilerError::from)?;
         validate_project_metadata_shape(
             &EffectPlan {
                 domain,

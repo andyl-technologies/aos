@@ -20,6 +20,7 @@
 
 pub mod capacity;
 pub mod operation;
+pub mod project_admission_metadata;
 pub mod project_source;
 pub mod protected_names;
 pub mod public_operation;

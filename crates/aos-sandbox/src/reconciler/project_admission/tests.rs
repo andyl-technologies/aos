@@ -153,21 +153,21 @@ impl Fixture {
                 source.protected_writer_physical_names_v1().unwrap(),
             )
             .unwrap();
-        let mut metadata = ProjectAdmissionMetadata {
-            admission_revision: revision,
-            admission_generation: generation,
-            source_commitment: commitment,
+        let mut metadata = ProjectAdmissionMetadata::from_historical_fields(
+            revision,
+            generation,
+            commitment,
             sandbox,
-            project: context.project(),
+            context.project(),
             reservation,
-            capacity_id: [1; 32],
-            phase: ProjectAdmissionPhase::Prepared,
-            challenge: None,
-            terminal: None,
-            retired_floor: None,
-            source_heads: heads,
-            original_projection: projection_bytes.clone(),
-        };
+            [1; 32],
+            ProjectAdmissionPhase::Prepared,
+            None,
+            None,
+            None,
+            heads,
+            projection_bytes.clone(),
+        );
         let transaction_id = [20; 16];
         let capacity = journal
             .prepare_global_capacity_reservation_v1(
@@ -175,7 +175,7 @@ impl Fixture {
                 transaction_id,
             )
             .unwrap();
-        metadata.capacity_id = capacity.reservation_id();
+        metadata.set_historical_capacity_id(capacity.reservation_id());
         let effect = EffectLedgerRecord {
             plan: plan.clone(),
             state: EffectState::Planned,
@@ -250,9 +250,11 @@ fn historical_dispatch_claims_rejoin_actual_original_effect_without_current_publ
         &mut fixture.journal,
         fixture.operation,
         effect,
-        ProjectAdmissionMetadata {
-            phase: ProjectAdmissionPhase::DispatchAuthorized,
-            ..metadata.clone()
+        {
+            let next_phase = ProjectAdmissionPhase::DispatchAuthorized;
+            let mut next = metadata.clone();
+            next.set_historical_phase(next_phase);
+            next
         },
     )
     .unwrap();
@@ -260,10 +262,10 @@ fn historical_dispatch_claims_rejoin_actual_original_effect_without_current_publ
     let claims =
         dispatch_readback_from_original_graph(&fixture.journal, fixture.operation).unwrap();
     assert_eq!(claims.operation, fixture.operation);
-    assert_eq!(claims.sandbox, metadata.sandbox);
-    assert_eq!(claims.reservation, metadata.reservation);
-    assert_eq!(claims.admission_revision, metadata.admission_revision);
-    assert_eq!(claims.source_commitment, metadata.source_commitment);
+    assert_eq!(claims.sandbox, metadata.sandbox());
+    assert_eq!(claims.reservation, metadata.reservation());
+    assert_eq!(claims.admission_revision, metadata.admission_revision());
+    assert_eq!(claims.source_commitment, metadata.source_commitment());
     let key = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
     let pin = crate::policy_compiler::PinnedControllerHoldSignerV1::decode(
         &crate::policy_compiler::encode_controller_hold_signer_credential_v1(
@@ -283,7 +285,7 @@ fn historical_dispatch_claims_rejoin_actual_original_effect_without_current_publ
     .unwrap();
     let verified = verify_controller_project_dispatch_readback_v1(&packet, &pin, 811).unwrap();
     assert_eq!(verified.metadata, claims.metadata);
-    assert_eq!(verified.reservation, metadata.reservation);
+    assert_eq!(verified.reservation, metadata.reservation());
     let mut terminal_domain = packet;
     terminal_domain[..8].copy_from_slice(b"AOSCTP04");
     assert!(verify_controller_project_dispatch_readback_v1(&terminal_domain, &pin, 811).is_err());
@@ -322,20 +324,22 @@ fn original_graph_and_dispatch_suffix_survive_cold_replay_without_source_row() {
         &mut fixture.journal,
         fixture.operation,
         effect,
-        ProjectAdmissionMetadata {
-            phase: ProjectAdmissionPhase::DispatchAuthorized,
-            ..metadata.clone()
+        {
+            let next_phase = ProjectAdmissionPhase::DispatchAuthorized;
+            let mut next = metadata.clone();
+            next.set_historical_phase(next_phase);
+            next
         },
     )
     .unwrap();
     let authorized = fixture.effect().project_admission.unwrap();
-    assert_eq!(authorized.admission_revision, metadata.admission_revision);
-    assert_eq!(authorized.source_commitment, metadata.source_commitment);
-    assert_eq!(authorized.original_projection, metadata.original_projection);
+    assert_eq!(authorized.admission_revision(), metadata.admission_revision());
+    assert_eq!(authorized.source_commitment(), metadata.source_commitment());
+    assert_eq!(authorized.original_projection(), metadata.original_projection());
     assert_eq!(
         fixture
             .journal
-            .recover_global_capacity_reservation_v1(authorized.capacity_id)
+            .recover_global_capacity_reservation_v1(authorized.capacity_id())
             .unwrap()
             .request()
             .future_transactions,
@@ -365,8 +369,35 @@ fn original_graph_rejects_changed_child_source_and_same_key_request() {
         retained_create_sandbox_admission_revision_v1(&fixture.journal, fixture.operation, false)
             .unwrap()
             .unwrap();
-    let mut changed = metadata.clone();
-    changed.sandbox = SandboxId::from_bytes([0xc5; 16]);
+    let admission_revision = metadata.admission_revision();
+    let admission_generation = metadata.admission_generation();
+    let source_commitment = metadata.source_commitment();
+    let _sandbox = metadata.sandbox();
+    let project = metadata.project();
+    let reservation = metadata.reservation();
+    let capacity_id = metadata.capacity_id();
+    let phase = metadata.phase();
+    let challenge = metadata.challenge();
+    let terminal = metadata.terminal();
+    let retired_floor = metadata.retired_floor();
+    let source_heads = metadata.source_heads();
+    let original_projection = metadata.original_projection().to_vec();
+    let sandbox = SandboxId::from_bytes([0xc5; 16]);
+    let changed = ProjectAdmissionMetadata::from_historical_fields(
+        admission_revision,
+        admission_generation,
+        source_commitment,
+        sandbox,
+        project,
+        reservation,
+        capacity_id,
+        phase,
+        challenge,
+        terminal,
+        retired_floor,
+        source_heads,
+        original_projection,
+    );
     assert!(
         validate_original_projection(
             &fixture.journal,
@@ -405,9 +436,36 @@ fn changed_dispatch_transfer_is_nonmutating_and_keeps_reserved_suffix() {
     let mut fixture = Fixture::prepared();
     let effect = fixture.effect();
     let metadata = effect.project_admission.clone().unwrap();
-    let mut changed = metadata.clone();
-    changed.phase = ProjectAdmissionPhase::DispatchAuthorized;
-    changed.admission_revision = ObjectDigest::from_bytes([99; 32]);
+    let _admission_revision = metadata.admission_revision();
+    let admission_generation = metadata.admission_generation();
+    let source_commitment = metadata.source_commitment();
+    let sandbox = metadata.sandbox();
+    let project = metadata.project();
+    let reservation = metadata.reservation();
+    let capacity_id = metadata.capacity_id();
+    let _phase = metadata.phase();
+    let challenge = metadata.challenge();
+    let terminal = metadata.terminal();
+    let retired_floor = metadata.retired_floor();
+    let source_heads = metadata.source_heads();
+    let original_projection = metadata.original_projection().to_vec();
+    let phase = ProjectAdmissionPhase::DispatchAuthorized;
+    let admission_revision = ObjectDigest::from_bytes([99; 32]);
+    let changed = ProjectAdmissionMetadata::from_historical_fields(
+        admission_revision,
+        admission_generation,
+        source_commitment,
+        sandbox,
+        project,
+        reservation,
+        capacity_id,
+        phase,
+        challenge,
+        terminal,
+        retired_floor,
+        source_heads,
+        original_projection,
+    );
     let cut = fixture.journal.snapshot_sequence();
     assert!(transfer_metadata(&mut fixture.journal, fixture.operation, effect, changed).is_err());
     assert_eq!(fixture.journal.snapshot_sequence(), cut);
@@ -424,9 +482,11 @@ fn dispatch_without_root_artifact_keeps_exact_flight_when_credentials_expire_or_
         &mut fixture.journal,
         fixture.operation,
         effect,
-        ProjectAdmissionMetadata {
-            phase: ProjectAdmissionPhase::DispatchAuthorized,
-            ..metadata
+        {
+            let next_phase = ProjectAdmissionPhase::DispatchAuthorized;
+            let mut next = metadata;
+            next.set_historical_phase(next_phase);
+            next
         },
     )
     .unwrap();
@@ -438,18 +498,18 @@ fn dispatch_without_root_artifact_keeps_exact_flight_when_credentials_expire_or_
     let heads = crate::policy_compiler::test_signed_project_heads_for_history_v1(
         &deployment_key,
         &project_key,
-        retained.project,
+        retained.project(),
     );
     assert_eq!(
         fixture
             .source
             .preview_source_project_admission_reservation_v1(
-                retained.reservation.client_nonce(),
-                retained.project,
-                retained.reservation.names(),
+                retained.reservation().client_nonce(),
+                retained.project(),
+                retained.reservation().names(),
             )
             .unwrap(),
-        retained.reservation
+        retained.reservation()
     );
     assert!(
         crate::policy_compiler::verify_policy_deployment_head_v1(
@@ -471,7 +531,7 @@ fn dispatch_without_root_artifact_keeps_exact_flight_when_credentials_expire_or_
     );
     let attempt = |deployment_key: &ed25519_dalek::SigningKey, now| {
         crate::policy_compiler::prepare_fixed_root_project_admission_intent_v1(
-            retained.reservation,
+            retained.reservation(),
             &heads.project,
             &heads.project_input,
             &project_key.verifying_key(),
@@ -504,7 +564,7 @@ fn dispatch_without_root_artifact_keeps_exact_flight_when_credentials_expire_or_
     assert_eq!(
         fixture
             .journal
-            .recover_global_capacity_reservation_v1(retained.capacity_id)
+            .recover_global_capacity_reservation_v1(retained.capacity_id())
             .unwrap()
             .request()
             .future_transactions,

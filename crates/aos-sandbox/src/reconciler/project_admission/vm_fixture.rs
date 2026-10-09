@@ -155,21 +155,21 @@ pub fn prepare_project_history_vm_flight_v1(
         PROJECT,
     )?;
     let mut effect = load_scoped_effect(&journal, operation, scope, &plan)?;
-    let mut metadata = ProjectAdmissionMetadata {
-        admission_revision: revision,
-        admission_generation: generation,
-        source_commitment: commitment,
+    let mut metadata = ProjectAdmissionMetadata::from_historical_fields(
+        revision,
+        generation,
+        commitment,
         sandbox,
-        project: PROJECT,
+        PROJECT,
         reservation,
-        capacity_id: [1; 32],
-        phase: ProjectAdmissionPhase::Prepared,
-        challenge: None,
-        terminal: None,
-        retired_floor: None,
-        source_heads: heads,
+        [1; 32],
+        ProjectAdmissionPhase::Prepared,
+        None,
+        None,
+        None,
+        heads,
         original_projection,
-    };
+    );
     effect.project_admission = Some(metadata.clone());
     let bytes = controller_project_suffix_budget(&effect)?;
     let transaction_id = OperationId::new().into_bytes();
@@ -177,7 +177,7 @@ pub fn prepare_project_history_vm_flight_v1(
         capacity_request(operation, &metadata, &plan, 3, 8, bytes),
         transaction_id,
     )?;
-    metadata.capacity_id = capacity.reservation_id();
+    metadata.set_historical_capacity_id(capacity.reservation_id());
     effect.project_admission = Some(metadata);
     let reservation_record = capacity.record().clone();
     journal.commit_global_capacity_reservation_v1(
@@ -223,30 +223,30 @@ pub fn require_project_history_vm_flight_v1(
         ProjectAdmissionPhase::DispatchAuthorized
     };
     let is_blocked = matches!(effect.state, EffectState::PermanentlyBlocked { .. });
-    if metadata.phase != expected
+    if metadata.phase() != expected
         || !(matches!(effect.state, EffectState::Applying { .. }) || retired && is_blocked)
     {
         return Err("VM original Create phase changed or became applied".into());
     }
     let preview = preview_project_history_vm_reservation_v1(
         source,
-        metadata.reservation.client_nonce(),
-        metadata.project,
+        metadata.reservation().client_nonce(),
+        metadata.project(),
     )?;
     if retired {
         if preview.issue()
             != metadata
-                .reservation
+                .reservation()
                 .issue()
                 .checked_add(1)
                 .ok_or("issue overflow")?
             || journal
-                .recover_global_capacity_reservation_v1(metadata.capacity_id)
+                .recover_global_capacity_reservation_v1(metadata.capacity_id())
                 .is_ok()
         {
             return Err("VM Source ACK or Controller suffix retirement absent".into());
         }
-    } else if preview != metadata.reservation {
+    } else if preview != metadata.reservation() {
         return Err("VM original Source proposal changed".into());
     }
     if is_blocked {
