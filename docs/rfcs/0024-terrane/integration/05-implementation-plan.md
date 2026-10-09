@@ -320,6 +320,15 @@ Its measured benefit and runtime correctness remain unqualified. Registration
 real-filesystem predicate witnesses, expanding the owning loading check to
 twenty-three cases. Those witnesses remain unimplemented at registration;
 requesting the check fails until every declared case exists and passes.
+The private native candidate `fe73757d63` now implements all three witnesses
+with actual held captures, real directory link growth, unchanged first recipes,
+distinct body/policy/mode/inode/ancestry/descriptor observations and fresh
+native refusals before synchronization. Absent leaves and parents that appear
+later also refuse; no selected authority or success acknowledgment is fabricated.
+Review corrected test helper calls to satisfy the workspace's `expect_used`
+restriction without allowances. Scoped formatting and diff checks pass; compile,
+runtime, portable compatibility and publication-budget qualification remain
+pending. Existing owning witnesses still supply cancellation and owner checks.
 The reviewed permanent recovery candidate `b0d2b176f0` retains original
 directory continuity while staging fresh, unselected progress proposals and
 restores full canonical candidate enumeration before preselection directory
@@ -353,6 +362,14 @@ handoff and checks the exact unsafe physical-fence refusal, absence of selected
 progress/reclaim and preservation of owner/pass/manifest. The complete eleven
 staging witnesses, owning reconciliation gate and large-family bound remain
 unqualified; this smoke result does not advance T-GC-1.
+The subsequent unchanged eleven-case matrix has started. Its added-cycle
+witness times out at 120.004 seconds after genuine fresh recovery and an actual
+late-pack reclaim return; the final progress seal is submitted but has no return
+before timeout. The whole liveness witness and completed-pass acknowledgment
+remain unqualified. The original matrix process continues for the independent
+remaining cases (`/tmp/terrane-permanent-stage-focused-e3.log`, run
+`cbb1472a-42dc-407d-a4ba-23ef71c2decb`). No per-effect timestamps establish
+which operation caused the elapsed failure.
 Strict native all-target Clippy also passes with warnings denied (5 minutes
 5 seconds, including a recorded wait for an external shared-target lock;
 `/tmp/terrane-permanent-stage-clippy.log`). This elapsed observation does not
