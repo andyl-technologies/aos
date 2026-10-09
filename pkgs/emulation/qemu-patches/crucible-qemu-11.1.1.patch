@@ -1,31 +1,891 @@
-From 6349c51b5a57babce7a58340eda74f85fedff4ac Mon Sep 17 00:00:00 2001
+From 9f2c75b7d78059936402aba0ad932932cd496a6f Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Fri, 9 Oct 2026 11:52:46 +0000
-Subject: [PATCH] Keep hot-fork operation state outside reclaimed monitor
- stacks
+Date: Fri, 9 Oct 2026 17:02:07 +0000
+Subject: [PATCH] Run ICH9 crossmode timer producers in fresh processes
 
-The OOB monitor command submits a pointer to its local operation while the
-main loop forks. In the child, libc makes vanished pthread stacks reusable.
-Starting the replacement monitor can therefore reuse the operation's storage
-while reconstruction still holds its pointer.
+The crossmode fixture used a raw fork after QEMU's RCU constructor had started a worker. Its child could inherit qemu_hot_fork_thread_lock and block before emitting the migration stream, leaving the package check indefinitely waiting for its length prefix.
 
-Allocate the complete operation before submission. The parent frees its copy
-on command return; the child frees its independent copy only after publishing
-retained state, rebinding the monitor basis and releasing private input. Keep
-all reconstruction guards, resource ownership and callback ordering intact.
+Spawn the same test executable with posix_spawn so the real exact VMState writer runs without inherited QEMU thread state. Preserve all four producer scenarios and the original migration acceptance/refusal and timer assertions. Bound producer IPC to five seconds and isolated GLib test subprocesses to ten seconds, closing descriptors and reaping only the owned producer on failure.
 
-Add a source-derived lifetime regression using real fork and pthread stack
-reuse. The original declaration overlaps the replacement stack and refuses;
-the heap declaration stays outside thread stacks and preserves its immutable
-witness and interior pointer. The test never dereferences inherited stack
-storage or writes into another thread's stack. Its reduced payload does not
-establish native callback behavior or attribute a physical crash.
-
-Validation: AOS compiler and the actual linked libc/GLib, warnings denied;
-original ownership refusal and heap success both observed. Full canonical
-native/package and physical guest qualification remain separate requirements.
+The actual package worker was observed blocked on the registry mutex. All 21 corrected controls passed with the configured AOS compiler and existing native objects; a separate short original probe passed, so it is retained as a non-reproduction of the timing-dependent failure. The existing heap-owned hot-fork operation, protocol headers and production timer code remain unchanged.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
+---
+ MAINTAINERS                                   |    20 +
+ accel/accel-common.c                          |     6 +
+ accel/accel-system.c                          |    10 +
+ accel/tcg/atomic_template.h                   |   166 +-
+ accel/tcg/cpu-exec-common.c                   |     5 +
+ accel/tcg/cpu-exec.c                          |   195 +-
+ accel/tcg/cputlb.c                            |   729 +-
+ accel/tcg/crucible-control-delivery-summary.c |   219 +
+ accel/tcg/icount-common.c                     |   844 +-
+ accel/tcg/internal-common.h                   |    12 +
+ accel/tcg/meson.build                         |     3 +
+ accel/tcg/plugin-gen.c                        |    10 +-
+ accel/tcg/tb-maint.c                          |   264 +-
+ accel/tcg/tcg-accel-ops-icount.c              |   134 +-
+ accel/tcg/tcg-accel-ops-icount.h              |     3 +
+ accel/tcg/tcg-accel-ops-preemption.c          |   302 +
+ accel/tcg/tcg-accel-ops-rr.c                  |  2567 ++-
+ accel/tcg/tcg-accel-ops-rr.h                  |   238 +
+ accel/tcg/tcg-accel-ops-sim-shmem.c           |   182 +
+ accel/tcg/tcg-accel-ops-sim-shmem.h           |    19 +
+ accel/tcg/tcg-accel-ops-sim.c                 |    39 +
+ accel/tcg/tcg-accel-ops.c                     |     5 +-
+ accel/tcg/tcg-accel-ops.h                     |     1 +
+ accel/tcg/tcg-all.c                           |    51 +
+ accel/tcg/trace-events                        |    10 +
+ accel/tcg/translate-all.c                     |   375 +-
+ accel/tcg/translator.c                        |   150 +-
+ audio/audio-mixeng-be.c                       |    67 +-
+ audio/audio_int.h                             |     4 +-
+ backends/rng-builtin.c                        |    23 +
+ backends/rng.c                                |    34 +
+ block.c                                       |     2 +
+ block/block-backend.c                         |   627 +
+ block/crucible-hot-fork-source.c              |  1768 +++
+ block/crucible-shmem.c                        |  1066 ++
+ block/file-posix.c                            |   186 +
+ block/graph-lock.c                            |    94 +
+ block/io.c                                    |    21 +
+ block/meson.build                             |     2 +
+ block/qcow2.c                                 |     2 +
+ block/qed.c                                   |     6 +-
+ block/qed.h                                   |     1 +
+ block/raw-format.c                            |     2 +
+ blockdev.c                                    |   729 +-
+ chardev/baum.c                                |   140 +-
+ chardev/char-crucible-console.c               |   463 +
+ chardev/char-socket.c                         |   428 +
+ chardev/char.c                                |     8 +
+ chardev/console-control-provider.c            |   194 +
+ chardev/console-dispatch-owner.c              |   602 +
+ chardev/console-hot-fork-owner.c              |   467 +
+ chardev/console-installed-node.c              |  1409 ++
+ chardev/console-node-writer.c                 |  1540 ++
+ chardev/console-node-writer.h                 |   345 +
+ chardev/meson.build                           |     3 +
+ cpu-common.c                                  |     7 +
+ docs/devel/tcg-icount.rst                     |    11 +-
+ docs/devel/tracing.rst                        |    34 +
+ gdbstub/gdbstub.c                             |     1 -
+ hw/9pfs/virtio-9p-device.c                    |   376 +
+ hw/9pfs/virtio-9p.h                           |     8 +
+ hw/acpi/core.c                                |   404 +-
+ hw/acpi/generic_event_device.c                |    19 +
+ hw/acpi/ghes-stub.c                           |    31 +
+ hw/acpi/ghes.c                                |   228 +-
+ hw/acpi/ich9.c                                |   301 +-
+ hw/acpi/ich9_tco.c                            |    57 +-
+ hw/acpi/ich9_timer.c                          |    20 +-
+ hw/acpi/pcihp.c                               |     6 +-
+ hw/acpi/piix4.c                               |   149 +-
+ hw/adc/npcm7xx_adc.c                          |    89 +-
+ hw/arm/integratorcp.c                         |    79 +-
+ hw/arm/omap1.c                                |   677 +-
+ hw/arm/strongarm.c                            |    94 +-
+ hw/arm/virt-acpi-build.c                      |    19 +
+ hw/audio/adlib.c                              |    25 -
+ hw/audio/asc.c                                |   117 +-
+ hw/audio/hda-codec.c                          |   205 +-
+ hw/audio/intel-hda.c                          |    85 +-
+ hw/audio/pcspk.c                              |    19 +
+ hw/audio/sb16.c                               |     7 +-
+ hw/avr/atmega.c                               |    19 +-
+ hw/avr/atmega.h                               |     1 +
+ hw/block/fdc-fingerprint.h                    |   117 +
+ hw/block/fdc-internal.h                       |     1 +
+ hw/block/fdc-isa.c                            |    16 +
+ hw/block/fdc-sysbus.c                         |    17 +
+ hw/block/fdc.c                                |    46 +-
+ hw/block/pflash_cfi01.c                       |    42 +-
+ hw/block/pflash_cfi02.c                       |    82 +-
+ hw/block/virtio-blk.c                         |   365 +-
+ hw/char/cadence_uart.c                        |    49 +-
+ hw/char/exynos4210_uart.c                     |     9 +-
+ hw/char/ibex_uart.c                           |    56 +-
+ hw/char/imx_serial.c                          |    61 +-
+ hw/char/parallel.c                            |    16 +
+ hw/char/pl011.c                               |    49 +-
+ hw/char/renesas_sci.c                         |   130 +-
+ hw/char/serial-isa.c                          |    17 +
+ hw/char/serial.c                              |   324 +-
+ hw/char/sh_serial.c                           |     7 +-
+ hw/char/sifive_uart.c                         |    65 +-
+ hw/char/virtio-serial-bus.c                   |    69 +
+ hw/core/cpu-common.c                          |     4 +
+ hw/core/cpu-system.c                          |   159 +
+ hw/core/machine-qmp-cmds.c                    |     1 +
+ hw/core/or-irq.c                              |     2 +-
+ hw/core/ptimer.c                              |   447 +-
+ hw/core/qdev.c                                |    75 +-
+ hw/cxl/cxl-component-utils.c                  |   199 +-
+ hw/cxl/cxl-device-utils.c                     |    88 +-
+ hw/cxl/cxl-mailbox-utils.c                    |   473 +-
+ hw/cxl/switch-mailbox-cci.c                   |    10 +-
+ hw/display/ati.c                              |    13 +-
+ hw/display/imx6ul_lcdif.c                     |    64 +-
+ hw/display/macfb.c                            |   110 +-
+ hw/display/pl110.c                            |    14 +-
+ hw/display/vga-fingerprint.h                  |   151 +
+ hw/display/vga-pci.c                          |    28 +
+ hw/display/vga.c                              |    86 +-
+ hw/display/vga_int.h                          |     4 +-
+ hw/display/virtio-gpu-virgl.c                 |    16 +-
+ hw/dma/i8257.c                                |    34 +
+ hw/dma/pl330.c                                |    66 +-
+ hw/dma/rc4030.c                               |    24 +-
+ hw/dma/soc_dma.c                              |    12 +-
+ hw/gpio/gpio_key.c                            |   105 +-
+ hw/gpio/pl061.c                               |    26 +
+ hw/hppa/machine.c                             |    54 +-
+ hw/hyperv/hv-balloon.c                        |    14 +-
+ hw/i2c/core.c                                 |    44 +
+ hw/i2c/pm_smbus.c                             |    43 +
+ hw/i2c/smbus_eeprom.c                         |    28 +
+ hw/i2c/smbus_ich9.c                           |    25 +
+ hw/i386/acpi-build.c                          |    19 +
+ hw/i386/multiboot.c                           |    19 +-
+ hw/i386/port92.c                              |    18 +
+ hw/i386/vapic.c                               |    47 +
+ hw/i386/vmmouse.c                             |    28 +
+ hw/i3c/aspeed_i3c.c                           |    53 +-
+ hw/i3c/mock-i3c-target.c                      |    97 +-
+ hw/ide/core.c                                 |     6 +-
+ hw/ide/ich-fingerprint.h                      |   139 +
+ hw/ide/ich.c                                  |    26 +
+ hw/ide/pci.c                                  |    91 +
+ hw/input/adb.c                                |    91 +-
+ hw/input/hid.c                                |     7 +-
+ hw/input/pckbd.c                              |   206 +-
+ hw/input/ps2.c                                |    90 +
+ hw/intc/apic.c                                |   797 +-
+ hw/intc/apic_common.c                         |   489 +-
+ hw/intc/arm_gic.c                             |   255 +-
+ hw/intc/arm_gic_common.c                      |   172 +
+ hw/intc/arm_gicv3.c                           |   243 +-
+ hw/intc/arm_gicv3_common.c                    |    94 +
+ hw/intc/arm_gicv3_cpuif.c                     |   223 +
+ hw/intc/arm_gicv3_redist.c                    |    53 +-
+ hw/intc/bcm2836_control.c                     |   115 +-
+ hw/intc/gic_internal.h                        |     4 +-
+ hw/intc/i8259.c                               |   215 +-
+ hw/intc/i8259_common.c                        |   107 +
+ hw/intc/ioapic.c                              |    37 +-
+ hw/intc/ioapic_common.c                       |   149 +-
+ hw/intc/ioapic_internal.h                     |     3 +
+ hw/intc/mips_gic.c                            |    13 +
+ hw/intc/openpic.c                             |   194 +-
+ hw/intc/riscv_aclint.c                        |   115 +-
+ hw/intc/s390_flic.c                           |     2 +-
+ hw/ipmi/ipmi_bmc_extern.c                     |    10 +-
+ hw/ipmi/ipmi_bmc_sim.c                        |   181 +-
+ hw/isa/lpc-ich9-fingerprint.h                 |   118 +
+ hw/isa/lpc_ich9.c                             |   113 +-
+ hw/isa/piix.c                                 |    31 +
+ hw/isa/vt82c686.c                             |    71 +-
+ hw/m68k/next-cube.c                           |    18 +-
+ hw/m68k/q800-glue.c                           |    96 +-
+ hw/mem/cxl_type3.c                            |   505 +
+ hw/misc/arm_sysctl.c                          |    21 +-
+ hw/misc/edu.c                                 |   354 +-
+ hw/misc/iotkit-secctl.c                       |     4 +-
+ hw/misc/lasi.c                                |     5 +-
+ hw/misc/mac_via.c                             |    79 +-
+ hw/misc/macio/cuda.c                          |   199 +-
+ hw/misc/macio/macio.c                         |    17 +-
+ hw/misc/macio/pmu.c                           |   158 +-
+ hw/misc/mos6522.c                             |   284 +-
+ hw/misc/mps2-fpgaio.c                         |   321 +-
+ hw/misc/npcm_clk.c                            |    95 +-
+ hw/misc/nrf51_rng.c                           |    96 +-
+ hw/misc/riscv_cpc.c                           |    13 +-
+ hw/misc/sifive_e_aon.c                        |   246 +-
+ hw/net/can/flexcan.c                          |   145 +-
+ hw/net/dp8393x.c                              |   128 +-
+ hw/net/e1000-fingerprint.h                    |   112 +
+ hw/net/e1000.c                                |   149 +-
+ hw/net/e1000e.c                               |   112 +-
+ hw/net/e1000e_core.c                          |    17 +-
+ hw/net/e1000e_core.h                          |     1 +
+ hw/net/e1000x_common.c                        |    64 +-
+ hw/net/i82596.c                               |   185 +-
+ hw/net/i82596.h                               |     3 +-
+ hw/net/igb.c                                  |    83 +-
+ hw/net/igb_core.c                             |    17 +-
+ hw/net/igb_core.h                             |     1 +
+ hw/net/lan9118.c                              |    23 +-
+ hw/net/pcnet.c                                |    90 +-
+ hw/net/pcnet.h                                |     1 +
+ hw/net/rocker/rocker_of_dpa.c                 |     8 +-
+ hw/net/rocker/rocker_of_dpa.h                 |    14 +
+ hw/net/rtl8139.c                              |   143 +-
+ hw/net/spapr_llan.c                           |    56 +-
+ hw/net/virtio-net.c                           |   681 +-
+ hw/nvme/ctrl.c                                |   122 +-
+ hw/nvme/nvme.h                                |     3 +
+ hw/nvram/fw_cfg.c                             |   464 +-
+ hw/or1k/cputimer.c                            |   205 +-
+ hw/pci-bridge/cxl_downstream.c                |    65 +
+ hw/pci-bridge/cxl_root_port.c                 |    64 +
+ hw/pci-bridge/cxl_upstream.c                  |    91 +
+ hw/pci-host/gpex.c                            |    16 +
+ hw/pci-host/i440fx.c                          |    15 +
+ hw/pci-host/q35.c                             |    16 +
+ hw/pci/msi.c                                  |    13 +
+ hw/pci/msix.c                                 |    57 +
+ hw/pci/pci.c                                  |    80 +
+ hw/pci/pci_host.c                             |    22 +
+ hw/pci/pcie.c                                 |     6 +-
+ hw/ppc/pnv_core.c                             |   144 +
+ hw/ppc/pnv_occ.c                              |    33 +-
+ hw/ppc/pnv_sbe.c                              |    26 +-
+ hw/ppc/ppc.c                                  |   305 +-
+ hw/ppc/ppc_booke.c                            |   101 +-
+ hw/ppc/spapr.c                                |    12 +-
+ hw/ppc/spapr_iommu.c                          |     2 +-
+ hw/riscv/riscv-iommu-hpm.c                    |    30 +-
+ hw/rtc/goldfish_rtc.c                         |     6 +
+ hw/rtc/ls7a_rtc.c                             |    51 +-
+ hw/rtc/m48t59-internal.h                      |    10 +
+ hw/rtc/m48t59-isa.c                           |    38 +
+ hw/rtc/m48t59.c                               |   254 +-
+ hw/rtc/mc146818rtc.c                          |  1502 +-
+ hw/rtc/pl031.c                                |   374 +-
+ hw/s390x/ipl.c                                |     2 +-
+ hw/s390x/s390-pci-inst.c                      |    26 +-
+ hw/s390x/tod-tcg.c                            |    30 +-
+ hw/s390x/tod.c                                |    18 +
+ hw/scsi/lsi53c895a.c                          |    64 +-
+ hw/scsi/ncr53c710.c                           |    10 +-
+ hw/sd/sd.c                                    |    63 +-
+ hw/sd/sdhci.c                                 |    67 +-
+ hw/sparc64/sparc64.c                          |   124 +-
+ hw/ssi/ibex_spi_host.c                        |    63 +-
+ hw/timer/a9gtimer.c                           |   142 +-
+ hw/timer/allwinner-a10-pit.c                  |    17 +-
+ hw/timer/arm_timer.c                          |     1 +
+ hw/timer/aspeed_timer.c                       |   331 +-
+ hw/timer/avr_timer16.c                        |   214 +-
+ hw/timer/bcm2835_systmr.c                     |   119 +-
+ hw/timer/cadence_ttc.c                        |   184 +-
+ hw/timer/exynos4210_mct.c                     |    16 +-
+ hw/timer/hpet.c                               |   664 +-
+ hw/timer/i8254.c                              |   313 +-
+ hw/timer/i8254_common.c                       |   482 +-
+ hw/timer/ibex_timer.c                         |   118 +-
+ hw/timer/mips_gictimer.c                      |   258 +-
+ hw/timer/npcm7xx_timer.c                      |   215 +-
+ hw/timer/nrf51_timer.c                        |   224 +-
+ hw/timer/pxa2xx_timer.c                       |   371 +-
+ hw/timer/renesas_cmt.c                        |   210 +-
+ hw/timer/renesas_tmr.c                        |   240 +-
+ hw/timer/sifive_pwm.c                         |   232 +-
+ hw/timer/sse-counter.c                        |   207 +-
+ hw/timer/sse-timer.c                          |    84 +-
+ hw/timer/stellaris-gptm.c                     |   155 +-
+ hw/timer/stm32f2xx_timer.c                    |   202 +-
+ hw/usb/core.c                                 |    34 +
+ hw/usb/dev-hub.c                              |    52 +-
+ hw/usb/hcd-dwc2.c                             |   174 +-
+ hw/usb/hcd-dwc2.h                             |     4 +
+ hw/usb/hcd-ehci.c                             |   167 +-
+ hw/usb/hcd-ehci.h                             |     7 +-
+ hw/usb/hcd-ohci.c                             |   127 +-
+ hw/usb/hcd-ohci.h                             |     3 +
+ hw/usb/hcd-uhci.c                             |   162 +-
+ hw/usb/hcd-uhci.h                             |     3 +
+ hw/usb/hcd-xhci.c                             |   144 +-
+ hw/usb/hcd-xhci.h                             |     3 +
+ hw/usb/host-libusb.c                          |     5 +-
+ hw/usb/redirect.c                             |   115 +-
+ hw/usb/u2f-passthru.c                         |    84 +-
+ hw/vfio/pci.c                                 |    17 +-
+ hw/virtio/Kconfig                             |     5 +
+ hw/virtio/meson.build                         |     2 +
+ hw/virtio/virtio-balloon.c                    |    89 +-
+ hw/virtio/virtio-crucible-accelerator-pci.c   |    77 +
+ hw/virtio/virtio-crucible-accelerator.c       |   560 +
+ hw/virtio/virtio-nsm.c                        |     4 +-
+ hw/virtio/virtio-pci.c                        |    77 +
+ hw/virtio/virtio-rng.c                        |   130 +-
+ hw/virtio/virtio.c                            |   614 +-
+ hw/watchdog/sbsa_gwdt.c                       |   117 +-
+ hw/watchdog/spapr_watchdog.c                  |    68 +-
+ hw/watchdog/wdt_aspeed.c                      |    98 +-
+ hw/watchdog/wdt_diag288.c                     |    71 +-
+ hw/watchdog/wdt_i6300esb.c                    |    59 +-
+ hw/watchdog/wdt_ib700.c                       |    59 +-
+ hw/xtensa/pic_cpu.c                           |     7 +-
+ include/accel/accel-cpu-ops.h                 |     7 +
+ include/accel/accel-ops.h                     |     3 +
+ include/aos/crucible/crucible_shmem_abi.h     |  1512 ++
+ include/block/block-global-state.h            |     3 +
+ include/block/block_int-common.h              |    46 +
+ include/block/block_int-io.h                  |     6 +
+ include/block/graph-lock.h                    |    28 +-
+ include/block/thread-pool.h                   |     2 +
+ include/chardev/char-crucible-console.h       |   112 +
+ include/chardev/char-socket.h                 |   132 +
+ include/chardev/char.h                        |     5 +
+ include/chardev/console-control-provider.h    |    69 +
+ include/chardev/console-dispatch-owner.h      |   119 +
+ include/chardev/console-installed-node.h      |   109 +
+ include/chardev/console-native-owner.h        |    81 +
+ include/crucible_native_console_draft.h       |   149 +
+ include/exec/icount.h                         |    98 +-
+ include/exec/translation-block.h              |     4 +
+ include/exec/translator.h                     |     7 +
+ include/hw/acpi/acpi.h                        |    19 +
+ .../acpi/generic-event-device-fingerprint.h   |   126 +
+ include/hw/acpi/ghes.h                        |    21 +
+ include/hw/acpi/ich9.h                        |     2 +
+ include/hw/acpi/ich9_tco.h                    |    14 +-
+ include/hw/acpi/piix4-fingerprint.h           |   116 +
+ include/hw/adc/npcm7xx_adc.h                  |     1 +
+ include/hw/arm/omap.h                         |     2 +
+ include/hw/audio/asc.h                        |     3 +
+ include/hw/char/cadence_uart.h                |     1 +
+ include/hw/char/ibex_uart.h                   |     1 +
+ include/hw/char/imx_serial.h                  |     1 +
+ include/hw/char/parallel-isa-fingerprint.h    |    27 +
+ include/hw/char/renesas_sci.h                 |     3 +
+ include/hw/char/serial.h                      |    11 +-
+ include/hw/char/sifive_uart.h                 |     1 +
+ include/hw/core/cpu.h                         |   201 +
+ include/hw/core/qdev.h                        |    15 +
+ include/hw/core/sysemu-cpu-ops.h              |    26 +
+ include/hw/cxl/cxl_component.h                |    16 +-
+ include/hw/cxl/cxl_device.h                   |    68 +-
+ include/hw/display/imx6ul_lcdif.h             |     1 +
+ include/hw/display/macfb.h                    |     1 +
+ include/hw/i2c/pm_smbus.h                     |     2 +
+ include/hw/i386/apic_internal.h               |    22 +
+ include/hw/i3c/aspeed_i3c.h                   |     1 +
+ include/hw/i3c/mock-i3c-target.h              |     6 +-
+ include/hw/input/adb.h                        |     1 +
+ include/hw/input/i8042.h                      |     6 +
+ include/hw/intc/arm_gic_common.h              |     6 +
+ include/hw/intc/arm_gicv3_common.h            |    11 +
+ include/hw/intc/bcm2836_control.h             |     1 +
+ include/hw/intc/riscv_aclint.h                |     7 +-
+ include/hw/isa/i8259_internal.h               |     5 +
+ include/hw/m68k/q800-glue.h                   |     2 +
+ include/hw/misc/mac_via.h                     |    10 +
+ include/hw/misc/macio/cuda.h                  |     3 +
+ include/hw/misc/macio/pmu.h                   |     3 +
+ include/hw/misc/mos6522.h                     |    42 +
+ include/hw/misc/mps2-fpgaio.h                 |    12 +
+ include/hw/misc/npcm_clk.h                    |    20 +
+ include/hw/misc/nrf51_rng.h                   |     1 +
+ include/hw/misc/sifive_e_aon.h                |     6 +-
+ include/hw/net/dp8393x.h                      |     2 +
+ include/hw/net/flexcan.h                      |     3 +
+ include/hw/nvram/fw_cfg.h                     |     9 +
+ include/hw/pci/msix.h                         |     2 +
+ include/hw/pci/pci.h                          |     4 +
+ include/hw/ppc/openpic.h                      |    11 +-
+ include/hw/ppc/pnv_core.h                     |     8 +
+ include/hw/ppc/pnv_occ.h                      |     2 +
+ include/hw/ppc/pnv_sbe.h                      |     2 +
+ include/hw/ppc/ppc.h                          |    15 +
+ include/hw/ppc/spapr.h                        |     1 +
+ include/hw/rtc/mc146818rtc.h                  |    29 +-
+ include/hw/rtc/pl031.h                        |     6 +
+ include/hw/sd/sdhci.h                         |     1 +
+ include/hw/southbridge/piix-fingerprint.h     |    29 +
+ include/hw/ssi/ibex_spi_host.h                |     1 +
+ include/hw/timer/a9gtimer.h                   |     7 +-
+ include/hw/timer/aspeed_timer.h               |     5 +-
+ include/hw/timer/avr_timer16.h                |     8 +-
+ include/hw/timer/bcm2835_systmr.h             |     1 +
+ include/hw/timer/cadence_ttc.h                |     5 +-
+ include/hw/timer/i8254_internal.h             |    22 +
+ include/hw/timer/ibex_timer.h                 |     2 +
+ include/hw/timer/mips_gictimer.h              |     9 +
+ include/hw/timer/npcm7xx_timer.h              |     6 +
+ include/hw/timer/nrf51_timer.h                |     4 +
+ include/hw/timer/renesas_cmt.h                |     4 +
+ include/hw/timer/renesas_tmr.h                |     4 +
+ include/hw/timer/sifive_pwm.h                 |     2 +
+ include/hw/timer/sse-counter.h                |    31 +-
+ include/hw/timer/sse-timer.h                  |     1 +
+ include/hw/timer/stellaris-gptm.h             |     3 +
+ include/hw/timer/stm32f2xx_timer.h            |     6 +-
+ include/hw/usb/usb.h                          |    17 +
+ include/hw/virtio/virtio-balloon.h            |     1 +
+ include/hw/virtio/virtio-blk.h                |     4 +
+ include/hw/virtio/virtio-bus.h                |     2 +
+ .../hw/virtio/virtio-crucible-accelerator.h   |    58 +
+ include/hw/virtio/virtio-net.h                |     6 +-
+ include/hw/virtio/virtio-pci.h                |    21 +
+ include/hw/virtio/virtio-rng.h                |     5 +-
+ include/hw/virtio/virtio.h                    |    24 +
+ include/hw/watchdog/sbsa_gwdt.h               |     1 +
+ include/hw/watchdog/wdt_aspeed.h              |     1 +
+ include/hw/watchdog/wdt_diag288.h             |     1 +
+ include/migration/misc.h                      |    10 +
+ include/migration/register.h                  |    10 +
+ include/migration/vmstate.h                   |    58 +
+ include/monitor/monitor.h                     |    14 +
+ include/plugins/qemu-plugin.h                 |  1906 +++
+ include/qemu/accel.h                          |    10 +
+ include/qemu/aio.h                            |   133 +
+ include/qemu/coroutine.h                      |     3 +
+ include/qemu/crucible-fault.h                 |   814 +
+ include/qemu/crucible-hot-fork-async.h        |    84 +
+ include/qemu/crucible-hot-fork-child.h        |   423 +
+ include/qemu/crucible-hot-fork-plugin.h       |    49 +
+ include/qemu/crucible-idle-wait.h             |    58 +
+ include/qemu/crucible-process.h               |    16 +
+ include/qemu/guest-random.h                   |    31 +
+ include/qemu/madvise.h                        |     7 +
+ include/qemu/main-loop.h                      |     9 +
+ include/qemu/plugin.h                         |   292 +
+ include/qemu/rcu.h                            |    91 +
+ include/qemu/thread-posix.h                   |     8 +
+ include/qemu/thread.h                         |   154 +
+ include/qemu/timer.h                          |   154 +-
+ include/qobject/json-parser.h                 |     4 +
+ include/system/block-backend-global-state.h   |   337 +
+ include/system/blockdev.h                     |    12 +
+ include/system/cpu-timers-internal.h          |    21 +-
+ include/system/cpus.h                         |    18 +
+ include/system/crucible-checkpoint.h          |    80 +
+ .../system/crucible-hot-fork-coordinator.h    |   100 +
+ .../system/crucible-hot-fork-plugin-child.h   |   732 +
+ include/system/crucible-plugin-wake.h         |    21 +
+ include/system/crucible-sim-ipi.h             |     8 +
+ include/system/crucible-sim-preemption.h      |    22 +
+ include/system/dma.h                          |    61 +-
+ include/system/iothread.h                     |    13 +
+ include/system/memory.h                       |    59 +-
+ include/system/memory_cached.h                |    41 +
+ include/system/memory_ldst_cached.h.inc       |    69 +
+ include/system/ram_addr.h                     |     3 +-
+ include/system/ramlist.h                      |    12 +
+ include/system/replay.h                       |     7 +-
+ include/system/rng.h                          |    10 +
+ include/system/rtc.h                          |    27 +
+ include/system/runstate.h                     |     4 +
+ include/tcg/startup.h                         |     9 +
+ iothread.c                                    |   149 +
+ migration/migration.c                         |   114 +
+ migration/savevm.c                            |   536 +-
+ migration/savevm.h                            |    22 +
+ migration/vmstate-types.c                     |   168 +
+ migration/vmstate.c                           |    28 +-
+ monitor/fds.c                                 |   228 +
+ monitor/monitor-internal.h                    |   175 +
+ monitor/monitor.c                             |   752 +
+ monitor/qmp-cmds-control.c                    |     1 +
+ monitor/qmp-cmds.c                            |  6254 +++++++-
+ monitor/qmp.c                                 |   182 +
+ net/announce.c                                |     8 +-
+ net/filter-buffer.c                           |    37 +-
+ net/net.c                                     |    94 +-
+ net/slirp-time.h                              |    23 +
+ net/slirp.c                                   |    29 +
+ plugins/api-system.c                          |  3006 +++-
+ plugins/api.c                                 |  1103 +-
+ plugins/core.c                                |     5 +
+ plugins/crucible-fault-accelerator.c          |  1847 +++
+ plugins/crucible-fault-clock.c                |  4662 ++++++
+ plugins/crucible-fault-hardware-error.c       |  1869 +++
+ plugins/crucible-fault-instruction.c          |  3305 ++++
+ plugins/crucible-fault-interrupt.c            |  2850 ++++
+ plugins/crucible-fault-lifecycle.c            |  2764 ++++
+ plugins/crucible-fault-memory.c               |  1396 ++
+ plugins/crucible-fault-node.c                 | 13217 ++++++++++++++++
+ plugins/crucible-fault-register.c             |  1335 ++
+ plugins/crucible-fault-vcpu-service.c         |  1484 ++
+ plugins/crucible-fault-vmstate.c              |   783 +
+ plugins/crucible-fault.c                      |  1645 ++
+ plugins/crucible-idle-wait.c                  |   171 +
+ plugins/crucible-stop-context.h               |    98 +
+ plugins/loader.c                              |     5 +
+ plugins/meson.build                           |    14 +-
+ qapi/block-core.json                          |    18 +-
+ qapi/misc.json                                |   197 +-
+ qapi/run-state.json                           |  2960 ++++
+ qemu-options.hx                               |    23 +-
+ qobject/json-streamer.c                       |    10 +
+ replay/replay-internal.c                      |     9 +-
+ replay/replay-internal.h                      |     6 -
+ replay/replay.c                               |     3 +-
+ stubs/runstate-check.c                        |    46 +
+ system/cpu-timers.c                           |   258 +-
+ system/cpus.c                                 |   274 +-
+ system/crucible-checkpoint-restore.c          |   739 +
+ system/crucible-checkpoint.c                  |  1428 ++
+ system/crucible-hot-fork-coordinator.c        |   554 +
+ system/crucible-hot-fork-plugin-child.c       |  2045 +++
+ system/ioport.c                               |    43 +-
+ system/main.c                                 |   118 +
+ system/memory.c                               |    53 +-
+ system/meson.build                            |     8 +-
+ system/physmem.c                              |   559 +-
+ system/qdev-monitor.c                         |     4 +-
+ system/rtc.c                                  |    52 +-
+ system/runstate.c                             |    76 +
+ system/vl.c                                   |    30 +-
+ target/arm/cpregs-pmu.c                       |   100 +-
+ target/arm/cpu-irq.c                          |    29 +-
+ target/arm/cpu.c                              |   116 +-
+ target/arm/cpu.h                              |    63 +
+ target/arm/crucible-fingerprint.h             |   132 +
+ target/arm/crucible-register.c                |   547 +
+ target/arm/gtimer.c                           |    34 +
+ target/arm/helper.c                           |   380 +-
+ target/arm/internals.h                        |     5 +
+ target/arm/machine.c                          |   457 +-
+ target/arm/meson.build                        |     2 +
+ target/arm/ptw.c                              |   338 +-
+ target/arm/tcg/op_helper.c                    |   145 +-
+ target/arm/tcg/tlb_helper.c                   |    37 +-
+ target/arm/tcg/translate-a64.c                |    17 +-
+ target/hppa/cpu.h                             |     6 +
+ target/hppa/machine.c                         |   118 +-
+ target/hppa/op_helper.c                       |     2 +-
+ target/hppa/sys_helper.c                      |    63 +
+ target/i386/cpu.c                             |   124 +
+ target/i386/cpu.h                             |    53 +
+ target/i386/crucible-fingerprint.h            |    93 +
+ target/i386/crucible-register.c               |  1015 ++
+ target/i386/gdbstub.c                         |    14 +-
+ target/i386/helper.h                          |     3 +
+ target/i386/machine.c                         |   129 +
+ target/i386/meson.build                       |     1 +
+ target/i386/tcg/emit.c.inc                    |     9 +
+ target/i386/tcg/fpu_helper.c                  |    24 +-
+ target/i386/tcg/misc_helper.c                 |    39 +
+ target/i386/tcg/seg_helper.c                  |     5 +-
+ target/i386/tcg/system/excp_helper.c          |   481 +-
+ target/i386/tcg/system/misc_helper.c          |    56 +-
+ target/i386/tcg/system/svm_helper.c           |    50 +-
+ target/i386/tcg/tcg-stub.c                    |     5 +
+ target/i386/tcg/translate.c                   |     4 +
+ target/loongarch/cpu.h                        |     5 +
+ target/loongarch/machine.c                    |   120 +
+ target/loongarch/tcg/constant_timer.c         |    63 +-
+ target/mips/cpu.h                             |     7 +
+ target/mips/system/cp0_timer.c                |   115 +-
+ target/mips/system/machine.c                  |   135 +-
+ target/or1k/cpu.h                             |     6 +
+ target/or1k/machine.c                         |   150 +-
+ target/ppc/cpu.h                              |     1 +
+ target/ppc/machine.c                          |   309 +-
+ target/ppc/power8-pmu.c                       |    23 +-
+ target/riscv/cpu.h                            |     6 +
+ target/riscv/machine.c                        |   202 +-
+ target/riscv/tcg/debug.c                      |    35 +-
+ target/riscv/tcg/itrigger-timer.h             |    38 +
+ target/riscv/tcg/pmu.c                        |    70 +-
+ target/riscv/tcg/tcg-cpu.c                    |     4 +-
+ target/riscv/time_helper.c                    |    47 +-
+ target/riscv/time_helper.h                    |     4 +
+ target/s390x/cpu.h                            |     3 +
+ target/s390x/machine.c                        |   141 +-
+ target/s390x/tcg/misc_helper.c                |    41 +
+ target/s390x/tcg/s390-tod.h                   |    73 +
+ target/sparc/cpu.h                            |     9 +
+ target/sparc/machine.c                        |   160 +-
+ target/xtensa/cpu.h                           |     3 +
+ target/xtensa/op_helper.c                     |    31 +-
+ target/xtensa/timer.h                         |    54 +
+ tcg/region.c                                  |     1 -
+ tcg/tcg.c                                     |    12 +
+ tests/qemu-iotests/205                        |    12 +-
+ tests/qemu-iotests/219                        |    89 +-
+ tests/qemu-iotests/219.out                    |    80 +-
+ tests/qtest/crucible-exact-tb-exit.py         |    85 +
+ .../qtest/crucible-fingerprint-projection.py  |   720 +
+ tests/qtest/crucible-icount-migration.py      |   330 +
+ tests/qtest/crucible-idle-wait-liveness.py    |  1979 +++
+ tests/qtest/crucible-multiboot-gap.py         |   151 +
+ tests/qtest/libqos/fw_cfg.c                   |     1 +
+ tests/qtest/meson.build                       |    46 +
+ tests/qtest/npcm7xx_timer-test.c              |    49 +
+ tests/qtest/pflash-cfi02-test.c               |    64 +
+ tests/qtest/qmp-cmd-test.c                    |   328 +
+ tests/qtest/riscv-csr-test.c                  |    87 +
+ tests/qtest/usb-hcd-uhci-test.c               |    43 +
+ tests/qtest/virtio-serial-test.c              |   119 +-
+ tests/tcg/plugins/crucible-exact-tb-exit.c    |   135 +
+ .../plugins/crucible-fingerprint-observer.c   |   317 +
+ .../tcg/plugins/crucible-idle-wait-liveness.c |   353 +
+ tests/tcg/plugins/crucible-instruction.c      |  1962 +++
+ tests/tcg/plugins/crucible-memory-access.c    |  1229 ++
+ tests/tcg/plugins/crucible-memory-dma.c       |   470 +
+ .../crucible-memory-service-restart-probe.py  |   302 +
+ tests/tcg/plugins/crucible-memory.c           |   983 ++
+ tests/tcg/plugins/crucible-register.c         |  1083 ++
+ tests/tcg/plugins/meson.build                 |    12 +
+ tests/tcg/x86_64/system/self-modifying-code.c |   229 +
+ tests/unit/check-json-parser.c                |    25 +
+ ...act-crucible-hot-fork-operation-storage.py |    57 +
+ tests/unit/meson.build                        |   689 +
+ tests/unit/ptimer-test-stubs.c                |   136 +-
+ tests/unit/ptimer-test.c                      |   106 +-
+ tests/unit/ptimer-test.h                      |     2 +
+ tests/unit/test-aio.c                         |   280 +
+ tests/unit/test-block-backend.c               |  1887 +++
+ tests/unit/test-char.c                        |   146 +
+ tests/unit/test-coroutine.c                   |   180 +
+ .../test-crucible-accel-classification.py     |   787 +
+ .../test-crucible-acpi-piix-fingerprint.c     |   457 +
+ tests/unit/test-crucible-acpi-pm-wide-clock.c |  1041 ++
+ tests/unit/test-crucible-ahci-fingerprint.c   |   145 +
+ tests/unit/test-crucible-aio-fork-custody.py  |   689 +
+ .../test-crucible-apic-timer-wide-clock.c     |   681 +
+ tests/unit/test-crucible-arm-fingerprint.c    |   248 +
+ .../unit/test-crucible-arm-timer-wide-clock.c |   834 +
+ .../unit/test-crucible-child-file-refusal.py  |   407 +
+ .../test-crucible-cold-fault-predicates.py    |   686 +
+ .../unit/test-crucible-console-seal-fixture.c |   894 ++
+ tests/unit/test-crucible-console-seal.py      |   265 +
+ tests/unit/test-crucible-control-deferred.py  |   529 +
+ tests/unit/test-crucible-control-delivery.py  |   363 +
+ tests/unit/test-crucible-control-observer.py  |   459 +
+ tests/unit/test-crucible-cxl-timestamp.c      |   349 +
+ .../unit/test-crucible-device-load-console.py |   343 +
+ tests/unit/test-crucible-e1000-fingerprint.c  |   179 +
+ .../unit/test-crucible-fault-rule-presence.py |   568 +
+ tests/unit/test-crucible-fdc-fingerprint.c    |   225 +
+ tests/unit/test-crucible-hot-fork-child.c     |  3196 ++++
+ .../unit/test-crucible-hot-fork-coordinator.c |   308 +
+ ...test-crucible-hot-fork-operation-storage.c |   218 +
+ tests/unit/test-crucible-hpet-phase.c         |   764 +
+ .../test-crucible-hppa-timer-wide-clock.c     |   604 +
+ tests/unit/test-crucible-i3c-timer.c          |   238 +
+ .../unit/test-crucible-ich9-aux-wide-clock.c  |   819 +
+ tests/unit/test-crucible-icount-rate.c        |    43 +
+ tests/unit/test-crucible-idle-wait.c          |  1430 ++
+ .../test-crucible-lazy-memory-identity.py     |   414 +
+ .../test-crucible-lifecycle-projection.py     |   328 +
+ ...test-crucible-loongarch-timer-wide-clock.c |   685 +
+ .../test-crucible-mips-count-wide-clock.c     |   669 +
+ tests/unit/test-crucible-mips-gic-migration.c |   519 +
+ tests/unit/test-crucible-mos6522-clock.c      |   331 +
+ tests/unit/test-crucible-mutex-owner-cache.py |   463 +
+ .../test-crucible-mutex-waiter-counters.py    |   475 +
+ tests/unit/test-crucible-net-output-stop.py   |   929 ++
+ tests/unit/test-crucible-net-stop-chain.py    |   476 +
+ tests/unit/test-crucible-nvme-phase.c         |   397 +
+ .../unit/test-crucible-openrisc-wide-clock.c  |   612 +
+ .../unit/test-crucible-parallel-fingerprint.c |    90 +
+ .../unit/test-crucible-pit-timer-wide-clock.c |   833 +
+ tests/unit/test-crucible-ppc-wide-clock.c     |   793 +
+ tests/unit/test-crucible-procfd-flags.py      |   357 +
+ tests/unit/test-crucible-ptimer-wide-clock.c  |   593 +
+ tests/unit/test-crucible-rc4030-period.c      |   278 +
+ tests/unit/test-crucible-riscv-cpc-clock.c    |   217 +
+ .../unit/test-crucible-rr-halted-neighbor.py  |   206 +
+ tests/unit/test-crucible-rr-sim-barriers.py   |   633 +
+ tests/unit/test-crucible-rtc-calendar.c       |   295 +
+ .../unit/test-crucible-rtc-timer-wide-clock.c |   865 +
+ .../unit/test-crucible-s390-tod-wide-clock.c  |   153 +
+ ...est-crucible-serial-kbd-timer-wide-clock.c |   732 +
+ tests/unit/test-crucible-settle-prepark.py    |   490 +
+ tests/unit/test-crucible-slirp-time.c         |    30 +
+ .../unit/test-crucible-snapshot-fast-path.py  |   371 +
+ tests/unit/test-crucible-sparc-wide-clock.c   |   545 +
+ tests/unit/test-crucible-stop-context.py      |   405 +
+ .../test-crucible-stopped-control-rearm.py    |   244 +
+ .../test-crucible-tcg-crossing-membership.py  |   486 +
+ tests/unit/test-crucible-tcg-fast-paths.py    |   797 +
+ .../unit/test-crucible-tcg-page-collection.py |   791 +
+ .../test-crucible-template-control-drain.py   |   587 +
+ tests/unit/test-crucible-tsc-source-index.py  |   403 +
+ tests/unit/test-crucible-vcpu-service-time.c  |   350 +
+ tests/unit/test-crucible-vfio-timer.c         |   238 +
+ tests/unit/test-crucible-vga-blink.c          |   258 +
+ tests/unit/test-crucible-vga-fingerprint.c    |   174 +
+ tests/unit/test-crucible-x86-fingerprint.c    |   205 +
+ tests/unit/test-crucible-xhci-microframe.c    |   300 +
+ tests/unit/test-crucible-xtensa-timer.c       |    75 +
+ tests/unit/test-qdev.c                        |    33 +
+ tests/unit/test-rcu-list.c                    |    68 +
+ tests/unit/test-vmstate.c                     |   210 +
+ ui/input.c                                    |   524 +-
+ util/aio-posix.c                              |   216 +-
+ util/aio-posix.h                              |    15 +
+ util/aio-win32.c                              |     3 +
+ util/async.c                                  |   758 +-
+ util/crucible-hot-fork-child.c                |  1303 ++
+ util/fdmon-epoll.c                            |   107 +
+ util/guest-random.c                           |    61 +
+ util/main-loop.c                              |    79 +-
+ util/meson.build                              |     1 +
+ util/qemu-coroutine-sleep.c                   |    18 +-
+ util/qemu-coroutine.c                         |     2 +
+ util/qemu-thread-posix.c                      |  1588 +-
+ util/qemu-timer.c                             |   940 +-
+ util/rcu.c                                    |   438 +-
+ util/thread-pool.c                            |     6 +
+ util/trace-events                             |     6 +
+ 714 files changed, 177231 insertions(+), 2787 deletions(-)
+ create mode 100644 accel/tcg/crucible-control-delivery-summary.c
+ create mode 100644 accel/tcg/tcg-accel-ops-preemption.c
+ create mode 100644 accel/tcg/tcg-accel-ops-sim-shmem.c
+ create mode 100644 accel/tcg/tcg-accel-ops-sim-shmem.h
+ create mode 100644 accel/tcg/tcg-accel-ops-sim.c
+ create mode 100644 block/crucible-hot-fork-source.c
+ create mode 100644 block/crucible-shmem.c
+ create mode 100644 chardev/char-crucible-console.c
+ create mode 100644 chardev/console-control-provider.c
+ create mode 100644 chardev/console-dispatch-owner.c
+ create mode 100644 chardev/console-hot-fork-owner.c
+ create mode 100644 chardev/console-installed-node.c
+ create mode 100644 chardev/console-node-writer.c
+ create mode 100644 chardev/console-node-writer.h
+ create mode 100644 hw/block/fdc-fingerprint.h
+ create mode 100644 hw/display/vga-fingerprint.h
+ create mode 100644 hw/ide/ich-fingerprint.h
+ create mode 100644 hw/isa/lpc-ich9-fingerprint.h
+ create mode 100644 hw/net/e1000-fingerprint.h
+ create mode 100644 hw/virtio/virtio-crucible-accelerator-pci.c
+ create mode 100644 hw/virtio/virtio-crucible-accelerator.c
+ create mode 100644 include/aos/crucible/crucible_shmem_abi.h
+ create mode 100644 include/chardev/char-crucible-console.h
+ create mode 100644 include/chardev/console-control-provider.h
+ create mode 100644 include/chardev/console-dispatch-owner.h
+ create mode 100644 include/chardev/console-installed-node.h
+ create mode 100644 include/chardev/console-native-owner.h
+ create mode 100644 include/crucible_native_console_draft.h
+ create mode 100644 include/hw/acpi/generic-event-device-fingerprint.h
+ create mode 100644 include/hw/acpi/piix4-fingerprint.h
+ create mode 100644 include/hw/char/parallel-isa-fingerprint.h
+ create mode 100644 include/hw/southbridge/piix-fingerprint.h
+ create mode 100644 include/hw/virtio/virtio-crucible-accelerator.h
+ create mode 100644 include/qemu/crucible-fault.h
+ create mode 100644 include/qemu/crucible-hot-fork-async.h
+ create mode 100644 include/qemu/crucible-hot-fork-child.h
+ create mode 100644 include/qemu/crucible-hot-fork-plugin.h
+ create mode 100644 include/qemu/crucible-idle-wait.h
+ create mode 100644 include/qemu/crucible-process.h
+ create mode 100644 include/system/crucible-checkpoint.h
+ create mode 100644 include/system/crucible-hot-fork-coordinator.h
+ create mode 100644 include/system/crucible-hot-fork-plugin-child.h
+ create mode 100644 include/system/crucible-plugin-wake.h
+ create mode 100644 include/system/crucible-sim-ipi.h
+ create mode 100644 include/system/crucible-sim-preemption.h
+ create mode 100644 net/slirp-time.h
+ create mode 100644 plugins/crucible-fault-accelerator.c
+ create mode 100644 plugins/crucible-fault-clock.c
+ create mode 100644 plugins/crucible-fault-hardware-error.c
+ create mode 100644 plugins/crucible-fault-instruction.c
+ create mode 100644 plugins/crucible-fault-interrupt.c
+ create mode 100644 plugins/crucible-fault-lifecycle.c
+ create mode 100644 plugins/crucible-fault-memory.c
+ create mode 100644 plugins/crucible-fault-node.c
+ create mode 100644 plugins/crucible-fault-register.c
+ create mode 100644 plugins/crucible-fault-vcpu-service.c
+ create mode 100644 plugins/crucible-fault-vmstate.c
+ create mode 100644 plugins/crucible-fault.c
+ create mode 100644 plugins/crucible-idle-wait.c
+ create mode 100644 plugins/crucible-stop-context.h
+ create mode 100644 system/crucible-checkpoint-restore.c
+ create mode 100644 system/crucible-checkpoint.c
+ create mode 100644 system/crucible-hot-fork-coordinator.c
+ create mode 100644 system/crucible-hot-fork-plugin-child.c
+ create mode 100644 target/arm/crucible-fingerprint.h
+ create mode 100644 target/arm/crucible-register.c
+ create mode 100644 target/arm/gtimer.c
+ create mode 100644 target/i386/crucible-fingerprint.h
+ create mode 100644 target/i386/crucible-register.c
+ create mode 100644 target/riscv/tcg/itrigger-timer.h
+ create mode 100644 target/xtensa/timer.h
+ create mode 100644 tests/qtest/crucible-exact-tb-exit.py
+ create mode 100644 tests/qtest/crucible-fingerprint-projection.py
+ create mode 100644 tests/qtest/crucible-icount-migration.py
+ create mode 100644 tests/qtest/crucible-idle-wait-liveness.py
+ create mode 100644 tests/qtest/crucible-multiboot-gap.py
+ create mode 100644 tests/tcg/plugins/crucible-exact-tb-exit.c
+ create mode 100644 tests/tcg/plugins/crucible-fingerprint-observer.c
+ create mode 100644 tests/tcg/plugins/crucible-idle-wait-liveness.c
+ create mode 100644 tests/tcg/plugins/crucible-instruction.c
+ create mode 100644 tests/tcg/plugins/crucible-memory-access.c
+ create mode 100644 tests/tcg/plugins/crucible-memory-dma.c
+ create mode 100755 tests/tcg/plugins/crucible-memory-service-restart-probe.py
+ create mode 100644 tests/tcg/plugins/crucible-memory.c
+ create mode 100644 tests/tcg/plugins/crucible-register.c
+ create mode 100644 tests/tcg/x86_64/system/self-modifying-code.c
+ create mode 100644 tests/unit/extract-crucible-hot-fork-operation-storage.py
+ create mode 100644 tests/unit/test-crucible-accel-classification.py
+ create mode 100644 tests/unit/test-crucible-acpi-piix-fingerprint.c
+ create mode 100644 tests/unit/test-crucible-acpi-pm-wide-clock.c
+ create mode 100644 tests/unit/test-crucible-ahci-fingerprint.c
+ create mode 100644 tests/unit/test-crucible-aio-fork-custody.py
+ create mode 100644 tests/unit/test-crucible-apic-timer-wide-clock.c
+ create mode 100644 tests/unit/test-crucible-arm-fingerprint.c
+ create mode 100644 tests/unit/test-crucible-arm-timer-wide-clock.c
+ create mode 100644 tests/unit/test-crucible-child-file-refusal.py
+ create mode 100644 tests/unit/test-crucible-cold-fault-predicates.py
+ create mode 100644 tests/unit/test-crucible-console-seal-fixture.c
+ create mode 100644 tests/unit/test-crucible-console-seal.py
+ create mode 100644 tests/unit/test-crucible-control-deferred.py
+ create mode 100644 tests/unit/test-crucible-control-delivery.py
+ create mode 100644 tests/unit/test-crucible-control-observer.py
+ create mode 100644 tests/unit/test-crucible-cxl-timestamp.c
+ create mode 100644 tests/unit/test-crucible-device-load-console.py
+ create mode 100644 tests/unit/test-crucible-e1000-fingerprint.c
+ create mode 100644 tests/unit/test-crucible-fault-rule-presence.py
+ create mode 100644 tests/unit/test-crucible-fdc-fingerprint.c
+ create mode 100644 tests/unit/test-crucible-hot-fork-child.c
+ create mode 100644 tests/unit/test-crucible-hot-fork-coordinator.c
+ create mode 100644 tests/unit/test-crucible-hot-fork-operation-storage.c
+ create mode 100644 tests/unit/test-crucible-hpet-phase.c
+ create mode 100644 tests/unit/test-crucible-hppa-timer-wide-clock.c
+ create mode 100644 tests/unit/test-crucible-i3c-timer.c
+ create mode 100644 tests/unit/test-crucible-ich9-aux-wide-clock.c
+ create mode 100644 tests/unit/test-crucible-icount-rate.c
+ create mode 100644 tests/unit/test-crucible-idle-wait.c
+ create mode 100644 tests/unit/test-crucible-lazy-memory-identity.py
+ create mode 100644 tests/unit/test-crucible-lifecycle-projection.py
+ create mode 100644 tests/unit/test-crucible-loongarch-timer-wide-clock.c
+ create mode 100644 tests/unit/test-crucible-mips-count-wide-clock.c
+ create mode 100644 tests/unit/test-crucible-mips-gic-migration.c
+ create mode 100644 tests/unit/test-crucible-mos6522-clock.c
+ create mode 100644 tests/unit/test-crucible-mutex-owner-cache.py
+ create mode 100644 tests/unit/test-crucible-mutex-waiter-counters.py
+ create mode 100644 tests/unit/test-crucible-net-output-stop.py
+ create mode 100644 tests/unit/test-crucible-net-stop-chain.py
+ create mode 100644 tests/unit/test-crucible-nvme-phase.c
+ create mode 100644 tests/unit/test-crucible-openrisc-wide-clock.c
+ create mode 100644 tests/unit/test-crucible-parallel-fingerprint.c
+ create mode 100644 tests/unit/test-crucible-pit-timer-wide-clock.c
+ create mode 100644 tests/unit/test-crucible-ppc-wide-clock.c
+ create mode 100644 tests/unit/test-crucible-procfd-flags.py
+ create mode 100644 tests/unit/test-crucible-ptimer-wide-clock.c
+ create mode 100644 tests/unit/test-crucible-rc4030-period.c
+ create mode 100644 tests/unit/test-crucible-riscv-cpc-clock.c
+ create mode 100644 tests/unit/test-crucible-rr-halted-neighbor.py
+ create mode 100644 tests/unit/test-crucible-rr-sim-barriers.py
+ create mode 100644 tests/unit/test-crucible-rtc-calendar.c
+ create mode 100644 tests/unit/test-crucible-rtc-timer-wide-clock.c
+ create mode 100644 tests/unit/test-crucible-s390-tod-wide-clock.c
+ create mode 100644 tests/unit/test-crucible-serial-kbd-timer-wide-clock.c
+ create mode 100644 tests/unit/test-crucible-settle-prepark.py
+ create mode 100644 tests/unit/test-crucible-slirp-time.c
+ create mode 100644 tests/unit/test-crucible-snapshot-fast-path.py
+ create mode 100644 tests/unit/test-crucible-sparc-wide-clock.c
+ create mode 100644 tests/unit/test-crucible-stop-context.py
+ create mode 100644 tests/unit/test-crucible-stopped-control-rearm.py
+ create mode 100644 tests/unit/test-crucible-tcg-crossing-membership.py
+ create mode 100644 tests/unit/test-crucible-tcg-fast-paths.py
+ create mode 100644 tests/unit/test-crucible-tcg-page-collection.py
+ create mode 100644 tests/unit/test-crucible-template-control-drain.py
+ create mode 100644 tests/unit/test-crucible-tsc-source-index.py
+ create mode 100644 tests/unit/test-crucible-vcpu-service-time.c
+ create mode 100644 tests/unit/test-crucible-vfio-timer.c
+ create mode 100644 tests/unit/test-crucible-vga-blink.c
+ create mode 100644 tests/unit/test-crucible-vga-fingerprint.c
+ create mode 100644 tests/unit/test-crucible-x86-fingerprint.c
+ create mode 100644 tests/unit/test-crucible-xhci-microframe.c
+ create mode 100644 tests/unit/test-crucible-xtensa-timer.c
+ create mode 100644 util/crucible-hot-fork-child.c
 
 diff --git a/MAINTAINERS b/MAINTAINERS
 index 902db77218eacc2461b54fe675c9816b3d98aec6..efa17b3715547e731699fcd0edcb3de3ce8d49bd 100644
@@ -175372,16 +176232,19 @@ index 0000000000000000000000000000000000000000..ca1c90abe3b22fa2412002e449f07c67
 +}
 diff --git a/tests/unit/test-crucible-ich9-aux-wide-clock.c b/tests/unit/test-crucible-ich9-aux-wide-clock.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..3625a5222c36e18e8210088c86e81648c582d72e
+index 0000000000000000000000000000000000000000..e9d44247d10dbb53b3794f0249c055549929516a
 --- /dev/null
 +++ b/tests/unit/test-crucible-ich9-aux-wide-clock.c
-@@ -0,0 +1,735 @@
+@@ -0,0 +1,819 @@
 +/*
 + * Literal ICH9 auxiliary timer runtime and deferred migration regressions.
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
 +#include "qemu/osdep.h"
++#include <poll.h>
++#include <spawn.h>
 +#include <sys/wait.h>
++#include <glib-unix.h>
 +#include "qapi/error.h"
 +#include "qemu/main-loop.h"
 +#include "qemu/module.h"
@@ -175399,6 +176262,7 @@ index 0000000000000000000000000000000000000000..3625a5222c36e18e8210088c86e81648
 +#include "../../hw/acpi/ich9_tco.c"
 +#include "../../hw/acpi/ich9_timer.c"
 +
++static char *test_executable;
 +static __int128 observed_ps;
 +static unsigned smi_events;
 +static unsigned nanosecond_reads;
@@ -175545,7 +176409,7 @@ index 0000000000000000000000000000000000000000..3625a5222c36e18e8210088c86e81648
 +static bool run_in_child(void)
 +{
 +    if (!g_test_subprocess()) {
-+        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
 +        g_test_trap_assert_passed();
 +        return false;
 +    }
@@ -175953,84 +176817,153 @@ index 0000000000000000000000000000000000000000..3625a5222c36e18e8210088c86e81648
 +    destroy_fixture(&lpc);
 +}
 +
++/* The actual VMState writer runs only in a fresh executable process. */
++static int produce_exact_stream(unsigned scenario)
++{
++    ICH9LPCState lpc = { 0 };
++    GByteArray *output;
++
++    initialize_fixture(&lpc, true);
++    observed_ps = scenario == 1 ? ((__int128)1 << 120) + 357 : 357;
++    tco_timer_reload(&lpc.pm.tco_regs);
++    ich9_pm_update_swsmi_timer(&lpc.pm, true);
++    ich9_pm_update_periodic_timer(&lpc.pm, true);
++    if (scenario == 2) {
++        for (unsigned index = 0; index < 3; index++) {
++            timer_mod_ps_wide(ich9_aux_timer(&lpc.pm, index), -1);
++        }
++    }
++    if (scenario == 3) {
++        /* The actual prior 11-byte field writer, never a legacy reader. */
++        const VMStateDescription old_timer = {
++            .name = "ich9_pm/tco-timer-ps",
++            .version_id = 1,
++            .minimum_version_id = 1,
++            .fields = (const VMStateField[]) {
++                VMSTATE_TIMER_NS_PHASE_PTR(tco_regs.tco_timer,
++                                           ICH9LPCPMRegs),
++                VMSTATE_END_OF_LIST(),
++            },
++        };
++        const VMStateDescription old_stream = {
++            .name = auxiliary_stream.name,
++            .version_id = 1,
++            .minimum_version_id = 1,
++            .pre_save = auxiliary_stream.pre_save,
++            .fields = auxiliary_stream.fields,
++            .subsections = (const VMStateDescription * const []) {
++                &old_timer, NULL,
++            },
++        };
++        output = save_description(&lpc.pm, &old_stream);
++    } else {
++        output = save_auxiliary(&lpc.pm);
++    }
++    uint32_t length = output->len;
++
++    /* Bounded test IPC, with the same field writer and scenario inputs. */
++    g_assert_cmpint(write(STDOUT_FILENO, &length, sizeof(length)), ==,
++                    sizeof(length));
++    g_assert_cmpint(write(STDOUT_FILENO, output->data, length), ==, length);
++    g_byte_array_unref(output);
++    destroy_fixture(&lpc);
++    return 0;
++}
++
 +static GByteArray *exact_producer_stream(unsigned scenario)
 +{
++    posix_spawn_file_actions_t actions;
++    GError *error = NULL;
 +    int descriptors[2];
 +    pid_t producer;
-+    uint32_t length;
 +    int status;
++    char producer_argument[] = "--ich9-exact-stream";
++    char scenario_argument[] = { '0' + scenario, '\0' };
++    char *arguments[] = {
++        test_executable, producer_argument, scenario_argument, NULL,
++    };
++    uint8_t encoded[sizeof(uint32_t) + 512];
++    size_t received = 0;
++    bool complete = false;
++    int64_t deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
++    uint32_t length;
 +    GByteArray *bytes;
 +
-+    g_assert_cmpint(pipe(descriptors), ==, 0);
-+    producer = fork();
-+    g_assert_cmpint(producer, >=, 0);
-+    if (!producer) {
-+        ICH9LPCState lpc = { 0 };
-+        GByteArray *output;
++    g_assert_cmpuint(scenario, <, 4);
++    g_assert_true(g_unix_open_pipe(descriptors, FD_CLOEXEC, &error));
++    g_assert_no_error(error);
++    g_assert_cmpint(posix_spawn_file_actions_init(&actions), ==, 0);
++    g_assert_cmpint(posix_spawn_file_actions_adddup2(
++        &actions, descriptors[1], STDOUT_FILENO), ==, 0);
++    g_assert_cmpint(posix_spawn_file_actions_addclose(
++        &actions, descriptors[0]), ==, 0);
++    g_assert_cmpint(posix_spawn_file_actions_addclose(
++        &actions, descriptors[1]), ==, 0);
 +
-+        close(descriptors[0]);
-+        initialize_fixture(&lpc, true);
-+        observed_ps = scenario == 1 ? ((__int128)1 << 120) + 357 : 357;
-+        tco_timer_reload(&lpc.pm.tco_regs);
-+        ich9_pm_update_swsmi_timer(&lpc.pm, true);
-+        ich9_pm_update_periodic_timer(&lpc.pm, true);
-+        if (scenario == 2) {
-+            for (unsigned index = 0; index < 3; index++) {
-+                timer_mod_ps_wide(ich9_aux_timer(&lpc.pm, index), -1);
-+            }
-+        }
-+        if (scenario == 3) {
-+            /* The actual prior 11-byte field writer, never a legacy reader. */
-+            const VMStateDescription old_timer = {
-+                .name = "ich9_pm/tco-timer-ps",
-+                .version_id = 1,
-+                .minimum_version_id = 1,
-+                .fields = (const VMStateField[]) {
-+                    VMSTATE_TIMER_NS_PHASE_PTR(tco_regs.tco_timer,
-+                                               ICH9LPCPMRegs),
-+                    VMSTATE_END_OF_LIST(),
-+                },
-+            };
-+            const VMStateDescription old_stream = {
-+                .name = auxiliary_stream.name,
-+                .version_id = 1,
-+                .minimum_version_id = 1,
-+                .pre_save = auxiliary_stream.pre_save,
-+                .fields = auxiliary_stream.fields,
-+                .subsections = (const VMStateDescription * const []) {
-+                    &old_timer, NULL,
-+                },
-+            };
-+            output = save_description(&lpc.pm, &old_stream);
-+        } else {
-+            output = save_auxiliary(&lpc.pm);
-+        }
-+        length = output->len;
-+        /* Bounded test IPC only; this is not a process protocol fixture. */
-+        g_assert_cmpint(write(descriptors[1], &length, sizeof(length)), ==,
-+                        sizeof(length));
-+        g_assert_cmpint(write(descriptors[1], output->data, length), ==,
-+                        length);
-+        _exit(0);
-+    }
++    /* Fork-then-exec still runs RCU atfork handlers and inherits their locks. */
++    int spawned = posix_spawn(&producer, test_executable, &actions, NULL,
++                              arguments, environ);
++
++    posix_spawn_file_actions_destroy(&actions);
 +    close(descriptors[1]);
-+    g_assert_cmpint(read(descriptors[0], &length, sizeof(length)), ==,
-+                    sizeof(length));
-+    g_assert_cmpuint(length, >, 0);
-+    g_assert_cmpuint(length, <, 512);
-+    bytes = g_byte_array_sized_new(length);
-+    g_byte_array_set_size(bytes, length);
-+    for (size_t offset = 0; offset < length;) {
-+        ssize_t received = read(descriptors[0], bytes->data + offset,
-+                                 length - offset);
++    if (spawned) {
++        close(descriptors[0]);
++        g_error("Cannot spawn exact ICH9 timer producer: %s",
++                g_strerror(spawned));
++    }
 +
-+        g_assert_cmpint(received, >, 0);
-+        offset += received;
++    while (received < sizeof(encoded)) {
++        int64_t remaining = deadline - g_get_monotonic_time();
++        struct pollfd descriptor = { .fd = descriptors[0], .events = POLLIN };
++        int ready;
++        ssize_t count;
++
++        if (remaining <= 0) {
++            break;
++        }
++        ready = poll(&descriptor, 1, (remaining + 999) / 1000);
++        if (ready < 0 && errno == EINTR) {
++            continue;
++        }
++        if (ready <= 0) {
++            break;
++        }
++        count = read(descriptors[0], encoded + received,
++                     sizeof(encoded) - received);
++        if (count < 0 && errno == EINTR) {
++            continue;
++        }
++        if (count == 0) {
++            complete = true;
++            break;
++        }
++        if (count < 0) {
++            break;
++        }
++        received += count;
 +    }
 +    close(descriptors[0]);
-+    g_assert_cmpint(waitpid(producer, &status, 0), ==, producer);
++    if (!complete) {
++        /* Only this fixture's owned producer is terminated on IPC failure. */
++        g_assert_cmpint(kill(producer, SIGKILL), ==, 0);
++    }
++    pid_t waited;
++
++    do {
++        waited = waitpid(producer, &status, 0);
++    } while (waited < 0 && errno == EINTR);
++    g_assert_cmpint(waited, ==, producer);
++    g_assert_true(complete);
 +    g_assert_true(WIFEXITED(status));
 +    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    g_assert_cmpuint(received, >=, sizeof(length));
++    memcpy(&length, encoded, sizeof(length));
++    g_assert_cmpuint(length, >, 0);
++    g_assert_cmpuint(length, <, 512);
++    g_assert_cmpuint(received, ==, sizeof(length) + length);
++
++    bytes = g_byte_array_sized_new(length);
++    g_byte_array_append(bytes, encoded + sizeof(length), length);
 +    return bytes;
 +}
 +
@@ -176078,6 +177011,14 @@ index 0000000000000000000000000000000000000000..3625a5222c36e18e8210088c86e81648
 +
 +int main(int argc, char **argv)
 +{
++    test_executable = g_find_program_in_path(argv[0]);
++    g_assert_nonnull(test_executable);
++    if (argc == 3 && !strcmp(argv[1], "--ich9-exact-stream")) {
++        g_assert_cmpuint(strlen(argv[2]), ==, 1);
++        g_assert_true(argv[2][0] >= '0' && argv[2][0] <= '3');
++        return produce_exact_stream(argv[2][0] - '0');
++    }
++
 +    g_test_init(&argc, &argv, NULL);
 +    g_test_add_func("/ich9/tco-wide-runtime", test_tco_wide_runtime);
 +    g_test_add_func("/ich9/tco-events", test_tco_events);
@@ -176109,7 +177050,10 @@ index 0000000000000000000000000000000000000000..3625a5222c36e18e8210088c86e81648
 +                         test_crossmode_stream);
 +    g_test_add_data_func("/ich9/refuse-prior-precise-format",
 +                         GUINT_TO_POINTER(3), test_crossmode_stream);
-+    return g_test_run();
++    int result = g_test_run();
++
++    g_free(test_executable);
++    return result;
 +}
 diff --git a/tests/unit/test-crucible-icount-rate.c b/tests/unit/test-crucible-icount-rate.c
 new file mode 100644
@@ -204733,3 +205677,6 @@ index df549646d12fd29400cb551b8e7b5ff111a92083..9682b59078f3f311e24e46853f5bfe82
  # aio-posix.c
  run_poll_handlers_begin(void *ctx, int64_t max_ns, int64_t timeout) "ctx %p max_ns %"PRId64 " timeout %"PRId64
  run_poll_handlers_end(void *ctx, bool progress, int64_t timeout) "ctx %p progress %d new timeout %"PRId64
+-- 
+2.55.0
+
