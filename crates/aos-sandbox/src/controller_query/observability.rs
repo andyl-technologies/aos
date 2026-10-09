@@ -1688,6 +1688,7 @@ fn canonical_read_error(_error: ReadError) -> DormantObservabilityErrorV1 {
 fn read_nonzero_digest(
     reader: &mut CanonicalReaderV1<'_>,
 ) -> Result<ObjectDigest, DormantObservabilityErrorV1> {
+    // Consume the complete field before rejecting its semantic zero sentinel.
     let bytes: [u8; 32] = reader.array()?;
     if bytes == [0; 32] {
         return Err(DormantObservabilityErrorV1::NotCanonical);
@@ -1698,6 +1699,7 @@ fn read_nonzero_digest(
 fn read_length_prefixed<'a>(
     reader: &mut CanonicalReaderV1<'a>,
 ) -> Result<&'a [u8], DormantObservabilityErrorV1> {
+    // Retain this format's cast and consumed prefix if its payload is missing.
     let length = reader.u32()? as usize;
     reader.bytes(length)
 }

@@ -873,6 +873,7 @@ fn detach_stage(code: u8) -> Option<DetachStageV1> {
     }
 }
 
+// Header and typed evidence semantics stay here; Core owns byte boundaries.
 struct Cursor<'a> {
     reader: BoundedReader<'a, ()>,
     tag: u8,
