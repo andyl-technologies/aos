@@ -16,6 +16,22 @@
   pkgs,
 }: let
   fixture = import ./_native-hub-production.nix {inherit lib mkSystem pkgs;};
+  publicationProject = import ./_container-publication-project.nix {
+    inherit lib pkgs;
+    packages = {
+      hub-helper = fixture.helperV1;
+      hub-tool = fixture.toolV1;
+      nginx = pkgs.nginx;
+      aos-hub = pkgs.aos-hub;
+    };
+  };
+  updateProject = import ./_container-publication-project.nix {
+    inherit lib pkgs;
+    packages = {
+      hub-helper = fixture.helperV2;
+      hub-tool = fixture.toolV2;
+    };
+  };
   upgradeToplevel = fixture.consumerUpgradeSystem.config.system.build.toplevel;
   upgradeImage = fixture.consumerUpgradeSystem.config.system.build.image.raw;
   upgradeImageDisk = fixture.consumerUpgradeSystem.config.system.build.imageArtifacts.raw.disk;
@@ -35,6 +51,8 @@
       pkgs.binutils
       pkgs.sbsigntools
       pkgs.systemd
+      publicationProject.project
+      updateProject.project
     ];
     pname = "native-hub-publisher-closure-info";
   };
@@ -581,6 +599,7 @@ in {
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
           export NIX_REMOTE=""
           export NIX_CONF_DIR="$HOME/.config/nix"
+          cd ${publicationProject.project}
           mkdir -p "$NIX_CONF_DIR" /var/tmp/aos-publication-v1
           printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' \\
             > "$NIX_CONF_DIR/nix.conf"
@@ -600,24 +619,13 @@ in {
           initial = "$key"
           EOF
           {APR} publish {HELPER_V1} --registry production \\
-            --name hub-helper --version 1.0.0 \\
-            --description 'Native Hub helper fixture' --license MIT \\
-            --maintainer publisher@example.test \\
             --key-id initial
           {APR} publish {NGINX} --registry production \\
-            --name nginx --version '${pkgs.nginx.version}' \\
-            --description 'nginx — high-performance HTTP and reverse proxy server' \\
-            --license BSD-2-Clause --maintainer publisher@example.test \\
             --key-id initial
           {APR} publish {AOS_HUB_PACKAGE} --registry production \\
-            --name aos-hub --version '${pkgs.aos-hub.version}' \\
-            --description 'Native and Worker registry Hub service.' \\
-            --license Apache-2.0 --maintainer publisher@example.test \\
             --key-id initial
           {APR} release 1.0.0 --registry production \\
-            --store-path {TOOL_V1} --name hub-tool \\
-            --description 'Native Hub production fixture' --license MIT \\
-            --maintainer publisher@example.test --key-id initial \\
+            --store-path {TOOL_V1} --key-id initial \\
             --channel stable --init-channel --cache-url {REGISTRY} \\
             --upload-url file:///var/tmp/aos-publication-v1
           {APR} verify --registry production
@@ -885,15 +893,11 @@ in {
           export NIX_CONF_DIR="$HOME/.config/nix"
           rm -rf /var/tmp/aos-publication-v2
           mkdir -p /var/tmp/aos-publication-v2
+          cd ${updateProject.project}
           {APR} publish {HELPER_V2} --registry production \\
-            --name hub-helper --version 2.0.0 --previous 1.0.0 \\
-            --description 'Native Hub helper fixture update' --license MIT \\
-            --maintainer publisher@example.test --key-id initial
+            --previous 1.0.0 --key-id initial
           {APR} release 2.0.0 --registry production \\
-            --store-path {TOOL_V2} --name hub-tool --version 2.0.0 \\
-            --previous 1.0.0 \\
-            --description 'Native Hub production fixture update' --license MIT \\
-            --maintainer publisher@example.test --key-id initial \\
+            --store-path {TOOL_V2} --previous 1.0.0 --key-id initial \\
             --channel stable --count 256 --cache-url {REGISTRY} \\
             --upload-url file:///var/tmp/aos-publication-v2
           {APR} verify --registry production
