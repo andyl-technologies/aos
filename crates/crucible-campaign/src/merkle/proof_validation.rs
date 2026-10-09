@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[cfg(test)]
+mod child_table_tests;
+
 pub(super) fn finish_scan_page(
     mut entries: Vec<(CampaignHash, ContentId)>,
     limit: usize,
@@ -55,11 +58,36 @@ pub(super) fn decode_node_bytes(
     }
     {
         let _scope = envelope_budget.as_ref().map(|budget| budget.enter());
-        if node.child_references()? != *envelope.children() {
+        if !child_table_matches(&node, envelope.children()) {
             return Err(invalid("node-child-table-mismatch"));
         }
     }
     Ok(node)
+}
+
+/// Compares validated entries with the authenticated table without rebuilding it.
+fn child_table_matches(node: &MerkleNode, children: &BTreeSet<ChildReference>) -> bool {
+    if node.entries.len() != children.len() {
+        return false;
+    }
+
+    // validate() has already bounded every slot to one hexadecimal nibble.
+    // Zero-padded slot roles have the same order as the entry map; every
+    // generated role is a valid identifier, so no role constructor can refuse.
+    node.entries
+        .iter()
+        .zip(children)
+        .all(|((slot, entry), child)| {
+            let Some(hex) = b"0123456789abcdef".get(usize::from(*slot)) else {
+                return false;
+            };
+            let prefix = [b's', b'l', b'o', b't', b'.', b'0', *hex, b'.'];
+            let (suffix, id): (&[u8], ContentId) = match entry {
+                MerkleEntry::Leaf { value, .. } => (b"value", *value),
+                MerkleEntry::Node { content_id, .. } => (b"node", *content_id),
+            };
+            child.role().as_bytes().strip_prefix(&prefix) == Some(suffix) && child.id() == id
+        })
 }
 
 pub(super) fn validate_page_proof_nodes(

@@ -77,6 +77,7 @@ pub mod inflight;
 pub mod netlink;
 pub mod ninep;
 pub mod request;
+mod snapshot_allocation;
 mod snapshot_codec;
 pub mod subnode;
 
@@ -120,6 +121,7 @@ pub use request::{
     Response, ResponseStatus,
 };
 
+pub use snapshot_allocation::DeviceSnapshotAllocation;
 pub use subnode::{
     IoCore, IoCoreSnapshot, IoCoreSnapshotCodecError, IoRequestEnqueueFailure, IoSubNode,
     SelectedDeliveryOutcome, ShmemDeliveryFailure, ShmemDeliveryResult, ShmemDequeueResult,

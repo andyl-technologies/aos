@@ -1,8 +1,10 @@
-//! Shared original resource custody and typed JSON artifact decoding.
+//! Shared original resource custody and typed artifact encoding and decoding.
 //!
 //! The storage substrate owns the finite account used by campaign and compact
-//! scenario codecs. This facade adds the serde visitor adapter without giving
-//! storage a dependency on model formats or JSON.
+//! scenario codecs. This facade adds scoped JSON visitors, borrowed-seed CBOR
+//! decoding, and bounded output adapters without giving storage a dependency
+//! on model formats or serialization libraries. Format-specific parser and
+//! custom-visitor allocations still require their own original purposes.
 
 pub use crucible_cas::owned_decode::{
     DecodeAdmissionError, DecodeBudget, DecodeCustody, DecodeDescriptorLoan,

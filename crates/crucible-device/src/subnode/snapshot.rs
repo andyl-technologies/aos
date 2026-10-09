@@ -31,7 +31,7 @@ impl IoCoreSnapshot {
         self.canonical_bytes_with_admission(maximum, &mut |_| Ok(()))
     }
 
-    fn canonical_bytes_with_admission(
+    pub(crate) fn canonical_bytes_with_admission(
         &self,
         maximum: u64,
         admit_allocation: &mut dyn FnMut(u64) -> Result<(), IoCoreSnapshotCodecError>,

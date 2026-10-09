@@ -59,3 +59,87 @@ fn block_fault_checkpoint_codec_is_bounded_versioned_and_canonical() {
         Err(BlockFaultStateCodecError::Noncanonical)
     );
 }
+
+#[test]
+fn supplied_fault_parser_preserves_canonical_state_and_input_admission() {
+    let expected = state();
+    let bytes = expected.to_canonical_bytes().unwrap();
+    let mut calls = 0;
+
+    let actual = BlockFaultState::from_canonical_bytes_with_decoder(
+        &bytes,
+        32,
+        MAX_BLOCK_FAULT_STATE_BYTES,
+        &mut |_| Ok(()),
+        |payload| {
+            calls += 1;
+            ciborium::de::from_reader(payload)
+        },
+    )
+    .unwrap();
+
+    assert_eq!(actual, expected);
+    assert_eq!(calls, 1);
+
+    let maximum = u64::try_from(bytes.len() - 1).unwrap();
+    let result = BlockFaultState::from_canonical_bytes_with_decoder(
+        &bytes,
+        32,
+        maximum,
+        &mut |_| Ok(()),
+        |payload| {
+            calls += 1;
+            ciborium::de::from_reader(payload)
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(BlockFaultStateCodecError::ResourceLimit { .. })
+    ));
+    assert_eq!(calls, 1);
+}
+
+#[test]
+fn supplied_fault_parser_error_precedes_restore_validation() {
+    let bytes = state().to_canonical_bytes().unwrap();
+    let mut calls = 0;
+
+    let result = BlockFaultState::from_canonical_bytes_with_decoder(
+        &bytes,
+        0,
+        MAX_BLOCK_FAULT_STATE_BYTES,
+        &mut |_| Ok(()),
+        |_| {
+            calls += 1;
+            Err(ciborium::de::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "actual supplied fault parser failure",
+            )))
+        },
+    );
+
+    assert_eq!(result, Err(BlockFaultStateCodecError::Malformed));
+    assert_eq!(calls, 1);
+}
+
+#[test]
+fn fault_validation_output_is_admitted_before_buffer_reservation() {
+    let expected = state();
+    let bytes = expected.to_canonical_bytes().unwrap();
+    let mut requested = Vec::new();
+
+    let result = BlockFaultState::from_canonical_bytes_with_decoder(
+        &bytes,
+        32,
+        MAX_BLOCK_FAULT_STATE_BYTES,
+        &mut |count| {
+            requested.push(count);
+            Err("original fault output refused")
+        },
+        |payload| ciborium::de::from_reader(payload),
+    );
+
+    assert_eq!(result, Err(BlockFaultStateCodecError::Malformed));
+    assert_eq!(requested, [bytes.len() as u64]);
+}

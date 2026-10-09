@@ -1,14 +1,19 @@
 //! Block-device checkpoint snapshot representation.
 
+#[path = "snapshot/seed.rs"]
+mod seed;
+
 use std::collections::{BTreeMap, BTreeSet};
+
+use crate::DeviceSnapshotAllocation;
 
 use serde::ser::SerializeSeq;
 use serde::{Serialize, Serializer};
 
 use crate::inflight::PendingResponse;
 use crate::snapshot_codec::{
-    BoundedVec, SnapshotEncodeError, SnapshotResourceError, admit_input, encode_prefixed,
-    map_decode_error,
+    BoundedVec, SnapshotEncodeError, SnapshotResourceError, admit_input,
+    encode_prefixed_with_admission, map_decode_error,
 };
 use crate::subnode::{IoCoreSnapshot, IoCoreSnapshotCodecError};
 
@@ -26,9 +31,36 @@ type SnapshotPage = BoundedVec<u8, { PAGE_SIZE as u64 }>;
 type SnapshotPages = BoundedVec<(u64, SnapshotPage), MAX_BLOCK_SNAPSHOT_PAGES>;
 type SnapshotDirtyPages = BoundedVec<u64, MAX_BLOCK_SNAPSHOT_PAGES>;
 
+/// Borrows the exact allocation callback for the concrete block wire tables.
+///
+/// The callback is carried directly into every custom bounded table. The caller
+/// supplies the enclosing parser and retains the accepted allocations' custody;
+/// this seed neither discovers an account nor grants a funded output owner.
+pub struct BlockSnapshotWireSeed<'a, 'callback> {
+    inner: seed::BlockWireSeed<'a, 'callback>,
+}
+
+/// Retains a decoded wire until the device codec validates its continuation.
+///
+/// Its fields are private so an injected parser cannot fabricate device state
+/// or extract the intermediate tables outside the codec's validation route.
+pub struct DecodedBlockSnapshotWire {
+    wire: BlockSnapshotWire,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for BlockSnapshotWireSeed<'_, '_> {
+    type Value = DecodedBlockSnapshotWire;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        self.inner
+            .deserialize(decoder)
+            .map(|wire| DecodedBlockSnapshotWire { wire })
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct BlockSnapshotWire {
+pub(crate) struct BlockSnapshotWire {
     core: SnapshotBytes,
     base_hash: [u8; 32],
     device_length: u64,
@@ -139,12 +171,29 @@ impl BlockSnapshot {
         &self,
         maximum: u64,
     ) -> Result<Vec<u8>, BlockSnapshotCodecError> {
+        self.to_canonical_bytes_with_admission(maximum, &mut |_| Ok(()))
+    }
+
+    fn to_canonical_bytes_with_admission(
+        &self,
+        maximum: u64,
+        admit_allocation: &mut dyn FnMut(u64) -> Result<(), &'static str>,
+    ) -> Result<Vec<u8>, BlockSnapshotCodecError> {
         admit_snapshot_resources(self)?;
         validate_snapshot(self, maximum)?;
         let wire = BlockSnapshotEncodeWire {
             core: bounded_bytes(
                 self.core
-                    .canonical_bytes_with_limit(maximum.min(MAX_BLOCK_SNAPSHOT_BYTES))
+                    .canonical_bytes_with_admission(
+                        maximum.min(MAX_BLOCK_SNAPSHOT_BYTES),
+                        &mut |bytes| {
+                            admit_allocation(bytes).map_err(|_| {
+                                IoCoreSnapshotCodecError::Malformed(
+                                    "original validation output refused",
+                                )
+                            })
+                        },
+                    )
                     .map_err(map_io_core_error)?,
                 "block I/O core bytes",
             )?,
@@ -155,7 +204,10 @@ impl BlockSnapshot {
             dirty: SnapshotDirtyPagesRef(&self.dirty),
             storage_faults: bounded_bytes(
                 self.storage_faults
-                    .to_canonical_bytes_with_limit(maximum.min(MAX_BLOCK_SNAPSHOT_BYTES))
+                    .to_canonical_bytes_with_admission(
+                        maximum.min(MAX_BLOCK_SNAPSHOT_BYTES),
+                        admit_allocation,
+                    )
                     .map_err(map_block_fault_error)?,
                 "block storage-fault bytes",
             )?,
@@ -167,12 +219,13 @@ impl BlockSnapshot {
                 self.latency.per_byte_ns,
             ],
         };
-        encode_prefixed(
+        encode_prefixed_with_admission(
             &wire,
             BLOCK_SNAPSHOT_MAGIC,
             "block snapshot bytes",
             maximum,
             MAX_BLOCK_SNAPSHOT_BYTES,
+            admit_allocation,
         )
         .map_err(map_encode_error)
     }
@@ -211,23 +264,139 @@ impl BlockSnapshot {
         let wire: BlockSnapshotWire = ciborium::de::from_reader(payload).map_err(|error| {
             map_decode_error(error).map_or(BlockSnapshotCodecError::Malformed, map_resource_error)
         })?;
+        Self::finish_decoded_wire(
+            bytes,
+            maximum,
+            wire,
+            &mut |_| Ok(()),
+            &mut |_| Ok(()),
+            |bytes, length, maximum, admit_output| {
+                BlockFaultState::from_canonical_bytes_with_decoder(
+                    bytes,
+                    length,
+                    maximum,
+                    admit_output,
+                    |payload| ciborium::de::from_reader(payload),
+                )
+            },
+        )
+    }
+
+    /// Decodes custom wire tables through a supplied borrowed parser seed.
+    ///
+    /// The parser must use the same saved enclosing account as `admit_table`.
+    /// Each callback receives the checked element-table extent before that
+    /// table's reservation. Nested ordinary serde members are the supplied
+    /// parser's responsibility. The nested fault decoder receives the original
+    /// fault envelope after earlier fields have been accepted, preserving its
+    /// original parser account and supplied-order errors. The collection callback
+    /// names each actual page-map or dirty-set insertion before allocation.
+    /// Nested codecs,
+    /// validation and canonical output retain their separate purposes.
+    /// This method does not certify complete device allocation payment.
+    ///
+    /// # Errors
+    /// Returns the supplied decoder error or the same structural, resource,
+    /// nested-state and canonical failures as the ordinary codec. An admission
+    /// callback error is a fixed serde relay; its owner retains the typed cause.
+    pub fn from_canonical_bytes_with_wire_decoder<F, G>(
+        bytes: &[u8],
+        maximum: u64,
+        admit_table: &mut dyn FnMut(u64) -> Result<(), &'static str>,
+        admit_collection: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
+        decode: F,
+        decode_fault: G,
+    ) -> Result<Self, BlockSnapshotCodecError>
+    where
+        F: for<'a, 'callback> FnOnce(
+            &[u8],
+            BlockSnapshotWireSeed<'a, 'callback>,
+        ) -> Result<
+            DecodedBlockSnapshotWire,
+            ciborium::de::Error<std::io::Error>,
+        >,
+        G: FnOnce(
+            &[u8],
+            u64,
+            u64,
+            &mut dyn FnMut(u64) -> Result<(), &'static str>,
+        ) -> Result<BlockFaultState, BlockFaultStateCodecError>,
+    {
+        let payload = bytes
+            .strip_prefix(BLOCK_SNAPSHOT_MAGIC)
+            .ok_or(BlockSnapshotCodecError::Version)?;
+        admit_input(
+            bytes,
+            "block snapshot bytes",
+            maximum,
+            MAX_BLOCK_SNAPSHOT_BYTES,
+        )
+        .map_err(map_resource_error)?;
+
+        let admission = std::cell::RefCell::new(&mut *admit_table);
+        let decoded = decode(
+            payload,
+            BlockSnapshotWireSeed {
+                inner: seed::BlockWireSeed {
+                    admission: &admission,
+                },
+            },
+        )
+        .map_err(|error| {
+            map_decode_error(error).map_or(BlockSnapshotCodecError::Malformed, map_resource_error)
+        })?;
+        let admit_table = admission.into_inner();
+        Self::finish_decoded_wire(
+            bytes,
+            maximum,
+            decoded.wire,
+            admit_table,
+            admit_collection,
+            decode_fault,
+        )
+    }
+
+    fn finish_decoded_wire<G>(
+        bytes: &[u8],
+        maximum: u64,
+        wire: BlockSnapshotWire,
+        admit_allocation: &mut dyn FnMut(u64) -> Result<(), &'static str>,
+        admit_collection: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
+        decode_fault: G,
+    ) -> Result<Self, BlockSnapshotCodecError>
+    where
+        G: FnOnce(
+            &[u8],
+            u64,
+            u64,
+            &mut dyn FnMut(u64) -> Result<(), &'static str>,
+        ) -> Result<BlockFaultState, BlockFaultStateCodecError>,
+    {
         let snapshot = Self {
-            core: IoCoreSnapshot::from_canonical_bytes_with_limit(
+            core: IoCoreSnapshot::from_canonical_bytes_with_admission(
                 wire.core.as_slice(),
                 maximum.min(MAX_BLOCK_SNAPSHOT_BYTES),
+                &mut |bytes| {
+                    admit_allocation(bytes).map_err(|_| {
+                        IoCoreSnapshotCodecError::Malformed(
+                            "original device snapshot allocation refused",
+                        )
+                    })
+                },
             )
             .map_err(map_io_core_error)?,
             base_hash: wire.base_hash,
             device_length: wire.device_length,
             overlay_delta: OverlayDelta {
-                pages: decode_pages(wire.overlay_delta)?,
+                pages: decode_pages(wire.overlay_delta, admit_collection)?,
             },
-            full_pages: decode_pages(wire.full_pages)?,
-            dirty: wire.dirty.into_inner().into_iter().collect(),
-            storage_faults: BlockFaultState::from_canonical_bytes_with_limit(
+            full_pages: decode_pages(wire.full_pages, admit_collection)?,
+            dirty: decode_dirty_pages(wire.dirty, admit_collection)?,
+            storage_faults: decode_fault(
                 wire.storage_faults.as_slice(),
                 wire.device_length,
                 maximum.min(MAX_BLOCK_SNAPSHOT_BYTES),
+                admit_allocation,
             )
             .map_err(map_block_fault_error)?,
             latency: BlockLatency::new(
@@ -240,7 +409,11 @@ impl BlockSnapshot {
         };
         admit_snapshot_resources(&snapshot)?;
         validate_snapshot(&snapshot, maximum)?;
-        if snapshot.to_canonical_bytes_with_limit(maximum)?.as_slice() != bytes {
+        if snapshot
+            .to_canonical_bytes_with_admission(maximum, admit_allocation)?
+            .as_slice()
+            != bytes
+        {
             return Err(BlockSnapshotCodecError::Noncanonical);
         }
         Ok(snapshot)
@@ -285,21 +458,38 @@ pub enum BlockSnapshotCodecError {
 
 fn decode_pages(
     pages: SnapshotPages,
+    admit: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
 ) -> Result<BTreeMap<u64, [u8; PAGE_SIZE]>, BlockSnapshotCodecError> {
     let pages = pages.into_inner();
     if pages.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
         return Err(BlockSnapshotCodecError::Noncanonical);
     }
-    pages
-        .into_iter()
-        .map(|(offset, bytes)| {
-            let page = bytes
-                .into_inner()
-                .try_into()
-                .map_err(|_| BlockSnapshotCodecError::Invalid)?;
-            Ok((offset, page))
-        })
-        .collect()
+
+    let mut decoded = BTreeMap::new();
+    for (offset, bytes) in pages {
+        let page = bytes
+            .into_inner()
+            .try_into()
+            .map_err(|_| BlockSnapshotCodecError::Invalid)?;
+        admit(DeviceSnapshotAllocation::BlockPage).map_err(|_| BlockSnapshotCodecError::Nested)?;
+        decoded.insert(offset, page);
+    }
+    Ok(decoded)
+}
+
+fn decode_dirty_pages(
+    pages: SnapshotDirtyPages,
+    admit: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
+) -> Result<BTreeSet<u64>, BlockSnapshotCodecError> {
+    let mut decoded = BTreeSet::new();
+    for page in pages.into_inner() {
+        if !decoded.contains(&page) {
+            admit(DeviceSnapshotAllocation::BlockDirtyPage)
+                .map_err(|_| BlockSnapshotCodecError::Nested)?;
+            decoded.insert(page);
+        }
+    }
+    Ok(decoded)
 }
 
 fn bounded_bytes(

@@ -1,10 +1,11 @@
-//! Typed serde allocation admission for JSON leaves in scoped artifact codecs.
+//! Typed serde allocation admission for scoped artifact codecs.
 //!
 //! Collection hints are suppressed so an untrusted count cannot preallocate a
 //! container. Each typed seed is admitted before decoding its value, including
 //! conservative Vec growth and B-tree entry storage. Owned strings and bytes
-//! are admitted before visitors can copy them; parser scratch is admitted before
-//! serde_json starts. Custom visitors with additional allocations need their
+//! are admitted before visitors can copy them. Format owners admit parser
+//! scratch separately; the JSON entry does so before serde_json starts.
+//! Custom visitors with additional allocations need their
 //! own explicit compact-codec charges.
 
 use serde::Deserialize;
