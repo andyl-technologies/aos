@@ -91,8 +91,8 @@ impl<'a, E> BoundedReader<'a, E> {
     ///
     /// Returns the mapped offset-overflow or truncation error.
     pub fn bytes(&mut self, count: usize) -> Result<&'a [u8], E> {
-        let (value, end) = checked_byte_region(self.bytes, self.offset, count)
-            .map_err(self.error)?;
+        let (value, end) =
+            checked_byte_region(self.bytes, self.offset, count).map_err(self.error)?;
         self.offset = end;
         Ok(value)
     }
@@ -223,7 +223,10 @@ mod tests {
 
         assert_eq!(checked_byte_region(&bytes, 3, 2), Err(ReadError::Truncated));
         assert_eq!(checked_byte_region(&bytes, 5, 0), Err(ReadError::Truncated));
-        assert_eq!(checked_byte_region(input, usize::MAX, 0), Err(ReadError::Truncated));
+        assert_eq!(
+            checked_byte_region(input, usize::MAX, 0),
+            Err(ReadError::Truncated)
+        );
         assert_eq!(
             checked_byte_region(input, usize::MAX, 1),
             Err(ReadError::LengthOverflow)
@@ -249,7 +252,10 @@ mod tests {
         let mut reader = BoundedReader::new(&[7, 8], mapped_error);
 
         assert_eq!(reader.u8(), Ok(7));
-        assert_eq!(reader.bytes(usize::MAX), Err((ReadError::LengthOverflow, 1)));
+        assert_eq!(
+            reader.bytes(usize::MAX),
+            Err((ReadError::LengthOverflow, 1))
+        );
         assert_eq!(reader.bytes(2), Err((ReadError::Truncated, 2)));
         assert_eq!(reader.remaining_bytes(), &[8]);
         assert_eq!(reader.u8(), Ok(8));

@@ -1658,8 +1658,8 @@ impl<'a> BoundedFrameDecoderV1<'a> {
         &mut self,
         length: usize,
     ) -> Result<&'a [u8], BoundedFrameDecodeError> {
-        let (bytes, end) = checked_byte_region(self.bytes, self.offset, length)
-            .map_err(|error| match error {
+        let (bytes, end) =
+            checked_byte_region(self.bytes, self.offset, length).map_err(|error| match error {
                 ReadError::LengthOverflow => BoundedFrameDecodeError::LimitExceeded,
                 _ => BoundedFrameDecodeError::Truncated,
             })?;
