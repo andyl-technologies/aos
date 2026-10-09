@@ -104,6 +104,15 @@
       release_vm_package "$version" --registry "$registry" "''${channel_options[@]}"
     }
 
+    commit_fixture_changes() {
+      local registry_dir="$1"
+      local message="$2"
+      git -C "$registry_dir" add -A
+      if ! git -C "$registry_dir" diff --cached --quiet; then
+        git -C "$registry_dir" commit -m "$message"
+      fi
+    }
+
     assert_file_not_contains() {
       file="$1"
       pattern="$2"
@@ -493,8 +502,7 @@ in {
           fail "apr cache generate e2e-tool $version"
         }
 
-        git -C "$REG_DIR" add -A
-        git -C "$REG_DIR" commit -m "release: e2e-tool $version"
+        commit_fixture_changes "$REG_DIR" "release: e2e-tool $version"
         run_logged "/tmp/e2e-release-$version.out" release_fixture_registry e2e-reg "$version" || {
           fail "apr release authenticates e2e-tool $version"
           return 1
@@ -736,8 +744,7 @@ in {
           fail "apr cache generate system $version"
         }
 
-        git -C "$REG_DIR" add -A
-        git -C "$REG_DIR" commit -m "release: server $version"
+        commit_fixture_changes "$REG_DIR" "release: server $version"
       }
 
       create_publish_registry e2e-system-reg
@@ -895,8 +902,7 @@ in {
           --no-commit || {
           fail "apr cache generate fleet-tool $version"
         }
-        git -C "$REG_DIR" add -A
-        git -C "$REG_DIR" commit -m "release: fleet-tool $version"
+        commit_fixture_changes "$REG_DIR" "release: fleet-tool $version"
         run_logged "/tmp/fleet-release-$version.out" release_fixture_registry fleet-reg "$version" || {
           fail "apr release authenticates fleet-tool $version"
           return 1
