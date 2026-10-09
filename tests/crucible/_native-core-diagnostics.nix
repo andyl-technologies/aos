@@ -149,9 +149,14 @@
       end
     '';
   };
-  stackReferences = ./_native-core-stack-references.py;
+  # A derivation, not a bare path: the rootfs closure only follows rootfsDeps.
+  stackReferences = pkgs.writeTextFile {
+    name = "crucible-native-core-stack-references";
+    destination = "/share/crucible/native-core-stack-references.py";
+    text = builtins.readFile ./_native-core-stack-references.py;
+  };
 in {
-  rootfsDeps = [pkgs.gdb pkgs.python3 commands];
+  rootfsDeps = [pkgs.gdb pkgs.python3 commands stackReferences];
 
   setup = ''
     # The volume bounds allocated core data together; sparse logical file
@@ -216,7 +221,8 @@ in {
           ulimit -S -f 512 || exit 1
           ulimit -H -f 512 || exit 1
           ${pkgs.coreutils}/bin/timeout -k 2 120 ${pkgs.python3}/bin/python3 -I -S \
-            ${stackReferences} "$native_core_file" "$native_core_tid"
+            ${stackReferences}/share/crucible/native-core-stack-references.py \
+            "$native_core_file" "$native_core_tid"
         ) > /tmp/crucible-native-core-stack-references.txt 2>&1 || native_core_scan_status=$?
         native_core_scan_bytes=$(${pkgs.coreutils}/bin/wc -c < /tmp/crucible-native-core-stack-references.txt)
         printf 'native_core_stack_scan_status=%s report_bytes=%s report_file_limit=262144 emitted_head_limit=65536\n' \
