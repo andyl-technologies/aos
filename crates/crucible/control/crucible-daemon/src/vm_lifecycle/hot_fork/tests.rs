@@ -221,7 +221,12 @@ fn host_continuation_clone_cost_is_bounded_across_siblings() {
         let executable = std::env::current_exe()
             .unwrap_or_else(|error| panic!("locate host clone cost test executable: {error}"));
         let output = std::process::Command::new(executable)
-            .args([test_name.as_str(), "--exact", "--test-threads=1"])
+            .args([
+                test_name.as_str(),
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .env(ISOLATION_MARKER, "1")
             .output()
             .unwrap_or_else(|error| panic!("run isolated host clone cost test: {error}"));
@@ -236,6 +241,7 @@ fn host_continuation_clone_cost_is_bounded_across_siblings() {
             stdout.contains("test result: ok. 1 passed;"),
             "isolated host clone cost test did not execute exactly one test:\n{stdout}"
         );
+        print!("{stdout}");
         return;
     }
 
