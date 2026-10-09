@@ -100,6 +100,37 @@ impl OwnedFinalCheck {
         }
     }
 
+    /// Retains genuine maintenance pairs with linear physical bracketing.
+    ///
+    /// Forward inventory order preserves each first observation. The reverse
+    /// pass checks earlier pairs again after every later pair was observed;
+    /// the last pair needs no duplicate observation. The original current
+    /// check runs before the first pair and after each observation, preserving
+    /// clock, expiry and cancellation refusal without recursively duplicating
+    /// previously retained pair checks. Every effect still refreshes its full
+    /// Frame and retains all genuine descriptors through acknowledgment.
+    pub(crate) fn with_restore_pairs(
+        &self,
+        pairs: &[crate::store::native_publication_effects::NativeRestorePair],
+    ) -> Self {
+        if pairs.is_empty() {
+            return self.clone();
+        }
+
+        let current = self.clone();
+        let held: Vec<_> = pairs.iter().map(|pair| pair.held()).collect();
+        Self {
+            check: SharedOwned::new(move || {
+                current.recheck()?;
+                for pair in held.iter().chain(held.iter().rev().skip(1)) {
+                    pair.recheck().map_err(native_restore_failure)?;
+                    current.recheck()?;
+                }
+                Ok(())
+            }),
+        }
+    }
+
     /// Retains actual collector extraction descriptors beside genuine current authority.
     ///
     /// The closed worker receipt preserves physical source continuity through
