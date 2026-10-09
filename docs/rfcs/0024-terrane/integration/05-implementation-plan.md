@@ -197,7 +197,16 @@ read-only retained-selection helper supports both actual held roles, preserves
 strict protected receipts and fresh selected checks, and performs no repair.
 Physical fault assertions now require corruption or unavailability so generic
 unsupported refusal cannot qualify original-input closing. Fresh build and
-runtime qualification remain pending. Parallel review also identifies CDC-19's
+runtime qualification remain pending. Corrected retained-read candidate
+`c6d5227e81` passes its required native build and strict all-target Clippy;
+actual test compilation remains in progress. The seven-case runtime has not
+yet rerun. Parallel review corrects a nested-overlay fixture's expected
+projected property order without changing independent output identities or
+weakening callback assertions. A complete decoder-call audit also identifies
+the derived-object plaintext reader as an additional CDC-19 consumer; its
+shared wiring now uses the object-context decoder, and the boundary gate
+requires a dedicated exact reader witness. That witness's implementation and
+assembled runtime qualification remain pending. Parallel review also identifies CDC-19's
 final manifest chunk boundary gap in admission, restoration and guarded reads.
 An isolated codec/manifest witness workline owns the correction; the exact native
 nonfinal and final admission selectors are registered in `cdc-boundaries`.

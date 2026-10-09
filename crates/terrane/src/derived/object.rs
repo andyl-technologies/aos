@@ -1,7 +1,7 @@
 //! Reassembles bounded plaintext ranges from verified manifest-ordered chunks.
 
 use super::Error;
-use crate::{codec::decode_verified, store::ContentStore};
+use crate::{codec::decode_object_chunk_verified, store::ContentStore};
 use terrane_core::{
     chunking::ChunkProfile,
     codec::{Codec, parse_envelope},
@@ -169,7 +169,7 @@ impl<S: ContentStore + Sync, D: DictionaryResolver + Sync> PlaintextObject
                     _ => None,
                 };
                 let chunk_length = usize::try_from(chunk.length).map_err(|_| Error::InvalidRead)?;
-                let verified = decode_verified(
+                let verified = decode_object_chunk_verified(
                     &encoded,
                     chunk_length,
                     self.profile,

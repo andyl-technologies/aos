@@ -6,6 +6,9 @@ mod signed_tests;
 #[path = "dictionary_tests.rs"]
 mod dictionary_tests;
 
+#[path = "object_boundary_tests.rs"]
+mod object_boundary_tests;
+
 use super::*;
 use crate::store::{
     ByteRange, Capabilities, CapabilityReport, ContentStore, ContentUpload, Durability,
