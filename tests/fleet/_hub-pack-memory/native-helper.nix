@@ -16,6 +16,12 @@ in
       cargoRoot = "crates";
       cargoWorkspaceMembers = import ../_hub-retained-workspace.nix native.src;
       cargoDeps = builtins.elemAt native.passthru.evidenceSources 1;
+      # Native library tests import the pure Worker ledger and its regressions.
+      postConfigure = ''
+        mkdir -p aos-hub-worker/src
+        cp ${worker.src}/crates/aos-hub-worker/src/hybrid_authority_state.rs aos-hub-worker/src/
+        cp -r ${worker.src}/crates/aos-hub-worker/src/hybrid_authority_state aos-hub-worker/src/
+      '';
       cargoBuildCommands = [cargoCommand];
       cargoEnv = {
         OPENSSL_DIR = "${pkgs.openssl}";
