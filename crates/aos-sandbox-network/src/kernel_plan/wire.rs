@@ -1,5 +1,7 @@
 //! Private fixed-width codec and semantic validation for kernel plans.
 
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
+
 use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -230,8 +232,8 @@ pub(super) fn encode_assignment(bytes: &mut Vec<u8>, assignment: BrokerAssignmen
 pub(super) fn decode_assignment(
     decoder: &mut Decoder<'_>,
 ) -> Result<BrokerAssignment, NetworkKernelPlanError> {
-    let sandbox = SandboxId::from_bytes(decoder.take()?);
-    let incarnation = IncarnationId::from_bytes(decoder.take()?);
+    let sandbox = SandboxId::from_bytes(decoder.array()?);
+    let incarnation = IncarnationId::from_bytes(decoder.array()?);
     let epoch = AssignmentEpoch::new(decoder.u64()?);
     let desired_generation = DesiredGeneration::new(decoder.u64()?);
     let digest = decode_digest(decoder, "missing assignment digest")?;
@@ -404,11 +406,11 @@ pub(super) fn encode_address_pair(bytes: &mut Vec<u8>, pair: KernelAddressPair) 
 pub(super) fn decode_address_pair(
     decoder: &mut Decoder<'_>,
 ) -> Result<KernelAddressPair, NetworkKernelPlanError> {
-    let family = decode_family(decoder.byte()?)?;
-    let prefix_length = decoder.byte()?;
-    decoder.zeroes(2)?;
-    let host = decode_address_bytes(family, decoder.take()?)?;
-    let sandbox = decode_address_bytes(family, decoder.take()?)?;
+    let family = decode_family(decoder.u8()?)?;
+    let prefix_length = decoder.u8()?;
+    zeroes(decoder, 2)?;
+    let host = decode_address_bytes(family, decoder.array()?)?;
+    let sandbox = decode_address_bytes(family, decoder.array()?)?;
     Ok(KernelAddressPair {
         host,
         sandbox,
@@ -427,11 +429,11 @@ pub(super) fn encode_route(bytes: &mut Vec<u8>, route: KernelRoute) {
 pub(super) fn decode_route(
     decoder: &mut Decoder<'_>,
 ) -> Result<KernelRoute, NetworkKernelPlanError> {
-    let family = decode_family(decoder.byte()?)?;
-    let prefix_length = decoder.byte()?;
-    decoder.zeroes(2)?;
-    let destination = decode_address_bytes(family, decoder.take()?)?;
-    let gateway = decode_address_bytes(family, decoder.take()?)?;
+    let family = decode_family(decoder.u8()?)?;
+    let prefix_length = decoder.u8()?;
+    zeroes(decoder, 2)?;
+    let destination = decode_address_bytes(family, decoder.array()?)?;
+    let gateway = decode_address_bytes(family, decoder.array()?)?;
     Ok(KernelRoute {
         destination: KernelPrefix {
             address: destination,
@@ -460,9 +462,9 @@ pub(super) fn encode_endpoint(
 pub(super) fn decode_endpoint(
     decoder: &mut Decoder<'_>,
 ) -> Result<NetworkEndpointPolicyV1, NetworkKernelPlanError> {
-    let endpoint_id = NetworkEndpointId::from_bytes(decoder.take()?);
+    let endpoint_id = NetworkEndpointId::from_bytes(decoder.array()?);
     let flow_count = usize::from(decoder.u16()?);
-    decoder.zeroes(2)?;
+    zeroes(decoder, 2)?;
     let expected_digest = decode_digest(decoder, "missing endpoint digest")?;
     if flow_count == 0 || flow_count > MAXIMUM_FLOWS_PER_ENDPOINT {
         return Err(NetworkKernelPlanError::Invalid(
@@ -513,15 +515,15 @@ pub(super) fn encode_flow(bytes: &mut Vec<u8>, flow: NetworkFlowPolicyV1) {
 pub(super) fn decode_flow(
     decoder: &mut Decoder<'_>,
 ) -> Result<NetworkFlowPolicyV1, NetworkKernelPlanError> {
-    let direction = decode_direction(decoder.byte()?)?;
-    let protocol = decode_protocol(decoder.byte()?)?;
-    let family = decode_family(decoder.byte()?)?;
-    let prefix_length = decoder.byte()?;
-    let prefix_address = decode_address_bytes(family, decoder.take()?)?;
+    let direction = decode_direction(decoder.u8()?)?;
+    let protocol = decode_protocol(decoder.u8()?)?;
+    let family = decode_family(decoder.u8()?)?;
+    let prefix_length = decoder.u8()?;
+    let prefix_address = decode_address_bytes(family, decoder.array()?)?;
     let first_port = decoder.u16()?;
     let last_port = decoder.u16()?;
-    let ports_present = decode_flag(decoder.byte()?, "invalid port presence")?;
-    decoder.zeroes(3)?;
+    let ports_present = decode_flag(decoder.u8()?, "invalid port presence")?;
+    zeroes(decoder, 3)?;
     let prefix = network_prefix(KernelPrefix {
         address: prefix_address,
         prefix_length,
@@ -844,7 +846,7 @@ pub(super) fn decode_digest(
     decoder: &mut Decoder<'_>,
     error: &'static str,
 ) -> Result<ObjectDigest, NetworkKernelPlanError> {
-    nonzero_digest(decoder.take()?, error)
+    nonzero_digest(decoder.array()?, error)
 }
 
 pub(super) fn nonzero_digest(
@@ -941,70 +943,31 @@ pub(super) fn kernel_plan_digest(bytes: &[u8]) -> ObjectDigest {
     ObjectDigest::from_bytes(digest.finalize().into())
 }
 
-pub(super) struct Decoder<'a> {
-    bytes: &'a [u8],
-    cursor: usize,
+pub(super) type Decoder<'a> = BoundedReader<'a, NetworkKernelPlanError>;
+
+pub(super) fn read_error(error: ReadError) -> NetworkKernelPlanError {
+    match error {
+        ReadError::LengthOverflow => NetworkKernelPlanError::TooLarge,
+        ReadError::Truncated => NetworkKernelPlanError::Truncated,
+        ReadError::NonzeroReserved => {
+            NetworkKernelPlanError::Invalid("reserved bytes are nonzero")
+        }
+        ReadError::TrailingBytes => NetworkKernelPlanError::LengthMismatch,
+    }
 }
 
-impl<'a> Decoder<'a> {
-    pub(super) const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, cursor: 0 }
-    }
-
-    pub(super) fn take<const N: usize>(&mut self) -> Result<[u8; N], NetworkKernelPlanError> {
-        let end = self
-            .cursor
-            .checked_add(N)
-            .ok_or(NetworkKernelPlanError::TooLarge)?;
-        let bytes = self
-            .bytes
-            .get(self.cursor..end)
-            .ok_or(NetworkKernelPlanError::Truncated)?;
-        self.cursor = end;
-        bytes
-            .try_into()
-            .map_err(|_| NetworkKernelPlanError::Truncated)
-    }
-
-    pub(super) fn byte(&mut self) -> Result<u8, NetworkKernelPlanError> {
-        Ok(self.take::<1>()?[0])
-    }
-
-    pub(super) fn u16(&mut self) -> Result<u16, NetworkKernelPlanError> {
-        Ok(u16::from_be_bytes(self.take()?))
-    }
-
-    pub(super) fn u32(&mut self) -> Result<u32, NetworkKernelPlanError> {
-        Ok(u32::from_be_bytes(self.take()?))
-    }
-
-    pub(super) fn u64(&mut self) -> Result<u64, NetworkKernelPlanError> {
-        Ok(u64::from_be_bytes(self.take()?))
-    }
-
-    pub(super) fn zeroes(&mut self, length: usize) -> Result<(), NetworkKernelPlanError> {
-        let end = self
-            .cursor
-            .checked_add(length)
-            .ok_or(NetworkKernelPlanError::TooLarge)?;
-        let bytes = self
-            .bytes
-            .get(self.cursor..end)
-            .ok_or(NetworkKernelPlanError::Truncated)?;
+// A valid borrowed range cannot overflow. Missing ranges are classified by Core;
+// nonzero reserved bytes must fail before the original cursor is advanced.
+pub(super) fn zeroes(
+    decoder: &mut Decoder<'_>,
+    length: usize,
+) -> Result<(), NetworkKernelPlanError> {
+    if let Some(bytes) = decoder.remaining_bytes().get(..length) {
         if bytes.iter().any(|byte| *byte != 0) {
             return Err(NetworkKernelPlanError::Invalid(
                 "reserved bytes are nonzero",
             ));
         }
-        self.cursor = end;
-        Ok(())
     }
-
-    pub(super) fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.cursor)
-    }
-
-    pub(super) fn finished(&self) -> bool {
-        self.cursor == self.bytes.len()
-    }
+    decoder.bytes(length).map(|_| ())
 }

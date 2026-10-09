@@ -165,15 +165,15 @@ impl NetworkKernelPlanV1 {
             return Err(NetworkKernelPlanError::Truncated);
         }
 
-        let mut decoder = Decoder::new(bytes);
-        if decoder.take::<8>()? != *MAGIC {
+        let mut decoder = Decoder::new(bytes, read_error);
+        if decoder.array::<8>()? != *MAGIC {
             return Err(NetworkKernelPlanError::Invalid("invalid magic"));
         }
         if decoder.u16()? != VERSION {
             return Err(NetworkKernelPlanError::Invalid("unsupported version"));
         }
-        let action = NetworkKernelActionV1::decode(decoder.byte()?)?;
-        let publication = NetworkNamespacePublicationRequirementV1::decode(decoder.byte()?)?;
+        let action = NetworkKernelActionV1::decode(decoder.u8()?)?;
+        let publication = NetworkNamespacePublicationRequirementV1::decode(decoder.u8()?)?;
         let declared_length =
             usize::try_from(decoder.u32()?).map_err(|_| NetworkKernelPlanError::TooLarge)?;
         if declared_length != bytes.len() {
@@ -181,23 +181,23 @@ impl NetworkKernelPlanV1 {
         }
 
         let assignment = decode_assignment(&mut decoder)?;
-        let network_handle = decoder.take()?;
+        let network_handle = decoder.array()?;
         let allocation_generation = decoder.u64()?;
-        let kind = decode_network_kind(decoder.byte()?)?;
-        let veth_present = decode_flag(decoder.byte()?, "invalid veth presence")?;
-        let gate_present = decode_flag(decoder.byte()?, "invalid gate presence")?;
-        decoder.zeroes(1)?;
+        let kind = decode_network_kind(decoder.u8()?)?;
+        let veth_present = decode_flag(decoder.u8()?, "invalid veth presence")?;
+        let gate_present = decode_flag(decoder.u8()?, "invalid gate presence")?;
+        zeroes(&mut decoder, 1)?;
         let mtu = decoder.u32()?;
-        let host_name = decoder.take()?;
-        let sandbox_name = decoder.take()?;
-        let host_mac = decoder.take()?;
-        let sandbox_mac = decoder.take()?;
-        decoder.zeroes(4)?;
+        let host_name = decoder.array()?;
+        let sandbox_name = decoder.array()?;
+        let host_mac = decoder.array()?;
+        let sandbox_mac = decoder.array()?;
+        zeroes(&mut decoder, 4)?;
         let profile_digest = decode_digest(&mut decoder, "missing profile digest")?;
         let packet_program_digest = decode_digest(&mut decoder, "missing packet-program digest")?;
         let enforcement_program_digest =
             decode_digest(&mut decoder, "missing enforcement-program digest")?;
-        let gate_digest_bytes = decoder.take::<32>()?;
+        let gate_digest_bytes = decoder.array::<32>()?;
         let lease_gate_program_digest = match gate_present {
             true => Some(nonzero_digest(
                 gate_digest_bytes,
@@ -218,7 +218,7 @@ impl NetworkKernelPlanV1 {
         let address_pair_count = usize::from(decoder.u16()?);
         let route_count = usize::from(decoder.u16()?);
         let endpoint_count = usize::from(decoder.u16()?);
-        decoder.zeroes(2)?;
+        zeroes(&mut decoder, 2)?;
         validate_counts(address_pair_count, route_count, endpoint_count)?;
         validate_minimum_tail(
             decoder.remaining(),
@@ -239,7 +239,7 @@ impl NetworkKernelPlanV1 {
         for _ in 0..endpoint_count {
             endpoints.push(decode_endpoint(&mut decoder)?);
         }
-        if !decoder.finished() {
+        if !decoder.is_empty() {
             return Err(NetworkKernelPlanError::LengthMismatch);
         }
 
