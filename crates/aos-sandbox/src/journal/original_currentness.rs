@@ -1,3 +1,13 @@
+//! Original writer currentness, native history, and postcommit readbacks.
+//!
+//! This private owner keeps the complete Q04 native suffix audit, fixed Cache
+//! loans, Controller signing and refresh bookends, and original owner readbacks.
+//! Every check borrows the same Journal and its closed role recipes. Shared
+//! replay, advisory preflight and final append crossings remain with their
+//! existing owners; callers retain native outcomes and first-cause reservoirs.
+//!
+//! This grouping changes neither protected custody nor dependency boundaries.
+
 use std::path::Path;
 use std::sync::Arc;
 

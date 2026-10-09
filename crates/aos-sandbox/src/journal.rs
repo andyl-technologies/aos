@@ -22,6 +22,8 @@
 //! owners. The private `protected_storage` group owns protected opening, name
 //! witnesses, and retained descriptor/failure custody without widening access
 //! to the journal's native owner or issuing domain authority.
+//! The private `original_currentness` group keeps original native history,
+//! fixed writer loans, signing bookends, and postcommit readbacks together.
 
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet};
