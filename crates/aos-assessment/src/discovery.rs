@@ -384,27 +384,51 @@ fn select_component(
     now_unix: u64,
     observation_max_age_seconds: u64,
 ) -> Result<ComponentDiscovery> {
+    select_component_policy(
+        component_id,
+        &component.current,
+        &component.release_policy,
+        observation,
+        now_unix,
+        observation_max_age_seconds,
+    )
+}
+
+/// Selects a component from immutable version policy and bounded evidence.
+///
+/// This is the same selection path used by legacy maintenance inventories;
+/// portable package definitions do not need local source-edit metadata.
+///
+/// # Errors
+///
+/// Returns an error for malformed observations or an unsupported current version
+/// under the declared policy. Freshness and coverage failures return unknown.
+pub fn select_component_policy(
+    component_id: &str,
+    current_version: &ComponentVersion,
+    policy: &ReleasePolicy,
+    observation: &UpstreamObservationV1,
+    now_unix: u64,
+    observation_max_age_seconds: u64,
+) -> Result<ComponentDiscovery> {
     observation.validate()?;
     if now_unix < observation.retrieved_at_unix
         || now_unix.saturating_sub(observation.retrieved_at_unix) > observation_max_age_seconds
         || !observation
             .coverage
-            .is_sufficient(&component.current.upstream_id)
+            .is_sufficient(&current_version.upstream_id)
     {
         return Ok(component_result(component_id, DiscoveryDecision::Unknown));
     }
 
-    let current = version_key(
-        component.release_policy.version_scheme,
-        &component.current.comparison_version,
-    )?;
-    let minimum_age = u64::from(component.release_policy.minimum_age_days) * 86_400;
+    let current = version_key(policy.version_scheme, &current_version.comparison_version)?;
+    let minimum_age = u64::from(policy.minimum_age_days) * 86_400;
     let mut accepted = Vec::new();
     let mut rejected = Vec::new();
     for candidate in &observation.candidates {
         let rejection = if candidate.yanked {
             Some("yanked")
-        } else if candidate.prerelease && !component.release_policy.allow_prerelease {
+        } else if candidate.prerelease && !policy.allow_prerelease {
             Some("prerelease-disallowed")
         } else {
             let observed_at = candidate
@@ -421,27 +445,24 @@ fn select_component(
             continue;
         }
 
-        let key = match version_key(
-            component.release_policy.version_scheme,
-            &candidate.raw_version,
-        ) {
+        let key = match version_key(policy.version_scheme, &candidate.raw_version) {
             Ok(key) => key,
             Err(_) => {
                 rejected.push(reject(candidate, "unorderable-version"));
                 continue;
             }
         };
-        if key.is_prerelease() && !component.release_policy.allow_prerelease {
+        if key.is_prerelease() && !policy.allow_prerelease {
             rejected.push(reject(candidate, "prerelease-disallowed"));
             continue;
         }
-        if let Some(major) = component.release_policy.series_major
+        if let Some(major) = policy.series_major
             && key.major() != Some(major)
         {
             rejected.push(reject(candidate, "outside-maintained-stream"));
             continue;
         }
-        if let Some(minor) = component.release_policy.series_minor
+        if let Some(minor) = policy.series_minor
             && key.minor() != Some(minor)
         {
             rejected.push(reject(candidate, "outside-maintained-stream"));

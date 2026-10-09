@@ -71,6 +71,8 @@ pub struct PackageScanDefinitionV1 {
     pub family: FamilyId,
     /// Explicit maintained upstream stream.
     pub stream: String,
+    /// Exact logical package/output members owned by this update unit.
+    pub members: Vec<MemberId>,
     /// Preserved maintenance controller authority.
     pub classification: Classification,
     /// Preserved maintenance support posture.
@@ -120,6 +122,10 @@ impl PackageScanDefinitionV1 {
             bail!("unsupported package scan definition schema");
         }
         text(&self.stream, 96, "maintained stream")?;
+        if self.members.is_empty() || self.members.len() > 128 {
+            bail!("scan definition requires bounded logical members");
+        }
+        sorted(&self.members, "scan definition members")?;
         if self.components.len() > 128 || self.metadata_origins.len() > 128 {
             bail!("package scan definition exceeds scope limits");
         }

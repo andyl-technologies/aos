@@ -9,7 +9,7 @@ fn definition() -> serde_json::Value {
     json!({
         "schema": PACKAGE_SCAN_DEFINITION_V1,
         "unitId": "example-1", "family": "example", "stream": "1",
-        "classification": "manual", "lifecycle": "supported",
+        "classification": "manual", "lifecycle": "supported", "members":["example"],
         "reason": "Human-reviewed upstream identity",
         "metadataOrigins": ["fixture-publication"],
         "versionProjection": {"kind":"component-field", "component":"main", "field":"comparisonVersion"},

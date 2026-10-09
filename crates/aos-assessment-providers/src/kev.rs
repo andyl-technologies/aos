@@ -4,7 +4,6 @@
 
 use anyhow::{Result, bail};
 use aos_contract::Sha256Digest;
-use serde::{Deserialize, Serialize};
 
 use crate::json::parse;
 use crate::osv::{array, required};
@@ -12,19 +11,8 @@ use crate::osv::{array, required};
 /// Identifies the admitted CISA KEV catalog normalization profile.
 pub const ADAPTER_VERSION: &str = "aos-cisa-kev/v1";
 
-/// Retains one source-attributed known-exploitation assertion.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct KnownExploit {
-    /// Exact uppercase CVE identifier.
-    pub cve_id: String,
-    /// Source catalog version containing this assertion.
-    pub catalog_version: String,
-    /// Exact source addition date.
-    pub date_added: String,
-    /// Exact raw catalog evidence.
-    pub source_digest: Sha256Digest,
-}
+/// Shared source-attributed exploitation assertion and exact CVE grammar.
+pub use aos_assessment::advisory::{KnownExploit, is_cve_id};
 
 /// Parses a complete catalog into a bounded sorted exploitation assertion set.
 ///
@@ -67,19 +55,4 @@ pub fn catalog(bytes: &[u8]) -> Result<Vec<KnownExploit>> {
         bail!("KEV catalog contains a duplicate CVE assertion");
     }
     Ok(records)
-}
-
-/// Checks the exact CVE identifier grammar without case/name heuristics.
-#[must_use]
-pub fn is_cve_id(value: &str) -> bool {
-    let Some(rest) = value.strip_prefix("CVE-") else {
-        return false;
-    };
-    let Some((year, sequence)) = rest.split_once('-') else {
-        return false;
-    };
-    year.len() == 4
-        && year.bytes().all(|byte| byte.is_ascii_digit())
-        && (4..=20).contains(&sequence.len())
-        && sequence.bytes().all(|byte| byte.is_ascii_digit())
 }

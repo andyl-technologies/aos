@@ -16,7 +16,16 @@ pub const DOCUMENT_LIMITS: JsonLimits = JsonLimits {
 
 /// Rejects null members before optional fields can lose their wire identity.
 pub(crate) fn decode<T: DeserializeOwned>(bytes: &[u8], label: &str) -> Result<T> {
-    let value: Value = DOCUMENT_LIMITS.decode(bytes, label)?;
+    decode_with_limits(bytes, label, DOCUMENT_LIMITS)
+}
+
+/// Decodes the same strict optional-field profile under a transport-specific budget.
+pub(crate) fn decode_with_limits<T: DeserializeOwned>(
+    bytes: &[u8],
+    label: &str,
+    limits: JsonLimits,
+) -> Result<T> {
+    let value: Value = limits.decode(bytes, label)?;
     reject_null(&value)?;
     serde_json::from_value(value).map_err(|error| anyhow::anyhow!("invalid {label}: {error}"))
 }

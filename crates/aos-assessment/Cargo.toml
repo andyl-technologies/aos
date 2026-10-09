@@ -7,6 +7,7 @@ description = "Pure shared package inventory, upstream policy, and vulnerability
 
 [dependencies]
 anyhow = { workspace = true }
+base64 = { workspace = true }
 aos-contract = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

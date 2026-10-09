@@ -22,6 +22,94 @@ pub const ADVISORY_RECORD_V1: &str = "aos.advisory-record/v1";
 /// Identifies the immutable advisory snapshot format.
 pub const ADVISORY_SNAPSHOT_V1: &str = "aos.advisory-snapshot/v1";
 
+/// Retains one source-attributed assertion of known exploitation.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct KnownExploit {
+    /// Exact uppercase CVE identifier.
+    pub cve_id: String,
+    /// Exact source catalog revision.
+    pub catalog_version: String,
+    /// Source's exact date of catalog addition.
+    pub date_added: String,
+    /// Exact retained raw catalog bytes.
+    pub source_digest: Sha256Digest,
+}
+
+/// Binds a complete supplied exploitation catalog to its freshness observation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ExploitCatalog {
+    /// Exact catalog retrieval/validation/expiry and completeness evidence.
+    pub observation: ProviderObservationV1,
+    /// Exact source-attributed entries, sorted by CVE and revision.
+    pub records: Vec<KnownExploit>,
+}
+
+impl ExploitCatalog {
+    /// Validates exact source custody, catalog identity and bounded record sets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid/duplicate IDs, dates, custody references,
+    /// payload identity, catalog revision conflicts or excessive source scope.
+    pub fn validate(&self) -> Result<()> {
+        self.observation.validate()?;
+        if self.observation.provider != "cisa-kev"
+            || self.observation.project != "catalog"
+            || self.records.len() > 20_000
+        {
+            bail!("unsupported or excessive exploitation catalog scope");
+        }
+        sorted(&self.records, "known-exploitation assertions")?;
+        if self
+            .records
+            .windows(2)
+            .any(|pair| pair[0].cve_id == pair[1].cve_id)
+        {
+            bail!("duplicate exploitation catalog CVE assertion");
+        }
+        for entry in &self.records {
+            if !is_cve_id(&entry.cve_id) || entry.date_added.len() != 10 {
+                bail!("invalid exploitation assertion identity/date");
+            }
+            crate::time::Timestamp::parse(&format!("{}T00:00:00Z", entry.date_added))?;
+            text(&entry.catalog_version, 128, "exploitation catalog revision")?;
+            if entry.source_digest != self.observation.response_digest {
+                bail!("exploitation assertion differs from the retained catalog");
+            }
+            if self
+                .records
+                .first()
+                .is_some_and(|first| first.catalog_version != entry.catalog_version)
+            {
+                bail!("exploitation catalog contains conflicting source revisions");
+            }
+        }
+        if self.observation.payload_digest
+            != Sha256Digest::of_canonical("aos.known-exploitation-set/v1", &self.records)?
+        {
+            bail!("exploitation catalog differs from its normalized payload identity");
+        }
+        Ok(())
+    }
+}
+
+/// Checks exact CVE grammar without advisory-name or case heuristics.
+#[must_use]
+pub fn is_cve_id(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("CVE-") else {
+        return false;
+    };
+    let Some((year, sequence)) = rest.split_once('-') else {
+        return false;
+    };
+    year.len() == 4
+        && year.bytes().all(|byte| byte.is_ascii_digit())
+        && (4..=20).contains(&sequence.len())
+        && sequence.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 /// Selects source-defined affected-range semantics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -303,6 +391,9 @@ pub struct AdvisorySnapshotV1 {
     pub schema: String,
     /// Sources strictly ordered by provider and project.
     pub sources: Vec<AdvisorySnapshotSource>,
+    /// Optional retained exploitation catalog; absence is never non-exploitation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exploit_catalog: Option<ExploitCatalog>,
 }
 
 impl AdvisorySnapshotV1 {
@@ -315,6 +406,9 @@ impl AdvisorySnapshotV1 {
     pub fn validate(&self) -> Result<()> {
         if self.schema != ADVISORY_SNAPSHOT_V1 || self.sources.len() > 100_000 {
             bail!("unsupported or excessive advisory snapshot");
+        }
+        if let Some(catalog) = &self.exploit_catalog {
+            catalog.validate()?;
         }
         let mut previous = None;
         for source in &self.sources {

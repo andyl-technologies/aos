@@ -19,24 +19,37 @@
 //! - [`advisory`] binds normalized advisory revisions and query snapshots.
 //! - [`ranges`] interprets admitted version intervals without lexical fallback.
 //! - [`nvd`] evaluates complete configuration expressions and environment facts.
+//! - [`input`] freezes policy, candidate history and complete evidence references.
+//! - [`disposition`] binds reviewed claims to exact components and source revisions.
+//! - [`evaluator`] and [`findings`] construct deterministic scoped assessments.
+//! - [`result`] defines shared version, finding, diagnostic and coverage records.
+//! - [`bundle`] verifies portable exports and offline reproduction without granting authority.
 //!
 //! Existing `aos-maintain` paths reexport these contracts for compatibility.
 
 #![forbid(unsafe_code)]
 
 pub mod advisory;
+mod aliases;
+pub mod bundle;
 pub mod decision;
 pub mod definition;
 pub mod discovery;
+pub mod disposition;
+pub mod evaluator;
+pub mod findings;
 pub mod identity;
+pub mod input;
 pub mod inventory;
 pub mod nvd;
 pub mod observation;
 pub mod ranges;
+pub mod result;
 pub mod scan_inventory;
 pub mod security;
 pub mod time;
 mod validation;
+mod version;
 
 /// Schema identifier for the first maintenance inventory contract.
 pub const MAINTENANCE_INVENTORY_V1: &str = "aos.maintenance-inventory/v1";
