@@ -196,17 +196,27 @@ the retained physical recipes required by the closing ledger. A reviewed
 read-only retained-selection helper supports both actual held roles, preserves
 strict protected receipts and fresh selected checks, and performs no repair.
 Physical fault assertions now require corruption or unavailability so generic
-unsupported refusal cannot qualify original-input closing. Fresh build and
-runtime qualification remain pending. Corrected retained-read candidate
+unsupported refusal cannot qualify original-input closing. Corrected retained-read
+candidate
 `c6d5227e81` passes its required native build and strict all-target Clippy;
-actual test compilation remains in progress. The seven-case runtime has not
-yet rerun. Parallel review corrects a nested-overlay fixture's expected
+actual all-target test compilation and executable-bound inventory pass. Its
+seven held-read witnesses all pass in 16.499 seconds at the unchanged default
+deadlines, with source and executable seals unchanged (run
+`c2611fb8-11a8-4ba5-be63-df8db2974764`). The separate twenty-four pure overlay
+cases on that frozen candidate finish with seven passes and seventeen failures.
+The unset baseline's internal encoding is incorrectly validated as an explicit
+property binding, and a virtual range starting after a punctuation sibling
+omits crossing graft children. Both corrections remain in the isolated
+materializer workline; no negative refusal or earlier source review qualifies
+these failures. The backfill, full read selection and SDK qualification remain
+required. Parallel review also corrects a nested-overlay fixture's expected
 projected property order without changing independent output identities or
 weakening callback assertions. A complete decoder-call audit also identifies
 the derived-object plaintext reader as an additional CDC-19 consumer; its
 shared wiring now uses the object-context decoder, and the boundary gate
 requires a dedicated exact reader witness. That witness's implementation and
-assembled runtime qualification remain pending. Parallel review also identifies CDC-19's
+assembled runtime qualification remain pending. Parallel review also identifies
+CDC-19's
 final manifest chunk boundary gap in admission, restoration and guarded reads.
 An isolated codec/manifest witness workline owns the correction; the exact native
 nonfinal and final admission selectors are registered in `cdc-boundaries`.
@@ -217,7 +227,11 @@ pending, including the permanent restoration path.
 Native overlay review also
 identifies inherited index bindings that need authentication against their
 signed source and recomputation for the actual output. Source corrections
-and fixtures remain in that workline; none of these results accepts a task.
+and fixtures remain in that workline. Another review finds unreported planner
+reconstruction; the native algebra workline replaces those redundant rebuilds
+with qualified metadata traversal while preserving separately measured full
+source reconstruction. Its source and runtime review remain pending; none of
+these results accepts a task.
 The owning gates and full current trunk floor remain pending. No diagnostic
 run substitutes for qualification.
 Unchanged-budget runtime tests and the complete current trunk floor remain

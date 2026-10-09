@@ -65,6 +65,7 @@
   ];
 
   nativeStdTests = [
+    "guard::snapshot::tests::qualified_occurrences_preserve_shared_layer_contexts"
     "indexing::tests::load_source_reads_unbound_namespace_without_auxiliary_reads"
     "indexing::tests::load_source_preserves_shared_grafts_and_internal_physical_contexts"
     "indexing::tests::load_source_keeps_typed_source_failures_and_selected_revisions"
