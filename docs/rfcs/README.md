@@ -37,5 +37,6 @@ topic files.
 | [0019](0019-oci-containers/README.md) | 2026-08-27 | Scratch OCI containers built from AOS package closures and published through AOS Hub | Proposed — phased plan in [`implementation-plan.md`](0019-oci-containers/implementation-plan.md) |
 | [0020](0020-crucible-campaigns/README.md) | 2026-09-04 | Crucible campaigns — adaptive exploration, lazy frontiers, and hot QEMU forking | Proposed; implementation in progress |
 | [0023](0023-hub-hybrid-topology/README.md) | 2026-09-24 | AOS Hub hybrid runtime topology — Worker edge and storage compute with Native PostgreSQL authority | Proposed; implementation in progress |
+| [0026](0026-package-assessment-service/README.md) | 2026-10-08 | Continuous package assessment in AOS Hub — shared local/hosted update and vulnerability checks, alerts, evidence handoffs, and Native/Worker/Hybrid execution | Proposed (design-only; stacked on Hybrid PR #374) |
 
 Numbering is chronological by the date the design entered the tree.
