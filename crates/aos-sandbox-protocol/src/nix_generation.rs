@@ -543,6 +543,7 @@ fn generation_read_error(_: ReadError) -> ProtocolValidationError {
     invalid("generation record truncation")
 }
 
+// Retain the format's separate width diagnostic after the exact byte read.
 fn read_generation_fixed<const SIZE: usize>(
     reader: &mut BoundedReader<'_, ProtocolValidationError>,
 ) -> Result<[u8; SIZE], ProtocolValidationError> {
@@ -552,6 +553,7 @@ fn read_generation_fixed<const SIZE: usize>(
         .map_err(|_| invalid("generation record width"))
 }
 
+// Field bound and body failures retain the already consumed length prefix.
 fn read_generation_variable<'bytes>(
     reader: &mut BoundedReader<'bytes, ProtocolValidationError>,
     maximum: usize,
