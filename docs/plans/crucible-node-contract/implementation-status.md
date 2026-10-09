@@ -236,13 +236,35 @@ excluded, 628 GPL cases, 770 QEMU library cases with five declared fixtures
 excluded, and the complete registered integration groups including 33 QMP cases.
 These source checkpoints do not replace an ordinary production package build.
 
-The new signed QEMU production regeneration currently fails a mandatory fresh
-fixture requiring the original `Applied` status. That failure remains under
-investigation; the production QEMU/source pair is not green at this checkpoint.
-The latest whole license gate is still not green: its all-target lint stage
-identified missing test-local panic allowances in two campaign test modules.
-Neither result is inferred from
-previous package, protocol or source gates.
+The signed `2e733` QEMU production regeneration now passes its mandatory fresh
+original-status fixture, all new mandatory models, and the 13 plus 10 adversarial
+mutants (`waqx` build). Matching production plugin generation, corresponding
+source closure and final live pair probes now pass: the exact current pair is
+QEMU `2sp`, plugin `hd0`, and corresponding source `c5`; the packaged plugin
+passes all 632 cases. Eight production native probes pass in 0.29 seconds.
+The latest whole license gate failed 15 engineering gates; source hygiene and
+API error documentation are still being repaired. These results do not replace
+that publication check.
+
+The later source-probe checkpoint `d4d13e9edf` passes 12 source-probe guards and
+the central controller all-target strict gate (83 seconds). The fresh core suite
+passes 832 cases with five explicit native fixtures excluded (31.94 seconds),
+and the ordinary daemon suite passes 882 cases with 58 excluded fixtures
+(9.44 seconds). Four data probes, two actual issuer checks (34.59 seconds), and
+six actual negative-provider cohort checks (13.62 seconds) also pass. The
+registered V7 ABI-conformance gate (`lh6jr`) and required hermetic application
+test-target compilation (`26w8`) pass. The local ARM mechanism checkpoint
+`adf71aaae7` had a PID-reuse cleanup defect. The committed follow-up
+`2283453725` supersedes that cleanup, after independently remeasuring the current
+`cr9j`/`j0wr` artifacts, all 31 plus 13 checks, and an installed source-gone,
+two-fresh reconstruction with three native groups reaped. These mechanism and
+cleanup checks do not qualify full-system gem5 device parity or KVM. The 31-file replay slice
+is committed as `7589ea2779` after 844 core cases (34.10 seconds), 882 daemon
+cases (11.06 seconds), strict checks (57.32 seconds), and eight actual native
+checks (13.44 seconds) pass. The first daemon run at 128/default test threads
+passed 875 cases and failed seven at the 1,024-descriptor limit; its original log
+is retained. A complete rerun at eight test threads passes all 882 cases. These
+results qualify the recorded scope, not arbitrary counterfactual replay.
 
 A separate, unregistered terminal assertion overlay passes a 20.01-second
 installed source-gone/two-fresh continuation witness. Its closed scope is one
@@ -272,6 +294,19 @@ independent x86 and ARM witnesses preserve exact native birth/checksum context
 through source removal, two fresh restores and complete fresh resource audits.
 This isolated lookup result does not measure Linux boot, device parity, CPU
 fidelity or complete typed diagnostics.
+
+A provisional QEMU/plugin component comparison uses revision `2fc6fabd90` and
+native source `0729c9712e`, with the identical frozen controller on both sides.
+Six interleaved AB/BA/AB Linux boots preserve the complete RAM, register, serial,
+grant, idle and timer witnesses, including original icount 8,481,484,328; seven
+negative controls also pass. The same guest, 50 ps/instruction clock and CPU
+placement are retained. Median launch-to-ready changes from 29.50669 to
+29.54280 seconds (+0.12%). Mean times change from 31.50219 to 29.63408 seconds
+(-5.93%), dominated by the first reference sample's 35.52384-second outlier.
+All samples are retained without replacement or exclusion. These three pairs do
+not support a reproducible material component gain or regression. This compares
+components under the frozen controller, not the current controller, the complete
+node executor or the final RFC implementation.
 
 There is no overall Linux boot candidate speedup claim yet. Candidate comparisons
 must reuse the same guest bytes and workload, record interventions and compare

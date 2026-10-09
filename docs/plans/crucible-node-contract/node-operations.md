@@ -92,3 +92,36 @@ actor's independent retention owner before accepting requests. Its namespace
 exposes no deletion authority. Native cleanup keeps that lock and active roots
 until authentic complete reclamation; SIGINT and SIGTERM stop admission and
 drain original worlds before endpoint retirement.
+
+## Operator-installed storage sources
+
+The optional `immutable_artifacts` policy array enrolls absolute local source
+files and independently expected complete `ContentRef` records before the daemon
+publishes its endpoint. Entries are closed objects with `path` and `expected`.
+The default is empty and omitted from serialized policy, preserving edition-one
+policy bytes. Enrollment verifies actual NOFOLLOW regular files and refuses
+changed content, conflicting identities, more than 64 entries, files exceeding
+4 MiB, or an aggregate exceeding 16 MiB. Remote selections cannot enroll paths.
+
+The installed catalog accepts `host_scripted` sources connected through ordinary
+public request ports to `host_io` block or 9P profiles. Scripted sources carry
+finite immutable public request frames and original evaluation instants. Storage
+owners consume those exact frames, retain their request identifiers and tags,
+and publish byte-checked responses with their causal source parents. Block writes
+remain in owned copy-on-write state; the installed base file stays immutable.
+These closed profiles qualify their own repeatability rather than borrowing the
+nonrepeatability of an unrelated reference checksum device.
+
+The owning daemon compiles source and storage selections with the same `node
+compile` command, and executes them through `node observe` and `node status`.
+Selections contain content references rather than local source paths. Changing an
+installed source refuses admission; authenticating an original completed request
+after restart returns its unchanged durable record and original activation. It
+does not reconstruct or dispatch that request again.
+
+The host `node capture` and `node restore` archive commands remain limited to
+separately qualified clock worlds. The independently qualified fixed-workload
+gem5/clock profile uses `node native-capture`, `node native-restore`, and
+`node native-status`; its owning actor retains original pending operations and
+authenticates signed state before constructing fresh native owners. Ordinary
+storage execution does not authorize exact storage restoration.

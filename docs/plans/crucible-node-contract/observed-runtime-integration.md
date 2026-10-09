@@ -97,6 +97,51 @@ payload objects, pending transfers, credits, input acknowledgement state and
 immutable source content. Node-only codecs do not establish transfer closure.
 Original observed execution alone does not qualify another topology or fork.
 
+## Installed gem5 policy
+
+The source-built `gem5-closed-profile` package retains the exact native engine,
+controller, model, image tools, independent auditor, two known guest programs,
+and complete recipe/patch provenance. Its package build must pass the actual
+x86_64 and aarch64 native capture/source-exit/two-restore checks before emitting
+the closed policy manifest. Each restored branch must also pass a fresh capture
+and independent closure check; the loader rejects older manifests without this
+mandatory witness. The fixed scope is freestanding O3 execution with
+classic DDR3 memory, no ingress, stdout and exit syscalls, one-picosecond ticks,
+and the checked even-reaction/odd-publication mapping. Neither modeled diagnostic
+completeness nor full-system device parity is qualified by this policy.
+
+The production controller compiles in this package's manifest path through
+`CRUCIBLE_GEM5_CLOSED_PROFILE_MANIFEST`. `InstalledGem5ClosedProfile::built_in`
+uses that compile-time value exclusively; an unconfigured development build
+refuses the profile. Remote requests and runtime environment variables cannot
+choose a replacement policy, guest, or artifact hash. Every metadata object is
+closed to unknown fields. Loading measures the complete launch assets, original
+source archives, recipes, ordered patches and realized configuration files;
+launch admission rechecks the exact installed assets and selected known guest.
+Reconstruction may use the controller, model and guest copies at their fixed
+managed filenames under the actual private native root. The verifier checks
+root ownership and permissions, rejects links and alternate routes, and reads
+the complete original installed bytes independently. Native executables,
+auditors and image tools retain their installed package paths.
+
+An installed policy is one prerequisite for native qualification. It does not
+mint live execution authority: the provider separately requires an authentic
+unchanged-cut capture and independently audited complete closure of the actual
+parked native incarnation. A reconstructed incarnation needs fresh live closure
+evidence. The public observed catalog remains restricted to its independently
+qualified host/reference implementations while the mixed native factory and
+archive path are integrated.
+
+Mixed admission separates a locally owned inactive reconstruction lease from
+native readiness. The lease pins the signed original archive, exact target
+activation and fresh owner identities in an already reserved supervision slot;
+it reports no child PID or live native certificate. Child allocation occurs
+only beneath the installed empty capsule. The preparation qualifier then checks
+the actual PID/start identity, independently measured executable, unchanged
+native boundary and fresh sealed execution authority. A lease cannot implement
+that qualifier. The complete Clock and CPU roster, installed profiles and all
+selected assets are regenerated and authenticated before graph sealing.
+
 ## Original execution and custody
 
 Preparation reserves a finite whole-world retirement slot before native
