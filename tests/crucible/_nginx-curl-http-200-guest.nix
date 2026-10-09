@@ -279,9 +279,9 @@ in
             then ''
               case "$cmdline" in
                 *" crucible.http.role=proxy "*)
-                  envoy --mode validate --config-path /etc/envoy-proxy.json
+                  envoy --mode validate --config-path /etc/envoy-proxy.json --log-level warning
                   exec envoy --disable-hot-restart --concurrency 1 \
-                    --config-path /etc/envoy-proxy.json --log-level info
+                    --config-path /etc/envoy-proxy.json --log-level warning
                   ;;
                 *" crucible.http.role=upstream "*)
                   exec nginx -c /etc/nginx/nginx.conf -g 'daemon off; master_process off;'
@@ -290,9 +290,9 @@ in
             ''
             else if envoyDirect
             then ''
-              envoy --mode validate --config-path /etc/envoy-direct.json
+              envoy --mode validate --config-path /etc/envoy-direct.json --log-level warning
               exec envoy --disable-hot-restart --concurrency 1 \
-                --config-path /etc/envoy-direct.json --log-level info
+                --config-path /etc/envoy-direct.json --log-level warning
             ''
             else "exec nginx -c /etc/nginx/nginx.conf -g 'daemon off; master_process off;'"
           }
