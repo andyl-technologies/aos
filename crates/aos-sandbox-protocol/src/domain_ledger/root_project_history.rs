@@ -623,3 +623,42 @@ fn zero_digest() -> ObjectDigest {
     ObjectDigest::from_bytes([0; 32])
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn floor_names_failure_precedes_issue_and_checksum_failures() {
+        let floor = RootProjectHistoryFloorV1::from_historical_fields(
+            RootProjectHistoryTerminalKindV1::Committed,
+            1,
+            ObjectDigest::from_bytes([1; 32]),
+            ObjectDigest::from_bytes([2; 32]),
+            ObjectDigest::from_bytes([3; 32]),
+            ObjectDigest::from_bytes([4; 32]),
+            ObjectDigest::from_bytes([5; 32]),
+            ObjectDigest::from_bytes([6; 32]),
+            [7; 16],
+            [8; 16],
+            ProjectId::from_bytes([9; 16]),
+            ObjectDigest::from_bytes([10; 32]),
+            [11; 16],
+            ProtectedJournalNamesV1::from_historical_fields((1, 2), (3, 4), (5, 6)),
+        );
+        let canonical = floor.record_bytes();
+        assert_eq!(RootProjectHistoryFloorV1::from_record_bytes(&canonical).unwrap(), floor);
+
+        let mut bad_issue = canonical;
+        bad_issue[16..24].fill(0);
+        assert!(matches!(RootProjectHistoryFloorV1::from_record_bytes(&bad_issue), Err(RootProjectHistoryDataErrorV1::InvalidHead)));
+
+        let mut bad_checksum = canonical;
+        bad_checksum[360] ^= 1;
+        assert!(matches!(RootProjectHistoryFloorV1::from_record_bytes(&bad_checksum), Err(RootProjectHistoryDataErrorV1::InvalidHead)));
+
+        for mut competing_failure in [bad_issue, bad_checksum] {
+            competing_failure[312..320].fill(0);
+            assert!(matches!(RootProjectHistoryFloorV1::from_record_bytes(&competing_failure), Err(RootProjectHistoryDataErrorV1::Names(super::super::ProtectedHistoryDataErrorV1::Malformed))));
+        }
+    }
+}

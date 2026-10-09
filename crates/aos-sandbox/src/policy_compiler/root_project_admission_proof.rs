@@ -960,6 +960,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn historical_row_failures_retain_domain_errors_inside_io_errors() {
+        use aos_sandbox_protocol::domain_ledger::{
+            ProtectedHistoryDataErrorV1,
+            protected_names::ProtectedJournalNamesV1,
+            root_project_history::RootProjectHistoryDataErrorV1,
+        };
+
+        let invalid_head = super::super::PolicyDeploymentHeadErrorV1::from(
+            RootProjectHistoryDataErrorV1::InvalidHead,
+        );
+        assert!(matches!(invalid_head, super::super::PolicyDeploymentHeadErrorV1::InvalidHead));
+        let invalid_names = super::super::PolicyDeploymentHeadErrorV1::from(
+            RootProjectHistoryDataErrorV1::Names(ProtectedHistoryDataErrorV1::Malformed),
+        );
+        assert!(matches!(invalid_names, super::super::PolicyDeploymentHeadErrorV1::Journal(crate::journal::JournalError::ProtectedBoundary)));
+
+        let marker = RootProjectReservationCancellationV1::from_historical_fields(
+            ObjectDigest::from_bytes([1; 32]),
+            [2; 16],
+            ProjectId::from_bytes([0; 16]),
+        );
+        let reply = encode_root_project_reservation_cancel_reply_v1(
+            [2; 16], marker.reservation(), Some(marker),
+        ).unwrap();
+        let error = decode_reservation_cancel_reply(&reply, [2; 16], marker.reservation()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert!(matches!(error.get_ref().unwrap().downcast_ref::<super::super::PolicyDeploymentHeadErrorV1>(), Some(super::super::PolicyDeploymentHeadErrorV1::InvalidHead)));
+
+        let reservation = SourceProjectAdmissionReservationV1::from_historical_fields(
+            1,
+            [2; 16],
+            ProjectId::from_bytes([3; 16]),
+            ProtectedJournalNamesV1::from_historical_fields((1, 2), (3, 4), (5, 6)),
+        );
+        let mut floor_reply = [0; FLOOR_REPLY_BYTES];
+        floor_reply[..8].copy_from_slice(FLOOR_REPLY_MAGIC);
+        floor_reply[8..24].copy_from_slice(&reservation.client_nonce());
+        floor_reply[24] = 1;
+        floor_reply[32..40].copy_from_slice(b"AOSQPF01");
+        floor_reply[40..42].copy_from_slice(&1_u16.to_be_bytes());
+        floor_reply[42] = 1;
+
+        let error = decode_floor_reply(&floor_reply, reservation).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert!(matches!(error.get_ref().unwrap().downcast_ref::<super::super::PolicyDeploymentHeadErrorV1>(), Some(super::super::PolicyDeploymentHeadErrorV1::Journal(crate::journal::JournalError::ProtectedBoundary))));
+    }
+
+    #[test]
     fn reservation_cancellation_reply_requires_exact_nonce_and_marker() {
         let marker = RootProjectReservationCancellationV1::from_historical_fields(
             ObjectDigest::from_bytes([1; 32]),

@@ -106,3 +106,47 @@ pub fn create_project_source_commitment_v1(
     )
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::root_project_history::project_admission_client_nonce_v1;
+
+    #[test]
+    fn asymmetric_generations_pin_source_commitment_and_client_nonce() {
+        let operation = OperationId::from_bytes([0x21; 16]);
+        let heads = HistoricalCreateProjectSourceHeadsV1::from_historical_fields(
+            ObjectDigest::from_bytes([0x31; 32]),
+            0x1112_1314_1516_1718,
+            ObjectDigest::from_bytes([0x32; 32]),
+            ObjectDigest::from_bytes([0x33; 32]),
+            RevocationScopeId::from_bytes([0x34; 16]),
+            0x2122_2324_2526_2728,
+            ObjectDigest::from_bytes([0x35; 32]),
+        );
+        let bytes = heads.record_bytes();
+        assert_eq!(&bytes[32..40], &[0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18]);
+        assert_eq!(&bytes[120..128], &[0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28]);
+        assert_eq!(HistoricalCreateProjectSourceHeadsV1::from_record_bytes(&bytes), Some(heads));
+
+        let commitment = create_project_source_commitment_v1(
+            operation,
+            ObjectDigest::from_bytes([0x22; 32]),
+            0x0102_0304_0506_0708,
+            SandboxId::from_bytes([0x23; 16]),
+            ProjectId::from_bytes([0x24; 16]),
+            heads,
+        );
+        // Independent SHA-256 vectors use the literal domains and ordered
+        // fixed-width fields, with all three generations in big-endian order.
+        assert_eq!(commitment.as_bytes(), &[
+            0x4b, 0x43, 0xc4, 0xe2, 0x42, 0x43, 0x06, 0xe7,
+            0x08, 0x76, 0x1a, 0x4b, 0xe1, 0x9a, 0x8c, 0xd2,
+            0xa6, 0xfd, 0xac, 0xb4, 0x31, 0xd9, 0xe5, 0x4d,
+            0x2d, 0xa8, 0xba, 0x80, 0x82, 0xf1, 0x53, 0x2f,
+        ]);
+        assert_eq!(project_admission_client_nonce_v1(operation, commitment), [
+            0xea, 0x0e, 0x0a, 0x31, 0x8e, 0xaa, 0x81, 0x3d,
+            0x6e, 0xeb, 0xec, 0xd5, 0x02, 0xef, 0xb9, 0x71,
+        ]);
+    }
+}
