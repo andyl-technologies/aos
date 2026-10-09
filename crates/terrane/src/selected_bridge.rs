@@ -160,6 +160,29 @@ impl OwnedFinalCheck {
         self.with_restore_pairs(std::slice::from_ref(pair))
     }
 
+    /// Retains original candidate-directory continuity during unselected staging.
+    ///
+    /// Only unrelated immutable progress proposals may use this narrower physical
+    /// check. The owning producer must restore complete candidate enumeration
+    /// before preselection synchronization and keep it through slot installation
+    /// and acknowledgment. Continuity alone proves neither coverage nor absence.
+    pub(crate) fn with_permanent_candidate_continuity(
+        &self,
+        source: &Arc<NativePermanentObservation>,
+    ) -> Self {
+        let current = self.clone();
+        let source = Arc::clone(source);
+        Self {
+            check: SharedOwned::new(move || {
+                current.recheck()?;
+                source
+                    .recheck_candidate_continuity()
+                    .map_err(native_restore_failure)?;
+                current.recheck()
+            }),
+        }
+    }
+
     /// Retains genuine candidate-family traversal beside current authority.
     ///
     /// The opaque native receipt refreshes its complete family enumeration and
