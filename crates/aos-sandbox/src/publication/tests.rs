@@ -559,12 +559,27 @@ struct NativePublicationInputs {
 }
 
 impl NativePublicationInputs {
-    fn new(manifest: CanonicalAssignmentManifestV1, lease: SignedOwnershipLease, required_audiences: Vec<BrokerAudience>, templates: Vec<BrokerDispatchTemplateV1>) -> Self {
-        Self { manifest, lease, required_audiences, templates }
+    fn new(
+        manifest: CanonicalAssignmentManifestV1,
+        lease: SignedOwnershipLease,
+        required_audiences: Vec<BrokerAudience>,
+        templates: Vec<BrokerDispatchTemplateV1>,
+    ) -> Self {
+        Self {
+            manifest,
+            lease,
+            required_audiences,
+            templates,
+        }
     }
 
     fn prepare(self) -> Result<PreparedAuthorityPublicationV1, AuthorityPublicationError> {
-        prepare_authority_publication(AuthorityPublicationProposalV1::new(self.manifest, self.lease, self.required_audiences, self.templates))
+        prepare_authority_publication(AuthorityPublicationProposalV1::new(
+            self.manifest,
+            self.lease,
+            self.required_audiences,
+            self.templates,
+        ))
     }
 }
 
@@ -619,8 +634,7 @@ pub(crate) fn activation_fixture(
     )
     .unwrap_or_else(|error| panic!("test draft failed: {error}"));
     let claim = activation_claim(&draft, lease_generation);
-    let prepared = crate::bind_authority_publication_lease(draft
-        .clone(), &claim, lease)
+    let prepared = crate::bind_authority_publication_lease(draft.clone(), &claim, lease)
         .unwrap_or_else(|error| panic!("test bind failed: {error}"));
     (draft, prepared)
 }
@@ -735,8 +749,7 @@ fn control_activation_from_proposal(
     )
     .unwrap_or_else(|error| panic!("test draft failed: {error}"));
     let claim = activation_claim(&draft, lease_generation);
-    let prepared = crate::bind_authority_publication_lease(draft
-        .clone(), &claim, lease)
+    let prepared = crate::bind_authority_publication_lease(draft.clone(), &claim, lease)
         .unwrap_or_else(|error| panic!("test bind failed: {error}"));
     (draft, prepared)
 }
@@ -766,8 +779,7 @@ pub(crate) fn descriptor_host_activation_fixture(
     )
     .unwrap_or_else(|error| panic!("descriptor Host draft failed: {error}"));
     let claim = activation_claim(&draft, lease_generation);
-    let prepared = crate::bind_authority_publication_lease(draft
-        .clone(), &claim, lease)
+    let prepared = crate::bind_authority_publication_lease(draft.clone(), &claim, lease)
         .unwrap_or_else(|error| panic!("descriptor Host bind failed: {error}"));
     (draft, prepared)
 }
@@ -794,8 +806,7 @@ pub(crate) fn descriptor_free_mount_activation_fixture()
     )
     .unwrap_or_else(|error| panic!("descriptor-free Mount draft failed: {error}"));
     let claim = activation_claim(&draft, 1);
-    let prepared = crate::bind_authority_publication_lease(draft
-        .clone(), &claim, lease)
+    let prepared = crate::bind_authority_publication_lease(draft.clone(), &claim, lease)
         .unwrap_or_else(|error| panic!("descriptor-free Mount bind failed: {error}"));
     (draft, prepared)
 }
@@ -834,8 +845,7 @@ pub(crate) fn alternate_descriptor_free_activation_fixture()
     )
     .unwrap_or_else(|error| panic!("alternate test draft failed: {error}"));
     let claim = activation_claim(&draft, 1);
-    let prepared = crate::bind_authority_publication_lease(draft
-        .clone(), &claim, lease)
+    let prepared = crate::bind_authority_publication_lease(draft.clone(), &claim, lease)
         .unwrap_or_else(|error| panic!("alternate test bind failed: {error}"));
     (draft, prepared)
 }
@@ -1291,7 +1301,10 @@ fn gate_activation_bridge_owns_exact_publication_records_and_facts() {
     assert_eq!(lease, prepared.history.lease_digest());
     assert_eq!(receipt_action, prepared.history.receipt_action());
     assert_eq!(receipt_request_id, *prepared.history.receipt_request_id());
-    assert_eq!(receipt_claim_digest, prepared.history.receipt_claim_digest());
+    assert_eq!(
+        receipt_claim_digest,
+        prepared.history.receipt_claim_digest()
+    );
     assert_eq!(recovered_prepared, prepared);
 }
 
@@ -1381,10 +1394,12 @@ fn draft_roundtrips_multiple_templates_for_one_audience() {
     )
     .unwrap_or_else(|error| panic!("test draft failed: {error}"));
     assert_eq!(draft.templates().len(), 2);
-    let first_binding = crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest())
-        .unwrap_or_else(|error| panic!("first effect binding failed: {error}"));
-    let second_binding = crate::bind_authority_publication_effect(&draft, draft.templates()[1].digest())
-        .unwrap_or_else(|error| panic!("second effect binding failed: {error}"));
+    let first_binding =
+        crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest())
+            .unwrap_or_else(|error| panic!("first effect binding failed: {error}"));
+    let second_binding =
+        crate::bind_authority_publication_effect(&draft, draft.templates()[1].digest())
+            .unwrap_or_else(|error| panic!("second effect binding failed: {error}"));
     assert_eq!(first_binding.audience(), BrokerAudience::Mount);
     assert_ne!(
         first_binding.template_digest(),
@@ -1398,8 +1413,7 @@ fn draft_roundtrips_multiple_templates_for_one_audience() {
         .unwrap_or_else(|error| panic!("test draft decode failed: {error}"));
     assert_eq!(decoded, draft);
     let claim = activation_claim(&draft, 1);
-    let prepared = crate::bind_authority_publication_lease(draft
-        .clone(), &claim, lease)
+    let prepared = crate::bind_authority_publication_lease(draft.clone(), &claim, lease)
         .unwrap_or_else(|error| panic!("test lease binding failed: {error}"));
 
     let directory = TestDirectory::new();

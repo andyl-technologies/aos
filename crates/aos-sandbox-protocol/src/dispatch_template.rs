@@ -19,7 +19,10 @@
 use aos_proto::aos::sandbox::local::v1::{BrokerDescriptorRole, BrokerMethod, RuntimeAction};
 use aos_sandbox_core::format::decode_broker_authorization_plan;
 use aos_sandbox_core::model::KeyReference;
-use aos_sandbox_core::{BrokerArgumentCommitment, BrokerAudience, BrokerAuthorizationPlan, BrokerGrantTarget, BrokerVerb, ObjectDigest, ProtocolId};
+use aos_sandbox_core::{
+    BrokerArgumentCommitment, BrokerAudience, BrokerAuthorizationPlan, BrokerGrantTarget,
+    BrokerVerb, ObjectDigest, ProtocolId,
+};
 use crate::{MAXIMUM_PACKET_DESCRIPTORS, MAXIMUM_REQUEST_BYTES};
 use crate::authorization_artifact::SignedBrokerPlan;
 use sha2::{Digest as _, Sha256};
@@ -39,7 +42,6 @@ pub struct BrokerDispatchSemanticIdentityV1 {
     target: BrokerGrantTarget,
     argument_commitment: BrokerArgumentCommitment,
 }
-
 
 impl BrokerDispatchSemanticIdentityV1 {
     /// Constructs an identity returned by a protocol semantic compiler.
@@ -209,7 +211,6 @@ pub enum BrokerDispatchTemplateError {
     PlanGrantMismatch,
 }
 
-
 fn validate_method(
     signed_plan: &SignedBrokerPlan,
     method: BrokerMethod,
@@ -362,9 +363,7 @@ pub fn template_digest_from_parts(
 ///
 /// The digest commits to the verb, encoded grant target and argument commitment.
 /// It does not prove that any request body has those semantics.
-pub fn semantic_identity_digest(
-    semantics: BrokerDispatchSemanticIdentityV1,
-) -> ObjectDigest {
+pub fn semantic_identity_digest(semantics: BrokerDispatchSemanticIdentityV1) -> ObjectDigest {
     let mut digest = Sha256::new();
     digest.update(SEMANTIC_IDENTITY_DOMAIN);
     digest.update(semantics.verb.get().to_be_bytes());
@@ -433,7 +432,6 @@ pub fn validate_durable_attempt_body(
     inject_deadline(deadline_free_body, deadline_boottime_nanoseconds)
         .is_ok_and(|body| body == attempt_body)
 }
-
 
 fn validate_remaining_body_fields(bytes: &[u8]) -> Result<(), BrokerDispatchTemplateError> {
     let mut cursor = 0;
@@ -593,10 +591,11 @@ mod tests {
     use buffa::Message as _;
     use ed25519_dalek::SigningKey;
 
-    use aos_sandbox_ownership_protocol::{OwnershipAuthorityVerifier, OwnershipClaimV1, OwnershipTransactionReceiptV1, UnverifiedOwnershipLeaseResponse};
-    use crate::authorization_artifact::{
-        BrokerPlanPreparation, ReturnedSignature, SigningAuthority,
+    use aos_sandbox_ownership_protocol::{
+        OwnershipAuthorityVerifier, OwnershipClaimV1, OwnershipTransactionReceiptV1,
+        UnverifiedOwnershipLeaseResponse,
     };
+    use crate::authorization_artifact::{BrokerPlanPreparation, ReturnedSignature, SigningAuthority};
 
     use crate::authorization_artifact::tests::{authority, key_reference};
     use super::*;
@@ -656,8 +655,16 @@ mod tests {
             Vec::new(),
         )
         .unwrap_or_else(|error| panic!("test plan failed: {error}"));
-        let preparation = BrokerPlanPreparation::new(plan, authority("controller", SignaturePurpose::BrokerAuthorization, &key, 21))
-            .unwrap_or_else(|error| panic!("test preparation failed: {error}"));
+        let preparation = BrokerPlanPreparation::new(
+            plan,
+            authority(
+                "controller",
+                SignaturePurpose::BrokerAuthorization,
+                &key,
+                21,
+            ),
+        )
+        .unwrap_or_else(|error| panic!("test preparation failed: {error}"));
         let signature = sign_statement(preparation.signing_request().statement().clone(), &key)
             .unwrap_or_else(|error| panic!("test signing failed: {error}"));
         let lease_scope = TrustScopeId::from_bytes([31; 16]);
@@ -711,8 +718,11 @@ mod tests {
         }
     }
     fn signed_plan(plan: BrokerAuthorizationPlan, key: &SigningKey) -> SignedBrokerPlan {
-        let preparation = BrokerPlanPreparation::new(plan, authority("controller", SignaturePurpose::BrokerAuthorization, key, 21))
-            .unwrap_or_else(|error| panic!("test preparation failed: {error}"));
+        let preparation = BrokerPlanPreparation::new(
+            plan,
+            authority("controller", SignaturePurpose::BrokerAuthorization, key, 21),
+        )
+        .unwrap_or_else(|error| panic!("test preparation failed: {error}"));
         let signature = sign_statement(preparation.signing_request().statement().clone(), key)
             .unwrap_or_else(|error| panic!("test plan signature failed: {error}"));
         preparation

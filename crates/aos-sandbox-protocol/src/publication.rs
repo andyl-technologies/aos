@@ -36,7 +36,9 @@ use aos_sandbox_core::{
 };
 use sha2::{Digest as _, Sha256};
 
-use aos_sandbox_ownership_protocol::{OwnershipClaimAction, OwnershipClaimV1, OwnershipTransactionReceiptV1, SignedOwnershipLease};
+use aos_sandbox_ownership_protocol::{
+    OwnershipClaimAction, OwnershipClaimV1, OwnershipTransactionReceiptV1, SignedOwnershipLease,
+};
 use crate::authorization_artifact::SignedBrokerPlan;
 use crate::dispatch_template::{BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1};
 
@@ -44,7 +46,11 @@ mod draft;
 mod format;
 pub use format::{decode_current, decode_prepared, decode_prepared_with_artifacts, encode_current};
 use format::validate_encoded_publication;
-use draft::{decode_draft, draft_digest, encode_bound_draft, encode_draft, encode_proposal, encode_recovered_draft, encode_target, validate_draft, validate_encoded_size, validate_proposal};
+use draft::{
+    decode_draft, draft_digest, encode_bound_draft, encode_draft, encode_proposal,
+    encode_recovered_draft, encode_target, validate_draft, validate_encoded_size,
+    validate_proposal,
+};
 
 const MAGIC: &[u8; 8] = b"AOSCPUB1";
 const VERSION: u16 = 1;
@@ -155,7 +161,6 @@ impl AuthorityPublicationDraftV1 {
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.bytes
     }
-
 
     /// Binds typed ownership artifacts into a complete publication history.
     ///
@@ -473,7 +478,6 @@ pub struct RecoveredPublicationArtifactsV1 {
     templates: Vec<RecoveredBrokerDispatchTemplateV1>,
 }
 
-
 /// Checks archived publication bytes without constructing current authority.
 ///
 /// # Errors
@@ -630,7 +634,6 @@ fn take_bytes<'a>(
     take(bytes, cursor, length)
 }
 
-
 impl PublicationHistoryV1 {
     /// Returns the canonical assignment manifest retained by this history.
     pub const fn manifest(&self) -> &CanonicalAssignmentManifestV1 {
@@ -761,9 +764,7 @@ impl RecoveredOwnershipLeaseV1 {
         lease: &[u8],
         signature: &[u8],
     ) -> Result<(), PublicationHistoryError> {
-        if self.canonical_lease() != lease
-            || self.canonical_signature() != signature
-        {
+        if self.canonical_lease() != lease || self.canonical_signature() != signature {
             return Err(PublicationHistoryError::CorruptCurrent);
         }
 
@@ -800,7 +801,13 @@ impl DecodedPublicationCurrentV1 {
     /// The owned artifacts come from the same complete decode and move without
     /// cloning or another parser pass. This decomposition establishes no current
     /// authority and performs no Native acceptance.
-    pub fn into_parts(self) -> (PublicationHistoryV1, RecoveredOwnershipLeaseV1, Vec<RecoveredBrokerDispatchTemplateV1>) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        PublicationHistoryV1,
+        RecoveredOwnershipLeaseV1,
+        Vec<RecoveredBrokerDispatchTemplateV1>,
+    ) {
         (self.history, self.lease, self.templates)
     }
 }
@@ -1017,7 +1024,6 @@ mod nix_audience_denial_tests {
         }
     }
 }
-
 
 #[cfg(test)]
 #[path = "publication/tests.rs"]

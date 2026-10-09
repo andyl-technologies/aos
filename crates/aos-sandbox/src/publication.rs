@@ -18,8 +18,16 @@
 //! Durable publication encoding and its isolated journal namespace use one
 //! exact V1 schema. Unknown keys and non-V1 values fail closed as corruption.
 
-use aos_sandbox_core::{BrokerAudience, BrokerVerb, CanonicalAssignmentManifestV1, ObjectDigest, OperationId, ProtocolVersion, RawPairedClockSample, SandboxId};
-use crate::{AuthorityBoundEffectPlanV1, BrokerDispatchAttemptError, BrokerDispatchAttemptV1, GuardianPlanRequestV1, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalRecord, JournalTransaction, PreparedAuthorityEffectV1, RecordNamespace, SignedOwnershipLease};
+use aos_sandbox_core::{
+    BrokerAudience, BrokerVerb, CanonicalAssignmentManifestV1, ObjectDigest, OperationId,
+    ProtocolVersion, RawPairedClockSample, SandboxId,
+};
+use crate::{
+    AuthorityBoundEffectPlanV1, BrokerDispatchAttemptError, BrokerDispatchAttemptV1,
+    GuardianPlanRequestV1, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
+    JournalRecord, JournalTransaction, PreparedAuthorityEffectV1, RecordNamespace,
+    SignedOwnershipLease,
+};
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 use aos_sandbox_ownership_protocol::{OwnershipClaimAction, OwnershipClaimV1};
 
@@ -30,10 +38,18 @@ use crate::BrokerDispatchTemplateV1;
 
 mod format;
 use format::{decode_current, decode_prepared};
-use aos_sandbox_protocol::publication::{self as publication_data, PublicationHistoryV1, PublicationHistoryError};
+use aos_sandbox_protocol::publication::{
+    self as publication_data, PublicationHistoryV1, PublicationHistoryError,
+};
 use publication_data::{current_key, prepared_key, CURRENT_KEY_PREFIX, PREPARED_KEY_PREFIX};
-pub(crate) use publication_data::{MAXIMUM_PUBLICATION_BYTES, decode_historical_output_publication_v1, validate_historical_output_publication_v1};
-pub use publication_data::{AuthorityPublicationDraftV1, AuthorityPublicationProposalV1, RecoveredBrokerDispatchTemplateV1, RecoveredOwnershipLeaseV1};
+pub(crate) use publication_data::{
+    MAXIMUM_PUBLICATION_BYTES, decode_historical_output_publication_v1,
+    validate_historical_output_publication_v1,
+};
+pub use publication_data::{
+    AuthorityPublicationDraftV1, AuthorityPublicationProposalV1, RecoveredBrokerDispatchTemplateV1,
+    RecoveredOwnershipLeaseV1,
+};
 
 /// Carries one complete validated bundle before its atomic journal commit.
 #[derive(Clone, Eq, PartialEq)]
@@ -282,7 +298,11 @@ impl<'a> AuthorityPublicationStore<'a> {
         }
 
         if let Some(current) = self.current(prepared.history.sandbox())? {
-            current.prepared.history.require_successor(&prepared.history).map_err(AuthorityPublicationError::from)?;
+            current
+                .prepared
+                .history
+                .require_successor(&prepared.history)
+                .map_err(AuthorityPublicationError::from)?;
         }
         let transaction = JournalTransaction::new(
             transaction_id,
@@ -326,7 +346,10 @@ impl<'a> AuthorityPublicationStore<'a> {
             return Err(AuthorityPublicationError::PreparedConflict);
         }
         self.validate_namespace()?;
-        let decoded = decode_prepared(prepared.history.canonical_bytes(), prepared.history.digest())?;
+        let decoded = decode_prepared(
+            prepared.history.canonical_bytes(),
+            prepared.history.digest(),
+        )?;
         if &decoded != prepared || prepared.history.source_draft_digest() != draft.digest() {
             return Err(AuthorityPublicationError::CorruptCurrent);
         }
@@ -381,7 +404,11 @@ impl<'a> AuthorityPublicationStore<'a> {
     ) -> Result<(), AuthorityPublicationError> {
         self.validate_namespace()?;
         if let Some(current) = self.current(prepared.history.sandbox())? {
-            current.prepared.history.require_successor(&prepared.history).map_err(AuthorityPublicationError::from)?;
+            current
+                .prepared
+                .history
+                .require_successor(&prepared.history)
+                .map_err(AuthorityPublicationError::from)?;
         }
         Ok(())
     }
@@ -465,7 +492,10 @@ pub(crate) fn validate_durable_gate_publication(
         .map(decode_current)
         .transpose()?
         .ok_or(AuthorityPublicationError::CorruptCurrent)?;
-    prepared.history.require_successor(&current.prepared.history).map_err(AuthorityPublicationError::from)
+    prepared
+        .history
+        .require_successor(&current.prepared.history)
+        .map_err(AuthorityPublicationError::from)
         .map_err(|_| AuthorityPublicationError::CorruptCurrent)?;
     Ok(())
 }
@@ -506,10 +536,15 @@ pub(crate) fn validate_durable_effect_attempt(
         .map(|bytes| format::decode_prepared_with_artifacts(bytes, digest))
         .transpose()?
         .ok_or(AuthorityPublicationError::CorruptCurrent)?;
-    if prepared.history.sandbox() != sandbox || prepared.history.source_draft_digest() != source_draft_digest {
+    if prepared.history.sandbox() != sandbox
+        || prepared.history.source_draft_digest() != source_draft_digest
+    {
         return Err(AuthorityPublicationError::CorruptCurrent);
     }
-    activated.history.require_successor(&prepared.history).map_err(AuthorityPublicationError::from)
+    activated
+        .history
+        .require_successor(&prepared.history)
+        .map_err(AuthorityPublicationError::from)
         .map_err(|_| AuthorityPublicationError::CorruptCurrent)?;
     let template = artifacts
         .templates()
@@ -674,7 +709,10 @@ impl<'a> AuthorityPublicationStore<'a> {
         let current = self
             .current(sandbox)?
             .ok_or(AuthorityPublicationError::CurrentAbsent)?;
-        activated.history.require_successor(&current.prepared.history).map_err(AuthorityPublicationError::from)?;
+        activated
+            .history
+            .require_successor(&current.prepared.history)
+            .map_err(AuthorityPublicationError::from)?;
         if activated.history.source_draft_digest() != source_draft_digest
             || current.prepared.history.source_draft_digest() != source_draft_digest
         {
@@ -724,7 +762,10 @@ impl<'a> AuthorityPublicationStore<'a> {
         let current = self
             .current(sandbox)?
             .ok_or(AuthorityPublicationError::CurrentAbsent)?;
-        activated.history.require_successor(&current.prepared.history).map_err(AuthorityPublicationError::from)?;
+        activated
+            .history
+            .require_successor(&current.prepared.history)
+            .map_err(AuthorityPublicationError::from)?;
         if activated.history.source_draft_digest() != source_draft_digest
             || current.prepared.history.source_draft_digest() != source_draft_digest
         {
@@ -858,8 +899,12 @@ impl From<PublicationHistoryError> for AuthorityPublicationError {
 /// Returns [`AuthorityPublicationError`] for invalid or incomplete audiences,
 /// unsupported audiences, substituted assignment/ownership context or an oversized
 /// canonical publication.
-pub fn prepare_authority_publication(proposal: AuthorityPublicationProposalV1) -> Result<PreparedAuthorityPublicationV1, AuthorityPublicationError> {
-    let history = proposal.prepare().map_err(AuthorityPublicationError::from)?;
+pub fn prepare_authority_publication(
+    proposal: AuthorityPublicationProposalV1,
+) -> Result<PreparedAuthorityPublicationV1, AuthorityPublicationError> {
+    let history = proposal
+        .prepare()
+        .map_err(AuthorityPublicationError::from)?;
     Ok(PreparedAuthorityPublicationV1 { history })
 }
 
@@ -874,8 +919,14 @@ pub fn prepare_authority_publication(proposal: AuthorityPublicationProposalV1) -
 /// Returns [`AuthorityPublicationError::ContextMismatch`] for substituted context,
 /// [`AuthorityPublicationError::PublicationTooLarge`] for an oversized encoding, or
 /// [`AuthorityPublicationError::InvalidDraft`] for failed complete validation.
-pub fn bind_authority_publication_lease(draft: AuthorityPublicationDraftV1, claim: &OwnershipClaimV1, lease: SignedOwnershipLease) -> Result<PreparedAuthorityPublicationV1, AuthorityPublicationError> {
-    let history = draft.bind_lease(claim, lease).map_err(AuthorityPublicationError::from)?;
+pub fn bind_authority_publication_lease(
+    draft: AuthorityPublicationDraftV1,
+    claim: &OwnershipClaimV1,
+    lease: SignedOwnershipLease,
+) -> Result<PreparedAuthorityPublicationV1, AuthorityPublicationError> {
+    let history = draft
+        .bind_lease(claim, lease)
+        .map_err(AuthorityPublicationError::from)?;
     Ok(PreparedAuthorityPublicationV1 { history })
 }
 

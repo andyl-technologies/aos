@@ -22,9 +22,7 @@ use aos_sandbox_protocol::storage_output_reserve::authority_archive::{
 };
 
 use crate::Journal;
-use crate::publication::{
-    RecoveredOwnershipLeaseV1, decode_historical_output_publication_v1,
-};
+use crate::publication::{RecoveredOwnershipLeaseV1, decode_historical_output_publication_v1};
 
 use super::authority::{
     HistoricalStorageOutputRetentionErrorV1, NAMESPACE, require_fixed_controller_writer,
@@ -357,10 +355,7 @@ fn reconstruct_publication(
     create_operation: OperationId,
     publication_digest: ObjectDigest,
     encoded: &[Option<&[u8]>; 2],
-) -> Result<
-    (Vec<u8>, RecoveredOwnershipLeaseV1),
-    HistoricalStorageOutputRetentionErrorV1,
-> {
+) -> Result<(Vec<u8>, RecoveredOwnershipLeaseV1), HistoricalStorageOutputRetentionErrorV1> {
     let first = HistoricalOutputPublicationChunkViewV1::decode(
         encoded[0].ok_or(HistoricalStorageOutputRetentionErrorV1::Invalid)?,
     )?;

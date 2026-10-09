@@ -564,4 +564,3 @@ fn encode_template(
     );
     Ok(())
 }
-

@@ -148,10 +148,7 @@ pub fn decode_prepared(
 pub fn decode_prepared_with_artifacts(
     bytes: &[u8],
     expected_digest: ObjectDigest,
-) -> Result<
-    (PublicationHistoryV1, RecoveredPublicationArtifactsV1),
-    PublicationHistoryError,
-> {
+) -> Result<(PublicationHistoryV1, RecoveredPublicationArtifactsV1), PublicationHistoryError> {
     if bytes.len() > MAXIMUM_PUBLICATION_BYTES
         || bytes.len() < 10
         || &bytes[..8] != MAGIC
@@ -518,7 +515,8 @@ mod tests {
         let bytes = original.canonical_bytes();
 
         let old = decode_prepared(bytes, original.digest()).unwrap();
-        let (prepared, artifacts) = decode_prepared_with_artifacts(bytes, original.digest()).unwrap();
+        let (prepared, artifacts) =
+            decode_prepared_with_artifacts(bytes, original.digest()).unwrap();
 
         assert_eq!(old, original);
         assert_eq!(prepared, old);
@@ -527,9 +525,14 @@ mod tests {
             artifacts.lease.canonical_lease(),
             artifacts.lease.canonical_signature(),
         );
-        assert!(crate::publication::validate_historical_output_publication_v1(
-            bytes, original.digest(), Some(expected),
-        ).is_ok());
+        assert!(
+            crate::publication::validate_historical_output_publication_v1(
+                bytes,
+                original.digest(),
+                Some(expected),
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -551,7 +554,9 @@ mod tests {
         for expected in changed_preimages {
             assert!(matches!(
                 crate::publication::validate_historical_output_publication_v1(
-                    bytes, original.digest(), Some(expected),
+                    bytes,
+                    original.digest(),
+                    Some(expected),
                 ),
                 Err(PublicationHistoryError::CorruptCurrent),
             ));
@@ -581,26 +586,37 @@ mod tests {
             let digest = publication_digest(&changed);
 
             assert!(
-                matches!(decode_prepared(&changed, digest),
-                    Err(PublicationHistoryError::CorruptCurrent)),
+                matches!(
+                    decode_prepared(&changed, digest),
+                    Err(PublicationHistoryError::CorruptCurrent)
+                ),
                 "old decoder accepted {offset}",
             );
             assert!(
-                matches!(decode_prepared_with_artifacts(&changed, digest),
-                    Err(PublicationHistoryError::CorruptCurrent)),
+                matches!(
+                    decode_prepared_with_artifacts(&changed, digest),
+                    Err(PublicationHistoryError::CorruptCurrent)
+                ),
                 "artifact decoder accepted {offset}",
             );
             assert!(
-                matches!(crate::publication::validate_historical_output_publication_v1(
-                    &changed, digest, None,
-                ), Err(PublicationHistoryError::CorruptCurrent)),
+                matches!(
+                    crate::publication::validate_historical_output_publication_v1(
+                        &changed, digest, None,
+                    ),
+                    Err(PublicationHistoryError::CorruptCurrent)
+                ),
                 "carrier-free validation accepted {offset}",
             );
         }
 
-        assert!(matches!(decode_prepared(bytes, ObjectDigest::from_bytes([0; 32])),
-            Err(PublicationHistoryError::CorruptCurrent)));
-        assert!(matches!(decode_prepared_with_artifacts(bytes, ObjectDigest::from_bytes([0; 32])),
-            Err(PublicationHistoryError::CorruptCurrent)));
+        assert!(matches!(
+            decode_prepared(bytes, ObjectDigest::from_bytes([0; 32])),
+            Err(PublicationHistoryError::CorruptCurrent)
+        ));
+        assert!(matches!(
+            decode_prepared_with_artifacts(bytes, ObjectDigest::from_bytes([0; 32])),
+            Err(PublicationHistoryError::CorruptCurrent)
+        ));
     }
 }

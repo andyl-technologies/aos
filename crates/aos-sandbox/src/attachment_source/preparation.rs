@@ -537,8 +537,11 @@ impl PreparedCurrentAttachmentSourceResumeV1 {
                 return Err(AttachmentSourceError::Conflict);
             }
         };
-        if aos_sandbox_protocol::dispatch_template::inject_deadline(&body_without_deadline, deadline)
-            .map_err(|_| AttachmentSourceError::Protocol)?
+        if aos_sandbox_protocol::dispatch_template::inject_deadline(
+            &body_without_deadline,
+            deadline,
+        )
+        .map_err(|_| AttachmentSourceError::Protocol)?
             != self.attempt.record.request_body
         {
             return Err(AttachmentSourceError::CorruptState);
@@ -694,8 +697,11 @@ where
         .get_or_insert_default()
         .deadline_boottime_nanoseconds = 0;
     let body_without_deadline = deadline_free.encode_to_vec();
-    if aos_sandbox_protocol::dispatch_template::inject_deadline(&body_without_deadline, deadline_boottime_nanoseconds)
-        .map_err(|_| AttachmentSourceError::Protocol)?
+    if aos_sandbox_protocol::dispatch_template::inject_deadline(
+        &body_without_deadline,
+        deadline_boottime_nanoseconds,
+    )
+    .map_err(|_| AttachmentSourceError::Protocol)?
         != body
     {
         return Err(AttachmentSourceError::Protocol);

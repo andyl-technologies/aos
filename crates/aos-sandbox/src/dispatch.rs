@@ -34,9 +34,14 @@ use crate::publication::{RecoveredBrokerDispatchTemplateV1, RecoveredOwnershipLe
 use crate::SignedOwnershipLease;
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
-pub use aos_sandbox_protocol::dispatch_template::{BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, BrokerDispatchTemplateError};
+pub use aos_sandbox_protocol::dispatch_template::{
+    BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, BrokerDispatchTemplateError,
+};
 use aos_sandbox_protocol::dispatch_template::{match_plan_grant, inject_deadline};
-pub(crate) use aos_sandbox_protocol::dispatch_template::{template_digest_from_parts, semantic_identity_digest, validate_durable_deadline_free_body, validate_durable_attempt_body};
+pub(crate) use aos_sandbox_protocol::dispatch_template::{
+    template_digest_from_parts, semantic_identity_digest, validate_durable_deadline_free_body,
+    validate_durable_attempt_body,
+};
 
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
@@ -257,7 +262,8 @@ impl BrokerDispatchAttemptV1 {
         let body = inject_deadline(
             template.body_without_deadline(),
             deadline_boottime_nanoseconds,
-        ).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        )
+        .map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
         let request_bytes =
             u32::try_from(body.len()).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
         let descriptor_count = u16::try_from(template.descriptor_roles().len())
@@ -345,7 +351,8 @@ impl BrokerDispatchAttemptV1 {
         let deadline_body = inject_deadline(
             template.body_without_deadline(),
             deadline_boottime_nanoseconds,
-        ).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        )
+        .map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
         let body = encode_host_guardian_companion_v1(
             &deadline_body,
             guardian_plan.canonical_plan(),
@@ -442,7 +449,8 @@ impl BrokerDispatchAttemptV1 {
         let body = inject_deadline(
             template.body_without_deadline(),
             deadline_boottime_nanoseconds,
-        ).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        )
+        .map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
         let request_bytes =
             u32::try_from(body.len()).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
         let descriptor_count = u16::try_from(template.descriptor_roles().len())
@@ -483,7 +491,8 @@ impl BrokerDispatchAttemptV1 {
         let deadline_body = inject_deadline(
             template.body_without_deadline(),
             deadline_boottime_nanoseconds,
-        ).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        )
+        .map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
         let durable_body = encode_host_guardian_companion_v1(
             &deadline_body,
             guardian_plan.canonical_plan(),
@@ -562,7 +571,8 @@ impl BrokerDispatchAttemptV1 {
         let deadline_body = inject_deadline(
             template.body_without_deadline(),
             deadline_boottime_nanoseconds,
-        ).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        )
+        .map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
         let body = encode_host_guardian_companion_v1(
             &deadline_body,
             companion.broker_plan(),

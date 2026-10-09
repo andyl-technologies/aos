@@ -28,7 +28,8 @@ fn open(directory: &std::path::Path) -> Journal {
 fn fixture(journal: Journal) -> (Reconciler<NoEffects>, RuntimeFacts) {
     let mut reconciler = Reconciler::new(journal, NO_EFFECTS);
     let (draft, prepared) = crate::publication::tests::runtime_scope_activation_fixture(1);
-    let effect = crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap();
+    let effect =
+        crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap();
     let _activation_plan = runtime_activation_support::activate(
         &mut reconciler,
         1,

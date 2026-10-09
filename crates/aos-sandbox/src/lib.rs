@@ -354,10 +354,11 @@ pub use ownership_service::{
     DurableOwnershipProtocolService, InProcessOwnershipSessionClient, OwnershipProtocolServiceError,
 };
 pub use publication::{
-    prepare_authority_publication, bind_authority_publication_lease, bind_authority_publication_effect,
-    AuthorityPublicationDraftV1, AuthorityPublicationError, AuthorityPublicationOutcome,
-    AuthorityPublicationProposalV1, AuthorityPublicationStore, CurrentAuthorityPublicationV1,
-    PreparedAuthorityPublicationV1, RecoveredBrokerDispatchTemplateV1, RecoveredOwnershipLeaseV1,
+    prepare_authority_publication, bind_authority_publication_lease,
+    bind_authority_publication_effect, AuthorityPublicationDraftV1, AuthorityPublicationError,
+    AuthorityPublicationOutcome, AuthorityPublicationProposalV1, AuthorityPublicationStore,
+    CurrentAuthorityPublicationV1, PreparedAuthorityPublicationV1,
+    RecoveredBrokerDispatchTemplateV1, RecoveredOwnershipLeaseV1,
 };
 pub use reconciler::{
     AcceptOutcome, AuthorityBoundEffectPlanV1, AuthorityEffectAttemptTimingV1,

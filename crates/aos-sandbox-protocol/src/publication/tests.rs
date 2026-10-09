@@ -22,9 +22,14 @@ use aos_sandbox_core::{
 use buffa::Message as _;
 use ed25519_dalek::SigningKey;
 
-use aos_sandbox_ownership_protocol::{OwnershipAuthorityVerifier, OwnershipClaimV1, OwnershipTransactionReceiptV1, UnverifiedOwnershipLeaseResponse, ExpectedOwnershipLease};
+use aos_sandbox_ownership_protocol::{
+    OwnershipAuthorityVerifier, OwnershipClaimV1, OwnershipTransactionReceiptV1,
+    UnverifiedOwnershipLeaseResponse, ExpectedOwnershipLease,
+};
 use crate::dispatch_template::BrokerDispatchSemanticIdentityV1;
-use crate::authorization_artifact::{BrokerPlanPreparation, ReturnedSignature, SignedBrokerPlan, SigningAuthority};
+use crate::authorization_artifact::{
+    BrokerPlanPreparation, ReturnedSignature, SignedBrokerPlan, SigningAuthority,
+};
 
 use crate::authorization_artifact::tests::{authority, key_reference};
 use super::*;
@@ -128,8 +133,16 @@ fn signed_plan(
         Vec::new(),
     )
     .unwrap_or_else(|error| panic!("test plan failed: {error}"));
-    let preparation = BrokerPlanPreparation::new(plan, authority("controller", SignaturePurpose::BrokerAuthorization, &key, 20))
-        .unwrap_or_else(|error| panic!("test plan preparation failed: {error}"));
+    let preparation = BrokerPlanPreparation::new(
+        plan,
+        authority(
+            "controller",
+            SignaturePurpose::BrokerAuthorization,
+            &key,
+            20,
+        ),
+    )
+    .unwrap_or_else(|error| panic!("test plan preparation failed: {error}"));
     let signature = sign_statement(preparation.signing_request().statement().clone(), &key)
         .unwrap_or_else(|error| panic!("test signing failed: {error}"));
     let signed = preparation
