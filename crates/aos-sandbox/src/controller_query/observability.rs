@@ -1870,3 +1870,102 @@ fn commit_observability_progress(
         Err(_) => Err(DormantObservabilityErrorV1::ImplementationRejected),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HEALTH_CODE_LENGTH_OFFSET: usize = 8 + 8 + 4 + 1 + 1 + 8;
+    const HEALTH_CODE_OFFSET: usize = HEALTH_CODE_LENGTH_OFFSET + 4;
+    const HEALTH_CODE: &str = "ready";
+    const INVENTORY_OFFSET: usize = HEALTH_CODE_OFFSET + HEALTH_CODE.len();
+
+    // These ordinary DATA constructors do not issue a protected observation.
+    fn current_observation_data() -> DormantObservabilityCurrentObservationV1 {
+        let check = DormantHealthCheckV1::new(
+            DormantHealthComponentV1::Journal,
+            DormantHealthStateV1::Healthy,
+            1,
+            HEALTH_CODE.to_owned(),
+        )
+        .unwrap();
+        let health = DormantHealthSnapshotV1::new(2, vec![check]).unwrap();
+
+        let resource = DormantResidualResourceV1::new(
+            DormantResidualKindV1::Namespace,
+            DormantResidualStateV1::Ambiguous,
+            ObjectDigest::from_bytes([3; 32]),
+            Some([4; 16]),
+        )
+        .unwrap();
+        let inventory = DormantResidualInventoryV1::new(5, 2, vec![resource]).unwrap();
+
+        DormantObservabilityCurrentObservationV1::new(health, inventory).unwrap()
+    }
+
+    #[test]
+    fn current_observation_round_trips_and_rejects_every_short_prefix() {
+        let current = current_observation_data();
+        let encoded = encode_current_observation(&current).unwrap();
+
+        let decoded = decode_current_observation(&encoded).unwrap();
+        assert_eq!(decoded.health, current.health);
+        assert_eq!(decoded.residual_inventory, current.residual_inventory);
+        assert_eq!(encode_current_observation(&decoded).unwrap(), encoded);
+
+        for length in 0..encoded.len() {
+            assert_eq!(
+                decode_current_observation(&encoded[..length]).err(),
+                Some(DormantObservabilityErrorV1::NotCanonical),
+                "short prefix of {length} bytes",
+            );
+        }
+    }
+
+    #[test]
+    fn health_code_errors_precede_missing_inventory() {
+        let encoded = encode_current_observation(&current_observation_data()).unwrap();
+
+        for (invalid_byte, expected_error) in [
+            (b'!', DormantObservabilityErrorV1::InvalidCode),
+            (0xff, DormantObservabilityErrorV1::NotCanonical),
+        ] {
+            let mut malformed = encoded[..INVENTORY_OFFSET].to_vec();
+            malformed[HEALTH_CODE_OFFSET] = invalid_byte;
+
+            assert_eq!(
+                decode_current_observation(&malformed).err(),
+                Some(expected_error),
+            );
+        }
+    }
+
+    #[test]
+    fn trailing_bytes_precede_invalid_inventory_generation() {
+        let mut encoded = encode_current_observation(&current_observation_data()).unwrap();
+        encoded[INVENTORY_OFFSET..INVENTORY_OFFSET + 8].fill(0);
+
+        assert_eq!(
+            decode_current_observation(&encoded).err(),
+            Some(DormantObservabilityErrorV1::Unspecified),
+        );
+
+        encoded.push(0);
+        assert_eq!(
+            decode_current_observation(&encoded).err(),
+            Some(DormantObservabilityErrorV1::NotCanonical),
+        );
+    }
+
+    #[test]
+    fn health_code_length_overrun_is_not_canonical() {
+        let mut encoded = encode_current_observation(&current_observation_data()).unwrap();
+        encoded[HEALTH_CODE_LENGTH_OFFSET..HEALTH_CODE_OFFSET]
+            .copy_from_slice(&u32::MAX.to_be_bytes());
+
+        assert_eq!(
+            decode_current_observation(&encoded).err(),
+            Some(DormantObservabilityErrorV1::NotCanonical),
+        );
+    }
+}
