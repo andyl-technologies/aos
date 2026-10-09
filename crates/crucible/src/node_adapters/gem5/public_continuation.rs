@@ -39,6 +39,29 @@ pub fn gem5_public_continuation_schema() -> Result<SchemaRef, OperationFailure> 
     })
 }
 
+/// Names the distinct preparation and original-scheduling-epoch preservation edition.
+pub const GEM5_PUBLIC_EPOCH_CONTINUATION_PROFILE: &str = "gem5/public-process-preservation-v2";
+
+/// Returns the selected scheduler-epoch-bearing wrapper schema.
+///
+/// # Errors
+/// Refuses invalid schema identities or specification content construction.
+pub fn gem5_public_epoch_continuation_schema() -> Result<SchemaRef, OperationFailure> {
+    let specification = format!(
+        "{}; edition2 additionally binds separately signed original scheduling epoch objects under {}",
+        GEM5_PUBLIC_CONTINUATION_SPECIFICATION,
+        crate::node_scheduling::SCHEDULING_EPOCH_POLICY_SPECIFICATION
+    );
+    Ok(SchemaRef {
+        id: Id::new("crucible/gem5-public-native-continuation-v2")
+            .map_err(|error| refusal(&error.to_string()))?,
+        version: 2,
+        definition: canonical::content_ref(specification.as_bytes(), "text/plain")
+            .map_err(|error| refusal(&error.to_string()))?,
+        extensions: Extensions::new(),
+    })
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PublicWire {
@@ -86,13 +109,20 @@ impl QualifiedGem5Node {
                 || !graph.selected_extensions().is_empty()
                 || graph.world_binding_hash() != &self.preparation.world_binding_hash
                 || graph.binding(&self.preparation.route.node) != Some(&self.preparation.binding)
-                || !self
+                || !(self
                     .preparation
                     .binding
                     .compatibility
                     .implementation
                     .formats
                     .contains(&gem5_public_continuation_schema()?)
+                    || self
+                        .preparation
+                        .binding
+                        .compatibility
+                        .implementation
+                        .formats
+                        .contains(&gem5_public_epoch_continuation_schema()?))
             {
                 return Err(refusal(
                     "public gem5 preservation is not its selected installed initial profile",
@@ -160,9 +190,16 @@ impl QualifiedGem5Node {
                 "public capture lost its original owning native session",
             ));
         }
+        let epochs = self
+            .preparation
+            .binding
+            .compatibility
+            .implementation
+            .formats
+            .contains(&gem5_public_epoch_continuation_schema()?);
         let wire = PublicWire {
             format: "crucible.gem5.public-native-continuation".to_owned(),
-            schema_version: 1,
+            schema_version: if epochs { 2 } else { 1 },
             node: self.preparation.route.node.clone(),
             // Filled after genuine capture; reserve its complete maximum before
             // invoking the mechanical native hook rather than allocating late.
@@ -195,9 +232,17 @@ impl QualifiedGem5Node {
             .maximum_objects
             .checked_sub(1)
             .ok_or_else(|| refusal("public envelope has no preallocated object credit"))?;
-        let profile = Id::new(GEM5_PUBLIC_CONTINUATION_PROFILE)
-            .map_err(|error| refusal(&error.to_string()))?;
-        let schema = gem5_public_continuation_schema()?;
+        let profile = Id::new(if epochs {
+            GEM5_PUBLIC_EPOCH_CONTINUATION_PROFILE
+        } else {
+            GEM5_PUBLIC_CONTINUATION_PROFILE
+        })
+        .map_err(|error| refusal(&error.to_string()))?;
+        let schema = if epochs {
+            gem5_public_epoch_continuation_schema()?
+        } else {
+            gem5_public_continuation_schema()?
+        };
         // The inner hook retains its original image and seal before returning a
         // fallible copy. Once entered, no local error proves native no-effects.
         let mut captured = self
@@ -264,7 +309,7 @@ pub(super) fn decode_public_preparation(
     let wire: PublicWire = serde_json::from_value(value)
         .map_err(|_| refusal("public native envelope has unsupported closed fields"))?;
     if wire.format != "crucible.gem5.public-native-continuation"
-        || wire.schema_version != 1
+        || !matches!(wire.schema_version, 1 | 2)
         || &wire.node != node
     {
         return Err(refusal(
@@ -517,7 +562,7 @@ fn preparation_history(
         })?;
         if predecessor.node != wire.node
             || predecessor.format != "crucible.gem5.public-native-continuation"
-            || predecessor.schema_version != 1
+            || predecessor.schema_version != wire.schema_version
         {
             return Err(refusal(
                 "historical public preparation backend or participant changed",

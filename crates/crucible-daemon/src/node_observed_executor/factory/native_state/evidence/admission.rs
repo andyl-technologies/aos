@@ -73,6 +73,10 @@ impl AdmissionEvidence for MixedEvidence {
         let public_clock_continuation =
             crucible::node_adapters::host_public_clock_continuation_schema()
                 .map_err(|error| evidence(&error.reason))?;
+        let epoch_native = crucible::node_adapters::gem5::gem5_public_epoch_continuation_schema()
+            .map_err(|error| evidence(&error.reason))?;
+        let epoch_clock = crucible::node_adapters::host_public_clock_epoch_continuation_schema()
+            .map_err(|error| evidence(&error.reason))?;
         let selected = self.bindings.values().any(|binding| {
             binding
                 .compatibility
@@ -85,6 +89,8 @@ impl AdmissionEvidence for MixedEvidence {
                 && (schema == &public_native
                     || schema == &public_clock
                     || schema == &public_native_continuation
+                    || schema == &epoch_native
+                    || schema == &epoch_clock
                     || schema == &public_clock_continuation))
         {
             true

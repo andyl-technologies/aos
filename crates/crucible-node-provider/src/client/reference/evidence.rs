@@ -412,7 +412,7 @@ fn contains_private_text(value: &Value, secret: &str) -> bool {
     }
 }
 
-fn reject_private_envelope(envelope: &Envelope, secret: &[u8]) -> Result<(), ProviderError> {
+pub(super) fn reject_private_envelope(envelope: &Envelope, secret: &[u8]) -> Result<(), ProviderError> {
     if envelope.method == Method::Hello {
         return Err(ProviderError::Frame("handshake observations are private"));
     }

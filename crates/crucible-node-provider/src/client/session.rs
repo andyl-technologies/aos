@@ -19,6 +19,12 @@ use crate::transport::{FrameReader, write_frame_with_limits};
 
 use super::{ClientContent, DeadlineStream, ExchangeDeadline};
 
+#[path = "session/resend.rs"]
+mod resend;
+
+#[path = "session/lifecycle_resend.rs"]
+mod lifecycle_resend;
+
 /// Binds the actual socket peer to independently measured launch facts.
 pub struct ClientPeer {
     /// Names the original retained provider process, never a provider JSON claim.

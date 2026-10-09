@@ -180,7 +180,8 @@ pub(super) fn build_world(
                 )?
             }
             InstalledNodeKind::Gem5Closed { .. }
-            | InstalledNodeKind::Gem5ClosedPreserving { .. } => {
+            | InstalledNodeKind::Gem5ClosedPreserving { .. }
+            | InstalledNodeKind::Gem5ClosedEpochPreserving { .. } => {
                 return Err(refused(
                     "closed gem5 requires its distinct public profile compiler",
                 ));

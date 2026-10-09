@@ -146,6 +146,17 @@ impl PreparedNativeCustody {
 }
 
 impl NativeRuntimeContinuationVerifier for PreparedNativeCustody {
+    fn preserve_scheduling_epochs(
+        &mut self,
+        snapshot: &RuntimeSnapshot,
+        scheduling: &SchedulingSnapshot,
+        target: &ActivationRecord,
+    ) -> Result<Option<crate::node_scheduling::SchedulingEpochEvidence>, RuntimeError> {
+        self.native_mut()
+            .map_err(|_| RuntimeError::ForeignAuthority)?
+            .preserve_scheduling_epochs(snapshot, scheduling, target)
+    }
+
     fn verify_terminal_continuation(
         &mut self,
         snapshot: &RuntimeSnapshot,

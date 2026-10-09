@@ -156,6 +156,11 @@ impl HostArchive {
                 .snapshot(cut, ordinal)
                 .map_err(schema)?
         };
+        if scheduler.schema_version != 1 {
+            return Err(refusal(
+                "legacy Host archive does not preserve scheduling epoch lineage",
+            ));
+        }
         let source = if terminal {
             runtime
                 .terminal_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)

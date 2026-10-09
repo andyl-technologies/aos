@@ -172,7 +172,17 @@ impl MixedEvidence {
             || !scheduler.pending_deliveries.is_empty()
             || !scheduler.external_closed_prefixes.is_empty()
             || runtime.schema_version != 1
-            || scheduler.schema_version != 1
+            || !matches!(scheduler.schema_version, 1 | 2)
+            || (scheduler.schema_version == 2
+                && !self.scenario.compatibility.iter().all(|binding| {
+                    binding.implementation.formats.iter().any(|schema| {
+                        matches!(
+                            schema.id.as_str(),
+                            "crucible/host-public-clock-continuation-v2"
+                                | "crucible/gem5-public-native-continuation-v2"
+                        )
+                    })
+                }))
             || runtime.source_activation.world_binding_hash != world
             || scheduler.world_binding_hash != world
             || runtime.source_activation.activation_id != scheduler.source_activation_id

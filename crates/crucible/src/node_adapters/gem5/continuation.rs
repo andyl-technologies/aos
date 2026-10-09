@@ -54,9 +54,14 @@ pub fn authenticate_gem5_continuation(
     maximum_microsteps: U64,
 ) -> Result<Gem5AuthenticatedContinuation, OperationFailure> {
     let owner = source.owner();
-    let public =
-        owner.key.profile.as_str() == super::public_continuation::GEM5_PUBLIC_CONTINUATION_PROFILE;
-    let expected_schema = if public {
+    let epochs = owner.key.profile.as_str()
+        == super::public_continuation::GEM5_PUBLIC_EPOCH_CONTINUATION_PROFILE;
+    let public = epochs
+        || owner.key.profile.as_str()
+            == super::public_continuation::GEM5_PUBLIC_CONTINUATION_PROFILE;
+    let expected_schema = if epochs {
+        super::public_continuation::gem5_public_epoch_continuation_schema()?
+    } else if public {
         super::public_continuation::gem5_public_continuation_schema()?
     } else {
         gem5_native_continuation_schema()?
@@ -93,12 +98,16 @@ pub fn authenticate_gem5_continuation(
         .native()
         .map_err(|error| refusal(&error.to_string()))?;
     let public_preparation = if public {
-        Some(super::public_continuation::decode_public_preparation(
+        let decoded = super::public_continuation::decode_public_preparation(
             native,
             source.runtime(),
             node,
             &evidence,
-        )?)
+        )?;
+        if decoded.wire.schema_version != if epochs { 2 } else { 1 } {
+            return Err(refusal("public native key and envelope edition differ"));
+        }
+        Some(decoded)
     } else {
         None
     };

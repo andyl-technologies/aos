@@ -43,7 +43,8 @@ pub use preparation_mapping::{
     gem5_public_preparation_schema,
 };
 pub use public_continuation::{
-    GEM5_PUBLIC_CONTINUATION_SPECIFICATION, gem5_public_continuation_schema,
+    GEM5_PUBLIC_CONTINUATION_SPECIFICATION, GEM5_PUBLIC_EPOCH_CONTINUATION_PROFILE,
+    gem5_public_continuation_schema, gem5_public_epoch_continuation_schema,
 };
 
 /// Names the installed no-ingress O3/stdout full-position execution profile.

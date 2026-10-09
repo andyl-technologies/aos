@@ -59,8 +59,18 @@ pub(super) fn measure(
             ["supported_execution",include_str!("supported_execution.rs")],
             ["runtime_retries",include_str!("runtime_retries.rs")],
             ["metadata_inspection",include_str!("metadata_inspection.rs")],
+            ["source_metadata_reviews",include_str!("source_metadata_reviews.rs")],
+            ["source_metadata_review_tests",include_str!("source_metadata_review_tests.rs")],
+            ["issuer",include_str!("issuer.rs")],
             ["package_metadata_controls",include_str!("package_metadata_controls.rs")],
             ["source_probe",include_str!("source_probe.rs")],
+            ["source_resend_plan",include_str!("source_resend_plan.rs")],
+            ["source_resend_execution",include_str!("source_resend_execution.rs")],
+            ["preparation_resend",include_str!("../../../../../crucible/src/node_adapters/cnp/preparation_resend.rs")],
+            ["sdk_session_resend",include_str!("../../../../../crucible-node-provider/src/client/session/resend.rs")],
+            ["sdk_reference_resend",include_str!("../../../../../crucible-node-provider/src/client/reference/resend.rs")],
+            ["sdk_transmissions",include_str!("../../../../../crucible-node-provider/src/client/reference/transmissions.rs")],
+            ["sdk_evidence_privacy",include_str!("../../../../../crucible-node-provider/src/client/reference/evidence.rs")],
             ["source_probe_execution",include_str!("source_probe_execution.rs")],
             ["provider_only",include_str!("native/provider_only.rs")],
             ["prepared_adverse",include_str!("../../../../../crucible/src/node_adapters/cnp/preparation_adverse.rs")],
@@ -80,7 +90,13 @@ pub(super) fn measure(
         .iter()
         .map(super::source_pre_activation_probe::SourcePreActivationProbePlan::build)
         .collect::<Result<Vec<_>, _>>()?;
+    let resend_plans = candidate
+        .installations
+        .iter()
+        .map(super::source_resend_plan::SourceResendPlan::build)
+        .collect::<Result<Vec<_>, _>>()?;
     let fixtures = canonical::canonical_json(&serde_json::json!({
+        "source_resend_plans":resend_plans.iter().map(|plan|serde_json::json!({"reference":plan.reference,"bytes":plan.bytes,"objects":plan.objects.iter().map(|(reference,bytes)|serde_json::json!({"reference":reference,"bytes":bytes})).collect::<Vec<_>>() })).collect::<Vec<_>>(),
         "source_probe_plans":source_probes.iter().map(|plan|serde_json::json!({"reference":plan.reference,"bytes":plan.bytes,"objects":plan.objects.iter().map(|(reference,bytes)|serde_json::json!({"reference":reference,"bytes":bytes})).collect::<Vec<_>>() })).collect::<Vec<_>>(),
         "prepared_probe_plans":prepared_plans.iter().map(|plan|serde_json::json!({"reference":plan.reference,"bytes":plan.bytes,"objects":plan.fixture_objects().iter().map(|(reference,bytes)|serde_json::json!({"reference":reference,"bytes":bytes})).collect::<Vec<_>>() })).collect::<Vec<_>>(),
         "schema":"crucible.reference.qualification-fixtures.v1",
@@ -88,6 +104,7 @@ pub(super) fn measure(
         "supported_cycle":super::supported_execution::fixture(),
         "runtime_cached_recovery":super::runtime_retries::fixture(),
         "metadata_inspection":super::metadata_inspection::fixture(),
+        "source_metadata_reviews":super::source_metadata_reviews::fixture(),
         "artifact_integrity_plan":candidate.installations[0].package.artifact_measurement_plan().map_err(failure)?.fixture(),
         "window_order":[["producer",0],["consumer",0],["consumer",1],["producer",1],["consumer",2],["producer",2]],
         "node_windows":oracles.iter().map(|oracle|serde_json::json!({

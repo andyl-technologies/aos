@@ -87,6 +87,17 @@ impl MixedNativeFactory {
 }
 
 impl NativeWorldFactory for MixedNativeFactory {
+    fn authenticate_scheduling_epochs(
+        &self,
+        graph: &AdmittedGraph,
+        runtime: &RuntimeSnapshot,
+        scheduler: &SchedulingSnapshot,
+        epochs: &crucible::node_scheduling::SchedulingEpochEvidence,
+    ) -> Result<(), StateError> {
+        self.check_graph(graph)?;
+        super::scheduling_epochs::authenticate(&self.profile, graph, runtime, scheduler, epochs)
+    }
+
     fn authenticate_source(
         &self,
         graph: &AdmittedGraph,

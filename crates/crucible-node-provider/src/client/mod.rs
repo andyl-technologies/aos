@@ -16,6 +16,7 @@ pub use deadline::{DeadlineStream, ExchangeDeadline};
 pub use reference::{
     ObservationHandle, ObservationLimits, ObservationScope, ObservedContent, ObservedRequest,
     ObservedRequestKey, RecordedReferenceObservation, ReferenceController,
-    ReferenceObservationSnapshot,
+    ReferenceObservationSnapshot, TransmissionLimits, TransmissionObservation,
+    TransmissionObservationHandle,
 };
 pub use session::{ClientCustody, ClientOriginal, ClientPeer, ClientSession};

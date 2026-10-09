@@ -92,12 +92,15 @@ impl HostModelNode {
         let preservation_matches = if preservation {
             guarantee.capture_scope == crucible_node_contract::CaptureScope::CompleteModel
                 && guarantee.continuation == crucible_node_contract::Continuation::Exact
-                && self
+                && (self
                     .binding
                     .compatibility
                     .implementation
                     .formats
                     .contains(&public_continuation::host_public_clock_continuation_schema()?)
+                    || self.binding.compatibility.implementation.formats.contains(
+                        &public_continuation::host_public_clock_epoch_continuation_schema()?,
+                    ))
         } else {
             guarantee.capture_scope == crucible_node_contract::CaptureScope::None
                 && guarantee.continuation == crucible_node_contract::Continuation::Unsupported

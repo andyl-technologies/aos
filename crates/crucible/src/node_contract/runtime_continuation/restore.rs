@@ -92,6 +92,15 @@ impl PreparedRuntimeRestore {
         if snapshot.schema_version == 3 {
             verifier.verify_terminal_continuation(&snapshot, scheduling, target)?;
         }
+        let epochs = verifier.preserve_scheduling_epochs(&snapshot, scheduling, target)?;
+        if let Some(epochs) = &epochs {
+            crate::node_scheduling::validate_restored_scheduling_epochs(
+                graph, scheduling, target, epochs,
+            )
+            .map_err(|_| RuntimeError::InvalidReceipt)?;
+        } else if scheduling.schema_version != 1 {
+            return Err(RuntimeError::InvalidReceipt);
+        }
         let evidence = verifier.verify_runtime_continuation(&snapshot, scheduling, target)?;
         evidence
             .proof
@@ -119,15 +128,14 @@ impl PreparedRuntimeRestore {
             .collect::<Result<Vec<_>, _>>()?;
         let native = VerifiedNativeContinuation {
             target: target.clone(),
-            scheduler_hash: canonical::json_hash(
-                "cnp.scheduler-continuation.v1",
-                &serde_json::to_value(scheduling).map_err(|_| RuntimeError::InvalidReceipt)?,
-            )
-            .map_err(|_| RuntimeError::InvalidReceipt)?,
+            scheduler_hash: scheduling
+                .continuation_hash()
+                .map_err(|_| RuntimeError::InvalidReceipt)?,
             reservations: scheduling.reservations.clone(),
             input_batches: scheduling.input_batches.clone(),
             input_acknowledgements,
             proof: evidence.proof,
+            epochs,
         };
         Ok(Self {
             target: target.clone(),

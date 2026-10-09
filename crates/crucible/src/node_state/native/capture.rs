@@ -183,6 +183,21 @@ impl NativeArchive {
         let source = runtime
             .runtime_snapshot(cut, ordinal, self.limits.state.maximum_record_bytes)
             .map_err(schema)?;
+        let epochs = runtime
+            .scheduler(graph, activation)
+            .map_err(schema)?
+            .scheduling_epoch_evidence(&scheduler)
+            .map_err(schema)?;
+        if let Some(epochs) = &epochs {
+            if edition != ContentInventoryEdition::Typed {
+                return Err(refused(
+                    "scheduling epochs require the typed native inventory",
+                ));
+            }
+            crate::node_scheduling::validate_scheduling_epoch_bodies(graph, &scheduler, epochs)
+                .map_err(schema)?;
+            factory.authenticate_scheduling_epochs(graph, &source, &scheduler, epochs)?;
+        }
         let immutable_refs = if let Some(refs) = &graph_refs {
             refs.verify(graph, self.limits.state)?;
             refs.roots().to_vec()
@@ -212,9 +227,6 @@ impl NativeArchive {
         } else {
             self.limits.native
         };
-        let captures = runtime
-            .capture_installed_native(graph, activation, &coordinator.runtime, native_limits)
-            .map_err(schema)?;
         let mut objects = Objects::new(self, edition);
         for (reference, bytes) in content.entries() {
             let dependencies = immutable.dependencies(
@@ -224,6 +236,26 @@ impl NativeArchive {
             )?;
             objects.insert(reference.clone(), bytes, dependencies)?;
         }
+        if let Some(epochs) = &epochs {
+            objects.insert(
+                epochs.policy.reference.clone(),
+                &epochs.policy.bytes,
+                vec![],
+            )?;
+            for body in &epochs.objects {
+                let value =
+                    canonical::parse_json(&body.bytes, self.limits.state.maximum_record_bytes)
+                        .map_err(schema)?;
+                objects.insert(
+                    body.reference.clone(),
+                    &body.bytes,
+                    core_references(&value, self.limits.state.maximum_record_bytes)?,
+                )?;
+            }
+        }
+        let captures = runtime
+            .capture_installed_native(graph, activation, &coordinator.runtime, native_limits)
+            .map_err(schema)?;
         let coordinator_ref = objects.record(
             &coordinator,
             core_references(&coordinator, self.limits.state.maximum_record_bytes)?,
@@ -655,6 +687,26 @@ impl CaptureEvidence for Evidence<'_> {
         {
             return Err(refused("native coordinator world or repeatability differs"));
         }
+        if let Some(rows) = &saved.scheduler.original_epochs {
+            if self.record.index.schema_version != 2 {
+                return Err(refused(
+                    "original scheduling epochs require typed source inventory",
+                ));
+            }
+            let epochs = source_epoch_evidence(rows, content)?;
+            crate::node_scheduling::validate_scheduling_epoch_bodies(
+                graph,
+                &saved.scheduler,
+                &epochs,
+            )
+            .map_err(schema)?;
+            self.factory.authenticate_scheduling_epochs(
+                graph,
+                &saved.runtime,
+                &saved.scheduler,
+                &epochs,
+            )?;
+        }
         self.factory
             .authenticate_coordinator(graph, &saved.runtime, &saved.scheduler, content)?;
         Ok(NativeCoordinatorCaptureProof {
@@ -750,4 +802,62 @@ impl<'a> Objects<'a> {
     fn finish(self) -> Vec<Object> {
         self.objects.into_values().collect()
     }
+}
+
+/// Collects exact original epoch bodies under their complete signed identities.
+///
+/// # Errors
+/// Refuses missing bodies, conflicting policies or aggregate precredit excess.
+pub(in crate::node_state) fn source_epoch_evidence(
+    rows: &[crate::node_scheduling::SavedSchedulingEpoch],
+    content: &VerifiedStateContent,
+) -> Result<crate::node_scheduling::SchedulingEpochEvidence, StateError> {
+    let policy = rows
+        .first()
+        .ok_or_else(|| refused("empty scheduling epoch inventory"))?
+        .policy
+        .clone();
+    if rows.len() > crate::node_scheduling::MAXIMUM_SCHEDULING_EPOCHS {
+        return Err(refused(
+            "original scheduling epoch roster exceeds finite credit",
+        ));
+    }
+    let mut references = std::collections::BTreeSet::new();
+    for row in rows {
+        if row.policy != policy {
+            return Err(refused(
+                "scheduling epochs name conflicting installed policies",
+            ));
+        }
+        references.extend([
+            row.coordinator.clone(),
+            row.scheduler.clone(),
+            row.runtime.clone(),
+        ]);
+    }
+    // Check complete signed geometry before duplicating any retained body.
+    // Distinct full references keep independent roles even when bytes share a hash.
+    let mut total = usize::try_from(policy.length.get()).map_err(schema)?;
+    for reference in &references {
+        total = total
+            .checked_add(usize::try_from(reference.length.get()).map_err(schema)?)
+            .ok_or_else(|| refused("original scheduling body credit overflow"))?;
+    }
+    if total > crate::node_scheduling::MAXIMUM_SCHEDULING_EPOCH_BYTES {
+        return Err(refused(
+            "original scheduling aggregate body credit exhausted",
+        ));
+    }
+    let read = |reference: crucible_node_contract::ContentRef| {
+        let bytes = content
+            .get(&reference)
+            .ok_or_else(|| refused("signed original scheduling body absent"))?
+            .to_vec();
+        Ok::<_, StateError>(crate::node_scheduling::InputPayload { reference, bytes })
+    };
+    Ok(crate::node_scheduling::SchedulingEpochEvidence {
+        policy: read(policy)?,
+        rows: rows.to_vec(),
+        objects: references.into_iter().map(read).collect::<Result<_, _>>()?,
+    })
 }

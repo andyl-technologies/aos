@@ -22,6 +22,7 @@ mod prepared_gate_evidence;
 mod qualification;
 mod run_error;
 mod runtime_retries;
+mod source_metadata_reviews;
 mod source_pre_activation_execution;
 mod source_pre_activation_probe;
 mod source_probe;
@@ -38,3 +39,6 @@ pub use run_error::QualificationRunError;
 pub use qualification::{
     InstalledReferenceQualifier, ReferenceQualificationObservation, ReferenceQualificationRun,
 };
+
+mod source_resend_execution;
+mod source_resend_plan;

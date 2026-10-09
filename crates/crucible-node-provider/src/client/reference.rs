@@ -21,6 +21,17 @@ pub use evidence::{
     ObservedRequestKey, RecordedReferenceObservation, ReferenceObservationSnapshot,
 };
 
+#[path = "reference/resend.rs"]
+mod resend;
+
+#[path = "reference/lifecycle_resend.rs"]
+mod lifecycle_resend;
+#[path = "reference/transmissions.rs"]
+pub(crate) mod transmissions;
+pub use transmissions::{
+    TransmissionLimits, TransmissionObservation, TransmissionObservationHandle,
+};
+
 /// Owns original public control and receipt bytes beneath a separately retained native peer.
 ///
 /// The enclosing installed adapter retains the actual provider Child, private
@@ -36,6 +47,7 @@ pub struct ReferenceController {
     budget: Duration,
     qualifications: Vec<ContentRef>,
     observer: Option<evidence::ObservationRecorder>,
+    transmissions: Option<transmissions::TransmissionRecorder>,
 }
 
 impl ReferenceController {
@@ -123,6 +135,7 @@ impl ReferenceController {
             budget,
             qualifications,
             observer: None,
+            transmissions: None,
         })
     }
 

@@ -144,6 +144,7 @@ fn fixture(policy: ExecutionPolicy, resolution: u64, latency: Option<u64>) -> Ca
         payloads: BTreeMap::new(),
         maximum_pending_payload_bytes: U64::new(1_048_576),
         maximum_microsteps: U64::new(4),
+        restored_epochs: None,
     }
 }
 

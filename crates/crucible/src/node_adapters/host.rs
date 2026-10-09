@@ -20,7 +20,8 @@ pub use preparation::{
 use preparation::{HostPreparationOrigin, HostPublicPreparation};
 pub use public_continuation::{
     HOST_PUBLIC_CLOCK_CONTINUATION_PROFILE, HOST_PUBLIC_CLOCK_CONTINUATION_SPECIFICATION,
-    host_public_clock_continuation_schema, validate_public_clock_continuation,
+    HOST_PUBLIC_CLOCK_EPOCH_CONTINUATION_PROFILE, host_public_clock_continuation_schema,
+    host_public_clock_epoch_continuation_schema, validate_public_clock_continuation,
 };
 pub use state::archive::{HostContinuationInventory, validate_host_continuation};
 
@@ -284,7 +285,14 @@ impl HostModelNode {
                 .implementation
                 .formats
                 .contains(&public_continuation::host_public_clock_continuation_schema()?);
-        let preservation = Id::new(if public_preservation {
+        let epoch_preservation = binding
+            .compatibility
+            .implementation
+            .formats
+            .contains(&public_continuation::host_public_clock_epoch_continuation_schema()?);
+        let preservation = Id::new(if epoch_preservation {
+            public_continuation::HOST_PUBLIC_CLOCK_EPOCH_CONTINUATION_PROFILE
+        } else if public_preservation {
             public_continuation::HOST_PUBLIC_CLOCK_CONTINUATION_PROFILE
         } else {
             HOST_PRESERVATION_PROFILE

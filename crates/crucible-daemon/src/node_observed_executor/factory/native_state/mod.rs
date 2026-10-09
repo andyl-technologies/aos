@@ -16,6 +16,7 @@ mod ledger;
 mod profile;
 pub(super) mod public_catalog;
 mod publication;
+mod scheduling_epochs;
 mod service;
 mod staging;
 

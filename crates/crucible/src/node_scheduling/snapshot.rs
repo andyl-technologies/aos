@@ -188,9 +188,12 @@ pub struct SavedInputBatch {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SchedulingSnapshot {
-    /// Selects the sole supported snapshot schema edition.
+    /// Selects legacy continuation or explicit inherited scheduling epochs.
     #[serde(deserialize_with = "crucible_node_contract::deserialize_version")]
     pub schema_version: u16,
+    /// Retains original pending-permission ancestry only in edition two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_epochs: Option<Vec<super::SavedSchedulingEpoch>>,
     /// Names the exact retained superdense event-order profile.
     pub ordering_profile: String,
     /// Binds the unchanged complete durable world compatibility identity.

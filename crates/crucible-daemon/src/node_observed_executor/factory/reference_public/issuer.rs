@@ -1,6 +1,7 @@
 //! Issues the complete original population from a source-owned native actor.
 //!
-//! Native success covers only the declared two case subsets. Every remaining
+//! Native success covers only the declared two case subsets. Four exact
+//! metadata reviews are authenticated as source inspections. Every remaining
 //! required review stays NotExecuted. The private acceptance authority refuses
 //! unresolved criteria before ordinary installation can use this report.
 
@@ -27,7 +28,11 @@ pub(super) struct SourceIssuedQualification {
 }
 
 impl SourceIssuedQualification {
-    /// Issues both original native cases and every still-unexecuted requirement.
+    /// Issues original native cases, authenticated metadata reviews and omissions.
+    ///
+    /// # Errors
+    /// Refuses changed original context, evidence or source-review predicates,
+    /// and a population outside the qualification limits.
     pub(super) fn issue(original: CandidateHarnessResult) -> Result<Self, QualificationError> {
         let issued = issue_report(&original)?;
         Ok(Self { original, issued })
@@ -38,6 +43,10 @@ impl SourceIssuedQualification {
     }
 
     /// Measures a fresh installed scope before the concrete ordinary gate.
+    ///
+    /// # Errors
+    /// Refuses unavailable or changed installed artifacts and context, and
+    /// incomplete mandatory evidence. It never waives unexecuted criteria.
     pub(super) fn admit_current(&self) -> Result<AcceptedQualification, QualificationError> {
         let package = super::package::InstalledPublicReferencePackage::built_in()
             .map_err(|_| refused("current source implementation unavailable"))?;
@@ -87,15 +96,48 @@ impl SourceIssuedQualification {
 }
 
 /// Assembles a complete original population without consuming its native seal.
+///
+/// # Errors
+/// Refuses changed source context, criteria, original native evidence or a
+/// population outside the configured qualification limits.
+pub(super) fn issue_native_report(
+    original: &CandidateHarnessResult,
+) -> Result<IssuedQualification, QualificationError> {
+    let authority = SourceAuthority::base(original)?;
+    native_population(original, &authority)?.finish()
+}
+
+/// Issues native and authenticated source-inspection results for one actor.
+///
+/// # Errors
+/// Refuses changed original source reviews, native evidence, criteria or a
+/// population outside the configured qualification limits.
 pub(super) fn issue_report(
     original: &CandidateHarnessResult,
 ) -> Result<IssuedQualification, QualificationError> {
     let authority = SourceAuthority::new(original)?;
+    let mut population = native_population(original, &authority)?;
+    if let Some(reviews) = original.source_reviews() {
+        for id in super::source_metadata_reviews::REVIEW_IDS {
+            let case = format!("reference/review/{id}");
+            let (reference, bytes) = reviews
+                .result(&case)
+                .ok_or(refused("original source metadata review absent"))?;
+            population.record(&case, reviews.verdict(), reference, bytes, &authority)?;
+        }
+    }
+    population.finish()
+}
+
+fn native_population(
+    original: &CandidateHarnessResult,
+    authority: &SourceAuthority<'_>,
+) -> Result<WitnessPopulation, QualificationError> {
     let criteria = authority.criteria;
     let mut population = WitnessPopulation::install(
         &criteria.bytes,
         &criteria.reference,
-        &authority,
+        authority,
         QualificationLimits::default(),
     )?;
     for (id, bytes, verdict) in [
@@ -111,9 +153,9 @@ pub(super) fn issue_report(
         ),
     ] {
         let reference = canonical::content_ref(bytes, "application/json")?;
-        population.record(id, verdict, &reference, bytes, &authority)?;
+        population.record(id, verdict, &reference, bytes, authority)?;
     }
-    population.finish()
+    Ok(population)
 }
 
 struct SourceAuthority<'a> {
@@ -123,6 +165,14 @@ struct SourceAuthority<'a> {
 
 impl<'a> SourceAuthority<'a> {
     fn new(original: &'a CandidateHarnessResult) -> Result<Self, QualificationError> {
+        let authority = Self::base(original)?;
+        if let Some(reviews) = original.source_reviews() {
+            reviews.authenticate(original, &issue_native_report(original)?)?;
+        }
+        Ok(authority)
+    }
+
+    fn base(original: &'a CandidateHarnessResult) -> Result<Self, QualificationError> {
         let (unit, criteria) = original.qualification_context().ok_or(refused(
             "source candidate did not reach complete predeclared context",
         ))?;
@@ -215,7 +265,16 @@ impl InstalledWitnessAuthority for SourceAuthority<'_> {
         let (original, expected) = match case.id.as_str() {
             WORLD_CASE => (self.original.original_bytes(), self.world_verdict()),
             RETIREMENT_CASE => (self.original.retirement_bytes(), self.retirement_verdict()?),
-            _ => return Err(refused("source authority has no original review witness")),
+            _ => {
+                let reviews = self
+                    .original
+                    .source_reviews()
+                    .ok_or(refused("source authority has no original review witness"))?;
+                let (_, bytes) = reviews
+                    .result(&case.id)
+                    .ok_or(refused("source authority has no original review witness"))?;
+                (bytes, reviews.verdict())
+            }
         };
         if original != bytes
             || verdict != expected
@@ -308,3 +367,14 @@ fn refused(reason: &'static str) -> QualificationError {
 #[cfg(test)]
 #[path = "issuer_tests.rs"]
 mod issuer_tests;
+
+/// Authenticates the original source reviews through the concrete issuer.
+///
+/// # Errors
+/// Refuses changed actor context, source artifacts or original review bytes.
+#[cfg(test)]
+pub(super) fn authenticate_source_reviews_for_test(
+    original: &CandidateHarnessResult,
+) -> Result<(), QualificationError> {
+    SourceAuthority::new(original).map(|_| ())
+}

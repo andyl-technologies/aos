@@ -192,6 +192,26 @@ pub struct RuntimeSnapshot {
 
 /// Authenticates complete native runtime-ledger continuation at an unchanged cut.
 pub trait NativeRuntimeContinuationVerifier {
+    /// Authenticates inherited original scheduling permission bodies under fresh custody.
+    ///
+    /// Legacy adapters return no policy for edition one and refuse edition two.
+    /// An installed implementation must bind the original signed coordinator,
+    /// actual native construction ancestry and complete fresh owner mapping.
+    ///
+    /// # Errors
+    /// Refuses unsupported ancestry or unavailable original native custody.
+    fn preserve_scheduling_epochs(
+        &mut self,
+        _snapshot: &RuntimeSnapshot,
+        scheduling: &SchedulingSnapshot,
+        _target: &ActivationRecord,
+    ) -> Result<Option<crate::node_scheduling::SchedulingEpochEvidence>, RuntimeError> {
+        if scheduling.schema_version != 1 {
+            return Err(RuntimeError::InvalidReceipt);
+        }
+        Ok(None)
+    }
+
     /// Authenticates original terminal state and native result custody under fresh owners.
     ///
     /// This separate installed gate must authenticate the complete original
@@ -303,9 +323,17 @@ pub struct VerifiedNativeContinuation {
     input_batches: Vec<SavedInputBatch>,
     input_acknowledgements: Vec<NativeInputAcknowledgement>,
     proof: ContentRef,
+    epochs: Option<crate::node_scheduling::SchedulingEpochEvidence>,
 }
 
 impl VerifiedNativeContinuation {
+    /// Borrows checked original epoch bodies retained beneath actual fresh native proof.
+    pub(crate) fn restored_scheduling_epochs(
+        &self,
+    ) -> Option<&crate::node_scheduling::SchedulingEpochEvidence> {
+        self.epochs.as_ref()
+    }
+
     /// Returns the exact fresh generation authenticated by native continuation proof.
     pub fn target_activation(&self) -> &ActivationRecord {
         &self.target

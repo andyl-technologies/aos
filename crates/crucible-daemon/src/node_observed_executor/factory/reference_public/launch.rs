@@ -48,6 +48,8 @@ pub(super) struct PublicLaunchRequest {
     pub(super) controller_nonce: Bytes,
     pub(super) observation_limits: ObservationLimits,
     pub(super) observation_sink: Rc<RefCell<Option<ObservationHandle>>>,
+    pub(super) transmission_sink:
+        Rc<RefCell<Option<crucible_node_provider::client::TransmissionObservationHandle>>>,
 }
 
 pub(super) struct ObservedPublicPreparation {
@@ -55,6 +57,7 @@ pub(super) struct ObservedPublicPreparation {
     pub(super) observations: ObservationHandle,
     pub(super) probe: serde_json::Value,
     pub(super) prepared_probe: serde_json::Value,
+    pub(super) resends: serde_json::Value,
 }
 
 /// Keeps the one original connection's uncertainty in its native reservation.
@@ -101,12 +104,13 @@ pub(super) fn launch(
     queue: &PublicReferenceCustodyQueue,
     request: PublicLaunchRequest,
 ) -> Result<ObservedPublicPreparation, ProviderError> {
-    if request.observation_sink.borrow().is_some() {
+    if request.observation_sink.borrow().is_some() || request.transmission_sink.borrow().is_some() {
         return Err(ProviderError::Correlation(
             "original observation slot already occupied",
         ));
     }
     let probe_plan = super::source_probe::SourceProbePlan::build(installed)?;
+    let resend_plan = super::source_resend_plan::SourceResendPlan::build(installed)?;
     let prepared_plan =
         super::source_pre_activation_probe::SourcePreActivationProbePlan::build(installed)?;
     let provider = installed
@@ -302,12 +306,23 @@ pub(super) fn launch(
         Duration::from_secs(3),
         installed.qualifications.clone(),
     )?;
+    let transmissions = controller.observe_resends(super::source_resend_plan::LIMITS)?;
+    *request.transmission_sink.borrow_mut() = Some(transmissions.clone());
     let observations = controller.observe(request.observation_limits)?;
     *request.observation_sink.borrow_mut() = Some(observations.clone());
     guard.attach(controller, handshake)?;
     let (probe, original_snapshot) =
         super::source_probe_execution::collect(installed, &mut guard, &probe_plan, &observations)?;
     let probe = serde_json::json!({"premises":probe,"original_snapshot_bytes":original_snapshot});
+    let (resend, resend_originals, resend_frames) = super::source_resend_execution::collect(
+        installed,
+        &mut guard,
+        &resend_plan,
+        &observations,
+        &transmissions,
+    )?;
+    let resends = serde_json::json!({"premises":resend,"original_snapshot_bytes":resend_originals,"transmitted_snapshot_bytes":resend_frames});
+
     let mut prepared = CnpReferencePreparation::prepare(guard, installed)
         .map_err(|failure| ProviderError::Io(std::io::Error::other(failure.error.reason)))?;
     let (prepared_probe, original_snapshot) = super::source_pre_activation_execution::collect(
@@ -323,6 +338,7 @@ pub(super) fn launch(
         observations,
         probe,
         prepared_probe,
+        resends,
     })
 }
 

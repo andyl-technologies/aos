@@ -96,7 +96,7 @@ impl InstalledMixedEngine {
 
     /// Prepares an actual closed native peer and clock beneath reserved custody.
     pub(super) fn prepare_live(&self, isa: &str) -> Result<MixedLiveWorld, NodeObservedError> {
-        self.prepare_live_selected(isa, false, false, None)
+        self.prepare_live_selected(isa, false, false, false, None)
     }
 
     pub(super) fn prepare_public_initial(
@@ -104,7 +104,7 @@ impl InstalledMixedEngine {
         isa: &str,
         activation_id: Id,
     ) -> Result<MixedLiveWorld, NodeObservedError> {
-        self.prepare_live_selected(isa, true, false, Some(activation_id))
+        self.prepare_live_selected(isa, true, false, false, Some(activation_id))
     }
 
     pub(super) fn prepare_public_preserving(
@@ -112,7 +112,15 @@ impl InstalledMixedEngine {
         isa: &str,
         activation_id: Id,
     ) -> Result<MixedLiveWorld, NodeObservedError> {
-        self.prepare_live_selected(isa, true, true, Some(activation_id))
+        self.prepare_live_selected(isa, true, true, false, Some(activation_id))
+    }
+
+    pub(super) fn prepare_public_epoch_preserving(
+        &self,
+        isa: &str,
+        activation_id: Id,
+    ) -> Result<MixedLiveWorld, NodeObservedError> {
+        self.prepare_live_selected(isa, true, true, true, Some(activation_id))
     }
 
     fn prepare_live_selected(
@@ -120,9 +128,16 @@ impl InstalledMixedEngine {
         isa: &str,
         public: bool,
         public_continuation: bool,
+        scheduling_epochs: bool,
         activation_id: Option<Id>,
     ) -> Result<MixedLiveWorld, NodeObservedError> {
-        let profile = Rc::new(if public_continuation {
+        let profile = Rc::new(if scheduling_epochs {
+            MixedProfile::build_public_epoch_preserving(
+                self.installed.clone(),
+                &measure_executable(&self.host)?,
+                isa,
+            )?
+        } else if public_continuation {
             MixedProfile::build_public_preserving(
                 self.installed.clone(),
                 &measure_executable(&self.host)?,
@@ -291,10 +306,20 @@ impl InstalledMixedEngine {
         archive: NativeArchiveRecord,
         isa: &str,
     ) -> Result<MixedColdPlan, NodeObservedError> {
-        let public = archive.owners().iter().any(|owner| {
-            owner.key.schema.id.as_str() == "crucible/gem5-public-native-continuation-v1"
+        let epochs = archive.owners().iter().any(|owner| {
+            owner.key.schema.id.as_str() == "crucible/gem5-public-native-continuation-v2"
         });
-        let profile = Rc::new(if public {
+        let public = epochs
+            || archive.owners().iter().any(|owner| {
+                owner.key.schema.id.as_str() == "crucible/gem5-public-native-continuation-v1"
+            });
+        let profile = Rc::new(if epochs {
+            MixedProfile::build_public_epoch_preserving(
+                self.installed.clone(),
+                &measure_executable(&self.host)?,
+                isa,
+            )?
+        } else if public {
             MixedProfile::build_public_preserving(
                 self.installed.clone(),
                 &measure_executable(&self.host)?,

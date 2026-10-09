@@ -152,7 +152,13 @@ fn validate_saved_profile(
         .collect();
     for saved in &snapshot.positions {
         validate_position(saved.position, snapshot.maximum_microsteps)?;
-        if saved.position < snapshot.source_boundary {
+        if saved.position < snapshot.source_boundary
+            && !super::super::super::epoch::rows_cover_position(
+                snapshot,
+                &saved.owner,
+                saved.position,
+            )
+        {
             return Err(SchedulingError::InvalidSnapshot);
         }
         let (grid, policy) = &owner_contracts[&saved.owner];
@@ -690,11 +696,29 @@ fn validate_delivery_lineage(delivery: &Delivery, cap: U64) -> Result<(), Schedu
 
 pub(crate) fn validate_structure(snapshot: &SchedulingSnapshot) -> Result<(), SchedulingError> {
     snapshot.world_binding_hash.validate()?;
-    if snapshot.schema_version != 1
+    if !matches!(snapshot.schema_version, 1 | 2)
+        || (snapshot.schema_version == 2) != snapshot.original_epochs.is_some()
         || snapshot.ordering_profile != "superdense-v1"
         || snapshot.source_generation.get() == 0
     {
         return Err(SchedulingError::InvalidSnapshot);
+    }
+    if let Some(rows) = &snapshot.original_epochs {
+        if rows.is_empty() || rows.len() > super::super::super::MAXIMUM_SCHEDULING_EPOCHS {
+            return Err(SchedulingError::InvalidSnapshot);
+        }
+        bounded_sorted(rows, |row| row.scheduler.clone())?;
+        let mut inherited = BTreeSet::new();
+        for row in rows {
+            row.validate_row(snapshot)?;
+            if row
+                .reservations
+                .iter()
+                .any(|saved| !inherited.insert(saved.reservation.owner.clone()))
+            {
+                return Err(SchedulingError::InvalidSnapshot);
+            }
+        }
     }
     bounded_sorted(&snapshot.source_owners, |owner| owner.owner.clone())?;
     bounded_sorted(&snapshot.positions, |position| position.owner.clone())?;

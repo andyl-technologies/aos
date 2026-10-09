@@ -370,6 +370,46 @@ strict checks across nine crates. Legacy control/native codecs and the required
 hermetic application unit/integration test-target build pass. These tests qualify
 the recorded selections; unsupported source policies remain refused.
 
+### Typed original epochs and retained provider transmissions
+
+The explicitly selected preservation profile retains original scheduler epochs
+through fresh activation and later recapture. Version-two scheduler evidence
+binds the original grant, input inventory, cursor and source generation while
+the current activation has its own owner identities and boundary. Legacy
+version-one encodings remain unchanged. The default native verifier refuses
+the new scope before invoking native continuation; the installed fixed RF x86
+profile independently verifies the complete typed records and finite credits.
+
+The ordinary planner witness completes and acknowledges its original Clock
+grant at 10 ps while the original CPU grant remains pending at 0 ps. After
+deleting the source processes and namespace, two independently qualified fresh
+worlds retain those exact requests and acknowledgements. A further source-gone
+recapture preserves the original epoch through generation three, followed by
+matching native suffixes, scheduler commits, acknowledgements and group
+reclamation. The integrated witness passes in 231.57 seconds.
+
+The provider SDK retains separate original requests and bounded transmission
+journals. Explicit source-qualified repeats of Discover and original NotStarted
+refusals send identical material under the original identity with fresh transport
+sequences. Absent or exhausted reservations refuse before transmission; provider
+loss retains attempted bytes and fences uncertain work. Completed Realize and
+Admit repeats require a separate SDK qualifier; the actual fixture preserves
+the same native child and original control bodies. The source caller currently
+selects the safe pre-realization controls.
+Its mandatory original peer census, world execution and retirement checks remain
+part of the retained cohort.
+
+Source metadata inspection runs once inside the owning actor. Inspection failure
+or unwinding preserves prior objects and uncertainty; later report reads reuse
+the original collection. The partial issuer retains four source-inspection
+passes, 368 unexecuted requirements and ten inapplicable requirements. Ordinary
+reference-provider admission still requires complete behavioral qualification.
+
+The integrated source passes 325 targeted native, protocol, scheduler, state and
+source-quality checks, together with all-target strict checks across nine crates.
+The broader hermetic controller and application builds remain separate required
+qualification steps. Raw original cohorts and build logs remain local.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

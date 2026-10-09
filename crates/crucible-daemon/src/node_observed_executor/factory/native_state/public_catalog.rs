@@ -56,6 +56,7 @@ pub(in super::super) fn prepare_native(
     if !matches!(
         selections[1].kind,
         InstalledNodeKind::Gem5ClosedPreserving { .. }
+            | InstalledNodeKind::Gem5ClosedEpochPreserving { .. }
     ) {
         return Err(refused(
             "native preservation requires its distinct installed owner codec",
@@ -102,9 +103,9 @@ pub(super) fn selected_isa(
         ));
     }
     match cpu.kind {
-        InstalledNodeKind::Gem5Closed { isa } | InstalledNodeKind::Gem5ClosedPreserving { isa } => {
-            Ok(isa)
-        }
+        InstalledNodeKind::Gem5Closed { isa }
+        | InstalledNodeKind::Gem5ClosedPreserving { isa }
+        | InstalledNodeKind::Gem5ClosedEpochPreserving { isa } => Ok(isa),
         _ => Err(refused(
             "closed gem5 original native model selection is absent",
         )),
@@ -125,8 +126,14 @@ pub(in super::super) fn scenario(
     let preserving = matches!(
         selections[1].kind,
         InstalledNodeKind::Gem5ClosedPreserving { .. }
+            | InstalledNodeKind::Gem5ClosedEpochPreserving { .. }
     );
-    let profile = if preserving {
+    let profile = if matches!(
+        selections[1].kind,
+        InstalledNodeKind::Gem5ClosedEpochPreserving { .. }
+    ) {
+        MixedProfile::build_public_epoch_preserving(installed, &catalog.host_identity, isa.name())?
+    } else if preserving {
         MixedProfile::build_public_preserving(installed, &catalog.host_identity, isa.name())?
     } else {
         MixedProfile::build_public(installed, &catalog.host_identity, isa.name())?
@@ -171,7 +178,13 @@ pub(super) fn prepare_source(
     let activation = Id::new(format!("activation/{}", execution_text(execution)))?;
     let live = if matches!(
         selections[1].kind,
+        InstalledNodeKind::Gem5ClosedEpochPreserving { .. }
+    ) {
+        engine.prepare_public_epoch_preserving(isa.name(), activation)?
+    } else if matches!(
+        selections[1].kind,
         InstalledNodeKind::Gem5ClosedPreserving { .. }
+            | InstalledNodeKind::Gem5ClosedEpochPreserving { .. }
     ) {
         engine.prepare_public_preserving(isa.name(), activation)?
     } else {

@@ -109,6 +109,11 @@ pub enum InstalledNodeKind {
         /// Selects the independently installed fixed guest and native poll policy.
         isa: InstalledGem5Isa,
     },
+    /// Selects original pending-permission ancestry in the closed public native codec.
+    Gem5ClosedEpochPreserving {
+        /// Selects the independently installed fixed guest and native poll policy.
+        isa: InstalledGem5Isa,
+    },
     /// Runs native block or 9p storage with independently enrolled immutable input.
     HostIo {
         /// Binds the native storage codec, immutable input and positive timing.
@@ -165,6 +170,9 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
             InstalledNodeKindWire::Gem5ClosedPreserving { isa } => {
                 Self::Gem5ClosedPreserving { isa }
             }
+            InstalledNodeKindWire::Gem5ClosedEpochPreserving { isa } => {
+                Self::Gem5ClosedEpochPreserving { isa }
+            }
             InstalledNodeKindWire::HostIo { profile } => Self::HostIo { profile },
             InstalledNodeKindWire::HostScripted { profile } => Self::HostScripted { profile },
             InstalledNodeKindWire::HostSeededLink { profile } => Self::HostSeededLink { profile },
@@ -213,6 +221,9 @@ enum InstalledNodeKindWire {
         isa: InstalledGem5Isa,
     },
     Gem5ClosedPreserving {
+        isa: InstalledGem5Isa,
+    },
+    Gem5ClosedEpochPreserving {
         isa: InstalledGem5Isa,
     },
     HostIo {
@@ -438,6 +449,7 @@ impl InstalledNodeCatalog {
                 selection.kind,
                 InstalledNodeKind::Gem5Closed { .. }
                     | InstalledNodeKind::Gem5ClosedPreserving { .. }
+                    | InstalledNodeKind::Gem5ClosedEpochPreserving { .. }
             )
         }) {
             return native_state::public_catalog::scenario(self, selections);
@@ -504,6 +516,7 @@ impl InstalledNodeCatalog {
                     selection.kind,
                     InstalledNodeKind::Gem5Closed { .. }
                         | InstalledNodeKind::Gem5ClosedPreserving { .. }
+                        | InstalledNodeKind::Gem5ClosedEpochPreserving { .. }
                 )
             }) {
                 native_state::public_catalog::publisher(stored)?
@@ -546,6 +559,7 @@ impl InstalledNodeCatalog {
                 selection.kind,
                 InstalledNodeKind::Gem5Closed { .. }
                     | InstalledNodeKind::Gem5ClosedPreserving { .. }
+                    | InstalledNodeKind::Gem5ClosedEpochPreserving { .. }
             )
         }) {
             return native_state::public_catalog::prepare(self, selections, scenario, execution);
@@ -842,7 +856,8 @@ impl InstalledNodeCatalog {
                     );
                 }
                 InstalledNodeKind::Gem5Closed { .. }
-                | InstalledNodeKind::Gem5ClosedPreserving { .. } => {
+                | InstalledNodeKind::Gem5ClosedPreserving { .. }
+                | InstalledNodeKind::Gem5ClosedEpochPreserving { .. } => {
                     return Err(refused(
                         "closed gem5 requires its original public preparation bridge",
                     ));
@@ -937,7 +952,8 @@ impl InstalledNodeCatalog {
         for selection in selections {
             match &selection.kind {
                 InstalledNodeKind::Gem5Closed { .. }
-                | InstalledNodeKind::Gem5ClosedPreserving { .. } => {
+                | InstalledNodeKind::Gem5ClosedPreserving { .. }
+                | InstalledNodeKind::Gem5ClosedEpochPreserving { .. } => {
                     return Err(refused(
                         "closed gem5 native custody cannot become a host model",
                     ));

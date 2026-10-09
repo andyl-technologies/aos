@@ -2,8 +2,8 @@
 //!
 //! Profile construction describes a selected model; it grants no qualification,
 //! native custody or readiness. Admission separately measures the real resources
-//! and fresh execution authority. This child remains confined to integration
-//! tests until the complete mixed cold-world witness has qualified its bridge.
+//! and fresh execution authority. The epoch-preserving edition remains a distinct
+//! candidate until its ordinary planner continuation witness qualifies the bridge.
 
 use std::{collections::BTreeMap, rc::Rc};
 
@@ -38,9 +38,26 @@ pub(super) struct MixedProfile {
     pub(super) isa: String,
     pub(super) public_preparation: bool,
     pub(super) public_continuation: bool,
+    pub(super) scheduling_epochs: bool,
 }
 
 impl MixedProfile {
+    /// Reconstructs the selected installed edition without reusing its portable bodies.
+    ///
+    /// # Errors
+    /// Refuses unsupported installed assets, ISA, schema or policy identities.
+    pub(super) fn regenerate(&self, host: &ContentRef) -> Result<Self, NodeObservedError> {
+        if self.scheduling_epochs {
+            Self::build_public_epoch_preserving(self.installed.clone(), host, &self.isa)
+        } else if self.public_continuation {
+            Self::build_public_preserving(self.installed.clone(), host, &self.isa)
+        } else if self.public_preparation {
+            Self::build_public(self.installed.clone(), host, &self.isa)
+        } else {
+            Self::build(self.installed.clone(), host, &self.isa)
+        }
+    }
+
     /// Regenerates the complete fixed no-ingress Clock and gem5 model selection.
     ///
     /// # Errors
@@ -51,7 +68,7 @@ impl MixedProfile {
         host: &ContentRef,
         isa: &str,
     ) -> Result<Self, NodeObservedError> {
-        Self::build_selected(installed, host, isa, false, false)
+        Self::build_selected(installed, host, isa, false, false, false)
     }
 
     pub(super) fn build_public(
@@ -59,7 +76,7 @@ impl MixedProfile {
         host: &ContentRef,
         isa: &str,
     ) -> Result<Self, NodeObservedError> {
-        Self::build_selected(installed, host, isa, true, false)
+        Self::build_selected(installed, host, isa, true, false, false)
     }
 
     pub(super) fn build_public_preserving(
@@ -67,7 +84,24 @@ impl MixedProfile {
         host: &ContentRef,
         isa: &str,
     ) -> Result<Self, NodeObservedError> {
-        Self::build_selected(installed, host, isa, true, true)
+        Self::build_selected(installed, host, isa, true, true, false)
+    }
+
+    /// Describes the fixed x86 public codec with explicit original scheduling epochs.
+    ///
+    /// # Errors
+    /// Refuses other ISAs or invalid installed artifact, schema and policy identities.
+    pub(super) fn build_public_epoch_preserving(
+        installed: Rc<InstalledGem5ClosedProfile>,
+        host: &ContentRef,
+        isa: &str,
+    ) -> Result<Self, NodeObservedError> {
+        if isa != "x86_64" {
+            return Err(super::super::refused(
+                "scheduling epoch candidate qualifies only fixed x86_64",
+            ));
+        }
+        Self::build_selected(installed, host, isa, true, true, true)
     }
 
     fn build_selected(
@@ -76,6 +110,7 @@ impl MixedProfile {
         isa: &str,
         public_preparation: bool,
         public_continuation: bool,
+        scheduling_epochs: bool,
     ) -> Result<Self, NodeObservedError> {
         let guest = installed.guest(isa)?;
         let mut contents = BTreeMap::new();
@@ -111,6 +146,21 @@ impl MixedProfile {
             qualification_body["restart"] = "exact original public preparation/coordinator and native custody; fresh independently audited restored sessions; complete coupled publication".into();
             qualification_body["public_continuation"] = true.into();
         }
+        if scheduling_epochs {
+            qualification_body["schema"] =
+                "crucible.installed-public-native-preservation.v2".into();
+            qualification_body["scheduling_epoch_policy"] = serde_json::to_value(
+                crucible::node_scheduling::closed_scheduling_epoch_policy()
+                    .map_err(|error| super::super::refused(&error.to_string()))?,
+            )?;
+            put(
+                &mut contents,
+                crucible::node_scheduling::SCHEDULING_EPOCH_POLICY_SPECIFICATION
+                    .as_bytes()
+                    .to_vec(),
+                "text/plain",
+            )?;
+        }
         let qualification = put_json(&mut contents, &qualification_body)?;
         let clock = InstalledNodeSelection {
             node: Id::new("clock")?,
@@ -139,6 +189,7 @@ impl MixedProfile {
                     &mut binding,
                     &mut contents,
                     public_continuation,
+                    scheduling_epochs,
                 )?;
             }
             let domain = owner
@@ -216,6 +267,11 @@ impl MixedProfile {
                 "crucible.installed-public-native-preservation-scenario.v1".into();
             scenario_body["public_continuation"] = true.into();
         }
+        if scheduling_epochs {
+            scenario_body["schema"] =
+                "crucible.installed-public-native-preservation-scenario.v2".into();
+            scenario_body["scheduling_epochs"] = true.into();
+        }
         let scenario_ref = put_json(&mut contents, &scenario_body)?;
         let initialization_ref = put_json(
             &mut contents,
@@ -278,6 +334,7 @@ impl MixedProfile {
             isa: isa.to_owned(),
             public_preparation,
             public_continuation,
+            scheduling_epochs,
         })
     }
 }
@@ -288,6 +345,7 @@ fn select_public_preparation(
     binding: &mut BindingCompatibility,
     contents: &mut BTreeMap<String, ScenarioContent>,
     preservation: bool,
+    scheduling_epochs: bool,
 ) -> Result<(), NodeObservedError> {
     use crucible::node_adapters::{
         HOST_PUBLIC_CLOCK_PREPARATION_SPECIFICATION,
@@ -327,16 +385,39 @@ fn select_public_preparation(
     descriptor.configuration_ref = put_json(contents, &configuration)?;
     binding.configuration_ref = descriptor.configuration_ref.clone();
     if preservation {
-        let (continuation, specification, profile) = if descriptor.id.as_str() == "clock" {
+        let (continuation, specification, profile) = if scheduling_epochs {
+            let (schema, legacy, profile) = if descriptor.id.as_str() == "clock" {
+                (
+                    crucible::node_adapters::host_public_clock_epoch_continuation_schema(),
+                    crucible::node_adapters::HOST_PUBLIC_CLOCK_CONTINUATION_SPECIFICATION,
+                    crucible::node_adapters::HOST_PUBLIC_CLOCK_EPOCH_CONTINUATION_PROFILE,
+                )
+            } else {
+                (
+                    crucible::node_adapters::gem5::gem5_public_epoch_continuation_schema(),
+                    crucible::node_adapters::gem5::GEM5_PUBLIC_CONTINUATION_SPECIFICATION,
+                    crucible::node_adapters::gem5::GEM5_PUBLIC_EPOCH_CONTINUATION_PROFILE,
+                )
+            };
+            (
+                schema,
+                format!(
+                    "{}; edition2 additionally binds separately signed original scheduling epoch objects under {}",
+                    legacy,
+                    crucible::node_scheduling::SCHEDULING_EPOCH_POLICY_SPECIFICATION
+                ),
+                profile,
+            )
+        } else if descriptor.id.as_str() == "clock" {
             (
                 crucible::node_adapters::host_public_clock_continuation_schema(),
-                crucible::node_adapters::HOST_PUBLIC_CLOCK_CONTINUATION_SPECIFICATION,
+                crucible::node_adapters::HOST_PUBLIC_CLOCK_CONTINUATION_SPECIFICATION.to_owned(),
                 crucible::node_adapters::HOST_PUBLIC_CLOCK_CONTINUATION_PROFILE,
             )
         } else {
             (
                 crucible::node_adapters::gem5::gem5_public_continuation_schema(),
-                crucible::node_adapters::gem5::GEM5_PUBLIC_CONTINUATION_SPECIFICATION,
+                crucible::node_adapters::gem5::GEM5_PUBLIC_CONTINUATION_SPECIFICATION.to_owned(),
                 "gem5/public-process-preservation-v1",
             )
         };
@@ -357,6 +438,12 @@ fn select_public_preparation(
             .formats
             .sort_by(|left, right| left.id.cmp(&right.id));
         configuration["public_continuation_schema"] = serde_json::to_value(&continuation)?;
+        if scheduling_epochs {
+            configuration["scheduling_epoch_policy"] = serde_json::to_value(
+                crucible::node_scheduling::closed_scheduling_epoch_policy()
+                    .map_err(|error| super::super::refused(&error.to_string()))?,
+            )?;
+        }
         descriptor.configuration_ref = put_json(contents, &configuration)?;
         binding.configuration_ref = descriptor.configuration_ref.clone();
         for facet in &mut binding.operating_contract.facets {

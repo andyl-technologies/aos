@@ -151,6 +151,7 @@ fn setup(
 ) -> (Evidence, CaptureManifest, StateRequirements) {
     let snapshot = SchedulingSnapshot {
         schema_version: 1,
+        original_epochs: None,
         ordering_profile: "superdense-v1".into(),
         world_binding_hash: graph.world_binding_hash().clone(),
         source_activation_id: id("source/activation"),

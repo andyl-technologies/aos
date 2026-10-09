@@ -212,8 +212,25 @@ pub(crate) fn admit_capture_with_selected_graph(
         ));
     }
     bounded_record(&proof.scheduler, limits.maximum_record_bytes)?;
+    if proof.scheduler.schema_version == 2 {
+        if edition != super::closure::ContentInventoryEdition::Typed {
+            return Err(incomplete(
+                "coordinator",
+                "original scheduling epochs require typed source inventory",
+            ));
+        }
+        let rows = proof.scheduler.original_epochs.as_ref().ok_or_else(|| {
+            incomplete(
+                "coordinator",
+                "original scheduling epoch inventory is absent",
+            )
+        })?;
+        let epochs = super::native::source_epoch_evidence(rows, &content)?;
+        crate::node_scheduling::validate_scheduling_epoch_bodies(graph, &proof.scheduler, &epochs)
+            .map_err(schema)?;
+    }
     if proof.world_repeatability != graph.world_repeatability()
-        || proof.scheduler.schema_version != 1
+        || !matches!(proof.scheduler.schema_version, 1 | 2)
         || proof.scheduler.ordering_profile != manifest.ordering_profile
         || proof.scheduler.source_generation.get() == 0
         || proof.scheduler.world_binding_hash != manifest.world_binding_hash

@@ -190,6 +190,26 @@ impl MixedStaging {
 }
 
 impl NativeRuntimeContinuationVerifier for MixedStaging {
+    fn preserve_scheduling_epochs(
+        &mut self,
+        snapshot: &RuntimeSnapshot,
+        scheduling: &SchedulingSnapshot,
+        target: &ActivationRecord,
+    ) -> Result<Option<crucible::node_scheduling::SchedulingEpochEvidence>, RuntimeError> {
+        if !self.profile.scheduling_epochs {
+            return if scheduling.schema_version == 1 {
+                Ok(None)
+            } else {
+                Err(RuntimeError::InvalidReceipt)
+            };
+        }
+        // Authentic fresh proof/owner construction must already be retained in
+        // this owning capsule; an archive body alone never authorizes an epoch.
+        self.verify_runtime_continuation(snapshot, scheduling, target)?;
+        super::scheduling_epochs::original_evidence(&self.profile, &self.archive, target.boundary)
+            .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))
+    }
+
     fn verify_runtime_continuation(
         &mut self,
         snapshot: &RuntimeSnapshot,

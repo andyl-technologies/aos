@@ -71,6 +71,25 @@ pub trait CnpReferenceQualification {
         })
     }
 
+    /// Authenticates a fixed retained-original resend population and actual native custody.
+    ///
+    /// Called before every possible send. Cached companion absence is not a
+    /// native premise, and the source policy must authenticate original bodies
+    /// under the unchanged attached controller and predeclared fixture.
+    ///
+    /// # Errors
+    /// Refuses by default, unplanned originals, changed scope or native census.
+    fn authenticate_pre_realization_resends(
+        &self,
+        _: &CnpLaunchGuard,
+        _: &[Id],
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: EffectKnowledge::None,
+            reason: "source-qualified retained-original resends are not installed".into(),
+        })
+    }
+
     /// Authenticates the genuinely realized companion beneath its original closed gate.
     ///
     /// # Errors

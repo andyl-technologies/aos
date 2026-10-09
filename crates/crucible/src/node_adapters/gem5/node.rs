@@ -142,7 +142,17 @@ impl QualifiedGem5Node {
                     .implementation
                     .formats
                     .contains(&super::public_continuation::gem5_public_continuation_schema()?);
-                let preservation_profile = if public_preservation {
+                let epoch_preservation = preparation
+                    .binding
+                    .compatibility
+                    .implementation
+                    .formats
+                    .contains(
+                        &super::public_continuation::gem5_public_epoch_continuation_schema()?,
+                    );
+                let preservation_profile = if epoch_preservation {
+                    super::public_continuation::GEM5_PUBLIC_EPOCH_CONTINUATION_PROFILE
+                } else if public_preservation {
                     super::public_continuation::GEM5_PUBLIC_CONTINUATION_PROFILE
                 } else {
                     GEM5_OPAQUE_PRESERVATION_PROFILE
@@ -215,15 +225,24 @@ impl QualifiedGem5Node {
                 if let Some(restored) = &restored {
                     super::restore::validate_fresh_continuation(&preparation, restored)?;
                     if let Some(public) = &restored.public_preparation {
+                        let selected_schema = match public.wire.schema_version {
+                            1 => super::public_continuation::gem5_public_continuation_schema()?,
+                            2 => {
+                                super::public_continuation::gem5_public_epoch_continuation_schema()?
+                            }
+                            _ => {
+                                return Err(refusal(
+                                    "restored public native source edition is unsupported",
+                                ));
+                            }
+                        };
                         if public.world.activation != restored.source.source_activation
                             || !preparation
                                 .binding
                                 .compatibility
                                 .implementation
                                 .formats
-                                .contains(
-                                    &super::public_continuation::gem5_public_continuation_schema()?,
-                                )
+                                .contains(&selected_schema)
                         {
                             return Err(refusal(
                                 "restored public native source differs from its selected graph",
@@ -295,6 +314,7 @@ impl QualifiedGem5Node {
                             selected.id.as_str(),
                             GEM5_OPAQUE_PRESERVATION_PROFILE
                                 | super::public_continuation::GEM5_PUBLIC_CONTINUATION_PROFILE
+                                | super::public_continuation::GEM5_PUBLIC_EPOCH_CONTINUATION_PROFILE
                         )
                     })
                     .map(|selected| selected.id.clone())

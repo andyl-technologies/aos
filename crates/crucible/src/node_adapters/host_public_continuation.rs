@@ -34,6 +34,29 @@ pub fn host_public_clock_continuation_schema() -> Result<SchemaRef, OperationFai
     })
 }
 
+/// Names the distinct preparation and original-scheduling-epoch preservation edition.
+pub const HOST_PUBLIC_CLOCK_EPOCH_CONTINUATION_PROFILE: &str = "host/public-clock-preservation-v2";
+
+/// Returns the selected scheduler-epoch-bearing wrapper schema.
+///
+/// # Errors
+/// Refuses invalid schema identities or specification content construction.
+pub fn host_public_clock_epoch_continuation_schema() -> Result<SchemaRef, OperationFailure> {
+    let specification = format!(
+        "{}; edition2 additionally binds separately signed original scheduling epoch objects under {}",
+        HOST_PUBLIC_CLOCK_CONTINUATION_SPECIFICATION,
+        crate::node_scheduling::SCHEDULING_EPOCH_POLICY_SPECIFICATION
+    );
+    Ok(SchemaRef {
+        id: Id::new("crucible/host-public-clock-continuation-v2")
+            .map_err(|error| failure(&error.to_string()))?,
+        version: 2,
+        definition: canonical::content_ref(specification.as_bytes(), "text/plain")
+            .map_err(|error| failure(&error.to_string()))?,
+        extensions: Extensions::new(),
+    })
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Wire {
@@ -90,7 +113,11 @@ pub fn validate_public_clock_continuation(
             .compatibility
             .implementation
             .formats
-            .contains(&host_public_clock_continuation_schema()?)
+            .iter()
+            .any(|schema| {
+                schema.id.as_str() == "crucible/host-public-clock-continuation-v1"
+                    || schema.id.as_str() == "crucible/host-public-clock-continuation-v2"
+            })
     {
         return Err(failure(
             "public Clock source differs from installed selected graph",
@@ -144,7 +171,11 @@ impl HostModelNode {
                 .compatibility
                 .implementation
                 .formats
-                .contains(&host_public_clock_continuation_schema()?)
+                .iter()
+                .any(|schema| {
+                    schema.id.as_str() == "crucible/host-public-clock-continuation-v1"
+                        || schema.id.as_str() == "crucible/host-public-clock-continuation-v2"
+                })
             || graph.world_binding_hash() != &self.world_hash
             || graph.binding(&self.route.node) != Some(&self.binding)
             || self.public_preparation.is_some()
@@ -281,9 +312,15 @@ impl HostModelNode {
             runtime.capture_cut,
             inner_limits,
         )?;
+        let epochs = self
+            .binding
+            .compatibility
+            .implementation
+            .formats
+            .contains(&host_public_clock_epoch_continuation_schema()?);
         let wire = Wire {
             format: "crucible.host.public-clock-continuation".to_owned(),
-            schema_version: 1,
+            schema_version: if epochs { 2 } else { 1 },
             node: self.route.node.clone(),
             native_state: capture.state.reference.clone(),
             world_preparation: record.reference,
@@ -320,9 +357,17 @@ impl HostModelNode {
             }
         }
         capture.state = InputPayload { reference, bytes };
-        capture.key.profile = Id::new(HOST_PUBLIC_CLOCK_CONTINUATION_PROFILE)
-            .map_err(|error| failure(&error.to_string()))?;
-        capture.key.schema = host_public_clock_continuation_schema()?;
+        capture.key.profile = Id::new(if epochs {
+            HOST_PUBLIC_CLOCK_EPOCH_CONTINUATION_PROFILE
+        } else {
+            HOST_PUBLIC_CLOCK_CONTINUATION_PROFILE
+        })
+        .map_err(|error| failure(&error.to_string()))?;
+        capture.key.schema = if epochs {
+            host_public_clock_epoch_continuation_schema()?
+        } else {
+            host_public_clock_continuation_schema()?
+        };
         Ok(capture)
     }
 }
@@ -333,9 +378,15 @@ fn authenticate_clock_preparation(
     maximum: usize,
 ) -> Result<AuthenticatedClockPreparation, OperationFailure> {
     let owner = source.owner();
+    let epochs = owner.key.profile.as_str() == HOST_PUBLIC_CLOCK_EPOCH_CONTINUATION_PROFILE;
+    let schema = if epochs {
+        host_public_clock_epoch_continuation_schema()?
+    } else {
+        host_public_clock_continuation_schema()?
+    };
     if owner.key.implementation.as_str() != "crucible-host-clock"
-        || owner.key.profile.as_str() != HOST_PUBLIC_CLOCK_CONTINUATION_PROFILE
-        || owner.key.schema != host_public_clock_continuation_schema()?
+        || (!epochs && owner.key.profile.as_str() != HOST_PUBLIC_CLOCK_CONTINUATION_PROFILE)
+        || owner.key.schema != schema
         || owner.participants.as_slice() != std::slice::from_ref(node)
         || !owner.artifacts.is_empty()
     {
@@ -382,7 +433,7 @@ fn authenticate_clock_preparation(
     for depth in 0..64 {
         let wire: Wire = decode_public_json(&current.bytes, maximum)?;
         if wire.format != "crucible.host.public-clock-continuation"
-            || wire.schema_version != 1
+            || wire.schema_version != if epochs { 2 } else { 1 }
             || &wire.node != node
         {
             return Err(failure(

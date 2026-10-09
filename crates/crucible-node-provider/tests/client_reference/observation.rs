@@ -5,6 +5,12 @@
 
 use super::*;
 
+#[path = "resend.rs"]
+mod resend;
+
+#[path = "lifecycle_resend.rs"]
+mod lifecycle_resend;
+
 fn observed_controller(
     maximum_requests: usize,
 ) -> (

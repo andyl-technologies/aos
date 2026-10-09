@@ -15,6 +15,8 @@ pub(crate) mod extensions;
 mod storage;
 mod typed_index;
 
+pub(super) use capture::source_epoch_evidence;
+
 #[cfg(test)]
 mod tests;
 
@@ -119,6 +121,25 @@ impl AuthenticatedNativeSource<'_> {
 /// complete native ledgers and every image/resource dependency. Source image
 /// certificates never qualify a fresh live peer or grant execution authority.
 pub trait NativeWorldFactory {
+    /// Authenticates the selected original-epoch codec before native effects or allocation.
+    ///
+    /// Legacy factory policies remain unsupported for scheduler edition two.
+    /// Original object references are preservation data, never a native capability.
+    ///
+    /// # Errors
+    /// Refuses unsupported source policy, changed body inventory or native ancestry.
+    fn authenticate_scheduling_epochs(
+        &self,
+        _graph: &AdmittedGraph,
+        _runtime: &RuntimeSnapshot,
+        _scheduler: &crate::node_scheduling::SchedulingSnapshot,
+        _epochs: &crate::node_scheduling::SchedulingEpochEvidence,
+    ) -> Result<(), StateError> {
+        Err(refused(
+            "installed factory has no selected scheduling epoch codec",
+        ))
+    }
+
     /// Resolves installed support for the exact selected native semantic closure.
     ///
     /// Missing support preserves refusal before native capture or allocation.

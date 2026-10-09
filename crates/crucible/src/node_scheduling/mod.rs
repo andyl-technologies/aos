@@ -6,6 +6,7 @@
 //! and publication adapters must qualify before connected nodes can advance:
 //! this module never substitutes an empty queue for that missing evidence.
 
+mod epoch;
 mod error;
 pub mod event;
 mod grant;
@@ -15,6 +16,7 @@ mod policy;
 mod scheduler;
 mod snapshot;
 
+pub use epoch::*;
 pub use error::*;
 pub use grant::*;
 pub use input::*;

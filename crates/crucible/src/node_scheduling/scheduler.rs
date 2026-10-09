@@ -103,6 +103,7 @@ pub struct CausalScheduler {
     payloads: BTreeMap<crucible_node_contract::ContentRef, Vec<u8>>,
     maximum_pending_payload_bytes: U64,
     maximum_microsteps: U64,
+    restored_epochs: Option<super::SchedulingEpochEvidence>,
 }
 
 #[path = "terminal.rs"]
@@ -327,6 +328,7 @@ impl CausalScheduler {
             payloads: BTreeMap::new(),
             maximum_pending_payload_bytes,
             maximum_microsteps: graph.coordinator_policy().maximum_microsteps_per_instant,
+            restored_epochs: None,
         };
         for connection in &graph.world().connections {
             let policy = graph
@@ -1053,3 +1055,6 @@ mod inputs_impl;
 
 #[path = "preflight_impl.rs"]
 mod preflight;
+
+#[path = "epoch_impl.rs"]
+mod epoch_impl;

@@ -15,8 +15,10 @@ use std::{
 use crucible::{
     node_admission::AdmittedGraph,
     node_contract::{
-        BeginResult, NodeRuntime, OperationOutcome, OperationToken, SavedRuntimeResult,
+        ActivationRecord, BeginResult, NodeRuntime, OperationOutcome, OperationToken,
+        SavedRuntimeResult,
     },
+    node_dispatch::DispatchRound,
     node_state::{
         NativeArchive, NativeArchiveLimits, NativeArchiveRecord, NativeWorldRestoreDriver,
         PublicationKnowledge, RestorePublication, RestoredWorld, StateLimits, StateRequirements,
@@ -446,7 +448,22 @@ fn public_preparation_pending_native_survives_source_death_in_two_complete_world
     cold_world_witness("x86_64", false, true);
 }
 
+#[test]
+#[ignore = "requires the genuine installed public catalog, planner and cold native images"]
+fn ordinary_planner_clock_ack_and_pending_native_survive_two_fresh_worlds() {
+    cold_world_witness_with_planner("x86_64", false, true, true);
+}
+
 fn cold_world_witness(isa: &str, held_publication: bool, public: bool) {
+    cold_world_witness_with_planner(isa, held_publication, public, false);
+}
+
+fn cold_world_witness_with_planner(
+    isa: &str,
+    held_publication: bool,
+    public: bool,
+    ordinary_planner: bool,
+) {
     // Failed native callbacks keep their original backing tree until the owning
     // supervisor proves reclamation. A temporary-directory Drop cannot decide
     // when live images and process-private files are safe to unlink.
@@ -489,8 +506,14 @@ fn cold_world_witness(isa: &str, held_publication: bool, public: bool) {
                 super::super::InstalledNodeSelection {
                     node: id("cpu"),
                     owner: id("owner/cpu"),
-                    kind: super::super::InstalledNodeKind::Gem5ClosedPreserving {
-                        isa: super::control::InstalledGem5Isa::X86_64,
+                    kind: if ordinary_planner {
+                        super::super::InstalledNodeKind::Gem5ClosedEpochPreserving {
+                            isa: super::control::InstalledGem5Isa::X86_64,
+                        }
+                    } else {
+                        super::super::InstalledNodeKind::Gem5ClosedPreserving {
+                            isa: super::control::InstalledGem5Isa::X86_64,
+                        }
                     },
                 },
             ];
@@ -557,15 +580,50 @@ fn cold_world_witness(isa: &str, held_publication: bool, public: bool) {
             .accept_boundary_observation(observation)
             .unwrap();
     }
-    let admission = runtime
-        .scheduler(&graph, &activation)
-        .unwrap()
-        .admit_exact(
-            &id("cpu"),
-            id("original/cpu-grant"),
-            U64::new(1_000_000_000),
-        )
-        .unwrap();
+    let (admission, cut) = if ordinary_planner {
+        let clock = plan_original_grant(
+            &mut runtime,
+            &graph,
+            &activation,
+            "clock",
+            "original/clock-grant",
+            10,
+        );
+        let mut round = DispatchRound::start(&mut runtime, vec![clock], 1).unwrap();
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            round.poll(&mut runtime, &mut context),
+            Poll::Ready(Ok(()))
+        ));
+        let publication = round.publish(&mut runtime).unwrap();
+        assert_eq!(publication.operations, vec![id("original/clock-grant")]);
+        let cut = runtime
+            .scheduler(&graph, &activation)
+            .unwrap()
+            .position(&id("clock"))
+            .unwrap();
+        assert_eq!(cut.time_ps, U64::new(10));
+        let cpu = plan_original_grant(
+            &mut runtime,
+            &graph,
+            &activation,
+            "cpu",
+            "original/cpu-grant",
+            1_000_000_000,
+        );
+        (cpu, cut)
+    } else {
+        let admission = runtime
+            .scheduler(&graph, &activation)
+            .unwrap()
+            .admit_exact(
+                &id("cpu"),
+                id("original/cpu-grant"),
+                U64::new(1_000_000_000),
+            )
+            .unwrap();
+        (admission, source_target.boundary)
+    };
     let BeginResult::Accepted(original) = runtime.begin_admitted(admission).unwrap() else {
         panic!("actual native grant was refused");
     };
@@ -585,52 +643,75 @@ fn cold_world_witness(isa: &str, held_publication: bool, public: bool) {
             8
         );
     }
-    let cut = source_target.boundary;
     let ordinal = U64::new(17);
     let before = runtime
         .runtime_snapshot(cut, ordinal, 16 * 1024 * 1024)
         .unwrap();
-    assert_eq!(before.operations.len(), 1);
-    assert_eq!(before.operations[0].operation, *original.operation());
-    assert!(before.operations[0].scheduling_commit.is_none());
+    assert_eq!(
+        before.operations.len(),
+        if ordinary_planner { 2 } else { 1 }
+    );
+    assert!(before.inputs.is_empty());
+    let original_cpu = before
+        .operations
+        .iter()
+        .find(|operation| operation.route.node == id("cpu"))
+        .unwrap();
+    assert_eq!(original_cpu.operation, *original.operation());
+    assert!(original_cpu.scheduling_commit.is_none());
+    if ordinary_planner {
+        let clock = before
+            .operations
+            .iter()
+            .find(|operation| operation.route.node == id("clock"))
+            .unwrap();
+        assert_eq!(clock.operation, id("original/clock-grant"));
+        assert!(matches!(clock.result, SavedRuntimeResult::Acknowledged(_)));
+        assert!(clock.scheduling_commit.is_some());
+    }
     if held_publication {
         assert!(matches!(
-            before.operations[0].result,
+            original_cpu.result,
             SavedRuntimeResult::Complete(_)
         ));
     } else {
-        assert_eq!(before.operations[0].result, SavedRuntimeResult::Pending);
+        assert_eq!(original_cpu.result, SavedRuntimeResult::Pending);
     }
     let limits = archive_limits();
     let archive_path = directory.join("native-archive");
     let archive = NativeArchive::open(&archive_path, limits).unwrap();
-    let record = archive
-        .capture_world(
+    let capture_world = if ordinary_planner {
+        NativeArchive::capture_world_typed
+    } else {
+        NativeArchive::capture_world
+    };
+    let record = capture_world(
+        &archive,
+        &graph,
+        &mut runtime,
+        &activation,
+        cut,
+        ordinal,
+        id("mixed/original-capture"),
+        requirements(),
+        &factory.immutable(),
+        factory.as_ref(),
+    )
+    .unwrap();
+    if public {
+        let retry = capture_world(
+            &archive,
             &graph,
             &mut runtime,
             &activation,
             cut,
             ordinal,
-            id("mixed/original-capture"),
+            id("mixed/original-capture-retry"),
             requirements(),
             &factory.immutable(),
             factory.as_ref(),
         )
         .unwrap();
-    if public {
-        let retry = archive
-            .capture_world(
-                &graph,
-                &mut runtime,
-                &activation,
-                cut,
-                ordinal,
-                id("mixed/original-capture-retry"),
-                requirements(),
-                &factory.immutable(),
-                factory.as_ref(),
-            )
-            .unwrap();
         assert_eq!(retry.owners(), record.owners());
         // The signed owner state includes the original native capture identity,
         // image hashes and exact role/name roster. A second mechanical capture
@@ -764,9 +845,9 @@ fn cold_world_witness(isa: &str, held_publication: bool, public: bool) {
             .unwrap(),
         native_source
     );
-    let (left_graph, mut left, left_factory) =
+    let (mut left_graph, mut left, mut left_factory, left_namespace) =
         restore(&engine, record.clone(), isa, &blobs, &refs, "left", limits);
-    let (right_graph, mut right, right_factory) =
+    let (right_graph, mut right, right_factory, _right_namespace) =
         restore(&engine, record, isa, &blobs, &refs, "right", limits);
     assert_ne!(
         left.activation().record().owners,
@@ -785,35 +866,88 @@ fn cold_world_witness(isa: &str, held_publication: bool, public: bool) {
     for saved in [&left_snapshot, &right_snapshot] {
         assert_eq!(saved.capture_cut, before.capture_cut);
         assert_eq!(saved.capture_ordinal, before.capture_ordinal);
-        assert_eq!(
-            saved.operations[0].operation,
-            before.operations[0].operation
-        );
-        assert_eq!(saved.operations[0].request, before.operations[0].request);
-        assert_eq!(saved.operations[0].scheduling_commit, None);
+        assert!(saved.inputs.is_empty());
+        let cpu = saved
+            .operations
+            .iter()
+            .find(|operation| operation.route.node == id("cpu"))
+            .unwrap();
+        assert_eq!(cpu.operation, original_cpu.operation);
+        assert_eq!(cpu.request, original_cpu.request);
+        assert_eq!(cpu.scheduling_commit, None);
+        if ordinary_planner {
+            let original = before
+                .operations
+                .iter()
+                .find(|operation| operation.route.node == id("clock"))
+                .unwrap();
+            let fresh = saved
+                .operations
+                .iter()
+                .find(|operation| operation.route.node == id("clock"))
+                .unwrap();
+            assert_eq!(fresh.operation, original.operation);
+            assert_eq!(fresh.request, original.request);
+            assert_eq!(fresh.scheduling_commit, original.scheduling_commit);
+            let SavedRuntimeResult::Acknowledged(mut outcome) = fresh.result.clone() else {
+                panic!("original Clock acknowledgement was lost");
+            };
+            assert_eq!(outcome.owners, fresh.route.owners);
+            if let Some(observation) = &mut outcome.scheduling {
+                assert_eq!(observation.owners, fresh.route.owners);
+                observation.owners = original.route.owners.clone();
+            }
+            outcome.owners = original.route.owners.clone();
+            assert_eq!(SavedRuntimeResult::Acknowledged(outcome), original.result);
+        }
     }
-    let left_activation = left.activation().clone();
+    let mut left_activation = left.activation().clone();
     let right_activation = right.activation().clone();
     if public {
         // A current fresh preparation can become a later signed source while
         // retaining the prior original Ready and coordinator bodies unchanged.
-        let recaptured = archive
-            .capture_world(
-                &left_graph,
-                left.runtime_mut(),
-                &left_activation,
-                cut,
-                ordinal,
-                id("mixed/restored-capture"),
-                requirements(),
-                &left_factory.immutable(),
-                left_factory.as_ref(),
-            )
-            .unwrap();
+        let recaptured = capture_world(
+            &archive,
+            &left_graph,
+            left.runtime_mut(),
+            &left_activation,
+            cut,
+            ordinal,
+            id("mixed/restored-capture"),
+            requirements(),
+            &left_factory.immutable(),
+            left_factory.as_ref(),
+        )
+        .unwrap();
         recaptured
             .admit(&left_graph, requirements(), left_factory.as_ref())
             .unwrap();
         assert_eq!(recaptured.runtime_snapshot().unwrap(), left_snapshot);
+        if ordinary_planner {
+            let scheduler = recaptured.scheduling_snapshot().unwrap();
+            assert_eq!(scheduler.schema_version, 2);
+            assert_eq!(
+                scheduler.source_generation,
+                left_activation.record().generation
+            );
+            assert_eq!(scheduler.source_boundary, left_activation.record().boundary);
+            let epochs = scheduler.original_epochs.as_ref().unwrap();
+            assert_eq!(epochs.len(), 1);
+            assert_eq!(
+                epochs[0].source_generation,
+                before.source_activation.generation
+            );
+            assert_eq!(
+                epochs[0].reservations[0].reservation.operation,
+                id("original/cpu-grant")
+            );
+            assert_eq!(
+                epochs[0].reservations[0].position.position.time_ps,
+                U64::new(0)
+            );
+            assert_eq!(scheduler.source_boundary.time_ps, U64::new(10));
+        }
+
         for owner in recaptured.owners() {
             let bytes = recaptured
                 .object_bytes(&owner.state, 16 * 1024 * 1024)
@@ -826,6 +960,73 @@ fn cold_world_witness(isa: &str, held_publication: bool, public: bool) {
                 .unwrap();
             let original: serde_json::Value = serde_json::from_slice(&original).unwrap();
             assert!(original["previous"].is_null());
+        }
+        if ordinary_planner {
+            let original_epochs = recaptured
+                .scheduling_snapshot()
+                .unwrap()
+                .original_epochs
+                .unwrap();
+            let retired_activation = left_activation.record().clone();
+            drop(left);
+            drop(left_factory);
+            drop(left_graph);
+            reclaim_world(&engine, &retired_activation);
+            std::fs::remove_dir_all(&left_namespace).unwrap();
+            assert!(!left_namespace.exists());
+            let (graph, restored, factory, _namespace) =
+                restore(&engine, recaptured, isa, &blobs, &refs, "third", limits);
+            left_graph = graph;
+            left = restored;
+            left_factory = factory;
+            left_activation = left.activation().clone();
+            assert_eq!(
+                left_activation.record().generation,
+                retired_activation
+                    .generation
+                    .checked_add(U64::new(1))
+                    .unwrap()
+            );
+            let third_capture = capture_world(
+                &archive,
+                &left_graph,
+                left.runtime_mut(),
+                &left_activation,
+                cut,
+                ordinal,
+                id("mixed/third-capture"),
+                requirements(),
+                &left_factory.immutable(),
+                left_factory.as_ref(),
+            )
+            .unwrap();
+            third_capture
+                .admit(&left_graph, requirements(), left_factory.as_ref())
+                .unwrap();
+            let third_scheduler = third_capture.scheduling_snapshot().unwrap();
+            assert_eq!(
+                third_scheduler.original_epochs.as_ref(),
+                Some(&original_epochs)
+            );
+            assert_eq!(
+                third_scheduler.source_generation,
+                left_activation.record().generation
+            );
+            assert_eq!(third_scheduler.source_boundary, cut);
+            assert_eq!(
+                third_scheduler.reservations[0].operation,
+                id("original/cpu-grant")
+            );
+            assert_eq!(
+                third_scheduler
+                    .positions
+                    .iter()
+                    .find(|position| position.owner == id("owner/cpu"))
+                    .unwrap()
+                    .position
+                    .time_ps,
+                U64::new(0)
+            );
         }
     }
     let left_original = left
@@ -882,6 +1083,40 @@ fn cold_world_witness(isa: &str, held_publication: bool, public: bool) {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+fn plan_original_grant(
+    runtime: &mut NodeRuntime,
+    graph: &AdmittedGraph,
+    activation: &crucible::node_contract::WorldActivation,
+    node: &str,
+    operation: &str,
+    horizon: u64,
+) -> crucible::node_scheduling::ExecutionAdmission {
+    let mut input_records = Vec::new();
+    let planned: Result<_, crate::node_control::NodeControlError> =
+        crate::node_execution::plan_exact_operation(
+            runtime,
+            crate::node_execution::ExactOperationRequest {
+                graph,
+                activation,
+                node: &id(node),
+                horizon: U64::new(horizon),
+                names: crate::node_execution::ExactOperationNames {
+                    operation: id(operation),
+                    stage: id(&format!("{operation}/stage")),
+                    batch: id(&format!("{operation}/batch")),
+                },
+            },
+            |record| {
+                input_records.push(record);
+                Ok(())
+            },
+        );
+    // These installed nodes have no ingress lanes. The actual ordinary planner
+    // therefore creates no staging cut or invented zero-port input history.
+    assert!(input_records.is_empty());
+    planned.unwrap().unwrap()
+}
+
 fn restore(
     engine: &InstalledMixedEngine,
     record: NativeArchiveRecord,
@@ -894,9 +1129,11 @@ fn restore(
     Rc<AdmittedGraph>,
     Box<RestoredWorld>,
     Rc<MixedNativeFactory>,
+    std::path::PathBuf,
 ) {
     let plan = engine.prepare_cold(record.clone(), isa).unwrap();
     let public = plan.profile.public_continuation;
+    let namespace = plan.namespace.clone();
     let graph = plan.graph.clone();
     let target = plan.target.clone();
     let factory = Rc::new(MixedNativeFactory::for_cold(plan, engine.native.clone()));
@@ -938,7 +1175,7 @@ fn restore(
         .native
         .record_publication(&target, PublicationKnowledge::Committed)
         .unwrap();
-    (graph, restored, factory)
+    (graph, restored, factory, namespace)
 }
 
 fn finish_poll(runtime: &mut NodeRuntime, token: &OperationToken) -> OperationOutcome {
@@ -971,6 +1208,27 @@ fn expected_checksum() -> [u8; 8] {
     }
 
     answer.to_le_bytes()
+}
+
+fn reclaim_world(engine: &InstalledMixedEngine, activation: &ActivationRecord) {
+    let mut context = Context::from_waker(Waker::noop());
+    for _ in 0..6000 {
+        if let Poll::Ready(Err(error)) = engine.runtime.poll_reclamation(&mut context) {
+            panic!("{error}");
+        }
+        if engine.native.original_group_reclaimed(activation).unwrap() {
+            let mut reclaimed = engine.native.take_reclaimed().unwrap();
+            let original = reclaimed
+                .iter_mut()
+                .find(|original| &original.scope.activation == activation)
+                .unwrap();
+            assert!(original.custody.child.try_wait().unwrap().is_some());
+            original.evidence.verify(&original.bytes).unwrap();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("original source epoch namespace still owns native groups");
 }
 
 fn reclaim(engine: &InstalledMixedEngine) {

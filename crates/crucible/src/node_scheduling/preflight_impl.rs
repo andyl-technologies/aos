@@ -44,6 +44,7 @@ impl CausalScheduler {
             payloads: self.payloads.clone(),
             maximum_pending_payload_bytes: self.maximum_pending_payload_bytes,
             maximum_microsteps: self.maximum_microsteps,
+            restored_epochs: self.restored_epochs.clone(),
         };
         for receipt in receipts {
             let copied = SchedulingReceipt::new(

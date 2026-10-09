@@ -17,6 +17,7 @@ pub struct PreparedSchedulingRestore {
     target: ActivationRecord,
     snapshot: SchedulingSnapshot,
     input_acknowledgements: Vec<crate::node_scheduling::NativeInputAcknowledgement>,
+    epochs: Option<super::super::SchedulingEpochEvidence>,
 }
 
 impl PreparedSchedulingRestore {
@@ -32,10 +33,7 @@ impl PreparedSchedulingRestore {
         verified: &crate::node_contract::VerifiedNativeContinuation,
     ) -> Result<Self, SchedulingError> {
         validate_snapshot(graph, target, &snapshot)?;
-        let source_hash = crucible_node_contract::canonical::json_hash(
-            "cnp.scheduler-continuation.v1",
-            &snapshot,
-        )?;
+        let source_hash = snapshot.continuation_hash()?;
         if verified.target_activation() != target
             || verified.source_scheduler_hash() != &source_hash
         {
@@ -90,6 +88,7 @@ impl PreparedSchedulingRestore {
             target: target.clone(),
             snapshot,
             input_acknowledgements: acknowledgements.to_vec(),
+            epochs: verified.restored_scheduling_epochs().cloned(),
         })
     }
 
@@ -107,6 +106,7 @@ impl PreparedSchedulingRestore {
         }
         let mut scheduler = CausalScheduler::new(graph, activation.clone())?;
         scheduler.load_snapshot(self.snapshot)?;
+        scheduler.restored_epochs = self.epochs;
         for state in scheduler.input_batches.values_mut() {
             if state.acknowledgement.is_some() {
                 state.acknowledgement = Some(
@@ -182,8 +182,10 @@ impl CausalScheduler {
                 input_batch: reservation.input_batch.clone(),
             });
         }
+        let original_epochs = self.retained_epoch_rows(&reservations)?;
         Ok(SchedulingSnapshot {
-            schema_version: 1,
+            schema_version: if original_epochs.is_some() { 2 } else { 1 },
+            original_epochs,
             ordering_profile: "superdense-v1".into(),
             world_binding_hash: record.world_binding_hash.clone(),
             source_activation_id: record.activation_id.clone(),
