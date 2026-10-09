@@ -2479,9 +2479,30 @@ new graft fixture: a vector moves into the entry while the resolved target
 still borrows it. Source checks pass before and after the failed command;
 all thirty retained artifact hashes match. Stages 2 through 39 remain unrun.
 Reviewed test-only correction `1209048a33` clones that vector for the entry,
-retaining the target's borrow and every original assertion. Compilation and
-runtime on corrected source remain pending; the failed original is not retried
-and no earlier runtime passes transfer.
+retaining the target's borrow and every original assertion. Distinct combined
+candidate `c789c2b665` proceeds beyond that borrow error, then its first strict
+Core check exits 101 with eleven test-only `unwrap_used` diagnostics and one
+`explicit_auto_deref` diagnostic. Source checks and all thirty-two retained
+artifact hashes pass; stages 2 through 39 remain unrun. A scoped fixture
+correction must use the existing test allowance for meaningful `expect`
+messages and ordinary field coercion without weakening workspace lints.
+Runtime remains pending; neither failed original is retried and no earlier
+runtime passes transfer.
+Worker corrections replace the test unwraps with meaningful `expect` messages,
+remove redundant dereferences and explicitly locate the path-mounted native
+test child. Strict Core and native checks pass on that revision. The first
+pure refusal witness then exposes an incorrect fixture permission: bit two
+is Fork, whereas PROP-16 compares Commit and Admin. Corrected fixtures use
+the registered Commit bit four, retaining every refusal and preservation
+assertion. Both exact Core witnesses pass with exit zero after compiled
+discovery verifies their nonignored names and retained executable identity.
+Native discovery then exits 101: the compiler reports that
+`CommitContext::property_selection` is absent, although it exists in the
+current dependency source and the earlier native Clippy invocation passed.
+Native runtime and final-source strict reruns remain unrun. Dependency
+artifact reuse is a hypothesis requiring direct evidence, not an established
+cause. No cache or timestamp adjustment has occurred, and the original
+compiler failure remains preserved.
 No task checkbox or milestone status advances.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
