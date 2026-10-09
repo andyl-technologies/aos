@@ -37,6 +37,7 @@ mod object;
 mod object_profile;
 mod objective;
 mod observation;
+pub mod observed_node_attempt;
 mod planner_service;
 mod policy;
 mod repository;
