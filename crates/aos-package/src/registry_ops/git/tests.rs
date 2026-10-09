@@ -133,10 +133,7 @@ fn commit_registry_paths_allows_semantically_empty_rfc0001_tables_without_proven
          \n\
          [versions.platforms.x86_64-linux.permissions]\n\
          capabilities = []\n\
-         cgroup-delegate = false\n\
-         \n\
-         [versions.platforms.x86_64-linux.bpf_lsm]\n\
-         policies = []\n",
+         cgroup-delegate = false\n",
     )
     .unwrap();
 

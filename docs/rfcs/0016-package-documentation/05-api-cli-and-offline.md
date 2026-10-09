@@ -2,15 +2,17 @@
 
 ## One resource model
 
-The documentation object model is richer than any individual API response.
-`aos-hub-core` defines bounded view resources that the Connect API, public HTTP
-JSON, server-rendered Web pages, CLI, and LSP adapters share:
+`aos-doc-model` defines one bounded `aos.package-reference/v1` signed object
+that Connect, CLI, and LSP share. It retains package metadata and the exact
+checked `PackageAbilityReference`. Readers derive option and exported-method
+views directly from that reference.
+
+`aos-hub-core` also defines bounded view resources for browsing and search:
 
 - `DocumentationArtifactRef`;
 - `PackageDocumentationSummary`;
 - `PackageDocumentation`;
 - `OptionSummary` and `OptionDocument`;
-- `RuntimeSurfaceDocument`;
 - `DocumentationSearchHit`;
 - `DocumentationComparison`;
 - `DocumentationSourceIdentity`.
@@ -37,6 +39,7 @@ ListPackageOptions
 GetOption
 ComparePackageDocumentation
 GetDocumentationArtifact
+GetPackageDocumentationSchema
 ```
 
 Requests select exact versions/platforms or a named release/channel that the
@@ -47,6 +50,11 @@ and page size. A cursor from a different query or generation fails cleanly.
 `GetDocumentationArtifact` returns the verified canonical JSON bytes or a
 bounded streamed response plus identity metadata. It does not expose an
 unverified cache object merely because a caller knows a store hash.
+
+`GetPackageDocumentationSchema` selects an exact package/version/platform,
+loads its package reference at that registry commit, and returns those exact
+canonical bytes. A compatibility ability endpoint derives its response from
+the nested checked reference and never joins a second catalog.
 
 The Connect service is the authenticated and administrative API. Normal Hub
 resource-access policy applies to private registries, internal options, source
@@ -67,7 +75,7 @@ GET /{registry}/-/api/v1/documentation/{document-sha256}
 ```
 
 Common parameters include `q`, `kind`, `package`, `version`, `platform`,
-`release`, `channel`, `owner`, `type`, `contributable`, `page_size`, and
+`release`, `channel`, `owner`, `type`, `extensible`, `page_size`, and
 `page_token`. Path encoding is defined over the structured option path, not an
 ambiguous dot-separated string.
 
@@ -93,7 +101,7 @@ registries:
 ```text
 apm docs nginx
 apm docs nginx --version 1.30.4 --platform x86_64-linux
-apm docs nginx --section services
+apm docs nginx --section abilities
 apm docs nginx --format terminal|man|json
 
 apm options search 'tls certificate'
@@ -101,7 +109,7 @@ apm options search --installed --type opaque-reference
 apm options show nginx.virtualHosts.<name>.listenPort
 apm options compare nginx --from 1.28.0 --to 1.30.4
 
-apm schema nginx --format aos-json
+apm schema nginx
 apm schema --installed --format aos-json
 apm schema --desired ./desired.nix --format aos-json
 
@@ -123,8 +131,10 @@ rather than duplicating the complete renderer.
 
 All commands support existing AOS output conventions where meaningful: human
 terminal, table, `--json`, JSON Lines for streams, `--quiet`, and stable exit
-codes. JSON returns the shared resource/schema model, not terminal formatting
-internals.
+codes. `apm schema <package>` returns the exact same signed package reference
+as Hub and the LSP custom schema request. JSON returns the shared
+resource/schema model, not terminal formatting internals or a reconstructed
+option catalog.
 
 ## Hub CLI commands
 
@@ -205,7 +215,7 @@ in the runtime closure.
 The conventional views are:
 
 ```text
-apm-nginx(5)       package configuration and runtime surface
+apm-nginx(5)       package configuration and ability reference
 aos-options(5)     option language, ownership, contribution, and references
 ```
 
@@ -229,7 +239,7 @@ evaluation, and does not require Hub.
 Remote listening requires an explicit non-loopback address plus the ordinary
 AOS service/auth policy; the convenience command does not silently expose local
 package inventory. `apm docs --open` can start the loopback server and print or
-open its URL. The local UI retains package/configure/services/integrity views and
+open its URL. The local UI retains package/configure/abilities/integrity views and
 searches the bounded local corpus.
 
 ## Cache and sync controls

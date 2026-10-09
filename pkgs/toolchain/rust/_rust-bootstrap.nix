@@ -21,11 +21,22 @@
   changeId,
   prevRust,
   llvm,
+  platformSupport,
   needsDownloadRustc ? false,
   useBootstrapToml ? false,
   disableLld ? false,
   disableDarwinLld ? disableLld,
+  qualification ? null,
 }: let
+  # Compiler launchers are noninteractive and use the completed build shell.
+  compilerBash = stdenv.bash;
+  mkRustDerivation = attrs:
+    mkDerivation (attrs
+      // (
+        if qualification == null
+        then {}
+        else {inherit qualification;}
+      ));
   configFileName =
     if useBootstrapToml
     then "bootstrap.toml"
@@ -59,6 +70,8 @@ in
         openssl
         zlib
         needsDownloadRustc
+        qualification
+        platformSupport
         ;
       disableLld = disableDarwinLld;
       nativeRust = buildPackages.${prevRust.pname};
@@ -72,7 +85,7 @@ in
   else if stdenv.isCross && stdenv.hostPlatform.isLinux
   then
     import ./_rust-linux-hosted.nix {
-      inherit mkDerivation pname version src changeId configFileName;
+      inherit mkDerivation pname version src changeId configFileName qualification platformSupport;
       inherit buildPackages stdenv curl openssl zlib needsDownloadRustc disableLld;
       nativeRust = buildPackages.${prevRust.pname};
       nativeLlvm = buildPackages.${"llvm-${llvmMajor}"};
@@ -80,8 +93,8 @@ in
       description = "Rust ${version} — bootstrap chain intermediate";
     }
   else
-    mkDerivation {
-      inherit pname version src;
+    mkRustDerivation {
+      inherit pname version src platformSupport;
 
       buildDeps = [
         gnumake
@@ -89,7 +102,7 @@ in
         ninja
         pkg-config
         python3
-        bash
+        compilerBash
         which
         prevRust
         llvm
@@ -128,7 +141,7 @@ in
             # Must return exit 1 for unknown commands (especially rev-parse),
             # otherwise bootstrap tries canonicalize("") and panics.
             mkdir -p .fake-bin
-            printf '#!${bash}/bin/bash\nexit 1\n' > .fake-bin/git
+            printf '#!${compilerBash}/bin/bash\nexit 1\n' > .fake-bin/git
             chmod +x .fake-bin/git
             export PATH="$PWD/.fake-bin:$PATH"
 
@@ -258,7 +271,7 @@ in
                         if head -c4 "$f" | grep -q "ELF"; then
                           mv "$f" "$f.unwrapped"
                           cat > "$f" <<WRAP
-            #!${bash}/bin/bash
+            #!${compilerBash}/bin/bash
             export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
             exec "$f.unwrapped" "\$@"
             WRAP

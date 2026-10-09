@@ -1977,6 +1977,20 @@
          "service" : "DocumentationService"
       },
       {
+         "method" : "GetPackageAbilityReference",
+         "path" : "aos.hub.v1.DocumentationService/GetPackageAbilityReference",
+         "request" : "GetPackageAbilityReferenceRequest",
+         "response" : "GetPackageAbilityReferenceResponse",
+         "service" : "DocumentationService"
+      },
+      {
+         "method" : "GetReleaseAbilityGraph",
+         "path" : "aos.hub.v1.DocumentationService/GetReleaseAbilityGraph",
+         "request" : "GetReleaseAbilityGraphRequest",
+         "response" : "GetReleaseAbilityGraphResponse",
+         "service" : "DocumentationService"
+      },
+      {
          "method" : "SearchPackageDocumentation",
          "path" : "aos.hub.v1.DocumentationService/SearchPackageDocumentation",
          "request" : "SearchPackageDocumentationRequest",
@@ -2017,6 +2031,34 @@
          "request" : "GetPackageDocumentationSchemaRequest",
          "response" : "GetPackageDocumentationSchemaResponse",
          "service" : "DocumentationService"
+      },
+      {
+         "method" : "PlanConfigureReporter",
+         "path" : "aos.hub.v1.AbilityDeploymentService/PlanConfigureReporter",
+         "request" : "PlanConfigureAbilityDeploymentReporterRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "AbilityDeploymentService"
+      },
+      {
+         "method" : "ConfigureReporter",
+         "path" : "aos.hub.v1.AbilityDeploymentService/ConfigureReporter",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "AbilityDeploymentReporter",
+         "service" : "AbilityDeploymentService"
+      },
+      {
+         "method" : "ReportPackageOverlay",
+         "path" : "aos.hub.v1.AbilityDeploymentService/ReportPackageOverlay",
+         "request" : "ReportPackageAbilityDeploymentRequest",
+         "response" : "PackageAbilityDeploymentResponse",
+         "service" : "AbilityDeploymentService"
+      },
+      {
+         "method" : "GetPackageOverlay",
+         "path" : "aos.hub.v1.AbilityDeploymentService/GetPackageOverlay",
+         "request" : "GetPackageAbilityDeploymentRequest",
+         "response" : "PackageAbilityDeploymentResponse",
+         "service" : "AbilityDeploymentService"
       },
       {
          "method" : "ListChannels",
@@ -3118,7 +3160,7 @@
    },
    "protobuf_package" : "aos.hub.v1",
    "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 334,
+   "rpc_count" : 339,
    "services" : [
       "RegistryService",
       "OrganizationService",
@@ -3136,6 +3178,7 @@
       "RegistryConfigurationService",
       "PackageService",
       "DocumentationService",
+      "AbilityDeploymentService",
       "ChannelService",
       "ImageService",
       "ContainerService",

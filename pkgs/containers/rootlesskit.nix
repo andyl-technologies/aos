@@ -1,5 +1,6 @@
 ##! rootlesskit — User namespaces for rootless container engines
 {
+  lib,
   mkGoPackage,
   fetchGoModules,
   fetchurl,
@@ -15,8 +16,66 @@
   };
 in
   mkGoPackage {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "rootlesskit";
-    inherit version src goModules;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "RootlessKit accepts the request and documents its namespace and network controls.";
+        "files" = {};
+        "input" = "The rootless container launcher command-line contract.";
+        "operation" = "Render the launcher's help without creating a user namespace.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/rootlesskit\", \"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"--copy-up\" in result.stdout and \"--net\" in result.stdout\nprint(\"rootlesskit operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "rootlesskit operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "RootlessKit rejects the unknown network backend.";
+        "files" = {};
+        "input" = "An unsupported rootless network backend.";
+        "operation" = "Validate the requested network mode before namespace creation.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport subprocess\nresult = subprocess.run([\"@out@/bin/rootlesskit\", \"--net\", \"qualification-invalid\", \"true\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"unknown network mode\" in result.stderr\n\nsys.stderr.write(\"rootlesskit rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "rootlesskit rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
+    inherit src goModules;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     goPackage = "./cmd/rootlesskit";
     goOutput = "rootlesskit";
     doCheck = false;

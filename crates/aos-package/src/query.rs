@@ -27,7 +27,7 @@ use super::profile::meta::{list_meta, orphaned_by_registry};
 use super::registry::{Registry, RegistrySet, store_path_hash};
 use super::store;
 use super::sysroot_lock;
-use super::types::{ConfinementMeta, InstalledMeta, PackageMeta, PermissionsMeta, ProfileScope};
+use super::types::{InstalledMeta, NativeArtifactMeta, PackageMeta, ProfileScope};
 use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
@@ -238,7 +238,7 @@ pub async fn show(
         }
 
         if let Some(installed) = find_installed_package(&meta_list, package, Some(filter)) {
-            return show_installed_unavailable(installed, &meta_list, printer).await;
+            return show_installed_unavailable(installed, &meta_list, config.scope, printer).await;
         }
 
         if registries.get_registry(filter).is_none() {
@@ -250,122 +250,9 @@ pub async fn show(
     if let Some((reg, meta)) = registries.resolve(package) {
         show_registry_package(config, reg, meta, &meta_list, printer)
     } else if let Some(installed) = find_installed_package(&meta_list, package, None) {
-        show_installed_unavailable(installed, &meta_list, printer).await
+        show_installed_unavailable(installed, &meta_list, config.scope, printer).await
     } else {
         bail!("package '{package}' not found in any registry")
-    }
-}
-
-/// Displays the signed permission manifest and computed confinement summary.
-///
-/// # Errors
-///
-/// Returns an error under the same resolution conditions as [`show`], or when
-/// serializing the permission manifest fails.
-pub async fn show_package_permissions(
-    config: &ApmConfig,
-    package: &str,
-    registry_filter: Option<&str>,
-    printer: &Printer,
-) -> Result<()> {
-    let registries = load_registries(config)?;
-    let profile = Profile::open_readonly(config.scope);
-    let meta_list = list_meta(&profile)?;
-
-    if let Some(filter) = registry_filter {
-        if let Some(reg) = registries.get_registry(filter) {
-            if let Some(meta) = reg.get(package) {
-                return show_permissions(
-                    &meta.name,
-                    Some(&reg.config.name),
-                    meta.expose.is_some(),
-                    &meta.permissions,
-                    printer,
-                );
-            }
-        }
-
-        if let Some(installed) = find_installed_package(&meta_list, package, Some(filter)) {
-            return show_installed_permissions(installed, printer);
-        }
-
-        if registries.get_registry(filter).is_none() {
-            bail!("registry '{filter}' not found");
-        }
-        bail!("package '{package}' not found in registry '{filter}'");
-    }
-
-    if let Some((reg, meta)) = registries.resolve(package) {
-        show_permissions(
-            &meta.name,
-            Some(&reg.config.name),
-            meta.expose.is_some(),
-            &meta.permissions,
-            printer,
-        )
-    } else if let Some(installed) = find_installed_package(&meta_list, package, None) {
-        show_installed_permissions(installed, printer)
-    } else {
-        bail!("package '{package}' not found in any registry")
-    }
-}
-
-fn show_installed_permissions(installed: &InstalledMeta, printer: &Printer) -> Result<()> {
-    let apm = installed
-        .apm
-        .as_ref()
-        .context("installed metadata is missing APM package state")?;
-    show_permissions(
-        &apm.name,
-        Some(&apm.registry),
-        apm.expose.is_some(),
-        &apm.permissions,
-        printer,
-    )
-}
-
-fn show_permissions(
-    package: &str,
-    registry: Option<&str>,
-    exposed: bool,
-    permissions: &PermissionsMeta,
-    printer: &Printer,
-) -> Result<()> {
-    let confinement = confinement_for_display(exposed, permissions);
-    if printer.mode() == OutputMode::Json {
-        printer.json(&serde_json::json!({
-            "package": package,
-            "registry": registry,
-            "permissions": permissions,
-            "confinement": confinement,
-        }));
-        return Ok(());
-    }
-
-    printer.kv("Package", package);
-    if let Some(registry) = registry {
-        printer.kv("Registry", registry);
-    }
-    if let Some(confinement) = &confinement {
-        printer.kv("Confinement", &confinement.label);
-    }
-    if permissions.is_empty() {
-        printer.kv("Permissions", "(none)");
-    } else {
-        let rendered = serde_json::to_string(permissions).context("serializing permissions")?;
-        printer.kv("Permissions", &rendered);
-    }
-    Ok(())
-}
-
-fn confinement_for_display(
-    exposed: bool,
-    permissions: &PermissionsMeta,
-) -> Option<ConfinementMeta> {
-    if exposed || !permissions.is_empty() {
-        Some(permissions.computed_confinement())
-    } else {
-        None
     }
 }
 
@@ -388,13 +275,23 @@ fn show_registry_package(
         .find(|m| store_path_hash(&m.store_path) == pkg_hash);
 
     let is_installed = installed_meta.is_some();
+    let documentation_hint = meta.module_documentation.as_ref().map(|_| {
+        documentation_hint(
+            &meta.name,
+            config.scope,
+            installed_meta.is_some_and(|installed| {
+                installed
+                    .apm
+                    .as_ref()
+                    .is_some_and(|apm| apm.module_documentation.is_some())
+            }),
+        )
+    });
 
     // Resolve dependency names from references.
     let dep_names = resolve_dependency_names(meta, reg);
 
     let nar_size_str = format_size(meta.nar_size);
-    let confinement = confinement_for_display(meta.expose.is_some(), &meta.permissions);
-
     if printer.mode() == OutputMode::Json {
         let json_obj = serde_json::json!({
             "name": meta.name,
@@ -411,9 +308,10 @@ fn show_registry_package(
             "dependencies": dep_names,
             "source_drv": meta.source_drv,
             "maintainer": meta.maintainer,
-            "expose": meta.expose,
-            "permissions": meta.permissions,
-            "confinement": confinement,
+            "documentation": artifact_availability(meta.module_documentation.as_ref()),
+            "deployment": artifact_availability(meta.deployment.as_ref()),
+            "qualification": artifact_availability(meta.qualification.as_ref()),
+            "documentation_hint": documentation_hint,
         });
         printer.json(&json_obj);
     } else {
@@ -436,32 +334,22 @@ fn show_registry_package(
         }
         printer.kv("Source drv", &meta.source_drv);
         printer.kv("Maintainer", &meta.maintainer);
-        if let Some(expose) = &meta.expose {
-            printer.kv("Expose target", &expose.target);
-            if expose.requires.is_empty() {
-                printer.kv("Expose requires", "(none)");
-            } else {
-                printer.kv("Expose requires", &expose.requires.join(", "));
-            }
-        }
-        if let Some(confinement) = &confinement {
-            printer.kv("Confinement", &confinement.label);
-        }
-        if !meta.permissions.is_empty() {
-            let rendered =
-                serde_json::to_string(&meta.permissions).context("serializing permissions")?;
-            printer.kv("Permissions", &rendered);
-        }
-
+        print_document_authority(
+            printer,
+            meta.module_documentation.as_ref(),
+            meta.deployment.as_ref(),
+            meta.qualification.as_ref(),
+            documentation_hint.as_deref(),
+        );
         // Show sysroot-specific information.
         crate::sysroot::show_sysroot_info(meta, printer);
 
         // Show sysroot-lock violations if installed.
         if is_installed {
             if let Some((sysroot_refs, _sys_name, _sys_version)) =
-                sysroot_lock::get_sysroot_references(config)
+                sysroot_lock::get_sysroot_references(config)?
             {
-                let lookup = sysroot_lock::build_registry_lookup(config);
+                let lookup = sysroot_lock::build_registry_lookup(config)?;
                 let pkg_refs: Vec<String> = meta
                     .references
                     .iter()
@@ -494,6 +382,7 @@ fn show_registry_package(
 async fn show_installed_unavailable(
     installed: &InstalledMeta,
     meta_list: &[InstalledMeta],
+    scope: ProfileScope,
     printer: &Printer,
 ) -> Result<()> {
     let apm = installed
@@ -501,6 +390,10 @@ async fn show_installed_unavailable(
         .as_ref()
         .context("installed metadata is missing APM package state")?;
     let dep_names = installed_dependency_names(installed, meta_list).await?;
+    let documentation_hint = apm
+        .module_documentation
+        .as_ref()
+        .map(|_| documentation_hint(&apm.name, scope, true));
 
     if printer.mode() == OutputMode::Json {
         let json_obj = serde_json::json!({
@@ -519,6 +412,10 @@ async fn show_installed_unavailable(
             "dependencies": dep_names,
             "source_drv": null,
             "maintainer": null,
+            "documentation": artifact_availability(apm.module_documentation.as_ref()),
+            "deployment": artifact_availability(apm.deployment.as_ref()),
+            "qualification": artifact_availability(apm.qualification.as_ref()),
+            "documentation_hint": documentation_hint,
         });
         printer.json(&json_obj);
     } else {
@@ -534,9 +431,71 @@ async fn show_installed_unavailable(
         } else {
             printer.kv("Dependencies", &dep_names.join(", "));
         }
+        print_document_authority(
+            printer,
+            apm.module_documentation.as_ref(),
+            apm.deployment.as_ref(),
+            apm.qualification.as_ref(),
+            documentation_hint.as_deref(),
+        );
     }
 
     Ok(())
+}
+
+fn artifact_availability(metadata: Option<&NativeArtifactMeta>) -> serde_json::Value {
+    metadata.map_or_else(
+        || serde_json::json!({"available": false}),
+        |metadata| {
+            serde_json::json!({
+                "available": true,
+                "store_path": metadata.store_path,
+                "document_sha256": metadata.document_sha256,
+                "nar_hash": metadata.nar_hash,
+            })
+        },
+    )
+}
+
+fn documentation_hint(package: &str, scope: ProfileScope, installed: bool) -> String {
+    let command = match scope {
+        ProfileScope::User => format!("apm docs show {package}"),
+        ProfileScope::System => format!("apm docs show {package} --system"),
+    };
+    if installed {
+        command
+    } else {
+        format!("install the package, then run `{command}`")
+    }
+}
+
+fn print_document_authority(
+    printer: &Printer,
+    documentation: Option<&NativeArtifactMeta>,
+    deployment: Option<&NativeArtifactMeta>,
+    qualification: Option<&NativeArtifactMeta>,
+    hint: Option<&str>,
+) {
+    for (label, artifact) in [
+        ("Documentation", documentation),
+        ("Deployment", deployment),
+        ("Qualification", qualification),
+    ] {
+        printer.kv(
+            label,
+            if artifact.is_some() {
+                "available"
+            } else {
+                "unavailable"
+            },
+        );
+        if let Some(artifact) = artifact {
+            printer.kv(&format!("{label} document"), &artifact.document_sha256);
+        }
+    }
+    if let Some(hint) = hint {
+        printer.kv("Documentation hint", hint);
+    }
 }
 
 /// Dependency display names for an installed package: direct store
@@ -629,9 +588,9 @@ pub async fn list(
     let installed_by_source_map = installed_by_source(&meta_list);
 
     // Pre-load sysroot references and registry lookup for sysroot-lock checks.
-    let sysroot_info_for_lock = sysroot_lock::get_sysroot_references(config);
+    let sysroot_info_for_lock = sysroot_lock::get_sysroot_references(config)?;
     let registry_lookup = if sysroot_info_for_lock.is_some() {
-        sysroot_lock::build_registry_lookup(config)
+        sysroot_lock::build_registry_lookup(config)?
     } else {
         HashMap::new()
     };
@@ -912,7 +871,7 @@ fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let enabled = config.enabled_registries();
     let cache_dir = config.cache_path();
     let platform = native_platform();
-    RegistrySet::load(&cache_dir, &enabled, &platform)
+    RegistrySet::load_for_package_operations(&cache_dir, &enabled, &platform)
 }
 
 /// Names of enabled registries that have never been synced in the current
@@ -1176,25 +1135,12 @@ mod tests {
                 held,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
-                expose: None,
-                expose_artifact: None,
-                config_module: None,
-                documentation: None,
-                permissions: Default::default(),
-                bpf_lsm: None,
+                deployment: None,
+                module_documentation: None,
+                qualification: None,
                 attestation: Default::default(),
             }),
         }
-    }
-
-    #[test]
-    fn confinement_for_display_computes_exposed_default() {
-        let empty = PermissionsMeta::default();
-        let confinement = super::confinement_for_display(true, &empty).unwrap();
-
-        assert_eq!(confinement.class, crate::types::ConfinementClass::Sandboxed);
-        assert_eq!(confinement.label, "sandboxed");
-        assert!(super::confinement_for_display(false, &empty).is_none());
     }
 
     // 1. search_finds_by_name

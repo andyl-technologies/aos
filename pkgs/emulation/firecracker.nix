@@ -8,7 +8,6 @@
   llvm,
   linux-headers,
   cmake,
-  gnumake,
   bootstrapTools,
   glibc,
   stdenv,
@@ -21,6 +20,14 @@
     then buildPackages.llvm
     else llvm;
   buildTargetPrefix = lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.buildPlatform.config);
+
+  # CMake's compiler probes and aws-lc builds use generated Makefiles whose
+  # default shell is /bin/sh. A command-line binding also reaches recursive
+  # make invocations without replacing Cargo's jobserver flags.
+  buildMake = buildPackages.writeShellScriptBin "make" ''
+    exec ${buildPackages.gnumake}/bin/make \
+      SHELL=${buildPackages.bash}/bin/bash "$@"
+  '';
 
   # Firecracker's build script compiles seccomp policies on the build machine.
   # Its seccompiler dependency must link and load native libseccomp while the
@@ -58,7 +65,74 @@
   ];
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "firecracker";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Firecracker returns success and reports its version.";
+        "files" = {};
+        "input" = "The packaged Firecracker monitor's release identity.";
+        "operation" = "Request its version without creating a virtual machine.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/firecracker\", \"--version\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"Firecracker\" in (result.stdout + result.stderr), (result.returncode, result.stdout, result.stderr)\nprint(\"firecracker operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "firecracker operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Firecracker rejects the unsupported option.";
+        "files" = {};
+        "input" = "A Firecracker invocation containing an unknown option.";
+        "operation" = "Parse the invalid option before opening the API socket.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/firecracker\", \"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"firecracker rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "firecracker rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     cargoDeps = fetchCargoDeps {
@@ -77,7 +151,7 @@ in
       # Splicing Linux headers as a build dependency selects native syscall
       # numbers. Cross compilation uses the target sysroot and bindgen flags.
       ++ lib.optionals (!isLinuxCross) [linux-headers]
-      ++ [cmake gnumake]
+      ++ [cmake buildMake]
       ++ lib.optionals isLinuxCross [buildPackages.libseccomp];
 
     cargoEnv = lib.optionalAttrs isLinuxCross {

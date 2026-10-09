@@ -377,12 +377,20 @@ impl LocalStageStore {
             .context("another local stage operation is running")?;
         file.set_len(0)?;
         writeln!(file, "pid={}", std::process::id())?;
-        Ok(StageLock { _file: file })
+        Ok(StageLock { file })
     }
 }
 
 struct StageLock {
-    _file: File,
+    file: File,
+}
+
+impl Drop for StageLock {
+    fn drop(&mut self) {
+        // A concurrently forked child can retain this open-file description
+        // until exec. Release ownership when the stage operation completes.
+        let _ = rustix::fs::flock(&self.file, rustix::fs::FlockOperation::Unlock);
+    }
 }
 
 fn normalized_targets(destinations: &[String]) -> Result<Vec<String>> {

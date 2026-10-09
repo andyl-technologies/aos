@@ -1,7 +1,12 @@
-//! `apm` is the AOS package-consumer command-line tool.
+//! Shared installed entry point for the public `apm` command and the private
+//! package runtime and authenticated boot helper.
 
-/// Runs the `apm` CLI.
+/// Selects the package command surface from the installed entry-point name.
 #[tokio::main]
 async fn main() {
-    aos::entry::apm_main().await;
+    match aos_core::invocation::binary_name().as_str() {
+        "aos-package-runtime" => aos::entry::package_runtime_main().await,
+        "aos-boot-configuration" => aos::entry::boot_configuration_main(),
+        _ => aos::entry::apm_main().await,
+    }
 }

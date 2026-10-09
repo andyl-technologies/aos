@@ -34,6 +34,7 @@
 //!     "readyForVerifiedPublication": true
 //!   },
 //!   "evidence": {
+//!     "abilities": { "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "application/vnd.aos.container.static-abilities.v1+json", "digest": "sha256:...", "size": 640 },
 //!     "sbom": { "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "application/spdx+json", "digest": "sha256:...", "size": 640 },
 //!     "source": { "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "application/vnd.aos.source-closure.v1+json", "digest": "sha256:...", "size": 640 },
 //!     "license": { "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "application/vnd.aos.license-report.v1+json", "digest": "sha256:...", "size": 640 },
@@ -68,10 +69,10 @@ use crate::model::{Descriptor, Platform};
 /// Stable registry-relative location of the first container-release sidecar.
 pub const CONTAINER_RELEASE_SIDECAR_PATH: &str = "containers/v1/index.json";
 
-/// Schema version carried by [`ContainerRelease`].
+/// Schema version carried by signed [`ContainerRelease`] values.
 pub const CONTAINER_RELEASE_SCHEMA_VERSION: u32 = 1;
 
-/// Schema identifier carried by [`ContainerSignatureInput`].
+/// Schema identifier carried by signed [`ContainerSignatureInput`] values.
 pub const CONTAINER_SIGNATURE_INPUT_SCHEMA: &str = "aos.container.signature-input/v1";
 
 /// DSSE payload type used for exact AOS container signature-input bytes.
@@ -107,7 +108,7 @@ pub fn definition_attribute_matches_image(attribute: &str, image: &str) -> bool 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContainerRelease {
-    /// Required AOS sidecar schema version, currently `1`.
+    /// Required AOS sidecar schema version.
     pub schema_version: u32,
     /// Required exact AOS container-release media type.
     pub media_type: MediaType,
@@ -120,6 +121,10 @@ pub struct ContainerRelease {
     /// Full-closure mapping, source, and licensing qualification.
     pub qualification: ContainerEvidenceQualification,
     /// Required source, compliance, provenance, and signature evidence.
+    ///
+    /// Static ability evidence is retained as an opaque OCI descriptor here.
+    /// Launch admission must parse its payload, verify the image binding, and
+    /// discharge every external obligation before granting runtime authority.
     pub evidence: ContainerReleaseEvidence,
 }
 
@@ -491,6 +496,12 @@ fn decode_canonical_base64(value: &str, field: &'static str) -> Result<Vec<u8>> 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContainerSignatureInputEvidence {
+    /// OCI referrer manifest retaining static abilities and launch obligations.
+    ///
+    /// This descriptor is archival evidence. It does not itself grant an
+    /// ability or prove that a launch environment discharged its obligations.
+    #[serde(deserialize_with = "deserialize_strict_descriptor")]
+    pub abilities: Descriptor,
     /// OCI referrer manifest for the SPDX 2.3 JSON SBOM.
     #[serde(deserialize_with = "deserialize_strict_descriptor")]
     pub sbom: Descriptor,
@@ -514,6 +525,11 @@ impl ContainerSignatureInputEvidence {
     /// referrer manifest.
     pub fn validate(&self) -> Result<()> {
         validate_evidence_descriptor(
+            &self.abilities,
+            "container signature input abilities",
+            MediaType::AosContainerStaticAbilities,
+        )?;
+        validate_evidence_descriptor(
             &self.sbom,
             "container signature input SBOM",
             MediaType::SpdxJson,
@@ -536,7 +552,8 @@ impl ContainerSignatureInputEvidence {
     }
 
     fn matches(&self, evidence: &ContainerReleaseEvidence) -> bool {
-        self.sbom == evidence.sbom
+        self.abilities == evidence.abilities
+            && self.sbom == evidence.sbom
             && self.source == evidence.source
             && self.license == evidence.license
             && self.provenance == evidence.provenance
@@ -1032,6 +1049,12 @@ impl NixOutputIdentity {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContainerReleaseEvidence {
+    /// OCI referrer manifest retaining static abilities and launch obligations.
+    ///
+    /// This descriptor is archival evidence. It does not itself grant an
+    /// ability or prove that a launch environment discharged its obligations.
+    #[serde(deserialize_with = "deserialize_strict_descriptor")]
+    pub abilities: Descriptor,
     /// OCI referrer manifest for the SPDX 2.3 JSON software bill of materials.
     #[serde(deserialize_with = "deserialize_strict_descriptor")]
     pub sbom: Descriptor,
@@ -1057,6 +1080,11 @@ impl ContainerReleaseEvidence {
     /// Returns an error unless every field is an OCI referrer-manifest
     /// descriptor whose `artifactType` exactly matches its required role.
     pub fn validate(&self) -> Result<()> {
+        validate_evidence_descriptor(
+            &self.abilities,
+            "container release abilities",
+            MediaType::AosContainerStaticAbilities,
+        )?;
         validate_evidence_descriptor(&self.sbom, "container release SBOM", MediaType::SpdxJson)?;
         validate_evidence_descriptor(
             &self.source,
@@ -1204,7 +1232,7 @@ fn validate_unique_release_descriptors(release: &ContainerRelease) -> Result<()>
         (&release.evidence.provenance, "provenance"),
         (&release.evidence.signature, "signature"),
     ];
-    let mut digests = BTreeSet::new();
+    let mut digests = BTreeSet::from([release.evidence.abilities.digest]);
     for (descriptor, role) in descriptors {
         if !digests.insert(descriptor.digest) {
             return Err(Error::invalid(
@@ -1236,7 +1264,7 @@ fn validate_unique_signature_input_descriptors(input: &ContainerSignatureInput) 
         (&input.evidence.license, "license"),
         (&input.evidence.provenance, "provenance"),
     ];
-    let mut digests = BTreeSet::new();
+    let mut digests = BTreeSet::from([input.evidence.abilities.digest]);
     for (descriptor, role) in descriptors {
         if !digests.insert(descriptor.digest) {
             return Err(Error::invalid(
@@ -1648,6 +1676,7 @@ mod tests {
             },
             qualification: qualification_fixture(),
             evidence: ContainerReleaseEvidence {
+                abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
                 license: evidence_descriptor(MediaType::AosLicenseReport, "license"),
@@ -1665,6 +1694,7 @@ mod tests {
             oci: release.oci,
             nix: release.nix,
             evidence: ContainerSignatureInputEvidence {
+                abilities: release.evidence.abilities,
                 sbom: release.evidence.sbom,
                 source: release.evidence.source,
                 license: release.evidence.license,
@@ -1823,6 +1853,42 @@ mod tests {
                     MediaType::OciImageIndex
                 ),
             })
+        );
+
+        let mut input = signature_input_fixture();
+        input.schema = "aos.container.signature-input/unsupported".to_string();
+        assert!(input.validate().is_err());
+
+        let payload = to_canonical_json(&signature_input_fixture()).expect("signature input");
+        let envelope = ContainerDsseEnvelope {
+            payload_type: "application/vnd.aos.container.signature-input.unsupported+json"
+                .to_string(),
+            payload: base64::engine::general_purpose::STANDARD.encode(payload),
+            signatures: vec![ContainerDsseSignature {
+                keyid: base64::engine::general_purpose::STANDARD.encode(b"ssh-key"),
+                sig: base64::engine::general_purpose::STANDARD.encode(b"armored signature"),
+            }],
+        };
+        assert!(envelope.validate().is_err());
+
+        let mut release = serde_json::to_value(release_fixture()).expect("release JSON");
+        release["evidence"]
+            .as_object_mut()
+            .expect("release evidence")
+            .remove("abilities");
+        assert!(
+            ContainerRelease::from_json(&serde_json::to_vec(&release).expect("release bytes"))
+                .is_err()
+        );
+
+        let mut input = serde_json::to_value(signature_input_fixture()).expect("input JSON");
+        input["evidence"]
+            .as_object_mut()
+            .expect("input evidence")
+            .remove("abilities");
+        assert!(
+            ContainerSignatureInput::from_json(&serde_json::to_vec(&input).expect("input bytes"))
+                .is_err()
         );
     }
 

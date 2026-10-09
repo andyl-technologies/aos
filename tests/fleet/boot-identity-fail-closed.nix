@@ -12,6 +12,22 @@
 }: let
   failClosedSystem = mkSystem [
     ../../systems/server.nix
+    ({
+      lib,
+      initrdAbilityEvaluation ? null,
+      ...
+    }: {
+      options.aos.tests.bootIdentityGraph = lib.mkOption {
+        type = lib.types.raw;
+        internal = true;
+        readOnly = true;
+        description = "Native initrd graph inspected by this image acceptance fixture.";
+      };
+      aos.tests.bootIdentityGraph =
+        if initrdAbilityEvaluation == null
+        then {nodes = {};}
+        else initrdAbilityEvaluation._withoutProvenance initrdAbilityEvaluation.config.aos.activation.graph;
+    })
     {
       # Keep PID1 on its normal target so the identity guard actually runs.
       aos.boot.kernelParams = [
@@ -35,15 +51,28 @@
       };
     }
   ];
-  rootVerify = failClosedSystem.config.boot.initrd.systemd.services."aos-verity-root-verify";
+  nodes = builtins.attrValues failClosedSystem.config.aos.tests.bootIdentityGraph.nodes;
+  service = instance: name: let
+    selected = builtins.filter (node:
+      node.owner
+      == "service-management"
+      && builtins.elem instance node.identity
+      && (node.input.service or null) == name)
+    nodes;
+  in
+    if builtins.length selected == 1
+    then (builtins.head selected).input
+    else throw "The native initrd graph must contain exactly one ${instance}/${name} service.";
+  verification = service "verity-root-verification.aos-verity-root-verify" "aos-verity-root-verify";
+  mountVar = service "boot-preparations.mount-var" "mount-var";
 in
-  assert builtins.elem "aos-boot-identity-guard.service" failClosedSystem.config.boot.initrd.systemd.services."mount-var".requires;
-  assert builtins.elem "aos-verity-root-verify.service" failClosedSystem.config.boot.initrd.systemd.services."mount-var".requires;
-  assert builtins.elem "aos-boot-identity-guard.service" failClosedSystem.config.boot.initrd.systemd.services."systemd-veritysetup@root".requires;
-  assert builtins.elem "aos-boot-identity-guard.service" rootVerify.requires;
-  assert lib.hasInfix "systemctl start systemd-veritysetup@root.service" rootVerify.script;
-  assert builtins.elem "initrd-fs.target" rootVerify.requiredBy;
-  assert rootVerify.unitConfig.OnFailure == "aos-boot-identity-failure.target"; {
+  assert builtins.elem "aos-boot-identity-guard.service" mountVar.dependencies.requires;
+  assert (builtins.head verification.lifecycle.start).executable.path == "${pkgs.aos-verity-root-guard}/bin/aos-verity-root-verify";
+  assert builtins.elem "aos-boot-identity-guard.service" verification.dependencies.requires;
+  assert builtins.elem "mount-var.service" verification.dependencies.required_by;
+  assert builtins.elem "initrd-fs.target" verification.dependencies.required_by;
+  assert verification.failure_policy.handlers == ["aos-boot-integrity-failure.target"];
+  assert verification.failure_policy.dispatch == "isolate-active-goal"; {
     name = "boot-identity-fail-closed";
     timeout = 600;
     bootTimeout = 120;

@@ -1,5 +1,6 @@
 ##! ICU4C — Unicode and globalization support library
 {
+  lib,
   mkDerivation,
   fetchgit,
   gnumake,
@@ -26,7 +27,95 @@
   '';
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "icu";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "ICU returns the two expected Unicode code units.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"icu primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"icu rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <unicode/ustring.h>\nint main(void) {\n    const char input[3] = {'b', (char)0xc3, (char)0xbc}; UChar output[8]; int32_t length = 0;\n    UErrorCode error = U_ZERO_ERROR;\n    u_strFromUTF8(output, 8, &length, input, sizeof(input), &error);\n    return U_SUCCESS(error) && length == 2 && output[0] == 0x62 && output[1] == 0xfc ? pass() : 2;\n}\n\n";
+        };
+        "input" = "The UTF-8 bytes for b followed by u-umlaut.";
+        "operation" = "Convert the bytes into UTF-16 through ICU's u_strFromUTF8 API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-licuuc"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "icu primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "ICU returns U_INVALID_CHAR_FOUND.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"icu primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"icu rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <unicode/ustring.h>\nint main(void) {\n    const char input[1] = {(char)0x80}; UChar output[8]; int32_t length = 0;\n    UErrorCode error = U_ZERO_ERROR;\n    u_strFromUTF8(output, 8, &length, input, sizeof(input), &error);\n    if (error != U_INVALID_CHAR_FOUND) return 2;\n    return reject();\n}\n\n";
+        };
+        "input" = "A single continuation byte that cannot form a UTF-8 character.";
+        "operation" = "Convert the malformed byte through u_strFromUTF8.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-licuuc"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "icu rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     outputs = ["out" "cross"];
 

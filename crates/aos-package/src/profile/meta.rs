@@ -61,15 +61,16 @@ pub fn write_meta(profile: &Profile, hash: &str, meta: &InstalledMeta) -> Result
 ///
 /// Returns an error if an existing file cannot be read or parsed.
 pub fn read_meta(profile: &Profile, hash: &str) -> Result<Option<InstalledMeta>> {
-    let path = profile.path.join("meta").join(format!("{hash}.json"));
+    let path = metadata_directory(profile)?.join(format!("{hash}.json"));
     if !path.exists() {
         return Ok(None);
     }
 
     let data = std::fs::read_to_string(&path)
         .with_context(|| format!("reading metadata file {}", path.display()))?;
-    let meta: InstalledMeta = serde_json::from_str(&data)
+    let mut meta: InstalledMeta = serde_json::from_str(&data)
         .with_context(|| format!("parsing metadata file {}", path.display()))?;
+    apply_current_flags(profile, &mut meta)?;
     Ok(Some(meta))
 }
 
@@ -178,7 +179,7 @@ pub(crate) fn read_generation_meta(
 ///
 /// Returns an error if the `meta/` directory exists but cannot be read.
 pub fn list_meta(profile: &Profile) -> Result<Vec<InstalledMeta>> {
-    let meta_dir = profile.path.join("meta");
+    let meta_dir = metadata_directory(profile)?;
     let entries = match std::fs::read_dir(&meta_dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -199,7 +200,10 @@ pub fn list_meta(profile: &Profile) -> Result<Vec<InstalledMeta>> {
 
         let path = entry.path();
         match read_and_parse(&path) {
-            Ok(meta) => results.push(meta),
+            Ok(mut meta) => {
+                apply_current_flags(profile, &mut meta)?;
+                results.push(meta);
+            }
             Err(e) => {
                 eprintln!("warning: skipping {}: {e}", path.display());
             }
@@ -207,6 +211,42 @@ pub fn list_meta(profile: &Profile) -> Result<Vec<InstalledMeta>> {
     }
 
     Ok(results)
+}
+
+/// Reads immutable native snapshots through the same atomic pointer as payloads.
+fn metadata_directory(profile: &Profile) -> Result<std::path::PathBuf> {
+    if let Some(generation) = profile.current_generation()? {
+        if generation.path.join("native-deployment.json").is_file() {
+            return Ok(generation.path.join("meta"));
+        }
+    }
+    Ok(profile.path.join("meta"))
+}
+
+/// Keeps mutable hold/explicit flags separate from a committed native snapshot.
+fn apply_current_flags(profile: &Profile, meta: &mut InstalledMeta) -> Result<()> {
+    if !profile
+        .path
+        .join("current/native-deployment.json")
+        .is_file()
+    {
+        return Ok(());
+    }
+    let path = profile
+        .path
+        .join("meta")
+        .join(format!("{}.json", store_path_hash(&meta.store_path)));
+    if !path.is_file() {
+        return Ok(());
+    }
+    let current = read_and_parse(&path)?;
+    if current.store_path == meta.store_path {
+        if let (Some(current), Some(snapshot)) = (current.apm, &mut meta.apm) {
+            snapshot.held = current.held;
+            snapshot.explicit = current.explicit;
+        }
+    }
+    Ok(())
 }
 
 /// Find all metadata entries from a specific registry.
@@ -398,12 +438,9 @@ pub fn rebuild_meta(
                     held: false,
                     source_drv: pkg.source_drv.clone(),
                     source_nar_hash: pkg.source_nar_hash.clone(),
-                    expose: pkg.expose.clone(),
-                    expose_artifact: pkg.expose_artifact.clone(),
-                    config_module: pkg.config_module.clone(),
-                    documentation: pkg.documentation.clone(),
-                    permissions: pkg.permissions.clone(),
-                    bpf_lsm: pkg.bpf_lsm.clone(),
+                    deployment: pkg.deployment.clone(),
+                    module_documentation: pkg.module_documentation.clone(),
+                    qualification: pkg.qualification.clone(),
                     attestation: pkg.attestation.clone(),
                 }),
             }
@@ -473,12 +510,9 @@ mod tests {
                 held,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
-                expose: None,
-                expose_artifact: None,
-                config_module: None,
-                documentation: None,
-                permissions: Default::default(),
-                bpf_lsm: None,
+                deployment: None,
+                module_documentation: None,
+                qualification: None,
                 attestation: Default::default(),
             }),
         }
@@ -520,7 +554,6 @@ mod tests {
         let result = read_meta(&profile, "nonexistent").unwrap();
         assert!(result.is_none());
     }
-
     // 3. delete_meta removes the file
     #[test]
     fn delete_meta_removes_file() {

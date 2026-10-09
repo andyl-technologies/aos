@@ -7,6 +7,19 @@
   version = "1.20.2";
 in
   mkDerivation {
+    # The installed Autoconf macros and pkg-config metadata contain no host machine code.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "xorg-util-macros";
     inherit version;
 
