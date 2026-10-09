@@ -4,8 +4,8 @@ use anyhow::{Result, bail};
 use aos_core::output::Printer;
 use aos_package::config::ApmConfig;
 use aos_package::images::{ImageSelection, VerifiedRegistryImage};
-use aos_package::types::{ImageCompression, ImageTarget, ImageVerificationState, ProfileScope};
-use aos_remote::hub_types::{ImageInfo, ImageUki, SbatGeneration, SystemImage};
+use aos_package::types::{ImageCompression, ImageTarget, ProfileScope};
+use aos_remote::hub_types::{ImageInfo, SystemImage};
 
 use crate::cli::ImageSelectionArgs;
 
@@ -42,11 +42,7 @@ pub(super) async fn images(
 fn message(verified: VerifiedRegistryImage, channel: Option<&str>) -> SystemImage {
     let image = verified.image;
     let delivery = image.delivery;
-    let verification = match delivery.uki.verification {
-        ImageVerificationState::Unsigned => "unsigned",
-        ImageVerificationState::SignedUnverified => "signed-unverified",
-        ImageVerificationState::PolicyVerified => "policy-verified",
-    };
+    let contract_schema = delivery.artifact_contract.schema.clone();
     SystemImage {
         package: verified.package,
         release: delivery.release,
@@ -79,40 +75,22 @@ fn message(verified: VerifiedRegistryImage, channel: Option<&str>) -> SystemImag
                 .to_string()
             })
             .collect(),
-        boot_verification: verification.to_string(),
+        boot_verification: format!("provider-contract:{contract_schema}"),
         object_key: delivery.object_key,
         image_info: Some(ImageInfo {
-            filename: delivery.image_info.filename,
+            filename: delivery.artifact_contract.document.filename,
             download_url: String::new(),
-            object_key: delivery.image_info.object_key,
-            media_type: delivery.image_info.media_type,
-            byte_size: delivery.image_info.byte_size,
-            sha256: delivery.image_info.sha256,
-            store_path: delivery.image_info.store_path,
-            nar_hash: delivery.image_info.nar_hash,
-            nar_size: delivery.image_info.nar_size,
+            object_key: delivery.artifact_contract.document.object_key,
+            media_type: delivery.artifact_contract.document.media_type,
+            byte_size: delivery.artifact_contract.document.byte_size,
+            sha256: delivery.artifact_contract.document.sha256,
+            store_path: delivery.artifact_contract.document.store_path,
+            nar_hash: delivery.artifact_contract.document.nar_hash,
+            nar_size: delivery.artifact_contract.document.nar_size,
         }),
         logical_disk_sha256: delivery.logical_disk_sha256,
-        rootfs_sha256: delivery.rootfs_sha256,
-        uki: Some(ImageUki {
-            filename: delivery.uki.filename,
-            esp_path: delivery.uki.esp_path,
-            byte_size: delivery.uki.byte_size,
-            sha256: delivery.uki.sha256,
-            verification: verification.to_string(),
-            signer_cert_sha256: delivery.uki.signer_cert_sha256.unwrap_or_default(),
-            sbat: delivery
-                .uki
-                .sbat
-                .into_iter()
-                .map(|entry| SbatGeneration {
-                    component: entry.component,
-                    generation: entry.generation,
-                })
-                .collect(),
-            measured: delivery.uki.measured,
-            expected_pcr11: delivery.uki.expected_pcr11.unwrap_or_default(),
-        }),
+        rootfs_sha256: String::new(),
+        uki: None,
         release_verification: "verified".to_string(),
         store_path: image.store_path,
         nar_hash: image.nar_hash,

@@ -39,7 +39,12 @@
   # tools (systems.server-test).
   serverWithRegistry = mkSystem [
     ../../systems/server-test.nix
-    {aos.packages.aos-registry-server.bundle = true;}
+    {
+      aos.packages.aos-registry-server = {
+        package = pkgs.aos-registry-server;
+        bundle = true;
+      };
+    }
   ];
 
   # Stable test values. The 32-char store hash is fixed so the

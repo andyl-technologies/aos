@@ -8,6 +8,7 @@
 {
   mkDerivation,
   pname,
+  platformSupport,
   version,
   src,
   changeId,
@@ -41,7 +42,15 @@
   needsNativeZlibLink ? builtins.compareVersions version "1.79.0" >= 0 && builtins.compareVersions version "1.93.0" < 0,
   description,
   buildTool ? null,
+  qualification ? null,
 }: let
+  mkRustDerivation = attrs:
+    mkDerivation (attrs
+      // (
+        if qualification == null
+        then {}
+        else {inherit qualification;}
+      ));
   buildTriple = stdenv.buildPlatform.config;
   buildTripleEnv = builtins.replaceStrings ["-"] ["_"] buildTriple;
   hostTriple = stdenv.hostPlatform.config;
@@ -49,8 +58,8 @@
   toolList = builtins.toJSON tools;
   isFinal = builtins.elem "dev" outputs;
 in
-  mkDerivation {
-    inherit pname version src outputs;
+  mkRustDerivation {
+    inherit pname version src outputs platformSupport;
 
     buildDeps =
       [

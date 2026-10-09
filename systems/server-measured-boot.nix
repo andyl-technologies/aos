@@ -15,12 +15,24 @@
 {
   lib,
   pkgs,
+  packageModulesAvailable ? false,
   ...
 }: {
-  imports = [./server-secureboot.nix];
+  imports = [./server-secureboot.nix] ++ lib.optionals (!packageModulesAvailable) [./_native-policy/measured-boot.nix];
+  aos.activation.stages.host.configuration = [
+    (builtins.path {
+      path = ./_native-policy/measured-boot.nix;
+      name = "aos-measured-boot-policy.nix";
+    })
+  ];
+  aos.activation.stages.initrd.configuration = [
+    (builtins.path {
+      path = ./_native-policy/measured-boot.nix;
+      name = "aos-measured-boot-policy.nix";
+    })
+  ];
 
   aos.boot.secureBoot.measuredBoot = {
-    enable = true;
     pcrPrivateKey = "${pkgs.secure-boot-test-keys}/pcr.key";
     pcrPublicKey = "${pkgs.secure-boot-test-keys}/pcr.pem";
   };

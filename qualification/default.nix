@@ -1,15 +1,15 @@
-##! Evaluates the shared qualification policy with the AOS module fixed point.
+##! Resolves the declarative qualification policy into its offline contract.
 {
   lib,
   packageNames,
-  # Callers that also build the package inventory pass the same list they
-  # gave `pkgs/_platform-support.nix`, so both halves of the release contract
-  # always defer the same platforms.
+  nativeAdapterMatrix,
+  nativeOperationSpec,
+  # Inventory and qualification use the same reviewed platform deferral list.
   deferredPlatforms ? import ./deferred-platforms.nix,
   modules ? [],
 }:
 (import ./_eval.nix {
-  inherit lib packageNames;
+  inherit lib nativeAdapterMatrix nativeOperationSpec packageNames;
   modules = [{qualification.deferredPlatforms = deferredPlatforms;}] ++ modules;
 })
 .config

@@ -130,20 +130,11 @@ impl ApmConfig {
     ///
     /// # Errors
     ///
-    /// Returns an error when `[settings].parallel_downloads` is zero or the
-    /// credential PCR public key path is relative.
+    /// Returns an error when `[settings].parallel_downloads` is zero.
     fn validate_settings(settings: &ApmSettings) -> Result<()> {
         if settings.parallel_downloads == 0 {
             anyhow::bail!("apm.conf: [settings].parallel_downloads must be at least 1");
         }
-        if let Some(path) = &settings.credential_pcr_public_key
-            && !Path::new(path).is_absolute()
-        {
-            anyhow::bail!(
-                "apm.conf: [settings].credential_pcr_public_key must be an absolute path"
-            );
-        }
-
         Ok(())
     }
 
@@ -579,22 +570,6 @@ parallel_downloads = 0
             err.to_string()
                 .contains("parallel_downloads must be at least 1")
         );
-    }
-
-    #[test]
-    fn load_settings_rejects_relative_credential_pcr_public_key() {
-        let tmp = TempDir::new().unwrap();
-        write_file(
-            tmp.path(),
-            "apm.conf",
-            r#"
-[settings]
-credential_pcr_public_key = "keys/pcr.pem"
-"#,
-        );
-
-        let err = ApmConfig::load_settings(&layers(&[&tmp])).unwrap_err();
-        assert!(err.to_string().contains("credential_pcr_public_key"));
     }
 
     #[test]

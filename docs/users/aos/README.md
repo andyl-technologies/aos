@@ -23,7 +23,7 @@ production deployments must supply their own trust material.
 | First-boot storage | Literal `host.nix` supplied through metadata | Committed once; later changes are drift |
 | Host configuration | Pure `host.nix` evaluation and authenticated package configuration | Numbered configuration generations under `/var/lib/profiles/system` |
 | User packages | `apm install`, `upgrade`, `remove`, and `rollback` after account storage is provisioned | Per-user profile generations under `/var/lib/profiles/per-user` |
-| Runtime system packages | `apm install --system PACKAGE`, `upgrade --system`, and `remove --system` | Machine-wide package generations under `/var/lib/profiles/system-packages` |
+| Runtime system packages | `apm install --system PACKAGE`, `upgrade --system`, and `remove --system` | Machine-wide package generations under `/var/lib/profiles/system` |
 | OS image | `apm image install`, `upgrade`, and `rollback` | A/B image generations under `/var/lib/profiles/image` |
 
 Three command names cover different jobs in the AOS toolchain:
@@ -63,8 +63,8 @@ consumption, and on-host activation as distinct installed capabilities.
   from a file.
 - [Configure package registries](registries.md) covers the built-in registry,
   other public and internal registries, priorities, credentials, and trust.
-- [Understand the package sandbox](package-sandbox.md) explains the runtime
-  boundary for exposed services and how to inspect its effective policy.
+- [Understand native package runtime policy](package-sandbox.md) explains how
+  typed package requests become concrete host resources.
 - [Operate an AOS host](operations.md) covers services, logs, storage,
   packages, monitoring, and maintenance.
 - [Configure redundant and encrypted storage](host-nix.md#mirror-the-system-state)
@@ -98,6 +98,9 @@ consumption, and on-host activation as distinct installed capabilities.
 
 - [Package an application for AOS](package-authoring.md) follows a service from
   its derivation through image inclusion, registry publication, and upgrade.
+- [Inspect ability plans and retained execution](ability-inspection.md) covers
+  offline checked graphs, private operator views, retained diagnostics, and
+  realized artifact-consumption evidence.
 - Package and service configuration is generated from each package's Nix
   interface and signed runtime contract. Use `apm docs`, `apm options`, the
   offline `apm docs serve` browser, or the package documentation workspace in
@@ -114,3 +117,10 @@ consumption, and on-host activation as distinct installed capabilities.
 Registry producers should continue with
 [Operate an AOS package registry](../registry/). Hub operators should use the
 [AOS Hub guide](../aos-hub/).
+
+## Runtime abilities
+
+[Runtime abilities](runtime-abilities.md) explains native package modules,
+mergeable operation contracts, composed handlers, and the build-to-runtime path.
+Use `aos docs runtime` to inspect generated references and deferred transactions.
+The guide marks the remaining consumer migration explicitly.

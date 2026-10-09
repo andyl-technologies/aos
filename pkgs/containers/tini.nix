@@ -1,5 +1,6 @@
 ##! tini — Minimal container init process
 {
+  lib,
   mkDerivation,
   fetchurl,
   cmake,
@@ -8,8 +9,66 @@
   version = "0.19.0";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "tini";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Tini supervises the child and preserves its output and successful status.";
+        "files" = {};
+        "input" = "A child shell that prints one fixed line.";
+        "operation" = "Run the child under Tini in subreaper mode.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/tini"
+              "-s"
+              "--"
+              "@bash@"
+              "-c"
+              "printf 'answer=42\\n'"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "answer=42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Tini reports the spawn failure through status 127.";
+        "files" = {};
+        "input" = "An absolute child path that does not exist.";
+        "operation" = "Ask Tini to spawn the missing child.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/tini"
+              "-s"
+              "--"
+              "/qualification/missing-child"
+            ];
+            "exit_code" = 127;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
 
     src = fetchurl {
       urls = ["https://github.com/krallin/tini/archive/refs/tags/v${version}.tar.gz"];

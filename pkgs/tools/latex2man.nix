@@ -1,5 +1,6 @@
 ##! Perl-based converter for LaTeX manual sources.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -8,7 +9,81 @@
   version = "1.30";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "latex2man";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A small LaTeX manual source with a title and description.";
+        operation = "Convert the source to a troff manual page.";
+        expected = "The page contains the requested title and description.";
+        files."probe.tex" = ''
+          \begin{Name}{1}{aosprobe}{AOS}{probe}{AOS Probe}
+          \section{Description}
+          The answer is 42.
+          \end{Name}
+        '';
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/latex2man" "probe.tex" "probe.1"];
+            exit_code = 0;
+          }
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                from pathlib import Path
+
+                manual = Path("probe.1").read_text()
+                assert '.TH "AOSPROBE" "1"' in manual
+                assert "The answer is 42." in manual
+                print("latex2man converted manual page")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "latex2man converted manual page\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "A nonexistent LaTeX manual source.";
+        operation = "Request conversion of the missing source.";
+        expected = "Latex2man reports that the source cannot be opened.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/latex2man" "qualification-missing.tex" "probe.1"];
+            exit_code = 2;
+            observes_rejection = true;
+            stdout.exact = "";
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://mirrors.ctan.org/support/latex2man.zip"];

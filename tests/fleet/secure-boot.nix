@@ -34,6 +34,7 @@
     # system to reach multi-user (identity + role activation persist there).
     target = {
       system = systems.server-secureboot;
+      extraModules = [../../systems/_server-test-packages.nix];
       bootMode = "image";
       imageDiskMiB = 16384;
       packages = ["aos-test-agent"];

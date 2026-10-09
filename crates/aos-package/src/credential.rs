@@ -1,91 +1,67 @@
 //! Credential helper commands for package authors.
 //!
-//! These helpers prepare credential payloads that package `expose` metadata can
-//! consume. They intentionally run outside pure Nix builds because TPM2
+//! These helpers prepare payloads for typed configuration credential
+//! declarations. They intentionally run outside pure Nix builds because TPM2
 //! signed-PCR credential sealing depends on target/runtime key material.
 
-use std::fs::Permissions;
-use std::os::unix::fs::PermissionsExt;
+use std::ffi::OsStr;
+use std::fs::{OpenOptions, Permissions};
+use std::io::Read;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
+use aos_ability_model::LocalKey;
 use aos_core::output::{OutputMode, Printer};
 
 use crate::CredentialCommand;
-use crate::config::ApmConfig;
-use crate::credential_artifact::{credential_pcr_public_key, systemd_creds_encrypt_pretty};
-use crate::types::{validate_credential_ciphertext, validate_credential_name, validate_unit_name};
+use crate::types::validate_credential_ciphertext;
+
+const PROVIDER_LOCATOR: &str = "/etc/aos/providers/credential-encrypt";
+const MAX_PROVIDER_PATH_BYTES: u64 = 4096;
 
 /// Runs an `apm credential ...` helper command.
-pub(crate) fn run(
-    config: &ApmConfig,
-    command: &CredentialCommand,
-    printer: &Printer,
-) -> Result<()> {
+pub(crate) fn run(command: &CredentialCommand, printer: &Printer) -> Result<()> {
     match command {
         CredentialCommand::Encrypt {
             name,
             input,
             output,
             pcr_public_key,
-            expose_nix,
-            units,
         } => encrypt(
-            config,
             name,
             input,
             output.as_deref(),
             pcr_public_key.as_deref(),
-            *expose_nix,
-            units,
             printer,
         ),
     }
 }
 
 fn encrypt(
-    config: &ApmConfig,
     name: &str,
     input: &Path,
     output: Option<&Path>,
     pcr_public_key: Option<&Path>,
-    expose_nix: bool,
-    units: &[String],
     printer: &Printer,
 ) -> Result<()> {
-    validate_credential_name(name)?;
-    for unit in units {
-        validate_unit_name(unit)?;
-        if !unit.ends_with(".service") {
-            bail!("credential unit must be a service unit: {unit}");
-        }
-    }
+    LocalKey::new(name).context("credential name is not a canonical local key")?;
     validate_regular_file(input, "plaintext credential input")?;
-    let public_key = match pcr_public_key {
-        Some(path) => {
-            validate_regular_file(path, "PCR public key")?;
-            path.to_path_buf()
-        }
-        None => credential_pcr_public_key(&config.settings, &aos_root_path())?,
-    };
-
-    let pretty_output = systemd_creds_encrypt_pretty(name, &public_key, input)?;
-    let ciphertext = parse_inline_ciphertext(&pretty_output, name)?;
+    if let Some(path) = pcr_public_key {
+        validate_regular_file(path, "PCR public key")?;
+    }
+    let ciphertext = encrypt_with_selected_provider(name, input, pcr_public_key)?;
     if let Some(path) = output {
         write_ciphertext_output(path, &ciphertext)?;
     }
-    let snippet = expose_nix.then(|| render_nix_credential_snippet(name, &ciphertext, units));
-
     if printer.mode() == OutputMode::Json {
         printer.json(&serde_json::json!({
             "name": name,
             "ciphertext": ciphertext,
             "output": output.map(|path| path.display().to_string()),
-            "pcr_public_key": public_key.display().to_string(),
-            "expose_nix": snippet,
+            "pcr_public_key": pcr_public_key.map(|path| path.display().to_string()),
         }));
-    } else if let Some(snippet) = snippet {
-        println!("{snippet}");
     } else if output.is_none() {
         println!("{ciphertext}");
     } else {
@@ -129,182 +105,166 @@ fn write_ciphertext_output(path: &Path, ciphertext: &str) -> Result<()> {
     Ok(())
 }
 
-fn parse_inline_ciphertext(text: &str, expected_name: &str) -> Result<String> {
-    let mut lines = text.lines();
-    let first_line = lines
-        .next()
-        .context("encrypted credential output is empty")?
-        .trim_end();
-    let payload = first_line
-        .strip_prefix("SetCredentialEncrypted=")
-        .context("encrypted credential output is missing SetCredentialEncrypted= prefix")?;
-    let (name, ciphertext) = payload
-        .split_once(':')
-        .context("encrypted credential output is missing credential name separator")?;
-    if name != expected_name {
+fn encrypt_with_selected_provider(
+    name: &str,
+    input: &Path,
+    public_key: Option<&Path>,
+) -> Result<String> {
+    let override_path = std::env::var_os("AOS_CREDENTIAL_ENCRYPT_PROVIDER");
+    let provider = selected_provider(override_path.as_deref(), Path::new(PROVIDER_LOCATOR))?;
+    let resolved = std::fs::canonicalize(&provider)
+        .context("resolving the selected credential encryption provider")?;
+    checked_provider_path(resolved.as_os_str())?;
+    let metadata = std::fs::metadata(&resolved)?;
+    ensure!(
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0,
+        "the selected credential encryption provider must be an executable store file"
+    );
+
+    let mut command = Command::new(provider);
+    command.arg("--name").arg(name).arg("--input").arg(input);
+    if let Some(public_key) = public_key {
+        command.arg("--pcr-public-key").arg(public_key);
+    }
+
+    let result = command
+        .output()
+        .context("running the selected credential encryption provider")?;
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
         bail!(
-            "encrypted credential output name mismatch: expected '{}', got '{}'",
-            expected_name,
-            name
+            "credential encryption provider failed with {}{}",
+            result.status,
+            if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", stderr.trim())
+            }
         );
     }
-    let ciphertext = unwrapped_pretty_ciphertext(ciphertext, lines)?;
-    validate_credential_ciphertext(&ciphertext).with_context(|| {
-        "invalid encrypted credential payload from systemd-creds pretty output".to_string()
-    })?;
+    let ciphertext = String::from_utf8(result.stdout)
+        .context("credential encryption provider output is not UTF-8")?;
+    let ciphertext = ciphertext.trim_end_matches('\n').to_string();
+    validate_credential_ciphertext(&ciphertext)
+        .context("credential encryption provider returned an invalid ciphertext")?;
     Ok(ciphertext)
 }
 
-fn unwrapped_pretty_ciphertext<'a>(
-    first: &str,
-    continuation_lines: impl Iterator<Item = &'a str>,
-) -> Result<String> {
-    let (first, mut expects_continuation) = trim_pretty_part(first);
-    let mut ciphertext = first.to_string();
-    for line in continuation_lines {
-        let (part, continues) = trim_pretty_part(line);
-        if !part.is_empty() {
-            if !expects_continuation {
-                bail!("encrypted credential output has an unexpected continuation line");
-            }
-            ciphertext.push_str(part);
-        }
-        expects_continuation = continues;
+/// Resolves the explicit override or the target's installed provider locator.
+fn selected_provider(override_path: Option<&OsStr>, locator: &Path) -> Result<PathBuf> {
+    if let Some(path) = override_path {
+        return checked_provider_path(path);
     }
-    if expects_continuation {
-        bail!("encrypted credential output ended with an unterminated continuation");
-    }
-    Ok(ciphertext)
+
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(locator)
+        .context("the selected credential encryption provider is unavailable")?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file() && metadata.len() <= MAX_PROVIDER_PATH_BYTES + 1,
+        "credential encryption provider locator must be a bounded regular file"
+    );
+
+    let mut content = String::new();
+    file.take(MAX_PROVIDER_PATH_BYTES + 2)
+        .read_to_string(&mut content)
+        .context("reading the selected credential encryption provider locator")?;
+    ensure!(
+        content.len() as u64 <= MAX_PROVIDER_PATH_BYTES + 1,
+        "credential encryption provider locator exceeds its byte bound"
+    );
+    let path = content.strip_suffix('\n').unwrap_or(&content);
+    checked_provider_path(OsStr::new(path))
 }
 
-fn trim_pretty_part(part: &str) -> (&str, bool) {
-    let trimmed = part.trim();
-    let continues = trimmed.ends_with('\\');
-    (trimmed.trim_end_matches('\\').trim(), continues)
-}
-
-fn render_nix_credential_snippet(name: &str, ciphertext: &str, units: &[String]) -> String {
-    let units_line = if units.is_empty() {
-        String::new()
-    } else {
-        let units = units
-            .iter()
-            .map(|unit| nix_string(unit))
-            .collect::<Vec<_>>()
-            .join(" ");
-        format!("  units = [ {units} ];\n")
-    };
-    format!(
-        "{{\n  name = {};\n  encrypted = true;\n  ciphertext = {};\n{units_line}}}",
-        nix_string(name),
-        nix_string(ciphertext)
-    )
-}
-
-fn nix_string(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len() + 2);
-    escaped.push('"');
-    for ch in value.chars() {
-        match ch {
-            '\\' => escaped.push_str("\\\\"),
-            '"' => escaped.push_str("\\\""),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped.push('"');
-    escaped
-}
-
-fn aos_root_path() -> PathBuf {
-    match std::env::var("AOS_ROOT") {
-        Ok(value) if !value.is_empty() => {
-            let path = PathBuf::from(value);
-            if path.is_absolute() {
-                path
-            } else {
-                PathBuf::from("/").join(path)
-            }
-        }
-        _ => PathBuf::from("/"),
-    }
+/// Requires an exact executable locator within an immutable store object.
+fn checked_provider_path(value: &OsStr) -> Result<PathBuf> {
+    let value = value
+        .to_str()
+        .context("credential encryption provider path is not UTF-8")?;
+    ensure!(
+        value.len() as u64 <= MAX_PROVIDER_PATH_BYTES
+            && !value.contains(['\0', '\n', '\r'])
+            && value
+                .split('/')
+                .skip(1)
+                .all(|part| !matches!(part, "" | "." | "..")),
+        "credential encryption provider path must be a bounded canonical store path"
+    );
+    let path = PathBuf::from(value);
+    let (_, suffix) = crate::deployment::nix::store_root_and_suffix(&path)
+        .context("credential encryption provider must be retained in the Nix store")?;
+    ensure!(
+        !suffix.as_os_str().is_empty(),
+        "credential encryption provider must name an executable inside its store object"
+    );
+    Ok(path)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{checked_provider_path, selected_provider};
+    use std::ffi::OsStr;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    const PROVIDER: &str = "/nix/store/00000000000000000000000000000000-provider/bin/encrypt";
 
     #[test]
-    fn render_nix_credential_snippet_includes_units() {
-        let snippet = render_nix_credential_snippet(
-            "join-token",
-            "abcDEF0123+/=",
-            &["example.service".to_string(), "sidecar.service".to_string()],
-        );
+    fn installed_locator_selects_exact_provider() {
+        let temporary = tempfile::tempdir().unwrap();
+        let locator = temporary.path().join("provider");
+        fs::write(&locator, format!("{PROVIDER}\n")).unwrap();
 
         assert_eq!(
-            snippet,
-            "{\n  name = \"join-token\";\n  encrypted = true;\n  ciphertext = \"abcDEF0123+/=\";\n  units = [ \"example.service\" \"sidecar.service\" ];\n}"
-        );
-    }
-
-    #[test]
-    fn render_nix_credential_snippet_omits_empty_units() {
-        let snippet = render_nix_credential_snippet("join-token", "abcDEF0123+/=", &[]);
-
-        assert_eq!(
-            snippet,
-            "{\n  name = \"join-token\";\n  encrypted = true;\n  ciphertext = \"abcDEF0123+/=\";\n}"
+            selected_provider(None, &locator).unwrap(),
+            std::path::Path::new(PROVIDER)
         );
     }
 
     #[test]
-    fn nix_string_escapes_control_characters() {
-        assert_eq!(nix_string("a\"b\\c\n"), "\"a\\\"b\\\\c\\n\"");
-    }
+    fn explicit_override_does_not_require_a_locator() {
+        let temporary = tempfile::tempdir().unwrap();
 
-    #[test]
-    fn parse_inline_ciphertext_trims_trailing_newline() {
         assert_eq!(
-            parse_inline_ciphertext(
-                "SetCredentialEncrypted=join-token:abcDEF0123+/=\n",
-                "join-token"
+            selected_provider(
+                Some(OsStr::new(PROVIDER)),
+                &temporary.path().join("missing")
             )
             .unwrap(),
-            "abcDEF0123+/="
+            std::path::Path::new(PROVIDER)
         );
     }
 
     #[test]
-    fn parse_inline_ciphertext_unwraps_pretty_continuations() {
-        assert_eq!(
-            parse_inline_ciphertext(
-                "SetCredentialEncrypted=join-token: \\\n        abcDEF0123+/=\\\n        zz\n",
-                "join-token"
-            )
-            .unwrap(),
-            "abcDEF0123+/=zz"
-        );
+    fn locator_rejects_symlinks_and_oversized_contents() {
+        let temporary = tempfile::tempdir().unwrap();
+        let locator = temporary.path().join("provider");
+        let target = temporary.path().join("target");
+        fs::write(&target, PROVIDER).unwrap();
+        symlink(&target, &locator).unwrap();
+
+        assert!(selected_provider(None, &locator).is_err());
+
+        fs::remove_file(&locator).unwrap();
+        fs::write(&locator, "x".repeat(4098)).unwrap();
+
+        assert!(selected_provider(None, &locator).is_err());
     }
 
     #[test]
-    fn parse_inline_ciphertext_rejects_internal_newline_without_continuation() {
-        let err =
-            parse_inline_ciphertext("SetCredentialEncrypted=join-token:abc\nDEF", "join-token")
-                .unwrap_err();
-        assert!(
-            err.to_string().contains("unexpected continuation line"),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn parse_inline_ciphertext_rejects_name_mismatch() {
-        let err =
-            parse_inline_ciphertext("SetCredentialEncrypted=other:abcDEF0123+/=", "join-token")
-                .unwrap_err();
-        assert!(err.to_string().contains("name mismatch"), "{err:?}");
+    fn provider_paths_reject_host_paths_and_noncanonical_suffixes() {
+        for path in [
+            "/usr/bin/encrypt".to_owned(),
+            format!("{PROVIDER}\n\n"),
+            format!("{PROVIDER}/../other"),
+            format!("{PROVIDER}/./other"),
+            format!("{PROVIDER}//other"),
+            "/nix/store/00000000000000000000000000000000-provider".to_owned(),
+        ] {
+            assert!(checked_provider_path(OsStr::new(&path)).is_err(), "{path}");
+        }
     }
 }

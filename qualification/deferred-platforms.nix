@@ -8,7 +8,7 @@
 ##!
 ##! This list is the single source of truth for the qualification contract
 ##! (`qualification.deferredPlatforms`), the package inventory
-##! (`pkgs/_platform-support.nix`), and the container coordinator
+##! (`pkgs/_target-policy.nix`), and the container coordinator
 ##! (`flake.nix`). Nothing is deferred today: the first public
 ##! `andyl/experimental` edge release ships both Linux platforms, and the
 ##! release tooling closure installs the hosted `aarch64-linux` qualification

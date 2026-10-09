@@ -50,7 +50,7 @@ in
 
       # Log in as the interactive account over SSH. sshd resolves the home
       # from /etc/passwd, so a working session proves the bind mount, the
-      # tmpfiles-created directory, and the skeleton copy all line up.
+      # native home preparation, and the skeleton copy all line up.
       ssh_output = vm.succeed(
           textwrap.dedent(r"""
               set -e

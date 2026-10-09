@@ -10,14 +10,13 @@ use crate::registry_ops::provenance::statement::{
 };
 use crate::registry_ops::provenance::{
     PACKAGE_PROVENANCE_TRANSPARENCY_LOG, PackageProvenanceTransparencyLogEntry,
-    PackageTomlPlatformKey, StagedPackageProvenanceMeta, StagedPackageRfc0001Meta,
+    PackageTomlPlatformKey, StagedPackageProvenanceMeta,
     ensure_package_provenance_transparency_bytes_extend_head,
     head_package_provenance_transparency_log, package_provenance_trusted_keys,
     parse_package_provenance_transparency_log,
 };
+use crate::registry_ops::sha256_hex;
 use crate::registry_ops::store_paths::extract_hash;
-use crate::registry_ops::uki::sha256_hex;
-use crate::types::rfc0001_metadata_requires_provenance;
 use anyhow::{Context, Result, bail};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -178,9 +177,7 @@ pub(in crate::registry_ops) fn validate_staged_package_toml_provenance_requireme
             .with_context(|| format!("decoding staged package metadata {path} as UTF-8"))?;
         let value: toml::Value = toml::from_str(text)
             .with_context(|| format!("parsing staged package metadata {path}"))?;
-        for (key, platform_entry) in package_toml_platform_entries(&path, &value, "staged")? {
-            ensure_staged_package_rfc0001_provenance(&path, &key, platform_entry)?;
-        }
+        package_toml_platform_entries(&path, &value, "staged")?;
     }
     Ok(())
 }
@@ -207,6 +204,11 @@ fn head_package_toml_provenance_entries(dir: &Path) -> Result<Vec<StagedPackageP
         let value: toml::Value = toml::from_str(text)
             .with_context(|| format!("parsing HEAD package metadata {path}"))?;
         for (key, platform_entry) in package_toml_platform_entries(&path, &value, "HEAD")? {
+            metas.extend(named_output_provenance_entries(
+                &path,
+                &key,
+                platform_entry,
+            )?);
             let Some(provenance) = platform_entry
                 .get("provenance")
                 .and_then(toml::Value::as_str)
@@ -303,6 +305,11 @@ fn package_toml_provenance_entries_from_paths(
             ensure_staged_package_provenance_not_downgraded(dir, &path, &staged_entries)?;
         }
         for (key, platform_entry) in staged_entries {
+            metas.extend(named_output_provenance_entries(
+                &path,
+                &key,
+                platform_entry,
+            )?);
             let Some(provenance) = platform_entry
                 .get("provenance")
                 .and_then(toml::Value::as_str)
@@ -377,43 +384,6 @@ fn package_toml_provenance_entries_from_paths(
     Ok(metas)
 }
 
-fn ensure_staged_package_rfc0001_provenance(
-    path: &str,
-    key: &PackageTomlPlatformKey,
-    entry: &toml::Value,
-) -> Result<()> {
-    let meta: StagedPackageRfc0001Meta = entry.clone().try_into().with_context(|| {
-        format!(
-            "parsing staged package metadata {path} {} {} {} RFC-0001 fields",
-            key.package, key.version, key.platform
-        )
-    })?;
-    let requires_provenance = rfc0001_metadata_requires_provenance(
-        meta.expose.as_ref(),
-        meta.expose_artifact.as_ref(),
-        &meta.permissions,
-        meta.bpf_lsm.as_ref(),
-    );
-    if !requires_provenance {
-        return Ok(());
-    }
-    match entry.get("provenance") {
-        Some(provenance) if provenance.is_str() => Ok(()),
-        Some(_) => bail!(
-            "staged package metadata {path} {} {} {} provenance must be a string",
-            key.package,
-            key.version,
-            key.platform
-        ),
-        None => bail!(
-            "staged package metadata {path} {} {} {} uses RFC-0001 exposed or permission metadata without attestation provenance",
-            key.package,
-            key.version,
-            key.platform
-        ),
-    }
-}
-
 fn ensure_staged_package_provenance_not_downgraded(
     dir: &Path,
     path: &str,
@@ -443,6 +413,23 @@ fn ensure_staged_package_provenance_not_downgraded(
     let head_value: toml::Value = toml::from_str(head_text)
         .with_context(|| format!("parsing HEAD package metadata {path}"))?;
     for (key, head_entry) in package_toml_platform_entries(path, &head_value, "HEAD")? {
+        let head_outputs = named_output_provenance_entries(path, &key, head_entry)?;
+        let staged_outputs = staged_by_key
+            .get(&key)
+            .map(|entry| named_output_provenance_entries(path, &key, entry))
+            .transpose()?
+            .unwrap_or_default();
+        for committed in head_outputs {
+            if !staged_outputs
+                .iter()
+                .any(|candidate| candidate.store_path == committed.store_path)
+            {
+                bail!(
+                    "staged package metadata {path} removes committed named-output provenance for {}",
+                    committed.store_path
+                );
+            }
+        }
         let Some(head_provenance) = head_entry.get("provenance").and_then(toml::Value::as_str)
         else {
             continue;
@@ -465,6 +452,75 @@ fn ensure_staged_package_provenance_not_downgraded(
         }
     }
     Ok(())
+}
+
+fn named_output_provenance_entries(
+    path: &str,
+    key: &PackageTomlPlatformKey,
+    platform: &toml::Value,
+) -> Result<Vec<StagedPackageProvenanceMeta>> {
+    let mut metas = Vec::new();
+    let Some(outputs) = platform
+        .get("named_outputs")
+        .and_then(toml::Value::as_table)
+    else {
+        return Ok(metas);
+    };
+    for (output, metadata) in outputs {
+        let Some(facts) = metadata.get("attestation") else {
+            continue;
+        };
+        anyhow::ensure!(
+            facts.is_table(),
+            "named output {output} attestation must be a table"
+        );
+        let Some(provenance_value) = facts.get("provenance") else {
+            continue;
+        };
+        let provenance = provenance_value
+            .as_str()
+            .with_context(|| format!("named output {output} provenance must be a string"))?;
+        let field = |table: &toml::Value, name: &str| -> Result<String> {
+            staged_package_string_field(
+                path,
+                &key.package,
+                &key.version,
+                &key.platform,
+                table,
+                name,
+            )
+            .with_context(|| format!("reading evidence for named output {output}"))
+        };
+        metas.push(StagedPackageProvenanceMeta {
+            path: path.to_string(),
+            package: key.package.clone(),
+            version: key.version.clone(),
+            platform: key.platform.clone(),
+            store_path: field(metadata, "store_path")?,
+            source_drv: field(platform, "source_drv")?,
+            source_nar_hash: field(platform, "source_nar_hash")?,
+            root_digest: field(facts, "root_digest")?,
+            measurement: field(facts, "measurement")?,
+            root_hash: staged_package_optional_string_field(
+                path,
+                &key.package,
+                &key.version,
+                &key.platform,
+                facts,
+                "root_hash",
+            )?,
+            root_hash_sig: staged_package_optional_string_field(
+                path,
+                &key.package,
+                &key.version,
+                &key.platform,
+                facts,
+                "root_hash_sig",
+            )?,
+            provenance: provenance.to_string(),
+        });
+    }
+    Ok(metas)
 }
 
 fn package_toml_platform_entries<'a>(

@@ -255,6 +255,58 @@ pub enum HubCmd {
 
 #[derive(Subcommand)]
 pub enum HubDocumentationCmd {
+    /// Browse native operation declarations across one release
+    Abilities {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        #[arg(long)]
+        registry: String,
+        #[arg(long)]
+        release: Option<String>,
+        #[arg(long)]
+        platform: Option<String>,
+    },
+    /// Submit a checked desired graph and optional reporter result assertions
+    Report {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Native desired package transaction
+        #[arg(long)]
+        transaction: PathBuf,
+        /// Independent expected digest of the native transaction
+        #[arg(long)]
+        expected_digest: Option<String>,
+        /// Optional reporter assertions of named native effect results
+        #[arg(long)]
+        outputs: Option<PathBuf>,
+        /// Registry containing the authenticated package reference
+        #[arg(long)]
+        registry: String,
+        /// Release pin for the package reference
+        #[arg(long)]
+        release: Option<String>,
+        /// Package whose planned exports will be reported
+        #[arg(long)]
+        package: String,
+        /// Exact package version
+        #[arg(long)]
+        version: String,
+        /// Exact package platform
+        #[arg(long)]
+        platform: String,
+        /// Enrolled deployment reporter slot
+        #[arg(long)]
+        deployment: String,
+        /// Next strictly increasing sequence for this reporter slot
+        #[arg(long)]
+        sequence: u64,
+        /// Current enrollment resource version of this reporter slot
+        #[arg(long)]
+        reporter_resource_version: u64,
+        /// Report lifetime in seconds, at most 300
+        #[arg(long, default_value_t = 60)]
+        valid_for_seconds: u64,
+    },
     /// Search package documentation
     Search {
         #[command(flatten)]
@@ -297,7 +349,7 @@ pub enum HubDocumentationCmd {
         #[arg(long = "type")]
         option_type: Option<String>,
         #[arg(long)]
-        contributable: Option<bool>,
+        extensible: Option<bool>,
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },

@@ -21,8 +21,8 @@ use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
 use aos_hub::db::{
     ChannelSummary, Database, EndpointHostInput, EndpointRevisionSpec, GrantResource,
-    IndexSnapshot, NewBindingWriteRevision, NewSurfacePlacementSpec, RouteSpec, SurfaceTarget,
-    TokenAuth,
+    IndexSnapshot, NewBindingWriteRevision, NewSurfacePlacementSpec, ReleaseArtifactSnapshot,
+    ReleaseRow, ReleaseSnapshotArtifact, RouteSpec, SurfaceTarget, TokenAuth,
 };
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
@@ -138,8 +138,9 @@ async fn planned_rpc(
     .await
 }
 
-/// Seed one package and one channel into `registry_id` so a successful read
-/// returns observable data (and a denied read can be proven to return none).
+/// Seeds one completed release and its selected package catalog.
+///
+/// Successful reads return observable released data; denied reads return none.
 async fn seed_inventory(db: &Database, registry_id: i64) {
     let package: aos_package::registry::parse::PackageToml = toml::from_str(
         r#"
@@ -160,10 +161,24 @@ async fn seed_inventory(db: &Database, registry_id: i64) {
         "#,
     )
     .unwrap();
+    let commit = "c".repeat(64);
+    let tag = "a".repeat(64);
+    let artifacts = vec![ReleaseSnapshotArtifact {
+        package_name: "curl".into(),
+        package_version: "8.5.0".into(),
+        platform: "x86_64-linux".into(),
+        artifact_kind: "output".into(),
+        store_path: "/var/lib/store/secret-curl-8.5.0".into(),
+        store_hash: "secret".into(),
+    }];
+    let manifest_digest = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&artifacts).unwrap())
+    );
     let snapshot = IndexSnapshot {
-        commit: "c".repeat(64),
-        public_catalog_commit: None,
-        public_catalog_release: None,
+        commit: commit.clone(),
+        public_catalog_commit: Some(commit.clone()),
+        public_catalog_release: Some("8.5.0".into()),
         name: "secret".into(),
         description: None,
         readme: None,
@@ -171,9 +186,22 @@ async fn seed_inventory(db: &Database, registry_id: i64) {
         caches: Vec::new(),
         roster: Vec::new(),
         packages: vec![package],
-        package_documentation: Vec::new(),
-        releases: Vec::new(),
-        release_artifact_snapshots: Vec::new(),
+        releases: vec![ReleaseRow {
+            semver: "8.5.0".into(),
+            tag_oid: tag.clone(),
+            commit_oid: commit.clone(),
+            signer: None,
+            tagged_at: Some(1),
+            pack_present: true,
+        }],
+        release_artifact_snapshots: vec![ReleaseArtifactSnapshot {
+            release_tag: "8.5.0".into(),
+            source_commit: commit,
+            verified_tag_oid: tag,
+            manifest_digest,
+            artifacts,
+            container_release: None,
+        }],
         release_images: Vec::new(),
         channels: vec![ChannelSummary {
             name: "stable".into(),
@@ -1781,4 +1809,87 @@ async fn list_bindings_requires_storage_management_authority() {
     .await;
     assert_eq!(status, StatusCode::OK, "storage manager: {resp}");
     assert!(resp["bindings"][0]["spec"]["localRootPath"].is_null());
+}
+
+#[tokio::test]
+async fn documentation_api_preserves_private_registry_bearer_authorization() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let owner_org = db.create_org("docs-owner", "Docs Owner").await.unwrap();
+    db.create_org("docs-other", "Docs Other").await.unwrap();
+    let private = db
+        .create_managed_registry(owner_org, "", "private", "private", &[], false)
+        .await
+        .unwrap();
+    let public = db
+        .create_managed_registry(owner_org, "", "public", "public", &[], false)
+        .await
+        .unwrap();
+    let private_slug = db.registry_by_id(private).await.unwrap().unwrap().slug;
+    let public_slug = db.registry_by_id(public).await.unwrap().unwrap().slug;
+
+    let mut tokens = Vec::new();
+    for (email, org_slug) in [
+        ("reader@docs-owner.test", "docs-owner"),
+        ("reader@docs-other.test", "docs-other"),
+    ] {
+        let user = db.create_user(email, None).await.unwrap();
+        let scope = common::org_scope(&db, org_slug).await;
+        db.grant_membership("user", user, &scope, "viewer")
+            .await
+            .unwrap();
+        tokens.push(bearer(Principal::user(user), &scope, &[Permission::Read]));
+    }
+    let app = router(app_state(db).await).await;
+
+    for (slug, token, expected) in [
+        (public_slug.as_str(), None, StatusCode::OK),
+        (private_slug.as_str(), None, StatusCode::NOT_FOUND),
+        (
+            private_slug.as_str(),
+            Some(tokens[1].as_str()),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            private_slug.as_str(),
+            Some(tokens[0].as_str()),
+            StatusCode::OK,
+        ),
+    ] {
+        let mut request = Request::builder()
+            .uri(format!("/{slug}/-/api/v1/docs/schema"))
+            .header(header::HOST, "127.0.0.1:8420");
+        if let Some(token) = token {
+            request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            expected,
+            "unexpected schema access for {slug}"
+        );
+        if token.is_some() {
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "private, no-store"
+            );
+            assert!(response.headers()[header::VARY]
+                .to_str()
+                .unwrap()
+                .contains("Authorization"));
+        }
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        if expected == StatusCode::OK {
+            let schema: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(schema["properties"]["abilities"].is_object());
+            assert!(schema["properties"]["options"].is_object());
+        } else {
+            assert!(!String::from_utf8_lossy(&bytes).contains("ModuleReference"));
+        }
+    }
 }
