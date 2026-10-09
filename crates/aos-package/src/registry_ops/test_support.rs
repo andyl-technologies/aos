@@ -274,6 +274,7 @@ pub(in crate::registry_ops) fn container_release_inputs(
         },
         qualification: qualification.clone(),
         evidence: ContainerReleaseEvidence {
+            deployment: None,
             abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
             sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
             source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
@@ -288,6 +289,7 @@ pub(in crate::registry_ops) fn container_release_inputs(
         oci: release.oci.clone(),
         nix: release.nix.clone(),
         evidence: ContainerSignatureInputEvidence {
+            deployment: release.evidence.deployment.clone(),
             abilities: release.evidence.abilities.clone(),
             sbom: release.evidence.sbom.clone(),
             source: release.evidence.source.clone(),

@@ -496,6 +496,15 @@ fn decode_canonical_base64(value: &str, field: &'static str) -> Result<Vec<u8>> 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContainerSignatureInputEvidence {
+    /// OCI referrer manifest for the native deployment document, when emitted.
+    /// Older image bundles omit this field; present documents remain signed roots.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_strict_descriptor"
+    )]
+    pub deployment: Option<Descriptor>,
+
     /// OCI referrer manifest retaining static abilities and launch obligations.
     ///
     /// This descriptor is archival evidence. It does not itself grant an
@@ -524,6 +533,14 @@ impl ContainerSignatureInputEvidence {
     /// Returns an error unless every descriptor is a correctly typed OCI
     /// referrer manifest.
     pub fn validate(&self) -> Result<()> {
+        if let Some(deployment) = &self.deployment {
+            validate_evidence_descriptor(
+                deployment,
+                "container signature input deployment",
+                MediaType::AosArtifactDeployment,
+            )?;
+        }
+
         validate_evidence_descriptor(
             &self.abilities,
             "container signature input abilities",
@@ -552,7 +569,8 @@ impl ContainerSignatureInputEvidence {
     }
 
     fn matches(&self, evidence: &ContainerReleaseEvidence) -> bool {
-        self.abilities == evidence.abilities
+        self.deployment == evidence.deployment
+            && self.abilities == evidence.abilities
             && self.sbom == evidence.sbom
             && self.source == evidence.source
             && self.license == evidence.license
@@ -1049,6 +1067,15 @@ impl NixOutputIdentity {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContainerReleaseEvidence {
+    /// OCI referrer manifest for the native deployment document, when emitted.
+    /// Older image bundles omit this field; present documents remain signed roots.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_strict_descriptor"
+    )]
+    pub deployment: Option<Descriptor>,
+
     /// OCI referrer manifest retaining static abilities and launch obligations.
     ///
     /// This descriptor is archival evidence. It does not itself grant an
@@ -1080,6 +1107,14 @@ impl ContainerReleaseEvidence {
     /// Returns an error unless every field is an OCI referrer-manifest
     /// descriptor whose `artifactType` exactly matches its required role.
     pub fn validate(&self) -> Result<()> {
+        if let Some(deployment) = &self.deployment {
+            validate_evidence_descriptor(
+                deployment,
+                "container release deployment",
+                MediaType::AosArtifactDeployment,
+            )?;
+        }
+
         validate_evidence_descriptor(
             &self.abilities,
             "container release abilities",
@@ -1223,7 +1258,7 @@ fn validate_descriptor_json_size(descriptor: &Descriptor, field: &'static str) -
 }
 
 fn validate_unique_release_descriptors(release: &ContainerRelease) -> Result<()> {
-    let descriptors = [
+    let mut descriptors = vec![
         (&release.oci.index, "OCI index"),
         (&release.nix.closure, "closure"),
         (&release.evidence.sbom, "SBOM"),
@@ -1232,6 +1267,9 @@ fn validate_unique_release_descriptors(release: &ContainerRelease) -> Result<()>
         (&release.evidence.provenance, "provenance"),
         (&release.evidence.signature, "signature"),
     ];
+    if let Some(deployment) = &release.evidence.deployment {
+        descriptors.push((deployment, "deployment"));
+    }
     let mut digests = BTreeSet::from([release.evidence.abilities.digest]);
     for (descriptor, role) in descriptors {
         if !digests.insert(descriptor.digest) {
@@ -1256,7 +1294,7 @@ fn validate_unique_release_descriptors(release: &ContainerRelease) -> Result<()>
 }
 
 fn validate_unique_signature_input_descriptors(input: &ContainerSignatureInput) -> Result<()> {
-    let descriptors = [
+    let mut descriptors = vec![
         (&input.oci.index, "OCI index"),
         (&input.nix.closure, "closure"),
         (&input.evidence.sbom, "SBOM"),
@@ -1264,6 +1302,9 @@ fn validate_unique_signature_input_descriptors(input: &ContainerSignatureInput) 
         (&input.evidence.license, "license"),
         (&input.evidence.provenance, "provenance"),
     ];
+    if let Some(deployment) = &input.evidence.deployment {
+        descriptors.push((deployment, "deployment"));
+    }
     let mut digests = BTreeSet::from([input.evidence.abilities.digest]);
     for (descriptor, role) in descriptors {
         if !digests.insert(descriptor.digest) {
@@ -1591,6 +1632,16 @@ where
     StrictDescriptor::deserialize(deserializer).map(Descriptor::from)
 }
 
+fn deserialize_optional_strict_descriptor<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Descriptor>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<StrictDescriptor>::deserialize(deserializer)
+        .map(|descriptor| descriptor.map(Descriptor::from))
+}
+
 fn deserialize_strict_descriptors<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Vec<Descriptor>, D::Error>
@@ -1676,6 +1727,7 @@ mod tests {
             },
             qualification: qualification_fixture(),
             evidence: ContainerReleaseEvidence {
+                deployment: None,
                 abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
@@ -1694,6 +1746,7 @@ mod tests {
             oci: release.oci,
             nix: release.nix,
             evidence: ContainerSignatureInputEvidence {
+                deployment: release.evidence.deployment,
                 abilities: release.evidence.abilities,
                 sbom: release.evidence.sbom,
                 source: release.evidence.source,
@@ -1732,6 +1785,47 @@ mod tests {
         let mut mismatched = release;
         mismatched.identity.package_version = "0.1.1".to_string();
         assert!(input.validate_final_release(&mismatched).is_err());
+    }
+
+    #[test]
+    fn native_deployment_is_strict_signed_and_optional_for_older_images() {
+        let mut input = signature_input_fixture();
+        let mut release = release_fixture();
+        let deployment = evidence_descriptor(MediaType::AosArtifactDeployment, "deployment");
+        input.evidence.deployment = Some(deployment.clone());
+        release.evidence.deployment = Some(deployment);
+
+        let bytes = to_canonical_json(&input).expect("canonical signature input");
+        assert_eq!(
+            ContainerSignatureInput::from_canonical_json(&bytes).expect("deployment input"),
+            input
+        );
+        input
+            .validate_final_release(&release)
+            .expect("signed deployment binding");
+
+        release.evidence.deployment = None;
+        assert!(input.validate_final_release(&release).is_err());
+        let mut malformed = serde_json::to_value(&input).expect("input value");
+        malformed["evidence"]["deployment"]["unexpected"] = serde_json::json!(true);
+        assert!(
+            ContainerSignatureInput::from_json(
+                &to_canonical_json(&malformed).expect("malformed bytes")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn native_deployment_rejects_wrong_roles_and_reused_roots() {
+        let mut input = signature_input_fixture();
+        input.evidence.deployment = Some(input.evidence.provenance.clone());
+        assert!(input.validate().is_err());
+
+        let mut deployment = evidence_descriptor(MediaType::AosArtifactDeployment, "deployment");
+        deployment.digest = input.evidence.provenance.digest;
+        input.evidence.deployment = Some(deployment);
+        assert!(input.validate().is_err());
     }
 
     #[test]

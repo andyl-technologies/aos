@@ -382,6 +382,7 @@ The first-release media-type allowlist is:
   `{}` and which is used as an artifact manifest config;
 - `application/vnd.aos.container-release.v1+json`;
 - `application/vnd.aos.container.static-abilities.v1+json`;
+- `application/vnd.aos.artifact.deployment.v1+json`;
 - `application/vnd.aos.nix-closure.v1+json`;
 - `application/vnd.aos.source-closure.v1+json`;
 - `application/vnd.aos.source-closure.v1.tar+gzip`;
@@ -506,6 +507,14 @@ ability evidence each use their single `/v1` contract. The static ability
 descriptor is required in both the signature input and the final release, so
 every parser, verifier, Hub indexer, and graph traversal sees the same signed
 evidence set.
+
+Images that retain a native deployment document also include its OCI referrer
+descriptor as `evidence.deployment` in the signature input and final release.
+Older bundles may omit this field. When present, the descriptor is a distinct
+signed root: signing, transfer, placement validation, indexing, and graph
+retention must preserve the exact descriptor and its typed payload. Dropping
+or replacing it after signing invalidates the release. The document describes
+deployment inputs; publishing it grants no runtime permissions.
 
 The Hub indexer verifies this sidecar before creating a signed release root.
 Generic clients may pull an unverified manual tag, but only AOS-aware

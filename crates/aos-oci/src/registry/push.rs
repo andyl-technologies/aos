@@ -347,7 +347,7 @@ impl ReleaseGraph {
             layout_index.manifests == vec![release.oci.index.clone()],
             "release layout index does not contain the exact signed root descriptor"
         );
-        let roots = vec![
+        let mut roots = vec![
             &release.oci.index,
             &release.nix.closure,
             &release.evidence.abilities,
@@ -357,6 +357,9 @@ impl ReleaseGraph {
             &release.evidence.provenance,
             &release.evidence.signature,
         ];
+        if let Some(deployment) = &release.evidence.deployment {
+            roots.push(deployment);
+        }
         let mut collector = ReleaseGraphCollector {
             root,
             release,

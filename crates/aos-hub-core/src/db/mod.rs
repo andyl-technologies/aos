@@ -1696,6 +1696,8 @@ pub enum ContainerReleaseDescriptorRole {
     License,
     /// In-toto provenance evidence manifest.
     Provenance,
+    /// Native deployment-document evidence manifest.
+    Deployment,
     /// Producer-signature evidence manifest.
     Signature,
 }
@@ -1711,6 +1713,7 @@ impl ContainerReleaseDescriptorRole {
             Self::Source => "source",
             Self::License => "license",
             Self::Provenance => "provenance",
+            Self::Deployment => "deployment",
             Self::Signature => "signature",
         }
     }
@@ -25890,6 +25893,7 @@ fn validate_container_release_descriptor_snapshot(
             | ContainerReleaseDescriptorRole::Source
             | ContainerReleaseDescriptorRole::License
             | ContainerReleaseDescriptorRole::Provenance
+            | ContainerReleaseDescriptorRole::Deployment
             | ContainerReleaseDescriptorRole::Signature => anyhow::ensure!(
                 media_type == aos_oci_types::MediaType::OciImageManifest,
                 "signed container required descriptor is not an OCI image manifest"
@@ -25929,6 +25933,14 @@ fn validate_container_release_descriptor_snapshot(
             .unwrap_or_default()
             <= 1,
         "signed container descriptor snapshot repeats static ability evidence"
+    );
+    anyhow::ensure!(
+        roles
+            .get(&ContainerReleaseDescriptorRole::Deployment)
+            .copied()
+            .unwrap_or_default()
+            <= 1,
+        "signed container descriptor snapshot repeats native deployment evidence"
     );
     Ok(())
 }

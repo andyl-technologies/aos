@@ -132,6 +132,15 @@ pub fn fixture() -> Fixture {
 }
 
 pub fn add_signed_release_graph(fixture: &Fixture) -> ContainerRelease {
+    signed_release_graph(fixture, false)
+}
+
+/// Builds a signed-root fixture that retains a native deployment document.
+pub fn add_signed_release_graph_with_deployment(fixture: &Fixture) -> ContainerRelease {
+    signed_release_graph(fixture, true)
+}
+
+fn signed_release_graph(fixture: &Fixture, include_deployment: bool) -> ContainerRelease {
     let index = Descriptor {
         media_type: MediaType::OciImageIndex,
         digest: Sha256Digest::digest(&fixture.index),
@@ -265,6 +274,8 @@ pub fn add_signed_release_graph(fixture: &Fixture) -> ContainerRelease {
         },
         qualification: ready_qualification(),
         evidence: ContainerReleaseEvidence {
+            deployment: include_deployment
+                .then(|| artifact("deployment", MediaType::AosArtifactDeployment)),
             abilities: artifact("abilities", MediaType::AosContainerStaticAbilities),
             sbom: artifact("sbom", MediaType::SpdxJson),
             source: artifact("source", MediaType::AosSourceClosure),
@@ -282,6 +293,7 @@ pub fn publication_signature_input(release: &ContainerRelease) -> ContainerSigna
         oci: release.oci.clone(),
         nix: release.nix.clone(),
         evidence: ContainerSignatureInputEvidence {
+            deployment: release.evidence.deployment.clone(),
             abilities: release.evidence.abilities.clone(),
             sbom: release.evidence.sbom.clone(),
             source: release.evidence.source.clone(),
@@ -357,7 +369,7 @@ pub fn write_publication_inputs(inputs: &Path, layout: &Path, input: &ContainerS
         to_canonical_json(&signing_request).expect("signing request"),
     )
     .expect("write signing request");
-    let roots = serde_json::json!({
+    let mut roots = serde_json::json!({
         "schema": "aos.container.publication-roots/v1",
         "image": input.oci.index,
         "referrers": [
@@ -369,6 +381,12 @@ pub fn write_publication_inputs(inputs: &Path, layout: &Path, input: &ContainerS
             input.evidence.provenance,
         ],
     });
+    if let Some(deployment) = &input.evidence.deployment {
+        roots["referrers"]
+            .as_array_mut()
+            .expect("referrers")
+            .push(serde_json::to_value(deployment).expect("deployment descriptor"));
+    }
     fs::write(
         inputs.join("publication-roots.json"),
         to_canonical_json(&roots).expect("publication roots"),

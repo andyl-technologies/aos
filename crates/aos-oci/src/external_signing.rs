@@ -403,14 +403,18 @@ fn validate_publication_roots(inputs: &Path, input: &ContainerSignatureInput) ->
 }
 
 fn unsigned_evidence(input: &ContainerSignatureInput) -> Vec<&Descriptor> {
-    vec![
+    let mut descriptors = vec![
         &input.nix.closure,
         &input.evidence.abilities,
         &input.evidence.sbom,
         &input.evidence.source,
         &input.evidence.license,
         &input.evidence.provenance,
-    ]
+    ];
+    if let Some(deployment) = &input.evidence.deployment {
+        descriptors.push(deployment);
+    }
+    descriptors
 }
 
 fn unsigned_roots(input: &ContainerSignatureInput) -> Vec<Descriptor> {
@@ -524,6 +528,7 @@ fn signed_release(
         nix: input.nix.clone(),
         qualification: input.qualification.clone(),
         evidence: ContainerReleaseEvidence {
+            deployment: input.evidence.deployment.clone(),
             abilities: input.evidence.abilities.clone(),
             sbom: input.evidence.sbom.clone(),
             source: input.evidence.source.clone(),
@@ -598,7 +603,7 @@ fn write_complete_layout(
 }
 
 fn validate_finalized_graph(layout: &Path, release: &ContainerRelease) -> Result<()> {
-    let roots = vec![
+    let mut roots = vec![
         release.oci.index.clone(),
         release.nix.closure.clone(),
         release.evidence.abilities.clone(),
@@ -608,6 +613,10 @@ fn validate_finalized_graph(layout: &Path, release: &ContainerRelease) -> Result
         release.evidence.provenance.clone(),
         release.evidence.signature.clone(),
     ];
+    if let Some(deployment) = &release.evidence.deployment {
+        roots.push(deployment.clone());
+    }
+
     let objects = validate_graph(layout, &roots, &release.oci.index)?;
     ensure!(
         objects.len() >= roots.len(),

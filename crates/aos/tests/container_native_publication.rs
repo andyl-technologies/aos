@@ -549,6 +549,7 @@ fn signature_input(release: &ContainerRelease) -> ContainerSignatureInput {
         oci: release.oci.clone(),
         nix: release.nix.clone(),
         evidence: ContainerSignatureInputEvidence {
+            deployment: release.evidence.deployment.clone(),
             abilities: release.evidence.abilities.clone(),
             sbom: release.evidence.sbom.clone(),
             source: release.evidence.source.clone(),

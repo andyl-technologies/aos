@@ -1653,6 +1653,7 @@ fn container_evidence_kind(role: ContainerReleaseDescriptorRole) -> &'static str
         ContainerReleaseDescriptorRole::Source => "source",
         ContainerReleaseDescriptorRole::License => "license",
         ContainerReleaseDescriptorRole::Provenance => "provenance",
+        ContainerReleaseDescriptorRole::Deployment => "deployment",
         ContainerReleaseDescriptorRole::Signature => "signature",
         ContainerReleaseDescriptorRole::Index
         | ContainerReleaseDescriptorRole::PlatformManifest => "manifest",
@@ -1775,7 +1776,7 @@ fn descriptor_identity_matches(left: &Descriptor, right: &Descriptor) -> bool {
 fn container_evidence_descriptors(
     release: &ContainerRelease,
 ) -> Vec<(&'static str, ContainerReleaseDescriptorRole, &Descriptor)> {
-    vec![
+    let mut descriptors = vec![
         (
             "abilities",
             ContainerReleaseDescriptorRole::Abilities,
@@ -1811,7 +1812,17 @@ fn container_evidence_descriptors(
             ContainerReleaseDescriptorRole::Signature,
             &release.evidence.signature,
         ),
-    ]
+    ];
+
+    if let Some(deployment) = &release.evidence.deployment {
+        descriptors.push((
+            "deployment",
+            ContainerReleaseDescriptorRole::Deployment,
+            deployment,
+        ));
+    }
+
+    descriptors
 }
 
 fn release_snapshot_artifacts(
@@ -3446,6 +3457,7 @@ mod tests {
             closure: evidence(MediaType::AosNixClosure, "closure"),
         };
         let release_evidence = ContainerReleaseEvidence {
+            deployment: None,
             abilities: evidence(MediaType::AosContainerStaticAbilities, "abilities"),
             sbom: evidence(MediaType::SpdxJson, "sbom"),
             source: evidence(MediaType::AosSourceClosure, "source"),
@@ -3459,6 +3471,7 @@ mod tests {
             oci: oci.clone(),
             nix: nix.clone(),
             evidence: ContainerSignatureInputEvidence {
+                deployment: release_evidence.deployment.clone(),
                 abilities: release_evidence.abilities.clone(),
                 sbom: release_evidence.sbom.clone(),
                 source: release_evidence.source.clone(),
