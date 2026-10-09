@@ -1604,19 +1604,29 @@ mod tests {
         let decoded = decode_result(&encoded).unwrap();
         assert_eq!(decoded.dataset(), result.dataset());
         assert_eq!(encode_result(&decoded).unwrap(), encoded);
-        assert_eq!(&encoded[encoded.len() - 9..encoded.len() - 1], &guid.to_be_bytes());
+        assert_eq!(
+            &encoded[encoded.len() - 9..encoded.len() - 1],
+            &guid.to_be_bytes()
+        );
         for length in 0..encoded.len() {
-            assert!(matches!(
-                decode_result(&encoded[..length]),
-                Err(ZfsWorkerError::Protocol("workspace pin request is truncated"))
-            ), "prefix {length}");
+            assert!(
+                matches!(
+                    decode_result(&encoded[..length]),
+                    Err(ZfsWorkerError::Protocol(
+                        "workspace pin request is truncated"
+                    ))
+                ),
+                "prefix {length}"
+            );
         }
 
         let mut malformed_header = encoded[..12].to_vec();
         malformed_header[0] ^= 1;
         assert!(matches!(
             decode_result(&malformed_header),
-            Err(ZfsWorkerError::Protocol("workspace pin result header is invalid"))
+            Err(ZfsWorkerError::Protocol(
+                "workspace pin result header is invalid"
+            ))
         ));
 
         let mut invalid_identity_with_tail = encoded.clone();
@@ -1624,12 +1634,16 @@ mod tests {
         invalid_identity_with_tail.push(0);
         assert!(matches!(
             decode_result(&invalid_identity_with_tail),
-            Err(ZfsWorkerError::Protocol("workspace pin request has trailing bytes"))
+            Err(ZfsWorkerError::Protocol(
+                "workspace pin request has trailing bytes"
+            ))
         ));
         invalid_identity_with_tail.truncate(encoded.len());
         assert!(matches!(
             decode_result(&invalid_identity_with_tail),
-            Err(ZfsWorkerError::Protocol("workspace pin result identity is invalid"))
+            Err(ZfsWorkerError::Protocol(
+                "workspace pin result identity is invalid"
+            ))
         ));
 
         let mut invalid_utf8_with_tail = encoded;
@@ -1637,7 +1651,9 @@ mod tests {
         invalid_utf8_with_tail.push(0);
         assert!(matches!(
             decode_result(&invalid_utf8_with_tail),
-            Err(ZfsWorkerError::Protocol("workspace pin result string is not UTF-8"))
+            Err(ZfsWorkerError::Protocol(
+                "workspace pin result string is not UTF-8"
+            ))
         ));
     }
 
