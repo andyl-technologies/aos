@@ -74,6 +74,14 @@ where
         cancellation.close_after_failure(&mut self.client, cleanup)
     }
 
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    pub(crate) fn reset_under_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        self.client.reset_under_original(original)
+    }
+
     /// Attaches the independently owned target execution's live class budgets.
     pub fn set_host_operation_supervisor(
         &mut self,

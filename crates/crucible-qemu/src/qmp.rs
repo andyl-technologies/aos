@@ -35,6 +35,8 @@ use crate::QemuNodeChannelError;
 mod block_completion_observation;
 mod checkpoint;
 mod command;
+#[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+mod guarded_reset;
 #[cfg(feature = "kernel-swap-measurement")]
 mod kernel_swap_residency;
 mod paused_cpu;
@@ -967,7 +969,12 @@ where
         Ok(response)
     }
 
-    #[cfg(any(test, feature = "test-support", feature = "kernel-swap-measurement"))]
+    #[cfg(any(
+        test,
+        feature = "test-support",
+        feature = "kernel-swap-measurement",
+        feature = "private-measurement-domain"
+    ))]
     fn exchange_under(
         &mut self,
         command: QmpCommand<'_>,
@@ -1317,7 +1324,12 @@ struct QmpOperationDeadline<'a> {
     supervision: HostSupervisionDeadline,
     timeout: Duration,
     shared: Option<HostOperationGuard>,
-    #[cfg(any(test, feature = "test-support", feature = "kernel-swap-measurement"))]
+    #[cfg(any(
+        test,
+        feature = "test-support",
+        feature = "kernel-swap-measurement",
+        feature = "private-measurement-domain"
+    ))]
     borrowed: Option<&'a HostOperationGuard>,
     _lifetime: std::marker::PhantomData<&'a ()>,
 }
@@ -1330,14 +1342,24 @@ impl QmpOperationDeadline<'_> {
             supervision: HostSupervisionDeadline::start(timeout),
             timeout,
             shared: None,
-            #[cfg(any(test, feature = "test-support", feature = "kernel-swap-measurement"))]
+            #[cfg(any(
+                test,
+                feature = "test-support",
+                feature = "kernel-swap-measurement",
+                feature = "private-measurement-domain"
+            ))]
             borrowed: None,
             _lifetime: std::marker::PhantomData,
         }
     }
 
     fn remaining(&self, operation: &'static str) -> Result<Duration, QmpError> {
-        #[cfg(any(test, feature = "test-support", feature = "kernel-swap-measurement"))]
+        #[cfg(any(
+            test,
+            feature = "test-support",
+            feature = "kernel-swap-measurement",
+            feature = "private-measurement-domain"
+        ))]
         if let Some(guard) = self.borrowed {
             return guard
                 .wait_slice()
@@ -1374,7 +1396,12 @@ impl QmpOperationDeadline<'_> {
 
     fn retry_slice(&self, error: &io::Error) -> bool {
         let supervised = self.shared.is_some();
-        #[cfg(any(test, feature = "test-support", feature = "kernel-swap-measurement"))]
+        #[cfg(any(
+            test,
+            feature = "test-support",
+            feature = "kernel-swap-measurement",
+            feature = "private-measurement-domain"
+        ))]
         let supervised = supervised || self.borrowed.is_some();
         supervised
             && matches!(
@@ -1384,7 +1411,12 @@ impl QmpOperationDeadline<'_> {
     }
 
     fn complete(&self, operation: &'static str) -> Result<(), QmpError> {
-        #[cfg(any(test, feature = "test-support", feature = "kernel-swap-measurement"))]
+        #[cfg(any(
+            test,
+            feature = "test-support",
+            feature = "kernel-swap-measurement",
+            feature = "private-measurement-domain"
+        ))]
         if let Some(guard) = self.borrowed {
             return guard
                 .progress(1)
@@ -1631,6 +1663,9 @@ pub enum QmpCommandKind {
     Stop,
     /// Resume guest execution.
     Cont,
+    /// Request a managed guest reset using the caller's original operation.
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    SystemReset,
     /// Authenticated terminal lifecycle completion.
     CompleteTerminalLifecycle,
     /// QEMU-owned sealed plugin-resource inventory query.
@@ -1712,6 +1747,8 @@ impl QmpCommandKind {
             Self::QueryStatus => QMP_QUERY_STATUS_COMMAND,
             Self::Stop => QMP_STOP_COMMAND,
             Self::Cont => QMP_CONT_COMMAND,
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            Self::SystemReset => "system_reset",
             Self::CompleteTerminalLifecycle => QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND,
             Self::QueryHotForkPluginResourceInventory => {
                 QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND

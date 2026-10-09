@@ -539,3 +539,31 @@ fn bounded_scheduler_preemption_rejects_reaped_direct_child() -> Result<(), Box<
     assert!(evidence.claim().is_err());
     Ok(())
 }
+
+#[test]
+fn managed_reset_unsupported_node_has_zero_channel_effects() -> Result<(), Box<dyn Error>> {
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+
+    let log = shared_log();
+    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(2)),
+    )?;
+    let original = supervisor.begin(HostOperationClass::Preparation)?;
+    let before = recorded(&log);
+
+    let result = node.reset_under_original(&original);
+
+    assert!(matches!(
+        result,
+        Err(crate::QmpError::InvalidBound {
+            operation: "managed reset channel unavailable",
+        })
+    ));
+    assert_eq!(recorded(&log), before);
+    assert!(original.wait_slice().is_ok());
+    Ok(())
+}

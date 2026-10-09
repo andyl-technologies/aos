@@ -40,6 +40,8 @@ use crucible_shmem::{
 };
 
 mod channels;
+#[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+mod guarded_reset;
 mod paused_observation;
 pub(crate) use channels::QemuQmpMachineControlChannel;
 pub use channels::{QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuShmemHotPathChannel};

@@ -51,6 +51,14 @@ impl<S> QemuQmpMachineControlChannel for QemuQmpExactSnapshotControlChannel<S>
 where
     S: QmpTimeoutStream,
 {
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    fn reset_under_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpCommandComplete, crate::qmp::QmpError> {
+        self.vmstate.reset_under_original(original)
+    }
+
     #[cfg(feature = "kernel-swap-measurement")]
     fn discover_kernel_swap_admission(
         &mut self,

@@ -183,6 +183,8 @@ impl HotForkBlockBarrierAction {
 
 pub(super) enum QmpCommand<'a> {
     Capabilities,
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    SystemReset,
     SaveVm {
         tag: &'a QmpSnapshotTag,
         job_id: &'a str,
@@ -339,6 +341,8 @@ impl QmpCommand<'_> {
     pub(super) const fn kind(&self) -> QmpCommandKind {
         match self {
             Self::Capabilities => QmpCommandKind::Capabilities,
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            Self::SystemReset => QmpCommandKind::SystemReset,
             Self::SaveVm { .. } => QmpCommandKind::SaveVm,
             Self::DeleteSnapshot { .. } => QmpCommandKind::DeleteSnapshot,
             Self::CheckpointCapture { .. } => QmpCommandKind::CheckpointCapture,
@@ -405,6 +409,8 @@ impl QmpCommand<'_> {
                     "enable": ["oob"],
                 },
             }),
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            Self::SystemReset => json!({"execute": "system_reset"}),
             Self::SaveVm { tag, job_id } => {
                 snapshot_request(QMP_SNAPSHOT_SAVE_COMMAND, job_id, tag)
             }

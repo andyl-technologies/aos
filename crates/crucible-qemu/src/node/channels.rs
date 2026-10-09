@@ -532,6 +532,16 @@ impl QemuNodePendingQuantum {
 
 /// QMP machine-control channel for snapshot and quit commands.
 pub(crate) trait QemuQmpMachineControlChannel: Send {
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    fn reset_under_original(
+        &mut self,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpCommandComplete, crate::qmp::QmpError> {
+        Err(crate::qmp::QmpError::InvalidBound {
+            operation: "managed reset channel unavailable",
+        })
+    }
+
     #[cfg(feature = "kernel-swap-measurement")]
     fn discover_kernel_swap_admission(
         &mut self,
