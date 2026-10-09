@@ -6,7 +6,7 @@
 use crucible_node_contract::{Extensions, Phase, PreparedOwner, canonical};
 
 use super::*;
-use crate::node_contract::ReadyAttestation;
+use crate::node_contract::{NodeRoute, OperationToken, ReadyAttestation};
 
 fn id(value: &str) -> Id {
     Id::new(value).unwrap()
@@ -250,4 +250,59 @@ fn public_mapping_rejects_foreign_binding_generation_and_readiness() {
                 .is_err()
         );
     }
+}
+
+#[test]
+fn opaque_world_authority_requires_original_local_custody_and_world_scope() {
+    let (record, nodes) = fixture(false);
+    let original = WorldActivation {
+        authority: std::rc::Rc::new(()),
+        record,
+        nodes: nodes.into(),
+        preparation: None,
+    };
+    let clone = original.clone();
+    assert!(original.same_authority(&clone));
+
+    let mut independent = clone.clone();
+    independent.authority = std::rc::Rc::new(());
+    assert_eq!(original.record(), independent.record());
+    assert!(!original.same_authority(&independent));
+
+    let mut new_generation = clone;
+    new_generation.record.generation = 2.into();
+    assert!(!original.same_authority(&new_generation));
+}
+
+#[test]
+fn opaque_operation_authority_requires_original_custody_operation_and_owner_scope() {
+    let (record, _) = fixture(false);
+    let original = OperationToken {
+        authority: std::rc::Rc::new(()),
+        operation: id("operation/a"),
+        route: NodeRoute {
+            node: id("a"),
+            owners: record.owners,
+        },
+    };
+    let clone = original.clone();
+    assert!(original.same_authority(&clone));
+
+    let mut independent = clone.clone();
+    independent.authority = std::rc::Rc::new(());
+    assert_eq!(original.route(), independent.route());
+    assert_eq!(original.operation(), independent.operation());
+    assert!(!original.same_authority(&independent));
+
+    let mut another_operation = clone.clone();
+    another_operation.operation = id("operation/b");
+    assert!(!original.same_authority(&another_operation));
+
+    let mut another_owner = clone.clone();
+    another_owner.route.owners[0].owner = id("owner/b");
+    assert!(!original.same_authority(&another_owner));
+
+    let mut another_incarnation = clone;
+    another_incarnation.route.owners[0].incarnation = id("incarnation/b");
+    assert!(!original.same_authority(&another_incarnation));
 }

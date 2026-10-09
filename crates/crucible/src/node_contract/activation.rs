@@ -98,6 +98,16 @@ pub struct WorldActivation {
 }
 
 impl WorldActivation {
+    /// Tests whether two handles retain the same complete world authority.
+    ///
+    /// This compares actual local custody and the immutable world record. Equal
+    /// public generation or binding labels from another runtime do not match.
+    /// A positive result authenticates the retained handle only; it does not
+    /// establish current native readiness or authorize another operation.
+    pub fn same_authority(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.authority, &other.authority) && self.record == other.record
+    }
+
     /// Returns the complete committed world generation record.
     pub fn record(&self) -> &ActivationRecord {
         &self.record

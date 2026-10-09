@@ -332,6 +332,18 @@ pub struct OperationToken {
 }
 
 impl OperationToken {
+    /// Tests whether two tokens retain the same original operation authority.
+    ///
+    /// This compares actual local custody together with its immutable operation
+    /// and owner route. Equal public labels from another runtime do not match.
+    /// A positive result authenticates token identity only; it does not establish
+    /// native completion, current suspension or publication authority.
+    pub fn same_authority(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.authority, &other.authority)
+            && self.operation == other.operation
+            && self.route == other.route
+    }
+
     /// Returns the immutable original operation identity.
     pub fn operation(&self) -> &OperationId {
         &self.operation
