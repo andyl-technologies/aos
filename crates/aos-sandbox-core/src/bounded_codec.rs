@@ -201,6 +201,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bounded_append_reuses_capacity_and_accepts_empty_and_exact_bounds() {
+        let mut empty = Vec::new();
+        assert_eq!(append_with_capped_doubling(&mut empty, &[], 0).unwrap(), 0);
+        assert_eq!(empty.capacity(), 0);
+
+        let mut bytes = Vec::with_capacity(8);
+        bytes.extend_from_slice(b"ab");
+        let capacity = bytes.capacity();
+        let pointer = bytes.as_ptr();
+
+        assert_eq!(append_with_capped_doubling(&mut bytes, &[], 2).unwrap(), 0);
+        assert_eq!(append_with_capped_doubling(&mut bytes, b"cd", 4).unwrap(), 2);
+
+        assert_eq!(bytes, b"abcd");
+        assert_eq!(bytes.capacity(), capacity);
+        assert_eq!(bytes.as_ptr(), pointer);
+    }
+
+    #[test]
+    fn bounded_append_grows_to_the_cap_and_refuses_without_mutating_the_buffer() {
+        let mut bytes = Vec::with_capacity(4);
+        bytes.resize(bytes.capacity(), b'a');
+        let maximum = bytes.len() + 3;
+        let original_length = bytes.len();
+
+        assert_eq!(append_with_capped_doubling(&mut bytes, b"bc", maximum).unwrap(), 2);
+        assert!(bytes.capacity() >= maximum);
+        assert_eq!(&bytes[..original_length], vec![b'a'; original_length]);
+        assert_eq!(&bytes[original_length..], b"bc");
+        assert_eq!(append_with_capped_doubling(&mut bytes, b"d", maximum).unwrap(), 1);
+
+        let original = bytes.clone();
+        let capacity = bytes.capacity();
+        let pointer = bytes.as_ptr();
+
+        for (input, limit) in [(b"e".as_slice(), maximum), (&[], maximum - 1)] {
+            assert!(matches!(
+                append_with_capped_doubling(&mut bytes, input, limit),
+                Err(BoundedAppendError::LimitExceeded)
+            ));
+            assert_eq!(bytes, original);
+            assert_eq!(bytes.capacity(), capacity);
+            assert_eq!(bytes.as_ptr(), pointer);
+        }
+    }
+
+    #[test]
+    fn bounded_append_allocation_error_retains_the_reservation_source() {
+        let cause = Vec::<u8>::new().try_reserve_exact(usize::MAX).unwrap_err();
+        let message = cause.to_string();
+        let error = BoundedAppendError::Allocation(cause);
+
+        let source = std::error::Error::source(&error).unwrap();
+        assert!(source.is::<std::collections::TryReserveError>());
+        assert_eq!(source.to_string(), message);
+    }
+
+    #[test]
     fn fixed_width_reads_preserve_big_endian_values_and_reject_every_short_prefix() {
         let bytes = 0x0102_0304_0506_0708_u64.to_be_bytes();
         for length in 0..bytes.len() {

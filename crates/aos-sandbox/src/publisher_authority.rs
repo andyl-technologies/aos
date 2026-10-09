@@ -1169,6 +1169,31 @@ pub(crate) mod tests {
     use super::*;
     use crate::JournalLimits;
 
+    #[test]
+    fn bounded_writer_refusal_preserves_bytes_and_keeps_the_limit_flag_sticky() {
+        use std::io::Write as _;
+
+        let mut writer = BoundedWriter::new(4);
+        assert_eq!(writer.write(b"ab").unwrap(), 2);
+        let capacity = writer.bytes.capacity();
+        let pointer = writer.bytes.as_ptr();
+
+        let error = writer.write(b"cde").unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(error.to_string(), "publisher authority record is too large");
+        assert!(writer.exceeded);
+        assert_eq!(writer.bytes, b"ab");
+        assert_eq!(writer.bytes.capacity(), capacity);
+        assert_eq!(writer.bytes.as_ptr(), pointer);
+
+        assert_eq!(writer.write(b"cd").unwrap(), 2);
+        assert_eq!(writer.write(&[]).unwrap(), 0);
+        writer.flush().unwrap();
+        assert_eq!(writer.bytes, b"abcd");
+        assert!(writer.exceeded);
+    }
+
     struct TestDirectory(PathBuf);
 
     impl TestDirectory {

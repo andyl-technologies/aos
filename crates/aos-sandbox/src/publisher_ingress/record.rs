@@ -198,3 +198,32 @@ impl Write for BoundedBuffer {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_buffer_refusal_preserves_bytes_and_allows_later_in_bound_writes() {
+        let mut buffer = BoundedBuffer {
+            bytes: Vec::new(),
+            maximum: 4,
+        };
+        assert_eq!(buffer.write(b"ab").unwrap(), 2);
+        let capacity = buffer.bytes.capacity();
+        let pointer = buffer.bytes.as_ptr();
+
+        let error = buffer.write(b"cde").unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(error.to_string(), "record limit");
+        assert_eq!(buffer.bytes, b"ab");
+        assert_eq!(buffer.bytes.capacity(), capacity);
+        assert_eq!(buffer.bytes.as_ptr(), pointer);
+
+        assert_eq!(buffer.write(b"cd").unwrap(), 2);
+        assert_eq!(buffer.write(&[]).unwrap(), 0);
+        buffer.flush().unwrap();
+        assert_eq!(buffer.bytes, b"abcd");
+    }
+}
