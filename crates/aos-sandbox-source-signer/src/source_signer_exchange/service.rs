@@ -1,3 +1,14 @@
+//! Fixed activation and request dispatch for the independent Source signer.
+//!
+//! This private owner retains the startup credential, inherited listener and
+//! complete per-request signing, peer checks, send and shutdown recipes.
+//! The parent owns Root client verification and shared canonical wire framing.
+//! Source16 remains refused before key access or native observation; its
+//! separate retained CurrentNix owner is unchanged.
+//!
+//! This grouping preserves service custody without changing dependency or
+//! production authority boundaries.
+
 use std::error::Error;
 use std::io::{self, Read as _};
 use std::os::fd::AsFd as _;

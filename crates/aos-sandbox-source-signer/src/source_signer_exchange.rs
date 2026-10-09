@@ -6,6 +6,10 @@
 //! its protected public pin and expected hold.
 //! This transport neither adopts Controller's writer nor authorizes Q04/Create.
 //!
+//! The private service owner contains fixed activation and complete daemon
+//! request dispatch. Root client verification and shared wire codecs remain
+//! here; the public service entry directly exposes that same recipe.
+//!
 //! ```text
 //! AOSSSR01 | nonce[16] | root-cut[32] | project[16]
 //! AOSSSP01 | AOSSRB01 packet[288]
