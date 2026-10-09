@@ -367,6 +367,87 @@ fn producer_proof_inventory_requires_original_scope_and_complete_raw_dependencie
 }
 
 #[test]
+fn original_bytes_can_fill_two_distinct_typed_content_roles() {
+    let mut data = capture().transcript().clone();
+    let json = object(b"{\"original_native_custody\":true}");
+    let binary = InputPayload {
+        reference: canonical::content_ref(&json.bytes, "application/octet-stream").unwrap(),
+        bytes: json.bytes.clone(),
+    };
+    assert_eq!(json.reference.hash, binary.reference.hash);
+    assert_ne!(json.reference, binary.reference);
+
+    let proof = super::proof::RecordedProofClosure::capture(
+        &data.origin,
+        json.reference.clone(),
+        vec![binary.reference.clone()],
+    )
+    .unwrap();
+    data.records[0].evidence = vec![json.clone(), binary.clone(), proof];
+    data.records[0].physical_uncertainty = PhysicalTimingUncertainty::ObservedInterval {
+        earliest_ns: 1.into(),
+        latest_ns: 2.into(),
+        evidence: binary.reference.clone(),
+    };
+
+    let encoded = data.canonical_bytes().unwrap();
+    let restored = BoundaryTranscript::from_canonical_bytes(&encoded).unwrap();
+    assert_eq!(restored, data);
+    assert_eq!(restored.records[0].evidence[0], json);
+    assert_eq!(restored.records[0].evidence[1], binary);
+}
+
+#[test]
+fn typed_roles_do_not_authorize_changed_bytes_or_unretained_roles() {
+    let mut data = capture().transcript().clone();
+    let json = object(b"{\"original_native_custody\":true}");
+    let binary = InputPayload {
+        reference: canonical::content_ref(&json.bytes, "application/octet-stream").unwrap(),
+        bytes: json.bytes.clone(),
+    };
+    let proof = super::proof::RecordedProofClosure::capture(
+        &data.origin,
+        json.reference.clone(),
+        vec![binary.reference.clone()],
+    )
+    .unwrap();
+    data.records[0].evidence = vec![json, binary, proof];
+    assert!(data.canonical_bytes().is_ok());
+
+    let mut changed_bytes = data.clone();
+    changed_bytes.records[0].evidence[1].bytes.push(b' ');
+    assert!(changed_bytes.canonical_bytes().is_err());
+
+    let mut changed_role = data.clone();
+    changed_role.records[0].evidence[1].reference.media_type = "application/other".into();
+    assert!(changed_role.canonical_bytes().is_err());
+
+    let mut changed_enrollment_role = data.clone();
+    let source_binding = changed_enrollment_role.origin.source_binding.clone();
+    let enrolled = changed_enrollment_role
+        .origin
+        .context
+        .iter_mut()
+        .find(|object| object.reference == source_binding)
+        .unwrap();
+    enrolled.reference.media_type = "application/unenrolled-binding".into();
+    assert!(changed_enrollment_role.canonical_bytes().is_err());
+
+    let mut changed_measurement_role = data;
+    let mut evidence = changed_measurement_role.records[0].evidence[1]
+        .reference
+        .clone();
+    evidence.media_type = "application/unenrolled-measurement".into();
+    changed_measurement_role.records[0].physical_uncertainty =
+        PhysicalTimingUncertainty::ObservedInterval {
+            earliest_ns: 1.into(),
+            latest_ns: 2.into(),
+            evidence,
+        };
+    assert!(changed_measurement_role.canonical_bytes().is_err());
+}
+
+#[test]
 fn simultaneous_reservations_charge_complete_envelope_separators_before_effects() {
     let source = capture();
     let prototype = source.transcript().records[0].clone();

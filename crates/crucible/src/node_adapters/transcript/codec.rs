@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crucible_node_contract::{ContentRef, U64, Validate, canonical};
+use crucible_node_contract::{ContentRef, HashRef, U64, Validate, canonical};
 
 use super::types::*;
 
@@ -120,9 +120,9 @@ impl BoundaryTranscript {
                 ));
             }
         }
-        let mut objects = BTreeMap::new();
+        let mut objects = OriginalObjects::default();
         for object in &self.origin.context {
-            retain_object(&mut objects, &object.reference, &object.bytes)?;
+            objects.retain(&object.reference, &object.bytes)?;
         }
         if !self
             .origin
@@ -160,7 +160,7 @@ impl BoundaryTranscript {
                 position.validate().map_err(invalid)?;
             }
             for object in &record.evidence {
-                retain_object(&mut objects, &object.reference, &object.bytes)?;
+                objects.retain(&object.reference, &object.bytes)?;
             }
             for object in &record.evidence {
                 if let Some(closure) =
@@ -168,12 +168,7 @@ impl BoundaryTranscript {
                 {
                     let mut retained = std::collections::BTreeSet::new();
                     for reference in std::iter::once(&closure.root).chain(&closure.dependencies) {
-                        if !retained.insert(reference.hash.clone())
-                            || objects
-                                .get(&reference.hash.digest)
-                                .map(|(original, _)| *original)
-                                != Some(reference)
-                        {
+                        if !retained.insert(reference) || !objects.typed.contains_key(reference) {
                             return Err(TranscriptError::Invalid("original producer-proof inventory is duplicated or lacks raw dependency bytes".into()));
                         }
                     }
@@ -184,11 +179,7 @@ impl BoundaryTranscript {
                 latest_ns,
                 evidence,
             } = &record.physical_uncertainty
-                && (earliest_ns > latest_ns
-                    || objects
-                        .get(&evidence.hash.digest)
-                        .map(|(reference, _)| *reference)
-                        != Some(evidence))
+                && (earliest_ns > latest_ns || !objects.typed.contains_key(evidence))
             {
                 return Err(TranscriptError::Invalid(
                     "physical measurement custody".into(),
@@ -211,22 +202,36 @@ pub fn context_commitment(origin: &TranscriptOrigin) -> Result<ContentRef, Trans
     canonical::content_ref(&bytes, "application/json").map_err(invalid)
 }
 
-fn retain_object<'a>(
-    objects: &mut BTreeMap<String, (&'a ContentRef, &'a [u8])>,
-    reference: &'a ContentRef,
-    bytes: &'a [u8],
-) -> Result<(), TranscriptError> {
-    reference.verify(bytes).map_err(invalid)?;
-    if objects
-        .get(&reference.hash.digest)
-        .is_some_and(|stored| stored.0 != reference || stored.1 != bytes)
-    {
-        return Err(TranscriptError::Invalid(
-            "conflicting immutable object custody".into(),
-        ));
+/// Retains each original content role without allowing a hash to name two bodies.
+#[derive(Default)]
+struct OriginalObjects<'a> {
+    typed: BTreeMap<&'a ContentRef, &'a [u8]>,
+    bodies: BTreeMap<&'a HashRef, &'a [u8]>,
+}
+
+impl<'a> OriginalObjects<'a> {
+    fn retain(
+        &mut self,
+        reference: &'a ContentRef,
+        bytes: &'a [u8],
+    ) -> Result<(), TranscriptError> {
+        reference.verify(bytes).map_err(invalid)?;
+        if self
+            .bodies
+            .get(&reference.hash)
+            .is_some_and(|original| *original != bytes)
+        {
+            return Err(TranscriptError::Invalid(
+                "conflicting immutable object bytes".into(),
+            ));
+        }
+
+        // Media roles are part of the original typed reference. The same bytes
+        // can fill multiple authentic roles; dependency lookup must remain exact.
+        self.bodies.insert(&reference.hash, bytes);
+        self.typed.insert(reference, bytes);
+        Ok(())
     }
-    objects.insert(reference.hash.digest.clone(), (reference, bytes));
-    Ok(())
 }
 
 pub(super) fn invalid(error: impl std::fmt::Display) -> TranscriptError {
