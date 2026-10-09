@@ -2,11 +2,13 @@
 """Admit exact equal-completed-work pairs without claiming timing qualification.
 
 This offline checker binds both receipt files to supplied immutable hashes and
-matches each fixed row and seed within the same fingerprint edition only.
-Raw roots cannot compare an older fingerprint edition across a format cutover.
-An independent complete-state/RAM witness is a separate outstanding obligation.
-It retains CPU and wall costs separately. The
-existing producer reports whole-work CPU as unavailable, so its rows remain
+matches each fixed row and seed. Raw roots alone only compare the same
+fingerprint edition. Optional pinned complete-capture files compare all retained
+RAM and state bytes independently of those roots, while physical origin and
+model-complete producer compatibility remain outstanding obligations.
+
+It retains CPU and wall costs separately. The existing producer reports
+whole-work CPU as unavailable, so its rows remain
 blocked for CPU comparisons. Three repetitions and uncontrolled host cache do
 not establish a zero-regression confidence gate; this checker never issues one.
 """
@@ -108,7 +110,12 @@ def row_inventory(receipt):
         require(len(samples) == key[1], "completed count lacks actual samples")
         require(set(samples) == expected_seeds(*key), "seed moved from fixed family")
         inventory[key] = (row, samples)
-    expected = {(target, parallel, repeat) for target in TARGETS for parallel in PARALLEL for repeat in REPEATS}
+    expected = {
+        (target, parallel, repeat)
+        for target in TARGETS
+        for parallel in PARALLEL
+        for repeat in REPEATS
+    }
     require(set(inventory) == expected and used_seeds == set(range(1000, 1063)), "incomplete fixed matrix")
     return inventory
 
@@ -132,11 +139,16 @@ def compare(baseline, candidate, capture_pairs=None):
             pairs[seed] = pair
         require(set(pairs) == set(range(1000, 1063)), "incomplete fixed capture pair corpus")
         spec = importlib.util.spec_from_file_location(
-            "complete_state_witness", Path(__file__).with_name("ram-comparison-state-witness.py"))
+            "complete_state_witness",
+            Path(__file__).with_name("ram-comparison-state-witness.py"),
+        )
         state_consumer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(state_consumer)
     state_witnesses = []
-    require(digest(baseline["scenario_corpus"]) == digest(candidate["scenario_corpus"]), "authored scenario corpus changed")
+    require(
+        digest(baseline["scenario_corpus"]) == digest(candidate["scenario_corpus"]),
+        "authored scenario corpus changed",
+    )
     for field in ("host", "storage", "cpu_affinity"):
         for receipt in (baseline, candidate):
             value = receipt["pinned"][field]
@@ -177,26 +189,51 @@ def compare(baseline, candidate, capture_pairs=None):
             if value is not None:
                 integer(value, "positive completed-work CPU", 1)
         if reference_cpu is not None and observed_cpu is not None:
-            require(baseline["completed_work_cpu_scope"] == candidate["completed_work_cpu_scope"], "CPU scope changed")
-            require(baseline["completed_work_cpu_scope"] == CPU_SCOPE, "incomplete CPU accounting scope")
-            cpu = ratio(integer(observed_cpu, "candidate CPU", 1), integer(reference_cpu, "baseline CPU", 1))
-        rows.append({"family": list(key), "completed": observed["completed"],
-                     "wall_ratio": ratio(observed["elapsed_ns"], reference["elapsed_ns"]), "cpu_ratio": cpu})
-    return {"schema": "crucible.completed-work-comparison.v1", "rows": rows,
-            "cpu_comparison_ready": all(row["cpu_ratio"] is not None for row in rows),
-            "performance_qualified": False,
-            "comparison_scope": ("independent complete captured bytes, descriptive equal-work comparison only"
-                                 if state_consumer else "same fingerprint edition, descriptive equal-work comparison only"),
-            "common_capture_bytes_ready": state_consumer is not None,
-            "capture_witnesses": state_witnesses,
-            "capture_physical_origin_verified": False,
-            "fingerprint_edition_verified": False,
-            "holds": ["fingerprint edition is not independently certified; cross-edition baseline requires an independent common complete-state/RAM witness",
-                      "retained capture bytes do not certify physical inventory/stopped origin or model-complete producer compatibility",
-                      "implicit firmware identity requires a separate actual input binding",
-                      "actual host observation/clock/CPU source evidence is not certified by labels",
-                      "fixed paired uncertainty and separate zero-margin family gates are not implemented by this descriptive checker",
-                      "cold/warm host storage is uncontrolled in the existing producer"]}
+            require(
+                baseline["completed_work_cpu_scope"] == candidate["completed_work_cpu_scope"],
+                "CPU scope changed",
+            )
+            require(
+                baseline["completed_work_cpu_scope"] == CPU_SCOPE,
+                "incomplete CPU accounting scope",
+            )
+            cpu = ratio(
+                integer(observed_cpu, "candidate CPU", 1),
+                integer(reference_cpu, "baseline CPU", 1),
+            )
+        rows.append({
+            "family": list(key),
+            "completed": observed["completed"],
+            "wall_ratio": ratio(observed["elapsed_ns"], reference["elapsed_ns"]),
+            "cpu_ratio": cpu,
+        })
+
+    return {
+        "schema": "crucible.completed-work-comparison.v1",
+        "rows": rows,
+        "cpu_comparison_ready": all(row["cpu_ratio"] is not None for row in rows),
+        "performance_qualified": False,
+        "comparison_scope": (
+            "independent complete captured bytes, descriptive equal-work comparison only"
+            if state_consumer
+            else "same fingerprint edition, descriptive equal-work comparison only"
+        ),
+        "common_capture_bytes_ready": state_consumer is not None,
+        "capture_witnesses": state_witnesses,
+        "capture_physical_origin_verified": False,
+        "fingerprint_edition_verified": False,
+        "holds": [
+            "fingerprint edition is not independently certified; cross-edition baseline "
+            "requires an independent common complete-state/RAM witness",
+            "retained capture bytes do not certify physical inventory/stopped origin "
+            "or model-complete producer compatibility",
+            "implicit firmware identity requires a separate actual input binding",
+            "actual host observation/clock/CPU source evidence is not certified by labels",
+            "fixed paired uncertainty and separate zero-margin family gates are not "
+            "implemented by this descriptive checker",
+            "cold/warm host storage is uncontrolled in the existing producer",
+        ],
+    }
 
 
 def unique_fields(pairs):
@@ -210,7 +247,10 @@ def unique_fields(pairs):
 def read_pinned(path, expected):
     require(re.fullmatch(r"[0-9a-f]{64}", expected) is not None, "expected receipt SHA256")
     raw = path.read_bytes()
-    require(hashlib.sha256(raw).hexdigest() == expected, "receipt identity differs from pinned baseline/candidate")
+    require(
+        hashlib.sha256(raw).hexdigest() == expected,
+        "receipt identity differs from pinned baseline/candidate",
+    )
     return json.loads(raw, object_pairs_hook=unique_fields)
 
 

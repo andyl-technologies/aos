@@ -25,7 +25,7 @@ PAGE_BYTES = 4096
 MAX_ROOT_BYTES = 3 * 1024 * 1024
 MAX_REGIONS = 4096
 # The fixed admitted backing ceiling bounds streamed files, not an IO grant.
-# Complete inventory may include device/immutable backing beyond main512MiB.
+# Complete inventory may include device/immutable backing beyond main 512 MiB.
 MAX_RAM_BYTES = 4 * 1024 * 1024 * 1024
 MAX_STATE_BYTES = 512 * 1024 * 1024
 STATE_ROLES = ("device", "host_io", "node")
@@ -140,7 +140,12 @@ def inventory(data):
 
 def complete_ram(artifact, generation):
     # Fixed record overhead and root bounds are separate from logical RAM bytes.
-    maximum = MAX_RAM_BYTES + (MAX_RAM_BYTES // PAGE_BYTES + MAX_REGIONS) * 24 + MAX_ROOT_BYTES + 72
+    maximum = (
+        MAX_RAM_BYTES
+        + (MAX_RAM_BYTES // PAGE_BYTES + MAX_REGIONS) * 24
+        + MAX_ROOT_BYTES
+        + 72
+    )
     with pinned_file(artifact, maximum) as (stream, _):
         header = exact(stream, 72)
         magic, edition, initial, observed, records, root_length, reserved = struct.unpack(
@@ -245,7 +250,7 @@ def legacy_direct_ram(artifact):
                 require(region == ordinal and observed_offset == offset
                         and valid == min(length - offset, 4 * 1024 * 1024),
                         "master direct RAM record coverage")
-                # The producer uses up to4MiB records; the reader retains4KiB only.
+                # The producer uses up to 4 MiB records; the reader retains 4 KiB.
                 remaining = valid
                 while remaining:
                     size = min(remaining, PAGE_BYTES)

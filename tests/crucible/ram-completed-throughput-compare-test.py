@@ -26,26 +26,49 @@ def fixture(cpu=None):
             for repeat in comparison.REPEATS:
                 samples = []
                 for _ in range(parallel):
-                    samples.append({"seed": seed, "scenario": [seed % 256] * 32,
-                                    "fingerprint": [1] * 32, "charged_physical_quanta": 32,
-                                    "emitted_signal_events": 0, "fault_work_items": None,
-                                    "resources": dict(zip(comparison.RESOURCE_FIELDS,
-                                                          (1536 << 20, 4 << 30,
-                                                           512 << 20, 32 << 20,
-                                                           1, 1, 69, 1056))),
-                                    "requested_target_bytes": target})
+                    samples.append({
+                        "seed": seed,
+                        "scenario": [seed % 256] * 32,
+                        "fingerprint": [1] * 32,
+                        "charged_physical_quanta": 32,
+                        "emitted_signal_events": 0,
+                        "fault_work_items": None,
+                        "resources": dict(zip(
+                            comparison.RESOURCE_FIELDS,
+                            (1536 << 20, 4 << 30, 512 << 20, 32 << 20, 1, 1, 69, 1056),
+                        )),
+                        "requested_target_bytes": target,
+                    })
                     seed += 1
-                rows.append({"target_divisor": target, "parallel": parallel,
-                             "repeat": repeat, "elapsed_ns": 100, "completed": parallel,
-                             "completed_work_cpu_ns": cpu, "failures": [], "samples": samples})
-    return {"schema": comparison.SCHEMA, "quanta_per_attempt": 32,
-            "scenario_corpus": [1] * 32, "scenario_seeds": list(range(1000, 1063)),
-            "cache_scope": "synthetic uncontrolled cache",
-            "completed_work_cpu_scope": comparison.CPU_SCOPE,
-            "pinned": {"host": "synthetic host", "storage": "synthetic storage",
-                       "cpu_affinity": "0", "artifact_digests": [
-                           {"role": role, "bytes": 1, "blake3": [1] * 32}
-                           for role in comparison.ROLES]}, "rows": rows}
+                rows.append({
+                    "target_divisor": target,
+                    "parallel": parallel,
+                    "repeat": repeat,
+                    "elapsed_ns": 100,
+                    "completed": parallel,
+                    "completed_work_cpu_ns": cpu,
+                    "failures": [],
+                    "samples": samples,
+                })
+
+    return {
+        "schema": comparison.SCHEMA,
+        "quanta_per_attempt": 32,
+        "scenario_corpus": [1] * 32,
+        "scenario_seeds": list(range(1000, 1063)),
+        "cache_scope": "synthetic uncontrolled cache",
+        "completed_work_cpu_scope": comparison.CPU_SCOPE,
+        "pinned": {
+            "host": "synthetic host",
+            "storage": "synthetic storage",
+            "cpu_affinity": "0",
+            "artifact_digests": [
+                {"role": role, "bytes": 1, "blake3": [1] * 32}
+                for role in comparison.ROLES
+            ],
+        },
+        "rows": rows,
+    }
 
 
 class CompletedWorkAdmission(unittest.TestCase):
@@ -169,7 +192,9 @@ class CompletedWorkAdmission(unittest.TestCase):
 
     def test_complete_capture_pairs_are_actually_read_for_every_seed(self):
         capture_spec = importlib.util.spec_from_file_location(
-            "capture_controls", Path(__file__).with_name("ram-comparison-state-witness-test.py"))
+            "capture_controls",
+            Path(__file__).with_name("ram-comparison-state-witness-test.py"),
+        )
         controls = importlib.util.module_from_spec(capture_spec)
         capture_spec.loader.exec_module(controls)
         fixture_owner = controls.CompleteStateWitnessTests()
@@ -181,7 +206,10 @@ class CompletedWorkAdmission(unittest.TestCase):
                 right = fixture_owner.capture(generation=23, root_byte=99, versions=17)
                 left["boundary"]["seed"] = right["boundary"]["seed"] = seed
                 pairs.append({"seed": seed, "baseline": left, "candidate": right})
-            manifest = {"schema": "crucible.complete-capture-comparison-input.v1", "pairs": pairs}
+            manifest = {
+                "schema": "crucible.complete-capture-comparison-input.v1",
+                "pairs": pairs,
+            }
             candidate = fixture()
             candidate["rows"][0]["samples"][0]["fingerprint"] = [99] * 32
             result = comparison.compare(fixture(), candidate, manifest)
@@ -197,7 +225,10 @@ class CompletedWorkAdmission(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "actual work seed"):
                 comparison.compare(fixture(), candidate, changed)
             changed = copy.deepcopy(manifest)
-            body = Path(changed["pairs"][-1]["candidate"]["node"]["path"]).read_bytes() + b"different"
+            body = (
+                Path(changed["pairs"][-1]["candidate"]["node"]["path"]).read_bytes()
+                + b"different"
+            )
             changed["pairs"][-1]["candidate"]["node"] = fixture_owner.artifact(body)
             with self.assertRaisesRegex(ValueError, "state bytes"):
                 comparison.compare(fixture(), candidate, changed)
