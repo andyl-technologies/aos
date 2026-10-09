@@ -4,9 +4,8 @@
 //! request. Decoding restores the complete typed member and dependency set;
 //! the terminal commitment is recomputed before Storage can prepare a program.
 
-use aos_sandbox_core::{
-    BoundedReader, ObjectDigest, OperationId, ReadError, ResourceId, SandboxId, SnapshotId,
-};
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
+use aos_sandbox_core::{ObjectDigest, OperationId, ResourceId, SandboxId, SnapshotId};
 
 use super::{
     LifecycleAtomicDatasetSnapshotMemberV1, LifecycleAtomicDatasetSnapshotPlanV1,

@@ -22,7 +22,8 @@
 
 use std::{collections::BTreeSet, path::Path};
 
-use aos_sandbox_core::{BoundedReader, ObjectDigest, OperationId, ProjectId, SandboxId};
+use aos_sandbox_core::bounded_codec::BoundedReader;
+use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
 
