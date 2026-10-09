@@ -4995,6 +4995,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `ttl`, `forever`, and ordinary reflog duration/count selection.
   Parent-owned registrations and a nineteen-case auxiliary check now prepare
   isolated implementation of genuine local copied-destination first ownership.
+  D-113 clarifies truthful conservative DATA roots/state at the existing
+  pointers without encoding changes or foreign retention/lineage certification.
   Its production modules and runtime qualification remain pending; recurring
   permanent recovery and restoration remain additional T1 local obligations.
   Actual remote provider qualification belongs to T3. No remote conformance

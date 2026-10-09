@@ -154,6 +154,31 @@ An unavailable foreign original signing baseline alone is not a prerequisite
 for deleting only universally inadmissible P; it remains a prerequisite for
 any separate operation that actually certifies that foreign history.
 
+The roots/state pointers use the existing version-one `GcRoots` and `GcState`
+schemas, with the distinct copied-placement meaning in D-113. The destination
+factory MAY conservatively retain every current commit-bearing value and every
+selected historical new or predecessor commit without applying foreign age or
+retention claims. In this mode, `current` identifies a present selected value;
+`forever` identifies a historical value deliberately held without expiry by
+this physical check, not a verified foreign `retain=forever` property. Every
+such root has the unbounded `null` parent cutoff. Unknown selected history
+still refuses; an unselected proposal MUST NOT become a root. Opaque advisory
+sidecars retain their exact inventory and bytes without invented commit edges.
+
+The complete placement traversal records only actual canonical DATA expansions
+and verified eligible destination placements. It carries no proof context or
+proof-edge pruning decision; a completed frontier is empty only after every
+required physical dependency is accounted for. Required mark checkpoints retain
+their exact sorted hashes, reconstructed filters and raw-byte integrity
+pointers. The selected cycle, epoch and snapshot time come from the actual
+destination session, not imported artifact age. These records are usable only
+with the independently checked `CopiedPlacementFence`; decoding them, or
+reusing their expansions, MUST NOT qualify an ordinary `CurrentCollectionFence`,
+historical authorization or carried lineage. Ordinary GC-3/GC-5/GC-30 retention
+and authenticated traversal rules are unchanged. Any consumed policy/trust
+decision still requires its actual independent inputs; conservative retention
+neither invents them nor permits forbidden private-source probes.
+
 Select CopiedRetirementPreparation Preparing at revision 0 under a fresh
 operation nonce and NEW destination `[P, cycle, epoch]` binding. Its plan
 binds actual destination genesis, exact current placement fence, whole live

@@ -2338,6 +2338,38 @@ is added rather than editing history.
   - **Affects:** TEST-1 to TEST-3, OBJ-2/6 and DRV-21. DRV-22's independent
     replay and complete runtime qualification remain required.
 
+- **[D-113] Describe conservative copied DATA with existing traversal records.**
+  - **Status:** Decided (2026-10-09)
+  - **Decision:** Clarify the roots/state bodies referenced by D-82's distinct
+    `CopiedPlacementFence`. They retain the version-one `GcRoots`/`GcState`
+    schemas. A genuine destination factory may keep all present commit-bearing
+    values and selected history without expiry or foreign age filtering, using
+    `current` for present values and `forever` for deliberate conservative
+    historical DATA holds, with unbounded parent cutoffs. Physical expansion
+    claims contain no authenticated proof contexts or pruning decisions.
+    Completeness, canonical identities, eligible serving, checkpoint integrity,
+    destination registration, actual controls and current lease remain required.
+    The bodies alone cannot qualify ordinary collection or carried lineage.
+  - **Rationale:** D-82 requires complete copied DATA placement independently
+    of a foreign original signing baseline, but references records whose root
+    reasons were described only as authenticated ordinary retention outcomes.
+    Treating conservative history as a verified foreign policy would invent
+    authority; requiring that policy would prevent retirement of universally
+    inadmissible keys. The distinct fence provides the interpretation boundary.
+    Actual independent inputs remain mandatory for any consumed trust or policy
+    decision. No foreign timestamp, absent witness or decoded record supplies
+    deletion permission.
+  - **Alternatives considered:** Add another root/state encoding (rejected:
+    existing fields describe actual physical preservation); label all history
+    as authenticated ordinary retention or proof contexts (rejected: fabricates
+    verification); omit historical roots or dependencies (rejected: violates
+    complete copied placement); reuse the records for ordinary lineage evidence
+    (rejected: crosses the independent qualification boundary).
+  - **Compatibility:** No identity, encoding, key, requirement ID, gate name or
+    existing golden byte changes. Ordinary GC-3/GC-5/GC-30 behavior is unchanged.
+    This clarification precedes T1's freeze and completes no task or gate.
+  - **Affects:** GC-4/7/15/16/29, D-82 and copied-placement fence interpretation.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

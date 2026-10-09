@@ -933,6 +933,10 @@ CopiedPlacementFence = {
 ; Complete root/history/policy/serving closure and EVERY placement/fallback
 ; exclude this P. Missing old pack/index/witness is permitted, not evidence.
 ; Actual independent destination control/admin authority is always required.
+; D-113: pointed-to v1 roots/state may describe conservative copied DATA only.
+; Historical "forever" roots are destination physical holds, not foreign policy
+; claims; cutoff is null, expansion has no proof context and certifies no lineage.
+; Ordinary current-fence qualification cannot reuse those traversal claims.
 permanent-owner-selection = [0]        ; copied visibility, pending destination retirement
                           / [1, tstr, digest32]
 ; Exact selected operation key/raw immutable authorization digest. Only a

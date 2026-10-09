@@ -10,6 +10,8 @@
 //!
 //! These records contain untrusted traversal claims. Decoding does not prove root
 //! completeness, certificate validity, current lease ownership or deletion permission.
+//! A distinct copied-placement fence may bind conservative physical DATA traversal
+//! under D-113; those claims do not establish ordinary retention or foreign authority.
 
 use super::{GcError, MARK_FILTER_BYTES, MarkSet, ParentCutoff, ProofContext, key};
 use crate::{
