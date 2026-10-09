@@ -13,6 +13,10 @@
 //! - Bandwidth limiting
 //! - Retry with exponential backoff
 //!
+//! The default `transfer` feature enables generic transport. The optional
+//! `direct-upload` feature adds signed Hub uploads and their protocol types;
+//! consumers that only fetch metadata do not need those generated types.
+//!
 //! # Architecture
 //!
 //! The crate is organized in layers:
@@ -63,7 +67,7 @@
 pub mod auth;
 #[cfg(feature = "transfer")]
 pub mod bandwidth;
-#[cfg(feature = "transfer")]
+#[cfg(feature = "direct-upload")]
 pub mod direct_upload;
 #[cfg(feature = "transfer")]
 pub mod hash;

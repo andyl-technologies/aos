@@ -8,9 +8,6 @@ license.workspace = true
 default = ["transfer"]
 transfer = [
     "dep:async-trait",
-    "dep:aos-proto-types",
-    "dep:base64",
-    "dep:md-5",
     "dep:aws-config",
     "dep:aws-sdk-s3",
     "dep:aws-types",
@@ -29,6 +26,8 @@ transfer = [
     "dep:tracing",
     "dep:url",
 ]
+
+direct-upload = ["transfer", "dep:aos-proto-types", "dep:base64", "dep:md-5"]
 
 [dependencies]
 aos-proto-types = { workspace = true, optional = true }

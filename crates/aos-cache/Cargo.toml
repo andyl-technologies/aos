@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 aos-core = { workspace = true }
-aos-net = { workspace = true, features = ["transfer"] }
+aos-net = { workspace = true, features = ["direct-upload"] }
 aos-remote = { workspace = true }
 aos-proto-types = { workspace = true }
 anyhow = { workspace = true }
