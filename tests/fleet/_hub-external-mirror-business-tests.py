@@ -23,7 +23,7 @@ class MirrorBusinessTests(unittest.TestCase):
         ready = {"backgroundControllers": {"mirrorSync": {"intervalSeconds": 60, "mode": "full"}}}
         selected = {"reservedPlacementRoot": ".aos-mirror-qualification/" + run + "/final"}
         artifact = {"issuedAt": 10, "validUntil": 100,
-            "upstreamBase": "https://aos.andyl.org:4778/fleet-mirror/" + run,
+            "upstreamBase": "https://aos.fleet.test:4778/fleet-mirror/" + run,
             "placementPrefix": selected["reservedPlacementRoot"]}
         config = {"bindings": {"HUB_EXTERNAL_MIRROR_CONSUMER": json.dumps({"version": 1,
             "domains": [{"actualInstalled": True}]})}}

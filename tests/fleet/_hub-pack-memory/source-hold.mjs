@@ -41,7 +41,7 @@ async function selectedFile(reference, maximum) {
 }
 
 export async function startOwnedSource(config) {
-  if (config.version !== 1 || config.host !== "aos.andyl.org:4778" || config.port !== 4778
+  if (config.version !== 1 || config.host !== "aos.fleet.test:4778" || config.port !== 4778
       || !/^[a-f0-9]{32}$/.test(config.runId) || remaining(config.cutoffUptimeMillis) <= 2000
       || remaining(config.cutoffUptimeMillis) > 120000) throw new Error("source selection differs");
   if (config.bootId !== (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim()) {

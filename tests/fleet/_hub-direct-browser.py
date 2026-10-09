@@ -21,7 +21,7 @@ metadata = cookie.lstat()
 if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
         or metadata.st_mode & 0o077 or metadata.st_size > 65536):
     raise ValueError('selected browser cookie lacks private regular-file custody')
-origin = 'https://aos.andyl.org'
+origin = 'https://aos.fleet.test'
 observations = []
 
 def private_file(name, body):

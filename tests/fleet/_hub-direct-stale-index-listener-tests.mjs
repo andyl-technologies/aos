@@ -27,7 +27,7 @@ async function fixture({ delayUpstream = false, replyStatus = 200, replyBody = '
     '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost',
     '-keyout', privateKeyFile, '-out', certificateFile], { stdio: 'ignore' });
   const configuration = { version: 1, root, listenPort: 0, upstreamHost: 'worker',
-    upstreamPort: 443, originHost: 'aos.andyl.org', certificateFile, privateKeyFile,
+    upstreamPort: 443, originHost: 'aos.fleet.test', certificateFile, privateKeyFile,
     caFile: certificateFile, holdModuleFile: path.join(directory, '_hub-direct-stale-placement-hold.mjs') };
   const running = await startListener(configuration);
   const calls = [];

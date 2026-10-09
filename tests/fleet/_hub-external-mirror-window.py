@@ -23,7 +23,7 @@ def mirror_selection(registry, upstream, run_id, mode, *, frontier, source_commi
             or not re.fullmatch(r"[0-9a-f]{64}", source_commit)
             or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", frontier)):
         raise ValueError("Mirror selection lacks its signed source and mode")
-    expected_upstream = "https://aos.andyl.org:4778/fleet-mirror/" + run_id
+    expected_upstream = "https://aos.fleet.test:4778/fleet-mirror/" + run_id
     if upstream != expected_upstream:
         raise ValueError("Mirror upstream leaves its selected local TLS surface")
     selected = registry["registry"]

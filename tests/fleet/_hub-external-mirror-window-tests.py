@@ -20,7 +20,7 @@ def fixture(mode="full"):
         "placement": {"name": "mirror-" + suffix, "bindingName": "external-binding", "resourceVersion": "5",
             "prefix": ".aos-mirror-qualification/" + run + "/final/" + suffix}}
     binding = {"stableId": "external-binding", "resourceVersion": "6", "spec": {"name": "external-binding"}}
-    selected = module.mirror_selection(registry, "https://aos.andyl.org:4778/fleet-mirror/" + run,
+    selected = module.mirror_selection(registry, "https://aos.fleet.test:4778/fleet-mirror/" + run,
         run, mode, frontier="1.0.0", source_commit="b" * 64, binding=binding)
     configured = {"registryId": "1", "resourceVersion": "2", **module.mirror_desired(selected),
         "state": "pending", "observedCommit": "", "lastSyncAt": "0", "error": ""}
@@ -96,7 +96,7 @@ class MirrorWindowTests(unittest.TestCase):
 
     def test_source_mode_trust_or_version_drift_refuses(self):
         selected, configured, _, _, _ = fixture()
-        for field, changed in (("sourceUrl", "https://aos.andyl.org:4778/other"),
+        for field, changed in (("sourceUrl", "https://aos.fleet.test:4778/other"),
                 ("refspec", "refs/heads/*"), ("signaturePolicy", "allow_unsigned"),
                 ("authSecretRef", "another"), ("mode", 2), ("resourceVersion", "3"),
                 ("intervalSeconds", "1")):

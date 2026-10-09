@@ -79,7 +79,7 @@ def prepare_external_mirror_selection(native, worker, tools, prepared, processes
         "deploymentId": tools["deploymentId"], "publicOrigin": coordinates["publicOrigin"],
         "sourceDigest": manifest["workerSourceDigest"], "scriptVersion": manifest["workerScriptVersion"],
         "profileDigest": direct["evidence"]["structuralRuntime"]["protectedProfiles"][0]["protectedProfileDigest"],
-        "upstreamBase": "https://aos.andyl.org:4778/fleet-mirror/" + run,
+        "upstreamBase": "https://aos.fleet.test:4778/fleet-mirror/" + run,
         "placementPrefix": ".aos-mirror-qualification/" + run + "/final",
         "maximumObjectBytes": MIRROR_SOURCE_FILE_LIMIT, "issuedAt": issued, "validUntil": cutoff,
         "inputs": inputs, "clocks": clocks}

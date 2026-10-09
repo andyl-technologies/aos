@@ -37,7 +37,7 @@ def install_direct_stale_index_path(native, tools):
         "caFile": "/etc/ssl/certs/ca-certificates.crt"}))
     configuration = {"version": 1, "root": "/var/lib/hybrid-native-stale-index",
         "listenPort": 4650, "upstreamHost": "worker", "upstreamPort": 443,
-        "originHost": "aos.andyl.org", "holdModuleFile": tools["staleIndexHold"],
+        "originHost": "aos.fleet.test", "holdModuleFile": tools["staleIndexHold"],
         **{name: reference["path"] for name, reference in selected.items()}}
     controller = managed_fixture_module(tools["staleIndexController"], "direct_stale_index")
     installed = controller.start_direct_stale_index_listener(native, tools, configuration)

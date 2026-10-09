@@ -8,9 +8,9 @@
   storageHttp ? "",
   observationRoot ? "/var/lib/hybrid-native-observations",
   listenPort ? 443,
-  serverName ? "aos.staging.andyl.org",
+  serverName ? "aos-origin.fleet.test",
   upstream ? "https://127.0.0.1:4443",
-  upstreamCertificateName ? "aos.staging.andyl.org",
+  upstreamCertificateName ? "aos-origin.fleet.test",
   includeIssuer ? true,
   includeOriginalCorrelation ? false,
 }: let

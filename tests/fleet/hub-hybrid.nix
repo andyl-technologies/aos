@@ -422,7 +422,7 @@
       fixture.hubSystem.config.aos.registry-hub
       // {
         deploymentId = "fleet-hybrid-v1";
-        externalUrl = "https://aos.andyl.org";
+        externalUrl = "https://aos.fleet.test";
         listen =
           if externalDirect
           then "127.0.0.1:4443"
@@ -431,8 +431,12 @@
         channelReceiptKeyId = "staging-channel-v1";
         hybrid = {
           enable = true;
-          workerUrl = "https://aos.andyl.org";
-          originUrl = "https://aos.staging.andyl.org";
+          workerUrl = "https://aos.fleet.test";
+          originUrl = "https://aos-origin.fleet.test";
+          uploadMode =
+            if externalDirect
+            then "direct"
+            else "worker_proxy";
         };
         credentials =
           fixture.hubSystem.config.aos.registry-hub.credentials
@@ -650,12 +654,12 @@
         {
           HUB_TOPOLOGY = "hybrid";
           HUB_DEPLOYMENT_ID = "fleet-hybrid-v1";
-          HUB_HYBRID_ORIGIN_URL = "https://aos.staging.andyl.org";
+          HUB_HYBRID_ORIGIN_URL = "https://aos-origin.fleet.test";
           HUB_HYBRID_INGRESS_KEY = "hybrid-fleet-ingress-key-with-at-least-thirty-two-bytes";
           HUB_STORAGE_WORK_KEY = "hybrid-fleet-storage-key-with-at-least-thirty-two-bytes";
         }
         // lib.optionalAttrs externalDirect {
-          HUB_DIRECT_UPLOAD_PUBLIC_ORIGIN = "https://aos.andyl.org";
+          HUB_DIRECT_UPLOAD_PUBLIC_ORIGIN = "https://aos.fleet.test";
           HUB_DIRECT_UPLOAD_MANAGED_R2 = "false";
           HUB_DIRECT_UPLOAD_QUALIFICATION_ENABLED = "true";
           HUB_DIRECT_UPLOAD_CLOCK_MODE = "bounded_utc";
@@ -839,7 +843,7 @@ in {
         system = nativeSystem;
         bootMode = "image";
         hostStoreMount = true;
-        hostAliases = ["aos.staging.andyl.org"];
+        hostAliases = ["aos-origin.fleet.test"];
         imageDiskMiB = 16384;
         memoryMiB = 4096;
         varProvisioning = "repart";
@@ -848,7 +852,7 @@ in {
         system = edgeSystem;
         bootMode = "image";
         hostStoreMount = true;
-        hostAliases = ["aos.andyl.org"];
+        hostAliases = ["aos.fleet.test"];
         imageDiskMiB =
           if externalDirect
           then 32768
@@ -1380,8 +1384,8 @@ in {
               "aos": AOS, "apr": APR, "git": "${pkgs.git}/bin/git", "opensshBin": "${pkgs.openssh}/bin",
               "aosStorePath": "${pkgs.aos}", "containerPublicationInputs": "${containerPublicationInputs}",
               "openssl": "${pkgs.openssl}/bin/openssl", "helperStorePath": "${fixture.helperV1}",
-              "deploymentId": "fleet-hybrid-v1", "workerUrl": "https://aos.andyl.org",
-              "nativeOriginUrl": "https://aos.staging.andyl.org", "garage": GARAGE,
+              "deploymentId": "fleet-hybrid-v1", "workerUrl": "https://aos.fleet.test",
+              "nativeOriginUrl": "https://aos-origin.fleet.test", "garage": GARAGE,
               "s3Ca": "${s3PublicTrust}/value",
               "s3PublicTrust": "${s3PublicTrust}/value",
               "issuerCertificate": "${serverCertificate}/value", "issuerPrivateKey": "${serverPrivateKey}/value",

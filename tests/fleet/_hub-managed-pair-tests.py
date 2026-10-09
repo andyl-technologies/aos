@@ -159,7 +159,7 @@ class PairTests(unittest.TestCase):
             commands.append(command)
             return "200" if "--data-binary" in command else "{}"
 
-        for origin, root in (("https://aos.andyl.org", "/var/lib/hybrid-client/bootstrap-controls"),
+        for origin, root in (("https://aos.fleet.test", "/var/lib/hybrid-client/bootstrap-controls"),
                              ("https://localhost:4643", "/var/lib/hybrid-client/managed-a/controls")):
             client = Client()
             kwargs = {} if origin.endswith("andyl.org") else {"origin": origin, "evidence_root": root}

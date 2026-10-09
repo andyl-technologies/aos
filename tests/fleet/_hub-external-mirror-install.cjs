@@ -74,7 +74,7 @@ async function installExternalMirrorFunctional(runtime, options, request, namesp
     throw new Error('External Mirror typed storage purpose or installed audience differs');
   }
   const root = /^\.aos-mirror-qualification\/([0-9a-f]{32})\/final$/.exec(artifact.placementPrefix);
-  if (!root || artifact.upstreamBase !== `https://aos.andyl.org:4778/fleet-mirror/${root[1]}`
+  if (!root || artifact.upstreamBase !== `https://aos.fleet.test:4778/fleet-mirror/${root[1]}`
       || !Number.isSafeInteger(artifact.maximumObjectBytes)
       || artifact.maximumObjectBytes < 1 || artifact.maximumObjectBytes > 512 * 1024 * 1024
       || !Number.isSafeInteger(artifact.issuedAt) || !Number.isSafeInteger(artifact.validUntil)

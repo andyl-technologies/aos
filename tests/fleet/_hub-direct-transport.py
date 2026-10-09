@@ -19,7 +19,7 @@ def wait_worker_transport(worker, curl, python, external_direct, timeout=180,
     )
     return wait_fixture_tls_response(
         worker, curl, python,
-        "https://aos.andyl.org/_internal/storage/v1/" + route,
+        "https://aos.fleet.test/_internal/storage/v1/" + route,
         "POST", {expected}, observation_label, timeout,
     )
 

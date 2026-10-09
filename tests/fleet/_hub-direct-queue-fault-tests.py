@@ -340,7 +340,7 @@ class OriginalRefusalTests(unittest.TestCase):
             compile(textwrap.dedent(source), "queue-fault-private-guest", "exec")
             self.assertIn("'--config','-'", source)
             if "request" not in selected:
-                self.assertIn("https://aos.andyl.org/oauth2/token", source)
+                self.assertIn("https://aos.fleet.test/oauth2/token", source)
                 self.assertIn("grant_type=urn%3Aaos%3Aparams%3Aoauth%3Agrant-type%3Aprovisioning-token", source)
                 self.assertEqual(selected["tokenFile"], "/var/lib/hybrid-client/queue-faults/selected.token")
                 return json.dumps({"path": "private-oauth-response", "bytes": 100, "exitCode": 0,

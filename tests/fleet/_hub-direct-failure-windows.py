@@ -30,7 +30,7 @@ def probe_direct_failure_route(client, tools, label, path, authenticated):
             '-o', str(body), '-w', '%{http_code}', '-H', 'cf-connecting-ip: 192.0.2.10']
         if selected['authenticated']:
             arguments += ['-b', '/var/lib/hybrid-client/browser-session/cookies']
-        arguments += ['https://aos.andyl.org' + selected['path']]
+        arguments += ['https://aos.fleet.test' + selected['path']]
         started = time.time_ns()
         try:
             result = subprocess.run(arguments, stdin=subprocess.DEVNULL,

@@ -184,7 +184,7 @@ def run_direct_stale_index_case(native, worker, client, database_machine, tools,
     before = read_index(slug)
     if len(before["index"]) != 1 or before["index"][0][:3] != ["fresh", None, source["sourceCommit"]]:
         raise ValueError("Stale-index source is not the exact fresh signed publication")
-    selection = {"version": 1, "originHost": "aos.andyl.org",
+    selection = {"version": 1, "originHost": "aos.fleet.test",
         "deployment_id": tools["deploymentId"], "placement_id": row[0],
         "placement_resource_version": row[1], "binding_id": row[2],
         "binding_resource_version": row[3], "binding_kind": row[4], "placement_prefix": row[5]}

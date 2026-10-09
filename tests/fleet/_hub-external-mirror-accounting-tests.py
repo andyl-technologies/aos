@@ -23,7 +23,7 @@ capture._closed_review_json = load("mirror_review", "_hub-direct-review.py")._cl
 
 def fixture():
     source = {"registry_id": 1, "registry_resource_version": 2, "mirror_resource_version": 3,
-        "upstream_base": "https://aos.andyl.org:4778/fleet-mirror/" + "a" * 32,
+        "upstream_base": "https://aos.fleet.test:4778/fleet-mirror/" + "a" * 32,
         "protected_profile_digest": "b" * 64, "placement_id": 4, "placement_resource_version": 5,
         "write_spec_version": 6, "binding_id": 7, "binding_resource_version": 8,
         "placement_prefix": ".aos-mirror-qualification/" + "a" * 32 + "/final/full"}

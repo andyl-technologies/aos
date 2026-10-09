@@ -337,7 +337,7 @@ class QueueFaultNativeTransport:
                 '-H','cf-connecting-ip: 192.0.2.10','--data',
                 'grant_type=urn%3Aaos%3Aparams%3Aoauth%3Agrant-type%3Aprovisioning-token',
                 '--dump-header',headers,'--output',response,'--write-out','%{http_code}',
-                'https://aos.andyl.org/oauth2/token'],
+                'https://aos.fleet.test/oauth2/token'],
                 input=configuration.encode(),stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                 timeout=35,check=False)
             raw = Path(response).read_bytes() if Path(response).is_file() else b''
@@ -439,7 +439,7 @@ class QueueFaultNativeTransport:
                 '-H','Content-Type: application/json','-H','Connect-Protocol-Version: 1',
                 '-H','cf-connecting-ip: 192.0.2.10','--data-binary','@'+request,
                 '--dump-header',headers,'--output',response,'--write-out','%{http_code}',
-                'https://aos.andyl.org/aos.hub.v1.'+selected['route']],
+                'https://aos.fleet.test/aos.hub.v1.'+selected['route']],
                 input=configuration.encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 timeout=65,check=False)
             raw = Path(response).read_bytes() if Path(response).is_file() else b''

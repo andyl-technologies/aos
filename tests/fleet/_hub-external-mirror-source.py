@@ -30,15 +30,15 @@ def mirror_upstream_configuration(run_id, root, tools):
         "error_log " + root + "/nginx-error.private;\nevents { worker_connections 64; }\n"
         "http {\n    log_format mirror '$request_method $uri $status $body_bytes_sent';\n"
         "    access_log " + root + "/access.private mirror;\n"
-        "    server {\n        listen 4778 ssl;\n        server_name aos.andyl.org;\n"
+        "    server {\n        listen 4778 ssl;\n        server_name aos.fleet.test;\n"
         "        ssl_certificate " + tools["issuerCertificate"] + ";\n"
         "        ssl_certificate_key " + tools["issuerPrivateKey"] + ";\n"
         + ("        location /fleet-mirror/" + run_id + "/releases/memory/" + run_id + "/ {\n"
            "            proxy_pass https://127.0.0.1:4780;\n"
-           "            proxy_set_header Host aos.andyl.org:4778;\n"
+           "            proxy_set_header Host aos.fleet.test:4778;\n"
            "            proxy_http_version 1.1;\n"
            "            proxy_buffering off;\n            proxy_request_buffering off;\n"
-           "            proxy_ssl_server_name on;\n            proxy_ssl_name aos.andyl.org;\n"
+           "            proxy_ssl_server_name on;\n            proxy_ssl_name aos.fleet.test;\n"
            "            proxy_ssl_verify on;\n"
            "            proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;\n"
            "        }\n" if tools.get("packMemoryModules") is not None else "")
@@ -53,7 +53,7 @@ def prepare_external_mirror_signed_source(client, tools, run_id):
     """Use APR's actual signed helper release without extending the large corpus."""
     if not re.fullmatch(r"[0-9a-f]{32}", run_id):
         raise ValueError("Mirror signed source requires its actual run")
-    upstream = "https://aos.andyl.org:4778/fleet-mirror/" + run_id
+    upstream = "https://aos.fleet.test:4778/fleet-mirror/" + run_id
     signed = prepare_direct_signed_surface(client, tools["python"], tools["apr"], tools["git"],
         tools["opensshBin"], tools["nixBin"], tools["helperStorePath"], upstream,
         publication_project=tools["publicationProject"], authoring_name="mirror-" + run_id[:16])

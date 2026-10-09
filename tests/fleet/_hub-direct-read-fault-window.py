@@ -206,7 +206,7 @@ def run_direct_worker_revision_case(native, worker, s3, tools, process, registry
     environment = controller.capture_direct_stale_index_environment(native, tools, json.loads(trust_bytes),
         listener["root"] + "/revision.environment")
     common = {"processModuleFile": tools["staleIndexProcess"], "installation": listener}
-    selection = {"version": 1, "originHost": "aos.andyl.org", "deployment_id": tools["deploymentId"],
+    selection = {"version": 1, "originHost": "aos.fleet.test", "deployment_id": tools["deploymentId"],
         **dict(zip(("placement_id", "placement_resource_version", "binding_id", "binding_resource_version",
             "binding_kind", "placement_prefix"), row[:6]))}
     controller._guest(native, tools, "control", {**common,

@@ -58,7 +58,7 @@ response capture; header counts/hashes are measured, not predicted at preparatio
 The logger is exact unchanged Native logging.rs linked into the fixture child.
 
 source-hold.mjs/source-hold-launch.mjs own a fixed TLS source fixture at
-https://aos.andyl.org:4778/fleet-mirror/<run>, reusing the currently admitted exact
+https://aos.fleet.test:4778/fleet-mirror/<run>, reusing the currently admitted exact
 upstream spelling. This is a SOURCE FIXTURE, not a Garage/S3-response fault. It
 opens/verifies immutable publisher files with O_NOFOLLOW/currentUID/0600/nlink1/
 stable inode+fullSHA. Exactly4 source originals are allowed: pack,index,metadata0,
