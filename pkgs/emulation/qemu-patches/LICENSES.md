@@ -26,6 +26,9 @@ The atomic integration patch creates these QEMU source files:
 | `include/system/crucible-hot-fork-plugin-child.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-hot-fork-async.h` | GPL-2.0-or-later | Explicit file notice |
 | `include/qemu/crucible-idle-wait.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-node-service.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `accel/kvm/crucible-clock.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `include/system/crucible-kvm-clock.h` | GPL-2.0-only | Explicit SPDX identifier |
 | `plugins/crucible-fault.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-fault-memory.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-fault-node.c` | GPL-2.0-or-later | Explicit SPDX identifier |
@@ -50,6 +53,8 @@ The atomic integration patch creates these QEMU source files:
 | `tests/tcg/plugins/crucible-memory-dma.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/tcg/plugins/crucible-memory-service-restart-probe.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/tcg/plugins/crucible-idle-wait-liveness.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/tcg/plugins/crucible-node-control.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/qtest/crucible-node-control.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/qtest/crucible-idle-wait-liveness.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/qtest/crucible-exact-tb-exit.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-hot-fork-child.c` | GPL-2.0-or-later | Explicit SPDX identifier |
@@ -80,6 +85,7 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-template-control-drain.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-lifecycle-projection.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-icount-rate.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-node-service.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-vcpu-service-time.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-idle-wait.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-rr-halted-neighbor.py` | GPL-2.0-or-later | Explicit SPDX identifier |
