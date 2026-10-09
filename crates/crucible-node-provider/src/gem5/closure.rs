@@ -535,6 +535,9 @@ fn execute_auditor(
     let diagnostics: OwnedFd = inherited.try_clone()?.into();
     let input: OwnedFd = inherited.into();
     let mut child = Command::new(&auditor.path)
+        // Operational diagnostics must not depend on a caller's uninstalled
+        // locale: the measured shell wrapper shares the bounded receipt pipe.
+        .env("LC_ALL", "C")
         .stdin(Stdio::from(input))
         .stdout(Stdio::from(output))
         .stderr(Stdio::from(diagnostics))
@@ -583,3 +586,7 @@ fn execute_auditor(
     }
     result
 }
+
+#[cfg(test)]
+#[path = "closure_locale_tests.rs"]
+mod locale_tests;
