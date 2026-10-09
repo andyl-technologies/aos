@@ -300,9 +300,12 @@ remain checked. Its production native build passes (25.31 seconds;
 witnesses cover directory and current-input mutation, cancellation and fresh
 recovery of added late residue. Source review requires more precise physical
 refusal assertions in eight of those witnesses before their qualification.
-Strict Clippy, the expanded thirty-four-case owning reconciliation gate and
-the unchanged large-family recovery bound remain unqualified. Neither staging
-continuity nor the passing production build establishes collection coverage.
+Strict native all-target Clippy also passes with warnings denied (5 minutes
+5 seconds, including a recorded wait for an external shared-target lock;
+`/tmp/terrane-permanent-stage-clippy.log`). This elapsed observation does not
+measure source-stage cost. The expanded thirty-four-case owning reconciliation
+gate and the unchanged large-family recovery bound remain unqualified. Neither
+staging continuity nor build and lint results establish collection coverage.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
