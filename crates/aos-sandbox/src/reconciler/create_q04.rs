@@ -1172,7 +1172,7 @@ pub(crate) fn require_original_pending(journal: &Journal) -> Result<bool, Reconc
         return Ok(true);
     }
     let gate = gate.ok_or(ReconcilerError::CorruptLedger("Q04 consumed gate is absent"))?;
-    gate.require_cut_identity(&history.identity)?;
+    gate.require_cut_identity(&history.identity).map_err(crate::journal::JournalError::from)?;
     let expected_status = match last.phase() {
         2..=4 => 1,
         5..=6 => 2,
@@ -1182,7 +1182,7 @@ pub(crate) fn require_original_pending(journal: &Journal) -> Result<bool, Reconc
     };
     if gate.status() != expected_status
         || gate.bytes()[128..160] != last.bytes()[96..128]
-        || gate.historical_consumed_record()?.digest().as_bytes() != &last.bytes()[128..160]
+        || gate.historical_consumed_record().map_err(crate::journal::JournalError::from)?.digest().as_bytes() != &last.bytes()[128..160]
     {
         return Err(ReconcilerError::CorruptLedger("Q04 consumed gate/phase relation changed"));
     }

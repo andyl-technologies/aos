@@ -1206,7 +1206,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let payload = decode_root_create_q04_transfer_v1(
             &self.prehold_response, RootCreateQ04TransferKindV1::PreholdRecipe, nonce,
         )?;
-        Q04PreholdPublicationDataV1::decode(payload, nonce)
+        Q04PreholdPublicationDataV1::decode(payload, nonce).map_err(CreateQ04ErrorV1::from)
     }
 
     pub(crate) fn form_finalized_identity(

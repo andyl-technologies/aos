@@ -1805,6 +1805,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
             body[start..start + 4].copy_from_slice(&length.to_be_bytes());
         }
         super::Q04PreholdPublicationDataV1::from_body(body, identity.nonce())
+            .map_err(CreateQ04ErrorV1::from)
     }
 
     fn require_prehold_originals(&mut self) -> Result<(), CreateQ04ErrorV1> {

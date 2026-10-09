@@ -21,6 +21,8 @@
 //! while native admission and full projection grammar stay with Domain's owners.
 
 pub mod capacity;
+pub mod create_q04_history;
+pub mod execution_observe_reservation;
 pub mod operation;
 pub mod project_admission_metadata;
 pub mod project_source;

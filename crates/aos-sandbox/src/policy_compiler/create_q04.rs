@@ -13,7 +13,18 @@
 //! ```
 
 use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
+use aos_sandbox_protocol::domain_ledger::ProtectedHistoryDataErrorV1;
+pub(crate) use aos_sandbox_protocol::domain_ledger::create_q04_history::{
+    CLAIM_CHUNK_BYTES, DECISION_BYTES, GATE_BYTES, IDENTITY_BYTES, MAXIMUM_CLAIM_BYTES,
+    PENDING_BYTES, PHASE_BYTES, PREHOLD_RESPONSE_BYTES, Q04CutIdentityV1, Q04EffectSubgateV1,
+    Q04HistoryDataErrorV1, Q04PendingOwnerV1, Q04PendingRecordV1, Q04PhaseOwnerV1,
+    Q04PhaseRecordV1, Q04PreholdPublicationDataV1, Q04RootDecisionV1, Q04TransactionOwnerV1,
+    claim_chunk_count, chunk_count,
+};
+#[cfg(test)]
+use aos_sandbox_protocol::domain_ledger::create_q04_history::GATE_IDENTITY_DOMAIN;
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use ed25519_dalek::{Signature, Signer as _, SigningKey};
 use sha2::{Digest as _, Sha256};
@@ -41,19 +52,11 @@ pub(crate) use input_origin::{
     cache_replay_cell_bytes, candidate_capacity, original_input_demand, require_origin_identity,
 };
 
-pub(crate) const IDENTITY_BYTES: usize = 680;
-pub(crate) const PHASE_BYTES: usize = 592;
-pub(crate) const PENDING_BYTES: usize = 264;
-pub(crate) const GATE_BYTES: usize = 288;
-pub(crate) const DECISION_BYTES: usize = 384;
-pub(crate) const MAXIMUM_CLAIM_BYTES: usize = 1024 * 1024;
 pub(crate) const CLAIM_INDEX_BYTES: usize = 96;
 pub(crate) const CLAIM_CHUNK_PREFIX_BYTES: usize = 96;
-pub(crate) const CLAIM_CHUNK_BYTES: usize = 3072;
 pub(crate) const PREVIEW_INDEX_BYTES: usize = 48;
 pub(crate) const MAXIMUM_PREVIEW_BYTES: usize = 266_068;
 pub(crate) const PREHOLD_METADATA_BYTES: usize = 512;
-pub(crate) const PREHOLD_RESPONSE_BYTES: usize = 504;
 pub(crate) const MAXIMUM_PREHOLD_BYTES: usize = 198_252;
 const PREHOLD_FIELDS: usize = 6;
 const PREHOLD_PREFIX_BYTES: usize = 16 + PREHOLD_FIELDS * 4;
@@ -66,14 +69,6 @@ pub(crate) const CONTROLLER_PHASE_PREFIX: &[u8] = b"\0aos-controller-q04-phase-v
 pub(crate) const SOURCE_PENDING_KEY: &[u8] = b"\0aos-source-domain-q04-pending-v1\0";
 pub(crate) const CACHE_PENDING_KEY: &[u8] = b"\0aos-cache-q04-pending-v1\0";
 
-const IDENTITY_DOMAIN: &[u8] = b"aos.sandbox.create-q04.cut-identity.v1\0";
-const CONTROLLER_PHASE_DOMAIN: &[u8] = b"aos.sandbox.create-q04.controller-phase.v1\0";
-const ROOT_PHASE_DOMAIN: &[u8] = b"aos.sandbox.create-q04.root-phase.v1\0";
-const SOURCE_PENDING_DOMAIN: &[u8] = b"aos.sandbox.create-q04.source-pending.v1\0";
-const CACHE_PENDING_DOMAIN: &[u8] = b"aos.sandbox.create-q04.cache-pending.v1\0";
-const GATE_DOMAIN: &[u8] = b"aos.sandbox.create-q04.effect-subgate.v1\0";
-const GATE_IDENTITY_DOMAIN: &[u8] = b"aos.sandbox.create-q04.effect-gate-identity.v1\0";
-const DECISION_DOMAIN: &[u8] = b"aos.sandbox.create-q04.root-decision.v1\0";
 const CLAIM_SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.create-q04.claim.signature.v1\0";
 const CLAIM_INDEX_DOMAIN: &[u8] = b"aos.sandbox.create-q04.claim-index.v1\0";
 const CLAIM_CHUNK_DOMAIN: &[u8] = b"aos.sandbox.create-q04.claim-chunk.v1\0";
@@ -82,7 +77,6 @@ const PREVIEW_CHUNK_DOMAIN: &[u8] = b"aos.sandbox.create-q04.preview-chunk.v1\0"
 const PREHOLD_SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.create-q04.prefund-request.signature.v1\0";
 const PREHOLD_REQUEST_DOMAIN: &[u8] = b"aos.sandbox.create-q04.prefund-request.v1\0";
 const PREHOLD_CHUNK_DOMAIN: &[u8] = b"aos.sandbox.create-q04.prefund-chunk.v1\0";
-const PREHOLD_RESPONSE_DOMAIN: &[u8] = b"aos.sandbox.create-q04.prefund-response.v1\0";
 const ORIGINAL_PRECUT_DOMAIN: &[u8] = b"aos.sandbox.create-q04.original-precut.v1\0";
 
 // Both original owners compare the same canonical DATA. The recipe contains
@@ -130,7 +124,7 @@ pub(super) fn encode_q04_cut_recipe_v1(
         let start = 200 + index * 32;
         body[start..start + 32].copy_from_slice(digest.as_bytes());
     }
-    Q04CutIdentityV1::from_body(body).map_err(CreateQ04ErrorV1::Journal)
+    Q04CutIdentityV1::from_body(body).map_err(CreateQ04ErrorV1::from)
 }
 
 /// Reports the original typed failure of a selected Q04 continuation.
@@ -246,6 +240,22 @@ impl From<JournalTransactionDataError> for CreateQ04ErrorV1 {
     }
 }
 
+impl From<ProtectedHistoryDataErrorV1> for CreateQ04ErrorV1 {
+    fn from(error: ProtectedHistoryDataErrorV1) -> Self {
+        Self::Journal(JournalError::from(error))
+    }
+}
+
+impl From<Q04HistoryDataErrorV1> for CreateQ04ErrorV1 {
+    fn from(error: Q04HistoryDataErrorV1) -> Self {
+        match error {
+            Q04HistoryDataErrorV1::Malformed => Self::Journal(JournalError::ProtectedBoundary),
+            Q04HistoryDataErrorV1::ChangedCut => Self::ChangedCut,
+            Q04HistoryDataErrorV1::Bounds => Self::Bounds,
+        }
+    }
+}
+
 // A signing failure remains the first typed cause. A later whole-owner
 // readback failure is separate debt; it never overwrites that cause or drops
 // an already returned packet. This helper owns no resources or authority.
@@ -266,14 +276,6 @@ pub(crate) fn finish_controller_q04_signing_v1(
     } else {
         Ok(())
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Q04TransactionOwnerV1 {
-    Controller,
-    Source,
-    Cache,
-    Root,
 }
 
 // This nonissuing shape funds the same fixed-width lower suffix before Root5
@@ -319,249 +321,6 @@ pub(crate) fn lower_clearance_recipe_digest_v1(
     Ok(ObjectDigest::from_bytes(digest.finalize().into()))
 }
 
-impl Q04TransactionOwnerV1 {
-    /// Derives comparison DATA without predicting an observed commit or head.
-    pub(crate) fn transaction_id(
-        self,
-        identity: &Q04CutIdentityV1,
-        phase: u8,
-        predecessor: ObjectDigest,
-    ) -> Result<[u8; 16], JournalError> {
-        let (domain, last): (&[u8], u8) = match self {
-            Self::Controller => (b"aos.sandbox.create-q04.transaction.controller.v1\0", 8),
-            Self::Source => (b"aos.sandbox.create-q04.transaction.source.v1\0", 3),
-            Self::Cache => (b"aos.sandbox.create-q04.transaction.cache.v1\0", 3),
-            Self::Root => (b"aos.sandbox.create-q04.transaction.root.v1\0", 7),
-        };
-        if phase == 0 || phase > last || predecessor.as_bytes() == &[0; 32] {
-            return Err(JournalError::ProtectedBoundary);
-        }
-
-        let digest = Sha256::new()
-            .chain_update(domain)
-            .chain_update(identity.digest().as_bytes())
-            .chain_update([phase])
-            .chain_update(predecessor.as_bytes())
-            .finalize();
-        let mut transaction = [0; 16];
-        transaction.copy_from_slice(&digest[..16]);
-        if transaction == [0; 16] {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(transaction)
-    }
-}
-
-// Every offset below is fixed by the versioned contract. Accessors read only
-// a fully length/checksum/shape-checked array, never a caller's unchecked slice.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Q04CutIdentityV1([u8; IDENTITY_BYTES]);
-
-impl Q04CutIdentityV1 {
-    pub(crate) fn from_body(mut body: [u8; IDENTITY_BYTES]) -> Result<Self, JournalError> {
-        finish_record(&mut body, b"AOSQ4I01", None, IDENTITY_DOMAIN)?;
-        Self::decode(&body)
-    }
-
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
-        let bytes = checked_record::<IDENTITY_BYTES>(bytes, b"AOSQ4I01", None, IDENTITY_DOMAIN)?;
-        if bytes[108..112] != [0; 4]
-            || bytes[104..108] != [0; 4]
-            || nonzero::<16>(&bytes, 16).is_err()
-            || nonzero::<16>(&bytes, 32).is_err()
-            || nonzero::<16>(&bytes, 48).is_err()
-            || nonzero::<16>(&bytes, 64).is_err()
-            || nonzero::<16>(&bytes, 112).is_err()
-            || nonzero::<16>(&bytes, 168).is_err()
-            || nonzero::<16>(&bytes, 184).is_err()
-            || read_u32(&bytes, 80)? == 0
-            || read_u32(&bytes, 84)? == 0
-            || read_u64(&bytes, 88)? == 0
-            || read_u64(&bytes, 96)? != 1
-            || read_u64(&bytes, 160)? == 0
-            || read_u64(&bytes, 136)?.checked_sub(read_u64(&bytes, 128)?) != Some(60_000_000_000)
-            || read_u64(&bytes, 152)?.checked_sub(read_u64(&bytes, 144)?) != Some(65_000_000_000)
-            || (200..648).step_by(32).any(|offset| nonzero::<32>(&bytes, offset).is_err())
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(Self(bytes))
-    }
-
-    pub(crate) fn bytes(&self) -> &[u8; IDENTITY_BYTES] {
-        &self.0
-    }
-
-    pub(crate) fn digest(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(Sha256::digest(self.0).into())
-    }
-
-    pub(crate) fn nonce(&self) -> [u8; 16] {
-        fixed(&self.0, 16)
-    }
-
-    pub(crate) fn project(&self) -> ProjectId {
-        ProjectId::from_bytes(fixed(&self.0, 32))
-    }
-
-    pub(crate) fn operation(&self) -> OperationId {
-        OperationId::from_bytes(fixed(&self.0, 48))
-    }
-
-    pub(crate) fn controller_uid(&self) -> u32 {
-        u32::from_be_bytes(fixed(&self.0, 80))
-    }
-
-    pub(crate) fn source_uid(&self) -> u32 {
-        u32::from_be_bytes(fixed(&self.0, 84))
-    }
-
-    pub(crate) fn operation_revision(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(fixed(&self.0, 200))
-    }
-
-    pub(crate) fn desired_precondition(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(fixed(&self.0, 232))
-    }
-
-    pub(crate) fn effect_plan_digest(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(fixed(&self.0, 264))
-    }
-
-    pub(crate) fn sandbox(&self) -> SandboxId {
-        SandboxId::from_bytes(fixed(&self.0, 64))
-    }
-
-    pub(crate) fn stage_id(&self) -> [u8; 16] {
-        fixed(&self.0, 168)
-    }
-
-    pub(crate) fn publication_id(&self) -> [u8; 16] {
-        fixed(&self.0, 184)
-    }
-
-    pub(crate) fn binding(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(fixed(&self.0, 424))
-    }
-
-    pub(crate) fn gen1_floor(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(fixed(&self.0, 328))
-    }
-
-    pub(crate) fn ancestry(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(fixed(&self.0, 360))
-    }
-
-    /// Names the pre-decision comparator, not a consumed gate or authority.
-    pub(crate) fn gate_identity(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(
-            Sha256::new()
-                .chain_update(GATE_IDENTITY_DOMAIN)
-                .chain_update(self.bytes())
-                .finalize()
-                .into(),
-        )
-    }
-
-    pub(crate) fn accepted_generation(&self) -> u64 {
-        u64::from_be_bytes(fixed(&self.0, 96))
-    }
-
-    pub(crate) fn epoch(&self) -> u64 {
-        u64::from_be_bytes(fixed(&self.0, 160))
-    }
-
-    pub(crate) fn before_controller_rows(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(fixed(&self.0, 296))
-    }
-
-    pub(crate) fn policy_transaction(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(fixed(&self.0, 520))
-    }
-
-    pub(crate) fn policy_current(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(fixed(&self.0, 552))
-    }
-
-    pub(crate) fn cache_quota(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(fixed(&self.0, 584))
-    }
-}
-
-/// Retains an exact historical publication observation, never a live grant.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Q04RootDecisionV1([u8; DECISION_BYTES]);
-
-impl Q04RootDecisionV1 {
-    pub(crate) fn from_body(
-        mut body: [u8; DECISION_BYTES],
-        identity: &Q04CutIdentityV1,
-    ) -> Result<Self, JournalError> {
-        finish_record(&mut body, b"AOSQ4D01", None, DECISION_DOMAIN)?;
-        Self::decode(&body, identity)
-    }
-
-    pub(crate) fn decode(
-        bytes: &[u8],
-        identity: &Q04CutIdentityV1,
-    ) -> Result<Self, JournalError> {
-        let bytes = checked_record::<DECISION_BYTES>(
-            bytes,
-            b"AOSQ4D01",
-            None,
-            DECISION_DOMAIN,
-        )?;
-        if bytes[16..48] != *identity.digest().as_bytes()
-            || nonzero::<16>(&bytes, 48).is_err()
-            || bytes[64..80] != identity.publication_id()
-            || bytes[80..112] != *identity.policy_transaction().as_bytes()
-            || read_u64(&bytes, 112)? == 0
-            || bytes[120..152] != *identity.policy_current().as_bytes()
-            || bytes[152..184] != *identity.binding().as_bytes()
-            || bytes[184..216] != *identity.gate_identity().as_bytes()
-            || nonzero::<32>(&bytes, 216).is_err()
-            || nonzero::<32>(&bytes, 248).is_err()
-            || bytes[280..312] != *identity.cache_quota().as_bytes()
-            || read_u64(&bytes, 312)? == 0
-            || bytes[320..352] != *identity.before_controller_rows().as_bytes()
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(Self(bytes))
-    }
-
-    pub(crate) fn bytes(&self) -> &[u8; DECISION_BYTES] {
-        &self.0
-    }
-
-    pub(crate) fn digest(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(Sha256::digest(self.bytes()).into())
-    }
-
-    pub(crate) fn authority_transaction_id(&self) -> [u8; 16] {
-        fixed(&self.0, 48)
-    }
-
-    pub(crate) fn state_transaction_id(&self) -> [u8; 16] {
-        fixed(&self.0, 64)
-    }
-
-    pub(crate) fn state_sequence(&self) -> u64 {
-        u64::from_be_bytes(fixed(&self.0, 112))
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Q04PhaseOwnerV1 {
-    Controller,
-    Root,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Q04PhaseRecordV1 {
-    owner: Q04PhaseOwnerV1,
-    bytes: [u8; PHASE_BYTES],
-}
 
 // A borrowed, unbranded event recipe shared by the actual Controller and
 // Root's independent reconstruction. Callers supply real observations for a
@@ -664,333 +423,6 @@ pub(crate) fn controller_phase_recipe_v1(
         record.require_successor(prior)?;
     }
     Ok(record)
-}
-
-impl Q04PhaseRecordV1 {
-    pub(crate) fn from_body(
-        owner: Q04PhaseOwnerV1,
-        phase: u8,
-        mut body: [u8; PHASE_BYTES],
-        identity: &Q04CutIdentityV1,
-    ) -> Result<Self, JournalError> {
-        let (magic, domain) = match owner {
-            Q04PhaseOwnerV1::Controller => (b"AOSQ4C01", CONTROLLER_PHASE_DOMAIN),
-            Q04PhaseOwnerV1::Root => (b"AOSQ4R01", ROOT_PHASE_DOMAIN),
-        };
-        finish_record(&mut body, magic, Some(phase), domain)?;
-        Self::decode(owner, &body, identity)
-    }
-
-    pub(crate) fn decode(
-        owner: Q04PhaseOwnerV1,
-        bytes: &[u8],
-        identity: &Q04CutIdentityV1,
-    ) -> Result<Self, JournalError> {
-        let (magic, domain, last) = match owner {
-            Q04PhaseOwnerV1::Controller => (b"AOSQ4C01", CONTROLLER_PHASE_DOMAIN, 8),
-            Q04PhaseOwnerV1::Root => (b"AOSQ4R01", ROOT_PHASE_DOMAIN, 7),
-        };
-        let phase = *bytes.get(10).ok_or(JournalError::ProtectedBoundary)?;
-        if phase == 0 || phase > last {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let bytes = checked_record::<PHASE_BYTES>(bytes, magic, Some(phase), domain)?;
-        if bytes[16..48] != *identity.digest().as_bytes()
-            || bytes[48..64] != identity.stage_id()
-            || nonzero::<16>(&bytes, 544).is_err()
-            || nonzero::<32>(&bytes, 512).is_err()
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        require_phase_shape(owner, phase, &bytes)?;
-        Ok(Self { owner, bytes })
-    }
-
-    pub(crate) fn bytes(&self) -> &[u8; PHASE_BYTES] {
-        &self.bytes
-    }
-
-    pub(crate) fn owner(&self) -> Q04PhaseOwnerV1 {
-        self.owner
-    }
-
-    pub(crate) fn phase(&self) -> u8 {
-        self.bytes[10]
-    }
-
-    pub(crate) fn digest(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(Sha256::digest(self.bytes).into())
-    }
-
-    pub(crate) fn native_transaction_id(&self) -> [u8; 16] {
-        fixed(&self.bytes, 544)
-    }
-
-    pub(crate) fn acknowledgement(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(fixed(&self.bytes, 480))
-    }
-
-    pub(crate) fn require_successor(&self, prior: &Self) -> Result<(), JournalError> {
-        if self.owner != prior.owner
-            || self.phase() != prior.phase() + 1
-            || self.bytes[16..64] != prior.bytes[16..64]
-            || self.bytes[64..96] != *prior.digest().as_bytes()
-            || self.bytes[512..544] != prior.bytes[512..544]
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        // An introduced event remains immutable. A zero slot may be populated
-        // only in the new phase's closed shape; the caller checks its real event.
-        for offset in (96..480).step_by(32) {
-            if self.owner == Q04PhaseOwnerV1::Root && prior.phase() == 5 && offset == 160 {
-                // R5 carries its pre-write authorization recipe. R6 replaces
-                // that one slot with the actually observed R5 record digest.
-                if self.bytes[offset..offset + 32] != *prior.digest().as_bytes() {
-                    return Err(JournalError::ProtectedBoundary);
-                }
-                continue;
-            }
-            if prior.bytes[offset..offset + 32] != [0; 32]
-                && self.bytes[offset..offset + 32] != prior.bytes[offset..offset + 32]
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        }
-        Ok(())
-    }
-}
-
-// Slots after predecessor: decision, gate, release, settlement, clearance,
-// final, three held/released pairs, acknowledgement and original-before recipe.
-fn require_phase_shape(
-    owner: Q04PhaseOwnerV1,
-    phase: u8,
-    bytes: &[u8; PHASE_BYTES],
-) -> Result<(), JournalError> {
-    let introduced = match owner {
-        Q04PhaseOwnerV1::Controller => [2, 2, 5, 6, 7, 8],
-        Q04PhaseOwnerV1::Root => [3, 4, 5, 7, 7, 0],
-    };
-    for (index, first) in introduced.into_iter().enumerate() {
-        let offset = 96 + index * 32;
-        require_presence(&bytes[offset..offset + 32], first != 0 && phase >= first)?;
-    }
-
-    let held_first = match owner {
-        Q04PhaseOwnerV1::Controller => [1, 2, 2],
-        Q04PhaseOwnerV1::Root => [1, 1, 1],
-    };
-    for (index, first) in held_first.into_iter().enumerate() {
-        let held = 288 + index * 64;
-        require_presence(&bytes[held..held + 32], phase >= first)?;
-        require_presence(&bytes[held + 32..held + 64], phase >= match owner {
-            Q04PhaseOwnerV1::Controller => 5,
-            Q04PhaseOwnerV1::Root => 6,
-        })?;
-    }
-    require_presence(&bytes[64..96], phase > 1)?;
-    require_presence(&bytes[480..512], match owner {
-        Q04PhaseOwnerV1::Controller => phase >= 3,
-        Q04PhaseOwnerV1::Root => phase >= 4,
-    })
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Q04PendingOwnerV1 {
-    Source,
-    Cache,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Q04PendingRecordV1 {
-    owner: Q04PendingOwnerV1,
-    bytes: [u8; PENDING_BYTES],
-}
-
-impl Q04PendingRecordV1 {
-    pub(crate) fn from_body(
-        owner: Q04PendingOwnerV1,
-        phase: u8,
-        mut body: [u8; PENDING_BYTES],
-    ) -> Result<Self, JournalError> {
-        let (magic, domain) = match owner {
-            Q04PendingOwnerV1::Source => (b"AOSQ4S01", SOURCE_PENDING_DOMAIN),
-            Q04PendingOwnerV1::Cache => (b"AOSQ4K01", CACHE_PENDING_DOMAIN),
-        };
-        finish_record(&mut body, magic, Some(phase), domain)?;
-        Self::decode(owner, &body)
-    }
-
-    pub(crate) fn decode(
-        owner: Q04PendingOwnerV1,
-        bytes: &[u8],
-    ) -> Result<Self, JournalError> {
-        let (magic, domain) = match owner {
-            Q04PendingOwnerV1::Source => (b"AOSQ4S01", SOURCE_PENDING_DOMAIN),
-            Q04PendingOwnerV1::Cache => (b"AOSQ4K01", CACHE_PENDING_DOMAIN),
-        };
-        let phase = *bytes.get(10).ok_or(JournalError::ProtectedBoundary)?;
-        if !matches!(phase, 1 | 2) {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let bytes = checked_record::<PENDING_BYTES>(bytes, magic, Some(phase), domain)?;
-        let fields = [(16, 32), (48, 16), (64, 32), (104, 32), (136, 32), (200, 32)];
-        for (offset, width) in fields {
-            require_presence(&bytes[offset..offset + width], true)?;
-        }
-        if read_u64(&bytes, 96)? == 0 {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        require_presence(&bytes[168..200], phase == 2)?;
-        Ok(Self { owner, bytes })
-    }
-
-    pub(crate) fn bytes(&self) -> &[u8; PENDING_BYTES] {
-        &self.bytes
-    }
-
-    pub(crate) fn is_held(&self) -> bool {
-        self.bytes[10] == 1
-    }
-
-    /// Joins comparison bytes to the same finalized original cut.
-    pub(crate) fn require_identity(&self, identity: &Q04CutIdentityV1) -> Result<(), JournalError> {
-        if self.bytes[16..48] != *identity.digest().as_bytes()
-            || self.bytes[48..64] != identity.nonce()
-            || self.bytes[64..96] != *identity.binding().as_bytes()
-            || self.bytes[96..104] != identity.epoch().to_be_bytes()
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn digest(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(Sha256::digest(self.bytes()).into())
-    }
-
-    pub(crate) fn require_release_of(&self, held: &Self) -> Result<(), JournalError> {
-        if self.owner != held.owner
-            || self.is_held()
-            || !held.is_held()
-            || self.bytes[16..168] != held.bytes[16..168]
-            || self.bytes[200..232] != held.bytes[200..232]
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Q04EffectSubgateV1([u8; GATE_BYTES]);
-
-impl Q04EffectSubgateV1 {
-    pub(crate) fn from_body(mut body: [u8; GATE_BYTES]) -> Result<Self, JournalError> {
-        finish_record(&mut body, b"AOSQ4G01", None, GATE_DOMAIN)?;
-        Self::decode(&body)
-    }
-
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
-        let bytes = checked_record::<GATE_BYTES>(bytes, b"AOSQ4G01", None, GATE_DOMAIN)?;
-        if !matches!(bytes[184], 1..=4)
-            || bytes[185..192] != [0; 7]
-            || read_u64(&bytes, 176)? != 1
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let fields = [
-            (16, 32), (48, 32), (80, 16), (96, 32),
-            (128, 32), (160, 16), (224, 32),
-        ];
-        for (offset, width) in fields {
-            require_presence(&bytes[offset..offset + width], true)?;
-        }
-        require_presence(&bytes[192..224], bytes[184] != 1)?;
-        Ok(Self(bytes))
-    }
-
-    pub(crate) fn bytes(&self) -> &[u8; GATE_BYTES] {
-        &self.0
-    }
-
-    pub(crate) fn status(&self) -> u8 {
-        self.0[184]
-    }
-
-    // A nonauthorizing next-record recipe. The actual Controller transition
-    // separately joins the named signed ACK and complete prior native/CAS cut.
-    pub(crate) fn next_status_recipe(
-        &self,
-        acknowledgement: ObjectDigest,
-    ) -> Result<Self, JournalError> {
-        if self.status() >= 4 || acknowledgement.as_bytes() == &[0; 32] {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let mut body = self.0;
-        body[184] = self.status() + 1;
-        body[192..224].copy_from_slice(acknowledgement.as_bytes());
-        let next = Self::from_body(body)?;
-        next.require_successor(self)?;
-        Ok(next)
-    }
-
-    /// Hashes the complete canonical record, including its internal checksum.
-    pub(crate) fn digest(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(Sha256::digest(self.bytes()).into())
-    }
-
-    pub(crate) fn acknowledgement(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(fixed(&self.0, 192))
-    }
-
-    pub(crate) fn require_identity(
-        &self,
-        identity: &Q04CutIdentityV1,
-        decision: &Q04RootDecisionV1,
-    ) -> Result<(), JournalError> {
-        self.require_cut_identity(identity)?;
-        if self.0[128..160] != *decision.digest().as_bytes() {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn require_cut_identity(
-        &self,
-        identity: &Q04CutIdentityV1,
-    ) -> Result<(), JournalError> {
-        if self.0[16..48] != *identity.digest().as_bytes()
-            || self.0[48..80] != *identity.binding().as_bytes()
-            || self.0[80..96] != identity.publication_id()
-            || self.0[96..128] != *identity.policy_current().as_bytes()
-            || self.0[160..176] != identity.stage_id()
-            || self.0[176..184] != identity.accepted_generation().to_be_bytes()
-            || self.0[224..256] != *identity.gen1_floor().as_bytes()
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(())
-    }
-
-    // Reconstructs only the canonical historical C2 comparison bytes. This
-    // does not assert those bytes were committed or return a current gate.
-    pub(crate) fn historical_consumed_record(&self) -> Result<Self, JournalError> {
-        let mut body = self.0;
-        body[184] = 1;
-        body[192..224].fill(0);
-        Self::from_body(body)
-    }
-
-    pub(crate) fn require_successor(&self, prior: &Self) -> Result<(), JournalError> {
-        if self.status() != prior.status() + 1
-            || self.0[..184] != prior.0[..184]
-            || self.0[224..256] != prior.0[224..256]
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(())
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1519,19 +951,6 @@ fn claim_index_shape(
         return Err(CreateQ04ErrorV1::Bounds);
     }
     Ok((total, count))
-}
-
-fn claim_chunk_count(total: usize) -> Result<u16, CreateQ04ErrorV1> {
-    chunk_count(total, MAXIMUM_CLAIM_BYTES)
-}
-
-fn chunk_count(total: usize, maximum: usize) -> Result<u16, CreateQ04ErrorV1> {
-    if total == 0 || total > maximum {
-        return Err(CreateQ04ErrorV1::Bounds);
-    }
-    let count = total.checked_add(CLAIM_CHUNK_BYTES - 1)
-        .ok_or(CreateQ04ErrorV1::Bounds)? / CLAIM_CHUNK_BYTES;
-    u16::try_from(count).map_err(|_| CreateQ04ErrorV1::Bounds)
 }
 
 fn chunk_range(
@@ -2149,59 +1568,6 @@ pub(crate) fn prehold_index_shape(bytes: &[u8]) -> Result<(usize, u16), CreateQ0
     bounded_input_transfer_shape(bytes, PREHOLD_PREFIX_BYTES + 64, MAXIMUM_PREHOLD_BYTES)
 }
 
-// This fixed response is comparison DATA on the authenticated original
-// stream. Its decoder never asserts a reservation or grants a hold/commit.
-pub(crate) struct Q04PreholdPublicationDataV1([u8; PREHOLD_RESPONSE_BYTES]);
-
-impl Q04PreholdPublicationDataV1 {
-    pub(crate) fn from_body(
-        mut body: [u8; PREHOLD_RESPONSE_BYTES],
-        nonce: [u8; 16],
-    ) -> Result<Self, CreateQ04ErrorV1> {
-        finish_record(&mut body, b"AOSQ4J01", None, PREHOLD_RESPONSE_DOMAIN)?;
-        Self::decode(&body, nonce)
-    }
-
-    pub(crate) fn decode(bytes: &[u8], nonce: [u8; 16]) -> Result<Self, CreateQ04ErrorV1> {
-        let body = checked_record::<PREHOLD_RESPONSE_BYTES>(
-            bytes, b"AOSQ4J01", None, PREHOLD_RESPONSE_DOMAIN,
-        )?;
-        if nonce == [0; 16] || body[16..32] != nonce
-            || (32..128).step_by(32).any(|offset| nonzero::<32>(&body, offset).is_err())
-            || nonzero::<16>(&body, 128).is_err()
-            || nonzero::<16>(&body, 144).is_err()
-            || body[128..144] == body[144..160]
-            || (160..384).step_by(32).any(|offset| nonzero::<32>(&body, offset).is_err())
-            || read_u64(&body, 384)? == 0
-            || read_u64(&body, 392)? == 0
-            || (456..472).step_by(4).any(|offset| read_u32(&body, offset).map_or(true, |value| value == 0))
-        {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-        crate::journal::ProtectedJournalNamesV1::from_bytes(&body[400..448])
-            .map_err(crate::journal::JournalError::from)?;
-        let total = usize::try_from(read_u32(&body, 448)?).map_err(|_| CreateQ04ErrorV1::Bounds)?;
-        let chunks = u16::from_be_bytes(fixed(&body, 452));
-        let groups = u16::from_be_bytes(fixed(&body, 454));
-        let expected_groups = chunks.checked_add(127).ok_or(CreateQ04ErrorV1::Bounds)? / 128;
-        if total < 3432 || chunks != claim_chunk_count(total)? || groups != expected_groups {
-            return Err(CreateQ04ErrorV1::Bounds);
-        }
-        Ok(Self(body))
-    }
-
-    pub(crate) fn bytes(&self) -> &[u8; PREHOLD_RESPONSE_BYTES] {
-        &self.0
-    }
-
-    pub(crate) fn request_digest(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(fixed(&self.0, 32))
-    }
-
-    pub(crate) fn original_precut(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(fixed(&self.0, 64))
-    }
-}
 
 fn decode_length_prefixed_fields<const COUNT: usize>(
     body: &[u8],
@@ -2254,55 +1620,6 @@ fn encode_length_prefixed_fields<const COUNT: usize>(
     Ok(())
 }
 
-// Canonical DATA construction shares the same fixed header/checksum helper.
-// Callers still pass the resulting bytes through the sole complete codec;
-// neither this helper nor the decoded value supplies a live owner or grant.
-fn finish_record<const SIZE: usize>(
-    bytes: &mut [u8; SIZE],
-    magic: &[u8; 8],
-    phase: Option<u8>,
-    domain: &[u8],
-) -> Result<(), JournalError> {
-    if SIZE < 48 {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    bytes[..8].copy_from_slice(magic);
-    bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-    bytes[10] = phase.unwrap_or(0);
-    bytes[11..16].fill(0);
-
-    let checksum = Sha256::new()
-        .chain_update(domain)
-        .chain_update(&bytes[..SIZE - 32])
-        .finalize();
-    bytes[SIZE - 32..].copy_from_slice(&checksum);
-    Ok(())
-}
-
-fn checked_record<const SIZE: usize>(
-    bytes: &[u8],
-    magic: &[u8; 8],
-    phase: Option<u8>,
-    domain: &[u8],
-) -> Result<[u8; SIZE], JournalError> {
-    if SIZE < 48
-        || bytes.len() != SIZE
-        || bytes[..8] != *magic
-        || bytes[8..10] != 1_u16.to_be_bytes()
-        || bytes[10] != phase.unwrap_or(0)
-        || bytes[11..16] != [0; 5]
-        || Sha256::new()
-            .chain_update(domain)
-            .chain_update(&bytes[..SIZE - 32])
-            .finalize()
-            .as_slice()
-            != &bytes[SIZE - 32..]
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    bytes.try_into().map_err(|_| JournalError::ProtectedBoundary)
-}
-
 fn require_presence(bytes: &[u8], present: bool) -> Result<(), JournalError> {
     if bytes.iter().any(|byte| *byte != 0) != present {
         return Err(JournalError::ProtectedBoundary);
@@ -2314,11 +1631,12 @@ fn nonzero<const SIZE: usize>(bytes: &[u8], offset: usize) -> Result<[u8; SIZE],
     let end = offset
         .checked_add(SIZE)
         .ok_or(JournalError::ProtectedBoundary)?;
-    let bytes = bytes
-        .get(offset..end)
-        .ok_or(JournalError::ProtectedBoundary)?;
-    require_presence(bytes, true)?;
-    bytes.try_into().map_err(|_| JournalError::ProtectedBoundary)
+    let mut reader = BoundedReader::new(bytes, |_| JournalError::ProtectedBoundary);
+    let prefix = reader.bytes(end)?;
+    let field = &prefix[offset..end];
+
+    require_presence(field, true)?;
+    field.try_into().map_err(|_| JournalError::ProtectedBoundary)
 }
 
 fn fixed<const SIZE: usize>(bytes: &[u8], offset: usize) -> [u8; SIZE] {
@@ -2342,9 +1660,9 @@ fn read_integer_bytes<const SIZE: usize>(
     let end = offset
         .checked_add(SIZE)
         .ok_or(JournalError::ProtectedBoundary)?;
-    bytes
-        .get(offset..end)
-        .ok_or(JournalError::ProtectedBoundary)?
+    let mut reader = BoundedReader::new(bytes, |_| JournalError::ProtectedBoundary);
+    let prefix = reader.bytes(end)?;
+    prefix[offset..end]
         .try_into()
         .map_err(|_| JournalError::ProtectedBoundary)
 }
