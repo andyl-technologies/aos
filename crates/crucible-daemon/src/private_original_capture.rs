@@ -132,6 +132,24 @@ pub struct OriginalPreparation {
 }
 
 impl OriginalPreparation {
+    /// Requests a managed reset while borrowing the retained original guard.
+    ///
+    /// The driver retains the genuine node/factory owner and authenticates its
+    /// completed-write opportunity before this call. The result acknowledges
+    /// only QMP acceptance; physical reset, loader reseeding and whole-RAM root
+    /// evidence remain separate observations under that same ownership.
+    /// This method does not complete the original or create another operation.
+    ///
+    /// # Errors
+    /// Returns the adapter's original typed QMP error for unavailable support,
+    /// original refusal, command rejection or uncertain acknowledgement.
+    pub fn reset_node_under_original(
+        &self,
+        node: &mut crucible_qemu::QemuNode,
+    ) -> Result<crucible_qemu::QmpCommandComplete, crucible_qemu::QmpError> {
+        node.reset_under_original(&self.original)
+    }
+
     pub(crate) fn boundary(&self) -> Result<(), HostSupervisionError> {
         self.original.wait_slice().map(|_| ())
     }
