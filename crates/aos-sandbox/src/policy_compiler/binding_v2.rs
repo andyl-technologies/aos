@@ -22,7 +22,7 @@
 
 use std::{collections::BTreeSet, path::Path};
 
-use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
+use aos_sandbox_core::{BoundedReader, ObjectDigest, OperationId, ProjectId, SandboxId};
 use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
 
@@ -291,18 +291,20 @@ impl ClosedPolicyRootBindingV2 {
         if bytes.len() != RECORD_BYTES {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
-        let mut reader = BindingReaderV2 { bytes, offset: 0 };
-        if reader.take::<8>()? != *MAGIC
-            || reader.take::<2>()? != 2_u16.to_be_bytes()
-            || reader.take::<6>()? != [0; 6]
+        let mut reader = BoundedReader::new(bytes, |_| {
+            PolicyCompilerJournalErrorV1::UnauthenticatedCandidate
+        });
+        if reader.array::<8>()? != *MAGIC
+            || reader.array::<2>()? != 2_u16.to_be_bytes()
+            || reader.array::<6>()? != [0; 6]
         {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
         let binding = Self {
-            issuer_owner: reader.take()?,
-            project: ProjectId::from_bytes(reader.take()?),
-            sandbox: SandboxId::from_bytes(reader.take()?),
-            operation: OperationId::from_bytes(reader.take()?),
+            issuer_owner: reader.array()?,
+            project: ProjectId::from_bytes(reader.array()?),
+            sandbox: SandboxId::from_bytes(reader.array()?),
+            operation: OperationId::from_bytes(reader.array()?),
             operation_revision: reader.digest()?,
             accepted_generation: reader.u64()?,
             projection_revision: reader.digest()?,
@@ -324,10 +326,10 @@ impl ClosedPolicyRootBindingV2 {
             barrier_head: reader.digest()?,
             root_predecessor: reader.digest()?,
             root_generation: reader.u64()?,
-            effect_transaction: reader.take()?,
+            effect_transaction: reader.array()?,
             handoff_epoch: reader.u64()?,
         };
-        if reader.offset != BODY_BYTES || binding.encode()?.as_slice() != bytes {
+        if reader.remaining() != RECORD_BYTES - BODY_BYTES || binding.encode()?.as_slice() != bytes {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
         Ok(binding)
@@ -2915,35 +2917,6 @@ fn controller_hold_can_retire_at_root_cut(
     root_hold.is_some_and(|hold| {
         !hold.held && hold.binding == expected.binding() && hold.epoch == expected.epoch()
     })
-}
-
-struct BindingReaderV2<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl BindingReaderV2<'_> {
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], PolicyCompilerJournalErrorV1> {
-        let end = self
-            .offset
-            .checked_add(N)
-            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .and_then(|value| value.try_into().ok())
-            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn digest(&mut self) -> Result<ObjectDigest, PolicyCompilerJournalErrorV1> {
-        Ok(ObjectDigest::from_bytes(self.take()?))
-    }
-
-    fn u64(&mut self) -> Result<u64, PolicyCompilerJournalErrorV1> {
-        Ok(u64::from_be_bytes(self.take()?))
-    }
 }
 
 #[cfg(test)]

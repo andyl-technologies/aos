@@ -16,7 +16,8 @@ use aos_proto::aos::sandbox::local::v1::{
     StorageAction, StorageResult,
 };
 use aos_sandbox_core::{
-    AssignmentEpoch, NamespaceGeneration, ObjectDigest, OperationId, Revision, SandboxId,
+    AssignmentEpoch, BoundedReader, NamespaceGeneration, ObjectDigest, OperationId, ReadError,
+    Revision, SandboxId,
 };
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodRequestV1,
@@ -2440,29 +2441,27 @@ impl LifecycleEffectRequestV1 {
     pub(super) fn from_atomic_snapshot_wire_bytes(
         bytes: &[u8; 214],
     ) -> Result<Self, LifecyclePhase6ErrorV1> {
-        let mut offset = 0;
-        let operation =
-            OperationId::from_bytes(take_atomic_snapshot_wire_field(bytes, &mut offset)?);
-        let operation_revision = aos_sandbox_core::Revision::new(u64::from_be_bytes(
-            take_atomic_snapshot_wire_field(bytes, &mut offset)?,
-        ));
-        let domain = take_atomic_snapshot_wire_field::<1>(bytes, &mut offset)?[0];
-        let ordinal = u32::from_be_bytes(take_atomic_snapshot_wire_field(bytes, &mut offset)?);
-        let step = u32::from_be_bytes(take_atomic_snapshot_wire_field(bytes, &mut offset)?);
-        let direction = take_atomic_snapshot_wire_field::<1>(bytes, &mut offset)?[0];
-        let attempt = u32::from_be_bytes(take_atomic_snapshot_wire_field(bytes, &mut offset)?);
-        let admission =
-            ObjectDigest::from_bytes(take_atomic_snapshot_wire_field(bytes, &mut offset)?);
+        let mut reader = BoundedReader::new(bytes, |error| match error {
+            ReadError::LengthOverflow => LifecyclePhase6ErrorV1::Capacity,
+            _ => LifecyclePhase6ErrorV1::InvalidInput,
+        });
+        let operation = OperationId::from_bytes(reader.array()?);
+        let operation_revision =
+            aos_sandbox_core::Revision::new(u64::from_be_bytes(reader.array()?));
+        let domain = reader.array::<1>()?[0];
+        let ordinal = u32::from_be_bytes(reader.array()?);
+        let step = u32::from_be_bytes(reader.array()?);
+        let direction = reader.array::<1>()?[0];
+        let attempt = u32::from_be_bytes(reader.array()?);
+        let admission = ObjectDigest::from_bytes(reader.array()?);
         let logical = super::LifecycleStepRequestDigestV1::from_stored(ObjectDigest::from_bytes(
-            take_atomic_snapshot_wire_field(bytes, &mut offset)?,
+            reader.array()?,
         ))
         .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
-        let target = take_atomic_snapshot_wire_field(bytes, &mut offset)?;
-        let prerequisite =
-            ObjectDigest::from_bytes(take_atomic_snapshot_wire_field(bytes, &mut offset)?);
-        let plan = ObjectDigest::from_bytes(take_atomic_snapshot_wire_field(bytes, &mut offset)?);
-        let payload =
-            ObjectDigest::from_bytes(take_atomic_snapshot_wire_field(bytes, &mut offset)?);
+        let target = reader.array()?;
+        let prerequisite = ObjectDigest::from_bytes(reader.array()?);
+        let plan = ObjectDigest::from_bytes(reader.array()?);
+        let payload = ObjectDigest::from_bytes(reader.array()?);
         if domain != LifecycleEffectDomainV1::Storage as u8
             || ordinal != 4
             || direction != LifecycleEffectDirectionV1::Forward as u8
@@ -2668,22 +2667,6 @@ impl LifecycleEffectRequestV1 {
     pub const fn payload(self) -> ObjectDigest {
         self.payload
     }
-}
-
-fn take_atomic_snapshot_wire_field<const N: usize>(
-    bytes: &[u8],
-    offset: &mut usize,
-) -> Result<[u8; N], LifecyclePhase6ErrorV1> {
-    let end = offset
-        .checked_add(N)
-        .ok_or(LifecyclePhase6ErrorV1::Capacity)?;
-    let field = bytes
-        .get(*offset..end)
-        .ok_or(LifecyclePhase6ErrorV1::InvalidInput)?;
-    *offset = end;
-    field
-        .try_into()
-        .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)
 }
 
 fn active_step_attempt(

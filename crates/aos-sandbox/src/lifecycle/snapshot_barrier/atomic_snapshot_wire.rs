@@ -4,7 +4,9 @@
 //! request. Decoding restores the complete typed member and dependency set;
 //! the terminal commitment is recomputed before Storage can prepare a program.
 
-use aos_sandbox_core::{ObjectDigest, OperationId, ResourceId, SandboxId, SnapshotId};
+use aos_sandbox_core::{
+    BoundedReader, ObjectDigest, OperationId, ReadError, ResourceId, SandboxId, SnapshotId,
+};
 
 use super::{
     LifecycleAtomicDatasetSnapshotMemberV1, LifecycleAtomicDatasetSnapshotPlanV1,
@@ -75,23 +77,26 @@ impl LifecycleAtomicDatasetSnapshotPlanV1 {
         if bytes.len() > MAXIMUM_PLAN_BYTES {
             return Err(LifecyclePhase6ErrorV1::Capacity);
         }
-        let mut reader = PlanReader { bytes, offset: 0 };
-        if reader.take::<8>()? != *MAGIC {
+        let mut reader = BoundedReader::new(bytes, |error| match error {
+            ReadError::LengthOverflow => LifecyclePhase6ErrorV1::Capacity,
+            _ => LifecyclePhase6ErrorV1::InvalidInput,
+        });
+        if reader.array::<8>()? != *MAGIC {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
-        let operation = OperationId::from_bytes(reader.take()?);
-        let snapshot = SnapshotId::from_bytes(reader.take()?);
+        let operation = OperationId::from_bytes(reader.array()?);
+        let snapshot = SnapshotId::from_bytes(reader.array()?);
         let transaction =
-            super::super::LifecycleTransactionIdV1::new(ResourceId::from_bytes(reader.take()?))
+            super::super::LifecycleTransactionIdV1::new(ResourceId::from_bytes(reader.array()?))
                 .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
         let effect = super::super::LifecycleEffectRequestV1::from_atomic_snapshot_wire_bytes(
-            &reader.take()?,
+            &reader.array()?,
         )?;
-        let inventory_generation = u64::from_be_bytes(reader.take()?);
-        let inventory_source = ObjectDigest::from_bytes(reader.take()?);
-        let inventory_head = ObjectDigest::from_bytes(reader.take()?);
-        let inventory = ObjectDigest::from_bytes(reader.take()?);
-        let closed_count = usize::from(u16::from_be_bytes(reader.take()?));
+        let inventory_generation = u64::from_be_bytes(reader.array()?);
+        let inventory_source = ObjectDigest::from_bytes(reader.array()?);
+        let inventory_head = ObjectDigest::from_bytes(reader.array()?);
+        let inventory = ObjectDigest::from_bytes(reader.array()?);
+        let closed_count = usize::from(u16::from_be_bytes(reader.array()?));
         if closed_count == 0 || closed_count > super::super::MAXIMUM_LIFECYCLE_EXPECTATIONS {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
@@ -99,7 +104,7 @@ impl LifecycleAtomicDatasetSnapshotPlanV1 {
         for _ in 0..closed_count {
             closed_resources.push(decode_resource(&mut reader)?);
         }
-        let member_count = usize::from(u16::from_be_bytes(reader.take()?));
+        let member_count = usize::from(u16::from_be_bytes(reader.array()?));
         if member_count == 0 || member_count > super::super::MAXIMUM_LIFECYCLE_EXPECTATIONS {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
@@ -107,13 +112,13 @@ impl LifecycleAtomicDatasetSnapshotPlanV1 {
         for _ in 0..member_count {
             members.push(LifecycleAtomicDatasetSnapshotMemberV1 {
                 resource: decode_resource(&mut reader)?,
-                storage_handle: ObjectDigest::from_bytes(reader.take()?),
-                physical_identity: ObjectDigest::from_bytes(reader.take()?),
-                creating_request: ObjectDigest::from_bytes(reader.take()?),
+                storage_handle: ObjectDigest::from_bytes(reader.array()?),
+                physical_identity: ObjectDigest::from_bytes(reader.array()?),
+                creating_request: ObjectDigest::from_bytes(reader.array()?),
             });
         }
-        let commitment = ObjectDigest::from_bytes(reader.take()?);
-        if reader.offset != bytes.len()
+        let commitment = ObjectDigest::from_bytes(reader.array()?);
+        if !reader.is_empty()
             || operation.as_bytes() == &[0; 16]
             || snapshot.as_bytes() == &[0; 16]
             || effect.operation() != operation
@@ -172,31 +177,9 @@ fn encode_resource(bytes: &mut Vec<u8>, resource: LifecycleResourceV1) {
 }
 
 fn decode_resource(
-    reader: &mut PlanReader<'_>,
+    reader: &mut BoundedReader<'_, LifecyclePhase6ErrorV1>,
 ) -> Result<LifecycleResourceV1, LifecyclePhase6ErrorV1> {
-    let code = reader.take::<1>()?[0];
-    let identity = reader.take()?;
+    let code = reader.array::<1>()?[0];
+    let identity = reader.array()?;
     LifecycleResourceV1::from_code(code, identity).map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)
-}
-
-struct PlanReader<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl PlanReader<'_> {
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], LifecyclePhase6ErrorV1> {
-        let end = self
-            .offset
-            .checked_add(N)
-            .ok_or(LifecyclePhase6ErrorV1::Capacity)?;
-        let field = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(LifecyclePhase6ErrorV1::InvalidInput)?;
-        self.offset = end;
-        field
-            .try_into()
-            .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)
-    }
 }
