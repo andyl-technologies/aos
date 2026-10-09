@@ -71,7 +71,6 @@ use base64::Engine as _;
 use futures_util::{StreamExt as _, TryStreamExt as _};
 use sha2::{Digest as _, Sha256};
 
-use aos_hub_model::auth::jwt::{Claims, JwtKeys};
 use crate::fetch::{SurfaceFetch, SurfaceProvider};
 use crate::jobs::Job;
 use crate::lease::PublishLease;
@@ -84,6 +83,7 @@ use crate::topology_probe::TopologyProbeScheduler;
 use aos_hub_db::db::{
     Database, IndexStatus, PlacementReadRequirement, RegistryRecord, SurfaceTarget,
 };
+use aos_hub_model::auth::jwt::{Claims, JwtKeys};
 use aos_hub_model::clock;
 use aos_hub_model::domain::iam::{self, claims_principal, token_allows};
 use aos_hub_model::domain::{Permission, Principal, PrincipalKind, Role, Scope};

@@ -647,7 +647,7 @@ unknown, duplicated, future-dated, expired, or incorrectly scoped evidence
 cannot satisfy a required case. Preserve failed attempts; a later pass does not
 erase them from the operational record.
 
-Two ages are fixed in `aos_release::qualification::limits`: rollout
+Two ages are fixed in `aos_release_format::qualification::limits`: rollout
 observations and approvals expire after 10 minutes, and any other observation a
 report relies on expires after 30 days. A3 cases additionally require
 observation at least as long as the destination's soak, or the soak of an

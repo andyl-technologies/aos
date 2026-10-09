@@ -436,7 +436,7 @@ fn binary_entry_modules_share_the_process_error_boundary() {
 #[test]
 fn harness_lint_rejects_error_and_logging_drift() {
     let library_findings = error_logging_failures(
-        Path::new("crucible/determinism/crucible-determinism/src/lib.rs"),
+        Path::new("crucible/engine/crucible-determinism/src/lib.rs"),
         r#"
             pub fn bad() -> Result<(), Box<dyn Error>> {
                 let value = maybe().unwrap();
@@ -499,7 +499,7 @@ fn harness_lint_rejects_error_and_logging_drift() {
     );
 
     let standard_error_source = error_logging_failures(
-        Path::new("crucible/determinism/crucible-determinism/src/error.rs"),
+        Path::new("crucible/engine/crucible-determinism/src/error.rs"),
         r#"
             impl Error for TypedError {
                 fn source(&self) -> Option<&(dyn Error + 'static)> {

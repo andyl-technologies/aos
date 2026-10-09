@@ -1228,9 +1228,9 @@ pub enum SessionError {
   - Completed by `checks.crucible.phase5.sessionSimDoubleSuite`: the aggregate
     runs the full `crucible-session` suite, the API and daemon
     `gate_control_responsive` targets, and `gate:scheduler-liveness` under the
-    `test-double` feature with an initialized and stepped `crucible::SimDouble`
+    `test-double` feature with an initialized and stepped `crucible_engine::SimDouble`
     smoke path before the pure scheduler-liveness reduction. Source checks assert
-    the session/API/daemon control-responsive paths drive `crucible::SimDouble`
+    the session/API/daemon control-responsive paths drive `crucible_engine::SimDouble`
     through quantum-loop adapters, avoid QEMU backend construction or process
     launch, and reserve real QEMU for Contract A, guest non-mutation, and patch
     inertness fidelity properties only.

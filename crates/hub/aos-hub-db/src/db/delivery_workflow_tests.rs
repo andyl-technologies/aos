@@ -5,7 +5,7 @@ use crate::db::{GatewayRevisionSpec, NewRegistryPublication};
 
 #[tokio::test]
 async fn endpoint_selector_does_not_expose_an_ungranted_successor_generation() {
-    let (db, _, spec, _, _) = crate::db::topology::tests::route_fixture().await;
+    let (db, _, spec, _, _) = crate::db::fixtures::route_fixture().await;
     let consumer_id = db
         .create_org("endpoint-selector", "Endpoint selector")
         .await
@@ -46,7 +46,7 @@ async fn endpoint_selector_does_not_expose_an_ungranted_successor_generation() {
 
 async fn verified_fixture() -> (Database, DeliveryWorkflowRecord, DeliveryActivationRoute) {
     let (db, registry_id, mut spec, mut url, reservation) =
-        crate::db::topology::tests::route_fixture().await;
+        crate::db::fixtures::route_fixture().await;
     let surface = SurfaceTarget::Registry(registry_id);
     let owner = db.org_by_slug("route-probes").await.unwrap().unwrap();
     let placement = db

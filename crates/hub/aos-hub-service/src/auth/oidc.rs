@@ -69,9 +69,9 @@ use rand::Rng;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use aos_hub_model::auth::seal::SecretSealer;
 use crate::web::console::ports::HttpClient;
 use aos_hub_db::db::{Database, IdpConfigRecord};
+use aos_hub_model::auth::seal::SecretSealer;
 use aos_hub_model::domain::{Principal, Role, Scope};
 
 /// Lifetime of an in-flight OIDC authorization-code request (10 minutes).

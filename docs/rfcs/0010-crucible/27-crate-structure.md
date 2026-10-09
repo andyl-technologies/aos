@@ -36,7 +36,7 @@ The current runtime packages follow five Crucible layers, plus the test-only
 The L3 library is `crucible-engine`. The `crucible-cli` package produces the
 public executable named `crucible`; package renames preserve that command.
 The former assertion crate's determinism gate vocabulary now belongs to
-`crucible-test-support::assertion`. Production assertion semantics and evaluation
+`crucible_test_support::assertion`. Production assertion semantics and evaluation
 remain in `crucible-engine`.
 
 ```text
@@ -225,7 +225,7 @@ of scenarios, nodes, QEMU, or faults. *Not in it:* the scheduler algorithm
 (that is L3, built *on* these primitives), any I/O, any wall-clock.
 
 The engine owns production assertion vocabulary and evaluation. Test-only
-determinism assertion labels live in `crucible-test-support::assertion`.
+determinism assertion labels live in `crucible_test_support::assertion`.
 
 ### L1 — co-sim transport
 

@@ -9,12 +9,9 @@ use base64::Engine as _;
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    collect_plan_pin_impacts, multipart_completion_matches,
-    pb, render_nix_cache_info, validate_signing_key_consumer_compatibility,
-    RpcError, RpcService,
+    collect_plan_pin_impacts, multipart_completion_matches, pb, render_nix_cache_info,
+    validate_signing_key_consumer_compatibility, RpcError, RpcService,
 };
-use aos_hub_model::auth::jwt::JwtKeys;
-use aos_hub_model::auth::seal::SecretSealer;
 use crate::coordinator::InMemoryCoordinator;
 use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceObjectEvidence, SurfaceProvider};
 use crate::lease::InMemoryLease;
@@ -32,6 +29,8 @@ use aos_hub_db::db::{
     SurfacePlacementBlockers, SurfaceTarget, TokenAuth, VerifiedRegistryImageObject,
     WriteTicketPartRecord,
 };
+use aos_hub_model::auth::jwt::JwtKeys;
+use aos_hub_model::auth::seal::SecretSealer;
 use aos_hub_model::domain::{Permission, Principal, Role, Scope};
 
 #[allow(dead_code)]

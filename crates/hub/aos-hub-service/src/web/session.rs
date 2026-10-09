@@ -16,8 +16,8 @@
 
 use axum::http::{header, HeaderMap};
 
-use aos_hub_model::auth::session::COOKIE_NAME;
 use aos_hub_db::db::{Database, SessionAuth};
+use aos_hub_model::auth::session::COOKIE_NAME;
 use aos_hub_model::domain::Principal;
 
 /// A resolved, validated browser session.

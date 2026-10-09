@@ -869,9 +869,9 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::super::topology::tests::route_fixture;
     use super::super::RouteSpec;
     use super::*;
+    use crate::db::fixtures::route_fixture;
 
     fn instance_spec(default_registry_id: Option<i64>, enabled: bool) -> InstanceOciRouteSpec {
         let access_policy_json = "{}".to_string();

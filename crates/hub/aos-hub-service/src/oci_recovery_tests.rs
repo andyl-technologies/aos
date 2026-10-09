@@ -16,7 +16,7 @@ mod tests {
     use anyhow::{bail, Result};
     use aos_hub_db::db::*;
     use aos_hub_db::db::{SurfacePlacementRecord, SurfaceTarget};
-    use aos_oci_types::{Digest, RepositoryName};
+    use aos_oci_types::{RepositoryName, Sha256Digest};
 
     const NOW: i64 = 1_900_000_000;
 

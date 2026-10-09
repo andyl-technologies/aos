@@ -598,8 +598,9 @@ sequenceDiagram
   APM->>APM: Commit generation
 ```
 
-The Rust entry points are `deployment::evaluation::{resolve_packages, Evaluation}`
-and `deployment::transaction::Transactions` in `aos-package`. Evaluation uses
+The reusable Rust entry points are `aos_deployment::evaluation::{resolve_packages, Evaluation}`
+and `aos_deployment::transaction::Transactions`. The `aos-package-manager` crate
+adapts these APIs to package lookup and retained installation state. Evaluation uses
 stock Nix in pure/restricted mode with fixed source inputs and import-from-
 derivation disabled. It builds nothing and executes no host modification.
 Package/version/source conflicts fail before execution.

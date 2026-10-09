@@ -970,7 +970,7 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   scheduled before the lower rung's gate is green. — satisfies [ADV-1], [ADV-2],
   [ADV-3]; spec §22.1.
   Completed by `checks.crucible.phase6.advancedDependencyLadder`: the
-  `crucible-harness::phase_plan` module now carries an executable
+  `crucible_test_support::phase_plan` module now carries an executable
   `ADVANCED_FEATURE_TASK_ORDER` over the exact-determinism, save/restore, fork,
   search, coverage-feedback, and fuzzing rungs. The checker requires the
   determinism, replay-oracle, and control-plane phase gates to occur before
@@ -989,7 +989,7 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   resume+continue bit-identical to an uninterrupted run. — satisfies [ADV-4],
   [ADV-5]; spec §22.2; cross-ref 20 §3.
   Completed by `checks.crucible.phase6.explorationLifecycle`: the
-  `crucible-session::ExplorationLifecycleDriver` owns only a session actor
+  `crucible_session::ExplorationLifecycleDriver` owns only a session actor
   mailbox sender plus a live quantum-boundary snapshot, routing pause, resume,
   and stop through `SessionCommand::{Pause, Continue, Stop}`. The gate exercises
   the driver against a live `SessionActor`, requires every acknowledgement to

@@ -879,7 +879,7 @@ genuinely unresolved and is tracked as a spike in
   satisfied by the **existing `crucible-cas` `DagStore` interface** — the same
   backend-agnostic `put`/`get`/`has`(-by-content-hash) trait Crucible already
   ships — **not** by a second, separately-designed store. The fleet-visible and
-  team-shared backend is `crucible_cas::SharedDagStore` today; a future RFC-0007
+  team-shared backend is `crucible_store::SharedDagStore` today; a future RFC-0007
   (`ratchet`) shared substrate is a **drop-in replacement of the interface's
   internals**, gated behind D-17 and expressed only as documented merge-marker
   text, never as a build- or run-time dependency. This resolves the D-20
@@ -1160,7 +1160,7 @@ genuinely unresolved and is tracked as a spike in
   floor is exactly the smallest value that keeps the conservative lookahead budget
   positive. w8's landed perf suite (`gate:perf-bench`,
   `checks.crucible.phase7.gates.perfBench`, 21/21 green) includes the
-  **latency-parallelism sweep** (`crucible_harness::perf::latency_parallelism_sweep`,
+  **latency-parallelism sweep** (`crucible_test_support::perf::latency_parallelism_sweep`,
   [PERF-4]) which measures the **parallelism-is-the-lookahead-budget identity**:
   realized parallelism `P` scales with the minimum link latency and *degrades
   toward single-TB lockstep as the latency approaches the floor* (the cost model
@@ -1217,13 +1217,13 @@ genuinely unresolved and is tracked as a spike in
     of `P` toward the floor.
 - **Affects:** [INV-3], [DET-12], [SCHED-6], [SCHED-20], [G-9]; [IO-33], [IO-34],
   [PERF-4]; files 08, 15 (§15.4.2), 25; constant
-  `crucible::MIN_LINK_LATENCY` (`model.rs:57`); errors
+  `crucible_engine::MIN_LINK_LATENCY` (`model.rs:57`); errors
   `CrucibleModelError::LinkLatencyBelowFloor` (`crucible-device/src/error.rs`);
   the `NetLink` sub-node (`crucible-device/src/netlink.rs`); gates
   `checks.crucible.phase3.schedulerLinkLatencyFloor`,
   `checks.crucible.phase0.multiVmParallelism`,
   `checks.crucible.phase7.gates.perfBench`; the sweep
-  `crucible_harness::perf::latency_parallelism_sweep`. References D-10 (lookahead
+  `crucible_test_support::perf::latency_parallelism_sweep`. References D-10 (lookahead
   is the parallelism budget).
 - **Supersedes:** [D-21] (the Open provisional framing that left the floor value
   and the clamp-vs-reject choice unresolved pending benchmarks).

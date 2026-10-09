@@ -88,11 +88,11 @@
       }
       {
         label = "T-PAT-6 SimDouble adapter claim";
-        needle = "`crucible::SimDouble` quantum-loop adapter";
+        needle = "`crucible_engine::SimDouble` quantum-loop adapter";
       }
       {
         label = "T-PAT-6 scheduler liveness harness claim";
-        needle = "initialized `crucible::SimDouble` liveness harness";
+        needle = "initialized `crucible_engine::SimDouble` liveness harness";
       }
       {
         label = "T-PAT-6 no real QEMU claim";

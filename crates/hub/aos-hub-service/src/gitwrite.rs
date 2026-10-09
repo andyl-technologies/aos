@@ -44,12 +44,12 @@
 
 use anyhow::{bail, Context, Result};
 
-use aos_hub_model::auth::seal::SecretSealer;
 use crate::config::ChangeId;
 use crate::fetch::SurfaceFetch;
 use crate::git::{ObjectReader, CHANGE_ID_TRAILER};
 use crate::surface_write::SurfaceWrite;
 use aos_hub_db::db::{Database, RegistryRecord};
+use aos_hub_model::auth::seal::SecretSealer;
 
 use aos_registry_format::object::{
     decode_loose, encode_loose, encode_tree, hash_object, tree_map, ObjectKind, Oid, TreeEntry,

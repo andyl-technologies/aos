@@ -27,11 +27,11 @@ use base64::Engine as _;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-use aos_hub_model::auth::jwt::{OciRepositoryGrant, OciTokenGrant};
 use crate::oci_http::{OciAccess, OciHttpMetadata, OciHttpRequest};
 use crate::placement_read::PlacementReadOutcome;
 use crate::service::{RpcError, RpcService};
 use aos_hub_db::db::{InboundEndpointHost, RegistryRecord};
+use aos_hub_model::auth::jwt::{OciRepositoryGrant, OciTokenGrant};
 use aos_hub_model::delivery_http::{DeliveryMethod, HttpTimestamp};
 
 /// Distribution API version advertised on every OCI response.

@@ -2,7 +2,7 @@
 
 Runtime assertion semantics and evaluation are owned by `crucible-engine`.
 The small digest/order/decision-stream vocabulary used by determinism gates is
-owned by `crucible-test-support::assertion`; it is test support rather than a
+owned by `crucible_test_support::assertion`; it is test support rather than a
 separate runtime assertion library. Its historical `crucible-assert.v1` report
 identifier remains stable despite the package consolidation.
 

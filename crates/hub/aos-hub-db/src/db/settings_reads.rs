@@ -388,7 +388,7 @@ mod tests {
 
     #[tokio::test]
     async fn route_pages_are_bounded_and_resume_in_stable_identity_order() {
-        let (db, registry_id, mut spec, _, _) = crate::db::topology::tests::route_fixture().await;
+        let (db, registry_id, mut spec, _, _) = crate::db::fixtures::route_fixture().await;
         let surface = SurfaceTarget::Registry(registry_id);
         for (name, byte) in [("z", 3), ("a", 1), ("m", 2)] {
             spec.base_path = format!("/cache-{name}");

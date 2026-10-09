@@ -750,7 +750,7 @@ command.
   and identity-irrelevant `metadata`; property-test that id equals the
   recorded `Configuration::id()` and is independent of `state`/fingerprint/
   metadata. — satisfies [TEMP-1], [TEMP-2], [TEMP-4], [TEMP-5]; spec §1, §2.
-  - Completed by `crucible::Checkpoint` and
+  - Completed by `crucible_engine::Checkpoint` and
     `checks.crucible.phase1.gates.contentAddress`: the model now records
     `scenario_ref`, `parent`, `schedule_delta`, `virtual_time`, per-node
     `node_icounts`, optional `MaterializedState`, `coverage_fingerprint`, and
@@ -765,7 +765,7 @@ command.
   dedup of configurations reached by different paths; test the `parent`-chain ⇒
   schedule-prefix identity. — satisfies [TEMP-1], [TEMP-3], [TEMP-6]; spec §1,
   §2.
-  - Completed by `crucible::TemporalGraph` and
+  - Completed by `crucible_engine::TemporalGraph` and
     `checks.crucible.phase1.gates.contentAddress`: the graph stores
     content-addressed checkpoint nodes rooted at the baked genesis snapshot,
     records `step` children as thin checkpoint nodes via `record_step`, dedups
@@ -781,7 +781,7 @@ command.
   active faults — 08, 17), decision-RNG positions (04), and event-log offset
   (19); test it is sufficient for the version-nine descriptor branch. — satisfies [TEMP-7],
   [TEMP-8], [TEMP-9], [TEMP-10]; spec §3.
-  - Completed by `crucible::MaterializedState`,
+  - Completed by `crucible_engine::MaterializedState`,
     `checks.crucible.phase1.gates.contentAddress`, and
     `checks.crucible.phase1.gates.replayOracle`: fat checkpoints now carry
     structured VM snapshot refs with icounts, device overlay deltas with device
@@ -793,7 +793,7 @@ command.
   ancestor-replay) and fat checkpoints (`MaterializedState`, realized by
   version-nine descriptor restore), the thin-is-source-of-truth rule, and the materialize-hot-nodes /
   evict-fat→thin policy. — satisfies [TEMP-11], [TEMP-12], [TEMP-14]; spec §4.
-  - Completed by `crucible::TemporalGraph`, `crucible::MaterializationPolicy`,
+  - Completed by `crucible_engine::TemporalGraph`, `crucible_engine::MaterializationPolicy`,
     and `checks.crucible.phase1.gates.replayOracle`: descendant checkpoint DAG
     nodes remain thin (`state = None`) while exact fat snapshots live in the
     separate cache, `materialize_checkpoint` validates a fat cache against the
@@ -804,8 +804,8 @@ command.
 - [x] **T-TEMP-5** Require exact materialized checkpoints and reject incomplete
   device snapshots; thin checkpoints remain an explicit cache policy, not a
   runtime fallback. — satisfies [TEMP-13], [TEMP-20]; spec §4, §6; cross-ref 30.
-  - Completed by `crucible::MaterializationPolicy`,
-    `crucible_qemu::QemuVmSnapshot`, and
+  - Completed by `crucible_engine::MaterializationPolicy`,
+    `crucible_qemu_host::QemuVmSnapshot`, and
     `checks.crucible.phase2.qemuExactSnapshotRestore`: a fat checkpoint contains
     one identity-bound pair of QEMU VMState and Apache-side host-I/O continuation,
     capture deletes partial QEMU artifacts on failure, restore validates the pair
@@ -816,7 +816,7 @@ command.
   segment; unchanged pieces resolve by reference; all deltas BLAKE3-keyed and
   deduped; assert marginal fork cost ∝ delta size. — satisfies [TEMP-15],
   [TEMP-16], [TEMP-17]; spec §5.
-  - Completed by `crucible::CowDeltaRef`, `crucible::CowSharingStats`, and
+  - Completed by `crucible_engine::CowDeltaRef`, `crucible_engine::CowSharingStats`, and
     `checks.crucible.phase1.gates.contentAddress`: checkpoints now enumerate
     typed CoW delta refs for dirty VM memory, dirty device overlays,
     `schedule_delta`, and explicit appended event-log segments while preserving
@@ -848,10 +848,10 @@ command.
   layout) with a backend-agnostic trait for future remote backends and
   store-key reproduction artifacts. — satisfies [TEMP-21], [TEMP-22],
   [TEMP-23]; spec §7.
-  - Completed by `crucible::DagStore`, `crucible::MemoryDagStore`,
-    `crucible::LocalDagStore`, `crucible::TemporalGraphStoreKeys`,
+  - Completed by `crucible_engine::DagStore`, `crucible_engine::MemoryDagStore`,
+    `crucible_engine::LocalDagStore`, `crucible_engine::TemporalGraphStoreKeys`,
     `TemporalGraph::persist_checkpoint_closure`,
-    `crucible::DagStoreReproductionArtifact`, and
+    `crucible_engine::DagStoreReproductionArtifact`, and
     `checks.crucible.phase1.gates.contentAddress`: raw object bytes now produce
     portable BLAKE3-backed `ContentHash` keys via `ContentHash::from_bytes`;
     `put`/`get`/`exists` are backend-agnostic and idempotently dedup equal
@@ -866,14 +866,14 @@ command.
   rooted at live tips / pinned checkpoints / genesis, and the cache-not-identity
   / pinned-stays-realizable rules. — satisfies [TEMP-24], [TEMP-25], [TEMP-26];
   spec §8.
-  - Completed by `crucible::TemporalGraphGcRoots`,
-    `crucible::TemporalGraphReferenceCounts`,
-    `crucible::TemporalGraphGcReport`,
+  - Completed by `crucible_engine::TemporalGraphGcRoots`,
+    `crucible_engine::TemporalGraphReferenceCounts`,
+    `crucible_engine::TemporalGraphGcReport`,
     `TemporalGraph::reference_counts`, `TemporalGraph::garbage_collect`,
     `TemporalGraph::garbage_collect_store`,
     `TemporalGraph::collect_cached_snapshot`,
     `TemporalGraph::collect_cached_snapshot_store`,
-    `crucible::DagStore::delete`, `checks.crucible.phase1.gates.contentAddress`, and
+    `crucible_engine::DagStore::delete`, `checks.crucible.phase1.gates.contentAddress`, and
     `checks.crucible.phase1.gates.replayOracle`: live session tips, pinned
     checkpoints, and baked genesis snapshots form the mark roots; root
     multiplicity is reflected in checkpoint reference counts; sweep removes only
@@ -889,12 +889,12 @@ command.
   DAG (canonical-relabeling fingerprint; conservative decision independence),
   explicitly not a formal-methods engine. — satisfies [TEMP-27], [TEMP-28],
   [TEMP-29]; spec §9; cross-ref 22.
-  - Completed by `crucible::FrontierReductionPolicy`,
-    `crucible::FrontierReductionReport`,
-    `crucible::SymmetryReductionClasses`,
-    `crucible::SymmetryReductionKey`,
-    `crucible::PartialOrderReductionPolicy`,
-    `crucible::PartialOrderReductionKey`,
+  - Completed by `crucible_engine::FrontierReductionPolicy`,
+    `crucible_engine::FrontierReductionReport`,
+    `crucible_engine::SymmetryReductionClasses`,
+    `crucible_engine::SymmetryReductionKey`,
+    `crucible_engine::PartialOrderReductionPolicy`,
+    `crucible_engine::PartialOrderReductionKey`,
     `Decision::is_independent_from`, `Decision::reduction_order_key`,
     `Checkpoint::symmetry_reduction_key`,
     `TemporalGraph::symmetry_reduction_key`,
@@ -915,8 +915,8 @@ command.
   05 §9, 22.
   - Completed by `TemporalGraph::save`, `TemporalGraph::resume`,
     `TemporalGraph::fork`, `TemporalGraph::replay`, `TemporalGraph::search`,
-    `crucible::TemporalGraphSave`, `crucible::TemporalGraphRuntime`,
-    `crucible::TemporalGraphFork`, `crucible::TemporalGraphSearch`,
+    `crucible_engine::TemporalGraphSave`, `crucible_engine::TemporalGraphRuntime`,
+    `crucible_engine::TemporalGraphFork`, `crucible_engine::TemporalGraphSearch`,
     `checks.crucible.phase1.gates.contentAddress`, and
     `checks.crucible.phase1.gates.replayOracle`: save materializes a
     replay-oracle-checked fat checkpoint and persists the same graph closure to

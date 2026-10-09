@@ -219,10 +219,7 @@ impl Database {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    };
+    use std::sync::atomic::Ordering;
 
     use crate::db::fixtures::{count_queries, topology_fixture};
     #[tokio::test]

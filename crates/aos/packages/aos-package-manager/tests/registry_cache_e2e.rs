@@ -130,7 +130,13 @@ async fn static_nix_cache_e2e_generates_serves_and_downloads_real_store_path() -
         &printer,
     )
     .await?;
-    assert_stock_nix_can_query_signed_cache(&mirror_url, &store_path, &trusted_public_key)?;
+    // The HTTP fixture shares this runtime, so a blocking Nix client must leave
+    // its executor available to serve the cache requests.
+    tokio::task::spawn_blocking(move || {
+        assert_stock_nix_can_query_signed_cache(&mirror_url, &store_path, &trusted_public_key)
+    })
+    .await
+    .context("joining stock Nix cache verification")??;
     Ok(())
 }
 

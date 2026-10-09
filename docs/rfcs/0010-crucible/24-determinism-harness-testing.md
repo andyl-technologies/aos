@@ -931,7 +931,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   shmem ABI + IPC protocol, instruction-budget behavior generator, synthetic
   fingerprint; share the real shmem/queue/codec crates. — satisfies [HARN-14],
   [HARN-15], [HARN-17]; spec §3.
-  - Completed by `crucible::SimDouble` and
+  - Completed by `crucible_engine::SimDouble` and
     `checks.crucible.phase1.simDouble`: the double is compiled behind the
     `test-double` feature, enables the shared `crucible-shmem` and
     `crucible-protocol` crates only for that feature, builds its plugin-side
@@ -949,7 +949,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   - Completed by `checks.crucible.phase1.hostObservableSchedule` and
     `checks.crucible.phase2.qemuQuantumShmem`. The
     `host_observable_schedule_cross_checks_sim_double_against_plugin_projection`
-    unit test proves the callback-model half: `crucible::SimDouble` records a
+    unit test proves the callback-model half: `crucible_engine::SimDouble` records a
     typed host-observable schedule vocabulary for horizon advances, inbound
     SPSC frame deliveries, outbound SPSC frame emissions, I/O completions, and
     snapshots; the QEMU plugin test constructs the matching callback-model
@@ -1001,7 +1001,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [x] **T-HARN-13** Wire random in-search oracle sampling: each materialized fat
   checkpoint is also reconstructed thin and compared at a configurable rate during
   search/fuzzing; mismatch triggers bisection. — satisfies [HARN-13]; spec §6.
-  Completed by `crucible_harness::replay_oracle`'s `ReplayOracleSamplingConfig`,
+  Completed by `crucible_test_support::replay_oracle`'s `ReplayOracleSamplingConfig`,
   `ReplayOracleSearchMaterialization`, `ReplayOracleSearchSamplingReport`,
   `check_sampled_search_replay_oracle`, `SearchReplayOracleSamplingConfig`,
   `TemporalGraph::search_with_replay_oracle_sampling`,
@@ -1027,7 +1027,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   and pause acknowledgements within one post-request quantum; the test also
   verifies that snapshot, fork, inject, and query reach `QuantumRequest.control`
   before their acknowledgements are published, while pause is acknowledged as an
-  actor boundary state transition. `crucible-api::control_responsive` exposes
+  actor boundary state transition. `crucible_control_api::control_responsive` exposes
   the wall-clock-free
   `ControlResponsiveSessionProbe` route and rejects non-running, missing,
   rejected, backward, or over-bound evidence. The daemon target issues through
@@ -1062,8 +1062,8 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [x] **T-HARN-19** Implement the protocol-codec and 9p/blk wire fuzzers with the
   round-trip property and a regression corpus. — satisfies [HARN-34]; spec §8.3.
   Completed by `checks.crucible.phase2.protocolCodecFuzz`: the gate now runs the
-  existing structure-aware `crucible-protocol::codec_fuzz` target plus the
-  `crucible-qemu-plugin::io_wire_fuzz` target, both through
+  existing structure-aware `crucible_qemu_protocol::codec_fuzz` target plus the
+  `crucible_qemu_plugin::io_wire_fuzz` target, both through
   `gate:abi-conformance`. The I/O target carries a seeded regression corpus for
   malformed/adversarial block request payloads, block response payloads, and raw
   9p message envelopes; asserts no panic through `catch_unwind`; checks
@@ -1136,7 +1136,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   green-before-advance, with `gate:signal-fault-system` terminal and the `SimDouble`
   available from Phase 1. — satisfies [HARN-3], [HARN-30]; spec §13.
   Completed by `checks.crucible.phase1.phaseGateOrdering`:
-  `crucible_harness::phase_plan` now records every ordered phase-gate
+  `crucible_test_support::phase_plan` now records every ordered phase-gate
   occurrence from §13 separately from the one-row canonical gate catalog,
   including repeated gates such as `gate:replay-oracle` and
   `gate:e2e-determinism`. The model exposes green-before-advance validation by

@@ -513,7 +513,7 @@ unification) are the remaining work that wins parity.
      `worker`⇄`axum` bridge + the `SendWrapper` Send bridge; its D1/R2/D1-limiter
      back the `RpcService`, and its `consoleports` (logging `Mailer`, Fetch-API
      `HttpClient`, AES-GCM sealer) back the `ConsoleDeps`. *Done.*
-   - f. ✅ **Port `aos-hub-client::HubClient`** to a Connect-JSON `reqwest`
+   - f. ✅ **Port `aos_hub_client::HubClient`** to a Connect-JSON `reqwest`
      client over `aos-hub-api`. *Done.*
    - g. ✅ **Rewire the native hub** to mount `core::connect::rpc_router()` and
      `core::web::console::console_router()` (the CLI speaks Connect-JSON); the

@@ -183,7 +183,7 @@ green.
 
 - [x] `Server-Timing` span per `Backend::query`/`execute` (feature-gated) so
       per-statement ms is visible in `wrangler tail` / preview, not inferred.
-      *Done:* `aos_hub_core::backend::TimingBackend` + `QueryTimings`
+      *Done:* `aos_hub_service::backend::TimingBackend` + `QueryTimings`
       (`backend/timing.rs`, `query-timing` feature) decorate the read-path
       backend; the Worker emits `Server-Timing` from `fetch` (`lib.rs`). Native
       tests green; compiles on native + wasm32 with/without the feature.
@@ -218,14 +218,14 @@ green.
 
 - [x] Define a `KvStore` port in `aos-hub-service` (`get`/`put`/`delete`/TTL) with a
       Workers KV impl (Worker) and an LMDB impl (native).
-      *Done:* `aos_hub_core::kv::{KvStore, InMemoryKv}` (`kv.rs`, tested) +
+      *Done:* `aos_hub_service::kv::{KvStore, InMemoryKv}` (`kv.rs`, tested) +
       `WorkerKv` over Workers KV (`workerkv.rs`, compiles wasm). Native impl is
       in-process (`InMemoryKv`) — the LMDB **persistent** variant is a drop-in
       behind the same port (deferred, mirrors how `InMemoryLease` is the native
       lease today); a no-new-C-dep sqlite-backed variant is also available.
 - [x] Define a `Coordinator` port (atomic counter, lease, monotonic floor) with a
       Durable Object impl (Worker) and an in-process/LMDB-txn impl (native).
-      *Done:* `aos_hub_core::coordinator::{Coordinator, InMemoryCoordinator}`
+      *Done:* `aos_hub_service::coordinator::{Coordinator, InMemoryCoordinator}`
       (`coordinator.rs`, tested) + the `CoordinatorObject` Durable Object and
       `WorkerCoordinator` client (`coordinatorobj.rs`, compiles wasm). DO runtime
       behavior is verified on deploy (needs the `[[durable_objects.bindings]]`
@@ -322,7 +322,7 @@ green.
 
 - [x] Define a `Queue` port (Cloudflare Queues / native job runner) for async
       fan-out.
-      *Done:* `aos_hub_core::jobs::{Queue, Job, InMemoryQueue}` (`jobs.rs`,
+      *Done:* `aos_hub_service::jobs::{Queue, Job, InMemoryQueue}` (`jobs.rs`,
       tested — `Job` is a JSON-serializable enum: regenerate-surface,
       rebuild-directory, reindex, invalidate-read-model, deliver-webhook) +
       `WorkerQueue` over Cloudflare Queues (`workerqueue.rs`, `queue` feature,

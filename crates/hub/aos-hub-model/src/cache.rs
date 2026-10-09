@@ -179,5 +179,4 @@ mod tests {
         assert!(parse_cache_narinfo(1, "x", "Compression: zstd\n", 0).is_none());
         assert!(parse_cache_narinfo(1, "x", "StorePath: /nix/store/x-a\n", 0).is_none());
     }
-
 }

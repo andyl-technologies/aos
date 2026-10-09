@@ -796,7 +796,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   producer/consumer timing) shared by all determinism gates. — satisfies
   [DET-38]; spec §4.11.
   - Completed by `checks.crucible.phase1.adversarialHostFixture`: the shared
-    `crucible_harness::adversarial` fixture now publishes the canonical
+    `crucible_test_support::adversarial` fixture now publishes the canonical
     host-adversary profile matrix, seeded task-order and logical-affinity
     planning that drives worker partitioning, deterministic jitter/load
     injection, varied worker counts, and a role-aware producer/consumer skew
@@ -835,7 +835,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   bit-identical aggregate-icount trajectory across runs. — satisfies [DET-5],
   [DET-29]; spec §4.2.1, §4.8.
   - Completed by `checks.crucible.phase1.contractAIsolation`: the isolated
-    `crucible-sim::contract_a::ContractADriver` now models `N > 1` vCPU runs on
+    `crucible_determinism::contract_a::ContractADriver` now models `N > 1` vCPU runs on
     a single aggregate icount axis, samples every vCPU register file plus the RR
     cursor at each aggregate-icount boundary, folds that material into the run
     fingerprint, and proves replayed aggregate-icount trajectories are
@@ -880,7 +880,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     `checks.crucible.phase2.qemuPreemptionInject`: the plugin contract samples
     the authoritative sender vCPU and RR quantum, applies the fixed modeled
     node-icount IPI latency, and rounds to the next RR switch with
-    `crucible_protocol::deterministic_ipi_delivery_icount`; the exact-source
+    `crucible_qemu_protocol::deterministic_ipi_delivery_icount`; the exact-source
     QEMU microtest proves that the resulting mailbox command reaches
     `qemu_plugin_inject_preemption` and rejects an out-of-window coordinate.
 - [x] **T-DET-31** Implement app-requested randomness served from the single

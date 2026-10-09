@@ -13,6 +13,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .include_file("_connectrpc.rs")
         .compile()?;
 
-    println!("cargo:rerun-if-changed={proto_root}");
+    for file in &files {
+        println!("cargo:rerun-if-changed={file}");
+    }
     Ok(())
 }

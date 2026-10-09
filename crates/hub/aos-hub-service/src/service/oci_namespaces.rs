@@ -14,11 +14,11 @@ use sha2::{Digest as _, Sha256};
 use super::{
     claims_principal, parse_resource_version, RouteReservationPlanSeal, RpcError, RpcService,
 };
-use aos_hub_model::auth::jwt::Claims;
 use aos_hub_db::db::{
     InstanceOciRouteRecord, InstanceOciRouteReservation, InstanceOciRouteSpec, RegistryRecord,
     SurfaceTarget,
 };
+use aos_hub_model::auth::jwt::Claims;
 use aos_hub_model::domain::{Permission, Scope};
 
 const CREATE_PLAN: &str = "create_instance_oci_route";

@@ -28,7 +28,7 @@
   [`10-unified-runtime.md`](10-unified-runtime.md). This **supersedes** the
   read-only Workers edge in `crates/aos-registry-worker`.
 
-  **Shipped:** the async `Backend` + shared `aos-hub-db::db::Database` (reads
+  **Shipped:** the async `Backend` + shared `aos_hub_db::db::Database` (reads
   *and* writes; sqlx native / D1 Workers); a wasm-clean `aos-hub-api`
   message crate; the transport-free `RpcService` holding **all 26
   `aos.registry.v1` methods** (registry/package/channel/release reads, org/

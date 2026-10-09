@@ -1144,7 +1144,7 @@ branch on the verdict without parsing output:
   `qemu-crucible` and `crucible-qemu-plugin`. A complete candidate pair must
   have readable artifacts, a patched-QEMU sim-capability marker with plugins
   enabled and a build identity, and plugin build metadata whose ABI is derived
-  from `crucible_shmem::ABI_VERSION` and whose QEMU build identity matches the
+  from `crucible_qemu_shmem::ABI_VERSION` and whose QEMU build identity matches the
   selected QEMU marker. Explicit QEMU absence or any mismatched candidate pair
   fails with exit code 4 and a message listing the discovery order and stating
   that host `$PATH` QEMU is never used. Resolved QEMU backends carry the pinned

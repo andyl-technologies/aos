@@ -824,7 +824,7 @@ determinism contract (04).
   Completed as the `QemuNode` one-child/three-plane wrapper in
   `crucible-qemu`: it owns a private `std::process::Child` handle through
   `QemuNodeChild` plus a `QemuNodeChannels` bundle, exposes the synchronous
-  `crucible::Backend` boundary, routes current icount/advance/frame/idle/
+  `crucible_engine::Backend` boundary, routes current icount/advance/frame/idle/
   fingerprint operations only through the shmem hot path, rejects generic
   backend snapshot/restore, routes the paired exact-checkpoint API through QMP,
   and runs scheduler shutdown through the existing

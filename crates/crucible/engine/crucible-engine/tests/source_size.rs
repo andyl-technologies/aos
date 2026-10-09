@@ -57,7 +57,7 @@ fn collect_oversized_rust_sources(
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            collect_oversized_rust_sources(&path, &crates_dir, hygiene_baseline, oversized)?;
+            collect_oversized_rust_sources(&path, crates_dir, hygiene_baseline, oversized)?;
             continue;
         }
         if path.extension() != Some(OsStr::new("rs")) {

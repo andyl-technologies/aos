@@ -33,15 +33,15 @@
     ++ failuresFor "crates/crucible/engine/crucible-engine/Cargo.toml" cargoManifest [
       {
         label = "shared shmem dependency";
-        needle = ''crucible-shmem = { path = "../crucible-shmem", optional = true }'';
+        needle = ''crucible-qemu-shmem = { path = "../../protocol/crucible-qemu-shmem", optional = true }'';
       }
       {
         label = "shared protocol dependency";
-        needle = ''crucible-protocol = { path = "../crucible-protocol" }'';
+        needle = ''crucible-qemu-protocol = { path = "../../protocol/crucible-qemu-protocol" }'';
       }
       {
         label = "test-double feature dependencies";
-        needle = ''test-double = ["dep:crucible-shmem"]'';
+        needle = ''test-double = ["dep:crucible-qemu-shmem"]'';
       }
     ]
     ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [

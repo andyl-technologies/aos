@@ -9,7 +9,7 @@ use std::process::Output;
 
 use anyhow::{Context, Result};
 use aos_nar::cache::{NarCompression, StaticNarInfoInput, nar_url, render_static_narinfo};
-use aos_registry_client::registry::{objectstore, pack, tuf};
+use aos_registry_client::registry::objectstore;
 use registry_fixture::{RegistryFixture, StaticHttpServer};
 use sha2::{Digest, Sha256};
 

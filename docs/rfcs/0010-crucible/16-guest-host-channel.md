@@ -391,17 +391,17 @@ family. Those messages do not extend or reinterpret the closed marker-kind
 table below: dispatch first distinguishes the registered selectable version and
 kind prefix from this `CRBL` marker frame, then invokes exactly one codec. The
 selectable family owns its own golden vectors, byte ceiling, and version bump
-rule in `crucible-protocol::selectable`; wiring that dispatcher and catalog
+rule in `crucible_qemu_protocol::selectable`; wiring that dispatcher and catalog
 authority is RFC-0020 T-CAM-2.5. A retained runtime request crosses the existing
 plugin-to-host marker ring under the internal kind `0xff06` and the independent
-`CRUCSPQ2` codec owned by `crucible-protocol::selectable_transport`; it is not a
+`CRUCSPQ2` codec owned by `crucible_qemu_protocol::selectable_transport`; it is not a
 guest-originated marker kind and cannot enter the observational marker decoder.
 The same internal ring carries an admitted canonical `SelectableRegisterV1`
 under kind `0xff08` and a consumed canonical `SelectionReplyV1` under kind
 `0xff09`. These delta kinds let the Apache host mirror the GPL-side catalog
 without sharing native state or trusting a self-reported aggregate snapshot.
 
-The shared ABI owner is `crucible-protocol::doorbell_frame`: the
+The shared ABI owner is `crucible_qemu_protocol::doorbell_frame`: the
 `WhiteboxDoorbellFrame` codec encodes and decodes the canonical frame, the
 `GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS` corpus freezes byte-exact examples,
 and `WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE` requires regenerating every
@@ -558,7 +558,7 @@ Doorbell protocol version 3 kind table (closed, versioned set):
   produces a BackendRngEvidence (05), and elicits a host->guest reply (§16.5.3).
 ```
 
-Implementation note: `crucible-protocol::doorbell_marker` owns the closed marker
+Implementation note: `crucible_qemu_protocol::doorbell_marker` owns the closed marker
 vocabulary, body codec, typed decode diagnostics, and byte-exact marker golden
 vectors. The QEMU plugin decodes every generic marker trap through that shared
 codec before recording it, rejects `random_request` on the observational marker
@@ -964,7 +964,7 @@ the transport layer by construction.
   thin library) mirroring the marker vocabulary, hermetically from source for each
   guest arch from the single-source ABI. — satisfies [GHC-26], [GHC-27], [GHC-29];
   spec §16.6.
-  Completed by `checks.crucible.phase4.guestHostEmitter`: `crucible-guest::GuestCommand`
+  Completed by `checks.crucible.phase4.guestHostEmitter`: `crucible_guest::GuestCommand`
   now constructs every §16.5.1 marker family through the shared
   `crucible-protocol` marker codec, the `crucible-guest` CLI mirrors the
   always/sometimes/reachable/unreachable/lifecycle/event/coverage/get-random

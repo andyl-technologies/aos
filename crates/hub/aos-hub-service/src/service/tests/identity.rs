@@ -976,9 +976,9 @@ async fn private_image_resolve_authenticates_before_channel_lookup() {
 fn retention_reason_row_identity_is_refresh_local() {
     let reason_key = "registry_catalog:logical-reason";
 
-    let first = super::retention_refresh_reason_id("refresh-one", reason_key);
-    let repeated = super::retention_refresh_reason_id("refresh-one", reason_key);
-    let successor = super::retention_refresh_reason_id("refresh-two", reason_key);
+    let first = crate::service::retention_refresh_reason_id("refresh-one", reason_key);
+    let repeated = crate::service::retention_refresh_reason_id("refresh-one", reason_key);
+    let successor = crate::service::retention_refresh_reason_id("refresh-two", reason_key);
 
     assert_eq!(first, repeated);
     assert_ne!(first, successor);

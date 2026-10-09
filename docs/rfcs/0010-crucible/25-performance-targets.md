@@ -1106,7 +1106,7 @@ worker, and coordinate-invariance evidence from `gate:replay-oracle` and
 `gate:divergence-bisect`.
 
 T-PERF-34 is completed by the fail-closed register in
-`crucible_harness::perf::admission`, enforced by
+`crucible_test_support::perf::admission`, enforced by
 `checks.crucible.phase7.gates.perfBench`. The register names every mechanism
 admitted by §25.12: scheduler host workers and device host-work overlap are Class
 B because their observable commit coordinates are fixed before dispatch;

@@ -740,7 +740,7 @@ read before editing code or docs.
       command surface: S3 region/profile/endpoint, SFTP key/password/agent
       behavior, and HTTP token/basic/header credentials. `apr cache generate`
       now flattens backend upload auth flags into the `Generate` command,
-      maps them into `aos_cache::AuthOptions`, and threads those options through
+      maps them into `aos_nix_cache::AuthOptions`, and threads those options through
       `upload_static_cache_to_all`. Coverage includes
       `cache_upload_auth_args_map_to_backend_options` plus
       `crates/aos/cli/aos-cli/tests/apr_cache_cli.rs`, which exercises the flags on the real

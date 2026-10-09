@@ -42,6 +42,7 @@ sqlx = { workspace = true, features = ["sqlite"] }
 tokio = { workspace = true }
 
 [dev-dependencies]
+futures-util = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 rusqlite = { workspace = true }
 tempfile = { workspace = true }

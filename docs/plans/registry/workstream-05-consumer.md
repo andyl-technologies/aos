@@ -402,7 +402,7 @@ pub async fn resolve_objects(
     from: &semver::Version,
     to: &semver::Version,
     retained: &[semver::Version],
-    engine: &aos_net::TransferEngine,
+    engine: &aos_transfer::TransferEngine,
     printer: &Printer,
 ) -> anyhow::Result<()>;
 ```
@@ -412,7 +412,7 @@ with supporting helpers `fn deltas_at(to: &semver::Version) -> Vec<semver::Versi
 &str, to: &Version, from: &Version) -> Result<Vec<Version>>` (newest→oldest, read
 from `objects/info/alternates`). It replaces the three `pick_bundles` strategies
 ([`update.rs:394-417`](../../../crates/aos/packages/aos-package-manager/src/update.rs)) and reuses
-`aos_net::{TransferEngine, TransferRequest}` (already used by
+`aos_transfer::{TransferEngine, TransferRequest}` (already used by
 `download::fetch_one_narinfo`, [`download.rs:154`](../../../crates/aos/packages/aos-package-manager/src/download.rs))
 for the static GETs.
 

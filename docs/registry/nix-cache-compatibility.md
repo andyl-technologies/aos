@@ -362,7 +362,7 @@ into `NarInfo` and reads exactly these fields (`crates/aos/packages/aos-package-
 
 | narinfo field | Source in `render_static_narinfo` / `registry::nixcache` | Notes |
 |---|---|---|
-| `StorePath` | `<store_dir>/<basename(store_path)>` | Full store path; `basename` comes from `aos-nar::info`. |
+| `StorePath` | `<store_dir>/<basename(store_path)>` | Full store path; `basename` comes from `aos_nar::info`. |
 | `URL` | `nar_url(store_path, nar_hash, compression)` | Relative to the cache URL; `nar/{store_hash}-{nar_hash with ':' -> '-'}.{ext}`. The consumer joins it via `join_cache_url`. |
 | `Compression` | `NarCompression::{None,Zstd,Xz}.name()` | `zstd`, `xz`, or `none`. |
 | `FileHash` | compressed-bytes SHA-256 computed by `registry::nixcache` | Always emitted. Consumer verifies the wire bytes against it (integrity precheck). |

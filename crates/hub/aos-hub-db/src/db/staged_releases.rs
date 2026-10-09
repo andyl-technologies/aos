@@ -242,8 +242,6 @@ mod tests {
         let page = db.staged_release_summaries(id, "", 1).await.unwrap();
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].stage_id, "alpha");
-        assert!(page[0].revision_json.is_empty());
-        assert!(page[0].missing_paths.is_empty());
         assert_eq!(page[0].total_bytes, 3);
         assert_eq!(page[0].missing_object_count, 1);
 
@@ -320,8 +318,6 @@ mod tests {
         assert_eq!(summary.object_count, 50_000);
         assert_eq!(summary.missing_object_count, 50_000);
         assert_eq!(summary.total_bytes, 50_000_000);
-        assert!(summary.revision_json.is_empty());
-        assert!(summary.revision_gzip.is_empty());
         let storage = db
             .backend
             .query_opt(

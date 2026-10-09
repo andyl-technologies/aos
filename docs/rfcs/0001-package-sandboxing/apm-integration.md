@@ -542,7 +542,7 @@ tag-signed metadata.
    package-root NAR against the `nar_hash` from the signed metadata. The bytes
    cannot be tampered with in transit or at the cache.
 3. **The cache may add a second signature.** Generated narinfo can be Nix-cache
-   signed (`aos-nar::cache::NarInfoSigner`,
+   signed (`aos_nar::cache::NarInfoSigner`,
    [`../../registry/current-state.md`](../../registry/current-state.md) §7), so a
    stock-Nix substituter with `require-sigs = true` also accepts it.
 4. **TOFU + anti-rollback still apply.** First sync pins the registry's Ed25519

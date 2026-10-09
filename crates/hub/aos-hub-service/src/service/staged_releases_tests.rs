@@ -716,6 +716,8 @@ async fn staged_releases_discovery_requires_publish_even_on_public_registry() {
         .unwrap();
     assert_eq!(stages.stages.len(), 1);
     assert!(stages.stages[0].revision_json.is_empty());
+    assert!(stages.stages[0].revision_gzip.is_empty());
+    assert!(stages.stages[0].missing_paths.is_empty());
     assert_eq!(stages.stages[0].missing_object_count, 2);
 }
 

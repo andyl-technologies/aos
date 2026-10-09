@@ -99,7 +99,7 @@ the *metadata* layer; the *bytes* are the static cache files.
 > that is a **live host serving its own store**, a **different use case the registry
 > never runs**. What WS-06 reuses is the **library logic** those handlers call:
 > `narinfo::format_narinfo` ([`narinfo.rs:27`](../../../crates/aos/packages/aos-build-server/src/narinfo.rs)),
-> built on `aos-nar::info`, plus `sign.rs` and `compress.rs`. WS-06 calls that
+> built on `aos_nar::info`, plus `sign.rs` and `compress.rs`. WS-06 calls that
 > logic **offline** to write static files.
 
 ---

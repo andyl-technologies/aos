@@ -274,7 +274,7 @@ The `apm` NAR downloader is narinfo-driven today:
 - It verifies the compressed file against `FileHash` when present, falling back
   to `NarHash` for uncompressed NARs.
 
-Shared formatting and signing logic now lives in `aos-nar::cache`:
+Shared formatting and signing logic now lives in `aos_nar::cache`:
 `render_static_narinfo`, `nix_cache_info`, `nar_url`, and `NarInfoSigner`.
 `aos-server` calls that shared library for its live cache responses, while
 `apr cache generate` calls the same library offline to write the static cache.

@@ -837,7 +837,7 @@ unchanged), `crates/aos/packages/aos-package-manager/src/{desired,config_artifac
 
 **I1 (no `/etc` pollution).** Every runtime artifact the compiler writes lives under `/run/systemd/system/`. The compiler MUST NOT write to `/etc` or `/usr`. `/run/systemd/system` is tmpfs, outranks both, and is outside the composefs `/etc` overlay.
 
-**I2 (single control surface).** The compiler drives systemd ONLY through `aos_systemd::SystemdClient`: `daemon_reload`, `start_unit_no_wait`, `reset_failed_unit`, `list_units_by_patterns`. It MUST NOT shell out to `systemctl` (except the display-only `systemctl_status` already in the client) and MUST NOT use `StartTransientUnit`.
+**I2 (single control surface).** The compiler drives systemd ONLY through `aos_systemd_client::SystemdClient`: `daemon_reload`, `start_unit_no_wait`, `reset_failed_unit`, `list_units_by_patterns`. It MUST NOT shell out to `systemctl` (except the display-only `systemctl_status` already in the client) and MUST NOT use `StartTransientUnit`.
 
 **I3 (pure function of inputs).** The set of `/run/systemd/system` artifacts after a compile MUST be a deterministic function of `(manifest.json, graph.json)`. Re-running the compiler over identical inputs MUST produce byte-identical dropins and an identical `.wants/` symlink set (idempotent; safe to re-run).
 
@@ -1185,7 +1185,7 @@ The trait isolates the thin per-platform knowledge layer (endpoint, header, labe
 ///
 /// Implementors encode one platform's documented contract (endpoint
 /// paths, required headers, payload encoding, facts locations) over the
-/// shared `aos_net::TransferEngine`. The trait is the only seam the
+/// shared `aos_transfer::TransferEngine`. The trait is the only seam the
 /// dispatcher knows about; selection uses the typed result from `detect`.
 #[async_trait::async_trait]
 pub trait PlatformFetcher: Send + Sync {
