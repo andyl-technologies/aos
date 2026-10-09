@@ -5110,6 +5110,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   journal recapture to replace only the matching tracked Pending body with the
   actual native-acknowledged Committed body. Ordinary dedup staging is preserved;
   fresh-placement, collision and durability regressions remain unqualified.
+  Private composition `c39bcb8b4c` clears the remaining compiler error and
+  passes both default and Tokio production builds. The original terminal logs
+  retain twelve unused-item warnings; strict native Clippy and runtime checks
+  remain pending. Source review additionally finds ordinary Sweep still loads
+  every eligible Live metadata body before its authenticated walker, imposing
+  an unrelated availability prerequisite. The worker confines that copied-only
+  load to the copied branch. Private `e2302794b9` contains that reviewed fix and
+  genuine copied source/destination fixture setup with four uncompiled positive
+  cases. The other fifteen copied cases, eleven permanent recovery cases,
+  recurring complete passes and the complete local gate set remain pending.
+  Production compilation accepts no task and advances no milestone exit.
   Actual remote provider qualification belongs to T3. No remote conformance
   or full `gc-two-phase-delete` pass is claimed. D-78
   registers physical creation journals and recoverable deletion intent.
