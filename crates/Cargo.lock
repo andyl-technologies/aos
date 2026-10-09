@@ -2737,6 +2737,7 @@ dependencies = [
 name = "crucible-node-provider"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "crucible-node-contract",
  "rustix 1.1.4",
  "serde",
