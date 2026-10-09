@@ -54,6 +54,8 @@ impl SourceSignerCredentialV1 {
             return Err(SourceSignerCredentialErrorV1);
         }
 
+        // Reverse local drop order keeps the decoded pin before the derived key,
+        // and both before the original zeroizing pin and seed buffers.
         let signing_key = SigningKey::from_bytes(seed_bytes);
         let decoded_pin = PinnedSourceHoldReadbackSignerV1::decode(&pin);
         let pinned = match decoded_pin.as_ref() {
