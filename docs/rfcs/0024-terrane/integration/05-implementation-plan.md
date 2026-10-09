@@ -2331,9 +2331,13 @@ are not equivalent to that proposal.
 
 The class candidate's focused native witness, whole `derived-attr-record`
 gate and all five CDC gates now pass on `7c71e91bc5`. Its application-target
-compilation is running, with the formatter pair still queued. These results
-do not establish the complete current floor. A receiving-contract review also
-confirms that the broader store gates select real final-to-nonfinal dedup and
+compilation and exact formatter pair also pass, completing all thirteen
+qualification stages. The six owning gates report 77 named test executions with
+no failures or ignored cases; the separate focused witness passes once. The
+29-package application check compiles unit and integration targets without
+running them. The frozen source and selected executable remain unchanged.
+These results do not establish the complete current floor. A receiving-contract
+review also confirms that the broader store gates select real final-to-nonfinal dedup and
 inventory-only manifest refusals; their current-source executions remain
 required. Existing held-upload effect-counter cases are outside those gate
 selectors and have no inferred runtime result.
@@ -2344,9 +2348,18 @@ those copies with shared immutable ownership, retaining per-cohort promotion,
 active names and conflict classification. It changes only the private scope
 implementation and preserves every fresh observation and current check. Its
 source diff is reviewed; builds and runtime qualification remain unrun.
-The single diagnostic prepared for the earlier masked index denial also remains
-unrun until the class candidate releases the team's heavy lane. It preserves
-the original thirty-second writer and 120-second process settings.
+After the class candidate releases the team's heavy lane, the diagnostic's
+restoration command exits zero but its artifact verifier stops: Cargo reports
+the shared executable as fresh while it still contains the class candidate's
+bytes rather than the required earlier executable. Discovery and diagnostic
+runtime remain unrun, and the original expected hash is preserved. Read-only
+inspection finds the earlier differing source's timestamp predates the shared
+relative dependency records, which have checksum validation disabled. This
+supports a freshness hypothesis without proving Cargo's internal decision.
+A normal timestamp refresh of that one source file is under review; source
+bytes, modes, cache records and original failed evidence remain unchanged.
+The diagnostic preserves the thirty-second writer and 120-second process
+settings and cannot replace the earlier failed qualification.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
@@ -2424,8 +2437,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   dictionary fetch and verified decoding exercise the selected bytes. This
   candidate includes the reviewed parent-path buffer prerequisite. Its focused
   witness, whole derived-data gate and all five CDC gates now pass on that
-  frozen candidate. Application-target compilation and the formatter pair
-  remain in progress or queued; the complete current floor and task acceptance
+  frozen candidate. Application-target compilation and the exact formatter pair
+  also pass; the complete current floor and task acceptance
   remain unqualified.
   — satisfies
   OBJ-11 to OBJ-18, CDC-1 to CDC-20;
