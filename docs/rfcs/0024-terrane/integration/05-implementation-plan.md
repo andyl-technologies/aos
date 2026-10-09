@@ -345,7 +345,14 @@ seven remain unrun. These results establish no staging refusal or recovery
 behavior. Test-only correction `e3ce9e839e` treats actual nofollow `NotFound`
 as empty reservation inventory while preserving safe kind, owner and mode
 checks for existing directories and exposing other failures. Its scoped
-formatting and diff checks pass; corrected runtime qualification remains pending.
+formatting and diff checks pass. The corrected requested-directory-policy
+smoke witness now passes on `e3ce9e839e` (85.122 seconds, one pass and 923
+unrelated tests skipped; run `f7eddb22-b5e4-44a2-b275-152ed8f1d344`,
+`/tmp/terrane-permanent-stage-smoke-e3.log`). It reaches the real roots-proposal
+handoff and checks the exact unsafe physical-fence refusal, absence of selected
+progress/reclaim and preservation of owner/pass/manifest. The complete eleven
+staging witnesses, owning reconciliation gate and large-family bound remain
+unqualified; this smoke result does not advance T-GC-1.
 Strict native all-target Clippy also passes with warnings denied (5 minutes
 5 seconds, including a recorded wait for an external shared-target lock;
 `/tmp/terrane-permanent-stage-clippy.log`). This elapsed observation does not
