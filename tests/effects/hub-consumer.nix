@@ -123,6 +123,10 @@ let
   nodes = builtins.attrValues evaluated.config.aos.activation.graph.nodes;
   service = builtins.head (builtins.filter (node: node.input ? service && node.input.service == "aos-hub") nodes);
   allocations = builtins.filter (node: node.input ? path && node.input.path == "/var/lib/aos-hub") nodes;
+  prerequisiteNodeIds = builtins.attrNames (lib.filterAttrs (_: node:
+    (node.input ? path && node.input.path == "/var/lib/aos-hub")
+    || (builtins.elemAt node.identity 3 == "network" && builtins.elemAt node.identity 4 == "ready"))
+  evaluated.config.aos.activation.graph.nodes);
   credentials = builtins.filter (node: builtins.elemAt node.identity 3 == "credential" && builtins.elemAt node.identity 4 == "deliver") nodes;
   credentialViews = builtins.listToAttrs (builtins.map (view: {
       name = view.name;
@@ -169,6 +173,9 @@ let
     hubHybridKeepsTypedCredentials = builtins.length hybridService.input.credentials.views == 7;
     hubHybridRejectsMissingDatabase = !(assertionsPass hybridWithoutDatabase);
     hubOrdersPrerequisites = builtins.length service.dependencies >= 4;
+    hubOrdersNetworkAndState = builtins.length prerequisiteNodeIds == 2 && builtins.all (id: builtins.elem id service.dependencies) prerequisiteNodeIds;
+    hubKeepsReceiptsOutOfUnitDependencies = builtins.all (field: service.input.dependencies.${field} == []) ["after" "before" "requires" "wants"];
+    hubRequiresStateMount = builtins.length service.input.dependencies.required_mounts == 1 && (builtins.head service.input.dependencies.required_mounts).output == "path";
   };
 in
   assert builtins.all (value: value) (builtins.attrValues checks); checks

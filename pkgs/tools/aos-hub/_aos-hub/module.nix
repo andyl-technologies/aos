@@ -214,14 +214,14 @@
       (resultOf "network-readiness" "resource")
       (resultOf "state-storage" "resource")
     ];
+    # Network and allocation receipts order native effects. They are not
+    # service identities and must not become systemd unit dependencies.
     dependencies = {
-      after = [
-        (resultOf "network-readiness" "resource")
-        (resultOf "state-storage" "resource")
-      ];
+      after = [];
       before = [];
-      requires = [(resultOf "state-storage" "resource")];
-      wants = [(resultOf "network-readiness" "resource")];
+      requires = [];
+      wants = [];
+      required_mounts = [(resultOf "state-storage" "path")];
     };
     supervision = {
       startup_protocol = "process";
