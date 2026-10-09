@@ -345,6 +345,9 @@
     aos.image.budgets = {
       maxRuntimeClosureMiB = 912;
       maxInitrdMiB = 144;
+      # The measured 160.2 MiB UKI embeds the diagnostic initrd plus the kernel.
+      # Keep both boot slots within the existing 384 MiB ESP allowance.
+      maxUkiMiB = 164;
       # The complete diagnostic runtime produces a 731 MiB EROFS root.
       maxRootMiB = lib.mkForce 768;
       maxDownloadMiB = lib.mkForce rawDownloadMiB;
