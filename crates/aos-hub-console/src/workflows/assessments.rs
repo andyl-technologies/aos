@@ -5,9 +5,9 @@ use aos_assessment::result::PackageAssessmentV1;
 use aos_assessment_runtime::application::{AssessmentStatusV1, StatusQueryV1};
 use leptos::prelude::*;
 
+use super::assessment_scans::AssessmentScanControls;
 use crate::components::InlineError;
 use crate::transport::ApiClient;
-use super::assessment_scans::AssessmentScanControls;
 
 /// Renders authorized current status and retained result details for a registry.
 #[component]
@@ -16,6 +16,9 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
         return view! { <section class="panel"><h2>"Package assessments"</h2><p>"Assessment read access is required to view package checks."</p></section> }.into_any();
     }
     let epoch = RwSignal::new(0_u64);
+    let polling = RwSignal::new(true);
+    let active_reads = RwSignal::new(0_u32);
+    let displayed = RwSignal::new(None::<AssessmentStatusV1>);
     let controls = StoredValue::new((client.clone(), slug.clone()));
     let query = RwSignal::new(StatusQueryV1 {
         schema: "aos.assessment-status-query/v1".into(),
@@ -33,7 +36,9 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
         let query = query.get();
         let client = status_client.clone();
         let registry_slug = status_slug.clone();
+        let read = AssessmentReadGuard::new(active_reads);
         async move {
+            let _read = read;
             let query_json = serde_json::to_vec(&query).map_err(|error| error.to_string())?;
             let response = client
                 .call::<_, aos_proto_types::AssessmentDocumentResponse>(
@@ -43,12 +48,24 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
                         query_json,
                     },
                 )
-                .await
-                .map_err(|error| error.to_string())?;
-            AssessmentStatusV1::from_slice(&response.document_json)
+                .await;
+            let status = response
                 .map_err(|error| error.to_string())
+                .and_then(|response| {
+                    AssessmentStatusV1::from_slice(&response.document_json)
+                        .map_err(|error| error.to_string())
+                });
+            match &status {
+                Ok(status) => displayed.set(Some(status.clone())),
+                Err(_) => {
+                    polling.set(false);
+                    displayed.set(None);
+                }
+            }
+            status
         }
     });
+    start_status_poll(epoch, polling, active_reads);
     let result_client = client;
     let result_slug = slug;
     let detail = LocalResource::new(move || {
@@ -80,6 +97,7 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
             <div class="section-heading"><div><h2>"Package assessments"</h2>
                 <p>"Current package checks, evidence freshness and pending scans."</p>
             </div><button class="secondary-button" on:click=move |_| {
+                polling.set(true);
                 query.update(|query| { query.after_subject = None; query.inventory_digest = None; query.policy_digest = None; });
                 epoch.update(|value| *value = value.wrapping_add(1));
             }>"Refresh"</button></div>
@@ -107,12 +125,20 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
                                 {next.map(|position| view! { <button class="secondary-button" on:click=move |_| query.update(|query| {
                                     query.after_subject = Some(position.clone()); query.inventory_digest = Some(inventory_digest); query.policy_digest = Some(policy_digest);
                                 })>"Next packages"</button> })}
-                                <AssessmentScanControls client=controls.get_value().0 slug=controls.get_value().1 status=status.clone()/>
                             }.into_any()
                         }
                     }
                 })}
             </Suspense>
+            // Keep mutation controls mounted across status polls. Changing the
+            // displayed inventory or selector disposes their owned tasks.
+            <For each={move || displayed.get().into_iter().collect::<Vec<_>>()}
+                key={|status| (status.inventory_digest, status.inventory_revision, status.policy_digest,
+                    status.subjects.iter().map(|subject| subject.subject_ref.clone()).collect::<Vec<_>>())}
+                children={move |status| view! {
+                    <AssessmentScanControls client=controls.get_value().0 slug=controls.get_value().1 status=status/>
+                }}
+            />
             <Suspense fallback=move || view! { <p>"Loading retained assessment…"</p> }>
                 {move || Suspend::new(async move {
                     match detail.await.as_ref() {
@@ -124,6 +150,44 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
             </Suspense>
         </section>
     }.into_any()
+}
+
+/// Retains one read's lifetime so periodic refresh cannot overlap it.
+pub(super) struct AssessmentReadGuard {
+    active: RwSignal<u32>,
+}
+
+impl AssessmentReadGuard {
+    /// Registers a read until completion, cancellation or owner disposal.
+    pub(super) fn new(active: RwSignal<u32>) -> Self {
+        active.update(|count| *count = count.saturating_add(1));
+        Self { active }
+    }
+}
+
+impl Drop for AssessmentReadGuard {
+    fn drop(&mut self) {
+        self.active
+            .try_update(|count| *count = count.saturating_sub(1));
+    }
+}
+
+/// Polls visible assessment views while preserving in-flight work and owners.
+pub(super) fn start_status_poll(
+    epoch: RwSignal<u64>,
+    enabled: RwSignal<bool>,
+    active: RwSignal<u32>,
+) {
+    if let Ok(interval) = leptos::leptos_dom::helpers::set_interval_with_handle(
+        move || {
+            if enabled.get_untracked() && !document().hidden() && active.get_untracked() == 0 {
+                epoch.update(|value| *value = value.wrapping_add(1));
+            }
+        },
+        std::time::Duration::from_secs(5),
+    ) {
+        on_cleanup(move || interval.clear());
+    }
 }
 
 #[component]

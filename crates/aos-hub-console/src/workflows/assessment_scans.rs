@@ -8,6 +8,7 @@ use aos_assessment_runtime::control::{
 use aos_assessment_runtime::scan::ScanLimits;
 use leptos::prelude::*;
 
+use super::assessments::{start_status_poll, AssessmentReadGuard};
 use crate::components::InlineError;
 use crate::mutation::{idempotency_key, scoped_workflow_tasks};
 use crate::transport::ApiClient;
@@ -24,6 +25,8 @@ pub(super) fn AssessmentScanControls(
     let context = StoredValue::new((client, slug));
     let scope = StoredValue::new(status);
     let epoch = RwSignal::new(0_u64);
+    let polling = RwSignal::new(true);
+    let active_reads = RwSignal::new(0_u32);
     let position = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     let failure = RwSignal::new(None::<String>);
@@ -35,26 +38,67 @@ pub(super) fn AssessmentScanControls(
         let _ = epoch.get();
         let (client, registry_slug) = context.get_value();
         let after_scan = position.get();
+        let inspected = selected.get_untracked();
+        let read = AssessmentReadGuard::new(active_reads);
         async move {
-            let query = ScanListQueryV1 {
-                schema: "aos.assessment-scan-list-query/v1".into(),
-                limit: 50,
-                after_scan,
-            };
-            let document_json = serde_json::to_vec(&query).map_err(|error| error.to_string())?;
-            let response = client
-                .call::<_, aos_proto_types::AssessmentDocumentResponse>(
-                    aos_proto_types::SCAN_SERVICE_LIST_SCANS_PATH,
-                    &aos_proto_types::AssessmentControlRequest {
-                        registry_slug,
-                        document_json,
-                    },
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-            ScanListV1::from_slice(&response.document_json).map_err(|error| error.to_string())
+            let _read = read;
+            let outcome = async {
+                let query = ScanListQueryV1 {
+                    schema: "aos.assessment-scan-list-query/v1".into(),
+                    limit: 50,
+                    after_scan,
+                };
+                let document_json =
+                    serde_json::to_vec(&query).map_err(|error| error.to_string())?;
+                let response = client
+                    .call::<_, aos_proto_types::AssessmentDocumentResponse>(
+                        aos_proto_types::SCAN_SERVICE_LIST_SCANS_PATH,
+                        &aos_proto_types::AssessmentControlRequest {
+                            registry_slug: registry_slug.clone(),
+                            document_json,
+                        },
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let page = ScanListV1::from_slice(&response.document_json)
+                    .map_err(|error| error.to_string())?;
+                if let Some(inspected) = inspected {
+                    let query = ScanLookupV1 {
+                        schema: "aos.assessment-scan-lookup/v1".into(),
+                        scan_id: inspected.scan_id,
+                    };
+                    let response = client
+                        .call::<_, aos_proto_types::AssessmentDocumentResponse>(
+                            aos_proto_types::SCAN_SERVICE_GET_SCAN_PATH,
+                            &aos_proto_types::AssessmentControlRequest {
+                                registry_slug,
+                                document_json: serde_json::to_vec(&query)
+                                    .map_err(|error| error.to_string())?,
+                            },
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let receipt = ScanReceiptV1::from_slice(&response.document_json)
+                        .map_err(|error| error.to_string())?;
+                    selected.update(|current| {
+                        if current.as_ref().is_some_and(|current| {
+                            current.scan_id == receipt.scan_id
+                                && current.resource_version <= receipt.resource_version
+                        }) {
+                            *current = Some(receipt);
+                        }
+                    });
+                }
+                Ok::<_, String>(page)
+            }
+            .await;
+            if outcome.is_err() {
+                polling.set(false);
+            }
+            outcome
         }
     });
+    start_status_poll(epoch, polling, active_reads);
 
     let submit = move |_| {
         if busy.get_untracked() || !can_scan {
@@ -240,7 +284,10 @@ pub(super) fn AssessmentScanControls(
                 </select></label>
                 <button disabled=move || busy.get() || scope.get_value().subjects.is_empty() on:click=submit>"Scan displayed packages"</button>
             })}
-            <button class="secondary-button" on:click=move |_| epoch.update(|value| *value = value.wrapping_add(1))>"Refresh scans"</button>
+            <button class="secondary-button" on:click=move |_| {
+                polling.set(true);
+                epoch.update(|value| *value = value.wrapping_add(1));
+            }>"Refresh scans"</button>
             {move || failure.get().map(|detail| view! { <InlineError detail/> })}
             <Suspense fallback=move || view! { <p>"Loading scan history…"</p> }>
                 {move || Suspend::new(async move {
