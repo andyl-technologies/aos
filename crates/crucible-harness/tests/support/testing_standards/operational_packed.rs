@@ -93,13 +93,13 @@ pub(super) const CONTRACTS: &[Contract] = &[
         package: "crucible-cas",
         target: "src/content_store/packed/checked/tests",
         required: &[
-            "fn checked_publication_restarts_retries_and_keeps_exact_v1_index_bytes()",
+            "fn checked_publication_restarts_retries_and_keeps_exact_bounded_root_bytes()",
             "ContentId::for_bytes(ObjectKind::RamExtent, 1, &bytes)",
             r#"let restarted = PackedBlobBackend::open(
                 "checked-packed", fixture._root.path(), MIN_TARGET_PACK_BYTES,
             ).unwrap();"#,
-            "let generation = restarted.load_index().unwrap().generation;",
-            "assert_eq!(restarted.load_index().unwrap().generation, generation);",
+            "let generation = restarted.load_index().unwrap().header.generation;",
+            "assert_eq!(restarted.load_index().unwrap().header.generation, generation);",
             "fn checked_publication_retains_pack_visibility_and_exact_callback_refusal_before_index()",
             "Some(StoreError::Unauthorized)",
             "assert_eq!(source.outcome().published_packs, 1);",
@@ -107,7 +107,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
             "assert!(!source.outcome().index_visibility_uncertain);",
             "assert_eq!(fs::read(fixture.backend.index_path()).unwrap(), old_index);",
             "drop(error); fixture.original.verify_live().unwrap();",
-            "assert_eq!(fixture.backend.load_index().unwrap().entries.len(), 2);",
+            "assert_eq!(fixture.backend.load_index().unwrap().header.count, 2);",
         ],
         // Only these two concrete observations and their length assertions are
         // classified. Any additional retry call, macro, or declaration remains.

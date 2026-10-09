@@ -8,6 +8,8 @@ use super::*;
 use crate::content_store::StorePhysicalQuotaGuard;
 use crate::content_store::test_resources::FixtureResourceBudget;
 use crate::owned_decode::{DecodeAdmissionError, ResourceLoan};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::MetadataExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tempfile::TempDir;
 
@@ -722,9 +724,16 @@ fn checked_publication_projects_actual_cleanup_when_completed_work_has_no_failur
 #[derive(Default)]
 struct DescriptorCloseProbe {
     armed: AtomicBool,
-    path: std::sync::Mutex<Option<PathBuf>>,
+    descriptor: std::sync::Mutex<Option<DescriptorIdentity>>,
     charged_at_refund: std::sync::atomic::AtomicU64,
+    observation_completed: AtomicBool,
     physically_closed: AtomicBool,
+}
+
+struct DescriptorIdentity {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
 }
 
 struct CloseObservedQuota {
@@ -770,13 +779,24 @@ impl Drop for CloseObservedLoan {
                 .charged_at_refund
                 .store(charged, Ordering::SeqCst);
         }
-        if let Ok(path) = self.probe.path.lock()
-            && let Some(path) = path.as_deref()
+        if let Ok(descriptor) = self.probe.descriptor.lock()
+            && let Some(descriptor) = descriptor.as_ref()
         {
-            self.probe.physically_closed.store(
-                matches!(fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound),
-                Ordering::SeqCst,
-            );
+            // Another test can reuse this numeric descriptor after close.
+            // Observe this fixture's file identity, not the slot's absence.
+            let closed = match fs::metadata(&descriptor.path) {
+                Ok(metadata) => {
+                    Some(metadata.dev() != descriptor.device || metadata.ino() != descriptor.inode)
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Some(true),
+                Err(_) => None,
+            };
+            if let Some(closed) = closed {
+                self.probe.physically_closed.store(closed, Ordering::SeqCst);
+                self.probe
+                    .observation_completed
+                    .store(true, Ordering::SeqCst);
+            }
         }
     }
 }
@@ -823,6 +843,7 @@ fn final_pin_boundary_refusal_closes_real_file_before_same_original_descriptor_r
 
     for unwind in [false, true] {
         probe.charged_at_refund.store(0, Ordering::SeqCst);
+        probe.observation_completed.store(false, Ordering::SeqCst);
         probe.physically_closed.store(false, Ordering::SeqCst);
         let mut at = 0;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -843,7 +864,12 @@ fn final_pin_boundary_refusal_closes_real_file_before_same_original_descriptor_r
                             .unwrap();
                         assert!(fs::symlink_metadata(&descriptor_path).is_ok());
                         assert_eq!(resources.usage().unwrap().0, 1);
-                        *probe.path.lock().unwrap() = Some(descriptor_path);
+                        let metadata = fs::metadata(&descriptor_path).unwrap();
+                        *probe.descriptor.lock().unwrap() = Some(DescriptorIdentity {
+                            path: descriptor_path,
+                            device: metadata.dev(),
+                            inode: metadata.ino(),
+                        });
                         probe.armed.store(true, Ordering::SeqCst);
                         if unwind {
                             panic!("intentional exact pre-pin boundary unwind");
@@ -862,11 +888,47 @@ fn final_pin_boundary_refusal_closes_real_file_before_same_original_descriptor_r
             assert!(matches!(result, Ok(Err(StoreError::Unauthorized))));
         }
         assert_eq!(probe.charged_at_refund.load(Ordering::SeqCst), 1);
+        assert!(probe.observation_completed.load(Ordering::SeqCst));
         assert!(probe.physically_closed.load(Ordering::SeqCst));
         assert!(!probe.armed.load(Ordering::SeqCst));
         assert_eq!(resources.usage().unwrap(), baseline);
         original.verify_live().unwrap();
     }
+}
+
+#[test]
+fn descriptor_close_probe_rejects_refund_before_original_file_close() {
+    let directory = TempDir::new().unwrap();
+    let file = File::create(directory.path().join("early-refund-witness")).unwrap();
+    let metadata = file.metadata().unwrap();
+    let resources = Arc::new(FixtureResourceBudget::new(DESCRIPTORS, RESIDENT_BYTES));
+    let probe = Arc::new(DescriptorCloseProbe::default());
+    let original = DecodeBudget::for_store(Arc::new(CloseObservedQuota {
+        resources: resources.clone(),
+        probe: probe.clone(),
+    }))
+    .unwrap();
+    let baseline = resources.usage().unwrap();
+    let loan = original.reserve_descriptors(1).unwrap();
+    *probe.descriptor.lock().unwrap() = Some(DescriptorIdentity {
+        path: PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd())),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    });
+    probe.armed.store(true, Ordering::SeqCst);
+
+    // This intentional wrong-order control keeps the real file open while
+    // returning its same original credit. The probe must reject that order.
+    drop(loan);
+
+    assert_eq!(probe.charged_at_refund.load(Ordering::SeqCst), 1);
+    assert!(probe.observation_completed.load(Ordering::SeqCst));
+    assert!(!probe.physically_closed.load(Ordering::SeqCst));
+    assert!(!probe.armed.load(Ordering::SeqCst));
+    assert_eq!(file.metadata().unwrap().ino(), metadata.ino());
+    assert_eq!(resources.usage().unwrap(), baseline);
+    drop(file);
+    original.verify_live().unwrap();
 }
 
 struct CountedCheckedSource {
