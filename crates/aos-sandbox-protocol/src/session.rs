@@ -19,6 +19,9 @@ use aos_proto::aos::sandbox::local::v1::{
     BrokerServerHello, QueryRuntimeEffectResponse, RuntimeEffectStatus, RuntimeObservation,
     RuntimeState,
 };
+use aos_sandbox_broker_session_protocol::{
+    BrokerSessionProtocolV1, authenticated_broker_method_profile_v1,
+};
 use aos_sandbox_core::format::{
     decode_broker_authorization_plan, decode_ownership_lease, decode_signature,
 };
@@ -60,6 +63,9 @@ pub const MAXIMUM_HOST_QUERY_PACKET_BYTES: usize =
 pub const MAXIMUM_RUNTIME_EFFECT_RECEIPT_BYTES: usize = 1024 * 1024;
 const MAXIMUM_AUTHORIZATION_ARTIFACT_BYTES: usize = 960 * 1024;
 const MAXIMUM_BROKER_METHODS: usize = 23;
+// Keeps future authenticated methods outside the historical legacy vocabulary.
+const LEGACY_BROKER_METHOD_MAXIMUM: i32 =
+    BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1 as i32;
 const MAXIMUM_REQUIRED_FEATURES: usize = 64;
 const MAXIMUM_SAFE_ERROR_MESSAGE_BYTES: usize = 1024;
 
@@ -1891,71 +1897,32 @@ fn validate_method(
     let method = method
         .filter(|method| *method != BrokerMethod::BROKER_METHOD_UNSPECIFIED)
         .ok_or(ProtocolValidationError::UnknownAction)?;
-    let valid = matches!(
-        (protocol, method),
-        (
-            ProtocolId::HostBroker,
-            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
-                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME
-                | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
-                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
-                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
-                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
-                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
-                | BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
-                | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
-                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
-                | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
-                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
-                | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
-                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
-                | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
-                | BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
-        ) | (
-            ProtocolId::MountBroker,
-            BrokerMethod::BROKER_METHOD_MOUNT_APPLY
-                | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
-                | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
-                | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
-                | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS
-                | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
-                | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
-                | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS
-                | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
-                | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
-        ) | (
-            ProtocolId::MountFuseBroker,
-            BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
-        ) | (
-            ProtocolId::StorageBroker,
-            BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
-                | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1
-                | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
-                | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
-                | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
-                | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT
-                | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
-                | BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY
-                | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
-                | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1
-        ) | (
-            ProtocolId::NetworkBroker,
-            BrokerMethod::BROKER_METHOD_NETWORK_APPLY
-                | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
-                | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES
-        )
-    );
-    if !valid {
+
+    let number = method_number(method);
+    if !(1..=LEGACY_BROKER_METHOD_MAXIMUM).contains(&number) || matches!(number, 5 | 8) {
         return Err(ProtocolValidationError::MethodMismatch);
     }
+    if matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
+            | BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+            | BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2
+            | BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2
+            | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
+            | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+    ) {
+        return Err(ProtocolValidationError::MethodMismatch);
+    }
+
+    let profile = authenticated_broker_method_profile_v1(method)
+        .ok_or(ProtocolValidationError::MethodMismatch)?;
+    let protocol = BrokerSessionProtocolV1::from_protocol_id(protocol)
+        .map_err(|_| ProtocolValidationError::MethodMismatch)?;
+    if profile.protocol() != protocol {
+        return Err(ProtocolValidationError::MethodMismatch);
+    }
+
     Ok(method)
 }
 
@@ -2225,6 +2192,39 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn request_method_scope_refusal_precedes_empty_body_validation() {
+        let cases = [
+            (
+                BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1,
+                ProtocolId::HostBroker,
+                ProtocolValidationError::MethodMismatch,
+            ),
+            (
+                BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+                ProtocolId::PublicApi,
+                ProtocolValidationError::MethodMismatch,
+            ),
+            (
+                BrokerMethod::BROKER_METHOD_UNSPECIFIED,
+                ProtocolId::PublicApi,
+                ProtocolValidationError::UnknownAction,
+            ),
+        ];
+
+        for (method, protocol, expected) in cases {
+            let envelope = BrokerRequestEnvelope {
+                method: method.into(),
+                ..Default::default()
+            };
+
+            assert_eq!(
+                decode_request_envelope(&envelope.encode_to_vec(), protocol, 0),
+                Err(expected),
+            );
+        }
+    }
 
     #[test]
     fn git_coverage_methods_remain_closed_to_legacy_carriers() {
