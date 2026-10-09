@@ -8,6 +8,7 @@ use crate::bucket::held::HeldIdentity;
 use crate::bucket::{BucketBinding, FileBucket};
 use crate::store::{Clock, ContentValidator, LocalFs, StoreFailure};
 use std::sync::Mutex;
+use terrane_core::gc::publication::evidence::GuardSnapshot;
 use terrane_core::gc::publication::{
     Activation, BackendRegistration, PortableSnapshot, PredecessorSlot, PublicationCommit,
     PublicationTransaction,
@@ -197,6 +198,22 @@ async fn resolve_with_reads<
         let key = format!("publication/commits/{revision}");
         let Some(bytes) = reads.read(&key).await? else {
             let mut selected = selected.ok_or_else(corrupt)?;
+            if reads.retain_original
+                && let Some(expected) = selected.state.guard
+            {
+                // The selected digest identifies bytes, not their original
+                // protected incarnation. Capture that recipe before reuse.
+                let suffix: String = expected.iter().map(|byte| format!("{byte:02x}")).collect();
+                let bytes = reads
+                    .read(&format!("publication/guards/{suffix}"))
+                    .await?
+                    .ok_or_else(corrupt)?;
+                if digest(&bytes) != expected {
+                    return Err(corrupt());
+                }
+                GuardSnapshot::decode(&bytes).map_err(|_| corrupt())?;
+            }
+
             let mut log_reads = Vec::new();
             for row in &selected.state.branches {
                 if let terrane_core::gc::publication::CommittedSelection::Selected(record) =
