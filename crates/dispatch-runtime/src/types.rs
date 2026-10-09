@@ -140,6 +140,30 @@ impl Default for SessionLimits {
     }
 }
 
+/// Identifies an execution guarantee independently of assignment constraints.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionGuarantee {
+    /// Terminates native execution independently of solver cooperation.
+    HardCancellation,
+    /// Enforces a worker-specific memory and OOM boundary.
+    IndependentMemory,
+    /// Enforces application-wide accounting across sessions.
+    AggregateAccounting,
+    /// Initiates owner-loss cleanup independently of normal destruction.
+    OwnerCleanup,
+}
+
+impl std::fmt::Display for ExecutionGuarantee {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::HardCancellation => "hard cancellation",
+            Self::IndependentMemory => "independent memory containment",
+            Self::AggregateAccounting => "aggregate application accounting",
+            Self::OwnerCleanup => "independent owner-loss cleanup",
+        })
+    }
+}
+
 /// States execution guarantees a caller refuses to downgrade.
 #[derive(Clone, Debug, Default)]
 pub struct RequiredGuarantees {

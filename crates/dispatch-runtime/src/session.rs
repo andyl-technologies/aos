@@ -16,8 +16,8 @@ use tokio::{
 };
 
 use crate::{
-    CleanupReport, CloseMode, ExecutionProfile, JobStatus, RequiredGuarantees, RuntimeError,
-    SessionLimits, SolveOptions, SolveResult,
+    CleanupReport, CloseMode, ExecutionGuarantee, ExecutionProfile, JobStatus, RequiredGuarantees,
+    RuntimeError, SessionLimits, SolveOptions, SolveResult,
     connection::ConnectedWorker,
     providers::{ExecutionProvider, ResourceGrant, WorkerLaunch},
 };
@@ -104,25 +104,47 @@ impl SessionBuilder {
                 .checked_add(self.limits.cleanup_timeout)
                 .is_none()
         {
-            return Err(RuntimeError::Unsupported(
+            return Err(RuntimeError::InvalidConfiguration(
                 "session limits must be positive and frames must accommodate negotiation".into(),
             ));
         }
         let grant = self.provider.grant();
-        if (self.required.hard_cancellation && !grant.hard_cancellation)
-            || (self.required.independent_memory && !grant.independent_memory)
-            || (self.required.aggregate_accounting && !grant.aggregate_accounting)
-            || (self.required.owner_cleanup && !grant.owner_cleanup)
-        {
-            return Err(RuntimeError::Unsupported(
-                "provider cannot supply a required guarantee".into(),
+        for (required, supported, guarantee) in [
+            (
+                self.required.hard_cancellation,
+                grant.hard_cancellation,
+                ExecutionGuarantee::HardCancellation,
+            ),
+            (
+                self.required.independent_memory,
+                grant.independent_memory,
+                ExecutionGuarantee::IndependentMemory,
+            ),
+            (
+                self.required.aggregate_accounting,
+                grant.aggregate_accounting,
+                ExecutionGuarantee::AggregateAccounting,
+            ),
+            (
+                self.required.owner_cleanup,
+                grant.owner_cleanup,
+                ExecutionGuarantee::OwnerCleanup,
+            ),
+        ] {
+            if required && !supported {
+                return Err(RuntimeError::UnsupportedGuarantee(guarantee));
+            }
+        }
+        if self.expected_build.as_ref().is_some_and(String::is_empty) {
+            return Err(RuntimeError::InvalidConfiguration(
+                "backend build pin must be nonempty".into(),
             ));
         }
         let generation = NEXT_SESSION
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
-            .map_err(|_| RuntimeError::Unsupported("session identity exhausted".into()))?;
+            .map_err(|_| RuntimeError::Unavailable("session identity exhausted".into()))?;
         if let Some(capabilities) = &self.capabilities {
             if capabilities.backend_build_id.is_empty()
                 || capabilities.protocol_version != Some(crate::connection::version())
@@ -132,7 +154,7 @@ impl SessionBuilder {
                     .as_ref()
                     .is_some_and(|expected| *expected != capabilities.backend_build_id)
             {
-                return Err(RuntimeError::Unsupported(
+                return Err(RuntimeError::InvalidConfiguration(
                     "invalid trusted capability manifest".into(),
                 ));
             }
@@ -147,8 +169,15 @@ impl SessionBuilder {
                 )),
                 required_capabilities: Vec::new(),
             };
-            capabilities.limits =
-                Some(dispatch_protocol::negotiation::negotiate(&hello, capabilities)?.limits);
+            capabilities.limits = Some(
+                dispatch_protocol::negotiation::negotiate(&hello, capabilities)
+                    .map_err(|error| {
+                        RuntimeError::InvalidConfiguration(format!(
+                            "invalid trusted capability manifest: {error}"
+                        ))
+                    })?
+                    .limits,
+            );
         }
         self.worker.session_generation = generation;
         self.worker.max_frame_bytes = self.limits.max_frame_bytes;
@@ -180,11 +209,11 @@ impl SessionBuilder {
                 inner.acquire_worker(|| Ok(())),
             )
             .await
-            .map_err(|_| RuntimeError::Unsupported("provider initialization timed out".into()))??;
+            .map_err(|_| RuntimeError::Unavailable("provider initialization timed out".into()))??;
             let capabilities = worker
                 .worker
                 .as_ref()
-                .ok_or_else(|| RuntimeError::Unsupported("negotiation worker missing".into()))?
+                .ok_or_else(|| RuntimeError::Protocol("negotiation worker missing".into()))?
                 .capabilities
                 .clone();
             if inner.profile == ExecutionProfile::Warm {

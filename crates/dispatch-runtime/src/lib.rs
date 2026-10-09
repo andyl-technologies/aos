@@ -61,8 +61,8 @@ pub use providers::{
 };
 pub use session::{Job, PreparedInput, Session, SessionBuilder};
 pub use types::{
-    CandidateClass, CleanupReport, CloseMode, EffectiveOptions, EvidenceKind, ExecutionProfile,
-    JobStatus, RejectionReason, RequiredGuarantees, SearchEvidence, SearchMode, SeedPolicy,
-    SessionLimits, SolveOptions, SolveResult, StageTiming, Termination, UnavailabilityReason,
-    WorkerFailureCause, WorkerFailureReport,
+    CandidateClass, CleanupReport, CloseMode, EffectiveOptions, EvidenceKind, ExecutionGuarantee,
+    ExecutionProfile, JobStatus, RejectionReason, RequiredGuarantees, SearchEvidence, SearchMode,
+    SeedPolicy, SessionLimits, SolveOptions, SolveResult, StageTiming, Termination,
+    UnavailabilityReason, WorkerFailureCause, WorkerFailureReport,
 };

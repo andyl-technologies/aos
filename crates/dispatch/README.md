@@ -14,6 +14,7 @@ operations. Optional features expose sessions and portable solve requests:
 | No default features | Pure model construction and exact analysis |
 | `protocol` | Portable `SolveRequest` and `SearchRequestOptions` documents |
 | `runtime` | Bounded sessions and execution providers; includes `protocol` |
+| `systemd` | Optional Linux managed execution provider; includes `runtime` |
 | `cli` | Standalone `dispatch` executable; includes `runtime` |
 
 Default features enable the runtime and CLI. Applications select native executable

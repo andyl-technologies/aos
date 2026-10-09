@@ -283,8 +283,15 @@ impl CliError {
             },
             Self::Message { category, .. } => *category,
             Self::Runtime(error) => match error {
-                dispatch::runtime::RuntimeError::Unsupported(_) => ExitCategory::Unsupported,
+                dispatch::runtime::RuntimeError::InvalidConfiguration(_) => {
+                    ExitCategory::InvalidInput
+                }
+                dispatch::runtime::RuntimeError::Unsupported(_)
+                | dispatch::runtime::RuntimeError::UnsupportedGuarantee(_) => {
+                    ExitCategory::Unsupported
+                }
                 dispatch::runtime::RuntimeError::Overloaded(_) => ExitCategory::Overload,
+                dispatch::runtime::RuntimeError::Unavailable(_) => ExitCategory::ExecutionFailure,
                 _ => ExitCategory::ExecutionFailure,
             },
         }

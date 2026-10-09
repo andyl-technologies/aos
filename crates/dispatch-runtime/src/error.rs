@@ -9,7 +9,16 @@ pub enum RuntimeError {
     /// A configured accounting limit would be exceeded.
     #[error("session admission limit exceeded: {0}")]
     Overloaded(&'static str),
-    /// Configuration or a required guarantee cannot be supported.
+    /// An initialization setting is invalid or internally inconsistent.
+    #[error("invalid session configuration: {0}")]
+    InvalidConfiguration(String),
+    /// The selected provider cannot supply an explicitly required guarantee.
+    #[error("provider does not support required guarantee: {0}")]
+    UnsupportedGuarantee(crate::ExecutionGuarantee),
+    /// An initialization resource is unavailable within the operation budget.
+    #[error("execution resource unavailable: {0}")]
+    Unavailable(String),
+    /// The requested model or operation cannot be supported.
     #[error("unsupported configuration: {0}")]
     Unsupported(String),
     /// A handle belongs to an expired generation or released input.

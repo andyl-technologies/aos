@@ -9,8 +9,8 @@ use dispatch_model::{Assignment, Problem, ValidatedProblem};
 use dispatch_protocol::{canonical::model_digest, wire};
 use dispatch_runtime::{
     CandidateClass, CloseMode, CooperativeCancellation, EmbeddedBackend, EmbeddedProvider,
-    EmbeddedSolution, RejectionReason, RuntimeError, Session, SessionBuilder, SolveOptions,
-    Termination, WorkerLaunch,
+    EmbeddedSolution, ExecutionGuarantee, RejectionReason, RequiredGuarantees, RuntimeError,
+    Session, SessionBuilder, SessionLimits, SolveOptions, Termination, WorkerLaunch,
 };
 
 struct Engine {
@@ -61,7 +61,7 @@ fn problem() -> Problem {
     }
 }
 
-async fn session(reject: bool) -> Session {
+fn builder(reject: bool) -> SessionBuilder {
     let provider = Arc::new(EmbeddedProvider::new(Arc::new(Engine { reject })));
     SessionBuilder::new(
         provider,
@@ -74,9 +74,51 @@ async fn session(reject: bool) -> Session {
             max_frame_bytes: 16 * 1024 * 1024,
         },
     )
-    .start()
-    .await
-    .expect("embedded session initializes")
+}
+
+async fn session(reject: bool) -> Session {
+    builder(reject)
+        .start()
+        .await
+        .expect("embedded session initializes")
+}
+
+#[tokio::test]
+async fn invalid_limits_and_unsupported_guarantees_have_distinct_types() {
+    let limits = SessionLimits {
+        max_workers: 0,
+        ..SessionLimits::default()
+    };
+
+    let invalid = builder(false).limits(limits).start().await;
+    let unsupported = builder(false)
+        .required_guarantees(RequiredGuarantees {
+            independent_memory: true,
+            ..RequiredGuarantees::default()
+        })
+        .start()
+        .await;
+
+    assert!(matches!(
+        invalid,
+        Err(RuntimeError::InvalidConfiguration(_))
+    ));
+    assert!(matches!(
+        unsupported,
+        Err(RuntimeError::UnsupportedGuarantee(
+            ExecutionGuarantee::IndependentMemory
+        ))
+    ));
+}
+
+#[tokio::test]
+async fn invalid_trusted_metadata_is_configuration_failure() {
+    let result = builder(false)
+        .trusted_capabilities(wire::Capabilities::default())
+        .start()
+        .await;
+
+    assert!(matches!(result, Err(RuntimeError::InvalidConfiguration(_))));
 }
 
 #[tokio::test]
