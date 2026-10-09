@@ -35,12 +35,12 @@ generators. Two independent artifact builds still need to be compared before
 reproducible binary output is certified. Runtime statistics may contain wall
 timestamps; those must not become modeled time or semantic state commitments.
 
-The installed `share/gem5/source-manifest.json` explicitly records that the
-binary does not implement CNP/1 and has neither qualified exact capture nor
-qualified live branching. Successful source compilation and the upstream
-learning example establish package functionality only. They do not establish
-complete-state preservation, full-system Linux boot, device parity, exact
-stops or repeatability.
+The installed `share/gem5/source-manifest.json` identifies the native source
+and patch closure. The native binary is not a CNP/1 transport; the separately
+measured private controller implements that boundary. Qualification belongs
+to a source-owned installed profile, not to every configuration executable by
+the general-purpose binary. Source compilation and the upstream learning
+example alone establish no complete-state or device-parity claim.
 
 The local source build completed with all selected upstream ISA/protocol models,
 including the x86 and Arm generators, and passed the upstream learning example.
@@ -49,7 +49,15 @@ reconstructions. The owned-file custody witness passed two concurrent,
 divergent reconstructions with separate writable files. Real x86_64 and
 AArch64 O3/classic-cache/DDR3 witnesses also passed two concurrent, private-output
 reconstructions after source exit and removal of the source's owned output
-root. These are mechanism results; the qualified CPU/device list remains empty.
+root. The source-owned
+[closed-profile package](gem5-closed-profile-evidence.md) now qualifies complete
+opaque process capture for the two fixed freestanding checksum configurations.
+It binds the actual image, complete native process-resource ledger, immutable
+source/tool/model/guest artifacts, native ABI, stopped boundary and witnessed
+continuation. This restricted profile includes no arbitrary guest, external
+input or full-system device configuration. Typed CPU/cache/device diagnostics
+remain explicitly incomplete; their field fingerprints are independently
+checked without promoting them to complete-state inventories.
 
 The [native gem5 license inventory](../../../pkgs/emulation/gem5-patches/LICENSES.md)
 and [DMTCP patch inventory](../../../pkgs/tools/_dmtcp/LICENSES.md) identify the
@@ -57,9 +65,12 @@ modified upstream files and retained licenses. Successful test results do not
 authorize an incompatible native license combination or waive applicable
 source-distribution obligations.
 
-Production admission for the RFC-0025 gem5 exact profile must remain disabled.
-The source audit demonstrates concrete missing state, rather than an absence
-of paperwork. A failed or unsupported checkpoint must be refused before world
+Production admission requires the source-built installed-profile trust root,
+the private provider closure certificate for each actual capture, and the
+native controller's qualified full-position semantics. Configurations outside
+that installed scope remain refused. A freshly reconstructed owner must
+authenticate its own new capture resources before receiving new live capture
+authority. A failed or unsupported checkpoint is refused before world
 activation; there is no architectural-only fallback for an exact request.
 
 ### Implemented native boundary foundation
@@ -76,9 +87,12 @@ mixing with stock synthetic limit events, and resuming a drained owner. It
 shares ordinary startup with the stock Python interface; it does not invoke
 `simulate(0)` as an initialization shortcut. Initialization and authorized
 execution may perform startup work; capture itself does not call this wrapper.
-Logical frontier conversion, native event ordinals, incoming delivery ordering,
-early output custody and CNP/1 owner control remain separate implementation work.
-The patch is not a declaration of the complete `deterministic_exact` profile.
+The private owner builds logical frontier conversion, native event ordinals,
+original output custody and CNP/1 control on this primitive. The installed
+closed profile verifies exclusive full-position stops, one callback at a
+one-event budget ceiling and actual stdout birth within its native callback.
+The pre-event patch alone remains insufficient for `deterministic_exact`
+admission.
 
 ### Pipeline initialization regression
 
@@ -406,6 +420,117 @@ placement. They cover all future-affecting fields and canonical references.
 Do not exclude queues, replacement metadata, RNG state or timers as
 "performance-only": those change detailed-model future execution.
 
+## Native state inspection and closure
+
+`m5.crucibleStateInventory()` reads a parked native owner without running
+startup, inserting an exit event, servicing an event, drawing an RNG value,
+draining a CPU, or writing back a cache line. Calls before startup, during an
+executing event callback, with multiple event queues, pending asynchronous work,
+or without stable native event identities fail. Its versioned JSON inventory
+records the native tick, queue membership in native bin/stack order, stable event
+instance identities, callback types/descriptions, named native object types,
+and every registered current `mt19937_64` engine. Expired RNG registry slots
+retain their ordinal.
+
+The native event fixture tests repeated observation, refusal before startup and
+from an executing callback, and cuts between events with equal native keys. The
+x86 and AArch64 O3 witnesses compare the native inventory before capture and
+immediately after both fresh process reconstructions. Their guest argument vector
+uses a fixed executable name; the host ELF is independently specified and copied
+under owned resource custody. Otherwise, changing operational ELF paths also
+changes guest stack bytes and invalidates a complete RAM comparison.
+
+Native typed field visitors extend this inventory through
+`SimObject::crucibleModeledFields()`. Ordered field maps encode integer and enum
+values as decimal strings, explicit semantic object references as stable names,
+and modeled byte buffers as their byte count and SHA-256 digest. Duplicate field
+names and nonempty buffers without storage fail. These component byte hashes are
+inspection evidence; they do not replace the RFC's complete canonical graph and
+state commitments. Uninitialized bytes in invalid cache lines are excluded;
+valid cache values remain distinct from physical backing RAM.
+
+Allocated read-request packet storage is similarly distinct from defined data.
+The packet visitor hashes a complete payload only when its command carries data;
+partially satisfied functional reads expose their validity mask and only the
+valid byte values. Hashing an unfilled read buffer would observe allocator
+residue and produce different diagnostics for identical modeled states. The
+native O3 controls and packet-field validator detect that error.
+
+Every inventory currently reports `complete = false`. Every native object also
+reports `state_complete = false`; concrete visitors name omitted domains in
+`coverage.unsupported`. Neither equality of these partial inventories nor an
+opaque process-image digest is evidence that all future-affecting modeled fields
+are covered. Typed diagnostics cannot advertise complete coverage while unknown
+callback captures, polymorphic instruction/fault payloads, replacement histories,
+DMA transport state, or unsupported concrete types remain. A consuming owner
+preserves this incomplete diagnostic result independently of any capture proof.
+
+The shared inspection writer now assigns private graph aliases in deterministic
+first-encounter order. Repeated packet, request, instruction, sender-state and
+event references bind the same identity across native owners. A conflicting kind
+for one native object fails; a per-observation body guard prevents cyclic packet
+and sender-state ownership from recursing indefinitely. Native addresses remain
+inside the inspector. Each observation resets the identity and body registry.
+
+### Whole process-image qualification
+
+A closed profile can separately qualify opaque exact capture through complete
+native process-image ownership. This proof binds the stopped model, every
+mapped byte and native thread context, immutable code and guest configuration,
+file-descriptor custody, supplementary saved files, and host ABI. It does not
+turn the partial typed diagnostic graph into a complete semantic codec.
+
+`gem5-process-image-inventory` parses the pinned DMTCP 4.2 native64 little-endian
+image stream. It checks the two identical page headers, ordered mapped regions,
+anonymous parent/child run coverage, zero runs, bounded native payload extents,
+and exact terminal image boundary. It independently reads the authenticated
+parked peer's kernel maps, tasks and descriptors, hashes immutable mapped
+artifacts and owned regular files, and rejects unaccounted shared mappings,
+devices, symbolic file custody and shared hard links. Supplementary `_files`
+entries form part of the image closure.
+
+The DMTCP source patch records actual `Thread` context bodies immediately before
+writing the image, with application threads in `ST_SUSPENDED`. Those bodies
+include native register context, TLS state and saved signal state. The ledger
+also binds the kernel TID through DMTCP's virtual-to-real identity mapping;
+`Thread::tid` itself is virtual when the PID plugin is enabled. An independent
+parent process compares the actual kernel task roster before allowing source
+exit. The bounded ledger is private checkpointed memory; an inspection API retrieves it after
+capture without recapturing running registers. A source-built native witness
+exits the source and independently verifies that both suspended application and
+checkpoint-worker context bodies exactly equal their corresponding image bytes.
+Separate fixed native ledgers bind the complete descriptor census and the exact
+kernel-map snapshot consumed by the image writer. Their record bodies must also
+equal captured image bytes. Postcapture controller serialization can allocate
+and release private anonymous arenas; those later operational mappings are
+reported separately and cannot prove coverage of an original mapped interval.
+
+DMTCP's file plugin temporarily replaces a saved shared file mapping with an
+anonymous `PROT_NONE` placeholder. A native receipt binds the original mapping,
+the actual `FileConnection` supplementary path, its checkpointed flag and its
+temporary descriptor. The auditor admits this transformation only for the
+measured private read-only guest ELF, verifies its original inode and device,
+and requires the complete supplementary copy to match the measured ELF. It
+also checks that the exact native temporary descriptor was retired before
+controller rebind. Other allocator-to-file changes and unaccounted descriptor
+reuse fail. The source-exit mechanism witness exercises genuine native shared
+file conversion and independently validates every receipt against image bytes.
+
+Adversarial tests reject truncated image data, missing/reordered/overlapping
+anonymous children, altered headers, trailing bytes, unknown properties and
+unowned supplementary resources.
+
+The helper returns evidence rather than an admission token. A private provider
+certificate additionally authenticates the installed collector, actual kernel
+peer and start identity, immutable launch configuration, native pre-event stop,
+capture request and implementation/source identity. Fresh controller sockets and
+DMTCP's precisely identified operational shared area are separate reconstructed
+operational resources. The admitted freestanding O3 profile must exclude guest
+host-time/random/file/network input, external devices, parallel native execution,
+and unowned mutable resources. Full-system and external-device qualification
+requires its own closed resource inventory; passing this narrow mechanism check
+does not admit those configurations or arbitrary executables.
+
 ## Live fork, threads and external resources
 
 The upstream [fork entry point][fork] requires disabled listeners, calls
@@ -437,9 +562,10 @@ parent's backing lease or publish partial world state.
 ## Required local evidence and exit conditions
 
 Static audit and source compilation complete only the source-foundation portion
-of G0. The dynamic nondraining tests below remain required before T-CN-15 can
-be marked complete. The pre-event primitive and process-image mechanism do not
-yet constitute a full-state qualified native owner.
+of G0. The installed closed profile and its actual nondraining native witnesses
+cover its fixed freestanding CPU/memory configurations. The broader dynamic
+tests below remain necessary for additional device, guest, input and fidelity
+profiles; the general binary cannot inherit the restricted profile's authority.
 
 For each admitted x86_64 and AArch64 detailed configuration, construct witnesses
 with genuinely nonempty speculative pipeline, predictor history, dirty caches,
