@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 
 use aos_proto::aos::sandbox::local::v1::{Audience, BrokerMethod, DestinationSlotAction};
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::format::{
     decode_broker_authorization_plan, decode_ownership_lease, decode_signature,
 };
@@ -602,15 +603,15 @@ impl Record {
         if bytes.len() < FIXED_RECORD_BYTES || bytes.len() > MAXIMUM_RECORD_BYTES {
             return Err(DestinationSlotEffectError::CorruptState);
         }
-        let mut decoder = Decoder::new(bytes);
+        let mut decoder = BoundedReader::new(bytes, |_| DestinationSlotEffectError::CorruptState);
         if decoder.array::<8>()? != *MAGIC {
             return Err(DestinationSlotEffectError::CorruptState);
         }
-        let flags = decoder.byte()?;
+        let flags = decoder.u8()?;
         if flags & !FLAG_READY_EXPECTATION != 0 {
             return Err(DestinationSlotEffectError::CorruptState);
         }
-        let action = DestinationSlotAction::from_i32(i32::from(decoder.byte()?))
+        let action = DestinationSlotAction::from_i32(i32::from(decoder.u8()?))
             .ok_or(DestinationSlotEffectError::CorruptState)?;
         if decoder.array::<2>()? != [0; 2] {
             return Err(DestinationSlotEffectError::CorruptState);
@@ -630,9 +631,12 @@ impl Record {
         let lease_generation = decoder.u64()?;
         let deadline_boottime_nanoseconds = decoder.u64()?;
         let ready = decode_ready(&mut decoder, flags & FLAG_READY_EXPECTATION != 0)?;
-        let template_len = decoder.u32_as_usize()?;
-        let body_len = decoder.u32_as_usize()?;
-        let packet_len = decoder.u32_as_usize()?;
+        let template_len = usize::try_from(decoder.u32()?)
+            .map_err(|_| DestinationSlotEffectError::CorruptState)?;
+        let body_len = usize::try_from(decoder.u32()?)
+            .map_err(|_| DestinationSlotEffectError::CorruptState)?;
+        let packet_len = usize::try_from(decoder.u32()?)
+            .map_err(|_| DestinationSlotEffectError::CorruptState)?;
         let template_body = decoder.bytes(template_len)?.to_vec();
         let body = decoder.bytes(body_len)?.to_vec();
         let packet = decoder.bytes(packet_len)?.to_vec();
@@ -1062,7 +1066,7 @@ fn encode_assignment_target(bytes: &mut Vec<u8>, target: DurableRuntimeAuthority
 }
 
 fn decode_assignment_target(
-    decoder: &mut Decoder<'_>,
+    decoder: &mut BoundedReader<'_, DestinationSlotEffectError>,
 ) -> Result<DurableRuntimeAuthorityReferenceV1, DestinationSlotEffectError> {
     Ok(DurableRuntimeAuthorityReferenceV1::from_parts(
         aos_sandbox_core::SandboxId::from_bytes(decoder.array()?),
@@ -1102,7 +1106,7 @@ fn encode_ready(bytes: &mut Vec<u8>, ready: Option<ReadyResourceExpectation>) {
 }
 
 fn decode_ready(
-    decoder: &mut Decoder<'_>,
+    decoder: &mut BoundedReader<'_, DestinationSlotEffectError>,
     present: bool,
 ) -> Result<Option<ReadyResourceExpectation>, DestinationSlotEffectError> {
     let ready = ReadyResourceExpectation {
@@ -1138,7 +1142,7 @@ fn decode_ready(
 }
 
 fn decode_rematerialization_expectation(
-    decoder: &mut Decoder<'_>,
+    decoder: &mut BoundedReader<'_, DestinationSlotEffectError>,
 ) -> Result<Option<RematerializationExpectation>, DestinationSlotEffectError> {
     let value = RematerializationExpectation {
         operation_id: decoder.array()?,
@@ -1159,50 +1163,5 @@ fn decode_rematerialization_expectation(
         Ok(Some(value))
     } else {
         Err(DestinationSlotEffectError::CorruptState)
-    }
-}
-
-struct Decoder<'a> {
-    bytes: &'a [u8],
-}
-
-impl<'a> Decoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes }
-    }
-
-    fn bytes(&mut self, length: usize) -> Result<&'a [u8], DestinationSlotEffectError> {
-        let value = self
-            .bytes
-            .get(..length)
-            .ok_or(DestinationSlotEffectError::CorruptState)?;
-        self.bytes = self
-            .bytes
-            .get(length..)
-            .ok_or(DestinationSlotEffectError::CorruptState)?;
-        Ok(value)
-    }
-
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], DestinationSlotEffectError> {
-        self.bytes(N)?
-            .try_into()
-            .map_err(|_| DestinationSlotEffectError::CorruptState)
-    }
-
-    fn byte(&mut self) -> Result<u8, DestinationSlotEffectError> {
-        Ok(self.array::<1>()?[0])
-    }
-
-    fn u64(&mut self) -> Result<u64, DestinationSlotEffectError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-
-    fn u32_as_usize(&mut self) -> Result<usize, DestinationSlotEffectError> {
-        usize::try_from(u32::from_be_bytes(self.array()?))
-            .map_err(|_| DestinationSlotEffectError::CorruptState)
-    }
-
-    const fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
     }
 }

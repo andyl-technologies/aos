@@ -15,6 +15,7 @@ use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerClientHello, BrokerMethod, DestinationSlotAction, DestinationSlotLifecycle,
     Feature,
 };
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{FeatureRef, ObjectDigest, ProtocolId, RawPairedClockSample};
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE;
@@ -274,17 +275,17 @@ impl CompletionRecord {
         if bytes.len() < FIXED_RECORD_BYTES || bytes.len() > MAXIMUM_RECORD_BYTES {
             return Err(DestinationSlotEffectError::CorruptState);
         }
-        let mut bytes = bytes;
-        if take::<8>(&mut bytes)? != *MAGIC || take::<4>(&mut bytes)? != [0; 4] {
+        let mut decoder = BoundedReader::new(bytes, |_| DestinationSlotEffectError::CorruptState);
+        if decoder.array::<8>()? != *MAGIC || decoder.array::<4>()? != [0; 4] {
             return Err(DestinationSlotEffectError::CorruptState);
         }
-        let request_id = take(&mut bytes)?;
-        let attempt_digest = take(&mut bytes)?;
-        let receipt_len = usize::try_from(u32::from_be_bytes(take(&mut bytes)?))
+        let request_id = decoder.array()?;
+        let attempt_digest = decoder.array()?;
+        let receipt_len = usize::try_from(decoder.u32()?)
             .map_err(|_| DestinationSlotEffectError::CorruptState)?;
-        let receipt = take_slice(&mut bytes, receipt_len)?.to_vec();
-        let digest = take(&mut bytes)?;
-        if !bytes.is_empty() {
+        let receipt = decoder.bytes(receipt_len)?.to_vec();
+        let digest = decoder.array()?;
+        if !decoder.is_empty() {
             return Err(DestinationSlotEffectError::CorruptState);
         }
         Ok(Self {
@@ -539,23 +540,4 @@ fn validate_receipt(
         }
     }
     Ok(result)
-}
-
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], DestinationSlotEffectError> {
-    take_slice(bytes, N)?
-        .try_into()
-        .map_err(|_| DestinationSlotEffectError::CorruptState)
-}
-
-fn take_slice<'a>(
-    bytes: &mut &'a [u8],
-    length: usize,
-) -> Result<&'a [u8], DestinationSlotEffectError> {
-    let value = bytes
-        .get(..length)
-        .ok_or(DestinationSlotEffectError::CorruptState)?;
-    *bytes = bytes
-        .get(length..)
-        .ok_or(DestinationSlotEffectError::CorruptState)?;
-    Ok(value)
 }
