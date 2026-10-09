@@ -2464,8 +2464,18 @@ independent review verifies 160 retained artifact hashes and preserves a
 copy of the actual tested executable. Source review identifies the existing
 Raw loss fence when the exact nominal Live placement changes. A reviewed
 test-only correction adds that one expected increment while retaining the
-complete state comparison and every other assertion. New-source runtime
-qualification remains pending; the failed original is not retried.
+complete state comparison and every other assertion. A further source audit
+identifies the conditional CAP timestamp successor during independent reopen.
+The corrected fixture constructs its complete expected state and logical
+projection before reopening, permitting that successor only when the encoded
+CAP timestamp changes. Loss generation and every other field remain exact.
+Clean combined candidate `13540d1139` includes both retirement corrections,
+the two receiving witnesses and the selected graft-admission correction.
+Independent review verifies all 6,107 committed file images, modes and symlink
+targets. Its finite 39-stage qualification covers strict profiles, actual
+compiled inventories, focused regressions, owning gates, application targets
+and both formatters. New-source runtime qualification remains pending; the
+failed original is not retried and no earlier runtime passes transfer.
 No task checkbox or milestone status advances.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
@@ -2978,8 +2988,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   accepts them. The shared property-resolution gate now requires two pure
   commit-validator witnesses and two actual historical admission witnesses
   for preservation, publication/rollback and unchanged refusal controls.
-  Implementation and execution are pending on an isolated task branch;
-  current qualified scopes do not prove these additional contracts.
+  Reviewed implementation `853059704a2f` supplies the selected interpretation
+  to the pure commit validator and retains it throughout native admission.
+  Current-context callers retain their existing validation behavior. All
+  domain, reference, target, administrator, conflict and attribute refusals
+  remain in place. The four new witnesses exercise trusted historical
+  preservation and actual publication/rollback, with malformed, untrusted
+  and unauthorized controls. The production and test diffs are reviewed and
+  included in combined candidate `13540d1139`; execution remains pending.
+  Current qualified scopes do not prove these additional contracts.
   — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,
