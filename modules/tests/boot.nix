@@ -12,10 +12,18 @@
     checks = [
       {
         name = "configuration-activation";
-        description = "the first host configuration generation is active";
+        description = "the native host configuration lower is active";
         script = ''
-          vm.wait_until_succeeds("test -d /run/etc/system-1/metadata", timeout=180)
-          vm.succeed("test -d /run/etc/config-1/etc")
+          import re
+          import shlex
+
+          vm.wait_until_succeeds("test -s /var/lib/profiles/system/current/native-deployment.json", timeout=180)
+          configuration_mount_line = vm.succeed("findmnt -no SOURCE,FSTYPE,OPTIONS /etc")
+          native_lowers = re.findall(r"/run/etc/native-config-[0-9a-f]{64}/etc", configuration_mount_line)
+          assert len(native_lowers) == 1, configuration_mount_line
+          native_configuration_path = native_lowers[0]
+          vm.succeed("findmnt -t erofs " + shlex.quote(native_configuration_path))
+          vm.succeed("test -d /run/etc/system/metadata")
         '';
       }
       {
@@ -70,21 +78,9 @@
         name = "etc-three-layer-overlay";
         description = "/etc is the composefs three-layer overlay (spec v12 §1)";
         script = ''
-          # /etc is mounted as overlayfs with lowerdir+= /var/etc,
-          # /run/etc/config-<gen>/etc, /run/etc/system-<gen>/
-          # metadata, plus datadir+= /run/etc/system-<gen>/content
-          # and upperdir on /run/etc/upper-<gen>.
-          #
-          # Path shapes in the option line:
-          # - /var/etc is constructed under /sysroot in stage-1. The
-          #   generation-1 overlay rebuilt by activation reports its stage-2
-          #   path, /var/etc.
-          # - /run/etc/... does NOT carry /sysroot: the per-gen lower
-          #   mounts live in the initrd's /run, which switch_root
-          #   moves to /sysroot/run and then pivots, so the paths
-          #   were already in their post-pivot shape when the
-          #   overlay was constructed.
-          #
+          # The native lower and writable upper are keyed by the EROFS image
+          # digest. The image's metadata/content layers retain stable paths
+          # across switch-root, independent of profile generation numbers.
           # metacopy=on / redirect_dir=on don't appear in the option
           # line: kernel defaults (CONFIG_OVERLAY_FS_METACOPY=y +
           # CONFIG_OVERLAY_FS_REDIRECT_DIR=y) make them implicit.
@@ -92,21 +88,18 @@
           assert "overlay" in mount_line, f"/etc is not overlayfs: {mount_line!r}"
           for needle in (
               "lowerdir+=/var/etc",
-              "lowerdir+=/run/etc/config-",
-              "lowerdir+=/run/etc/system-",
-              "datadir+=/run/etc/system-",
-              "upperdir=/run/etc/upper-",
+              "lowerdir+=" + native_configuration_path,
+              "lowerdir+=/run/etc/system/metadata",
+              "datadir+=/run/etc/system/content",
+              "upperdir=/run/etc/native-upper-",
           ):
               assert needle in mount_line, \
                   f"/etc overlay missing {needle}: {mount_line!r}"
 
-          # The per-gen subtree must be reachable by path post-pivot
-          # — i.e. the /run/etc tmpfs and its sub-mounts must be
-          # children of the moved-from-initrd /run, not shadowed by
-          # it. Stat the system-<gen>/metadata mountpoint to prove
-          # the path resolves, not just that findmnt sees the mount.
-          vm.succeed("test -d /run/etc/system-1/metadata")
-          vm.succeed("test -d /run/etc/config-1/etc")
+          # Check the mounted layers remain reachable after the initrd hands
+          # /run to the host; mountinfo alone does not establish that.
+          vm.succeed("test -d /run/etc/system/metadata")
+          vm.succeed("test -d " + shlex.quote(native_configuration_path))
         '';
       }
       {
@@ -114,9 +107,9 @@
         description = "system EROFS metadata image is mounted as the bottom lower";
         script = ''
           # Early boot mounts the toplevel's etc-metadata.erofs below
-          # /run/etc/system-<gen>/metadata. The handoff preserves /run, so the
+          # /run/etc/system/metadata. The handoff preserves /run, so the
           # mount remains reachable after the host stage takes ownership.
-          vm.succeed("findmnt -t erofs /run/etc/system-1/metadata")
+          vm.succeed("findmnt -t erofs /run/etc/system/metadata")
         '';
       }
       {

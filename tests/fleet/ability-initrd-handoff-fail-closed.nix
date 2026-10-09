@@ -1,8 +1,8 @@
 # Initrd ability ownership handoff barrier negative test.
 #
-# The initrd controller first publishes a real durable journal and preserved
-# checkpoint. A deliberately ordered test service then replaces that checkpoint
-# before the handoff barrier authenticates it. The barrier must fail and keep
+# The initrd controller first publishes a real durable journal and retained
+# completion journal. A deliberately ordered test service then corrupts that journal
+# before the handoff barrier verifies it. The barrier must fail and keep
 # initrd-switch-root.target from reaching stage 2.
 {
   lib,
@@ -19,8 +19,15 @@
         bundle = true;
       };
 
-      boot.initrd.systemd.services.aos-ability-checkpoint-tamper = {
-        description = "Corrupt the Initrd Ability Handoff Checkpoint";
+      aos.activation.stages.initrd.configuration = [
+        (builtins.path {
+          path = ./_initrd-handoff-tamper-policy.nix;
+          name = "aos-initrd-handoff-tamper-policy.nix";
+        })
+      ];
+
+      boot.initrd.systemd.services.aos-ability-journal-tamper = {
+        description = "Corrupt the Initrd Ability Completion Journal";
         requiredBy = [
           "initrd-fs.target"
           "initrd-switch-root.target"
@@ -31,27 +38,28 @@
         unitConfig.DefaultDependencies = "no";
         serviceConfig.Type = "oneshot";
         script = ''
-          printf '%s\n' '{}' > /run/aos/ability-stage-handoff/initrd.json
+          journal=${failClosedSystem.config.aos.boot.substrateServices.initrdStateDirectory}/generations.journal
+          test -s "$journal"
+          printf X | ${pkgs.coreutils}/bin/dd of="$journal" bs=1 count=1 conv=notrunc status=none
+          ${pkgs.coreutils}/bin/sync "$journal"
           printf '%s\n' \
-            'aos-ability-checkpoint-tamper: replaced released checkpoint' \
+            'aos-ability-journal-tamper: corrupted completed journal' \
             > /dev/kmsg
         '';
       };
-
-      boot.initrd.systemd.services.aos-ability-initrd-handoff-barrier = {
-        requires = ["aos-ability-checkpoint-tamper.service"];
-        after = ["aos-ability-checkpoint-tamper.service"];
-      };
     }
   ];
+  initrdGraph = failClosedSystem.config.system.build.initrdDeploymentBundle.nativeTransaction.graph;
   barrier =
-    failClosedSystem.config.boot.initrd.systemd.services.aos-ability-initrd-handoff-barrier;
+    (builtins.head (builtins.filter
+      (node: builtins.elem "boot-preparations.aos-ability-initrd-handoff-barrier" node.identity)
+      (builtins.attrValues initrdGraph.nodes))).input;
 in
   assert lib.all
-  (unit: builtins.elem unit barrier.requires && builtins.elem unit barrier.after)
+  (unit: builtins.elem unit barrier.dependencies.requires && builtins.elem unit barrier.dependencies.after)
   [
     "aos-ability-initrd-controller.service"
-    "aos-ability-checkpoint-tamper.service"
+    "aos-ability-journal-tamper.service"
   ]; {
     name = "ability-initrd-handoff-fail-closed";
     timeout = 300;
@@ -74,9 +82,9 @@ in
         deadline = time.monotonic() + 60
         transcript = ""
         tamper_marker = (
-            "aos-ability-checkpoint-tamper: replaced released checkpoint"
+            "aos-ability-journal-tamper: corrupted completed journal"
         )
-        rejection_marker = "decoding preserved initrd stage checkpoint"
+        rejection_marker = "header digest mismatch"
         barrier_failure_marker = (
             "Failed to start Authenticate released initrd ability ownership"
         )

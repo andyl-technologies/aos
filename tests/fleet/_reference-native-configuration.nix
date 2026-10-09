@@ -9,6 +9,11 @@
   mainService = effects.serviceManagement.operations.realize.effects.nginx.outputs.resource;
   secondaryService = effects.serviceManagement.operations.realize.effects."runtime-services.nginx-secondary".outputs.resource;
 in {
+  # This fixture realizes the reference service matrix before the crash test.
+  # Keep its controller budget aligned with the fleet's six-hundred-second
+  # boot budget, including evaluation on a busy source-build host.
+  aos.services."control-plane.aos-activate".lifecycle.start_timeout_millis = lib.mkForce 600000;
+
   aos.services."runtime-services.nginx-main".enable = lib.mkForce false;
   aos.services.nginx = {
     enable = true;
@@ -55,9 +60,19 @@ in {
         path = "/var/lib/aos/ability-reference/nginx-secondary.conf";
         mode = "0444";
         content = ''
+          # The standalone reference daemon uses its fixture's root identity;
+          # the main package daemon has a manager-owned ephemeral identity.
+          user root root;
+          error_log stderr;
+          pid /var/lib/aos/ability-reference/nginx-secondary/nginx.pid;
           events { worker_connections 128; }
           http {
             access_log off;
+            client_body_temp_path client_body;
+            proxy_temp_path proxy;
+            fastcgi_temp_path fastcgi;
+            uwsgi_temp_path uwsgi;
+            scgi_temp_path scgi;
             server {
               listen 18082;
               server_name gamma.example;
