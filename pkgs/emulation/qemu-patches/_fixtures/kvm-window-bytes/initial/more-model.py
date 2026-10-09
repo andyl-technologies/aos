@@ -366,22 +366,10 @@ def main():
         function(kvm, 'kvm_crucible_dispatch_original_response', 'int'),
         function(clock, 'userspace_dispatch_return', 'bool'),
         function(clock, 'kvm_crucible_userspace_after_dispatch', 'bool'),
-        clock[clock.index('/* This optional original-response service'):
-              clock.index('CrucibleKvmInitialResponseInfo *qmp_x_crucible_kvm_initial_response(')],
+        clock[clock.index('/* This optional original-response service'):],
     ])
     body = output / 'response.c'
-    # This original More fixture keeps the first-response/window profile off.
-    # The distinct initial model exercises its genuine original-owner validator.
-    initial_disabled = r'''
-static CPUState *kvm_crucible_window_initial_response_owner_locked(
-    KVMState *state, uint32_t row, uint64_t generation, uint64_t invocation)
-{
-    assert(!state->crucible_window_configured && !original_service.initial_return);
-    assert(false && "initial-response callback reached the disabled More fixture");
-    return NULL;
-}
-'''
-    body.write_text(generated + '\n' + plumbing + '\n' + initial_disabled + '\n' + functions + TESTS)
+    body.write_text(generated + '\n' + plumbing + '\n' + functions + TESTS)
     includes = old_output / 'include'
     executable = output / 'response'
     subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror',

@@ -39,8 +39,11 @@ assert "entry->uncertain_effects = true;" in callback
 assert "entry->uncertain_effects = false;" not in callback
 
 handler = function(caller, "int kvm_crucible_dispatch_original_response(")
-assert handler.count("kvm_handle_io(") == 1
-assert handler.count("address_space_rw(") == 1
+# Retain the original mapped-exit branch assertions separately from the
+# canonical private-byte branch, whose actual dispatcher has its own proof.
+legacy_handler = handler[handler.index("switch (run->exit_reason)"):]
+assert legacy_handler.count("kvm_handle_io(") == 1
+assert legacy_handler.count("address_space_rw(") == 1
 assert "MemTxAttrs attributes" in handler
 assert "== MEMTX_OK ? 0 : -EIO" in handler
 command = function(clock, "CrucibleKvmResponseServiceInfo *qmp_x_crucible_kvm_response_service(")

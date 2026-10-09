@@ -228,6 +228,7 @@ halt/wakeup, pending I/O, exact output membership, disconnect containment and
 fresh-handle architectural restoration. Missing `/dev/kvm` is an operational
 failure, never a passing native conformance result. AArch64 requires a separate
 native AArch64 machine and its measured qualification identity.
+
 ## Original native RUN return custody (stage six)
 
 The separate `linux-controller-run-return-stage6` source variant adds the private
@@ -280,3 +281,98 @@ The current machine has no `/dev/kvm`; neither ISA has native hardware or comple
 profile qualification. The upcoming atomic QEMU window must bind these original
 receipts to its fixed owner roster, admitted input cut and retained prefix ledger
 before normal ceiling interruption can become source-owned reconciliation.
+
+## Kernel-owned external response bytes
+
+The separate stage7 source component adds immutable pre-vCPU capability
+`KVM_CAP_CRUCIBLE_RESPONSE_BYTES_V1` (`0xa02a`) and vCPU ioctl `0xd8`, with a
+version-one 4,264-byte packet and bounded 4,096-byte data area. It requires the
+controller clock, original completion and RUN-return components. The actual
+constructor reserves its accounted private capsule before architecture creation;
+constructor failures and native destruction release it. Disabled VMs allocate
+no capsule and retain the previous behavior.
+
+Native x86 MMIO/PIO and ARM MMIO external producers freeze original geometry and
+write bytes before mapped publication. A one-step request supplies exact original
+invocation, sequence, revision, clock generation and geometry; read input is
+frozen under the original vCPU mutex before the actual callback. Those consumers
+use private input instead of mutable shared buffers. A genuine More producer
+replaces only the current fragment. Exact cached requests recover the original
+result without another callback after copyout failure; different bytes under the
+same operation identifier are rejected. This is a bounded current-fragment and
+last-operation policy, so the host must retain older requests/results and custody
+before admitting a newer Step. The old completion Step refuses when the new
+bytes capability is enabled; its disabled behavior and all stages1–6 UAPI bytes
+remain unchanged.
+
+The standalone `linux-controller-response-bytes-stage7-check` compiles native
+x86/AArch64 source objects and the actual byte journal/producers/consumers with
+explicit native plumbing models. A held pthread tests both caller-input and
+shared-map replacement after freezing. Twenty-one compiler-success assertion
+mutations cover byte substitution, original retry, finite counters and native
+clock/owner admission; the earlier 23 controls remain enabled. The complete
+source variant is separate from the host kernel and is not installed or booted
+by these checks.
+
+No `/dev/kvm` is available on this machine. Native hardware, in-kernel MMIO data
+flow, other device/DMA/input/output writers, IRQ/timer closure and architectural
+preservation remain unqualified. ARM's mapped diagnostic trace address is not
+trusted provenance. Neither these source checks nor this capability issues
+common Ready or exact continuation authority.
+
+## Original KVM windows and canonical response caller
+
+The opt-in QEMU window fixes the native CPU roster before vCPU creation and
+reserves finite original RUN-return rows before allowing native entry. Begin,
+Close and Query bind the original window and kernel clock generation; changed
+generation or uncertain native effects remain Unknown. Original return Query
+and ACK require actual stopped native owners. The CPU lifetime fence runs before
+architecture destruction, mapping release or FD parking, retaining historical
+original receipt and callback pointers. Original initial-response results belong
+to each RUN row and remain recoverable after later More/Done transitions.
+
+The independently opted-in canonical-byte caller requires the stage-seven
+capability and exact packet geometry. It privately retains native producer
+geometry and write bytes before servicing the original paused callback; reads
+populate the owned response buffer. STEP submits that frozen buffer to the
+completion-only ioctl. The last exact request/result survives copy failure and
+retries without another handler invocation. More replaces only the current
+fragment. Native uncertainty and opacity remain sticky after reconciliation.
+The public observation distinguishes native Query, known native result, and an
+uncertain original-request echo; an echo is not completion evidence.
+
+Both source components preserve the old clock/QAPI contracts and default
+unconfigured paths. Their complete-profile, device, input and output flags
+remain false. They do not grant Ready, backend capture or quantum execution
+permission. The common installed runtime must still bind original grants and
+payload custody to qualified whole-device/interrupt/DMA timing and state roots.
+This machine has no `/dev/kvm`; compiled two-ISA emulators, extracted production
+functions and adversarial models are source/component evidence. On this x86
+host, the AArch64 emulator exercises its KVM stub. Native kernel architecture
+objects are checked separately for both ISAs; hardware execution is unqualified.
+
+Mandatory QEMU source fixtures reconstruct bounded native files from the pinned
+Linux archive and exact ordered stage-one through stage-seven patches. A retained
+stage-six source cut feeds original return/window proofs, while the final patched
+tree feeds canonical-byte proofs. Neither source cut is raw upstream source.
+The independent stage-seven kernel check preserves its native object and mutation
+acceptance. Kernel and QEMU source variants are not installed on the host.
+
+The current atomic source is commit
+`25df9f4e6896f40eb49958ca317be1429195808f`, tree
+`41e878a0ce9c0073bb07b04a8e63a4b04c40ddf7`. Its patch SHA256 is
+`292419b667608acfb99f7b979ae2e230f35fe9a5f45fceb892ad1255b7f565a1`
+and bundle SHA256 is
+`19b82eea8b04b0aa08321e253d8fbe4ffcdecd27e3973d93bfaf77fcc993bc90`.
+The mandatory regeneration gate passes at
+`695kjxrkkan7bg0qnmdgqkfwwy7r2lwz-crucible-phase2-qemu-atomic-patch-regeneration-0`,
+including the complete 3,770-task two-architecture build and existing and new
+source controls. The independently built kernel check passes at
+`bz7s358bnnzdkl7589bjfk0v6b8sgmgn-linux-controller-response-bytes-stage7-check-7.2.3`.
+
+An initial regression attempt exposed a missing production-helper extraction
+in the legacy RR barrier fixture. The corrected fixture supplies that helper
+with explicit generation zero for its legacy-only context; all existing
+assertions remain enabled. The failed attempt remains local evidence. This
+fixture correction changes no production code. Fresh complete suite ABI and
+license checks remain pending for this source stack.

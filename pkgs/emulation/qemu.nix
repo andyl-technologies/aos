@@ -6,6 +6,7 @@
   gnumake,
   bash,
   perl,
+  patch,
   pkg-config,
   meson,
   ninja,
@@ -39,6 +40,7 @@
   iproute2 ? null,
   kmod ? null,
   linux ? null,
+  linuxSource ? null,
   sed ? null,
   util-linux ? null,
   stdenv,
@@ -119,6 +121,10 @@
   # the Crucible checks and install their evidence.
   runCrucibleChecks =
     applyCruciblePatch && !fullUpstreamTestSuiteOnly && !stdenv.isCross;
+  kvmWindowByteChecks =
+    if runCrucibleChecks
+    then import ./_kvm-window-byte-checks.nix {inherit python3 patch linuxSource;}
+    else "";
   buildPython =
     if stdenv.isCross
     then buildPackages.python3
@@ -1953,6 +1959,7 @@ in
               ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-response-service}/refusal.py \
                 "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64" \
                 ${./qemu-patches/_fixtures/kvm-component-refusal.py}
+              ${kvmWindowByteChecks}
               # Use each changed translation unit's actual configured command,
               # then compare the reconstructed prior production bodies. Every
               # negative must compile and fail a native ownership assertion.

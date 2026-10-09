@@ -55,10 +55,14 @@ def main():
         # Clock closure also appears in the earlier completion namespace.
         # Mutate only this independently owned original-response component.
         marker = '/* This optional original-response service'
-        prefix, service = original.split(marker, 1)
+        prefix, response_tail = original.split(marker, 1)
+        service, initial = response_tail.split(
+            'CrucibleKvmInitialResponseInfo *qmp_x_crucible_kvm_initial_response(', 1,
+        )
         if service.count(before) != 1:
             raise ValueError('ambiguous actual source mutation: ' + name)
-        changed = prefix + marker + service.replace(before, after)
+        changed = (prefix + marker + service.replace(before, after) +
+                   'CrucibleKvmInitialResponseInfo *qmp_x_crucible_kvm_initial_response(' + initial)
         case = output / name
         candidate = case / 'source'
         candidate.mkdir(parents=True, exist_ok=True)
@@ -77,7 +81,9 @@ def main():
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=45,
         )
         (case / 'result.log').write_text(result.stdout)
-        if result.returncode == 0 or not (case / 'proof/response').is_file():
+        if (result.returncode == 0 or not (case / 'proof/response').is_file()
+                or 'died with <Signals.SIGABRT: 6>' not in result.stdout
+                or 'Assertion' not in result.stdout):
             raise AssertionError('compiled source mutation not rejected: ' + name)
         print('Compiled original response defect rejected:', name)
     print(f'All {len(MUTATIONS)} caller custody mutants rejected; no native qualification')

@@ -38,6 +38,10 @@ The atomic integration patch creates these QEMU source files:
 | `util/crucible-timer-selection.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `accel/kvm/crucible-clock.c` | GPL-2.0-only | Explicit SPDX identifier |
 | `include/system/crucible-kvm-clock.h` | GPL-2.0-only | Explicit SPDX identifier |
+| `accel/kvm/crucible-window.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `include/system/crucible-kvm-window.h` | GPL-2.0-only | Explicit SPDX identifier |
+| `accel/kvm/crucible-response-bytes.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `include/system/crucible-kvm-response-bytes.h` | GPL-2.0-only | Explicit SPDX identifier |
 | `plugins/crucible-fault.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-fault-memory.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-fault-node.c` | GPL-2.0-or-later | Explicit SPDX identifier |

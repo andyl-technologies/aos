@@ -228,7 +228,11 @@ def main():
     # Give the actual variadic boundary a fixture namespace; the only native
     # effect substitution is the explicit counted Linux syscall below.
     ioctl = ioctl.replace("int kvm_vm_ioctl(", "int lifetime_vm_ioctl(", 1)
+    # The original response profile leaves the atomic-window component off;
+    # its actual syscall predicate is retained instead of bypassed by a stub.
+    window = (source / "accel/kvm/crucible-window.c").read_text()
     functions = "\n\n".join([
+        model.function(window, "kvm_crucible_window_allow_clock_ioctl", "bool"),
         "#define ioctl counted_clock_ioctl\n" + ioctl + "\n#undef ioctl",
         model.function(clock, "clock_capability", "uint32_t"),
         model.function(clock, "clock_components", "uint32_t"),

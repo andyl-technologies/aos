@@ -44,13 +44,13 @@ def verify_refused_kernel_edition(executable):
     """Refuse an unsupported edition before reaching actual kernel initialization."""
     result = subprocess.run(
         [executable, "-machine", "none", "-accel",
-         "kvm,x-crucible-clock-experiment=on,x-crucible-clock-kernel-edition=2",
+         "kvm,x-crucible-clock-experiment=on,x-crucible-clock-kernel-edition=4",
          "-S", "-nodefaults", "-display", "none"],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         timeout=10, check=False,
     )
     assert result.returncode != 0
-    assert b"kernel edition must be 1 or 3" in result.stderr, result.stderr.decode()
+    assert b"kernel edition must be 1, ARM 2 or x86 3" in result.stderr, result.stderr.decode()
 
 
 def observe_unavailable_native_device(executable):

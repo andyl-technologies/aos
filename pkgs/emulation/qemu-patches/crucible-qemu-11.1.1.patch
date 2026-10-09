@@ -1,4 +1,4 @@
-From c1ca2f5d3f6593cc5620de25a0f39d3797229750 Mon Sep 17 00:00:00 2001
+From 25df9f4e6896f40eb49958ca317be1429195808f Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0700
 Subject: [PATCH] Integrate deterministic execution and validated TSC source
@@ -299,6 +299,33 @@ checks do not qualify RootSeal, a successful execution epoch, complete input
 or output closure, Ready, capture or fork. Ordinary disabled paths retain
 existing behavior. Full registered-package qualification is separate.
 
+Retain finite original KVM service windows and canonical response bytes.
+
+Keep original CPU work out of ordinary drain paths. Bind the retained window,
+paused owner, callback generation, exit geometry and exact original response
+through Query, completion and acknowledgment. Interrupted or failed kernel
+reentry preserves sticky uncertainty; no callback is redispatched.
+
+Preserve all existing native construction, IRQ and endpoint guards and the
+legacy KVM control encodings. New component namespaces refuse stopped TCG.
+Four new native implementation files carry explicit GPL-2.0-only notices.
+Kernel response-stage inputs remain separate versioned source components.
+
+Configured default two-ISA builds, native unit tests, existing source proofs
+and compiled adverse controls pass against the reviewed composition. These
+components do not establish Ready, complete device or input/output closure,
+quantum execution, native snapshots or hardware qualification. Live KVM
+qualification remains outstanding on this machine without /dev/kvm.
+
+Keep the existing RR/Sim barrier extraction linked to its original producer.
+
+Extract the actual native-window work guard alongside queue_work_on_cpu.
+The legacy-only fixture retains an explicitly disabled window generation and
+all original FIFO, BQL, timer, stop and healthy 8-to-3 cycle assertions.
+Configured compilation and execution of nineteen existing source fixtures
+pass; all five barrier defect controls compile and fail native assertions.
+No production function, per-file license or qualification flag is changed.
+
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
 diff --git a/MAINTAINERS b/MAINTAINERS
@@ -419,10 +446,10 @@ index 9176665202d2ba7613911882f4bfffcf7e6f92b2..37da92cd4affa94060db893faf85e263
      AccelState *accel = ms->accelerator;
 diff --git a/accel/kvm/crucible-clock.c b/accel/kvm/crucible-clock.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..6149810f06fa56f281de3920257dfbc0373edb14
+index 0000000000000000000000000000000000000000..cca7ffb0018b71482bd538e7b93018a7829781a6
 --- /dev/null
 +++ b/accel/kvm/crucible-clock.c
-@@ -0,0 +1,1233 @@
+@@ -0,0 +1,1470 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/* Experimental native clock component. Kernel counter coverage is incomplete;
 + * these controls cannot qualify timer/IRQ/device custody or a runnable CNP node.
@@ -434,6 +461,7 @@ index 0000000000000000000000000000000000000000..6149810f06fa56f281de3920257dfbc0
 +#include "system/kvm.h"
 +#include "system/kvm_int.h"
 +#include "system/crucible-kvm-clock.h"
++#include "system/crucible-kvm-window.h"
 +#include "system/runstate.h"
 +#include "system/system.h"
 +#include "system/cpus.h"
@@ -446,12 +474,18 @@ index 0000000000000000000000000000000000000000..6149810f06fa56f281de3920257dfbc0
 +
 +static uint32_t clock_capability(const KVMState *state)
 +{
++    if (state->crucible_clock_kernel_edition == 2) {
++        return KVM_CAP_CRUCIBLE_CLOCK_V2;
++    }
 +    return state->crucible_clock_kernel_edition == 3 ?
 +        KVM_CAP_CRUCIBLE_CLOCK_V3 : KVM_CAP_CRUCIBLE_CLOCK_V1;
 +}
 +
 +static uint32_t clock_components(const KVMState *state)
 +{
++    if (state->crucible_clock_kernel_edition == 2) {
++        return QEMU_CRUCIBLE_CLOCK_ARM_COMPONENTS;
++    }
 +    return state->crucible_clock_kernel_edition == 3 ?
 +        QEMU_CRUCIBLE_CLOCK_V3_COMPONENTS : QEMU_CRUCIBLE_CLOCK_COMPONENTS;
 +}
@@ -834,6 +868,9 @@ index 0000000000000000000000000000000000000000..6149810f06fa56f281de3920257dfbc0
 +    entry = userspace_entry_locked(state, cpu);
 +    available = UINT64_MAX - state->crucible_userspace_revision;
 +    accepted = !state->crucible_userspace_faulted && entry &&
++        (!state->crucible_window_configured ||
++         qatomic_load_acquire(&state->crucible_window_phase) ==
++         CRUCIBLE_KVM_WINDOW_RUNNING) &&
 +        (!state->crucible_response_service_configured ||
 +         !qatomic_load_acquire(&state->crucible_response_service_active)) &&
 +        available >= state->crucible_userspace_reserved_revisions &&
@@ -867,7 +904,10 @@ index 0000000000000000000000000000000000000000..6149810f06fa56f281de3920257dfbc0
 +    qemu_mutex_lock(&state->crucible_userspace_lock);
 +    entry = userspace_entry_locked(state, cpu);
 +    accepted = entry && entry->reserved_revisions == 2 &&
-+        userspace_run_return(entry, result, cpu->kvm_run->exit_reason);
++        userspace_run_return(entry, result,
++            state->crucible_response_bytes_configured ?
++            kvm_crucible_response_bytes_exit_reason(state, cpu) :
++            cpu->kvm_run->exit_reason);
 +    if (accepted) {
 +        entry->reserved_revisions--;
 +        state->crucible_userspace_reserved_revisions--;
@@ -1026,9 +1066,14 @@ index 0000000000000000000000000000000000000000..6149810f06fa56f281de3920257dfbc0
 +                                CrucibleKvmUserspaceExit *entry, bool retain)
 +{
 +    struct kvm_run *run = cpu->kvm_run;
-+    CrucibleKvmResponseGeometry value = { .reason = run->exit_reason };
++    CrucibleKvmResponseGeometry value = { 0 };
 +    CrucibleKvmResponseGeometry *original = &entry->response;
 +    const uint8_t *bytes;
++
++    if (state->crucible_response_bytes_configured) {
++        return kvm_crucible_response_bytes_geometry(state, cpu, entry, retain);
++    }
++    value.reason = run->exit_reason;
 +
 +    if (value.reason == KVM_EXIT_MMIO) {
 +        value.address = run->mmio.phys_addr;
@@ -1179,6 +1224,11 @@ index 0000000000000000000000000000000000000000..6149810f06fa56f281de3920257dfbc0
 +    if (!original_cpu || !original_cpu->created ||
 +        vcpu_index >= state->crucible_userspace_capacity) {
 +        error_setg(errp, "completion-only requires the original created vCPU");
++        return NULL;
++    }
++    if (state->crucible_response_bytes_configured &&
++        operation != CRUCIBLE_KVM_COMPLETION_OPERATION_QUERY) {
++        error_setg(errp, "canonical response bytes require their original typed namespace");
 +        return NULL;
 +    }
 +    if (operation == CRUCIBLE_KVM_COMPLETION_OPERATION_DISPATCH) {
@@ -1439,8 +1489,14 @@ index 0000000000000000000000000000000000000000..6149810f06fa56f281de3920257dfbc0
 +        /* Preserve attributes from this original actual KVM_RUN/post_run.
 +         * A subsequent kernel More fragment is part of that same instruction;
 +         * its paused handler must not invoke arch_post_run a second time. */
-+        service->attributes = attributes;
-+        service->attributes_known = true;
++        if (state->crucible_window_configured &&
++            !completion_geometry(state, cpu, entry, true)) {
++            entry->uncertain_effects = true;
++            accepted = false;
++        } else {
++            service->attributes = attributes;
++            service->attributes_known = true;
++        }
 +    }
 +    if (!accepted) {
 +        state->crucible_userspace_faulted = true;
@@ -1470,7 +1526,11 @@ index 0000000000000000000000000000000000000000..6149810f06fa56f281de3920257dfbc0
 +        entry->exit_sequence != exit_sequence ||
 +        entry->phase != CRUCIBLE_KVM_USERSPACE_HANDLING ||
 +        entry->reserved_revisions != 1 || entry->uncertain_effects ||
-+        entry->opaque_effects || !completion_geometry(state, cpu, entry, false)) {
++        entry->opaque_effects || !completion_geometry(state, cpu, entry, false) ||
++        (service->initial_return &&
++         kvm_crucible_window_initial_response_owner_locked(
++             state, service->original_record, service->original_generation,
++             service->original_invocation) != cpu)) {
 +        goto unknown;
 +    }
 +    attributes = service->attributes;
@@ -1564,7 +1624,8 @@ index 0000000000000000000000000000000000000000..6149810f06fa56f281de3920257dfbc0
 +        error_setg(errp, "response service original roster is unavailable");
 +        goto refused;
 +    }
-+    retry = service->issued && service->completion_id == completion_id &&
++    retry = service->issued && !service->initial_return &&
++        service->completion_id == completion_id &&
 +        service->exit_sequence == exit_sequence;
 +    if (operation == CRUCIBLE_KVM_RESPONSE_SERVICE_OPERATION_SUBMIT && !retry) {
 +        if (state->crucible_userspace_faulted ||
@@ -1598,6 +1659,10 @@ index 0000000000000000000000000000000000000000..6149810f06fa56f281de3920257dfbc0
 +        service->service_id++;
 +        service->completion_id = completion_id;
 +        service->exit_sequence = exit_sequence;
++        service->initial_return = false;
++        service->original_record = 0;
++        service->original_generation = 0;
++        service->original_invocation = 0;
 +        service->issued = true;
 +        service->completed = false;
 +        service->collected = false;
@@ -1656,8 +1721,1915 @@ index 0000000000000000000000000000000000000000..6149810f06fa56f281de3920257dfbc0
 +    g_free(info);
 +    return NULL;
 +}
++
++
++CrucibleKvmInitialResponseInfo *qmp_x_crucible_kvm_initial_response(
++    CrucibleKvmInitialResponseOperation operation, uint32_t record_index,
++    uint64_t generation, uint64_t expected_invocation, Error **errp)
++{
++    struct kvm_crucible_clock clock = { .operation = KVM_CRUCIBLE_CLOCK_QUERY };
++    KVMState *state = kvm_state;
++    CrucibleKvmUserspaceExit *entry;
++    CrucibleKvmOriginalReturn *record;
++    CrucibleKvmInitialResponseJournal *journal;
++    CrucibleKvmResponseService *service;
++    CrucibleKvmInitialResponseInfo *info;
++    CPUState *cpu, *original_cpu;
++    bool retry;
++    int result, callback_result;
++
++    assert(bql_locked());
++    if (!kvm_enabled() || !state->crucible_window_configured ||
++        !state->crucible_response_service_configured || !generation ||
++        !expected_invocation ||
++        (!runstate_check(RUN_STATE_PAUSED) &&
++         !runstate_check(RUN_STATE_PRELAUNCH)) ||
++        (operation != CRUCIBLE_KVM_INITIAL_RESPONSE_OPERATION_SUBMIT &&
++         operation != CRUCIBLE_KVM_INITIAL_RESPONSE_OPERATION_POLL)) {
++        error_setg(errp, "original initial response service is not admissible");
++        return NULL;
++    }
++    info = g_try_new0(CrucibleKvmInitialResponseInfo, 1);
++    if (!info) {
++        error_setg(errp, "initial response reply credit is unavailable");
++        return NULL;
++    }
++
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    record = kvm_crucible_window_initial_record_locked(
++        state, record_index, generation, expected_invocation);
++    if (!record) {
++        error_setg(errp, "initial response original return is not retained");
++        goto refused;
++    }
++    original_cpu = state->crucible_window_vcpus[record->vcpu_index].original_cpu;
++    journal = &record->initial_response;
++    if (journal->issued && journal->result_known) {
++        /* Recover the immutable original result without touching a later
++         * service, current fragment, clock generation or native slot. */
++        goto reply;
++    }
++    entry = userspace_entry_locked(state, original_cpu);
++    service = response_service_locked(state, original_cpu);
++    if (!entry || !service || !original_cpu->created ||
++        !original_cpu->stopped || original_cpu->unplug ||
++        original_cpu->crucible_native_window_run) {
++        error_setg(errp, "initial response original CPU custody is unavailable");
++        goto refused;
++    }
++    /* The selected CPU may own an active enrolled slot, which is not an idle
++     * cut. Every other original CPU must retain its actual stopped cut. */
++    CPU_FOREACH(cpu) {
++        if (cpu != original_cpu && !qemu_cpu_native_window_stopped(cpu)) {
++            error_setg(errp, "initial response lost another original CPU stop");
++            goto refused;
++        }
++    }
++    retry = journal->issued;
++    if (retry && (!service->issued || !service->initial_return ||
++        service->original_record != record_index ||
++        service->original_generation != generation ||
++        service->original_invocation != expected_invocation ||
++        service->service_id != journal->service_id ||
++        service->exit_sequence != journal->exit_sequence)) {
++        state->crucible_userspace_faulted = true;
++        entry->uncertain_effects = true;
++        error_setg(errp, "initial response original result custody is unavailable");
++        goto refused;
++    }
++    if (operation == CRUCIBLE_KVM_INITIAL_RESPONSE_OPERATION_SUBMIT && !retry) {
++        if (kvm_crucible_window_initial_response_owner_locked(
++                state, record_index, generation, expected_invocation) != original_cpu ||
++            state->crucible_userspace_faulted ||
++            state->crucible_response_service_active ||
++            state->crucible_window_generation != generation ||
++            qatomic_load_acquire(&state->crucible_window_phase) !=
++                CRUCIBLE_KVM_WINDOW_CLOSED ||
++            !service->attributes_known || service->service_id == UINT64_MAX ||
++            entry->uncertain_effects || entry->opaque_effects ||
++            entry->phase != CRUCIBLE_KVM_USERSPACE_HANDLING ||
++            entry->reserved_revisions != 1 ||
++            !completion_geometry(state, original_cpu, entry, false)) {
++            error_setg(errp, "original initial fragment is not admissible");
++            goto refused;
++        }
++        CPU_FOREACH(cpu) {
++            if (!qemu_cpu_native_window_stopped(cpu)) {
++                error_setg(errp, "initial response awaits the original stopped roster");
++                goto refused;
++            }
++        }
++        clock.version = state->crucible_clock_kernel_edition;
++        result = clock_control(state, &clock);
++        if (result < 0 || clock.window_generation != generation ||
++            clock.active || clock.run_owners || !clock.close_acknowledged) {
++            error_setg(errp, "initial response requires its original closed clock");
++            goto refused;
++        }
++        result = qemu_cpu_paused_service_submit(
++            original_cpu, entry->kernel_vcpu_id, service->service_id + 1,
++            entry->exit_sequence);
++        if (result < 0) {
++            error_setg(errp, "initial response original CPU slot admission refused");
++            goto refused;
++        }
++
++        /* BQL excludes enrolled dispatch until this original private journal
++         * and global closed-clock/RUN hold are published. No More is invented. */
++        service->service_id++;
++        service->initial_return = true;
++        service->original_record = record_index;
++        service->original_generation = generation;
++        service->original_invocation = expected_invocation;
++        service->completion_id = 0;
++        service->exit_sequence = entry->exit_sequence;
++        service->issued = true;
++        service->executing = false;
++        service->completed = false;
++        service->collected = false;
++        service->result = 0;
++        *journal = (CrucibleKvmInitialResponseJournal) {
++            .service_id = service->service_id,
++            .exit_sequence = service->exit_sequence,
++            .issued = true,
++        };
++        qatomic_store_release(&state->crucible_response_service_active, true);
++        retry = true;
++    }
++    if (!retry) {
++        error_setg(errp, "initial response poll changed the original return");
++        goto refused;
++    }
++    if (operation == CRUCIBLE_KVM_INITIAL_RESPONSE_OPERATION_POLL) {
++        result = qemu_cpu_paused_service_collect(
++            original_cpu, entry->kernel_vcpu_id, service->service_id,
++            service->exit_sequence, &callback_result);
++        if (result == 0) {
++            if (!service->completed || callback_result != service->result) {
++                state->crucible_userspace_faulted = true;
++                entry->uncertain_effects = true;
++                error_setg(errp, "initial response result custody conflicts");
++                goto refused;
++            }
++            if (!service->collected) {
++                service->collected = true;
++                /* The lifetime row owns the exact outcome before another
++                 * Completion/More can reuse this per-CPU service slot. */
++                journal->result_known = true;
++                if (callback_result >= 0) {
++                    qatomic_store_release(&state->crucible_response_service_active,
++                                          false);
++                }
++            }
++        } else if (result != -EAGAIN) {
++            error_setg(errp, "initial response original CPU slot is unavailable");
++            goto refused;
++        }
++    }
++    if (service->completed) {
++        journal->completed = true;
++        journal->result = service->result;
++        journal->uncertain_effects = entry->uncertain_effects;
++        journal->opaque_effects = entry->opaque_effects;
++    }
++
++reply:
++    info->schema_version = 1;
++    info->record_index = record_index;
++    info->generation = generation;
++    info->expected_invocation = expected_invocation;
++    info->vcpu_index = original_cpu->cpu_index;
++    info->native_vcpu_id = record->receipt.native_vcpu_id;
++    info->exit_sequence = journal->exit_sequence;
++    info->service_id = journal->service_id;
++    info->submitted = journal->issued;
++    info->completed = journal->completed;
++    info->result_known = journal->result_known;
++    info->callback_result = journal->completed ? journal->result : 0;
++    info->uncertain_effects = journal->uncertain_effects;
++    info->opaque_effects = journal->opaque_effects;
++    info->device_closure = false;
++    info->input_custody = false;
++    info->output_custody = false;
++    info->profile_qualified = false;
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    return info;
++
++refused:
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    g_free(info);
++    return NULL;
++}
+diff --git a/accel/kvm/crucible-response-bytes.c b/accel/kvm/crucible-response-bytes.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..599ac32656c5368f7cd68b89efd8f757d2af5f9e
+--- /dev/null
++++ b/accel/kvm/crucible-response-bytes.c
+@@ -0,0 +1,700 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Canonical external response bytes. Device/DMA/input/output closure is absent;
++ * neither compatibility nor these original journals qualify a runnable node.
++ */
++#include "qemu/osdep.h"
++#include "qemu/error-report.h"
++#include "qemu/main-loop.h"
++#include "qapi/error.h"
++#include "qapi/qapi-commands-run-state.h"
++#include "system/kvm.h"
++#include "system/kvm_int.h"
++#include "system/crucible-kvm-response-bytes.h"
++#include "system/cpus.h"
++#include "system/runstate.h"
++#include "system/system.h"
++#include "hw/core/cpu.h"
++
++G_STATIC_ASSERT(sizeof(struct kvm_crucible_response_bytes) == 4264);
++G_STATIC_ASSERT(offsetof(struct kvm_crucible_response_bytes, data) == 168);
++
++static bool response_bytes_source_id(const char *value)
++{
++    unsigned index;
++
++    if (!value || strlen(value) != 64) {
++        return false;
++    }
++    for (index = 0; index < 64; index++) {
++        if ((value[index] < '0' || value[index] > '9') &&
++            (value[index] < 'a' || value[index] > 'f')) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static const char *response_bytes_build_id(void)
++{
++#ifdef QEMU_CRUCIBLE_BUILD_ID
++    return QEMU_CRUCIBLE_BUILD_ID;
++#else
++    return NULL;
++#endif
++}
++
++static const char *response_bytes_source_hash(void)
++{
++#ifdef QEMU_CRUCIBLE_ATOMIC_PATCH_HASH
++    return QEMU_CRUCIBLE_ATOMIC_PATCH_HASH;
++#else
++    return NULL;
++#endif
++}
++
++int kvm_crucible_response_bytes_configure(KVMState *state)
++{
++    struct kvm_enable_cap cap = { .cap = KVM_CAP_CRUCIBLE_RESPONSE_BYTES_V1 };
++    CrucibleKvmResponseBytesJournal *journals;
++    int result;
++
++    if (!state->crucible_response_bytes_experiment) {
++        return 0;
++    }
++    if (autostart || !state->crucible_clock_configured ||
++        !state->crucible_userspace_configured ||
++        !state->crucible_completion_configured ||
++        !state->crucible_response_service_configured ||
++        !state->crucible_window_configured ||
++        (state->crucible_clock_kernel_edition != 2 && state->crucible_clock_kernel_edition != 3) ||
++        state->crucible_response_bytes_configured ||
++        !state->crucible_userspace_capacity ||
++        state->crucible_userspace_capacity > QEMU_CRUCIBLE_RESPONSE_BYTES_MAX_VCPUS ||
++        !response_bytes_source_id(response_bytes_build_id()) ||
++        !response_bytes_source_id(response_bytes_source_hash()) ||
++        kvm_vm_check_extension(state, KVM_CAP_CRUCIBLE_RESPONSE_BYTES_V1) != 1) {
++        error_report("canonical response bytes require the complete stopped original "
++                     "component roster, bounded credits, compatible kernel ABI "
++                     "and declared userspace identities");
++        return -ENOTSUP;
++    }
++    journals = g_try_new0(CrucibleKvmResponseBytesJournal,
++                         state->crucible_userspace_capacity);
++    if (!journals) {
++        return -ENOMEM;
++    }
++    result = kvm_vm_ioctl(state, KVM_ENABLE_CAP, &cap);
++    if (result < 0) {
++        g_free(journals);
++        return result;
++    }
++    state->crucible_response_bytes = journals;
++    state->crucible_response_bytes_configured = true;
++    return 0;
++}
++
++void kvm_crucible_response_bytes_destroy(KVMState *state)
++{
++    g_free(state->crucible_response_bytes);
++    state->crucible_response_bytes = NULL;
++    state->crucible_response_bytes_configured = false;
++}
++
++/* The fixed original roster and native kernel ID are established before create;
++ * destruction is protected by the permanent original-window lifetime guard.
++ */
++static CrucibleKvmResponseBytesJournal *response_bytes_journal(KVMState *state,
++                                                              CPUState *cpu)
++{
++    CrucibleKvmUserspaceExit *entry;
++
++    if (!state->crucible_response_bytes_configured || cpu->cpu_index < 0 ||
++        (uint32_t)cpu->cpu_index >= state->crucible_userspace_capacity) {
++        return NULL;
++    }
++    entry = &state->crucible_userspace_exits[cpu->cpu_index];
++    if (!entry->assigned || entry->kernel_vcpu_id != kvm_arch_vcpu_id(cpu)) {
++        return NULL;
++    }
++    return &state->crucible_response_bytes[cpu->cpu_index];
++}
++
++static bool response_bytes_packet_valid(const struct kvm_crucible_response_bytes *packet)
++{
++    uint32_t total = 0;
++    unsigned index;
++
++    if (packet->version != 1 || packet->phase > KVM_CRUCIBLE_COMPLETION_UNSUPPORTED ||
++        packet->consumed_sequence > packet->pending_sequence || (packet->flags & ~3U) ||
++        packet->data_length > KVM_CRUCIBLE_RESPONSE_BYTES_MAX) {
++        return false;
++    }
++    for (index = 0; index < ARRAY_SIZE(packet->reserved); index++) {
++        if (packet->reserved[index]) {
++            return false;
++        }
++    }
++    for (index = packet->data_length; index < KVM_CRUCIBLE_RESPONSE_BYTES_MAX; index++) {
++        if (packet->data[index]) {
++            return false;
++        }
++    }
++    if (packet->phase != KVM_CRUCIBLE_COMPLETION_PENDING &&
++        packet->phase != KVM_CRUCIBLE_COMPLETION_MORE) {
++        return !packet->address && !packet->data_offset && !packet->reason &&
++            !packet->length && !packet->count && !packet->size &&
++            !packet->direction && !packet->data_length;
++    }
++    if (packet->reason == KVM_EXIT_MMIO) {
++        if (!packet->length || packet->length > 8 || packet->count ||
++            packet->size || packet->data_offset || packet->direction > 1) {
++            return false;
++        }
++        total = packet->length;
++    } else if (packet->reason == KVM_EXIT_IO) {
++        if (packet->length || !packet->count || packet->address > UINT16_MAX ||
++            (packet->size != 1 && packet->size != 2 && packet->size != 4) ||
++            packet->count > KVM_CRUCIBLE_RESPONSE_BYTES_MAX / packet->size ||
++            packet->direction > KVM_EXIT_IO_OUT) {
++            return false;
++        }
++        total = packet->count * packet->size;
++    } else {
++        return false;
++    }
++    return packet->data_length == (packet->direction ? total : 0);
++}
++
++static bool response_bytes_query_valid(const struct kvm_crucible_response_bytes *packet,
++                                      uint64_t invocation, uint64_t native_id)
++{
++    return response_bytes_packet_valid(packet) &&
++        packet->operation == KVM_CRUCIBLE_RESPONSE_BYTES_QUERY &&
++        !packet->operation_id && packet->expected_invocation == invocation &&
++        packet->invocation == invocation && !packet->expected_sequence &&
++        !packet->expected_revision && !packet->expected_generation &&
++        packet->native_vcpu_id == native_id;
++}
++
++static void response_bytes_retain_geometry(CrucibleKvmUserspaceExit *entry,
++                                          const struct kvm_crucible_response_bytes *packet)
++{
++    entry->response = (CrucibleKvmResponseGeometry) {
++        .reason = packet->reason, .address = packet->address,
++        .data_offset = packet->data_offset,
++        .length = packet->reason == KVM_EXIT_IO ? packet->count * packet->size : packet->length,
++        .count = packet->count, .size = packet->size, .direction = packet->direction,
++        .prepared = packet->phase == KVM_CRUCIBLE_COMPLETION_PENDING ||
++            packet->phase == KVM_CRUCIBLE_COMPLETION_MORE,
++    };
++    memcpy(entry->response.response, packet->data, packet->data_length);
++}
++
++bool kvm_crucible_response_bytes_capture_return(KVMState *state, CPUState *cpu,
++    const struct kvm_crucible_run_return *receipt)
++{
++    CrucibleKvmResponseBytesJournal *journal = response_bytes_journal(state, cpu);
++    CrucibleKvmUserspaceExit *entry;
++    struct kvm_crucible_response_bytes *packet;
++    int result;
++
++    if (!journal || !receipt->invocation || receipt->run_result < 0 ||
++        !(receipt->flags & KVM_CRUCIBLE_RUN_RETURN_RETURNED)) {
++        return false;
++    }
++    packet = &journal->scratch;
++    *packet = (struct kvm_crucible_response_bytes) {
++        .version = 1, .operation = KVM_CRUCIBLE_RESPONSE_BYTES_QUERY,
++        .expected_invocation = receipt->invocation,
++    };
++    result = kvm_vcpu_ioctl(cpu, KVM_CRUCIBLE_RESPONSE_BYTES, packet);
++    if (result < 0 || !response_bytes_query_valid(packet, receipt->invocation,
++        receipt->native_vcpu_id) || packet->flags ||
++        packet->pending_sequence != receipt->response_sequence ||
++        packet->consumed_sequence != receipt->response_consumed ||
++        packet->revision != receipt->response_revision ||
++        packet->phase != receipt->response_phase) {
++        return false;
++    }
++    entry = &state->crucible_userspace_exits[cpu->cpu_index];
++    journal->canonical = *packet;
++    journal->generation = receipt->generation_end;
++    journal->snapshot_known = true;
++    journal->handler_completed = false;
++    response_bytes_retain_geometry(entry, packet);
++    return true;
++}
++
++uint32_t kvm_crucible_response_bytes_exit_reason(KVMState *state, CPUState *cpu)
++{
++    CrucibleKvmResponseBytesJournal *journal = response_bytes_journal(state, cpu);
++
++    if (!journal || !journal->snapshot_known) {
++        return KVM_EXIT_UNKNOWN;
++    }
++    return journal->canonical.reason;
++}
++
++bool kvm_crucible_response_bytes_geometry(KVMState *state, CPUState *cpu,
++    CrucibleKvmUserspaceExit *entry, bool retain)
++{
++    CrucibleKvmResponseBytesJournal *journal = response_bytes_journal(state, cpu);
++    const struct kvm_crucible_response_bytes *packet;
++    CrucibleKvmResponseGeometry *original = &entry->response;
++    uint32_t total;
++
++    if (!journal || !journal->snapshot_known || !original->prepared) {
++        return false;
++    }
++    packet = &journal->canonical;
++    total = packet->reason == KVM_EXIT_IO ? packet->count * packet->size : packet->length;
++    if (!response_bytes_packet_valid(packet) || packet->flags ||
++        packet->native_vcpu_id != entry->kernel_vcpu_id ||
++        packet->pending_sequence != entry->exit_sequence ||
++        (packet->phase != KVM_CRUCIBLE_COMPLETION_PENDING &&
++         packet->phase != KVM_CRUCIBLE_COMPLETION_MORE) ||
++        original->reason != packet->reason || original->address != packet->address ||
++        original->data_offset != packet->data_offset || original->length != total ||
++        original->count != packet->count || original->size != packet->size ||
++        original->direction != packet->direction ||
++        (packet->direction && memcmp(original->response, packet->data, total))) {
++        return false;
++    }
++    /* Before Submit this validates a More fragment without inventing dispatch.
++     * After dispatch, the original actual handler must have produced the reply.
++     */
++    return !retain || entry->phase != CRUCIBLE_KVM_USERSPACE_PENDING ||
++        journal->handler_completed;
++}
++
++CrucibleKvmResponseGeometry *kvm_crucible_response_bytes_dispatch_geometry(
++    KVMState *state, CPUState *cpu)
++{
++    CrucibleKvmResponseBytesJournal *journal;
++    CrucibleKvmUserspaceExit *entry;
++    CrucibleKvmResponseService *service;
++    CrucibleKvmResponseGeometry *geometry = NULL;
++
++    assert(qemu_cpu_is_self(cpu) && !bql_locked());
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    journal = response_bytes_journal(state, cpu);
++    if (!journal) {
++        goto out;
++    }
++    entry = &state->crucible_userspace_exits[cpu->cpu_index];
++    service = &state->crucible_response_services[cpu->cpu_index];
++    if (state->crucible_userspace_faulted ||
++        !qatomic_load_acquire(&state->crucible_response_service_active) ||
++        !service->issued || !service->executing || service->completed ||
++        service->exit_sequence != entry->exit_sequence ||
++        journal->handler_completed || entry->phase != CRUCIBLE_KVM_USERSPACE_HANDLING ||
++        entry->uncertain_effects || entry->opaque_effects ||
++        !kvm_crucible_response_bytes_geometry(state, cpu, entry, false)) {
++        goto out;
++    }
++    geometry = &entry->response;
++out:
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    return geometry;
++}
++
++void kvm_crucible_response_bytes_dispatch_done(KVMState *state, CPUState *cpu,
++    int result)
++{
++    CrucibleKvmResponseBytesJournal *journal;
++
++    assert(qemu_cpu_is_self(cpu) && !bql_locked());
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    journal = response_bytes_journal(state, cpu);
++    if (journal) {
++        CrucibleKvmResponseService *service = &state->crucible_response_services[cpu->cpu_index];
++        CrucibleKvmUserspaceExit *entry = &state->crucible_userspace_exits[cpu->cpu_index];
++
++        if (result >= 0 && !state->crucible_userspace_faulted &&
++            qatomic_load_acquire(&state->crucible_response_service_active) &&
++            service->issued && service->executing && !service->completed &&
++            service->exit_sequence == entry->exit_sequence &&
++            entry->phase == CRUCIBLE_KVM_USERSPACE_HANDLING &&
++            kvm_crucible_response_bytes_geometry(state, cpu, entry, false)) {
++            journal->handler_completed = true;
++        } else {
++            state->crucible_userspace_faulted = true;
++            entry->uncertain_effects = true;
++        }
++    }
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++}
++
++static bool response_bytes_clock_closed(KVMState *state, uint64_t generation)
++{
++    struct kvm_crucible_clock clock = {
++        .version = state->crucible_clock_kernel_edition,
++        .operation = KVM_CRUCIBLE_CLOCK_QUERY,
++    };
++    struct kvm_enable_cap cap = {
++        .cap = state->crucible_clock_kernel_edition == 2 ?
++            KVM_CAP_CRUCIBLE_CLOCK_V2 : KVM_CAP_CRUCIBLE_CLOCK_V3,
++        .args[0] = (uintptr_t)&clock,
++    };
++    uint32_t components = state->crucible_clock_kernel_edition == 2 ?
++        QEMU_CRUCIBLE_CLOCK_ARM_COMPONENTS : QEMU_CRUCIBLE_CLOCK_V3_COMPONENTS;
++    unsigned index;
++
++    if (kvm_vm_ioctl(state, KVM_ENABLE_CAP, &cap) < 0 ||
++        clock.version != state->crucible_clock_kernel_edition ||
++        clock.coverage != components || clock.window_generation != generation ||
++        clock.active || clock.run_owners || clock.close_acknowledged != 1 ||
++        clock.current_ns > INT64_MAX || clock.flags) {
++        return false;
++    }
++    for (index = 0; index < ARRAY_SIZE(clock.reserved); index++) {
++        if (clock.reserved[index]) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static bool response_bytes_step_valid(const struct kvm_crucible_response_bytes *original,
++                                     const struct kvm_crucible_response_bytes *result,
++                                     uint64_t native_id)
++{
++    if (!response_bytes_packet_valid(result) ||
++        result->operation != KVM_CRUCIBLE_RESPONSE_BYTES_STEP ||
++        result->operation_id != original->operation_id ||
++        result->expected_invocation != original->expected_invocation ||
++        result->expected_sequence != original->expected_sequence ||
++        result->expected_revision != original->expected_revision ||
++        result->expected_generation != original->expected_generation ||
++        result->invocation != original->expected_invocation ||
++        result->native_vcpu_id != native_id || original->expected_revision > UINT64_MAX - 2) {
++        return false;
++    }
++    if (result->callback_result < 0) {
++        return result->phase == KVM_CRUCIBLE_COMPLETION_UNKNOWN &&
++            (result->flags & KVM_CRUCIBLE_COMPLETION_UNCERTAIN) &&
++            result->pending_sequence == original->expected_sequence &&
++            result->consumed_sequence < original->expected_sequence &&
++            result->revision == original->expected_revision + 1;
++    }
++    if (result->flags || result->consumed_sequence != original->expected_sequence) {
++        return false;
++    }
++    return (result->phase == KVM_CRUCIBLE_COMPLETION_DONE &&
++            result->pending_sequence == original->expected_sequence &&
++            result->revision == original->expected_revision + 1) ||
++        (result->phase == KVM_CRUCIBLE_COMPLETION_MORE &&
++         original->expected_sequence != UINT64_MAX &&
++         result->pending_sequence == original->expected_sequence + 1 &&
++         result->revision == original->expected_revision + 2);
++}
++
++/* Only verified scalar facts feed the existing More handler's original journal.
++ * This is not an old ioctl receipt, and the old mutating namespace is refused.
++ */
++static void response_bytes_project_more(CrucibleKvmUserspaceExit *entry,
++                                       const CrucibleKvmResponseBytesJournal *journal)
++{
++    const struct kvm_crucible_response_bytes *original = &journal->original_request;
++    const struct kvm_crucible_response_bytes *result = &journal->result;
++
++    entry->completion = (CrucibleKvmCompletionJournal) {
++        .original_request = {
++            .version = 1, .operation = KVM_CRUCIBLE_COMPLETION_STEP,
++            .operation_id = original->operation_id,
++            .expected_sequence = original->expected_sequence,
++        },
++        .result = {
++            .version = 1, .operation = KVM_CRUCIBLE_COMPLETION_STEP,
++            .operation_id = result->operation_id,
++            .expected_sequence = result->expected_sequence,
++            .pending_sequence = result->pending_sequence,
++            .consumed_sequence = result->consumed_sequence,
++            .revision = result->revision, .callback_result = result->callback_result,
++            .phase = result->phase, .native_vcpu_id = result->native_vcpu_id,
++            .flags = result->flags,
++        },
++        .original_exit_sequence = original->expected_sequence,
++        .resulting_exit_sequence = result->pending_sequence,
++        .resulting_consumed_sequence = result->consumed_sequence,
++        .issued = true, .known = true,
++    };
++}
++
++static void response_bytes_fill_info(CrucibleKvmResponseBytesInfo *info,
++                                    const struct kvm_crucible_response_bytes *packet,
++                                    const CrucibleKvmResponseBytesJournal *journal,
++                                    uint32_t record_index, uint32_t vcpu_index,
++                                    uint64_t generation, bool result_known,
++                                    bool uncertain, bool opaque, const KVMState *state)
++{
++    int base64_state = 0, base64_save = 0;
++    size_t written;
++
++    info->schema_version = 1;
++    info->payload_kind = !result_known ?
++        CRUCIBLE_KVM_RESPONSE_BYTES_PAYLOAD_KIND_ORIGINAL_REQUEST :
++        packet->operation == KVM_CRUCIBLE_RESPONSE_BYTES_QUERY ?
++        CRUCIBLE_KVM_RESPONSE_BYTES_PAYLOAD_KIND_NATIVE_QUERY :
++        CRUCIBLE_KVM_RESPONSE_BYTES_PAYLOAD_KIND_NATIVE_RESULT;
++    info->components = QEMU_CRUCIBLE_RESPONSE_BYTES_COMPONENTS;
++    info->kernel_capability = KVM_CAP_CRUCIBLE_RESPONSE_BYTES_V1;
++    info->native_abi_size = sizeof(*packet);
++    info->maximum_data_bytes = KVM_CRUCIBLE_RESPONSE_BYTES_MAX;
++    info->clock_edition = state->crucible_clock_kernel_edition;
++    info->clock_components = state->crucible_clock_kernel_edition == 2 ?
++        QEMU_CRUCIBLE_CLOCK_ARM_COMPONENTS : QEMU_CRUCIBLE_CLOCK_V3_COMPONENTS;
++    memcpy(info->qemu_build_id, response_bytes_build_id(), 65);
++    memcpy(info->qemu_source_hash, response_bytes_source_hash(), 65);
++    info->record_index = record_index;
++    info->vcpu_index = vcpu_index;
++    info->native_vcpu_id = packet->native_vcpu_id;
++    info->generation = generation;
++    info->invocation = packet->invocation;
++    info->operation_id = packet->operation_id;
++    info->expected_sequence = packet->expected_sequence;
++    info->expected_revision = packet->expected_revision;
++    info->pending_sequence = packet->pending_sequence;
++    info->consumed_sequence = packet->consumed_sequence;
++    info->revision = packet->revision;
++    info->native_phase = result_known ? packet->phase :
++        KVM_CRUCIBLE_COMPLETION_UNKNOWN;
++    info->callback_result = packet->callback_result;
++    info->native_errno = packet->operation == KVM_CRUCIBLE_RESPONSE_BYTES_QUERY ?
++        0 : journal->native_errno;
++    info->reason = packet->reason;
++    info->address = packet->address;
++    info->data_offset = packet->data_offset;
++    info->length = packet->length;
++    info->count = packet->count;
++    info->size = packet->size;
++    info->direction = packet->direction;
++    info->data_length = packet->data_length;
++    written = g_base64_encode_step(packet->data, packet->data_length, false,
++        info->data_base64, &base64_state, &base64_save);
++    written += g_base64_encode_close(false, info->data_base64 + written,
++        &base64_state, &base64_save);
++    info->data_base64[written] = '\0';
++    info->result_known = result_known;
++    info->uncertain_effects = uncertain;
++    info->opaque_effects = opaque;
++    info->kernel_source_qualified = false;
++    info->device_closure = false;
++    info->input_custody = false;
++    info->output_custody = false;
++    info->profile_qualified = false;
++}
++
++CrucibleKvmResponseBytesInfo *qmp_x_crucible_kvm_response_bytes(
++    CrucibleKvmResponseBytesOperation operation, uint32_t record_index,
++    uint64_t generation, uint64_t expected_invocation, uint64_t operation_id,
++    uint64_t expected_sequence, Error **errp)
++{
++    KVMState *state = kvm_state;
++    CrucibleKvmOriginalReturn *record;
++    CrucibleKvmResponseBytesJournal *journal;
++    CrucibleKvmUserspaceExit *entry;
++    CrucibleKvmResponseBytesInfo *info;
++    CPUState *cpu, *original_cpu;
++    struct kvm_crucible_response_bytes *packet;
++    uint64_t available;
++    bool retry, cached = false;
++    int result;
++
++    assert(bql_locked());
++    if (!kvm_enabled() || !state->crucible_response_bytes_configured ||
++        (!runstate_check(RUN_STATE_PAUSED) && !runstate_check(RUN_STATE_PRELAUNCH)) ||
++        !generation || !expected_invocation ||
++        (operation != CRUCIBLE_KVM_RESPONSE_BYTES_OPERATION_QUERY &&
++         operation != CRUCIBLE_KVM_RESPONSE_BYTES_OPERATION_COMPLETE) ||
++        (operation == CRUCIBLE_KVM_RESPONSE_BYTES_OPERATION_QUERY &&
++         (operation_id || expected_sequence)) ||
++        (operation == CRUCIBLE_KVM_RESPONSE_BYTES_OPERATION_COMPLETE &&
++         (!operation_id || !expected_sequence))) {
++        error_setg(errp, "canonical native response bytes are not configured/admissible");
++        return NULL;
++    }
++    /* Every predictable reply allocation precedes the original native effect.
++     * An actual result remains in the journal even if later transport fails.
++     */
++    info = g_try_new0(CrucibleKvmResponseBytesInfo, 1);
++    if (!info) {
++        error_setg(errp, "canonical response header credit is unavailable");
++        return NULL;
++    }
++    info->qemu_build_id = g_try_malloc0(65);
++    info->qemu_source_hash = g_try_malloc0(65);
++    info->data_base64 = g_try_malloc0(((KVM_CRUCIBLE_RESPONSE_BYTES_MAX + 2) / 3) * 4 + 1);
++    if (!info->qemu_build_id || !info->qemu_source_hash || !info->data_base64) {
++        error_setg(errp, "canonical response serialization credit is unavailable");
++        qapi_free_CrucibleKvmResponseBytesInfo(info);
++        return NULL;
++    }
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    record = kvm_crucible_window_initial_record_locked(state, record_index,
++        generation, expected_invocation);
++    if (!record) {
++        error_setg(errp, "canonical response original RUN receipt is unavailable");
++        goto refused;
++    }
++    original_cpu = state->crucible_window_vcpus[record->vcpu_index].original_cpu;
++    journal = response_bytes_journal(state, original_cpu);
++    if (!journal) {
++        error_setg(errp, "canonical response original CPU lifetime is unavailable");
++        goto refused;
++    }
++    entry = &state->crucible_userspace_exits[original_cpu->cpu_index];
++    retry = operation == CRUCIBLE_KVM_RESPONSE_BYTES_OPERATION_COMPLETE &&
++        journal->request_issued && journal->original_request.operation_id == operation_id;
++    if (retry) {
++        if (journal->original_record != record_index ||
++            journal->original_request.expected_invocation != expected_invocation ||
++            journal->original_request.expected_generation != generation ||
++            journal->original_request.expected_sequence != expected_sequence) {
++            error_setg(errp, "canonical response retry changed original scope");
++            goto refused;
++        }
++        if (journal->result_known) {
++            cached = true;
++            goto reply;
++        }
++    }
++    if (state->crucible_userspace_faulted && !retry) {
++        error_setg(errp, "canonical response roster has unknown effects");
++        goto refused;
++    }
++    if (qatomic_load_acquire(&state->crucible_response_service_active) ||
++        state->crucible_window_generation != generation ||
++        qatomic_load_acquire(&state->crucible_window_phase) != CRUCIBLE_KVM_WINDOW_CLOSED ||
++        !response_bytes_clock_closed(state, generation)) {
++        error_setg(errp, "canonical response requires its actual closed original clock");
++        goto refused;
++    }
++    CPU_FOREACH(cpu) {
++        if (!qemu_cpu_native_window_stopped(cpu)) {
++            error_setg(errp, "canonical response awaits actual stopped original CPU owners");
++            goto refused;
++        }
++    }
++    if (!journal->snapshot_known || journal->canonical.invocation != expected_invocation ||
++        journal->generation != generation) {
++        error_setg(errp, "canonical response current native fragment is unavailable");
++        goto refused;
++    }
++    if (operation == CRUCIBLE_KVM_RESPONSE_BYTES_OPERATION_QUERY) {
++        packet = &journal->scratch;
++        *packet = (struct kvm_crucible_response_bytes) {
++            .version = 1, .operation = KVM_CRUCIBLE_RESPONSE_BYTES_QUERY,
++            .expected_invocation = expected_invocation,
++        };
++        result = kvm_vcpu_ioctl(original_cpu, KVM_CRUCIBLE_RESPONSE_BYTES, packet);
++        if (result < 0 || !response_bytes_query_valid(packet, expected_invocation,
++            entry->kernel_vcpu_id) || memcmp(packet, &journal->canonical, sizeof(*packet))) {
++            error_setg(errp, "canonical response current native Query conflicts");
++            goto refused;
++        }
++        goto reply;
++    }
++    if (!retry) {
++        if (!journal->handler_completed || entry->phase != CRUCIBLE_KVM_USERSPACE_PENDING ||
++            entry->uncertain_effects || entry->opaque_effects ||
++            entry->reserved_revisions || entry->exit_sequence != expected_sequence ||
++            !kvm_crucible_response_bytes_geometry(state, original_cpu, entry, false) ||
++            journal->original_request.operation_id == UINT64_MAX ||
++            operation_id != journal->original_request.operation_id + 1 ||
++            expected_sequence == UINT64_MAX || journal->canonical.revision > UINT64_MAX - 2) {
++            error_setg(errp, "canonical completion requires the original collected handler reply");
++            goto refused;
++        }
++    }
++    available = UINT64_MAX - state->crucible_userspace_revision;
++    if (entry->reserved_revisions || available < state->crucible_userspace_reserved_revisions ||
++        available - state->crucible_userspace_reserved_revisions < 3) {
++        error_setg(errp, "canonical completion original revision credits are exhausted");
++        goto refused;
++    }
++    if (!retry) {
++        const struct kvm_crucible_response_bytes *canonical = &journal->canonical;
++
++        journal->original_request = (struct kvm_crucible_response_bytes) {
++            .version = 1, .operation = KVM_CRUCIBLE_RESPONSE_BYTES_STEP,
++            .operation_id = operation_id, .expected_invocation = expected_invocation,
++            .expected_sequence = expected_sequence, .expected_revision = canonical->revision,
++            .expected_generation = generation, .address = canonical->address,
++            .data_offset = canonical->data_offset, .reason = canonical->reason,
++            .length = canonical->length, .count = canonical->count,
++            .size = canonical->size, .direction = canonical->direction,
++            .data_length = canonical->direction ? 0 : entry->response.length,
++        };
++        memcpy(journal->original_request.data, entry->response.response,
++            journal->original_request.data_length);
++        journal->original_record = record_index;
++        journal->request_issued = true;
++        journal->result_known = false;
++    }
++    entry->reserved_revisions = 2;
++    state->crucible_userspace_reserved_revisions += 2;
++    state->crucible_userspace_revision++;
++    packet = &journal->scratch;
++    *packet = journal->original_request;
++    result = kvm_vcpu_ioctl(original_cpu, KVM_CRUCIBLE_RESPONSE_BYTES, packet);
++    entry->reserved_revisions--;
++    state->crucible_userspace_reserved_revisions--;
++    state->crucible_userspace_revision++;
++    if (result < 0 || !response_bytes_step_valid(&journal->original_request, packet,
++                                               entry->kernel_vcpu_id)) {
++        journal->native_errno = result < 0 ? -result : EPROTO;
++        entry->uncertain_effects = true;
++        entry->phase = CRUCIBLE_KVM_USERSPACE_UNKNOWN;
++    } else {
++        journal->result = *packet;
++        journal->result_known = true;
++        journal->native_errno = 0;
++        entry->uncertain_effects |= packet->callback_result < 0 ||
++            (packet->flags & KVM_CRUCIBLE_COMPLETION_UNCERTAIN);
++        entry->opaque_effects |=
++            (packet->flags & KVM_CRUCIBLE_COMPLETION_OPAQUE);
++        if (packet->callback_result >= 0) {
++            journal->canonical = *packet;
++            journal->canonical.operation = KVM_CRUCIBLE_RESPONSE_BYTES_QUERY;
++            journal->canonical.operation_id = 0;
++            journal->canonical.expected_sequence = 0;
++            journal->canonical.expected_revision = 0;
++            journal->canonical.expected_generation = 0;
++            entry->exit_sequence = packet->pending_sequence;
++            entry->consumed_sequence = packet->consumed_sequence;
++            entry->exit_reason = packet->reason;
++            journal->handler_completed = false;
++            response_bytes_retain_geometry(entry, &journal->canonical);
++            response_bytes_project_more(entry, journal);
++            entry->phase = entry->uncertain_effects || entry->opaque_effects ?
++                CRUCIBLE_KVM_USERSPACE_UNKNOWN :
++                packet->phase == KVM_CRUCIBLE_COMPLETION_MORE ?
++                CRUCIBLE_KVM_USERSPACE_HANDLING : CRUCIBLE_KVM_USERSPACE_READY;
++        } else {
++            entry->phase = CRUCIBLE_KVM_USERSPACE_UNKNOWN;
++        }
++    }
++    journal->uncertain_effects = entry->uncertain_effects;
++    journal->opaque_effects = entry->opaque_effects;
++    if (entry->phase != CRUCIBLE_KVM_USERSPACE_HANDLING) {
++        state->crucible_userspace_reserved_revisions--;
++        entry->reserved_revisions = 0;
++    }
++reply:
++    packet = operation == CRUCIBLE_KVM_RESPONSE_BYTES_OPERATION_QUERY ?
++        &journal->canonical : journal->result_known ?
++        &journal->result : &journal->original_request;
++    response_bytes_fill_info(info, packet, journal, record_index, original_cpu->cpu_index,
++        generation,
++        operation == CRUCIBLE_KVM_RESPONSE_BYTES_OPERATION_QUERY || journal->result_known,
++        cached ? journal->uncertain_effects : entry->uncertain_effects,
++        cached ? journal->opaque_effects : entry->opaque_effects, state);
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    return info;
++
++refused:
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    qapi_free_CrucibleKvmResponseBytesInfo(info);
++    return NULL;
++}
+diff --git a/accel/kvm/crucible-window.c b/accel/kvm/crucible-window.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..08763965c04126ca9ddd90eeb391cd7d4c4ad94b
+--- /dev/null
++++ b/accel/kvm/crucible-window.c
+@@ -0,0 +1,996 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Native window/return mechanism only. Device, DMA, ingress, publication and
++ * architectural continuation closure remain independently unqualified. */
++#include "qemu/osdep.h"
++#include "qemu/error-report.h"
++#include "qemu/main-loop.h"
++#include "qapi/error.h"
++#include "qapi/qapi-commands-run-state.h"
++#include "system/kvm_int.h"
++#include "system/crucible-kvm-window.h"
++#include "system/cpus.h"
++#include "system/runstate.h"
++#include "system/system.h"
++#include "hw/core/cpu.h"
++
++G_STATIC_ASSERT(sizeof(struct kvm_crucible_run_return) == 128);
++G_STATIC_ASSERT(offsetof(struct kvm_crucible_run_return, run_result) == 56);
++G_STATIC_ASSERT(offsetof(struct kvm_crucible_run_return, reserved) == 112);
++
++static CrucibleKvmWindowVcpu *window_vcpu_locked(KVMState *state, CPUState *cpu)
++{
++    CrucibleKvmWindowVcpu *entry;
++
++    if (cpu->cpu_index < 0 ||
++        (uint32_t)cpu->cpu_index >= state->crucible_userspace_capacity ||
++        !state->crucible_userspace_exits[cpu->cpu_index].assigned ||
++        state->crucible_userspace_exits[cpu->cpu_index].kernel_vcpu_id !=
++        kvm_arch_vcpu_id(cpu)) {
++        return NULL;
++    }
++    entry = &state->crucible_window_vcpus[cpu->cpu_index];
++    return entry->assigned && entry->original_cpu == cpu ? entry : NULL;
++}
++
++static void window_unknown_locked(KVMState *state)
++{
++    qatomic_store_release(&state->crucible_window_phase,
++                          CRUCIBLE_KVM_WINDOW_UNKNOWN);
++    state->crucible_userspace_faulted = true;
++}
++
++int kvm_crucible_window_configure(KVMState *state)
++{
++    struct kvm_enable_cap cap = { .cap = KVM_CAP_CRUCIBLE_RUN_RETURN_V1 };
++    int result;
++
++    if (!state->crucible_window_experiment) {
++        return 0;
++    }
++    if (autostart || !state->crucible_clock_configured ||
++        !state->crucible_completion_configured ||
++        !state->crucible_response_service_configured ||
++        (state->crucible_clock_kernel_edition != 2 &&
++         state->crucible_clock_kernel_edition != 3) ||
++        state->crucible_window_configured) {
++        error_report("original native windows require -S, capped kernel clock, "
++                     "completion and original response service "
++                     "before vCPU creation");
++        return -EINVAL;
++    }
++    if (kvm_vm_check_extension(state, KVM_CAP_CRUCIBLE_RUN_RETURN_V1) != 1) {
++        return -ENOTSUP;
++    }
++
++    /* Both allocations precede capability activation and autonomous resources.
++     * Lifetime credits never authorize evicting an earlier receipt. */
++    state->crucible_window_returns =
++        g_try_new0(CrucibleKvmOriginalReturn, QEMU_CRUCIBLE_WINDOW_MAX_RETURNS);
++    state->crucible_window_vcpus =
++        g_try_new0(CrucibleKvmWindowVcpu, state->crucible_userspace_capacity);
++    if (!state->crucible_window_returns || !state->crucible_window_vcpus) {
++        result = -ENOMEM;
++        goto failure;
++    }
++    result = kvm_vm_ioctl(state, KVM_ENABLE_CAP, &cap);
++    if (result < 0) {
++        goto failure;
++    }
++    state->crucible_window_configured = true;
++    state->crucible_window_phase = CRUCIBLE_KVM_WINDOW_EMPTY;
++    return 0;
++
++failure:
++    g_free(state->crucible_window_returns);
++    g_free(state->crucible_window_vcpus);
++    state->crucible_window_returns = NULL;
++    state->crucible_window_vcpus = NULL;
++    return result;
++}
++
++void kvm_crucible_window_destroy(KVMState *state)
++{
++    /* Only process teardown can release these private records. Neither a close
++     * nor a lost host reply makes an original return disposable. */
++    g_free(state->crucible_window_returns);
++    g_free(state->crucible_window_vcpus);
++    state->crucible_window_returns = NULL;
++    state->crucible_window_vcpus = NULL;
++    state->crucible_window_configured = false;
++}
++
++bool kvm_crucible_window_allow_vcpu_create(KVMState *state)
++{
++    assert(bql_locked());
++    return !state->crucible_window_configured ||
++           !state->crucible_window_roster_sealed;
++}
++
++bool kvm_crucible_window_allow_clock_ioctl(KVMState *state,
++                                          unsigned long type,
++                                          const void *argument)
++{
++    const struct kvm_enable_cap *cap;
++    const struct kvm_crucible_clock *clock;
++
++    if (!state->crucible_window_configured || type != KVM_ENABLE_CAP ||
++        !argument) {
++        return true;
++    }
++    cap = argument;
++    if (cap->cap != KVM_CAP_CRUCIBLE_CLOCK_V1 &&
++        cap->cap != KVM_CAP_CRUCIBLE_CLOCK_V2 &&
++        cap->cap != KVM_CAP_CRUCIBLE_CLOCK_V3) {
++        return true;
++    }
++    clock = (const void *)(uintptr_t)cap->args[0];
++    if (!clock) {
++        return false;
++    }
++    if (clock->operation == KVM_CRUCIBLE_CLOCK_QUERY) {
++        return true;
++    }
++    /* The source-owned command flag is held only across this BQL ioctl, not
++     * accepted from a QMP caller's identifier or another CPU's TLS. */
++    return bql_locked() && state->crucible_window_clock_command;
++}
++
++bool kvm_crucible_window_enter(KVMState *state, CPUState *cpu)
++{
++    CrucibleKvmWindowVcpu *entry;
++    CrucibleKvmOriginalReturn *record;
++    bool accepted = false;
++
++    assert(bql_locked());
++    if (!state->crucible_window_configured) {
++        return true;
++    }
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    entry = window_vcpu_locked(state, cpu);
++    if (entry && qatomic_load_acquire(&state->crucible_window_phase) ==
++        CRUCIBLE_KVM_WINDOW_RUNNING &&
++        !state->crucible_userspace_faulted && !entry->current_reserved &&
++        entry->ack_known && entry->last_invocation != UINT64_MAX &&
++        entry->last_generation != state->crucible_window_generation &&
++        state->crucible_window_return_count <
++        QEMU_CRUCIBLE_WINDOW_MAX_RETURNS) {
++        entry->current_record = state->crucible_window_return_count++;
++        record = &state->crucible_window_returns[entry->current_record];
++        record->generation = state->crucible_window_generation;
++        record->expected_invocation = entry->last_invocation + 1;
++        record->vcpu_index = cpu->cpu_index;
++        entry->current_reserved = true;
++        entry->last_generation = state->crucible_window_generation;
++        accepted = true;
++    }
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    if (!accepted) {
++        /* This is the original CPU thread under BQL, not an inferred stop
++         * receipt. Its next loop must actually acknowledge cpu->stop. */
++        cpu->stop = true;
++    }
++    return accepted;
++}
++
++static bool run_receipt_shape(const struct kvm_crucible_run_return *receipt,
++                              uint32_t operation, uint64_t invocation)
++{
++    return receipt->version == 1 && receipt->operation == operation &&
++           receipt->expected_invocation == invocation &&
++           receipt->invocation == invocation &&
++           !(receipt->flags & ~31U) && !(receipt->pending_mask & ~15U) &&
++           !(receipt->response_flags & ~3U) &&
++           receipt->response_phase <= KVM_CRUCIBLE_COMPLETION_UNSUPPORTED &&
++           receipt->response_consumed <= receipt->response_sequence &&
++           receipt->current_begin_ns <= receipt->current_end_ns &&
++           !receipt->reserved_word && !receipt->reserved[0] &&
++           !receipt->reserved[1];
++}
++
++static bool run_receipt_same(const struct kvm_crucible_run_return *left,
++                             const struct kvm_crucible_run_return *right)
++{
++    struct kvm_crucible_run_return normalized = *left;
++
++    normalized.operation = right->operation;
++    return !memcmp(&normalized, right, sizeof(normalized));
++}
++
++static bool run_receipt_clean_interrupt(
++    const struct kvm_crucible_run_return *receipt, uint64_t generation,
++    uint64_t start_ns, uint64_t end_ns, uint64_t native_id, int result)
++{
++    return receipt->native_vcpu_id == native_id &&
++           receipt->generation_begin == generation &&
++           receipt->generation_end == generation &&
++           receipt->current_begin_ns >= start_ns &&
++           receipt->current_end_ns <= end_ns &&
++           (receipt->flags & KVM_CRUCIBLE_RUN_RETURN_RETURNED) &&
++           (receipt->flags & KVM_CRUCIBLE_RUN_RETURN_BEGIN_ACTIVE) &&
++           receipt->run_result == result &&
++           (result == -EINTR || result == -EAGAIN) &&
++           !receipt->pending_mask && !receipt->response_flags &&
++           receipt->response_sequence == receipt->response_consumed &&
++           (receipt->response_phase == KVM_CRUCIBLE_COMPLETION_EMPTY ||
++            receipt->response_phase == KVM_CRUCIBLE_COMPLETION_DONE);
++}
++
++bool kvm_crucible_window_after_run(KVMState *state, CPUState *cpu, int result)
++{
++    CrucibleKvmWindowVcpu *entry;
++    CrucibleKvmOriginalReturn *record;
++    struct kvm_crucible_run_return receipt;
++    bool clean_interrupt = false;
++    bool accepted = false;
++    int query_result;
++
++    if (!state->crucible_window_configured) {
++        return false;
++    }
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    entry = window_vcpu_locked(state, cpu);
++    if (!entry || !entry->current_reserved) {
++        window_unknown_locked(state);
++        goto out;
++    }
++    record = &state->crucible_window_returns[entry->current_record];
++    record->issued = true;
++    record->native_result = result;
++    receipt = (struct kvm_crucible_run_return) {
++        .version = 1, .operation = KVM_CRUCIBLE_RUN_RETURN_QUERY,
++        .expected_invocation = record->expected_invocation,
++    };
++    query_result = kvm_vcpu_ioctl(cpu, KVM_CRUCIBLE_RUN_RETURN, &receipt);
++    record->query_errno = query_result;
++
++    if (query_result == -ESTALE && result == -EAGAIN && entry->ack_known) {
++        /* Admission can reject before arch RUN. Authenticate the exact previous
++         * acknowledged record. Neither errno nor mapped exit_reason proves it. */
++        receipt = (struct kvm_crucible_run_return) {
++            .version = 1, .operation = KVM_CRUCIBLE_RUN_RETURN_QUERY,
++            .expected_invocation = entry->last_invocation,
++        };
++        query_result = kvm_vcpu_ioctl(cpu, KVM_CRUCIBLE_RUN_RETURN, &receipt);
++        record->query_errno = query_result;
++        if (!query_result && run_receipt_shape(&receipt,
++                KVM_CRUCIBLE_RUN_RETURN_QUERY, entry->last_invocation) &&
++            run_receipt_same(&receipt, &entry->last_receipt)) {
++            record->receipt = receipt;
++            record->no_birth_known = true;
++            record->ack_known = true;
++            clean_interrupt = true;
++        }
++    } else if (!query_result &&
++               run_receipt_shape(&receipt, KVM_CRUCIBLE_RUN_RETURN_QUERY,
++                                 record->expected_invocation)) {
++        /* Preserve even a mismatched/uncertain authentic record before refusal.
++         * There is no ACK, overwrite, device drain or new RUN on this path. */
++        record->receipt = receipt;
++        record->receipt_known = true;
++        entry->last_receipt = receipt;
++        entry->last_invocation = receipt.invocation;
++        entry->ack_known = false;
++        clean_interrupt = run_receipt_clean_interrupt(&receipt,
++            record->generation, state->crucible_window_start_ns,
++            state->crucible_window_end_ns, kvm_arch_vcpu_id(cpu), result);
++        accepted = receipt.native_vcpu_id == kvm_arch_vcpu_id(cpu) &&
++            receipt.generation_begin == record->generation &&
++            receipt.generation_end == record->generation &&
++            receipt.run_result == result &&
++            (receipt.flags & KVM_CRUCIBLE_RUN_RETURN_RETURNED) &&
++            (receipt.flags & KVM_CRUCIBLE_RUN_RETURN_BEGIN_ACTIVE) &&
++            receipt.current_begin_ns >= state->crucible_window_start_ns &&
++            receipt.current_end_ns <= state->crucible_window_end_ns &&
++            !receipt.response_flags &&
++            !(receipt.pending_mask & KVM_CRUCIBLE_RUN_PENDING_OPAQUE) &&
++            ((result >= 0 &&
++              (receipt.flags & KVM_CRUCIBLE_RUN_RETURN_CLOCK_ENTERED)) ||
++             clean_interrupt);
++    }
++
++    if (clean_interrupt) {
++        CrucibleKvmUserspaceExit *userspace =
++            &state->crucible_userspace_exits[cpu->cpu_index];
++
++        if (userspace->phase != CRUCIBLE_KVM_USERSPACE_RUNNING ||
++            userspace->reserved_revisions != 2 ||
++            state->crucible_userspace_reserved_revisions < 2 ||
++            userspace->uncertain_effects || userspace->opaque_effects ||
++            userspace->exit_sequence != userspace->consumed_sequence ||
++            (record->receipt_known &&
++             (receipt.response_sequence != userspace->exit_sequence ||
++              receipt.response_consumed != userspace->consumed_sequence))) {
++            window_unknown_locked(state);
++            goto out;
++        }
++        userspace->phase = CRUCIBLE_KVM_USERSPACE_READY;
++        userspace->reserved_revisions = 0;
++        state->crucible_userspace_reserved_revisions -= 2;
++        state->crucible_userspace_revision++;
++        accepted = true;
++    }
++    if (!accepted) {
++        window_unknown_locked(state);
++    } else if (qatomic_load_acquire(&state->crucible_window_phase) !=
++               CRUCIBLE_KVM_WINDOW_UNKNOWN) {
++        /* Every original CPU parks after one RUN; no guest entry is used to
++         * finish I/O or to consume a pending kernel return. */
++        qatomic_store_release(&state->crucible_window_phase,
++                              CRUCIBLE_KVM_WINDOW_CLOSING);
++    }
++out:
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    if (accepted && !clean_interrupt) {
++        if (state->crucible_response_bytes_configured) {
++            qemu_mutex_lock(&state->crucible_userspace_lock);
++            accepted = kvm_crucible_response_bytes_capture_return(state, cpu, &receipt);
++            if (!accepted) {
++                window_unknown_locked(state);
++            }
++            qemu_mutex_unlock(&state->crucible_userspace_lock);
++        }
++        if (accepted) {
++            accepted = kvm_crucible_userspace_after_run(state, cpu, result);
++        }
++        qemu_mutex_lock(&state->crucible_userspace_lock);
++        if (accepted) {
++            CrucibleKvmUserspaceExit *userspace =
++                &state->crucible_userspace_exits[cpu->cpu_index];
++
++            accepted = receipt.response_sequence == userspace->exit_sequence &&
++                receipt.response_consumed == userspace->consumed_sequence &&
++                ((userspace->phase == CRUCIBLE_KVM_USERSPACE_READY &&
++                  !receipt.pending_mask &&
++                  (receipt.response_phase == KVM_CRUCIBLE_COMPLETION_EMPTY ||
++                   receipt.response_phase == KVM_CRUCIBLE_COMPLETION_DONE)) ||
++                 (userspace->phase == CRUCIBLE_KVM_USERSPACE_HANDLING &&
++                  (receipt.response_phase == KVM_CRUCIBLE_COMPLETION_PENDING ||
++                   receipt.response_phase == KVM_CRUCIBLE_COMPLETION_MORE)));
++        }
++        if (!accepted) {
++            window_unknown_locked(state);
++        }
++        qemu_mutex_unlock(&state->crucible_userspace_lock);
++    }
++    return accepted;
++}
++
++void kvm_crucible_window_leave(KVMState *state, CPUState *cpu)
++{
++    CrucibleKvmWindowVcpu *entry;
++    CPUState *other;
++
++    assert(bql_locked());
++    if (!state->crucible_window_configured) {
++        return;
++    }
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    entry = window_vcpu_locked(state, cpu);
++    if (state->crucible_userspace_faulted) {
++        window_unknown_locked(state);
++    }
++    if (entry && entry->current_reserved) {
++        CrucibleKvmOriginalReturn *record =
++            &state->crucible_window_returns[entry->current_record];
++
++        if (!record->issued) {
++            /* Async/pre-RUN/native state-put failure is not NoEffects. */
++            window_unknown_locked(state);
++        }
++        entry->current_reserved = false;
++    }
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    /* Request each original CPU's real stop; this does not wait, execute an
++     * ordinary work item, or attest that another CPU has acknowledged it. */
++    CPU_FOREACH(other) {
++        other->crucible_native_window_run = false;
++        cpu_pause(other);
++    }
++}
++
++static int window_clock_control(KVMState *state,
++                                struct kvm_crucible_clock *clock)
++{
++    struct kvm_enable_cap cap = {
++        .cap = state->crucible_clock_kernel_edition == 2 ?
++               KVM_CAP_CRUCIBLE_CLOCK_V2 : KVM_CAP_CRUCIBLE_CLOCK_V3,
++        .args[0] = (uintptr_t)clock,
++    };
++    uint32_t components = state->crucible_clock_kernel_edition == 2 ?
++        QEMU_CRUCIBLE_CLOCK_ARM_COMPONENTS : QEMU_CRUCIBLE_CLOCK_V3_COMPONENTS;
++    int result;
++
++    assert(bql_locked());
++    assert(!state->crucible_window_clock_command);
++    state->crucible_window_clock_command = true;
++    result = kvm_vm_ioctl(state, KVM_ENABLE_CAP, &cap);
++    state->crucible_window_clock_command = false;
++    if (result < 0) {
++        return result;
++    }
++    if (clock->version != state->crucible_clock_kernel_edition ||
++        clock->coverage != components ||
++        clock->current_ns > INT64_MAX || clock->active > 1 ||
++        clock->close_acknowledged > 1) {
++        return -EPROTO;
++    }
++    return 0;
++}
++
++static bool window_original_roster(KVMState *state, bool stopped)
++{
++    CPUState *cpu;
++    uint32_t count = 0;
++
++    assert(bql_locked());
++    CPU_FOREACH(cpu) {
++        CrucibleKvmWindowVcpu *entry = window_vcpu_locked(state, cpu);
++
++        if (!entry || !cpu->created || cpu->unplug ||
++            (stopped && (!qemu_cpu_native_window_stopped(cpu) ||
++                         entry->current_reserved))) {
++            return false;
++        }
++        count++;
++    }
++    return count && count == state->crucible_window_roster_count;
++}
++
++static bool window_prepare_roster(KVMState *state)
++{
++    CPUState *cpu;
++    uint32_t count = 0;
++
++    assert(bql_locked());
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    CPU_FOREACH(cpu) {
++        CrucibleKvmWindowVcpu *entry;
++        CrucibleKvmUserspaceExit *userspace;
++
++        if (cpu->cpu_index < 0 ||
++            (uint32_t)cpu->cpu_index >= state->crucible_userspace_capacity ||
++            !cpu->created || !cpu->stopped || cpu->unplug) {
++            goto failure;
++        }
++        userspace = &state->crucible_userspace_exits[cpu->cpu_index];
++        entry = &state->crucible_window_vcpus[cpu->cpu_index];
++        if (!userspace->assigned || userspace->kernel_vcpu_id !=
++            kvm_arch_vcpu_id(cpu) || userspace->seen || entry->assigned) {
++            goto failure;
++        }
++        *entry = (CrucibleKvmWindowVcpu) {
++            .original_cpu = cpu, .assigned = true, .ack_known = true,
++            .last_receipt = {
++                .version = 1, .operation = KVM_CRUCIBLE_RUN_RETURN_QUERY,
++            },
++        };
++        count++;
++    }
++    state->crucible_window_roster_count = count;
++    state->crucible_window_roster_sealed = count != 0;
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    return count != 0;
++
++failure:
++    window_unknown_locked(state);
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    return false;
++}
++
++static bool window_returns_settled_locked(KVMState *state)
++{
++    uint32_t index;
++
++    /* CPU indices need not be dense; inspect the full admitted capacity. */
++    for (index = 0; index < state->crucible_userspace_capacity; index++) {
++        CrucibleKvmWindowVcpu *entry = &state->crucible_window_vcpus[index];
++        CrucibleKvmUserspaceExit *userspace =
++            &state->crucible_userspace_exits[index];
++
++        if (entry->assigned && (!entry->ack_known || entry->current_reserved ||
++            userspace->phase != CRUCIBLE_KVM_USERSPACE_READY ||
++            userspace->exit_sequence != userspace->consumed_sequence ||
++            userspace->uncertain_effects || userspace->opaque_effects)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++CrucibleKvmWindowInfo *qmp_x_crucible_kvm_original_window(
++    CrucibleKvmWindowOperation operation, uint64_t generation,
++    uint64_t start_ns, uint64_t end_ns, uint64_t stop_budget_ns, Error **errp)
++{
++    KVMState *state = kvm_state;
++    struct kvm_crucible_clock clock = {
++        .operation = KVM_CRUCIBLE_CLOCK_QUERY,
++    };
++    CrucibleKvmWindowInfo *info;
++    CrucibleKvmWindowPhase phase;
++    CPUState *cpu;
++    bool stopped;
++    int result;
++
++    assert(bql_locked());
++    if (!kvm_enabled() || !state->crucible_window_configured) {
++        error_setg(errp, "original native window component is not configured");
++        return NULL;
++    }
++    clock.version = state->crucible_clock_kernel_edition;
++    phase = qatomic_load_acquire(&state->crucible_window_phase);
++    if (operation != CRUCIBLE_KVM_WINDOW_OPERATION_BEGIN &&
++        (start_ns || end_ns ||
++         (operation != CRUCIBLE_KVM_WINDOW_OPERATION_CLOSE &&
++          stop_budget_ns))) {
++        error_setg(errp, "observational window fields must be zero");
++        return NULL;
++    }
++    if (operation == CRUCIBLE_KVM_WINDOW_OPERATION_BEGIN) {
++        bool settled;
++
++        if (!generation || state->crucible_window_generation == UINT64_MAX ||
++            generation != state->crucible_window_generation + 1 ||
++            start_ns >= end_ns || end_ns > INT64_MAX || stop_budget_ns ||
++            (phase != CRUCIBLE_KVM_WINDOW_EMPTY &&
++             phase != CRUCIBLE_KVM_WINDOW_CLOSED)) {
++            error_setg(errp,
++                       "original native window cannot admit this generation");
++            return NULL;
++        }
++        if (!state->crucible_window_roster_sealed &&
++            !window_prepare_roster(state)) {
++            error_setg(errp,
++                       "original native window roster preparation refused");
++            return NULL;
++        }
++        qemu_mutex_lock(&state->crucible_userspace_lock);
++        settled = !state->crucible_userspace_faulted &&
++            window_returns_settled_locked(state);
++        qemu_mutex_unlock(&state->crucible_userspace_lock);
++        if (!settled || !window_original_roster(state, true) ||
++            state->crucible_response_service_active) {
++            error_setg(errp,
++                       "original window retains outstanding native custody");
++            return NULL;
++        }
++        result = window_clock_control(state, &clock);
++        if (result < 0 || clock.active || !clock.close_acknowledged ||
++            clock.run_owners || clock.current_ns != start_ns ||
++            clock.window_generation != state->crucible_window_generation) {
++            error_setg(errp, "original native clock cut is not closed");
++            return NULL;
++        }
++        /* Reserve a whole fixed roster BEFORE any CPU is resumed. Lifetime
++         * Receipt credits cannot come from a prior uncollected window. */
++        if (state->crucible_window_roster_count >
++            QEMU_CRUCIBLE_WINDOW_MAX_RETURNS -
++            state->crucible_window_return_count) {
++            error_setg(errp,
++                       "original native return history credits exhausted");
++            return NULL;
++        }
++        result = qemu_cpu_native_window_seal(generation);
++        if (result < 0) {
++            error_setg_errno(errp, -result,
++                             "original CPU queue sealing failed");
++            return NULL;
++        }
++        state->crucible_window_generation = generation;
++        state->crucible_window_start_ns = start_ns;
++        state->crucible_window_end_ns = end_ns;
++        clock = (struct kvm_crucible_clock) {
++            .version = state->crucible_clock_kernel_edition,
++            .operation = KVM_CRUCIBLE_CLOCK_BEGIN,
++            .window_generation = generation, .start_ns = start_ns,
++            .end_ns = end_ns,
++        };
++        result = window_clock_control(state, &clock);
++        if (result < 0 || !clock.active ||
++            clock.window_generation != generation ||
++            clock.start_ns != start_ns || clock.end_ns != end_ns) {
++            qemu_mutex_lock(&state->crucible_userspace_lock);
++            window_unknown_locked(state);
++            qemu_mutex_unlock(&state->crucible_userspace_lock);
++            error_setg(errp, "original native clock begin outcome is unknown");
++            return NULL;
++        }
++        qatomic_store_release(&state->crucible_window_phase,
++                              CRUCIBLE_KVM_WINDOW_RUNNING);
++        CPU_FOREACH(cpu) {
++            cpu->crucible_native_window_run = true;
++            cpu_resume(cpu);
++        }
++    } else if (operation == CRUCIBLE_KVM_WINDOW_OPERATION_CLOSE) {
++        if (generation != state->crucible_window_generation ||
++            !stop_budget_ns || stop_budget_ns > 5000000000ULL ||
++            state->crucible_response_service_active) {
++            error_setg(errp,
++                       "original native close identity/budget is invalid");
++            return NULL;
++        }
++        if (!state->crucible_window_roster_sealed &&
++            !window_prepare_roster(state)) {
++            error_setg(errp,
++                       "original native close roster preparation refused");
++            return NULL;
++        }
++        if (qatomic_load_acquire(&state->crucible_window_phase) !=
++            CRUCIBLE_KVM_WINDOW_UNKNOWN) {
++            qatomic_store_release(&state->crucible_window_phase,
++                                  CRUCIBLE_KVM_WINDOW_CLOSING);
++        }
++        CPU_FOREACH(cpu) {
++            cpu->crucible_native_window_run = false;
++            cpu_pause(cpu);
++        }
++        clock.operation = KVM_CRUCIBLE_CLOCK_FREEZE;
++        clock.window_generation = generation;
++        clock.stop_budget_ns = stop_budget_ns;
++        result = window_clock_control(state, &clock);
++        if (result < 0) {
++            /* Freeze may already have taken effect. Retain identity/phase;
++             * Query observes its original result without a new RUN or drain. */
++            error_setg_errno(errp, -result,
++                             "original native close is unresolved");
++            return NULL;
++        }
++    } else if (operation == CRUCIBLE_KVM_WINDOW_OPERATION_QUERY) {
++        if (generation != state->crucible_window_generation) {
++            error_setg(errp, "original native window query is stale");
++            return NULL;
++        }
++        result = window_clock_control(state, &clock);
++        if (result < 0) {
++            error_setg_errno(errp, -result,
++                             "original native window query failed");
++            return NULL;
++        }
++    } else {
++        error_setg(errp, "unsupported original native window operation");
++        return NULL;
++    }
++
++    if (clock.window_generation != state->crucible_window_generation) {
++        /* An original userspace label cannot authenticate another kernel
++         * generation's clock cut. Retain uncertainty even after a Query;
++         * Close or Begin may already have changed native state. */
++        qemu_mutex_lock(&state->crucible_userspace_lock);
++        window_unknown_locked(state);
++        qemu_mutex_unlock(&state->crucible_userspace_lock);
++        error_setg(errp, "original native clock generation is inconsistent");
++        return NULL;
++    }
++
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    stopped = window_original_roster(state, true);
++    if (qatomic_load_acquire(&state->crucible_window_phase) ==
++        CRUCIBLE_KVM_WINDOW_CLOSING &&
++        stopped && !clock.active && clock.close_acknowledged &&
++        !clock.run_owners && clock.window_generation == generation) {
++        qatomic_store_release(&state->crucible_window_phase,
++                              CRUCIBLE_KVM_WINDOW_CLOSED);
++    }
++    info = g_new0(CrucibleKvmWindowInfo, 1);
++    info->schema_version = 1;
++    info->clock_edition = clock.version;
++    info->clock_components = clock.coverage;
++    info->generation = state->crucible_window_generation;
++    info->phase = qatomic_load_acquire(&state->crucible_window_phase);
++    info->current_ns = clock.current_ns;
++    info->clock_active = clock.active;
++    info->kernel_run_owners = clock.run_owners;
++    info->clock_closed = !clock.active && clock.close_acknowledged &&
++        !clock.run_owners;
++    info->original_cpus_stopped = stopped;
++    info->retained_returns = state->crucible_window_return_count;
++    info->input_custody_known = false;
++    info->device_custody_known = false;
++    info->publication_custody_known = false;
++    info->profile_qualified = false;
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    return info;
++}
++
++CrucibleKvmOriginalReturnInfo *qmp_x_crucible_kvm_original_return(
++    CrucibleKvmOriginalReturnOperation operation, uint32_t record_index,
++    uint64_t generation, uint64_t expected_invocation, Error **errp)
++{
++    KVMState *state = kvm_state;
++    CrucibleKvmOriginalReturn *record;
++    CrucibleKvmWindowVcpu *entry;
++    CrucibleKvmOriginalReturnInfo *info;
++    struct kvm_crucible_run_return receipt;
++    CPUState *cpu;
++    int result;
++
++    assert(bql_locked());
++    if (!kvm_enabled() || !state->crucible_window_configured) {
++        error_setg(errp, "original native return component is not configured");
++        return NULL;
++    }
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    if (record_index >= state->crucible_window_return_count) {
++        error_setg(errp, "original return index is not retained");
++        goto failure;
++    }
++    record = &state->crucible_window_returns[record_index];
++    entry = &state->crucible_window_vcpus[record->vcpu_index];
++    cpu = entry->original_cpu;
++    if (record->generation != generation ||
++        record->expected_invocation != expected_invocation || !cpu ||
++        !window_vcpu_locked(state, cpu) ||
++        !qemu_cpu_native_window_stopped(cpu) || entry->current_reserved ||
++        state->crucible_response_service_active) {
++        error_setg(errp,
++                   "original return identity or physical CPU cut is unresolved");
++        goto failure;
++    }
++    if (operation != CRUCIBLE_KVM_ORIGINAL_RETURN_OPERATION_QUERY &&
++        operation != CRUCIBLE_KVM_ORIGINAL_RETURN_OPERATION_ACK) {
++        error_setg(errp, "unsupported original return operation");
++        goto failure;
++    }
++
++    if (operation == CRUCIBLE_KVM_ORIGINAL_RETURN_OPERATION_ACK &&
++        !record->ack_known) {
++        if (!record->issued || !record->receipt_known ||
++            record->no_birth_known ||
++            !record->receipt.invocation ||
++            record->receipt.native_vcpu_id != kvm_arch_vcpu_id(cpu) ||
++            record->receipt.generation_begin != record->generation ||
++            record->receipt.generation_end != record->generation ||
++            record->receipt.run_result != record->native_result ||
++            !(record->receipt.flags & KVM_CRUCIBLE_RUN_RETURN_RETURNED) ||
++            record->receipt.invocation != entry->last_invocation ||
++            !run_receipt_same(&record->receipt, &entry->last_receipt)) {
++            error_setg(errp, "unknown original return cannot be acknowledged");
++            goto failure;
++        }
++        receipt = (struct kvm_crucible_run_return) {
++            .version = 1, .operation = KVM_CRUCIBLE_RUN_RETURN_ACK,
++            .expected_invocation = record->receipt.invocation,
++        };
++        result = kvm_vcpu_ioctl(cpu, KVM_CRUCIBLE_RUN_RETURN, &receipt);
++        record->ack_errno = result;
++        if (result < 0 || !run_receipt_shape(&receipt,
++                KVM_CRUCIBLE_RUN_RETURN_ACK, record->receipt.invocation) ||
++            !run_receipt_same(&receipt, &record->receipt)) {
++            /* A copy fault can follow the kernel's one-time ACK effect. The
++             * original row and nonce survive; a retry uses this same ioctl. */
++            window_unknown_locked(state);
++            error_setg(errp,
++                       "original native return acknowledgement is unresolved");
++            goto failure;
++        }
++        record->ack_known = true;
++        entry->ack_known = true;
++    }
++
++    info = g_new0(CrucibleKvmOriginalReturnInfo, 1);
++    info->schema_version = 1;
++    info->record_index = record_index;
++    info->generation = record->generation;
++    info->expected_invocation = record->expected_invocation;
++    info->invocation = record->receipt.invocation;
++    info->native_vcpu_id = record->receipt.native_vcpu_id;
++    info->native_result = record->native_result;
++    info->generation_begin = record->receipt.generation_begin;
++    info->generation_end = record->receipt.generation_end;
++    info->current_begin_ns = record->receipt.current_begin_ns;
++    info->current_end_ns = record->receipt.current_end_ns;
++    info->pending_mask = record->receipt.pending_mask;
++    info->response_sequence = record->receipt.response_sequence;
++    info->response_consumed = record->receipt.response_consumed;
++    info->response_revision = record->receipt.response_revision;
++    info->response_phase = record->receipt.response_phase;
++    info->response_flags = record->receipt.response_flags;
++    info->receipt_flags = record->receipt.flags;
++    info->issued = record->issued;
++    info->receipt_known = record->receipt_known;
++    info->no_birth_known = record->no_birth_known;
++    info->ack_known = record->ack_known;
++    info->query_errno = record->query_errno;
++    info->ack_errno = record->ack_errno;
++    info->profile_qualified = false;
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    return info;
++
++failure:
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    return NULL;
++}
++
++CrucibleKvmOriginalReturnInventory *qmp_x_crucible_kvm_original_returns(
++    uint64_t generation, uint32_t first_record, uint32_t maximum_records,
++    Error **errp)
++{
++    KVMState *state = kvm_state;
++    CrucibleKvmOriginalReturnInventory *inventory;
++    CrucibleKvmOriginalReturnIdentityList **tail;
++    uint32_t next_record;
++
++    assert(bql_locked());
++    if (!kvm_enabled() || !state->crucible_window_configured ||
++        !maximum_records || maximum_records > 128) {
++        error_setg(errp, "original return inventory requires bounded opt-in");
++        return NULL;
++    }
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    if (generation != state->crucible_window_generation ||
++        !state->crucible_window_roster_sealed ||
++        first_record > state->crucible_window_return_count ||
++        state->crucible_response_service_active ||
++        !window_original_roster(state, true)) {
++        error_setg(errp, "original return inventory requires its stopped cut");
++        goto failure;
++    }
++
++    /* Actual source scheduling chooses row order.  Observers learn original
++     * invocations instead of guessing from CPU index or a return count.
++     * Stopped owners stabilize retained row identities and count.  ACK status
++     * remains an observation per page, rather than one immutable capture. */
++    next_record = first_record + MIN(maximum_records,
++        state->crucible_window_return_count - first_record);
++    inventory = g_new0(CrucibleKvmOriginalReturnInventory, 1);
++    inventory->schema_version = 1;
++    inventory->generation = generation;
++    inventory->first_record = first_record;
++    inventory->next_record = next_record;
++    inventory->retained_returns = state->crucible_window_return_count;
++    inventory->profile_qualified = false;
++    tail = &inventory->entries;
++
++    for (uint32_t index = first_record; index < next_record; index++) {
++        CrucibleKvmOriginalReturn *original =
++            &state->crucible_window_returns[index];
++        CrucibleKvmOriginalReturnIdentity *identity =
++            g_new0(CrucibleKvmOriginalReturnIdentity, 1);
++        CrucibleKvmOriginalReturnIdentityList *item =
++            g_new0(CrucibleKvmOriginalReturnIdentityList, 1);
++
++        identity->record_index = index;
++        identity->generation = original->generation;
++        identity->expected_invocation = original->expected_invocation;
++        identity->vcpu_index = original->vcpu_index;
++        identity->native_vcpu_id =
++            state->crucible_userspace_exits[original->vcpu_index].kernel_vcpu_id;
++        identity->issued = original->issued;
++        identity->receipt_known = original->receipt_known;
++        identity->no_birth_known = original->no_birth_known;
++        identity->ack_known = original->ack_known;
++        item->value = identity;
++        *tail = item;
++        tail = &item->next;
++    }
++
++    /* No ioctl, ACK, RUN, callback, reconciliation or row mutation occurs. */
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    return inventory;
++
++failure:
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    return NULL;
++}
++
++
++CrucibleKvmOriginalReturn *kvm_crucible_window_initial_record_locked(
++    KVMState *state, uint32_t record_index, uint64_t generation,
++    uint64_t expected_invocation)
++{
++    CrucibleKvmOriginalReturn *record;
++    CrucibleKvmWindowVcpu *owner;
++    const struct kvm_crucible_run_return *receipt;
++    CPUState *cpu;
++
++    if (!state->crucible_window_configured ||
++        record_index >= state->crucible_window_return_count) {
++        return NULL;
++    }
++    record = &state->crucible_window_returns[record_index];
++    if (record->vcpu_index >= state->crucible_userspace_capacity ||
++        record->generation != generation ||
++        record->expected_invocation != expected_invocation ||
++        !record->issued || !record->receipt_known || record->no_birth_known ||
++        record->native_result < 0) {
++        return NULL;
++    }
++    owner = &state->crucible_window_vcpus[record->vcpu_index];
++    cpu = owner->original_cpu;
++    receipt = &record->receipt;
++    if (!cpu || !window_vcpu_locked(state, cpu) ||
++        !run_receipt_shape(receipt, KVM_CRUCIBLE_RUN_RETURN_QUERY,
++                           expected_invocation) ||
++        receipt->native_vcpu_id !=
++            state->crucible_userspace_exits[record->vcpu_index].kernel_vcpu_id ||
++        receipt->generation_begin != generation ||
++        receipt->generation_end != generation ||
++        receipt->run_result != record->native_result ||
++        (receipt->flags & (KVM_CRUCIBLE_RUN_RETURN_RETURNED |
++                          KVM_CRUCIBLE_RUN_RETURN_CLOCK_ENTERED |
++                          KVM_CRUCIBLE_RUN_RETURN_BEGIN_ACTIVE)) !=
++                         (KVM_CRUCIBLE_RUN_RETURN_RETURNED |
++                          KVM_CRUCIBLE_RUN_RETURN_CLOCK_ENTERED |
++                          KVM_CRUCIBLE_RUN_RETURN_BEGIN_ACTIVE)) {
++        return NULL;
++    }
++    return record;
++}
++
++
++CPUState *kvm_crucible_window_initial_response_owner_locked(
++    KVMState *state, uint32_t record_index, uint64_t generation,
++    uint64_t expected_invocation)
++{
++    CrucibleKvmOriginalReturn *record;
++    CrucibleKvmWindowVcpu *owner;
++    CrucibleKvmUserspaceExit *userspace;
++    const struct kvm_crucible_run_return *receipt;
++    CPUState *cpu;
++    uint32_t pending;
++
++    if (!state->crucible_window_configured ||
++        record_index >= state->crucible_window_return_count) {
++        return NULL;
++    }
++    record = &state->crucible_window_returns[record_index];
++    if (record->vcpu_index >= state->crucible_userspace_capacity ||
++        record->generation != generation ||
++        record->expected_invocation != expected_invocation ||
++        !record->issued || !record->receipt_known || record->no_birth_known ||
++        record->native_result < 0) {
++        return NULL;
++    }
++    owner = &state->crucible_window_vcpus[record->vcpu_index];
++    cpu = owner->original_cpu;
++    if (!cpu || !window_vcpu_locked(state, cpu) || owner->current_reserved) {
++        return NULL;
++    }
++    userspace = &state->crucible_userspace_exits[record->vcpu_index];
++    receipt = &record->receipt;
++    if (!run_receipt_shape(receipt, KVM_CRUCIBLE_RUN_RETURN_QUERY,
++                           expected_invocation) ||
++        receipt->invocation != owner->last_invocation ||
++        !run_receipt_same(receipt, &owner->last_receipt) ||
++        receipt->native_vcpu_id != userspace->kernel_vcpu_id ||
++        receipt->generation_begin != generation ||
++        receipt->generation_end != generation ||
++        receipt->run_result != record->native_result ||
++        (receipt->flags & (KVM_CRUCIBLE_RUN_RETURN_RETURNED |
++                          KVM_CRUCIBLE_RUN_RETURN_CLOCK_ENTERED |
++                          KVM_CRUCIBLE_RUN_RETURN_BEGIN_ACTIVE)) !=
++                         (KVM_CRUCIBLE_RUN_RETURN_RETURNED |
++                          KVM_CRUCIBLE_RUN_RETURN_CLOCK_ENTERED |
++                          KVM_CRUCIBLE_RUN_RETURN_BEGIN_ACTIVE) ||
++        receipt->response_phase != KVM_CRUCIBLE_COMPLETION_PENDING ||
++        receipt->response_flags ||
++        receipt->response_sequence != userspace->exit_sequence ||
++        receipt->response_consumed != userspace->consumed_sequence ||
++        receipt->response_consumed >= receipt->response_sequence) {
++        return NULL;
++    }
++
++    /* The receipt inspects private kernel pending state independently of
++     * mutable exit_reason. ARM has no x86 completion callback pointer; x86 PIO
++     * fast paths may have no pending pio.count after exposing their response. */
++    if (userspace->exit_reason == KVM_EXIT_MMIO) {
++        pending = KVM_CRUCIBLE_RUN_PENDING_MMIO;
++        if (state->crucible_clock_kernel_edition == 3) {
++            pending |= KVM_CRUCIBLE_RUN_PENDING_CALLBACK;
++        } else if (state->crucible_clock_kernel_edition != 2) {
++            return NULL;
++        }
++        if (receipt->pending_mask != pending) {
++            return NULL;
++        }
++    } else if (userspace->exit_reason == KVM_EXIT_IO) {
++        if (state->crucible_clock_kernel_edition != 3 ||
++            (receipt->pending_mask != KVM_CRUCIBLE_RUN_PENDING_CALLBACK &&
++             receipt->pending_mask != (KVM_CRUCIBLE_RUN_PENDING_CALLBACK |
++                                       KVM_CRUCIBLE_RUN_PENDING_PIO))) {
++            return NULL;
++        }
++    } else {
++        return NULL;
++    }
++    return cpu;
++}
 diff --git a/accel/kvm/kvm-all.c b/accel/kvm/kvm-all.c
-index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f4d0d5506 100644
+index 83cbd120a84784e3128812c22be952e7af2b5480..b62eba0be496ad3f77becdd5002130914542a046 100644
 --- a/accel/kvm/kvm-all.c
 +++ b/accel/kvm/kvm-all.c
 @@ -14,6 +14,7 @@
@@ -1689,10 +3661,27 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f
      ret = kvm_create_vcpu(cpu);
      if (!ret) {
          kvm_park_vcpu(cpu);
-@@ -714,6 +722,15 @@ int kvm_init_vcpu(CPUState *cpu, Error **errp)
+@@ -632,6 +640,11 @@ static int do_kvm_destroy_vcpu(CPUState *cpu)
+     KVMState *s = kvm_state;
+     int ret = 0;
+ 
++    /* A lifetime original RUN/service record retains this native incarnation.
++     * Fence destruction before arch state, mapped buffers or FD parking can
++     * change; the later CPU-list/object reclaim guard is not early enough. */
++    qemu_cpu_paused_service_reclaim_guard(cpu);
++
+     trace_kvm_destroy_vcpu(cpu->cpu_index, kvm_arch_vcpu_id(cpu));
+ 
+     ret = kvm_arch_destroy_vcpu(cpu);
+@@ -714,6 +727,20 @@ int kvm_init_vcpu(CPUState *cpu, Error **errp)
  
      trace_kvm_init_vcpu(cpu->cpu_index, kvm_arch_vcpu_id(cpu));
  
++    if (!kvm_crucible_window_allow_vcpu_create(s)) {
++        error_setg(errp, "original native window refuses a changed vCPU roster");
++        return -EBUSY;
++    }
++
 +    if (!kvm_crucible_userspace_bind_vcpu(s, cpu)) {
 +        error_setg(errp, "native userspace inventory refuses a reused vCPU identity");
 +        return -ENOTSUP;
@@ -1705,7 +3694,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f
      ret = kvm_arch_pre_create_vcpu(cpu, errp);
      if (ret < 0) {
          goto err;
-@@ -2780,6 +2797,10 @@ static int kvm_reset_vmfd(MachineState *ms)
+@@ -2780,6 +2807,10 @@ static int kvm_reset_vmfd(MachineState *ms)
      int ret = 0, type;
      Error *err = NULL;
  
@@ -1716,7 +3705,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f
      /*
       * bail if the current architecture does not support VM file
       * descriptor change.
-@@ -2968,6 +2989,24 @@ static int kvm_init(AccelState *as, MachineState *ms)
+@@ -2968,6 +2999,32 @@ static int kvm_init(AccelState *as, MachineState *ms)
      }
  
      s->vmfd = ret;
@@ -1738,19 +3727,29 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f
 +    if (ret < 0) {
 +        goto err;
 +    }
++    ret = kvm_crucible_window_configure(s);
++    if (ret < 0) {
++        goto err;
++    }
++    ret = kvm_crucible_response_bytes_configure(s);
++    if (ret < 0) {
++        goto err;
++    }
  
      s->nr_as = kvm_vm_check_extension(s, KVM_CAP_MULTI_ADDRESS_SPACE);
      if (s->nr_as <= 1) {
-@@ -3101,6 +3140,8 @@ static int kvm_init(AccelState *as, MachineState *ms)
+@@ -3101,6 +3158,10 @@ static int kvm_init(AccelState *as, MachineState *ms)
  
  err:
      assert(ret < 0);
++    kvm_crucible_window_destroy(s);
++    kvm_crucible_response_bytes_destroy(s);
 +    kvm_crucible_response_service_destroy(s);
 +    kvm_crucible_userspace_destroy(s);
      if (s->vmfd >= 0) {
          close(s->vmfd);
      }
-@@ -3184,6 +3225,27 @@ void kvm_flush_coalesced_mmio_buffer(void)
+@@ -3184,6 +3245,49 @@ void kvm_flush_coalesced_mmio_buffer(void)
      s->coalesced_flush_in_progress = false;
  }
  
@@ -1760,6 +3759,28 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f
 +    struct kvm_run *run = cpu->kvm_run;
 +
 +    assert(qemu_cpu_is_self(cpu) && !bql_locked());
++    if (kvm_state->crucible_response_bytes_configured) {
++        CrucibleKvmResponseGeometry *original =
++            kvm_crucible_response_bytes_dispatch_geometry(kvm_state, cpu);
++        int result;
++
++        if (!original) {
++            return -ESTALE;
++        }
++        if (original->reason == KVM_EXIT_IO) {
++            kvm_handle_io(original->address, attributes, original->response,
++                          original->direction, original->size, original->count);
++            result = 0;
++        } else if (original->reason == KVM_EXIT_MMIO) {
++            result = address_space_rw(&address_space_memory, original->address,
++                attributes, original->response, original->length,
++                original->direction) == MEMTX_OK ? 0 : -EIO;
++        } else {
++            result = -ENOTSUP;
++        }
++        kvm_crucible_response_bytes_dispatch_done(kvm_state, cpu, result);
++        return result;
++    }
 +    switch (run->exit_reason) {
 +    case KVM_EXIT_IO:
 +        kvm_handle_io(run->io.port, attributes,
@@ -1778,7 +3799,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f
  static void do_kvm_cpu_synchronize_state(CPUState *cpu, run_on_cpu_data arg)
  {
      if (!cpu->vcpu_dirty && !kvm_state->guest_state_protected) {
-@@ -3215,7 +3277,16 @@ static bool kvm_cpu_synchronize_put(CPUState *cpu, KvmPutState state,
+@@ -3215,7 +3319,16 @@ static bool kvm_cpu_synchronize_put(CPUState *cpu, KvmPutState state,
                                      const char *desc)
  {
      Error *err = NULL;
@@ -1796,7 +3817,22 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f
      if (ret) {
          if (err) {
              error_reportf_err(err, "Restoring resisters %s: ", desc);
-@@ -3461,7 +3532,15 @@ int kvm_cpu_exec(CPUState *cpu)
+@@ -3431,7 +3544,14 @@ int kvm_cpu_exec(CPUState *cpu)
+ 
+     trace_kvm_cpu_exec();
+ 
++    /* Reserve original return custody before async architecture effects,
++     * register PUT, pre_run or guest entry. Ordinary cont cannot open a grant. */
++    if (!kvm_crucible_window_enter(kvm_state, cpu)) {
++        return EXCP_INTERRUPT;
++    }
++
+     if (kvm_arch_process_async_events(cpu)) {
++        kvm_crucible_window_leave(kvm_state, cpu);
+         return EXCP_HLT;
+     }
+ 
+@@ -3461,7 +3581,17 @@ int kvm_cpu_exec(CPUState *cpu)
              kvm_cpu_kick_self();
          }
  
@@ -1805,14 +3841,16 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f
 +            break;
 +        }
          run_ret = kvm_vcpu_ioctl(cpu, KVM_RUN, 0);
-+        if (!kvm_crucible_userspace_after_run(kvm_state, cpu, run_ret)) {
++        if (!(kvm_state->crucible_window_configured ?
++              kvm_crucible_window_after_run(kvm_state, cpu, run_ret) :
++              kvm_crucible_userspace_after_run(kvm_state, cpu, run_ret))) {
 +            ret = -1;
 +            break;
 +        }
  
          /*
           * After writing cpu->exit_request, cpu_exit() sends a signal that writes
-@@ -3471,6 +3550,11 @@ int kvm_cpu_exec(CPUState *cpu)
+@@ -3471,6 +3601,18 @@ int kvm_cpu_exec(CPUState *cpu)
           */
  
          attrs = kvm_arch_post_run(cpu, run);
@@ -1821,10 +3859,17 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f
 +            ret = -1;
 +            break;
 +        }
++
++        if (kvm_state->crucible_window_configured) {
++            /* Keep the original I/O response Handling and its kernel callback
++             * pending. No ordinary device handler or second RUN is drained. */
++            ret = EXCP_INTERRUPT;
++            break;
++        }
  
  #ifdef KVM_HAVE_MCE_INJECTION
          if (unlikely(have_sigbus_pending)) {
-@@ -3514,7 +3598,7 @@ int kvm_cpu_exec(CPUState *cpu)
+@@ -3514,7 +3656,7 @@ int kvm_cpu_exec(CPUState *cpu)
                            run->io.direction,
                            run->io.size,
                            run->io.count);
@@ -1833,7 +3878,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f
              break;
          case KVM_EXIT_MMIO:
              /* Called outside BQL */
-@@ -3523,7 +3607,7 @@ int kvm_cpu_exec(CPUState *cpu)
+@@ -3523,7 +3665,7 @@ int kvm_cpu_exec(CPUState *cpu)
                               run->mmio.data,
                               run->mmio.len,
                               run->mmio.is_write);
@@ -1842,7 +3887,18 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f
              break;
          case KVM_EXIT_IRQ_WINDOW_OPEN:
              ret = EXCP_INTERRUPT;
-@@ -3644,6 +3728,13 @@ int kvm_vm_ioctl(KVMState *s, unsigned long type, ...)
+@@ -3608,7 +3750,9 @@ int kvm_cpu_exec(CPUState *cpu)
+     cpu_exec_end(cpu);
+     bql_lock();
+ 
+-    if (ret < 0) {
++    kvm_crucible_window_leave(kvm_state, cpu);
++
++    if (ret < 0 && !kvm_state->crucible_window_configured) {
+         cpu_dump_state(cpu, stderr, CPU_DUMP_CODE);
+         vm_stop(RUN_STATE_INTERNAL_ERROR);
+     }
+@@ -3644,6 +3788,16 @@ int kvm_vm_ioctl(KVMState *s, unsigned long type, ...)
      arg = va_arg(ap, void *);
      va_end(ap);
  
@@ -1852,11 +3908,14 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f
 +    if (!kvm_crucible_response_service_allow_clock_ioctl(s, type, arg)) {
 +        return -EBUSY;
 +    }
++    if (!kvm_crucible_window_allow_clock_ioctl(s, type, arg)) {
++        return -EBUSY;
++    }
 +
      trace_kvm_vm_ioctl(type, arg);
      accel_ioctl_begin();
      ret = ioctl(s->vmfd, type, arg);
-@@ -4266,9 +4357,144 @@ static void kvm_accel_instance_init(Object *obj)
+@@ -4266,9 +4420,177 @@ static void kvm_accel_instance_init(Object *obj)
      s->xen_evtchn_max_pirq = 256;
      s->device = NULL;
      s->msr_energy.enable = false;
@@ -1883,9 +3942,42 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f
 +}
 +
 +
++static bool kvm_get_crucible_response_bytes(Object *obj, Error **errp)
++{
++    return KVM_STATE(obj)->crucible_response_bytes_experiment;
++}
++
++static void kvm_set_crucible_response_bytes(Object *obj, bool enabled, Error **errp)
++{
++    KVMState *state = KVM_STATE(obj);
++
++    if (state->vmfd >= 0) {
++        error_setg(errp, "canonical native response bytes cannot change after initialization");
++        return;
++    }
++    state->crucible_response_bytes_experiment = enabled;
++}
++
 +static bool kvm_get_crucible_response_service(Object *obj, Error **errp)
 +{
 +    return KVM_STATE(obj)->crucible_response_service_experiment;
++}
++
++static bool kvm_get_crucible_original_window(Object *obj, Error **errp)
++{
++    return KVM_STATE(obj)->crucible_window_experiment;
++}
++
++static void kvm_set_crucible_original_window(Object *obj, bool enabled,
++                                            Error **errp)
++{
++    KVMState *state = KVM_STATE(obj);
++
++    if (state->fd != -1) {
++        error_setg(errp, "original native window cannot change after initialization");
++        return;
++    }
++    state->crucible_window_experiment = enabled;
 +}
 +
 +static void kvm_set_crucible_response_service(Object *obj, bool enabled,
@@ -1991,8 +4083,8 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f
 +    if (!visit_type_uint32(visitor, name, &value, errp)) {
 +        return;
 +    }
-+    if (value != 1 && value != 3) {
-+        error_setg(errp, "native clock kernel edition must be 1 or 3");
++    if (value != 1 && value != 2 && value != 3) {
++        error_setg(errp, "native clock kernel edition must be 1, ARM 2 or x86 3");
 +        return;
 +    }
 +    state->crucible_clock_kernel_edition = value;
@@ -2001,10 +4093,16 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f
  static void kvm_accel_class_init(ObjectClass *oc, const void *data)
  {
      AccelClass *ac = ACCEL_CLASS(oc);
-@@ -4311,6 +4537,26 @@ static void kvm_accel_class_init(ObjectClass *oc, const void *data)
+@@ -4311,6 +4633,32 @@ static void kvm_accel_class_init(ObjectClass *oc, const void *data)
      object_class_property_set_description(oc, "rapl-helper-socket",
          "Socket Path for comminucating with the Virtual MSR helper daemon");
  
++    object_class_property_add_bool(oc, "x-crucible-original-window",
++                                  kvm_get_crucible_original_window,
++                                  kvm_set_crucible_original_window);
++    object_class_property_add_bool(oc, "x-crucible-response-bytes",
++                                  kvm_get_crucible_response_bytes,
++                                  kvm_set_crucible_response_bytes);
 +    object_class_property_add_bool(oc, "x-crucible-paused-response-service",
 +                                  kvm_get_crucible_response_service,
 +                                  kvm_set_crucible_response_service);
@@ -2028,29 +4126,33 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..5ed02766d07f848692c643f8f12d328f
      kvm_arch_accel_class_init(oc);
  }
  
-@@ -4318,6 +4564,8 @@ static void kvm_accel_finalize(Object *obj)
+@@ -4318,6 +4666,10 @@ static void kvm_accel_finalize(Object *obj)
  {
      KVMState *s = KVM_STATE(obj);
  
++    kvm_crucible_window_destroy(s);
++    kvm_crucible_response_bytes_destroy(s);
 +    kvm_crucible_response_service_destroy(s);
 +    kvm_crucible_userspace_destroy(s);
      g_free(s->device);
  }
  
 diff --git a/accel/kvm/meson.build b/accel/kvm/meson.build
-index 397a1fe1fd1e398254d96a65239503203d0b749c..6a909bfc3156f8e293100c3c40bd71f718b5698e 100644
+index 397a1fe1fd1e398254d96a65239503203d0b749c..d653fcc4f864108b7c79681650e0f6ec455aba5f 100644
 --- a/accel/kvm/meson.build
 +++ b/accel/kvm/meson.build
-@@ -1,6 +1,7 @@
+@@ -1,6 +1,9 @@
  kvm_ss = ss.source_set()
  kvm_ss.add(files(
    'kvm-all.c',
 +  'crucible-clock.c',
++  'crucible-window.c',
++  'crucible-response-bytes.c',
    'kvm-accel-ops.c',
  ))
  
 diff --git a/accel/stubs/kvm-stub.c b/accel/stubs/kvm-stub.c
-index 32b4b074035062edfd751a1a08c694e561d26c89..6fe9ad33909367bd60ede1ce18f0c4b2cc0cd8fd 100644
+index 32b4b074035062edfd751a1a08c694e561d26c89..11a1e4004df07efe99772d695a4968513a37887c 100644
 --- a/accel/stubs/kvm-stub.c
 +++ b/accel/stubs/kvm-stub.c
 @@ -11,9 +11,34 @@
@@ -2088,7 +4190,7 @@ index 32b4b074035062edfd751a1a08c694e561d26c89..6fe9ad33909367bd60ede1ce18f0c4b2
  KVMState *kvm_state;
  bool kvm_kernel_irqchip;
  bool kvm_async_interrupts_allowed;
-@@ -143,3 +168,25 @@ int kvm_create_guest_memfd(uint64_t size, uint64_t flags, Error **errp)
+@@ -143,3 +168,67 @@ int kvm_create_guest_memfd(uint64_t size, uint64_t flags, Error **errp)
  {
      return -ENOSYS;
  }
@@ -2112,6 +4214,48 @@ index 32b4b074035062edfd751a1a08c694e561d26c89..6fe9ad33909367bd60ede1ce18f0c4b2
 +    uint64_t completion_id, uint64_t exit_sequence, Error **errp)
 +{
 +    error_setg(errp, "original paused response service requires native KVM");
++    return NULL;
++}
++
++CrucibleKvmWindowInfo *qmp_x_crucible_kvm_original_window(
++    CrucibleKvmWindowOperation operation, uint64_t generation,
++    uint64_t start_ns, uint64_t end_ns, uint64_t stop_budget_ns, Error **errp)
++{
++    error_setg(errp, "original native window requires source-qualified KVM components");
++    return NULL;
++}
++
++CrucibleKvmOriginalReturnInventory *qmp_x_crucible_kvm_original_returns(
++    uint64_t generation, uint32_t first_record, uint32_t maximum_records,
++    Error **errp)
++{
++    error_setg(errp, "original native return inventory is not available");
++    return NULL;
++}
++
++CrucibleKvmOriginalReturnInfo *qmp_x_crucible_kvm_original_return(
++    CrucibleKvmOriginalReturnOperation operation, uint32_t record_index,
++    uint64_t generation, uint64_t expected_invocation, Error **errp)
++{
++    error_setg(errp, "original native return requires source-qualified KVM components");
++    return NULL;
++}
++
++
++CrucibleKvmInitialResponseInfo *qmp_x_crucible_kvm_initial_response(
++    CrucibleKvmInitialResponseOperation operation, uint32_t record_index,
++    uint64_t generation, uint64_t expected_invocation, Error **errp)
++{
++    error_setg(errp, "original initial response service requires native KVM");
++    return NULL;
++}
++
++CrucibleKvmResponseBytesInfo *qmp_x_crucible_kvm_response_bytes(
++    CrucibleKvmResponseBytesOperation operation, uint32_t record_index,
++    uint64_t generation, uint64_t expected_invocation, uint64_t operation_id,
++    uint64_t expected_sequence, Error **errp)
++{
++    error_setg(errp, "canonical external response bytes require configured native KVM");
 +    return NULL;
 +}
 diff --git a/accel/tcg/atomic_template.h b/accel/tcg/atomic_template.h
@@ -18655,7 +20799,7 @@ index 22e5bae388ad085568f624747cf94285877c0f34..f45d7aea4e8e43b7cf93961c31d508e6
      chr->logfd = -1;
      chr->log_line_start = true;
 diff --git a/cpu-common.c b/cpu-common.c
-index adb76b3a786c06d08ae89c5623d26bf75755d432..32eb22dfc37efb9bbb5d73c0289e4e67312c0cb1 100644
+index adb76b3a786c06d08ae89c5623d26bf75755d432..b5cad8798aa3339da13e74fe83b0952471a3e0b2 100644
 --- a/cpu-common.c
 +++ b/cpu-common.c
 @@ -22,6 +22,7 @@
@@ -18705,7 +20849,7 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..32eb22dfc37efb9bbb5d73c0289e4e67
      if (!QTAILQ_IN_USE(cpu, node)) {
          /* there is nothing to undo since cpu_exec_init() hasn't been called */
          return;
-@@ -128,11 +147,452 @@ struct qemu_work_item {
+@@ -128,11 +147,517 @@ struct qemu_work_item {
      run_on_cpu_func func;
      run_on_cpu_data data;
      bool free, exclusive, done;
@@ -18948,8 +21092,70 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..32eb22dfc37efb9bbb5d73c0289e4e67
 +    _exit(125);
 +}
 +
++/* A published gate precedes the all-CPU queue check. Per-CPU check-then-seal
++ * would admit a producer on a later CPU while an earlier CPU was inspected. */
++static uint64_t native_window_generation;
++
++static void native_window_work_guard_locked(CPUState *cpu,
++                                            const char *boundary)
++{
++    uint64_t generation = qatomic_load_acquire(&native_window_generation);
++
++    if (generation) {
++        error_report("Crucible native window CPU conflict: cpu=%d generation=%"
++                     PRIu64 " boundary=%s; original effects unknown, "
++                     "whole child containment required",
++                     cpu->cpu_index, generation, boundary);
++        _exit(125);
++    }
++}
++
++int qemu_cpu_native_window_seal(uint64_t generation)
++{
++    CPUState *cpu;
++
++    assert(bql_locked());
++    if (!generation ||
++        generation <= qatomic_load_acquire(&native_window_generation)) {
++        return -ESTALE;
++    }
++    qatomic_store_release(&native_window_generation, generation);
++    CPU_FOREACH(cpu) {
++        qemu_mutex_lock(&cpu->work_mutex);
++        if (!cpu->stopped || !cpu->crucible_paused_service.enrolled ||
++            cpu->crucible_paused_service.active ||
++            cpu->crucible_paused_service.ordinary_depth ||
++            !QSIMPLEQ_EMPTY(&cpu->work_list)) {
++            native_window_work_guard_locked(cpu, "original-window-queue-cut");
++        }
++        qemu_mutex_unlock(&cpu->work_mutex);
++    }
++    /* No release is implemented without classified ordinary ingress roots.
++     * The explicitly enrolled original paused-service callback is independent. */
++    return 0;
++}
++
++bool qemu_cpu_native_window_stopped(CPUState *cpu)
++{
++    bool stopped;
++
++    assert(bql_locked());
++    qemu_mutex_lock(&cpu->work_mutex);
++    stopped = cpu->stopped && !cpu->crucible_native_window_run &&
++        !cpu->crucible_paused_service.active &&
++        !cpu->crucible_paused_service.ordinary_depth &&
++        QSIMPLEQ_EMPTY(&cpu->work_list);
++    qemu_mutex_unlock(&cpu->work_mutex);
++    return stopped;
++}
++
 +void qemu_cpu_paused_service_reclaim_guard(CPUState *cpu)
 +{
++    if (qatomic_load_acquire(&native_window_generation)) {
++        qemu_mutex_lock(&cpu->work_mutex);
++        native_window_work_guard_locked(cpu, "original-window-CPU-reclamation");
++        qemu_mutex_unlock(&cpu->work_mutex);
++    }
 +    if (!cpu->crucible_paused_service.enrolled) {
 +        return;
 +    }
@@ -18964,6 +21170,8 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..32eb22dfc37efb9bbb5d73c0289e4e67
 +static void paused_service_work_begin_locked(CPUState *cpu)
 +{
 +    QemuCpuPausedService *slot = &cpu->crucible_paused_service;
++
++    native_window_work_guard_locked(cpu, "ordinary-callback-dispatch");
 +
 +    if (!slot->enrolled) {
 +        return;
@@ -19129,6 +21337,7 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..32eb22dfc37efb9bbb5d73c0289e4e67
  static void queue_work_on_cpu(CPUState *cpu, struct qemu_work_item *wi)
  {
      qemu_mutex_lock(&cpu->work_mutex);
++    native_window_work_guard_locked(cpu, "ordinary-work-producer");
 +    if (cpu->crucible_paused_service.active) {
 +        paused_service_conflict_locked(cpu, "ordinary-work-producer");
 +    }
@@ -19158,7 +21367,7 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..32eb22dfc37efb9bbb5d73c0289e4e67
      QSIMPLEQ_INSERT_TAIL(&cpu->work_list, wi, node);
      wi->done = false;
      qemu_mutex_unlock(&cpu->work_mutex);
-@@ -141,14 +601,73 @@ static void queue_work_on_cpu(CPUState *cpu, struct qemu_work_item *wi)
+@@ -141,14 +666,73 @@ static void queue_work_on_cpu(CPUState *cpu, struct qemu_work_item *wi)
      cpu_exit(cpu);
  }
  
@@ -19234,7 +21443,7 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..32eb22dfc37efb9bbb5d73c0289e4e67
      }
  
      wi.func = func;
-@@ -249,6 +768,7 @@ void end_exclusive(void)
+@@ -249,6 +833,7 @@ void end_exclusive(void)
  /* Wait for exclusive ops to finish, and begin cpu execution.  */
  void cpu_exec_start(CPUState *cpu)
  {
@@ -19242,7 +21451,7 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..32eb22dfc37efb9bbb5d73c0289e4e67
      trace_cpu_exec_start(cpu->cpu_index);
  
      qatomic_set(&cpu->running, true);
-@@ -340,6 +860,7 @@ void async_safe_run_on_cpu(CPUState *cpu, run_on_cpu_func func,
+@@ -340,6 +925,7 @@ void async_safe_run_on_cpu(CPUState *cpu, run_on_cpu_func func,
  
  void free_queued_cpu_work(CPUState *cpu)
  {
@@ -19250,7 +21459,7 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..32eb22dfc37efb9bbb5d73c0289e4e67
      while (!QSIMPLEQ_EMPTY(&cpu->work_list)) {
          struct qemu_work_item *wi = QSIMPLEQ_FIRST(&cpu->work_list);
          QSIMPLEQ_REMOVE_HEAD(&cpu->work_list, node);
-@@ -353,6 +874,14 @@ void process_queued_cpu_work(CPUState *cpu)
+@@ -353,6 +939,14 @@ void process_queued_cpu_work(CPUState *cpu)
  {
      struct qemu_work_item *wi;
  
@@ -19265,7 +21474,7 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..32eb22dfc37efb9bbb5d73c0289e4e67
      qemu_mutex_lock(&cpu->work_mutex);
      if (QSIMPLEQ_EMPTY(&cpu->work_list)) {
          qemu_mutex_unlock(&cpu->work_mutex);
-@@ -361,6 +890,7 @@ void process_queued_cpu_work(CPUState *cpu)
+@@ -361,6 +955,7 @@ void process_queued_cpu_work(CPUState *cpu)
      while (!QSIMPLEQ_EMPTY(&cpu->work_list)) {
          wi = QSIMPLEQ_FIRST(&cpu->work_list);
          QSIMPLEQ_REMOVE_HEAD(&cpu->work_list, node);
@@ -19273,7 +21482,7 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..32eb22dfc37efb9bbb5d73c0289e4e67
          qemu_mutex_unlock(&cpu->work_mutex);
          if (wi->exclusive) {
              /* Running work items outside the BQL avoids the following deadlock:
-@@ -378,6 +908,7 @@ void process_queued_cpu_work(CPUState *cpu)
+@@ -378,6 +973,7 @@ void process_queued_cpu_work(CPUState *cpu)
              wi->func(cpu, wi->data);
          }
          qemu_mutex_lock(&cpu->work_mutex);
@@ -64734,7 +66943,7 @@ index 5f3b1327de0aa287c1859bf155a47c8815ebb08d..b726a4cbd5f2dae44f78ecbaefc4a92a
  
  SiFiveUARTState *sifive_uart_create(MemoryRegion *address_space, hwaddr base,
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index b54035fb13b22a530692186b0afbe2718f1fb8b8..f0be19d515a15637132f7f903ecd781199cce360 100644
+index b54035fb13b22a530692186b0afbe2718f1fb8b8..a9e73990c51611af2b22e821f3bede4a73972801 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -63,6 +63,7 @@ typedef int (*WriteCoreDumpFunction)(const void *buf, size_t size,
@@ -64812,7 +67021,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..f0be19d515a15637132f7f903ecd7811
      const char *gdb_core_xml_file;
      const char * (*gdb_arch_name)(CPUState *cpu);
      const char * (*gdb_get_core_xml_file)(CPUState *cpu);
-@@ -398,7 +445,104 @@ typedef union {
+@@ -398,7 +445,109 @@ typedef union {
  
  typedef void (*run_on_cpu_func)(CPUState *cpu, run_on_cpu_data data);
  
@@ -64843,6 +67052,11 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..f0be19d515a15637132f7f903ecd7811
 +int qemu_cpu_paused_service_submit(CPUState *cpu, uint64_t native_id,
 +                                  uint64_t operation_id, uint64_t exit_sequence);
 +void qemu_cpu_paused_service_reclaim_guard(CPUState *cpu);
++
++/* Publish before checking every original CPU queue; ordinary producers fault
++ * before enqueue/dispatch. There is no unqualified ingress release operation. */
++int qemu_cpu_native_window_seal(uint64_t generation);
++bool qemu_cpu_native_window_stopped(CPUState *cpu);
 +int qemu_cpu_paused_service_collect(CPUState *cpu, uint64_t native_id,
 +                                   uint64_t operation_id, uint64_t exit_sequence,
 +                                   int *callback_result);
@@ -64917,7 +67131,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..f0be19d515a15637132f7f903ecd7811
  
  #define CPU_UNSET_NUMA_NODE_ID -1
  
-@@ -442,6 +586,14 @@ struct qemu_work_item;
+@@ -442,6 +591,14 @@ struct qemu_work_item;
   * @crash_occurred: Indicates the OS reported a crash (panic) for this CPU
   * @singlestep_flags: Flags for single-stepping.
   * @icount_extra: Instructions until next timer event.
@@ -64932,7 +67146,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..f0be19d515a15637132f7f903ecd7811
   * @cpu_ases: Pointer to array of CPUAddressSpaces (which define the
   *            AddressSpaces this CPU has)
   * @as: Pointer to the first AddressSpace, for the convenience of targets which
-@@ -508,11 +660,37 @@ struct CPUState {
+@@ -508,11 +665,39 @@ struct CPUState {
      unsigned singlestep_flags;
      int64_t icount_budget;
      int64_t icount_extra;
@@ -64955,6 +67169,8 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..f0be19d515a15637132f7f903ecd7811
      QemuMutex work_mutex;
      QSIMPLEQ_HEAD(, qemu_work_item) work_list;
 +    QemuCpuPausedService crucible_paused_service;
++    /* Original KVM window entry is independent of ordinary runstate cont. */
++    bool crucible_native_window_run;
 +    /* Native node inventory only; retained identity is local to this CPU. */
 +    uint64_t crucible_node_next_work_id;
 +    bool crucible_node_work_tracking;
@@ -64970,7 +67186,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..f0be19d515a15637132f7f903ecd7811
  
      struct CPUAddressSpace *cpu_ases;
      AddressSpace *as;
-@@ -738,6 +916,138 @@ enum CPUDumpFlags {
+@@ -738,6 +923,138 @@ enum CPUDumpFlags {
   */
  void cpu_dump_state(CPUState *cpu, FILE *f, int flags);
  
@@ -65109,7 +67325,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..f0be19d515a15637132f7f903ecd7811
  /**
   * TranslateForDebugResult: gives result of cpu_translate_for_debug()
   *
-@@ -1088,6 +1398,7 @@ void process_queued_cpu_work(CPUState *cpu);
+@@ -1088,6 +1405,7 @@ void process_queued_cpu_work(CPUState *cpu);
   * cpu_exit.
   */
  void cpu_exec_start(CPUState *cpu);
@@ -75448,10 +77664,10 @@ index 0000000000000000000000000000000000000000..4a4d665eb7262cd2b9fff0ab1ceed514
 +#endif
 diff --git a/include/system/crucible-kvm-clock.h b/include/system/crucible-kvm-clock.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..cfe629ff57a4e4fbc9436221215a163968a7fadc
+index 0000000000000000000000000000000000000000..a71a07ed0bd4da7c4357bfeb443d8c7dd9f1e1d8
 --- /dev/null
 +++ b/include/system/crucible-kvm-clock.h
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,180 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +/* Native kernel component ABI, separated from SIM instruction-clock control. */
 +#ifndef QEMU_CRUCIBLE_KVM_CLOCK_H
@@ -75493,11 +77709,17 @@ index 0000000000000000000000000000000000000000..cfe629ff57a4e4fbc9436221215a1639
 +#define KVM_CAP_CRUCIBLE_CLOCK_V3 0xa027
 +#endif
 +
++#ifndef KVM_CAP_CRUCIBLE_CLOCK_V2
++#define KVM_CAP_CRUCIBLE_CLOCK_V2 0xa026
++#endif
++
 +#define QEMU_CRUCIBLE_CLOCK_COMPONENTS 7
 +/* Kernel v3 adds pvclock, software LAPIC and automatic ceiling stopping.
 + * It does not close userspace exits, QEMU devices or publication custody.
 + */
 +#define QEMU_CRUCIBLE_CLOCK_V3_COMPONENTS 159
++/* ARM counters, timer and actual ceiling owners; no userspace device closure. */
++#define QEMU_CRUCIBLE_CLOCK_ARM_COMPONENTS 228
 +
 +int kvm_crucible_clock_configure(KVMState *state);
 +bool kvm_crucible_clock_read_ns(int64_t *nanoseconds);
@@ -75594,7 +77816,11 @@ index 0000000000000000000000000000000000000000..cfe629ff57a4e4fbc9436221215a1639
 +    uint64_t service_id;
 +    uint64_t completion_id;
 +    uint64_t exit_sequence;
++    uint64_t original_generation;
++    uint64_t original_invocation;
++    uint32_t original_record;
 +    int result;
++    bool initial_return;
 +    bool attributes_known;
 +    bool issued;
 +    bool executing;
@@ -75620,6 +77846,217 @@ index 0000000000000000000000000000000000000000..cfe629ff57a4e4fbc9436221215a1639
 +bool kvm_crucible_userspace_after_run(KVMState *state, CPUState *cpu, int result);
 +bool kvm_crucible_userspace_after_dispatch(KVMState *state, CPUState *cpu);
 +
++
++#endif
+diff --git a/include/system/crucible-kvm-response-bytes.h b/include/system/crucible-kvm-response-bytes.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..cdf89d903742862e077d2869b988ce5014e545dc
+--- /dev/null
++++ b/include/system/crucible-kvm-response-bytes.h
+@@ -0,0 +1,79 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Canonical external-response byte custody, independent of whole-node closure. */
++#ifndef QEMU_CRUCIBLE_KVM_RESPONSE_BYTES_H
++#define QEMU_CRUCIBLE_KVM_RESPONSE_BYTES_H
++
++#include "system/crucible-kvm-clock.h"
++#include "system/crucible-kvm-window.h"
++
++#ifndef KVM_CAP_CRUCIBLE_RESPONSE_BYTES_V1
++#define KVM_CAP_CRUCIBLE_RESPONSE_BYTES_V1 0xa02a
++#define KVM_CRUCIBLE_RESPONSE_BYTES_QUERY 1
++#define KVM_CRUCIBLE_RESPONSE_BYTES_STEP 2
++#define KVM_CRUCIBLE_RESPONSE_BYTES_MAX 4096
++
++struct kvm_crucible_response_bytes {
++	uint32_t version;
++	uint32_t operation;
++	uint64_t operation_id;
++	uint64_t expected_invocation;
++	uint64_t expected_sequence;
++	uint64_t expected_revision;
++	uint64_t expected_generation;
++	uint64_t invocation;
++	uint64_t pending_sequence;
++	uint64_t consumed_sequence;
++	uint64_t revision;
++	uint64_t address;
++	uint64_t data_offset;
++	int32_t callback_result;
++	uint32_t phase;
++	uint32_t native_vcpu_id;
++	uint32_t reason;
++	uint32_t length;
++	uint32_t count;
++	uint32_t size;
++	uint32_t direction;
++	uint32_t data_length;
++	uint32_t flags;
++	uint64_t reserved[4];
++	uint8_t data[KVM_CRUCIBLE_RESPONSE_BYTES_MAX];
++};
++
++#define KVM_CRUCIBLE_RESPONSE_BYTES _IOWR(KVMIO, 0xd8, struct kvm_crucible_response_bytes)
++
++#endif
++
++#define QEMU_CRUCIBLE_RESPONSE_BYTES_MAX_VCPUS 128
++#define QEMU_CRUCIBLE_RESPONSE_BYTES_COMPONENTS 7
++
++/* These native buffers are preallocated, never serialized as private pointers. */
++typedef struct CrucibleKvmResponseBytesJournal {
++    struct kvm_crucible_response_bytes scratch;
++    struct kvm_crucible_response_bytes canonical;
++    struct kvm_crucible_response_bytes original_request;
++    struct kvm_crucible_response_bytes result;
++    uint64_t generation;
++    uint32_t original_record;
++    int native_errno;
++    bool snapshot_known;
++    bool request_issued;
++    bool result_known;
++    bool handler_completed;
++    bool uncertain_effects;
++    bool opaque_effects;
++} CrucibleKvmResponseBytesJournal;
++
++int kvm_crucible_response_bytes_configure(KVMState *state);
++void kvm_crucible_response_bytes_destroy(KVMState *state);
++bool kvm_crucible_response_bytes_capture_return(KVMState *state, CPUState *cpu,
++    const struct kvm_crucible_run_return *receipt);
++bool kvm_crucible_response_bytes_geometry(KVMState *state, CPUState *cpu,
++    CrucibleKvmUserspaceExit *entry, bool retain);
++CrucibleKvmResponseGeometry *kvm_crucible_response_bytes_dispatch_geometry(
++    KVMState *state, CPUState *cpu);
++void kvm_crucible_response_bytes_dispatch_done(KVMState *state, CPUState *cpu,
++    int result);
++uint32_t kvm_crucible_response_bytes_exit_reason(KVMState *state, CPUState *cpu);
++
++#endif
+diff --git a/include/system/crucible-kvm-window.h b/include/system/crucible-kvm-window.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e7fcc41b630a1330373ae96508e8c7a86aead5c5
+--- /dev/null
++++ b/include/system/crucible-kvm-window.h
+@@ -0,0 +1,120 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Original native RUN/window custody, separate from complete node admission. */
++#ifndef QEMU_CRUCIBLE_KVM_WINDOW_H
++#define QEMU_CRUCIBLE_KVM_WINDOW_H
++
++#include "system/crucible-kvm-clock.h"
++
++#ifndef KVM_CAP_CRUCIBLE_RUN_RETURN_V1
++#define KVM_CAP_CRUCIBLE_RUN_RETURN_V1 0xa029
++#define KVM_CRUCIBLE_RUN_RETURN_QUERY 1
++#define KVM_CRUCIBLE_RUN_RETURN_ACK 2
++#define KVM_CRUCIBLE_RUN_RETURN_RETURNED (1U << 0)
++#define KVM_CRUCIBLE_RUN_RETURN_CLOCK_ENTERED (1U << 1)
++#define KVM_CRUCIBLE_RUN_RETURN_BEGIN_ACTIVE (1U << 2)
++#define KVM_CRUCIBLE_RUN_RETURN_END_ACTIVE (1U << 3)
++#define KVM_CRUCIBLE_RUN_RETURN_CLOCK_STOPPED (1U << 4)
++#define KVM_CRUCIBLE_RUN_PENDING_CALLBACK (1U << 0)
++#define KVM_CRUCIBLE_RUN_PENDING_MMIO (1U << 1)
++#define KVM_CRUCIBLE_RUN_PENDING_PIO (1U << 2)
++#define KVM_CRUCIBLE_RUN_PENDING_OPAQUE (1U << 3)
++
++/* Exact stage-six kernel ABI, without process-private pointers. */
++struct kvm_crucible_run_return {
++    uint32_t version;
++    uint32_t operation;
++    uint64_t expected_invocation;
++    uint64_t invocation;
++    uint64_t generation_begin;
++    uint64_t generation_end;
++    uint64_t current_begin_ns;
++    uint64_t current_end_ns;
++    int64_t run_result;
++    uint64_t response_sequence;
++    uint64_t response_consumed;
++    uint64_t response_revision;
++    uint32_t native_vcpu_id;
++    uint32_t pending_mask;
++    uint32_t response_phase;
++    uint32_t response_flags;
++    uint32_t flags;
++    uint32_t reserved_word;
++    uint64_t reserved[2];
++};
++#define KVM_CRUCIBLE_RUN_RETURN \
++    _IOWR(KVMIO, 0xd7, struct kvm_crucible_run_return)
++#endif
++
++/* No history eviction or counter wrapping is permitted in this component. */
++#define QEMU_CRUCIBLE_WINDOW_MAX_RETURNS 65536
++
++typedef enum CrucibleKvmWindowPhase {
++    CRUCIBLE_KVM_WINDOW_EMPTY,
++    CRUCIBLE_KVM_WINDOW_RUNNING,
++    CRUCIBLE_KVM_WINDOW_CLOSING,
++    CRUCIBLE_KVM_WINDOW_CLOSED,
++    CRUCIBLE_KVM_WINDOW_UNKNOWN,
++} CrucibleKvmWindowPhase;
++
++/* Preallocated with the lifetime RUN roster. Later Completion/More or another
++ * native invocation cannot replace this original callback result. */
++typedef struct CrucibleKvmInitialResponseJournal {
++    uint64_t service_id;
++    uint64_t exit_sequence;
++    int result;
++    bool issued;
++    bool completed;
++    bool result_known;
++    bool uncertain_effects;
++    bool opaque_effects;
++} CrucibleKvmInitialResponseJournal;
++
++typedef struct CrucibleKvmOriginalReturn {
++    struct kvm_crucible_run_return receipt;
++    CrucibleKvmInitialResponseJournal initial_response;
++    uint64_t generation;
++    uint64_t expected_invocation;
++    uint32_t vcpu_index;
++    int native_result;
++    int query_errno;
++    int ack_errno;
++    bool issued;
++    bool receipt_known;
++    bool no_birth_known;
++    bool ack_known;
++} CrucibleKvmOriginalReturn;
++
++typedef struct CrucibleKvmWindowVcpu {
++    CPUState *original_cpu;
++    struct kvm_crucible_run_return last_receipt;
++    uint64_t last_invocation;
++    uint64_t last_generation;
++    uint32_t current_record;
++    bool assigned;
++    bool ack_known;
++    bool current_reserved;
++} CrucibleKvmWindowVcpu;
++
++int kvm_crucible_window_configure(KVMState *state);
++void kvm_crucible_window_destroy(KVMState *state);
++bool kvm_crucible_window_allow_vcpu_create(KVMState *state);
++bool kvm_crucible_window_allow_clock_ioctl(KVMState *state,
++                                          unsigned long type,
++                                          const void *argument);
++bool kvm_crucible_window_enter(KVMState *state, CPUState *cpu);
++bool kvm_crucible_window_after_run(KVMState *state, CPUState *cpu, int result);
++void kvm_crucible_window_leave(KVMState *state, CPUState *cpu);
++
++/* Caller retains the userspace journal lock. The pointer is process-private,
++ * and authenticates the original owner without admitting a native effect. */
++/* Historical lookup authenticates the fixed owner and original receipt, not
++ * the current pending fragment. It never permits a fresh native callback. */
++CrucibleKvmOriginalReturn *kvm_crucible_window_initial_record_locked(
++    KVMState *state, uint32_t record_index, uint64_t generation,
++    uint64_t expected_invocation);
++
++CPUState *kvm_crucible_window_initial_response_owner_locked(
++    KVMState *state, uint32_t record_index, uint64_t generation,
++    uint64_t expected_invocation);
 +
 +#endif
 diff --git a/include/system/crucible-plugin-wake.h b/include/system/crucible-plugin-wake.h
@@ -75827,18 +78264,20 @@ index a1ef7696cb56c7e8ef0bd269898c9185419287c2..6bb18f133e987699c4467b5283bc1bb8
   * Returns true if executing within IOThread context,
   * false otherwise.
 diff --git a/include/system/kvm_int.h b/include/system/kvm_int.h
-index 0876aac938d3b3565c6a26eb1f569c3c78f87c98..255b42e506903fe50847a229bd2452e95cbd4013 100644
+index 0876aac938d3b3565c6a26eb1f569c3c78f87c98..f463701b8f87bb3c451f8ea3c785cd88e9b178f2 100644
 --- a/include/system/kvm_int.h
 +++ b/include/system/kvm_int.h
-@@ -14,6 +14,7 @@
+@@ -14,6 +14,9 @@
  #include "qemu/accel.h"
  #include "qemu/queue.h"
  #include "system/kvm.h"
 +#include "system/crucible-kvm-clock.h"
++#include "system/crucible-kvm-window.h"
++#include "system/crucible-kvm-response-bytes.h"
  #include "accel/accel-ops.h"
  #include "hw/core/boards.h"
  #include "hw/i386/topology.h"
-@@ -108,6 +109,26 @@ struct KVMState
+@@ -108,6 +111,41 @@ struct KVMState
      int nr_slots_max;
      int fd;
      int vmfd;
@@ -75862,6 +78301,21 @@ index 0876aac938d3b3565c6a26eb1f569c3c78f87c98..255b42e506903fe50847a229bd2452e9
 +    uint64_t crucible_userspace_revision;
 +    uint64_t crucible_userspace_reserved_revisions;
 +    CrucibleKvmUserspaceExit *crucible_userspace_exits;
++    bool crucible_response_bytes_experiment;
++    bool crucible_response_bytes_configured;
++    CrucibleKvmResponseBytesJournal *crucible_response_bytes;
++    bool crucible_window_experiment;
++    bool crucible_window_configured;
++    bool crucible_window_roster_sealed;
++    bool crucible_window_clock_command;
++    CrucibleKvmWindowPhase crucible_window_phase;
++    uint64_t crucible_window_generation;
++    uint64_t crucible_window_start_ns;
++    uint64_t crucible_window_end_ns;
++    uint32_t crucible_window_return_count;
++    uint32_t crucible_window_roster_count;
++    CrucibleKvmOriginalReturn *crucible_window_returns;
++    CrucibleKvmWindowVcpu *crucible_window_vcpus;
      int coalesced_mmio;
      int coalesced_pio;
      struct kvm_coalesced_mmio_ring *coalesced_mmio_ring;
@@ -128955,7 +131409,7 @@ index 22b7afed9f650c866f81aa154e6ba03dcc606c44..1d42273ed53a18559b7b421cf756f415
  # @CommandLineParameterType:
  #
 diff --git a/qapi/run-state.json b/qapi/run-state.json
-index a5771ad46815528fef2c2ebfa538d4e023a19969..0c4f5700e278acb0bed15c2998106500e29993df 100644
+index a5771ad46815528fef2c2ebfa538d4e023a19969..36722d3d2d6ecb6e69486be948cd973e4052b094 100644
 --- a/qapi/run-state.json
 +++ b/qapi/run-state.json
 @@ -132,6 +132,3082 @@
@@ -132041,7 +134495,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..0c4f5700e278acb0bed15c2998106500
  ##
  # @SHUTDOWN:
  #
-@@ -749,3 +3825,364 @@
+@@ -749,3 +3825,855 @@
  ##
  { 'enum': 'NotifyVmexitOption',
    'data': [ 'run', 'internal-error', 'disable' ] }
@@ -132406,6 +134860,497 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..0c4f5700e278acb0bed15c2998106500
 +            'vcpu-index': 'uint32', 'completion-id': 'uint64',
 +            'exit-sequence': 'uint64' },
 +  'returns': 'CrucibleKvmResponseServiceInfo' }
++
++##
++# @CrucibleKvmWindowOperation:
++#
++# Selects a source-owned original native window transition.
++#
++# @begin: Opens the original kernel generation and fixed CPU roster.
++# @close: Seals entry, requests original CPU stops and bounded kernel
++#     freeze.
++# @query: Observes the retained native cut without execution or device
++#     drain.
++#
++# Since: 11.1
++##
++{ 'enum': 'CrucibleKvmWindowOperation', 'data': [ 'begin', 'close', 'query' ] }
++
++##
++# @CrucibleKvmWindowInfo:
++#
++# Reports native clock and CPU components without complete node
++#     authority.
++#
++# @schema-version: Fixed original window component edition, one.
++# @clock-edition: Actual selected native kernel clock ABI, two or
++#     three.
++# @clock-components: Exact partial coverage, ARM 228 or x86 159.
++# @generation: Original source-owned window generation.
++# @phase: Native phase: empty zero, running one, closing two, closed
++#     three, unknown four.
++# @current-ns: Actual kernel clock coordinate.
++# @clock-active: Actual kernel clock execution gate.
++# @kernel-run-owners: Actual owners still inside native RUN.
++# @clock-closed: Actual frozen kernel clock and zero RUN owners.
++# @original-cpus-stopped: Every original fixed CPU acknowledged
++#     stopped.
++# @retained-returns: Finite lifetime source-owned return rows.
++# @input-custody-known: Always false; input source closure is not
++#     qualified.
++# @device-custody-known: Always false; device and DMA roots are not
++#     closed.
++# @publication-custody-known: Always false; output custody is not
++#     qualified.
++# @profile-qualified: Always false; this is not a common Ready
++#     receipt.
++#
++# Since: 11.1
++##
++{ 'struct': 'CrucibleKvmWindowInfo',
++  'data': { 'schema-version': 'uint32',
++            'clock-edition': 'uint32', 'clock-components': 'uint32',
++            'generation': 'uint64',
++            'phase': 'uint32',
++            'current-ns': 'uint64',
++            'clock-active': 'bool',
++            'kernel-run-owners': 'uint32',
++            'clock-closed': 'bool',
++            'original-cpus-stopped': 'bool',
++            'retained-returns': 'uint32',
++            'input-custody-known': 'bool',
++            'device-custody-known': 'bool',
++            'publication-custody-known': 'bool',
++            'profile-qualified': 'bool' } }
++
++##
++# @x-crucible-kvm-original-window:
++#
++# Controls the opt-in source-owned window; ordinary cont and clock
++#     mutation
++# cannot open it.  Each CPU executes at most one original RUN per
++#     generation.
++# I/O exits remain deferred, and no input/device/publication closure
++#     is implied.
++#
++# @operation: Selects original begin, close or observation.
++# @generation: Original window generation; begin requires its exact
++#     successor.
++# @start-ns: Begin coordinate; zero for other operations.
++# @end-ns: Begin ceiling; zero for other operations.
++# @stop-budget-ns: Positive close allowance at most five seconds;
++#     otherwise zero.
++#
++# Since: 11.1
++##
++{ 'command': 'x-crucible-kvm-original-window',
++  'data': { 'operation': 'CrucibleKvmWindowOperation',
++            'generation': 'uint64', 'start-ns': 'uint64', 'end-ns': 'uint64',
++            'stop-budget-ns': 'uint64' },
++  'returns': 'CrucibleKvmWindowInfo' }
++
++##
++# @CrucibleKvmOriginalReturnOperation:
++#
++# Selects observation or original kernel acknowledgement.
++#
++# @query: Reads the already retained original journal row.
++# @ack: Acknowledges the same actual kernel original exactly once.
++#
++# Since: 11.1
++##
++{ 'enum': 'CrucibleKvmOriginalReturnOperation', 'data': [ 'query', 'ack' ] }
++
++##
++# @CrucibleKvmOriginalReturnInfo:
++#
++# Reports one original source journal row, never a whole-state
++#     capture.
++#
++# @schema-version: Fixed original return component edition, one.
++# @record-index: Original preallocated lifetime journal row.
++# @generation: Original source-owned window generation.
++# @expected-invocation: Reserved next kernel invocation, including a
++#     no-birth attempt.
++# @invocation: Actual retained kernel invocation, or previous
++#     invocation when no birth.
++# @native-vcpu-id: Actual kernel original vCPU identifier.
++# @native-result: Original native RUN syscall result.
++# @generation-begin: Actual original kernel entry generation.
++# @generation-end: Actual original kernel return generation.
++# @current-begin-ns: Actual original kernel entry clock sample.
++# @current-end-ns: Actual original kernel return clock sample.
++# @pending-mask: Actual hidden callback, MMIO, PIO and opaque mask.
++# @response-sequence: Original kernel response sequence.
++# @response-consumed: Original kernel consumed response sequence.
++# @response-revision: Original kernel response revision.
++# @response-phase: Original kernel response phase.
++# @response-flags: Sticky kernel uncertain or opaque history.
++# @receipt-flags: Actual original-return and clock sample flags.
++# @issued: Whether the original native RUN was invoked.
++# @receipt-known: Whether a returned kernel original is retained.
++# @no-birth-known: Exact prior acknowledged record proved pre-arch
++#     rejection.
++# @ack-known: Whether the original kernel ACK outcome is known.
++# @query-errno: Native receipt query result, zero on success.
++# @ack-errno: Original native ACK result, zero on success.
++# @profile-qualified: Always false; this does not qualify a node.
++#
++# Since: 11.1
++##
++{ 'struct': 'CrucibleKvmOriginalReturnInfo',
++  'data': { 'schema-version': 'uint32',
++            'record-index': 'uint32',
++            'generation': 'uint64',
++            'expected-invocation': 'uint64',
++            'invocation': 'uint64',
++            'native-vcpu-id': 'uint32',
++            'native-result': 'int64',
++            'generation-begin': 'uint64',
++            'generation-end': 'uint64',
++            'current-begin-ns': 'uint64',
++            'current-end-ns': 'uint64',
++            'pending-mask': 'uint32',
++            'response-sequence': 'uint64',
++            'response-consumed': 'uint64',
++            'response-revision': 'uint64',
++            'response-phase': 'uint32',
++            'response-flags': 'uint32',
++            'receipt-flags': 'uint32',
++            'issued': 'bool',
++            'receipt-known': 'bool',
++            'no-birth-known': 'bool',
++            'ack-known': 'bool',
++            'query-errno': 'int64',
++            'ack-errno': 'int64',
++            'profile-qualified': 'bool' } }
++
++##
++# @x-crucible-kvm-original-return:
++#
++# Observes or acknowledges one original return while its actual CPU is
++#     stopped.
++# Lost replies retain the same row and original ACK, without another
++#     RUN.
++#
++# @operation: Selects observation or original ACK.
++# @record-index: Original retained lifetime journal row.
++# @generation: Exact original window generation.
++# @expected-invocation: Exact original reserved invocation.
++#
++# Since: 11.1
++##
++{ 'command': 'x-crucible-kvm-original-return',
++  'data': { 'operation': 'CrucibleKvmOriginalReturnOperation',
++            'record-index': 'uint32', 'generation': 'uint64',
++            'expected-invocation': 'uint64' },
++  'returns': 'CrucibleKvmOriginalReturnInfo' }
++
++##
++# @CrucibleKvmOriginalReturnIdentity:
++#
++# Reports the actual source-owned identity of one retained original
++# return row.  Observation does not permit guest entry, callback
++# dispatch or acknowledgement of another original invocation.
++#
++# @record-index: Original preallocated lifetime row index.
++# @generation: Original row's retained window generation.
++# @expected-invocation: Original reserved next kernel invocation.
++# @vcpu-index: Original immutable QEMU CPU roster index.
++# @native-vcpu-id: Original kernel CPU identity; BSP zero is valid.
++# @issued: Whether the original native RUN syscall was invoked.
++# @receipt-known: Whether its returned kernel original is retained.
++# @no-birth-known: Whether the exact prior ACK proved no new birth.
++# @ack-known: Whether the original ACK outcome is known.
++#
++# Since: 11.1
++##
++{ 'struct': 'CrucibleKvmOriginalReturnIdentity',
++  'data': { 'record-index': 'uint32', 'generation': 'uint64',
++            'expected-invocation': 'uint64', 'vcpu-index': 'uint32',
++            'native-vcpu-id': 'uint64', 'issued': 'bool',
++            'receipt-known': 'bool', 'no-birth-known': 'bool',
++            'ack-known': 'bool' } }
++
++##
++# @CrucibleKvmOriginalReturnInventory:
++#
++# Reports a bounded identity page at the actual original CPU stopped
++# cut.  It performs no kernel query, ACK, RUN or device dispatch.
++# Row identities and count remain stable while stopped.  ACK status
++# may change between pages through another authenticated operation;
++# separate pages do not constitute one immutable capture.
++#
++# @schema-version: Fixed observational inventory edition, one.
++# @generation: Current original source-owned window generation.
++# @first-record: First requested original lifetime row index.
++# @next-record: First index after the returned contiguous page.
++# @retained-returns: Complete finite lifetime ledger row count.
++# @entries: Actual original row identities, at most 128.
++# @profile-qualified: Always false; an inventory cannot qualify a
++#     node.
++#
++# Since: 11.1
++##
++{ 'struct': 'CrucibleKvmOriginalReturnInventory',
++  'data': { 'schema-version': 'uint32', 'generation': 'uint64',
++            'first-record': 'uint32', 'next-record': 'uint32',
++            'retained-returns': 'uint32',
++            'entries': ['CrucibleKvmOriginalReturnIdentity'],
++            'profile-qualified': 'bool' } }
++
++##
++# @x-crucible-kvm-original-returns:
++#
++# Observes actual identities instead of guessing invocation numbers
++# from CPU scheduling order.  The complete original roster must have a
++# work-locked stopped cut with no active paused response service.
++# Original single-return Query and ACK still require the exact learned
++# row, generation and reserved invocation.
++#
++# @generation: Current exact original source-owned generation.
++# @first-record: First retained lifetime row to observe.
++# @maximum-records: Positive bounded page size, at most 128.
++#
++# Since: 11.1
++##
++{ 'command': 'x-crucible-kvm-original-returns',
++  'data': { 'generation': 'uint64', 'first-record': 'uint32',
++            'maximum-records': 'uint32' },
++  'returns': 'CrucibleKvmOriginalReturnInventory' }
++
++
++##
++# @CrucibleKvmInitialResponseOperation:
++#
++# Selects one first response callback or its retained result.
++#
++# @submit: Admit the original initial IO/MMIO response into its
++#     slot.
++# @poll: Collect the retained result without dispatching again.
++#
++# Since: 11.1
++##
++{ 'enum': 'CrucibleKvmInitialResponseOperation', 'data': ['submit', 'poll'] }
++
++##
++# @CrucibleKvmInitialResponseInfo:
++#
++# Reports one original initial response callback.  It does not
++# confer guest execution, device/output closure or continuation
++# authority.
++#
++# @schema-version: Independent initial response edition, one.
++# @record-index: Source-owned original return lifetime row.
++# @generation: Original retained return generation.
++# @expected-invocation: Original reserved kernel RUN invocation.
++# @vcpu-index: Original fixed CPU roster index.
++# @native-vcpu-id: Original native CPU identity; BSP zero is valid.
++# @exit-sequence: Original first response fragment sequence.
++# @service-id: Monotone original CPU paused callback slot identity.
++# @submitted: Whether its original callback slot was admitted.
++# @completed: Whether the actual handler returned a retained result.
++# @result-known: Whether its original CPU result was collected.
++# @callback-result: Actual handler result; zero until completed.
++# @uncertain-effects: Original handler uncertainty retained with its
++#     result.
++# @opaque-effects: Original owner opacity retained with the handler
++#     result.
++# @device-closure: Always false in this component.
++# @input-custody: Always false in this component.
++# @output-custody: Always false in this component.
++# @profile-qualified: Always false in this component.
++#
++# Since: 11.1
++##
++{ 'struct': 'CrucibleKvmInitialResponseInfo',
++  'data': { 'schema-version': 'uint32', 'record-index': 'uint32',
++            'generation': 'uint64', 'expected-invocation': 'uint64',
++            'vcpu-index': 'uint32', 'native-vcpu-id': 'uint64',
++            'exit-sequence': 'uint64', 'service-id': 'uint64',
++            'submitted': 'bool', 'completed': 'bool', 'result-known': 'bool',
++            'callback-result': 'int32', 'uncertain-effects': 'bool',
++            'opaque-effects': 'bool', 'device-closure': 'bool',
++            'input-custody': 'bool', 'output-custody': 'bool',
++            'profile-qualified': 'bool' } }
++
++##
++# @x-crucible-kvm-initial-response:
++#
++# Submits or polls the first IO/MMIO response using its retained
++# original kernel return, independently of later Completion More.
++# Fresh admission requires its original closed clock and stopped CPU
++# roster.  One original paused handler executes without guest entry,
++# ordinary queue drain or another kernel completion.
++#
++# Collection retains the original result in its lifetime return row.
++# Later completion fragments, service slots or clock generations
++# cannot replace it.  Recovering a known result is observational and
++# cannot release another active service or admit a new callback.
++#
++# @operation: Original callback submission or result polling.
++# @record-index: Actual retained original return row.
++# @generation: Original row generation.
++# @expected-invocation: Original reserved kernel RUN invocation.
++#
++# Since: 11.1
++##
++{ 'command': 'x-crucible-kvm-initial-response',
++  'data': { 'operation': 'CrucibleKvmInitialResponseOperation',
++            'record-index': 'uint32', 'generation': 'uint64',
++            'expected-invocation': 'uint64' },
++  'returns': 'CrucibleKvmInitialResponseInfo' }
++
++##
++# @CrucibleKvmResponseBytesOperation:
++#
++# @query: Observe the current canonical external-response
++#     fragment.
++# @complete: Complete one original kernel callback using the
++#     retained actual paused handler reply.  An exact
++#     last-operation retry does not repeat it.
++#
++# Since: 11.1
++##
++{ 'enum': 'CrucibleKvmResponseBytesOperation', 'data': [ 'query', 'complete' ] }
++
++##
++# @CrucibleKvmResponseBytesPayloadKind:
++#
++# Distinguishes authenticated native facts from retained input
++# echoes.
++#
++# @native-query: Authenticated current native Query.
++# @native-result: Authenticated original native STEP result.
++# @original-request: Retained original STEP input with an unknown
++#     native result.  Native output fields do not establish
++#     effects.
++#
++# Since: 11.1
++##
++{ 'enum': 'CrucibleKvmResponseBytesPayloadKind',
++  'data': [ 'native-query', 'native-result', 'original-request' ] }
++
++##
++# @CrucibleKvmResponseBytesInfo:
++#
++# Compatibility and original last-operation facts for kernel-owned
++# response bytes.  @payload-kind identifies whether @data-base64
++# contains a native canonical fragment or an original request
++# echo.  Request echoes retain read reply input after an uncertain
++# ioctl; they do not establish native output facts or callback
++# effects.  Source identities describe the compiled userspace
++# artifact.  They do not qualify the running kernel, devices, DMA,
++# input/output or capture.
++#
++# @schema-version: Independent canonical response-byte edition,
++#     one.
++# @payload-kind: Native fact or retained original input
++#     classification.
++# @components: Partial producer/input/cache component bitmap,
++#     seven.
++# @kernel-capability: Required response-byte kernel capability
++#     identifier.
++# @native-abi-size: Exact native request/result size, 4264 bytes.
++# @maximum-data-bytes: Maximum private response byte count, 4096.
++# @clock-edition: Required native clock edition, two or three.
++# @clock-components: Exact compatible native clock component
++#     bitmap.
++# @qemu-build-id: Declared build identity of the compiled QEMU
++#     artifact.
++# @qemu-source-hash: Declared atomic source patch identity for
++#     this build.
++# @record-index: Original lifetime RUN-return row.
++# @vcpu-index: Original fixed CPU roster index.
++# @native-vcpu-id: Original native CPU identity; BSP zero is
++#     valid.
++# @generation: Original retained clock generation.
++# @invocation: Native invocation when the result is known.
++# @operation-id: Original completion identity; zero for Query.
++# @expected-sequence: Original admitted fragment; zero for Query.
++# @expected-revision: Original admitted native revision; Query
++#     zero.
++# @pending-sequence: Native pending fragment when the result is
++#     known.
++# @consumed-sequence: Native consumed fragment when the result is
++#     known.
++# @revision: Native response revision when the result is known.
++# @native-phase: Native response phase when the result is known.
++# @callback-result: Original kernel callback result when known.
++# @native-errno: Original failed ioctl error; zero for a known
++#     result.
++# @reason: Canonical external exit reason when known.
++# @address: Canonical original PIO port or MMIO address.
++# @data-offset: Original mapped PIO offset, never a pointer.
++# @length: Canonical MMIO length; zero for PIO.
++# @count: Canonical PIO repetition count; zero for MMIO.
++# @size: Canonical PIO element width; zero for MMIO.
++# @direction: Canonical read/write direction.
++# @data-length: Number of canonical bytes in the returned payload.
++# @data-base64: Native bytes or retained input, encoded without
++#     line breaks.
++# @result-known: Whether the original native result is
++#     authenticated.
++# @uncertain-effects: Retained original effects uncertainty.
++# @opaque-effects: Retained original owner opacity.
++# @kernel-source-qualified: Always false in this component.
++# @device-closure: Always false in this component.
++# @input-custody: Always false in this component.
++# @output-custody: Always false in this component.
++# @profile-qualified: Always false in this component.
++#
++# Since: 11.1
++##
++{ 'struct': 'CrucibleKvmResponseBytesInfo',
++  'data': { 'schema-version': 'uint32',
++            'payload-kind': 'CrucibleKvmResponseBytesPayloadKind',
++            'components': 'uint32', 'kernel-capability': 'uint32',
++            'native-abi-size': 'uint32',
++            'maximum-data-bytes': 'uint32', 'clock-edition': 'uint32',
++            'clock-components': 'uint32', 'qemu-build-id': 'str',
++            'qemu-source-hash': 'str', 'record-index': 'uint32',
++            'vcpu-index': 'uint32', 'native-vcpu-id': 'uint32',
++            'generation': 'uint64', 'invocation': 'uint64',
++            'operation-id': 'uint64', 'expected-sequence': 'uint64',
++            'expected-revision': 'uint64', 'pending-sequence': 'uint64',
++            'consumed-sequence': 'uint64',
++            'revision': 'uint64', 'native-phase': 'uint32',
++            'callback-result': 'int32', 'native-errno': 'int32',
++            'reason': 'uint32', 'address': 'uint64', 'data-offset': 'uint64',
++            'length': 'uint32', 'count': 'uint32', 'size': 'uint32',
++            'direction': 'uint32', 'data-length': 'uint32', 'data-base64': 'str',
++            'result-known': 'bool', 'uncertain-effects': 'bool',
++            'opaque-effects': 'bool', 'kernel-source-qualified': 'bool',
++            'device-closure': 'bool', 'input-custody': 'bool',
++            'output-custody': 'bool', 'profile-qualified': 'bool' } }
++
++##
++# @x-crucible-kvm-response-bytes:
++#
++# Uses the immutable pre-vCPU external-response-byte mode.  Query
++# neither dispatches nor consumes, ACKs, drains or enters the
++# guest.  Complete requires the original closed window and
++# genuinely collected paused handler result; it performs only one
++# original kernel callback, without another KVM_RUN.  A cached
++# last-operation result survives failed delivery and later
++# fragments.
++#
++# @operation: Canonical Query or original completion.
++# @record-index: Original lifetime RUN-return row.
++# @generation: Original retained clock generation.
++# @expected-invocation: Original reserved kernel RUN invocation.
++# @operation-id: Consecutive original completion identity; Query
++#     zero.
++# @expected-sequence: Original admitted fragment; Query zero.
++#
++# Since: 11.1
++##
++{ 'command': 'x-crucible-kvm-response-bytes',
++  'data': { 'operation': 'CrucibleKvmResponseBytesOperation',
++            'record-index': 'uint32', 'generation': 'uint64',
++            'expected-invocation': 'uint64', 'operation-id': 'uint64',
++            'expected-sequence': 'uint64' },
++  'returns': 'CrucibleKvmResponseBytesInfo' }
 diff --git a/qemu-options.hx b/qemu-options.hx
 index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..ee980c288a79a4615ccbc66b8372acbc3722447b 100644
 --- a/qemu-options.hx
@@ -133092,7 +136037,7 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..3ce62e9a977ea55d839d8d625345d1b0
           * cpu_exit() is not enough to kick a halted CPU out of
           * qemu_tcg_wait_io_event.  async_run_on_cpu, instead,
 diff --git a/system/cpus.c b/system/cpus.c
-index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624ebf66abed5 100644
+index 97e5a5edee23b70d8bd170c2b984568f4e804672..4b1c0021800dabb933a1b9d98e9ef7727d7f15f0 100644
 --- a/system/cpus.c
 +++ b/system/cpus.c
 @@ -25,11 +25,13 @@
@@ -133117,7 +136062,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624eb
  #include "system/physmem.h"
  #include "system/replay.h"
  #include "system/runstate.h"
-@@ -76,6 +79,180 @@ static QemuMutex bql;
+@@ -76,14 +79,191 @@ static QemuMutex bql;
   */
  static const AccelOpsClass *cpus_accel;
  
@@ -133297,8 +136242,10 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624eb
 +
  bool cpu_is_stopped(CPUState *cpu)
  {
-     return cpu->stopped || !runstate_is_running();
-@@ -83,7 +260,9 @@ bool cpu_is_stopped(CPUState *cpu)
+-    return cpu->stopped || !runstate_is_running();
++    return cpu->stopped ||
++           (!cpu->crucible_native_window_run && !runstate_is_running());
+ }
  
  bool cpu_work_list_empty(CPUState *cpu)
  {
@@ -133309,7 +136256,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624eb
  }
  
  bool cpu_thread_is_idle(CPUState *cpu)
-@@ -258,6 +437,9 @@ int64_t cpus_get_elapsed_ticks(void)
+@@ -258,6 +438,9 @@ int64_t cpus_get_elapsed_ticks(void)
  
  void cpu_set_interrupt(CPUState *cpu, int mask)
  {
@@ -133319,7 +136266,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624eb
      /* Pairs with cpu_test_interrupt(). */
      qatomic_or(&cpu->interrupt_request, mask);
  }
-@@ -318,6 +500,9 @@ static int do_vm_stop(RunState state, bool send_stop)
+@@ -318,6 +501,9 @@ static int do_vm_stop(RunState state, bool send_stop)
       */
      ret |= bdrv_flush_all();
      trace_vm_stop_flush_all(ret);
@@ -133329,7 +136276,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624eb
  
      return ret;
  }
-@@ -327,6 +512,10 @@ static int do_vm_stop(RunState state, bool send_stop)
+@@ -327,6 +513,10 @@ static int do_vm_stop(RunState state, bool send_stop)
   */
  int vm_shutdown(void)
  {
@@ -133340,7 +136287,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624eb
      return do_vm_stop(RUN_STATE_SHUTDOWN, false);
  }
  
-@@ -438,7 +627,28 @@ void qemu_init_cpu_loop(void)
+@@ -438,7 +628,28 @@ void qemu_init_cpu_loop(void)
  
  void run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data)
  {
@@ -133369,7 +136316,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624eb
  }
  
  static void qemu_cpu_stop(CPUState *cpu, bool exit)
-@@ -466,6 +676,13 @@ void qemu_process_cpu_events(CPUState *cpu)
+@@ -466,6 +677,13 @@ void qemu_process_cpu_events(CPUState *cpu)
      bool slept = false;
  
      qatomic_set(&cpu->exit_request, false);
@@ -133383,7 +136330,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624eb
      while (cpu_thread_is_idle(cpu)) {
          if (!slept) {
              slept = true;
-@@ -506,6 +723,12 @@ void qemu_cpu_kick(CPUState *cpu)
+@@ -506,6 +724,12 @@ void qemu_cpu_kick(CPUState *cpu)
      } else { /* default */
          cpus_kick_thread(cpu);
      }
@@ -133396,7 +136343,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624eb
  }
  
  void qemu_cpu_kick_self(void)
-@@ -611,6 +834,21 @@ void cpu_thread_signal_destroyed(CPUState *cpu)
+@@ -611,6 +835,21 @@ void cpu_thread_signal_destroyed(CPUState *cpu)
      qemu_cond_signal(&qemu_cpu_cond);
  }
  
@@ -133418,7 +136365,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624eb
  void cpu_pause(CPUState *cpu)
  {
      if (qemu_cpu_is_self(cpu)) {
-@@ -623,6 +861,7 @@ void cpu_pause(CPUState *cpu)
+@@ -623,6 +862,7 @@ void cpu_pause(CPUState *cpu)
  
  void cpu_resume(CPUState *cpu)
  {
@@ -133426,7 +136373,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624eb
      cpu->exception_index = -1;
      cpu->stop = false;
      cpu->stopped = false;
-@@ -683,11 +922,34 @@ void resume_all_vcpus(void)
+@@ -683,11 +923,34 @@ void resume_all_vcpus(void)
      }
  }
  
@@ -133461,7 +136408,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624eb
      bql_unlock();
      qemu_thread_join(cpu->thread);
      bql_lock();
-@@ -743,6 +1005,10 @@ void cpu_stop_current(void)
+@@ -743,6 +1006,10 @@ void cpu_stop_current(void)
  
  int vm_stop(RunState state)
  {
@@ -133472,7 +136419,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624eb
      if (qemu_in_vcpu_thread()) {
          qemu_system_vmstop_request_prepare();
          qemu_system_vmstop_request(state);
-@@ -768,6 +1034,14 @@ int vm_prepare_start(bool step_pending)
+@@ -768,6 +1035,14 @@ int vm_prepare_start(bool step_pending)
      RunState state = vm_was_suspended ? RUN_STATE_SUSPENDED : RUN_STATE_RUNNING;
      RunState requested;
  
@@ -133487,7 +136434,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624eb
      qemu_vmstop_requested(&requested);
      if (runstate_is_running() && requested == RUN_STATE__MAX) {
          return -1;
-@@ -797,9 +1071,11 @@ int vm_prepare_start(bool step_pending)
+@@ -797,9 +1072,11 @@ int vm_prepare_start(bool step_pending)
      runstate_set(state);
      vm_state_notify(1, state);
      vm_was_suspended = false;
@@ -133499,7 +136446,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624eb
  void vm_start(void)
  {
      if (!vm_prepare_start(false)) {
-@@ -820,6 +1096,10 @@ void vm_resume(RunState state)
+@@ -820,6 +1097,10 @@ void vm_resume(RunState state)
     current state is forgotten forever */
  int vm_stop_force_state(RunState state)
  {
@@ -133510,7 +136457,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624eb
      if (runstate_is_live(runstate_get())) {
          return vm_stop(state);
      } else {
-@@ -928,4 +1208,3 @@ void qmp_inject_nmi(Error **errp)
+@@ -928,4 +1209,3 @@ void qmp_inject_nmi(Error **errp)
  {
      nmi_monitor_handle(monitor_get_cpu_index(monitor_cur()), errp);
  }
@@ -190616,10 +193563,10 @@ index 0000000000000000000000000000000000000000..47c5b0de1b13d148c6b19af3e0bacdf5
 +    main()
 diff --git a/tests/unit/test-crucible-rr-sim-barriers.py b/tests/unit/test-crucible-rr-sim-barriers.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..799611ed7d454507cea4ef5d550607a5d48fd320
+index 0000000000000000000000000000000000000000..ac231e80b1643c3613ceb63be13c8aec71f88d55
 --- /dev/null
 +++ b/tests/unit/test-crucible-rr-sim-barriers.py
-@@ -0,0 +1,665 @@
+@@ -0,0 +1,673 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production RR FIFO barriers and ordinary CPU event processing.
 +
@@ -190706,11 +193653,13 @@ index 0000000000000000000000000000000000000000..799611ed7d454507cea4ef5d550607a5
 +
 +PRELUDE = r"""
 +#include <assert.h>
++#include <inttypes.h>
 +#include <stdbool.h>
 +#include <stdint.h>
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
++#include <unistd.h>
 +#include <glib.h>
 +#define qemu_build_assert(condition) _Static_assert(condition, #condition)
 +#include "qemu/atomic.h"
@@ -190767,7 +193716,8 @@ index 0000000000000000000000000000000000000000..799611ed7d454507cea4ef5d550607a5
 +{ g_assert_not_reached(); }
 +static void qemu_cpu_node_observe(CPUState *cpu, uint32_t kind, uint64_t payload)
 +{ g_assert_false(cpu->crucible_node_ingress_armed); }
-+static void error_report(const char *message) { g_error("%s", message); }
++static void error_report(const char *message, ...)
++{ g_error("%s", message); }
 +
 +/* These source-specific seams assert the new component remains disabled.
 + * Its genuine owner-thread and producer behavior has an independent proof. */
@@ -190783,6 +193733,10 @@ index 0000000000000000000000000000000000000000..799611ed7d454507cea4ef5d550607a5
 +static void paused_service_conflict_locked(CPUState *cpu, const char *boundary)
 +{ g_assert_not_reached(); }
 +
++
++/* The original KVM window stays disabled in this legacy RR proof. The
++ * extracted producer guard reads this same zero generation throughout. */
++static uint64_t native_window_generation;
 +
 +static CPUState cpus[2], sentinel;
 +static CPUState *first_cpu = cpus, *current_cpu;
@@ -191178,7 +194132,8 @@ index 0000000000000000000000000000000000000000..799611ed7d454507cea4ef5d550607a5
 +    inventory = [
 +        ("accel/accel-system.c", ["bool current_accel_is_sim(void)\n{"]),
 +        ("system/cpus.c", ["bool cpu_work_list_empty(CPUState *cpu)\n{"]),
-+        ("cpu-common.c", ["static void queue_work_on_cpu(",
++        ("cpu-common.c", ["static void native_window_work_guard_locked(",
++                          "static void queue_work_on_cpu(",
 +                          "void async_run_on_cpu(", "void async_safe_run_on_cpu(",
 +                          "void process_queued_cpu_work("]),
 +        ("system/cpus.c", ["static void qemu_cpu_stop(",

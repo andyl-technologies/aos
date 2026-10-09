@@ -57,6 +57,7 @@ typedef int (*QemuCpuPausedServiceFunc)(CPUState *, uint64_t, uint64_t);
 struct CPUState {
     int cpu_index;
     bool created, stopped, unplug, stop, halted, thread_kicked, exit_request;
+    bool crucible_native_window_run;
     QemuMutex work_mutex;
     QSIMPLEQ_HEAD(, qemu_work_item) work_list;
     QemuCpuPausedService crucible_paused_service;
@@ -66,6 +67,8 @@ struct CPUState {
 };
 
 static CPUState native_cpu;
+#define CPU_FOREACH(cpu) for ((cpu) = &native_cpu; (cpu); (cpu) = NULL)
+static uint64_t native_window_generation;
 static QemuMutex bql = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t qemu_work_cond = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t qemu_pause_cond = PTHREAD_COND_INITIALIZER;
@@ -73,8 +76,6 @@ static pthread_cond_t halt_cond = PTHREAD_COND_INITIALIZER;
 static _Thread_local CPUState *current_cpu;
 static _Thread_local bool has_bql;
 static unsigned device_callbacks, ordinary_callbacks, kicks;
-/* This legacy fixture leaves the separate source-window gate unconfigured. */
-static uint64_t native_window_generation;
 static int callback_result;
 static bool hold_callback, hold_ordinary, run_event_wait;
 static int started[2], release_callback[2];
@@ -146,7 +147,8 @@ static void qemu_cond_wait(pthread_cond_t *condition, QemuMutex *mutex)
     assert(pthread_cond_wait(condition, mutex) == 0);
 }
 
-static bool cpu_is_stopped(CPUState *cpu) { return cpu->stopped; }
+static bool model_running = true;
+static bool runstate_is_running(void) { return model_running; }
 static bool cpu_has_work(CPUState *cpu) { return false; }
 static struct { bool (*cpu_thread_is_idle)(CPUState *); } model_accel;
 static typeof(model_accel) *cpus_accel = &model_accel;
@@ -265,6 +267,7 @@ static void units(void)
     bql_lock();
     assert(QSIMPLEQ_EMPTY(&native_cpu.work_list));
     assert(native_cpu.crucible_paused_service.ordinary_depth == 1);
+    assert(!qemu_cpu_native_window_stopped(&native_cpu));
     assert(qemu_cpu_paused_service_submit(&native_cpu, 71, 1, 19) == -EBUSY);
     assert(write(release_callback[1], "R", 1) == 1);
     bql_unlock();
@@ -275,6 +278,7 @@ static void units(void)
     assert(close(release_callback[0]) == 0 && close(release_callback[1]) == 0);
 
     async_run_on_cpu(&native_cpu, ordinary, (run_on_cpu_data){ 0 });
+    assert(!qemu_cpu_native_window_stopped(&native_cpu));
     assert(qemu_cpu_paused_service_submit(&native_cpu, 71, 1, 19) == -EBUSY);
     execute_original();
     assert(ordinary_callbacks == 2 && device_callbacks == 0);
@@ -288,6 +292,7 @@ static void units(void)
     execute_original();
     assert(device_callbacks == 1 && ordinary_callbacks == 2);
     assert(native_cpu.crucible_paused_service.active);
+    assert(!qemu_cpu_native_window_stopped(&native_cpu));
     assert(collect() == 0);
     assert(!native_cpu.crucible_paused_service.active);
     assert(cpu_work_list_empty(&native_cpu) && cpu_thread_is_idle(&native_cpu));
@@ -344,7 +349,24 @@ static void units(void)
     assert(collect() == 0 && kicks == 2);
     assert(close(started[0]) == 0 && close(started[1]) == 0);
     assert(close(release_callback[0]) == 0 && close(release_callback[1]) == 0);
-    puts("Actual extracted slot/thread transitions PASS; native qualification absent");
+    model_running = false;
+    native_cpu.stopped = false;
+    assert(cpu_is_stopped(&native_cpu));
+    native_cpu.crucible_native_window_run = true;
+    assert(!cpu_is_stopped(&native_cpu));
+    native_cpu.stopped = true;
+    assert(cpu_is_stopped(&native_cpu));
+    assert(!qemu_cpu_native_window_stopped(&native_cpu));
+    native_cpu.crucible_native_window_run = false;
+    model_running = true;
+    hold_callback = false;
+    run_event_wait = false;
+    assert(qemu_cpu_native_window_seal(1) == 0);
+    assert(qemu_cpu_paused_service_submit(&native_cpu, 71, 2, 20) == 0);
+    execute_original();
+    assert(qemu_cpu_paused_service_collect(&native_cpu, 71, 2, 20, &result) == 0);
+    assert(result == 0 && ordinary_callbacks == 0);
+    puts("Actual extracted slot/thread transitions, paused source-owned CPU run predicate and sealed original callback PASS; native qualification absent");
 }
 
 static void fatal(const char *boundary)
@@ -371,6 +393,7 @@ static void fatal(const char *boundary)
         assert(read(started[0], &marker, 1) == 1);
         bql_lock();
         assert(native_cpu.crucible_paused_service.executing);
+        assert(!qemu_cpu_native_window_stopped(&native_cpu));
         assert(!cpu_work_list_empty(&native_cpu) && !cpu_thread_is_idle(&native_cpu));
         async_run_on_cpu(&native_cpu, ordinary, (run_on_cpu_data){ 0 });
     } else {
@@ -382,12 +405,57 @@ static void fatal(const char *boundary)
     exit(0);
 }
 
+
+static void window_fatal(const char *boundary)
+{
+    char marker;
+    pthread_t thread;
+
+    reset();
+    if (!strcmp(boundary, "window-queued-cut")) {
+        async_run_on_cpu(&native_cpu, ordinary, (run_on_cpu_data){ 0 });
+        qemu_cpu_native_window_seal(1);
+    } else if (!strcmp(boundary, "window-inflight-cut")) {
+        assert(pipe(started) == 0 && pipe(release_callback) == 0);
+        hold_ordinary = true;
+        async_safe_run_on_cpu(&native_cpu, ordinary, (run_on_cpu_data){ 0 });
+        bql_unlock();
+        assert(pthread_create(&thread, NULL, worker, NULL) == 0);
+        assert(read(started[0], &marker, 1) == 1);
+        bql_lock();
+        assert(QSIMPLEQ_EMPTY(&native_cpu.work_list));
+        assert(native_cpu.crucible_paused_service.ordinary_depth == 1);
+        assert(!qemu_cpu_native_window_stopped(&native_cpu));
+        qemu_cpu_native_window_seal(1);
+    } else {
+        assert(qemu_cpu_native_window_seal(1) == 0);
+        assert(native_window_generation == 1);
+        if (!strcmp(boundary, "window-queued")) {
+            async_run_on_cpu(&native_cpu, ordinary, (run_on_cpu_data){ 0 });
+        } else if (!strcmp(boundary, "window-safe-queued")) {
+            async_safe_run_on_cpu(&native_cpu, ordinary, (run_on_cpu_data){ 0 });
+        } else if (!strcmp(boundary, "window-direct")) {
+            current_cpu = &native_cpu;
+            do_run_on_cpu(&native_cpu, ordinary, (run_on_cpu_data){ 0 }, &bql);
+        } else if (!strcmp(boundary, "window-teardown")) {
+            free_queued_cpu_work(&native_cpu);
+        } else {
+            abort();
+        }
+    }
+    puts("CONFLICT_RETURNED_AS_SUCCESS");
+    fflush(stdout);
+    exit(0);
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
     bql_lock();
     if (!strcmp(argv[1], "units")) {
         units();
+    } else if (!strncmp(argv[1], "window-", 7)) {
+        window_fatal(argv[1]);
     } else {
         fatal(argv[1]);
     }
@@ -399,7 +467,7 @@ int main(int argc, char **argv)
 
 def main():
     if len(sys.argv) != 4:
-        raise SystemExit("usage: slot-model.py QEMU_SOURCE AOS_CC OUTPUT_DIR")
+        raise SystemExit("usage: window-producer.py QEMU_SOURCE AOS_CC OUTPUT_DIR")
     source, compiler, output = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
     output.mkdir(parents=True, exist_ok=True)
     common = (source / "cpu-common.c").read_text()
@@ -408,6 +476,8 @@ def main():
     names = [
         "paused_service_conflict_locked",
         "native_window_work_guard_locked",
+        "qemu_cpu_native_window_seal",
+        "qemu_cpu_native_window_stopped",
         "qemu_cpu_paused_service_reclaim_guard",
         "paused_service_work_begin_locked",
         "paused_service_work_end_locked",
@@ -428,7 +498,7 @@ def main():
     ).replace("@WORK@", record(common, "qemu_work_item"))
     generated += "\n".join(function(common, name) for name in names)
     generated += "\n".join(function(events, name) for name in [
-        "cpu_work_list_empty", "cpu_thread_is_idle", "qemu_cpu_stop",
+        "cpu_is_stopped", "cpu_work_list_empty", "cpu_thread_is_idle", "qemu_cpu_stop",
         "qemu_process_cpu_events_common", "qemu_process_cpu_events",
     ]) + TESTS
     (output / "slot.c").write_text(generated)
@@ -453,7 +523,9 @@ def main():
         "earlier_outputs": ["opaque-original-output"],
     }
     encoded = json.dumps(original, sort_keys=True).encode()
-    for boundary in ["queued", "safe-queued", "direct", "teardown", "inflight"]:
+    for boundary in ["queued", "safe-queued", "direct", "teardown", "inflight",
+                     "window-queued-cut", "window-inflight-cut", "window-queued",
+                     "window-safe-queued", "window-direct", "window-teardown"]:
         with subprocess.Popen(
             [str(binary), boundary], stdout=subprocess.PIPE, stderr=subprocess.PIPE
         ) as child:
@@ -463,7 +535,10 @@ def main():
             assert retained["original"] == encoded and retained["effects"] == "Unknown"
             assert b"ORDINARY_CALLBACK_EXECUTED" not in stdout
             assert b"CONFLICT_RETURNED_AS_SUCCESS" not in stdout
-            assert b"native=71 operation=1 exit=19" in stderr
+            if boundary.startswith("window-"):
+                assert b"generation=1" in stderr
+            else:
+                assert b"native=71 operation=1 exit=19" in stderr
             assert b"whole child containment required" in stderr
             print(f"Actual child fault/death {boundary}: original host model custody Unknown")
 

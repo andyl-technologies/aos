@@ -37,6 +37,7 @@ PREFIX = r"""// SPDX-License-Identifier: GPL-2.0-only
 @ENTRY_DEFINITION@
 
 typedef struct CrucibleKvmResponseService CrucibleKvmResponseService;
+typedef struct CrucibleKvmResponseBytesJournal CrucibleKvmResponseBytesJournal;
 typedef int QemuMutex;
 typedef struct KVMState {
     @STATE_FIELDS@
@@ -89,6 +90,9 @@ static void qemu_mutex_unlock(QemuMutex *mutex)
     *mutex = 0;
 }
 
+/* Canonical-byte mode is disabled; accidental admission fails the fixture. */
+static uint32_t kvm_crucible_response_bytes_exit_reason(KVMState *state, CPUState *cpu)
+{ (void)state; (void)cpu; assert(false); return 0; }
 @FUNCTIONS@
 """
 
@@ -328,6 +332,15 @@ def main():
         state.index("    bool crucible_clock_experiment;"):
         state.index("    int coalesced_mmio;")
     ]
+    # Window records stay opaque in this original, disabled-profile fixture.
+    # Its phase enum is extracted rather than copied into test plumbing.
+    window = (source / "include/system/crucible-kvm-window.h").read_text()
+    start = window.index("typedef enum CrucibleKvmWindowPhase {")
+    end = window.index(";", window.index("\n}", start)) + 1
+    definition += "\n" + window[start:end] + "\n"
+    definition += "typedef struct CrucibleKvmOriginalReturn CrucibleKvmOriginalReturn;\n"
+    definition += "typedef struct CrucibleKvmWindowVcpu CrucibleKvmWindowVcpu;\n"
+
     names = [
         "userspace_exit_requires_completion",
         "userspace_run_start",

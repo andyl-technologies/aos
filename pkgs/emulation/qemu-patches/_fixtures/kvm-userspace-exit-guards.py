@@ -24,7 +24,22 @@ def verify(source):
     schema_bytes = (source / "qapi/run-state.json").read_bytes()
     # Complete original v1/v3 source and QAPI prefix, including the one added
     # public CPU header required for authentic paused-CPU inventory inspection.
-    if hashlib.sha256(clock_bytes[:6744]).hexdigest() != (
+    # The only prefix additions select the actual ARM edition. Removing these
+    # exact two branches reconstructs the previously frozen v1/v3 bodies;
+    # every other original byte remains authenticated by its existing hash.
+    original_clock = clock_bytes
+    # Initial response validation has one source-owned window declaration.
+    # Remove exactly that include before authenticating every original byte;
+    # neither native function bodies nor the frozen legacy hash may change.
+    window_header = b'#include "system/crucible-kvm-window.h"\n'
+    assert original_clock.count(window_header) == 1
+    original_clock = original_clock.replace(window_header, b"", 1)
+    for constant in ("KVM_CAP_CRUCIBLE_CLOCK_V2", "QEMU_CRUCIBLE_CLOCK_ARM_COMPONENTS"):
+        branch = ("    if (state->crucible_clock_kernel_edition == 2) {\n"
+                  "        return " + constant + ";\n    }\n").encode()
+        assert original_clock.count(branch) == 1
+        original_clock = original_clock.replace(branch, b"", 1)
+    if hashlib.sha256(original_clock[:6744]).hexdigest() != (
         "f36399e0a3b79c6b793b3d39bce8eb192ffd53913ebd09b136a1d4b14802aff0"
     ):
         raise ValueError("original KVM v1/v3 implementation changed")
