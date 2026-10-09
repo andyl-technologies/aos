@@ -395,7 +395,12 @@
     rawDownloadMiB,
     recoveryBundleMiB,
   }: {
-    aos.activation.stages.host.configuration = [./_image-acceptance-agent-policy.nix];
+    aos.activation.stages.host.configuration = [
+      (builtins.path {
+        path = ./_image-acceptance-agent-policy.nix;
+        name = "aos-hub-fleet-agent-policy.nix";
+      })
+    ];
     aos.image.budgets = {
       # The merged Native modules produce a 912.3 MiB diagnostic closure.
       # Retain a small allowance for package metadata and executable growth.

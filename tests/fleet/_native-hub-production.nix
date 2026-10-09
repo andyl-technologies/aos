@@ -115,7 +115,12 @@
   qualificationImage = {
     # The image adapter owns the transport agent. A second package-owned
     # instance would compete for its virtio-serial port during host replay.
-    aos.activation.stages.host.configuration = [./_image-acceptance-agent-policy.nix];
+    aos.activation.stages.host.configuration = [
+      (builtins.path {
+        path = ./_image-acceptance-agent-policy.nix;
+        name = "aos-hub-fleet-agent-policy.nix";
+      })
+    ];
     aos.image.budgets = {
       maxRuntimeClosureMiB = 3072;
       # The publisher is the largest qualification image at 868 MiB.
