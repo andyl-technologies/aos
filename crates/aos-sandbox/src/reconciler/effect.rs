@@ -2157,6 +2157,22 @@ mod tests {
         assert_eq!(PublicMutationEffectV1::decode(b"unrelated-format").unwrap(), None);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn public_effect_debug_keeps_original_flat_fields() {
+        let context = PublicMutationEffectV1::new(
+            PrincipalId::from_bytes([1; 16]), ProjectId::from_bytes([2; 16]),
+            123, vec![7, 8],
+        ).unwrap();
+        let expected = format!(
+            "PublicMutationEffectV1 {{ caller: {:?}, project: {:?}, accepted_wall_seconds: 123, canonical_request: [7, 8], fuse_admission: None, nix_start: None }}",
+            context.caller(), context.project(),
+        );
+
+        assert_eq!(format!("{context:?}"), expected);
+        assert!(!format!("{context:#?}").contains("plain:"));
+    }
+
     #[test]
     fn retained_capability_handle_effect_checks_method_without_resource_uid() {
         let body = AttenuateCapabilityRequest {
