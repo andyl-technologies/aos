@@ -1828,6 +1828,17 @@ in
               grep -q '^PASS production-body differential rule-presence fixture' fault-rule-presence.result
               cat rr-sim-barriers.result
               grep -q '^PASS healthy ordinary 8->3 cycles per CPU' rr-sim-barriers.result
+              # Check the optional KVM response ledger independently of native
+              # execution. Compiled mutation failures must reach actual assertions.
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-guards.py "$PWD"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-model.py \
+                "$PWD" "$CC" "$PWD/kvm-userspace-exit-proof"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-mutations.py \
+                "$PWD" "$CC" "$PWD/kvm-userspace-exit-mutations"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-component-refusal.py \
+                "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-refusal.py \
+                "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64"
               # Use each changed translation unit's actual configured command,
               # then compare the reconstructed prior production bodies. Every
               # negative must compile and fail a native ownership assertion.

@@ -1,4 +1,4 @@
-From cfc8b158bd726b08b23a479c23f5c18316c5a444 Mon Sep 17 00:00:00 2001
+From 903e56f421bab51f3c45a6b2770441d590bd4006 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0700
 Subject: [PATCH] Integrate deterministic execution and validated TSC source
@@ -198,6 +198,25 @@ repeated original three-callback HOME runs and legacy V4 controls pass.
 These components do not qualify complete native phase closure, IRQ/device
 settlement, snapshots, retained forks or a complete simulation node.
 
+Add an independently opted-in finite original KVM userspace exit ledger.
+Bind the kernel vCPU identity once before creation, retain original IO/MMIO
+callback and response custody through genuine successful kernel reentry,
+and preserve sticky uncertainty after interrupted or failed reentry.
+Reserve transition credit before native RUN, reject CPU slot replacement
+and register writes beneath unresolved responses, and expose only bounded
+read-only observations while actual CPU threads are acknowledged paused.
+
+Preserve the original edition-one and edition-three clock/QAPI contracts.
+Keep device, DMA, input, output and whole-profile qualification false.
+No native source file is added or removed; original licenses remain intact.
+
+Configured two-ISA native builds, forty-six native unit cases, fifteen
+extracted ledger controls and nine compiled executable mutation controls
+pass. Current aggregate source verification preserves all unchanged files,
+and nineteen existing extracted proofs and the mandatory source predicates
+pass. Both ISA command-refusal suites pass without a KVM device. These
+component checks do not qualify live hardware execution or native snapshots.
+
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
 diff --git a/MAINTAINERS b/MAINTAINERS
@@ -318,10 +337,10 @@ index 9176665202d2ba7613911882f4bfffcf7e6f92b2..37da92cd4affa94060db893faf85e263
      AccelState *accel = ms->accelerator;
 diff --git a/accel/kvm/crucible-clock.c b/accel/kvm/crucible-clock.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..759519ed70ced93e3dd408a2e1d492479162f41c
+index 0000000000000000000000000000000000000000..c71b5460e2e00a80de1f632911a33c900e32d78e
 --- /dev/null
 +++ b/accel/kvm/crucible-clock.c
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,550 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/* Experimental native clock component. Kernel counter coverage is incomplete;
 + * these controls cannot qualify timer/IRQ/device custody or a runnable CNP node.
@@ -337,6 +356,7 @@ index 0000000000000000000000000000000000000000..759519ed70ced93e3dd408a2e1d49247
 +#include "system/system.h"
 +#include "system/cpus.h"
 +#include "qemu/main-loop.h"
++#include "hw/core/cpu.h"
 +
 +G_STATIC_ASSERT(sizeof(struct kvm_crucible_clock) == 96);
 +G_STATIC_ASSERT(offsetof(struct kvm_crucible_clock, current_ns) == 48);
@@ -513,8 +533,366 @@ index 0000000000000000000000000000000000000000..759519ed70ced93e3dd408a2e1d49247
 +    return execute_clock_component(3, operation, window_generation, start_ns,
 +                                   end_ns, stop_budget_ns, errp);
 +}
++
++/* Only these exit families have the documented KVM_RUN completion obligation.
++ * Unsupported handlers remain opaque even after their kernel response is consumed.
++ */
++static bool userspace_exit_requires_completion(uint32_t reason)
++{
++    switch (reason) {
++    case KVM_EXIT_IO:
++    case KVM_EXIT_MMIO:
++    case KVM_EXIT_OSI:
++    case KVM_EXIT_PAPR_HCALL:
++    case KVM_EXIT_XEN:
++    case KVM_EXIT_EPR:
++    case KVM_EXIT_HYPERCALL:
++    case KVM_EXIT_TDX:
++    case KVM_EXIT_X86_RDMSR:
++    case KVM_EXIT_X86_WRMSR:
++        return true;
++    default:
++        return false;
++    }
++}
++
++static bool userspace_run_start(CrucibleKvmUserspaceExit *entry)
++{
++    if (entry->phase < CRUCIBLE_KVM_USERSPACE_READY ||
++        entry->phase > CRUCIBLE_KVM_USERSPACE_UNSUPPORTED ||
++        entry->phase == CRUCIBLE_KVM_USERSPACE_RUNNING ||
++        entry->phase == CRUCIBLE_KVM_USERSPACE_HANDLING ||
++        entry->consumed_sequence > entry->exit_sequence ||
++        entry->exit_sequence == UINT64_MAX || entry->reserved_revisions) {
++        return false;
++    }
++    entry->seen = true;
++    entry->phase = CRUCIBLE_KVM_USERSPACE_RUNNING;
++    return true;
++}
++
++static bool userspace_run_return(CrucibleKvmUserspaceExit *entry, int result,
++                                 uint32_t reason)
++{
++    if (entry->phase != CRUCIBLE_KVM_USERSPACE_RUNNING) {
++        return false;
++    }
++    if (result < 0) {
++        /* A clock-ceiling/custom kernel gate can precede emulation completion.
++         * Even EINTR is not an acknowledgement of the original response here.
++         */
++        entry->phase = CRUCIBLE_KVM_USERSPACE_UNKNOWN;
++        entry->uncertain_effects = true;
++        return true;
++    }
++    if (userspace_exit_requires_completion(reason) &&
++        entry->exit_sequence == UINT64_MAX) {
++        return false;
++    }
++
++    /* A successful KVM_RUN consumed the previous response. Another MMIO piece
++     * may immediately follow: that receives its own retained completion obligation.
++     */
++    entry->consumed_sequence = entry->exit_sequence;
++    entry->exit_reason = reason;
++    if (userspace_exit_requires_completion(reason)) {
++        entry->exit_sequence++;
++        if (reason == KVM_EXIT_IO || reason == KVM_EXIT_MMIO) {
++            entry->phase = CRUCIBLE_KVM_USERSPACE_HANDLING;
++        } else {
++            entry->opaque_effects = true;
++            entry->phase = CRUCIBLE_KVM_USERSPACE_UNSUPPORTED;
++        }
++    } else {
++        entry->phase = CRUCIBLE_KVM_USERSPACE_READY;
++    }
++    return true;
++}
++
++static bool userspace_dispatch_return(CrucibleKvmUserspaceExit *entry)
++{
++    if (entry->phase != CRUCIBLE_KVM_USERSPACE_HANDLING ||
++        entry->consumed_sequence >= entry->exit_sequence) {
++        return false;
++    }
++    entry->phase = CRUCIBLE_KVM_USERSPACE_PENDING;
++    return true;
++}
++
++int kvm_crucible_userspace_configure(KVMState *state, uint32_t capacity)
++{
++    if (!state->crucible_userspace_experiment) {
++        return 0;
++    }
++    if (!state->crucible_clock_configured || autostart || !capacity ||
++        capacity > QEMU_CRUCIBLE_USERSPACE_EXIT_MAX_VCPUS ||
++        state->crucible_userspace_configured) {
++        error_report("native userspace exit inventory requires a stopped configured "
++                     "controller clock and a bounded vCPU roster");
++        return -EINVAL;
++    }
++    state->crucible_userspace_exits =
++        g_try_new0(CrucibleKvmUserspaceExit, capacity);
++    if (!state->crucible_userspace_exits) {
++        return -ENOMEM;
++    }
++    qemu_mutex_init(&state->crucible_userspace_lock);
++    state->crucible_userspace_capacity = capacity;
++    state->crucible_userspace_configured = true;
++    return 0;
++}
++
++void kvm_crucible_userspace_destroy(KVMState *state)
++{
++    if (!state->crucible_userspace_configured) {
++        return;
++    }
++    /* This follows KVMState's process-local teardown, never a portable capture.
++     * Incomplete kernel emulation state is not represented by these records.
++     */
++    qemu_mutex_destroy(&state->crucible_userspace_lock);
++    g_free(state->crucible_userspace_exits);
++    state->crucible_userspace_exits = NULL;
++    state->crucible_userspace_configured = false;
++}
++
++bool kvm_crucible_userspace_bind_vcpu(KVMState *state, CPUState *cpu)
++{
++    CrucibleKvmUserspaceExit *entry;
++    uint64_t native_id = kvm_arch_vcpu_id(cpu);
++    uint32_t index;
++    bool accepted = false;
++
++    if (!state->crucible_userspace_configured) {
++        return true;
++    }
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    if (state->crucible_userspace_faulted || cpu->cpu_index < 0 ||
++        (uint32_t)cpu->cpu_index >= state->crucible_userspace_capacity) {
++        goto out;
++    }
++    entry = &state->crucible_userspace_exits[cpu->cpu_index];
++    if (entry->assigned) {
++        goto out;
++    }
++    for (index = 0; index < state->crucible_userspace_capacity; index++) {
++        CrucibleKvmUserspaceExit *original = &state->crucible_userspace_exits[index];
++
++        if (original->assigned && original->kernel_vcpu_id == native_id) {
++            goto out;
++        }
++    }
++    /* Assign once BEFORE pre-create hooks and KVM_CREATE_VCPU. Failed creation
++     * does not reopen this slot; neither pointer nor fd-number reuse is identity.
++     */
++    entry->kernel_vcpu_id = native_id;
++    entry->assigned = true;
++    accepted = true;
++out:
++    if (!accepted) {
++        state->crucible_userspace_faulted = true;
++    }
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    return accepted;
++}
++
++static CrucibleKvmUserspaceExit *userspace_entry_locked(KVMState *state,
++                                                       CPUState *cpu)
++{
++    if (cpu->cpu_index < 0 ||
++        (uint32_t)cpu->cpu_index >= state->crucible_userspace_capacity) {
++        state->crucible_userspace_faulted = true;
++        return NULL;
++    }
++    if (!state->crucible_userspace_exits[cpu->cpu_index].assigned ||
++        state->crucible_userspace_exits[cpu->cpu_index].kernel_vcpu_id !=
++        kvm_arch_vcpu_id(cpu)) {
++        state->crucible_userspace_faulted = true;
++        return NULL;
++    }
++    return &state->crucible_userspace_exits[cpu->cpu_index];
++}
++
++bool kvm_crucible_userspace_allow_state_put(KVMState *state, CPUState *cpu)
++{
++    CrucibleKvmUserspaceExit *entry;
++    bool accepted;
++
++    if (!state->crucible_userspace_configured) {
++        return true;
++    }
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    entry = userspace_entry_locked(state, cpu);
++    accepted = !state->crucible_userspace_faulted && entry &&
++        entry->phase == CRUCIBLE_KVM_USERSPACE_READY &&
++        entry->consumed_sequence == entry->exit_sequence;
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    return accepted;
++}
++
++bool kvm_crucible_userspace_before_run(KVMState *state, CPUState *cpu)
++{
++    CrucibleKvmUserspaceExit *entry;
++    uint64_t available;
++    bool accepted;
++
++    if (!state->crucible_userspace_configured) {
++        return true;
++    }
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    entry = userspace_entry_locked(state, cpu);
++    available = UINT64_MAX - state->crucible_userspace_revision;
++    accepted = !state->crucible_userspace_faulted && entry &&
++        available >= state->crucible_userspace_reserved_revisions &&
++        available - state->crucible_userspace_reserved_revisions >= 3 &&
++        userspace_run_start(entry);
++    if (accepted) {
++        /* Reserve return and possible IO dispatch receipts BEFORE KVM_RUN.
++         * Concurrent vCPUs cannot consume another original run's credits.
++         */
++        entry->reserved_revisions = 2;
++        state->crucible_userspace_reserved_revisions += 2;
++        state->crucible_userspace_revision++;
++    } else {
++        state->crucible_userspace_faulted = true;
++    }
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    return accepted;
++}
++
++bool kvm_crucible_userspace_after_run(KVMState *state, CPUState *cpu, int result)
++{
++    CrucibleKvmUserspaceExit *entry;
++    bool accepted;
++
++    if (!state->crucible_userspace_configured) {
++        return true;
++    }
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    entry = userspace_entry_locked(state, cpu);
++    accepted = entry && entry->reserved_revisions == 2 &&
++        userspace_run_return(entry, result, cpu->kvm_run->exit_reason);
++    if (accepted) {
++        entry->reserved_revisions--;
++        state->crucible_userspace_reserved_revisions--;
++        state->crucible_userspace_revision++;
++        if (entry->phase != CRUCIBLE_KVM_USERSPACE_HANDLING) {
++            state->crucible_userspace_reserved_revisions--;
++            entry->reserved_revisions = 0;
++        }
++    } else {
++        state->crucible_userspace_faulted = true;
++    }
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    return accepted;
++}
++
++bool kvm_crucible_userspace_after_dispatch(KVMState *state, CPUState *cpu)
++{
++    CrucibleKvmUserspaceExit *entry;
++    bool accepted;
++
++    if (!state->crucible_userspace_configured) {
++        return true;
++    }
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    entry = userspace_entry_locked(state, cpu);
++    accepted = entry && entry->reserved_revisions == 1 &&
++        userspace_dispatch_return(entry);
++    if (accepted) {
++        entry->reserved_revisions = 0;
++        state->crucible_userspace_reserved_revisions--;
++        state->crucible_userspace_revision++;
++    } else {
++        state->crucible_userspace_faulted = true;
++    }
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    return accepted;
++}
++
++CrucibleKvmUserspaceInfo *qmp_x_crucible_kvm_userspace_exits(Error **errp)
++{
++    CrucibleKvmUserspaceInfo *info;
++    CrucibleKvmUserspaceExitInfoList **tail;
++    CPUState *cpu;
++    uint32_t index;
++
++    assert(bql_locked());
++    if (!kvm_enabled() || !kvm_state->crucible_userspace_configured) {
++        error_setg(errp, "native KVM userspace exit inventory is not configured");
++        return NULL;
++    }
++    if (!runstate_check(RUN_STATE_PAUSED) && !runstate_check(RUN_STATE_PRELAUNCH)) {
++        error_setg(errp, "native userspace exit inventory requires paused QEMU CPUs");
++        return NULL;
++    }
++    CPU_FOREACH(cpu) {
++        if (cpu->created && !cpu->stopped) {
++            error_setg(errp, "native userspace exit inventory awaits actual CPU stop acknowledgement");
++            return NULL;
++        }
++    }
++
++    info = g_new0(CrucibleKvmUserspaceInfo, 1);
++    info->schema_version = 1;
++    info->capacity = kvm_state->crucible_userspace_capacity;
++    tail = &info->exits;
++    qemu_mutex_lock(&kvm_state->crucible_userspace_lock);
++    info->revision = kvm_state->crucible_userspace_revision;
++    info->faulted = kvm_state->crucible_userspace_faulted;
++    for (index = 0; index < info->capacity; index++) {
++        CrucibleKvmUserspaceExit *entry =
++            &kvm_state->crucible_userspace_exits[index];
++        CrucibleKvmUserspaceExitInfo *record;
++
++        if (!entry->seen) {
++            continue;
++        }
++        record = g_new0(CrucibleKvmUserspaceExitInfo, 1);
++        record->vcpu_index = index;
++        record->kernel_vcpu_id = entry->kernel_vcpu_id;
++        record->uncertain_effects = entry->uncertain_effects;
++        record->exit_sequence = entry->exit_sequence;
++        record->consumed_sequence = entry->consumed_sequence;
++        record->exit_reason = entry->exit_reason;
++        record->opaque_effects = entry->opaque_effects;
++        switch (entry->phase) {
++        case CRUCIBLE_KVM_USERSPACE_READY:
++            record->phase = CRUCIBLE_KVM_USERSPACE_EXIT_PHASE_READY;
++            break;
++        case CRUCIBLE_KVM_USERSPACE_RUNNING:
++            record->phase = CRUCIBLE_KVM_USERSPACE_EXIT_PHASE_RUNNING;
++            break;
++        case CRUCIBLE_KVM_USERSPACE_HANDLING:
++            record->phase = CRUCIBLE_KVM_USERSPACE_EXIT_PHASE_HANDLING;
++            break;
++        case CRUCIBLE_KVM_USERSPACE_PENDING:
++            record->phase = CRUCIBLE_KVM_USERSPACE_EXIT_PHASE_PENDING;
++            break;
++        case CRUCIBLE_KVM_USERSPACE_UNKNOWN:
++            record->phase = CRUCIBLE_KVM_USERSPACE_EXIT_PHASE_UNKNOWN;
++            break;
++        case CRUCIBLE_KVM_USERSPACE_UNSUPPORTED:
++            record->phase = CRUCIBLE_KVM_USERSPACE_EXIT_PHASE_UNSUPPORTED;
++            break;
++        default:
++            g_assert_not_reached();
++        }
++        QAPI_LIST_APPEND(tail, record);
++    }
++    qemu_mutex_unlock(&kvm_state->crucible_userspace_lock);
++
++    /* The real callback/response ledger says nothing about autonomous workers,
++     * ioeventfd/irqfd, coalesced writes, DMA, external input or publication custody.
++     */
++    info->device_closure = false;
++    info->input_custody = false;
++    info->output_custody = false;
++    info->profile_qualified = false;
++    return info;
++}
 diff --git a/accel/kvm/kvm-all.c b/accel/kvm/kvm-all.c
-index 83cbd120a84784e3128812c22be952e7af2b5480..e913f683e5c5ccae10852ef36bcd7854c902bc10 100644
+index 83cbd120a84784e3128812c22be952e7af2b5480..f1c9f8f8480eb8ecaa2a550f68911d6391dcb35b 100644
 --- a/accel/kvm/kvm-all.c
 +++ b/accel/kvm/kvm-all.c
 @@ -14,6 +14,7 @@
@@ -525,7 +903,39 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..e913f683e5c5ccae10852ef36bcd7854
  #include <sys/ioctl.h>
  #include <poll.h>
  
-@@ -2780,6 +2781,10 @@ static int kvm_reset_vmfd(MachineState *ms)
+@@ -445,6 +446,10 @@ static int kvm_rebind_vcpus(Error **errp)
+     KVMState *s = kvm_state;
+     int kvm_fd, ret = 0;
+ 
++    if (s->crucible_userspace_configured) {
++        error_setg(errp, "native userspace inventory requires the original fixed vCPU roster");
++        return -ENOTSUP;
++    }
+     CPU_FOREACH(cpu) {
+         vcpu_id = kvm_arch_vcpu_id(cpu);
+ 
+@@ -583,6 +588,9 @@ int kvm_create_and_park_vcpu(CPUState *cpu)
+ {
+     int ret = 0;
+ 
++    if (kvm_state->crucible_userspace_configured) {
++        return -ENOTSUP;
++    }
+     ret = kvm_create_vcpu(cpu);
+     if (!ret) {
+         kvm_park_vcpu(cpu);
+@@ -714,6 +722,10 @@ int kvm_init_vcpu(CPUState *cpu, Error **errp)
+ 
+     trace_kvm_init_vcpu(cpu->cpu_index, kvm_arch_vcpu_id(cpu));
+ 
++    if (!kvm_crucible_userspace_bind_vcpu(s, cpu)) {
++        error_setg(errp, "native userspace inventory refuses a reused vCPU identity");
++        return -ENOTSUP;
++    }
+     ret = kvm_arch_pre_create_vcpu(cpu, errp);
+     if (ret < 0) {
+         goto err;
+@@ -2780,6 +2792,10 @@ static int kvm_reset_vmfd(MachineState *ms)
      int ret = 0, type;
      Error *err = NULL;
  
@@ -536,7 +946,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..e913f683e5c5ccae10852ef36bcd7854
      /*
       * bail if the current architecture does not support VM file
       * descriptor change.
-@@ -2968,6 +2973,10 @@ static int kvm_init(AccelState *as, MachineState *ms)
+@@ -2968,6 +2984,15 @@ static int kvm_init(AccelState *as, MachineState *ms)
      }
  
      s->vmfd = ret;
@@ -544,10 +954,75 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..e913f683e5c5ccae10852ef36bcd7854
 +    if (ret < 0) {
 +        goto err;
 +    }
++
++    ret = kvm_crucible_userspace_configure(s, ms->smp.max_cpus);
++    if (ret < 0) {
++        goto err;
++    }
  
      s->nr_as = kvm_vm_check_extension(s, KVM_CAP_MULTI_ADDRESS_SPACE);
      if (s->nr_as <= 1) {
-@@ -4266,9 +4275,94 @@ static void kvm_accel_instance_init(Object *obj)
+@@ -3101,6 +3126,7 @@ static int kvm_init(AccelState *as, MachineState *ms)
+ 
+ err:
+     assert(ret < 0);
++    kvm_crucible_userspace_destroy(s);
+     if (s->vmfd >= 0) {
+         close(s->vmfd);
+     }
+@@ -3215,7 +3241,16 @@ static bool kvm_cpu_synchronize_put(CPUState *cpu, KvmPutState state,
+                                     const char *desc)
+ {
+     Error *err = NULL;
+-    int ret = kvm_arch_put_registers(cpu, state, &err);
++    int ret;
++
++    /* Never overwrite architectural state while an original hidden kernel
++     * response is pending or uncertain; a later run must use that same state.
++     */
++    if (!kvm_crucible_userspace_allow_state_put(kvm_state, cpu)) {
++        error_report("native userspace inventory refuses register replacement %s", desc);
++        return false;
++    }
++    ret = kvm_arch_put_registers(cpu, state, &err);
+     if (ret) {
+         if (err) {
+             error_reportf_err(err, "Restoring resisters %s: ", desc);
+@@ -3461,7 +3496,15 @@ int kvm_cpu_exec(CPUState *cpu)
+             kvm_cpu_kick_self();
+         }
+ 
++        if (!kvm_crucible_userspace_before_run(kvm_state, cpu)) {
++            ret = -1;
++            break;
++        }
+         run_ret = kvm_vcpu_ioctl(cpu, KVM_RUN, 0);
++        if (!kvm_crucible_userspace_after_run(kvm_state, cpu, run_ret)) {
++            ret = -1;
++            break;
++        }
+ 
+         /*
+          * After writing cpu->exit_request, cpu_exit() sends a signal that writes
+@@ -3514,7 +3557,7 @@ int kvm_cpu_exec(CPUState *cpu)
+                           run->io.direction,
+                           run->io.size,
+                           run->io.count);
+-            ret = 0;
++            ret = kvm_crucible_userspace_after_dispatch(kvm_state, cpu) ? 0 : -1;
+             break;
+         case KVM_EXIT_MMIO:
+             /* Called outside BQL */
+@@ -3523,7 +3566,7 @@ int kvm_cpu_exec(CPUState *cpu)
+                              run->mmio.data,
+                              run->mmio.len,
+                              run->mmio.is_write);
+-            ret = 0;
++            ret = kvm_crucible_userspace_after_dispatch(kvm_state, cpu) ? 0 : -1;
+             break;
+         case KVM_EXIT_IRQ_WINDOW_OPEN:
+             ret = EXCP_INTERRUPT;
+@@ -4266,9 +4309,110 @@ static void kvm_accel_instance_init(Object *obj)
      s->xen_evtchn_max_pirq = 256;
      s->device = NULL;
      s->msr_energy.enable = false;
@@ -557,6 +1032,22 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..e913f683e5c5ccae10852ef36bcd7854
      s->honor_guest_pat = ON_OFF_AUTO_OFF;
  }
  
++static bool kvm_get_crucible_userspace(Object *obj, Error **errp)
++{
++    return KVM_STATE(obj)->crucible_userspace_experiment;
++}
++
++static void kvm_set_crucible_userspace(Object *obj, bool enabled, Error **errp)
++{
++    KVMState *state = KVM_STATE(obj);
++
++    if (state->fd != -1) {
++        error_setg(errp, "native userspace exit inventory cannot change after initialization");
++        return;
++    }
++    state->crucible_userspace_experiment = enabled;
++}
++
 +static bool kvm_get_crucible_clock(Object *obj, Error **errp)
 +{
 +    return KVM_STATE(obj)->crucible_clock_experiment;
@@ -642,10 +1133,13 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..e913f683e5c5ccae10852ef36bcd7854
  static void kvm_accel_class_init(ObjectClass *oc, const void *data)
  {
      AccelClass *ac = ACCEL_CLASS(oc);
-@@ -4311,6 +4405,17 @@ static void kvm_accel_class_init(ObjectClass *oc, const void *data)
+@@ -4311,6 +4455,20 @@ static void kvm_accel_class_init(ObjectClass *oc, const void *data)
      object_class_property_set_description(oc, "rapl-helper-socket",
          "Socket Path for comminucating with the Virtual MSR helper daemon");
  
++    object_class_property_add_bool(oc, "x-crucible-userspace-exit-ledger",
++                                  kvm_get_crucible_userspace,
++                                  kvm_set_crucible_userspace);
 +    object_class_property_add_bool(oc, "x-crucible-clock-experiment",
 +                                  kvm_get_crucible_clock, kvm_set_crucible_clock);
 +    object_class_property_add(oc, "x-crucible-clock-kernel-edition", "uint32",
@@ -658,6 +1152,14 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..e913f683e5c5ccae10852ef36bcd7854
 +                              kvm_get_crucible_clock_ratio,
 +                              kvm_set_crucible_clock_ratio, NULL, GINT_TO_POINTER(1));
      kvm_arch_accel_class_init(oc);
+ }
+ 
+@@ -4318,6 +4476,7 @@ static void kvm_accel_finalize(Object *obj)
+ {
+     KVMState *s = KVM_STATE(obj);
+ 
++    kvm_crucible_userspace_destroy(s);
+     g_free(s->device);
  }
  
 diff --git a/accel/kvm/meson.build b/accel/kvm/meson.build
@@ -673,7 +1175,7 @@ index 397a1fe1fd1e398254d96a65239503203d0b749c..6a909bfc3156f8e293100c3c40bd71f7
  ))
  
 diff --git a/accel/stubs/kvm-stub.c b/accel/stubs/kvm-stub.c
-index 32b4b074035062edfd751a1a08c694e561d26c89..e1e7ff5bd1d88a4e7f15a2bb6490311e9eff297f 100644
+index 32b4b074035062edfd751a1a08c694e561d26c89..552dd980496053cefef5ec24a30f9b91431c3ae7 100644
 --- a/accel/stubs/kvm-stub.c
 +++ b/accel/stubs/kvm-stub.c
 @@ -11,9 +11,34 @@
@@ -711,6 +1213,16 @@ index 32b4b074035062edfd751a1a08c694e561d26c89..e1e7ff5bd1d88a4e7f15a2bb6490311e
  KVMState *kvm_state;
  bool kvm_kernel_irqchip;
  bool kvm_async_interrupts_allowed;
+@@ -143,3 +168,9 @@ int kvm_create_guest_memfd(uint64_t size, uint64_t flags, Error **errp)
+ {
+     return -ENOSYS;
+ }
++
++CrucibleKvmUserspaceInfo *qmp_x_crucible_kvm_userspace_exits(Error **errp)
++{
++    error_setg(errp, "native KVM userspace exit inventory is unavailable in this build");
++    return NULL;
++}
 diff --git a/accel/tcg/atomic_template.h b/accel/tcg/atomic_template.h
 index f7924078f77d42edb4b491787969715e717e0989..ebee2217475d784c58fd67d6306e7b77d3f459e5 100644
 --- a/accel/tcg/atomic_template.h
@@ -68723,10 +69235,10 @@ index 0000000000000000000000000000000000000000..4a4d665eb7262cd2b9fff0ab1ceed514
 +#endif
 diff --git a/include/system/crucible-kvm-clock.h b/include/system/crucible-kvm-clock.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..363e301f6b508ff6c8f4b6302521931d95f0ec6b
+index 0000000000000000000000000000000000000000..b965770691810c1324d610b10bf80a968701b6e3
 --- /dev/null
 +++ b/include/system/crucible-kvm-clock.h
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,84 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +/* Native kernel component ABI, separated from SIM instruction-clock control. */
 +#ifndef QEMU_CRUCIBLE_KVM_CLOCK_H
@@ -68775,6 +69287,40 @@ index 0000000000000000000000000000000000000000..363e301f6b508ff6c8f4b6302521931d
 +
 +int kvm_crucible_clock_configure(KVMState *state);
 +bool kvm_crucible_clock_read_ns(int64_t *nanoseconds);
++
++/* Private process-local inventory, never a snapshot of hidden kernel state. */
++#define QEMU_CRUCIBLE_USERSPACE_EXIT_MAX_VCPUS 4096
++
++typedef enum CrucibleKvmUserspacePhase {
++    CRUCIBLE_KVM_USERSPACE_READY,
++    CRUCIBLE_KVM_USERSPACE_RUNNING,
++    CRUCIBLE_KVM_USERSPACE_HANDLING,
++    CRUCIBLE_KVM_USERSPACE_PENDING,
++    CRUCIBLE_KVM_USERSPACE_UNKNOWN,
++    CRUCIBLE_KVM_USERSPACE_UNSUPPORTED,
++} CrucibleKvmUserspacePhase;
++
++typedef struct CrucibleKvmUserspaceExit {
++    CrucibleKvmUserspacePhase phase;
++    uint64_t exit_sequence;
++    uint64_t consumed_sequence;
++    uint32_t exit_reason;
++    uint64_t kernel_vcpu_id;
++    bool assigned;
++    bool seen;
++    bool opaque_effects;
++    bool uncertain_effects;
++    uint8_t reserved_revisions;
++} CrucibleKvmUserspaceExit;
++
++int kvm_crucible_userspace_configure(KVMState *state, uint32_t capacity);
++void kvm_crucible_userspace_destroy(KVMState *state);
++bool kvm_crucible_userspace_bind_vcpu(KVMState *state, CPUState *cpu);
++bool kvm_crucible_userspace_allow_state_put(KVMState *state, CPUState *cpu);
++bool kvm_crucible_userspace_before_run(KVMState *state, CPUState *cpu);
++bool kvm_crucible_userspace_after_run(KVMState *state, CPUState *cpu, int result);
++bool kvm_crucible_userspace_after_dispatch(KVMState *state, CPUState *cpu);
++
 +
 +#endif
 diff --git a/include/system/crucible-plugin-wake.h b/include/system/crucible-plugin-wake.h
@@ -68982,10 +69528,18 @@ index a1ef7696cb56c7e8ef0bd269898c9185419287c2..6bb18f133e987699c4467b5283bc1bb8
   * Returns true if executing within IOThread context,
   * false otherwise.
 diff --git a/include/system/kvm_int.h b/include/system/kvm_int.h
-index 0876aac938d3b3565c6a26eb1f569c3c78f87c98..08843240c631c1af201a2684889dd5d057fc45a3 100644
+index 0876aac938d3b3565c6a26eb1f569c3c78f87c98..fdd9995680514aa2bcd26dbb00881324d5981f38 100644
 --- a/include/system/kvm_int.h
 +++ b/include/system/kvm_int.h
-@@ -108,6 +108,11 @@ struct KVMState
+@@ -14,6 +14,7 @@
+ #include "qemu/accel.h"
+ #include "qemu/queue.h"
+ #include "system/kvm.h"
++#include "system/crucible-kvm-clock.h"
+ #include "accel/accel-ops.h"
+ #include "hw/core/boards.h"
+ #include "hw/i386/topology.h"
+@@ -108,6 +109,19 @@ struct KVMState
      int nr_slots_max;
      int fd;
      int vmfd;
@@ -68994,6 +69548,14 @@ index 0876aac938d3b3565c6a26eb1f569c3c78f87c98..08843240c631c1af201a2684889dd5d0
 +    uint32_t crucible_clock_numerator;
 +    uint32_t crucible_clock_denominator;
 +    uint32_t crucible_clock_kernel_edition;
++    bool crucible_userspace_experiment;
++    bool crucible_userspace_configured;
++    bool crucible_userspace_faulted;
++    QemuMutex crucible_userspace_lock;
++    uint32_t crucible_userspace_capacity;
++    uint64_t crucible_userspace_revision;
++    uint64_t crucible_userspace_reserved_revisions;
++    CrucibleKvmUserspaceExit *crucible_userspace_exits;
      int coalesced_mmio;
      int coalesced_pio;
      struct kvm_coalesced_mmio_ring *coalesced_mmio_ring;
@@ -121689,7 +122251,7 @@ index 22b7afed9f650c866f81aa154e6ba03dcc606c44..1d42273ed53a18559b7b421cf756f415
  # @CommandLineParameterType:
  #
 diff --git a/qapi/run-state.json b/qapi/run-state.json
-index a5771ad46815528fef2c2ebfa538d4e023a19969..2270b958aafcee7af145c150eeb0a293d03d998c 100644
+index a5771ad46815528fef2c2ebfa538d4e023a19969..0713c6561d5f9055a666e30fc0b13f70970dc5e5 100644
 --- a/qapi/run-state.json
 +++ b/qapi/run-state.json
 @@ -132,6 +132,3082 @@
@@ -124775,7 +125337,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..2270b958aafcee7af145c150eeb0a293
  ##
  # @SHUTDOWN:
  #
-@@ -749,3 +3825,108 @@
+@@ -749,3 +3825,208 @@
  ##
  { 'enum': 'NotifyVmexitOption',
    'data': [ 'run', 'internal-error', 'disable' ] }
@@ -124884,6 +125446,106 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..2270b958aafcee7af145c150eeb0a293
 +            'window-generation': 'uint64', 'start-ns': 'uint64',
 +            'end-ns': 'uint64', 'stop-budget-ns': 'uint64' },
 +  'returns': 'CrucibleKvmClockInfo' }
++
++##
++# @CrucibleKvmUserspaceExitPhase:
++#
++# Process-local KVM response handling phases.  Pending responses
++# belong to the
++# original exit until a successful later KVM_RUN consumes them.
++# Unknown retains
++# an interrupted response, and unsupported retains an opaque exit
++# family.
++#
++# @ready: No retained kernel response obligation.
++# @running: Original vCPU is executing KVM_RUN.
++# @handling: Original synchronous IO/MMIO callback has not returned.
++# @pending: Callback returned; kernel response completion is still
++#     pending.
++# @unknown: Failed or interrupted re-entry did not attest response
++#     completion.
++# @unsupported: Completion exit family has no qualified userspace
++#     handler ledger.
++#
++# Since: 11.1
++##
++{ 'enum': 'CrucibleKvmUserspaceExitPhase',
++  'data': [ 'ready', 'running', 'handling', 'pending', 'unknown', 'unsupported' ] }
++
++##
++# @CrucibleKvmUserspaceExitInfo:
++#
++# @vcpu-index: Original QEMU vCPU index within the bounded allocation.
++# @kernel-vcpu-id: Original kernel vCPU ID assigned once before
++#     creation.
++# @uncertain-effects: Failed re-entry was encountered; history never
++#     clears.
++# @exit-sequence: Last original kernel response obligation, initially
++#     zero.
++# @consumed-sequence: Last response consumed by a successful
++#     subsequent KVM_RUN.
++# @exit-reason: Last successful KVM_RUN exit reason.
++# @phase: Current native handler and kernel-response inventory.
++# @opaque-effects: An unsupported exit handler has executed in this
++#     process.
++#
++# Since: 11.1
++##
++{ 'struct': 'CrucibleKvmUserspaceExitInfo',
++  'data': { 'vcpu-index': 'uint32', 'kernel-vcpu-id': 'uint64',
++            'uncertain-effects': 'bool', 'exit-sequence': 'uint64',
++            'consumed-sequence': 'uint64', 'exit-reason': 'uint32',
++            'phase': 'CrucibleKvmUserspaceExitPhase', 'opaque-effects': 'bool' } }
++
++##
++# @CrucibleKvmUserspaceInfo:
++#
++# @schema-version: Independent userspace inventory edition, always
++#     one.
++# @capacity: Preallocated maximum vCPU roster, at most 4096.
++# @revision: Monotonic process-local transition sequence.
++# @faulted: Original inventory overflow or invalid transition prevents
++#     more runs.
++# @exits: Original seen vCPU records in strictly increasing index
++#     order.
++# @device-closure: Always false; asynchronous devices and DMA are not
++#     covered.
++# @input-custody: Always false; this component cannot authenticate an
++#     input cut.
++# @output-custody: Always false; device publication bytes are not
++#     retained here.
++# @profile-qualified: Always false; this inventory is not execution
++#     authority.
++#
++# Since: 11.1
++##
++{ 'struct': 'CrucibleKvmUserspaceInfo',
++  'data': { 'schema-version': 'uint32', 'capacity': 'uint32', 'revision': 'uint64',
++            'faulted': 'bool', 'exits': [ 'CrucibleKvmUserspaceExitInfo' ],
++            'device-closure': 'bool', 'input-custody': 'bool',
++            'output-custody': 'bool', 'profile-qualified': 'bool' } }
++
++##
++# @x-crucible-kvm-userspace-exits:
++#
++# Reports actual original userspace callback and kernel-response
++# obligations.
++# Requires pre-vCPU x-crucible-userspace-exit-ledger opt-in with a
++# configured
++# native controller clock, -S, and actual paused CPU acknowledgements.
++# Querying
++# never runs, completes, clears or replays an exit.  Existing clock
++# namespaces
++# retain their original partial semantics.  No profile is qualified by
++# this query.
++#
++# Returns: Bounded process-local inventory; all whole-device/custody
++# flags false.
++#
++# Since: 11.1
++##
++{ 'command': 'x-crucible-kvm-userspace-exits',
++  'returns': 'CrucibleKvmUserspaceInfo' }
 diff --git a/qemu-options.hx b/qemu-options.hx
 index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..3b3320f88f07f62bcf8377b9ce421eb2d60e80d2 100644
 --- a/qemu-options.hx
