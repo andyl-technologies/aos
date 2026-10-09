@@ -14,6 +14,7 @@ test-double = ["dep:crucible-shmem"]
 workspace = true
 
 [dependencies]
+crucible-node-contract = { workspace = true }
 blake3 = { workspace = true }
 ciborium = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }

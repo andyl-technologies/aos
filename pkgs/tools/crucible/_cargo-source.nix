@@ -30,6 +30,9 @@ in
           "${repoRootString}/docs/rfcs/0020-crucible-campaigns"
           "${repoRootString}/docs/rfcs/0020-crucible-campaigns/schema-registry.tsv"
           "${repoRootString}/docs/rfcs/0020-crucible-campaigns/11-implementation-plan.md"
+          "${repoRootString}/docs/rfcs/0025-crucible-node-contract"
+          "${repoRootString}/docs/rfcs/0025-crucible-node-contract/reference"
+          "${repoRootString}/docs/rfcs/0025-crucible-node-contract/reference/cnp-v1-vectors.json"
         ]
       );
   }

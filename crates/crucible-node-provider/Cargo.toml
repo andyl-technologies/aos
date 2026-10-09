@@ -1,0 +1,15 @@
+[package]
+name = "crucible-node-provider"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+crucible-node-contract = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

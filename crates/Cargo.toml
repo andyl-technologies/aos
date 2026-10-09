@@ -57,6 +57,8 @@ members = [
     "crucible-assert",
     "crucible-shmem",
     "crucible-protocol",
+    "crucible-node-contract",
+    "crucible-node-provider",
     "crucible-device",
     "crucible-debug-gateway",
     "crucible-qemu",
@@ -74,6 +76,8 @@ members = [
 license = "Apache-2.0"
 
 [workspace.dependencies]
+crucible-node-contract = { path = "crucible-node-contract" }
+crucible-node-provider = { path = "crucible-node-provider" }
 # Shared dependencies
 anyhow = "1"
 thiserror = "2"
