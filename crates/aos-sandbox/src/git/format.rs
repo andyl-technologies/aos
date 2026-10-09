@@ -12,6 +12,7 @@
 //! and atomic-CAS commitments. Decode preflights every nested count and length
 //! before any allocation.
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::model::{CacheDomain, CacheDomainKind};
 use aos_sandbox_core::{
     AssignmentEpoch, CacheDomainId, DesiredGeneration, IncarnationId, MediaType,
@@ -268,21 +269,21 @@ pub fn decode_git_exchange_plan_v1(
         return Err(GitModelError::CorruptEncoding);
     }
 
-    let mut bytes = body;
-    if take::<8>(&mut bytes)? != *MAGIC
-        || u16::from_be_bytes(take(&mut bytes)?) != VERSION
-        || take::<1>(&mut bytes)? != [preflight.kind]
-        || take::<1>(&mut bytes)? != [preflight.format as u8]
+    let mut bytes = BoundedReader::new(body, |_| GitModelError::CorruptEncoding);
+    if bytes.array::<8>()? != *MAGIC
+        || u16::from_be_bytes(bytes.array()?) != VERSION
+        || bytes.array::<1>()? != [preflight.kind]
+        || bytes.array::<1>()? != [preflight.format as u8]
     {
         return Err(GitModelError::CorruptEncoding);
     }
-    let exchange = ResourceId::from_bytes(take(&mut bytes)?);
-    let principal = PrincipalId::from_bytes(take(&mut bytes)?);
+    let exchange = ResourceId::from_bytes(bytes.array()?);
+    let principal = PrincipalId::from_bytes(bytes.array()?);
     let channel =
-        GitChannelBindingDigestV1::from_stored(ObjectDigest::from_bytes(take(&mut bytes)?))?;
-    let expiry = u64::from_be_bytes(take(&mut bytes)?);
-    let input_limit = u64::from_be_bytes(take(&mut bytes)?);
-    let output_limit = u64::from_be_bytes(take(&mut bytes)?);
+        GitChannelBindingDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
+    let expiry = u64::from_be_bytes(bytes.array()?);
+    let input_limit = u64::from_be_bytes(bytes.array()?);
+    let output_limit = u64::from_be_bytes(bytes.array()?);
     let protocol = decode_protocol(&mut bytes, preflight.format)?;
     let plan = match preflight.kind {
         1 => GitExchangePlanV1::Upload(
@@ -329,14 +330,14 @@ fn encode_protocol(bytes: &mut Vec<u8>, value: &GitProtocolV2ProfileV1) {
 }
 
 fn decode_protocol(
-    bytes: &mut &[u8],
+    bytes: &mut BoundedReader<'_, GitModelError>,
     format: GitObjectFormatV1,
 ) -> Result<GitProtocolV2ProfileV1, GitModelError> {
-    let service = decode_protocol_service(take::<1>(bytes)?[0])?;
-    if decode_format(take::<1>(bytes)?[0])? != format {
+    let service = decode_protocol_service(bytes.array::<1>()?[0])?;
+    if decode_format(bytes.array::<1>()?[0])? != format {
         return Err(GitModelError::CorruptEncoding);
     }
-    let count = usize::from(u16::from_be_bytes(take(bytes)?));
+    let count = usize::from(u16::from_be_bytes(bytes.array()?));
     if count > MAXIMUM_GIT_PROTOCOL_V2_CAPABILITIES {
         return Err(GitModelError::CorruptEncoding);
     }
@@ -345,10 +346,10 @@ fn decode_protocol(
         .try_reserve_exact(count)
         .map_err(|_| GitModelError::Allocation)?;
     for _ in 0..count {
-        capabilities.push(decode_protocol_capability(take::<1>(bytes)?[0])?);
+        capabilities.push(decode_protocol_capability(bytes.array::<1>()?[0])?);
     }
     let stored =
-        GitProtocolV2CapabilitiesDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
+        GitProtocolV2CapabilitiesDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
     let profile = GitProtocolV2ProfileV1::new(service, format, capabilities)
         .map_err(|_| GitModelError::CorruptEncoding)?;
     if profile.digest() != stored {
@@ -394,21 +395,21 @@ pub(super) fn encode_export(bytes: &mut Vec<u8>, value: &GitExportGenerationV1) 
 }
 
 pub(super) fn decode_export(
-    bytes: &mut &[u8],
+    bytes: &mut BoundedReader<'_, GitModelError>,
     format: GitObjectFormatV1,
     trusted_validator: &GitTrustedValidatorV1,
 ) -> Result<GitExportGenerationV1, GitModelError> {
-    let export = ResourceId::from_bytes(take(bytes)?);
-    let generation = Revision::new(u64::from_be_bytes(take(bytes)?));
+    let export = ResourceId::from_bytes(bytes.array()?);
+    let generation = Revision::new(u64::from_be_bytes(bytes.array()?));
     let stored_generation_digest =
-        GitExportGenerationDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
-    let project = ProjectId::from_bytes(take(bytes)?);
-    let repository = ResourceId::from_bytes(take(bytes)?);
-    let repository_revision = Revision::new(u64::from_be_bytes(take(bytes)?));
+        GitExportGenerationDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
+    let project = ProjectId::from_bytes(bytes.array()?);
+    let repository = ResourceId::from_bytes(bytes.array()?);
+    let repository_revision = Revision::new(u64::from_be_bytes(bytes.array()?));
     let descriptor = decode_descriptor(bytes)?;
     let database = decode_whole_database(bytes, format, trusted_validator)?;
     let refs = decode_refs(bytes, format)?;
-    let stored_ref_map = GitRefMapDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
+    let stored_ref_map = GitRefMapDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
     let result = GitExportGenerationV1::new(
         export,
         generation,
@@ -454,7 +455,7 @@ fn encode_receive(bytes: &mut Vec<u8>, value: &GitReceivePlanV1) {
 
 #[allow(clippy::too_many_arguments)]
 fn decode_receive(
-    bytes: &mut &[u8],
+    bytes: &mut BoundedReader<'_, GitModelError>,
     format: GitObjectFormatV1,
     exchange: ResourceId,
     protocol: GitProtocolV2ProfileV1,
@@ -465,31 +466,31 @@ fn decode_receive(
     output_limit: u64,
     trusted_validator: &GitTrustedValidatorV1,
 ) -> Result<GitReceivePlanV1, GitModelError> {
-    let repository = ResourceId::from_bytes(take(bytes)?);
-    let project = ProjectId::from_bytes(take(bytes)?);
-    let sandbox = SandboxId::from_bytes(take(bytes)?);
-    let workspace = ResourceId::from_bytes(take(bytes)?);
-    let current_revision = Revision::new(u64::from_be_bytes(take(bytes)?));
-    let stored_successor = Revision::new(u64::from_be_bytes(take(bytes)?));
+    let repository = ResourceId::from_bytes(bytes.array()?);
+    let project = ProjectId::from_bytes(bytes.array()?);
+    let sandbox = SandboxId::from_bytes(bytes.array()?);
+    let workspace = ResourceId::from_bytes(bytes.array()?);
+    let current_revision = Revision::new(u64::from_be_bytes(bytes.array()?));
+    let stored_successor = Revision::new(u64::from_be_bytes(bytes.array()?));
     let fence = GitReceiveFenceV1::new(
-        DesiredGeneration::new(u64::from_be_bytes(take(bytes)?)),
-        IncarnationId::from_bytes(take(bytes)?),
-        AssignmentEpoch::new(u64::from_be_bytes(take(bytes)?)),
-        NamespaceGeneration::new(u64::from_be_bytes(take(bytes)?)),
+        DesiredGeneration::new(u64::from_be_bytes(bytes.array()?)),
+        IncarnationId::from_bytes(bytes.array()?),
+        AssignmentEpoch::new(u64::from_be_bytes(bytes.array()?)),
+        NamespaceGeneration::new(u64::from_be_bytes(bytes.array()?)),
     )
     .map_err(|_| GitModelError::CorruptEncoding)?;
     let current_refs = decode_refs(bytes, format)?;
     let transitions = decode_transitions(bytes, format, trusted_validator)?;
-    let stored_pre_refs = GitRefMapDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
-    let stored_post_refs = GitRefMapDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
+    let stored_pre_refs = GitRefMapDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
+    let stored_post_refs = GitRefMapDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
     let pre_database = decode_whole_database(bytes, format, trusted_validator)?;
     let post_database = decode_whole_database(bytes, format, trusted_validator)?;
     let quarantine = decode_descriptor(bytes)?;
     let quarantine_digest =
-        GitQuarantineDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
+        GitQuarantineDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
     let validation =
-        GitValidationPolicyDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
-    let stored_cas = GitAtomicCasDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
+        GitValidationPolicyDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
+    let stored_cas = GitAtomicCasDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
     let repository = GitRepositoryV1::new(
         repository,
         project,
@@ -534,13 +535,13 @@ fn encode_audience(bytes: &mut Vec<u8>, value: &GitReadAudienceV1) {
     bytes.extend_from_slice(value.disclosure().domain_id().as_bytes());
     bytes.extend_from_slice(value.authorization().digest().as_bytes());
 }
-fn decode_audience(bytes: &mut &[u8]) -> Result<GitReadAudienceV1, GitModelError> {
-    let kind = decode_cache_kind(take::<1>(bytes)?[0])?;
-    if take::<7>(bytes)? != [0; 7] {
+fn decode_audience(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<GitReadAudienceV1, GitModelError> {
+    let kind = decode_cache_kind(bytes.array::<1>()?[0])?;
+    if bytes.array::<7>()? != [0; 7] {
         return Err(GitModelError::CorruptEncoding);
     }
-    let domain = CacheDomainId::from_bytes(take(bytes)?);
-    let authorization = GitAudienceDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
+    let domain = CacheDomainId::from_bytes(bytes.array()?);
+    let authorization = GitAudienceDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
     GitReadAudienceV1::new(CacheDomain::new(kind, domain), authorization)
         .map_err(|_| GitModelError::CorruptEncoding)
 }
@@ -559,23 +560,23 @@ pub(super) fn encode_whole_database(bytes: &mut Vec<u8>, value: &GitWholeObjectD
 }
 
 pub(super) fn decode_whole_database(
-    bytes: &mut &[u8],
+    bytes: &mut BoundedReader<'_, GitModelError>,
     format: GitObjectFormatV1,
     trusted_validator: &GitTrustedValidatorV1,
 ) -> Result<GitWholeObjectDatabaseV1, GitModelError> {
     let audience = decode_audience(bytes)?;
     let graph = decode_graph(bytes, format, trusted_validator)?;
-    let loose_objects = u64::from_be_bytes(take(bytes)?);
-    let packs = u64::from_be_bytes(take(bytes)?);
+    let loose_objects = u64::from_be_bytes(bytes.array()?);
+    let packs = u64::from_be_bytes(bytes.array()?);
     let pack_indexes =
-        GitPackIndexSetDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
+        GitPackIndexSetDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
     let inventory =
-        GitObjectInventoryDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
+        GitObjectInventoryDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
     let validator_report = decode_descriptor(bytes)?;
     let validator_policy =
-        GitValidationPolicyDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
+        GitValidationPolicyDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
     let validator_trust =
-        GitValidatorTrustDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
+        GitValidatorTrustDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
     let physical =
         GitPhysicalObjectEnumerationV1::new(&graph, loose_objects, packs, pack_indexes, inventory)
             .map_err(|_| GitModelError::CorruptEncoding)?;
@@ -606,18 +607,18 @@ fn encode_graph(bytes: &mut Vec<u8>, value: &GitObjectGraphEvidenceV1) {
     }
 }
 fn decode_graph(
-    bytes: &mut &[u8],
+    bytes: &mut BoundedReader<'_, GitModelError>,
     format: GitObjectFormatV1,
     trusted_validator: &GitTrustedValidatorV1,
 ) -> Result<GitObjectGraphEvidenceV1, GitModelError> {
-    let completeness = decode_completeness(take::<1>(bytes)?[0])?;
-    if take::<7>(bytes)? != [0; 7] {
+    let completeness = decode_completeness(bytes.array::<1>()?[0])?;
+    if bytes.array::<7>()? != [0; 7] {
         return Err(GitModelError::CorruptEncoding);
     }
-    let count = u64::from_be_bytes(take(bytes)?);
-    let total = u64::from_be_bytes(take(bytes)?);
-    let odb = GitObjectDatabaseDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
-    let graph_proof = GitGraphProofDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
+    let count = u64::from_be_bytes(bytes.array()?);
+    let total = u64::from_be_bytes(bytes.array()?);
+    let odb = GitObjectDatabaseDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
+    let graph_proof = GitGraphProofDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
     let root_count = read_count(bytes, MAXIMUM_GIT_GRAPH_ROOTS)?;
     let mut roots = Vec::new();
     roots
@@ -640,7 +641,7 @@ pub(super) fn encode_refs(bytes: &mut Vec<u8>, values: &[GitAdvertisedRefV1]) {
     }
 }
 pub(super) fn decode_refs(
-    bytes: &mut &[u8],
+    bytes: &mut BoundedReader<'_, GitModelError>,
     format: GitObjectFormatV1,
 ) -> Result<Vec<GitAdvertisedRefV1>, GitModelError> {
     let count = read_count(bytes, MAXIMUM_GIT_GRAPH_ROOTS)?;
@@ -649,8 +650,8 @@ pub(super) fn decode_refs(
         .try_reserve_exact(count)
         .map_err(|_| GitModelError::Allocation)?;
     for _ in 0..count {
-        let length = usize::from(u16::from_be_bytes(take(bytes)?));
-        let name = decode_ref_name(take_slice(bytes, length)?)?;
+        let length = usize::from(u16::from_be_bytes(bytes.array()?));
+        let name = decode_ref_name(bytes.bytes(length)?)?;
         let object = decode_oid_slot(bytes, format)?;
         values.push(GitAdvertisedRefV1::new(name, object));
     }
@@ -694,7 +695,7 @@ fn encode_transitions(bytes: &mut Vec<u8>, values: &[GitRefTransitionV1]) {
     }
 }
 fn decode_transitions(
-    bytes: &mut &[u8],
+    bytes: &mut BoundedReader<'_, GitModelError>,
     format: GitObjectFormatV1,
     trusted_validator: &GitTrustedValidatorV1,
 ) -> Result<Vec<GitRefTransitionV1>, GitModelError> {
@@ -704,17 +705,17 @@ fn decode_transitions(
         .try_reserve_exact(count)
         .map_err(|_| GitModelError::Allocation)?;
     for _ in 0..count {
-        let length = usize::from(u16::from_be_bytes(take(bytes)?));
-        let name = decode_ref_name(take_slice(bytes, length)?)?;
+        let length = usize::from(u16::from_be_bytes(bytes.array()?));
+        let name = decode_ref_name(bytes.bytes(length)?)?;
         let expected = decode_optional_oid(bytes, format)?;
         let proposed = decode_optional_oid(bytes, format)?;
-        let ancestry_present = take::<1>(bytes)?[0];
-        if ancestry_present > 1 || take::<7>(bytes)? != [0; 7] {
+        let ancestry_present = bytes.array::<1>()?[0];
+        if ancestry_present > 1 || bytes.array::<7>()? != [0; 7] {
             return Err(GitModelError::CorruptEncoding);
         }
-        let ancestry_digest = ObjectDigest::from_bytes(take(bytes)?);
-        let ancestry_database = ObjectDigest::from_bytes(take(bytes)?);
-        let ancestry_trust = ObjectDigest::from_bytes(take(bytes)?);
+        let ancestry_digest = ObjectDigest::from_bytes(bytes.array()?);
+        let ancestry_database = ObjectDigest::from_bytes(bytes.array()?);
+        let ancestry_trust = ObjectDigest::from_bytes(bytes.array()?);
         let ancestry = match ancestry_present {
             0 if [ancestry_digest, ancestry_database, ancestry_trust]
                 .iter()
@@ -753,18 +754,18 @@ pub(super) fn encode_descriptor(bytes: &mut Vec<u8>, value: &GitDescriptorV1) {
     bytes.extend_from_slice(value.descriptor().digest().as_bytes());
     bytes.extend_from_slice(&value.descriptor().encoded_size().to_be_bytes());
 }
-pub(super) fn decode_descriptor(bytes: &mut &[u8]) -> Result<GitDescriptorV1, GitModelError> {
-    let role = decode_descriptor_role(take::<1>(bytes)?[0])?;
-    if take::<1>(bytes)? != [0] {
+pub(super) fn decode_descriptor(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<GitDescriptorV1, GitModelError> {
+    let role = decode_descriptor_role(bytes.array::<1>()?[0])?;
+    if bytes.array::<1>()? != [0] {
         return Err(GitModelError::CorruptEncoding);
     }
-    let length = usize::from(u16::from_be_bytes(take(bytes)?));
-    let media = decode_string(take_slice(bytes, length)?)?;
+    let length = usize::from(u16::from_be_bytes(bytes.array()?));
+    let media = decode_string(bytes.bytes(length)?)?;
     let media = MediaType::new(media).map_err(|_| GitModelError::CorruptEncoding)?;
     let descriptor = ObjectDescriptor::new(
         media,
-        ObjectDigest::from_bytes(take(bytes)?),
-        u64::from_be_bytes(take(bytes)?),
+        ObjectDigest::from_bytes(bytes.array()?),
+        u64::from_be_bytes(bytes.array()?),
     );
     GitDescriptorV1::new(role, descriptor).map_err(|_| GitModelError::CorruptEncoding)
 }
@@ -775,10 +776,10 @@ fn encode_oid_slot(bytes: &mut Vec<u8>, value: GitObjectIdV1) {
     bytes.extend_from_slice(&slot);
 }
 fn decode_oid_slot(
-    bytes: &mut &[u8],
+    bytes: &mut BoundedReader<'_, GitModelError>,
     format: GitObjectFormatV1,
 ) -> Result<GitObjectIdV1, GitModelError> {
-    let slot = take::<32>(bytes)?;
+    let slot = bytes.array::<32>()?;
     match format {
         GitObjectFormatV1::Sha1 if slot[20..] == [0; 12] => {
             GitObjectIdV1::from_bytes(format, &slot[..20])
@@ -796,12 +797,12 @@ fn encode_optional_oid(bytes: &mut Vec<u8>, value: Option<GitObjectIdV1>) {
     }
 }
 fn decode_optional_oid(
-    bytes: &mut &[u8],
+    bytes: &mut BoundedReader<'_, GitModelError>,
     format: GitObjectFormatV1,
 ) -> Result<Option<GitObjectIdV1>, GitModelError> {
-    let present = take::<1>(bytes)?[0];
+    let present = bytes.array::<1>()?[0];
     if present == 0 {
-        if take::<32>(bytes)? == [0; 32] {
+        if bytes.array::<32>()? == [0; 32] {
             Ok(None)
         } else {
             Err(GitModelError::CorruptEncoding)
@@ -819,35 +820,35 @@ fn preflight(encoded: &[u8]) -> Result<Preflight, GitModelError> {
     {
         return Err(GitModelError::CorruptEncoding);
     }
-    let mut bytes = &encoded[..encoded.len() - DIGEST_BYTES];
-    if take::<8>(&mut bytes)? != *MAGIC || u16::from_be_bytes(take(&mut bytes)?) != VERSION {
+    let mut bytes = BoundedReader::new(&encoded[..encoded.len() - DIGEST_BYTES], |_| GitModelError::CorruptEncoding);
+    if bytes.array::<8>()? != *MAGIC || u16::from_be_bytes(bytes.array()?) != VERSION {
         return Err(GitModelError::CorruptEncoding);
     }
-    let kind = take::<1>(&mut bytes)?[0];
-    let format = decode_format(take::<1>(&mut bytes)?[0])?;
-    take_slice(&mut bytes, COMMON_BYTES - 12)?;
+    let kind = bytes.array::<1>()?[0];
+    let format = decode_format(bytes.array::<1>()?[0])?;
+    bytes.bytes(COMMON_BYTES - 12)?;
     preflight_protocol(&mut bytes)?;
     match kind {
         1 => {
-            take_slice(&mut bytes, 96)?;
+            bytes.bytes(96)?;
             preflight_descriptor(&mut bytes)?;
-            take_slice(&mut bytes, AUDIENCE_BYTES)?;
+            bytes.bytes(AUDIENCE_BYTES)?;
             preflight_graph(&mut bytes)?;
-            take_slice(&mut bytes, PHYSICAL_ENUMERATION_BYTES)?;
+            bytes.bytes(PHYSICAL_ENUMERATION_BYTES)?;
             preflight_descriptor(&mut bytes)?;
-            take_slice(&mut bytes, 64)?;
+            bytes.bytes(64)?;
             preflight_refs(&mut bytes)?;
-            take_slice(&mut bytes, 32)?;
+            bytes.bytes(32)?;
         }
         2 => {
-            take_slice(&mut bytes, RECEIVE_FIXED_BEFORE_REFS)?;
+            bytes.bytes(RECEIVE_FIXED_BEFORE_REFS)?;
             preflight_refs(&mut bytes)?;
             preflight_transitions(&mut bytes)?;
-            take_slice(&mut bytes, 64)?;
+            bytes.bytes(64)?;
             preflight_whole_database(&mut bytes)?;
             preflight_whole_database(&mut bytes)?;
             preflight_descriptor(&mut bytes)?;
-            take_slice(&mut bytes, 96)?;
+            bytes.bytes(96)?;
         }
         _ => return Err(GitModelError::CorruptEncoding),
     }
@@ -857,97 +858,82 @@ fn preflight(encoded: &[u8]) -> Result<Preflight, GitModelError> {
     Ok(Preflight { kind, format })
 }
 
-fn preflight_protocol(bytes: &mut &[u8]) -> Result<(), GitModelError> {
-    take_slice(bytes, 2)?;
-    let count = usize::from(u16::from_be_bytes(take(bytes)?));
+fn preflight_protocol(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<(), GitModelError> {
+    bytes.bytes(2)?;
+    let count = usize::from(u16::from_be_bytes(bytes.array()?));
     if count > MAXIMUM_GIT_PROTOCOL_V2_CAPABILITIES {
         return Err(GitModelError::CorruptEncoding);
     }
-    take_slice(
-        bytes,
-        count
+    bytes.bytes(count
             .checked_add(32)
-            .ok_or(GitModelError::CorruptEncoding)?,
-    )?;
+            .ok_or(GitModelError::CorruptEncoding)?)?;
     Ok(())
 }
 
-fn preflight_graph(bytes: &mut &[u8]) -> Result<(), GitModelError> {
-    take_slice(bytes, GRAPH_FIXED_BYTES - 4)?;
+fn preflight_graph(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<(), GitModelError> {
+    bytes.bytes(GRAPH_FIXED_BYTES - 4)?;
     let count = read_count(bytes, MAXIMUM_GIT_GRAPH_ROOTS)?;
-    take_slice(
-        bytes,
-        count
+    bytes.bytes(count
             .checked_mul(32)
-            .ok_or(GitModelError::CorruptEncoding)?,
-    )?;
+            .ok_or(GitModelError::CorruptEncoding)?)?;
     Ok(())
 }
-pub(super) fn preflight_refs(bytes: &mut &[u8]) -> Result<(), GitModelError> {
+pub(super) fn preflight_refs(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<(), GitModelError> {
     let count = read_count(bytes, MAXIMUM_GIT_GRAPH_ROOTS)?;
     for _ in 0..count {
-        let length = usize::from(u16::from_be_bytes(take(bytes)?));
+        let length = usize::from(u16::from_be_bytes(bytes.array()?));
         if length == 0 || length > MAXIMUM_GIT_REF_BYTES {
             return Err(GitModelError::CorruptEncoding);
         }
-        take_slice(
-            bytes,
-            length
+        bytes.bytes(length
                 .checked_add(32)
-                .ok_or(GitModelError::CorruptEncoding)?,
-        )?;
+                .ok_or(GitModelError::CorruptEncoding)?)?;
     }
     Ok(())
 }
 
-pub(super) fn preflight_export(bytes: &mut &[u8]) -> Result<(), GitModelError> {
-    take_slice(bytes, 96)?;
+pub(super) fn preflight_export(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<(), GitModelError> {
+    bytes.bytes(96)?;
     preflight_descriptor(bytes)?;
     preflight_whole_database(bytes)?;
     preflight_refs(bytes)?;
-    take_slice(bytes, 32)?;
+    bytes.bytes(32)?;
     Ok(())
 }
-fn preflight_transitions(bytes: &mut &[u8]) -> Result<(), GitModelError> {
+fn preflight_transitions(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<(), GitModelError> {
     let count = read_count(bytes, MAXIMUM_GIT_REF_TRANSITIONS)?;
     if count == 0 {
         return Err(GitModelError::CorruptEncoding);
     }
     for _ in 0..count {
-        let length = usize::from(u16::from_be_bytes(take(bytes)?));
+        let length = usize::from(u16::from_be_bytes(bytes.array()?));
         if length == 0 || length > MAXIMUM_GIT_REF_BYTES {
             return Err(GitModelError::CorruptEncoding);
         }
-        take_slice(
-            bytes,
-            length
+        bytes.bytes(length
                 .checked_add(170)
-                .ok_or(GitModelError::CorruptEncoding)?,
-        )?;
+                .ok_or(GitModelError::CorruptEncoding)?)?;
     }
     Ok(())
 }
-pub(super) fn preflight_descriptor(bytes: &mut &[u8]) -> Result<(), GitModelError> {
-    take_slice(bytes, 2)?;
-    let length = usize::from(u16::from_be_bytes(take(bytes)?));
+pub(super) fn preflight_descriptor(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<(), GitModelError> {
+    bytes.bytes(2)?;
+    let length = usize::from(u16::from_be_bytes(bytes.array()?));
     if length == 0 || length > 255 {
         return Err(GitModelError::CorruptEncoding);
     }
-    take_slice(
-        bytes,
-        length
+    bytes.bytes(length
             .checked_add(40)
-            .ok_or(GitModelError::CorruptEncoding)?,
-    )?;
+            .ok_or(GitModelError::CorruptEncoding)?)?;
     Ok(())
 }
 
-pub(super) fn preflight_whole_database(bytes: &mut &[u8]) -> Result<(), GitModelError> {
-    take_slice(bytes, AUDIENCE_BYTES)?;
+pub(super) fn preflight_whole_database(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<(), GitModelError> {
+    bytes.bytes(AUDIENCE_BYTES)?;
     preflight_graph(bytes)?;
-    take_slice(bytes, PHYSICAL_ENUMERATION_BYTES)?;
+    bytes.bytes(PHYSICAL_ENUMERATION_BYTES)?;
     preflight_descriptor(bytes)?;
-    take_slice(bytes, 64)?;
+    bytes.bytes(64)?;
     Ok(())
 }
 
@@ -976,8 +962,8 @@ fn push_u32(bytes: &mut Vec<u8>, value: usize) {
     let encoded = value.to_be_bytes();
     bytes.extend_from_slice(&encoded[encoded.len() - 4..]);
 }
-fn read_count(bytes: &mut &[u8], maximum: usize) -> Result<usize, GitModelError> {
-    let value = usize::try_from(u32::from_be_bytes(take(bytes)?))
+fn read_count(bytes: &mut BoundedReader<'_, GitModelError>, maximum: usize) -> Result<usize, GitModelError> {
+    let value = usize::try_from(u32::from_be_bytes(bytes.array()?))
         .map_err(|_| GitModelError::CorruptEncoding)?;
     if value > maximum {
         Err(GitModelError::CorruptEncoding)
@@ -1041,16 +1027,4 @@ fn decode_protocol_capability(value: u8) -> Result<GitProtocolV2CapabilityV1, Gi
         11 => Ok(GitProtocolV2CapabilityV1::SideBand64k),
         _ => Err(GitModelError::CorruptEncoding),
     }
-}
-fn take_slice<'a>(bytes: &mut &'a [u8], length: usize) -> Result<&'a [u8], GitModelError> {
-    let (value, remaining) = bytes
-        .split_at_checked(length)
-        .ok_or(GitModelError::CorruptEncoding)?;
-    *bytes = remaining;
-    Ok(value)
-}
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], GitModelError> {
-    take_slice(bytes, N)?
-        .try_into()
-        .map_err(|_| GitModelError::CorruptEncoding)
 }

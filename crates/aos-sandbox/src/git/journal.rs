@@ -1,5 +1,6 @@
 //! Inert Git journal namespace ownership model.
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use std::collections::BTreeMap;
 
 use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceId, Revision};
@@ -574,31 +575,31 @@ pub fn decode_git_journal_record_v1(
     if digest.as_bytes() != stored || !verifier.accepts_record(digest) {
         return Err(GitModelError::CorruptEncoding);
     }
-    let mut bytes = body;
-    if take::<8>(&mut bytes)? != *MAGIC || u16::from_be_bytes(take(&mut bytes)?) != VERSION {
+    let mut bytes = BoundedReader::new(body, |_| GitModelError::CorruptEncoding);
+    if bytes.array::<8>()? != *MAGIC || u16::from_be_bytes(bytes.array()?) != VERSION {
         return Err(GitModelError::CorruptEncoding);
     }
-    let kind = match take::<1>(&mut bytes)?[0] {
+    let kind = match bytes.array::<1>()?[0] {
         1 => GitJournalRecordKindV1::State,
         2 => GitJournalRecordKindV1::ReceiveEffect,
         3 => GitJournalRecordKindV1::Checkpoint,
         _ => return Err(GitModelError::CorruptEncoding),
     };
-    if take::<5>(&mut bytes)? != [0; 5] {
+    if bytes.array::<5>()? != [0; 5] {
         return Err(GitModelError::CorruptEncoding);
     }
     let record = GitJournalOwnershipRecordV1::new(
         kind,
-        ProjectId::from_bytes(take(&mut bytes)?),
-        ResourceId::from_bytes(take(&mut bytes)?),
-        ResourceId::from_bytes(take(&mut bytes)?),
-        Revision::new(u64::from_be_bytes(take(&mut bytes)?)),
-        optional_digest(take(&mut bytes)?),
-        ObjectDigest::from_bytes(take(&mut bytes)?),
-        ObjectDigest::from_bytes(take(&mut bytes)?),
-        ObjectDigest::from_bytes(take(&mut bytes)?),
-        ObjectDigest::from_bytes(take(&mut bytes)?),
-        optional_revision(u64::from_be_bytes(take(&mut bytes)?)),
+        ProjectId::from_bytes(bytes.array()?),
+        ResourceId::from_bytes(bytes.array()?),
+        ResourceId::from_bytes(bytes.array()?),
+        Revision::new(u64::from_be_bytes(bytes.array()?)),
+        optional_digest(bytes.array()?),
+        ObjectDigest::from_bytes(bytes.array()?),
+        ObjectDigest::from_bytes(bytes.array()?),
+        ObjectDigest::from_bytes(bytes.array()?),
+        ObjectDigest::from_bytes(bytes.array()?),
+        optional_revision(u64::from_be_bytes(bytes.array()?)),
     )
     .map_err(|_| GitModelError::CorruptEncoding)?;
     if record.journal_authority != verifier.authority
@@ -651,12 +652,4 @@ fn optional_digest(bytes: [u8; 32]) -> Option<ObjectDigest> {
 
 fn optional_revision(value: u64) -> Option<Revision> {
     (value != 0).then_some(Revision::new(value))
-}
-
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], GitModelError> {
-    let (head, tail) = bytes
-        .split_at_checked(N)
-        .ok_or(GitModelError::CorruptEncoding)?;
-    *bytes = tail;
-    head.try_into().map_err(|_| GitModelError::CorruptEncoding)
 }

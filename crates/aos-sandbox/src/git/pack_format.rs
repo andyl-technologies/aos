@@ -10,6 +10,7 @@
 //! [multi-pack-index-descriptor] | whole-ODB
 //! ```
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceId, Revision};
 
 use super::format::{
@@ -149,40 +150,40 @@ pub(super) fn decode_pack_generation_payload_v1(
     if encoded.len() < 12 || encoded.len() > MAXIMUM_PACK_RECORD_BYTES {
         return Err(GitModelError::CorruptEncoding);
     }
-    let mut bytes = encoded;
-    if take::<8>(&mut bytes)? != *MAGIC {
+    let mut bytes = BoundedReader::new(encoded, |_| GitModelError::CorruptEncoding);
+    if bytes.array::<8>()? != *MAGIC {
         return Err(GitModelError::CorruptEncoding);
     }
-    let body_length = usize::try_from(u32::from_be_bytes(take(&mut bytes)?))
+    let body_length = usize::try_from(u32::from_be_bytes(bytes.array()?))
         .map_err(|_| GitModelError::CorruptEncoding)?;
-    if body_length != bytes.len() {
+    if body_length != bytes.remaining() {
         return Err(GitModelError::CorruptEncoding);
     }
-    preflight_body(bytes)?;
-    let format = match take::<1>(&mut bytes)?[0] {
+    preflight_body(bytes.remaining_bytes())?;
+    let format = match bytes.array::<1>()?[0] {
         1 => GitObjectFormatV1::Sha1,
         2 => GitObjectFormatV1::Sha256,
         _ => return Err(GitModelError::CorruptEncoding),
     };
-    if take::<3>(&mut bytes)? != [0; 3] {
+    if bytes.array::<3>()? != [0; 3] {
         return Err(GitModelError::CorruptEncoding);
     }
-    let identity = ResourceId::from_bytes(take(&mut bytes)?);
-    let generation = Revision::new(u64::from_be_bytes(take(&mut bytes)?));
-    let predecessor_slot = take_slice(&mut bytes, 48)?;
+    let identity = ResourceId::from_bytes(bytes.array()?);
+    let generation = Revision::new(u64::from_be_bytes(bytes.array()?));
+    let predecessor_slot = bytes.bytes(48)?;
     let predecessor = decode_predecessor(predecessor_slot)?;
-    let project = ProjectId::from_bytes(take(&mut bytes)?);
-    let repository = ResourceId::from_bytes(take(&mut bytes)?);
-    let export = ResourceId::from_bytes(take(&mut bytes)?);
-    let export_generation = Revision::new(u64::from_be_bytes(take(&mut bytes)?));
+    let project = ProjectId::from_bytes(bytes.array()?);
+    let repository = ResourceId::from_bytes(bytes.array()?);
+    let export = ResourceId::from_bytes(bytes.array()?);
+    let export_generation = Revision::new(u64::from_be_bytes(bytes.array()?));
     let export_digest =
-        GitExportGenerationDigestV1::from_stored(ObjectDigest::from_bytes(take(&mut bytes)?))?;
+        GitExportGenerationDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
     let stored_digest =
-        GitPackGenerationDigestV1::from_stored(ObjectDigest::from_bytes(take(&mut bytes)?))?;
+        GitPackGenerationDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
     let pack = decode_descriptor(&mut bytes)?;
     let index = decode_descriptor(&mut bytes)?;
-    let multi_present = take::<1>(&mut bytes)?[0];
-    if take::<7>(&mut bytes)? != [0; 7] {
+    let multi_present = bytes.array::<1>()?[0];
+    if bytes.array::<7>()? != [0; 7] {
         return Err(GitModelError::CorruptEncoding);
     }
     let multi_pack_index = match multi_present {
@@ -215,12 +216,13 @@ pub(super) fn decode_pack_generation_payload_v1(
     Ok(value)
 }
 
-fn preflight_body(mut bytes: &[u8]) -> Result<(), GitModelError> {
-    take_slice(&mut bytes, 4 + 16 + 8 + 48 + 16 + 16 + 16 + 8 + 32 + 32)?;
+fn preflight_body(bytes: &[u8]) -> Result<(), GitModelError> {
+    let mut bytes = BoundedReader::new(bytes, |_| GitModelError::CorruptEncoding);
+    bytes.bytes(4 + 16 + 8 + 48 + 16 + 16 + 16 + 8 + 32 + 32)?;
     preflight_descriptor(&mut bytes)?;
     preflight_descriptor(&mut bytes)?;
-    let present = take::<1>(&mut bytes)?[0];
-    if take::<7>(&mut bytes)? != [0; 7] {
+    let present = bytes.array::<1>()?[0];
+    if bytes.array::<7>()? != [0; 7] {
         return Err(GitModelError::CorruptEncoding);
     }
     match present {
@@ -237,14 +239,15 @@ fn preflight_body(mut bytes: &[u8]) -> Result<(), GitModelError> {
 }
 
 fn decode_predecessor(
-    mut bytes: &[u8],
+    bytes: &[u8],
 ) -> Result<Option<GitPackGenerationPredecessorV1>, GitModelError> {
-    let present = take::<1>(&mut bytes)?[0];
-    if take::<7>(&mut bytes)? != [0; 7] {
+    let mut bytes = BoundedReader::new(bytes, |_| GitModelError::CorruptEncoding);
+    let present = bytes.array::<1>()?[0];
+    if bytes.array::<7>()? != [0; 7] {
         return Err(GitModelError::CorruptEncoding);
     }
-    let generation = u64::from_be_bytes(take(&mut bytes)?);
-    let digest = ObjectDigest::from_bytes(take(&mut bytes)?);
+    let generation = u64::from_be_bytes(bytes.array()?);
+    let digest = ObjectDigest::from_bytes(bytes.array()?);
     match (present, generation, digest.as_bytes() == &[0; 32]) {
         (0, 0, true) => Ok(None),
         (1, value, false) => GitPackGenerationPredecessorV1::new(
@@ -255,17 +258,4 @@ fn decode_predecessor(
         .map_err(|_| GitModelError::CorruptEncoding),
         _ => Err(GitModelError::CorruptEncoding),
     }
-}
-
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], GitModelError> {
-    let prefix = bytes.get(..N).ok_or(GitModelError::CorruptEncoding)?;
-    let value = <[u8; N]>::try_from(prefix).map_err(|_| GitModelError::CorruptEncoding)?;
-    *bytes = bytes.get(N..).ok_or(GitModelError::CorruptEncoding)?;
-    Ok(value)
-}
-
-fn take_slice<'a>(bytes: &mut &'a [u8], length: usize) -> Result<&'a [u8], GitModelError> {
-    let value = bytes.get(..length).ok_or(GitModelError::CorruptEncoding)?;
-    *bytes = bytes.get(length..).ok_or(GitModelError::CorruptEncoding)?;
-    Ok(value)
 }

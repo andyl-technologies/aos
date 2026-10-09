@@ -6,6 +6,7 @@
 //! checkpoint authenticates these bytes; the summary grants no runtime lease
 //! or object access.
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use std::collections::BTreeSet;
 
 use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceId, Revision};
@@ -532,19 +533,19 @@ pub(super) fn decode_retired_pack(
     floor: Revision,
 ) -> Result<GitRetiredPackSummaryV1, GitModelError> {
     let (lease_count, preflight_fork_count) = preflight_retired_pack(encoded)?;
-    let mut bytes = encoded;
-    let project = ProjectId::from_bytes(take(&mut bytes)?);
-    let repository = ResourceId::from_bytes(take(&mut bytes)?);
-    let pack_generation = ResourceId::from_bytes(take(&mut bytes)?);
-    let generation = Revision::new(u64::from_be_bytes(take(&mut bytes)?));
+    let mut bytes = BoundedReader::new(encoded, |_| GitModelError::CorruptEncoding);
+    let project = ProjectId::from_bytes(bytes.array()?);
+    let repository = ResourceId::from_bytes(bytes.array()?);
+    let pack_generation = ResourceId::from_bytes(bytes.array()?);
+    let generation = Revision::new(u64::from_be_bytes(bytes.array()?));
     let generation_digest =
-        GitPackGenerationDigestV1::from_stored(ObjectDigest::from_bytes(take(&mut bytes)?))?;
-    let pack_payload_digest = ObjectDigest::from_bytes(take(&mut bytes)?);
-    let pack_record_head = ObjectDigest::from_bytes(take(&mut bytes)?);
-    let retired_at_floor = Revision::new(u64::from_be_bytes(take(&mut bytes)?));
-    let encoded_lease_count = usize::try_from(u32::from_be_bytes(take(&mut bytes)?))
+        GitPackGenerationDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
+    let pack_payload_digest = ObjectDigest::from_bytes(bytes.array()?);
+    let pack_record_head = ObjectDigest::from_bytes(bytes.array()?);
+    let retired_at_floor = Revision::new(u64::from_be_bytes(bytes.array()?));
+    let encoded_lease_count = usize::try_from(u32::from_be_bytes(bytes.array()?))
         .map_err(|_| GitModelError::CorruptEncoding)?;
-    let fork_count = usize::try_from(u32::from_be_bytes(take(&mut bytes)?))
+    let fork_count = usize::try_from(u32::from_be_bytes(bytes.array()?))
         .map_err(|_| GitModelError::CorruptEncoding)?;
     if encoded_lease_count != lease_count || fork_count != preflight_fork_count {
         return Err(GitModelError::CorruptEncoding);
@@ -554,23 +555,23 @@ pub(super) fn decode_retired_pack(
         .try_reserve_exact(lease_count)
         .map_err(|_| GitModelError::Allocation)?;
     for _ in 0..lease_count {
-        let lease = ResourceId::from_bytes(take(&mut bytes)?);
-        let revision = Revision::new(u64::from_be_bytes(take(&mut bytes)?));
-        let outcome = match take::<1>(&mut bytes)?[0] {
+        let lease = ResourceId::from_bytes(bytes.array()?);
+        let revision = Revision::new(u64::from_be_bytes(bytes.array()?));
+        let outcome = match bytes.array::<1>()?[0] {
             2 => GitPackLeaseStatusV1::Released,
             3 => GitPackLeaseStatusV1::Expired,
             4 => GitPackLeaseStatusV1::Invalidated,
             _ => return Err(GitModelError::CorruptEncoding),
         };
-        if take::<7>(&mut bytes)? != [0; 7] {
+        if bytes.array::<7>()? != [0; 7] {
             return Err(GitModelError::CorruptEncoding);
         }
         leases.push(GitTerminalLeaseTombstoneV1 {
             lease,
             revision,
             outcome,
-            payload_digest: ObjectDigest::from_bytes(take(&mut bytes)?),
-            record_head: ObjectDigest::from_bytes(take(&mut bytes)?),
+            payload_digest: ObjectDigest::from_bytes(bytes.array()?),
+            record_head: ObjectDigest::from_bytes(bytes.array()?),
         });
     }
     let mut forks = Vec::new();
@@ -578,22 +579,22 @@ pub(super) fn decode_retired_pack(
         .try_reserve_exact(fork_count)
         .map_err(|_| GitModelError::Allocation)?;
     for _ in 0..fork_count {
-        let target = ResourceId::from_bytes(take(&mut bytes)?);
-        let revision = Revision::new(u64::from_be_bytes(take(&mut bytes)?));
-        let outcome = match take::<1>(&mut bytes)?[0] {
+        let target = ResourceId::from_bytes(bytes.array()?);
+        let revision = Revision::new(u64::from_be_bytes(bytes.array()?));
+        let outcome = match bytes.array::<1>()?[0] {
             3 => GitCheapForkStatusV1::Converted,
             4 => GitCheapForkStatusV1::Tombstoned,
             _ => return Err(GitModelError::CorruptEncoding),
         };
-        if take::<7>(&mut bytes)? != [0; 7] {
+        if bytes.array::<7>()? != [0; 7] {
             return Err(GitModelError::CorruptEncoding);
         }
         forks.push(GitTerminalForkTombstoneV1 {
             target,
             revision,
             outcome,
-            payload_digest: ObjectDigest::from_bytes(take(&mut bytes)?),
-            record_head: ObjectDigest::from_bytes(take(&mut bytes)?),
+            payload_digest: ObjectDigest::from_bytes(bytes.array()?),
+            record_head: ObjectDigest::from_bytes(bytes.array()?),
         });
     }
     if !bytes.is_empty() {
@@ -650,13 +651,4 @@ pub(super) fn preflight_retired_pack(encoded: &[u8]) -> Result<(usize, usize), G
         return Err(GitModelError::CorruptEncoding);
     }
     Ok((lease_count, fork_count))
-}
-
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], GitModelError> {
-    if bytes.len() < N {
-        return Err(GitModelError::CorruptEncoding);
-    }
-    let (head, tail) = bytes.split_at(N);
-    *bytes = tail;
-    head.try_into().map_err(|_| GitModelError::CorruptEncoding)
 }

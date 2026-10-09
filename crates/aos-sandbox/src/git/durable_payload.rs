@@ -10,6 +10,7 @@
 //! data. Decoding preflights all variable lengths before allocating and binds
 //! graph evidence to a verifier-issued [`GitTrustedValidatorV1`].
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{ObjectDigest, PrincipalId, ProjectId, ResourceId, Revision, SandboxId};
 
 use super::format::{
@@ -231,23 +232,23 @@ pub fn decode_git_durable_payload_v1(
         return Err(GitModelError::CorruptEncoding);
     }
     preflight_payload(kind, encoded)?;
-    let mut bytes = encoded;
+    let mut bytes = BoundedReader::new(encoded, |_| GitModelError::CorruptEncoding);
     let payload = match kind {
         GitDurableRecordKindV1::Repository => {
             GitDurablePayloadV1::Repository(decode_repository(&mut bytes, trusted_validator)?)
         }
         GitDurableRecordKindV1::Receive => {
             let length = read_length(&mut bytes)?;
-            let plan = take_slice(&mut bytes, length)?;
+            let plan = bytes.bytes(length)?;
             let GitExchangePlanV1::Receive(plan) =
                 decode_git_exchange_plan_v1(plan, trusted_validator)?
             else {
                 return Err(GitModelError::CorruptEncoding);
             };
-            let revision = Revision::new(u64::from_be_bytes(take(&mut bytes)?));
+            let revision = Revision::new(u64::from_be_bytes(bytes.array()?));
             let predecessor = decode_optional_digest(&mut bytes)?;
-            let phase = decode_receive_phase(take::<1>(&mut bytes)?[0])?;
-            if take::<7>(&mut bytes)? != [0; 7] {
+            let phase = decode_receive_phase(bytes.array::<1>()?[0])?;
+            if bytes.array::<7>()? != [0; 7] {
                 return Err(GitModelError::CorruptEncoding);
             }
             let sealed = decode_optional_digest(&mut bytes)?;
@@ -272,21 +273,21 @@ pub fn decode_git_durable_payload_v1(
         }
         GitDurableRecordKindV1::Publication => {
             let value = GitPublicationRecordV1::from_stored(
-                ResourceId::from_bytes(take(&mut bytes)?),
-                Revision::new(u64::from_be_bytes(take(&mut bytes)?)),
-                Revision::new(u64::from_be_bytes(take(&mut bytes)?)),
-                GitAtomicCasDigestV1::from_stored(ObjectDigest::from_bytes(take(&mut bytes)?))?,
-                u64::from_be_bytes(take(&mut bytes)?),
+                ResourceId::from_bytes(bytes.array()?),
+                Revision::new(u64::from_be_bytes(bytes.array()?)),
+                Revision::new(u64::from_be_bytes(bytes.array()?)),
+                GitAtomicCasDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?,
+                u64::from_be_bytes(bytes.array()?),
             )?;
             GitDurablePayloadV1::Publication(value)
         }
         GitDurableRecordKindV1::Export => {
-            let format = decode_format(take::<1>(&mut bytes)?[0])?;
-            if take::<7>(&mut bytes)? != [0; 7] {
+            let format = decode_format(bytes.array::<1>()?[0])?;
+            if bytes.array::<7>()? != [0; 7] {
                 return Err(GitModelError::CorruptEncoding);
             }
-            let predecessor_generation = u64::from_be_bytes(take(&mut bytes)?);
-            let predecessor_digest = ObjectDigest::from_bytes(take(&mut bytes)?);
+            let predecessor_generation = u64::from_be_bytes(bytes.array()?);
+            let predecessor_digest = ObjectDigest::from_bytes(bytes.array()?);
             let predecessor = match (predecessor_generation, predecessor_digest.as_bytes()) {
                 (0, digest) if digest == &[0; 32] => None,
                 (generation, digest)
@@ -308,7 +309,7 @@ pub fn decode_git_durable_payload_v1(
             )
         }
         GitDurableRecordKindV1::Pack => {
-            bytes = &[];
+            bytes = BoundedReader::new(&[], |_| GitModelError::CorruptEncoding);
             GitDurablePayloadV1::Pack(decode_pack_generation_payload_v1(
                 encoded,
                 trusted_validator,
@@ -319,29 +320,27 @@ pub fn decode_git_durable_payload_v1(
         }
         GitDurableRecordKindV1::CheapFork => {
             let target = decode_repository(&mut bytes, trusted_validator)?;
-            let source_repository = ResourceId::from_bytes(take(&mut bytes)?);
-            let source_revision = Revision::new(u64::from_be_bytes(take(&mut bytes)?));
+            let source_repository = ResourceId::from_bytes(bytes.array()?);
+            let source_revision = Revision::new(u64::from_be_bytes(bytes.array()?));
             let source_export = GitExportGenerationDigestV1::from_stored(
-                ObjectDigest::from_bytes(take(&mut bytes)?),
+                ObjectDigest::from_bytes(bytes.array()?),
             )?;
-            let pack = GitPackGenerationDigestV1::from_stored(ObjectDigest::from_bytes(take(
-                &mut bytes,
-            )?))?;
+            let pack = GitPackGenerationDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
             let lease = decode_pack_lease(&mut bytes)?;
-            let observed_at = GitBoottimeV1::from_stored(u64::from_be_bytes(take(&mut bytes)?))?;
-            let record_revision = Revision::new(u64::from_be_bytes(take(&mut bytes)?));
+            let observed_at = GitBoottimeV1::from_stored(u64::from_be_bytes(bytes.array()?))?;
+            let record_revision = Revision::new(u64::from_be_bytes(bytes.array()?));
             let predecessor = decode_optional_raw_digest(&mut bytes)?;
-            let status = match take::<1>(&mut bytes)?[0] {
+            let status = match bytes.array::<1>()?[0] {
                 1 => GitCheapForkStatusV1::Attached,
                 2 => GitCheapForkStatusV1::Detached,
                 3 => GitCheapForkStatusV1::Converted,
                 4 => GitCheapForkStatusV1::Tombstoned,
                 _ => return Err(GitModelError::CorruptEncoding),
             };
-            if take::<7>(&mut bytes)? != [0; 7] {
+            if bytes.array::<7>()? != [0; 7] {
                 return Err(GitModelError::CorruptEncoding);
             }
-            let closed = u64::from_be_bytes(take(&mut bytes)?);
+            let closed = u64::from_be_bytes(bytes.array()?);
             let closed_at = (closed != 0)
                 .then(|| GitBoottimeV1::from_stored(closed))
                 .transpose()?;
@@ -389,26 +388,26 @@ fn encode_repository(
 }
 
 fn decode_repository(
-    bytes: &mut &[u8],
+    bytes: &mut BoundedReader<'_, GitModelError>,
     trusted_validator: &GitTrustedValidatorV1,
 ) -> Result<GitRepositoryStateV1, GitModelError> {
-    let format = decode_format(take::<1>(bytes)?[0])?;
-    if take::<7>(bytes)? != [0; 7] {
+    let format = decode_format(bytes.array::<1>()?[0])?;
+    if bytes.array::<7>()? != [0; 7] {
         return Err(GitModelError::CorruptEncoding);
     }
     let repository = GitRepositoryV1::new(
-        ResourceId::from_bytes(take(bytes)?),
-        ProjectId::from_bytes(take(bytes)?),
-        SandboxId::from_bytes(take(bytes)?),
-        ResourceId::from_bytes(take(bytes)?),
+        ResourceId::from_bytes(bytes.array()?),
+        ProjectId::from_bytes(bytes.array()?),
+        SandboxId::from_bytes(bytes.array()?),
+        ResourceId::from_bytes(bytes.array()?),
         format,
-        Revision::new(u64::from_be_bytes(take(bytes)?)),
+        Revision::new(u64::from_be_bytes(bytes.array()?)),
     )
     .map_err(|_| GitModelError::CorruptEncoding)?;
     let predecessor = decode_optional_digest(bytes)?;
     let database = decode_whole_database(bytes, format, trusted_validator)?;
     let refs = decode_refs(bytes, format)?;
-    let stored_ref_map = GitRefMapDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
+    let stored_ref_map = GitRefMapDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
     let state = GitRepositoryStateV1::new(repository, predecessor, refs, database)
         .map_err(|_| GitModelError::CorruptEncoding)?;
     if state.ref_map() != stored_ref_map {
@@ -451,48 +450,48 @@ fn encode_pack_lease(bytes: &mut Vec<u8>, value: GitPackLeaseV1) {
     );
 }
 
-fn decode_pack_lease(bytes: &mut &[u8]) -> Result<GitPackLeaseV1, GitModelError> {
-    let project = ProjectId::from_bytes(take(bytes)?);
-    let repository = ResourceId::from_bytes(take(bytes)?);
-    let pack_generation = ResourceId::from_bytes(take(bytes)?);
-    let generation = Revision::new(u64::from_be_bytes(take(bytes)?));
+fn decode_pack_lease(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<GitPackLeaseV1, GitModelError> {
+    let project = ProjectId::from_bytes(bytes.array()?);
+    let repository = ResourceId::from_bytes(bytes.array()?);
+    let pack_generation = ResourceId::from_bytes(bytes.array()?);
+    let generation = Revision::new(u64::from_be_bytes(bytes.array()?));
     let generation_digest =
-        GitPackGenerationDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
-    let export = ResourceId::from_bytes(take(bytes)?);
-    let export_generation = Revision::new(u64::from_be_bytes(take(bytes)?));
+        GitPackGenerationDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
+    let export = ResourceId::from_bytes(bytes.array()?);
+    let export_generation = Revision::new(u64::from_be_bytes(bytes.array()?));
     let export_digest =
-        GitExportGenerationDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
-    let kind = take::<1>(bytes)?[0];
-    if take::<7>(bytes)? != [0; 7] {
+        GitExportGenerationDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
+    let kind = bytes.array::<1>()?[0];
+    if bytes.array::<7>()? != [0; 7] {
         return Err(GitModelError::CorruptEncoding);
     }
-    let consumer = match (kind, ResourceId::from_bytes(take(bytes)?)) {
+    let consumer = match (kind, ResourceId::from_bytes(bytes.array()?)) {
         (1, identity) => GitPackConsumerV1::Repository(identity),
         (2, identity) => GitPackConsumerV1::Export(identity),
         _ => return Err(GitModelError::CorruptEncoding),
     };
-    let lease = ResourceId::from_bytes(take(bytes)?);
-    let lease_revision = Revision::new(u64::from_be_bytes(take(bytes)?));
-    let principal = PrincipalId::from_bytes(take(bytes)?);
-    let boot = super::GitBootIdV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
-    let observed_at = GitBoottimeV1::from_stored(u64::from_be_bytes(take(bytes)?))?;
-    let expires_at = u64::from_be_bytes(take(bytes)?);
-    let pin_receipt = ObjectDigest::from_bytes(take(bytes)?);
-    let status = match take::<1>(bytes)?[0] {
+    let lease = ResourceId::from_bytes(bytes.array()?);
+    let lease_revision = Revision::new(u64::from_be_bytes(bytes.array()?));
+    let principal = PrincipalId::from_bytes(bytes.array()?);
+    let boot = super::GitBootIdV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
+    let observed_at = GitBoottimeV1::from_stored(u64::from_be_bytes(bytes.array()?))?;
+    let expires_at = u64::from_be_bytes(bytes.array()?);
+    let pin_receipt = ObjectDigest::from_bytes(bytes.array()?);
+    let status = match bytes.array::<1>()?[0] {
         1 => GitPackLeaseStatusV1::Active,
         2 => GitPackLeaseStatusV1::Released,
         3 => GitPackLeaseStatusV1::Expired,
         4 => GitPackLeaseStatusV1::Invalidated,
         _ => return Err(GitModelError::CorruptEncoding),
     };
-    if take::<7>(bytes)? != [0; 7] {
+    if bytes.array::<7>()? != [0; 7] {
         return Err(GitModelError::CorruptEncoding);
     }
-    let closed_at = match u64::from_be_bytes(take(bytes)?) {
+    let closed_at = match u64::from_be_bytes(bytes.array()?) {
         0 => None,
         value => Some(value),
     };
-    let predecessor_raw = ObjectDigest::from_bytes(take(bytes)?);
+    let predecessor_raw = ObjectDigest::from_bytes(bytes.array()?);
     let predecessor_boot = (predecessor_raw.as_bytes() != &[0; 32])
         .then(|| super::GitBootIdV1::from_stored(predecessor_raw))
         .transpose()?;
@@ -520,31 +519,31 @@ fn decode_pack_lease(bytes: &mut &[u8]) -> Result<GitPackLeaseV1, GitModelError>
 }
 
 fn preflight_payload(kind: GitDurableRecordKindV1, encoded: &[u8]) -> Result<(), GitModelError> {
-    let mut bytes = encoded;
+    let mut bytes = BoundedReader::new(encoded, |_| GitModelError::CorruptEncoding);
     match kind {
         GitDurableRecordKindV1::Repository => preflight_repository(&mut bytes)?,
         GitDurableRecordKindV1::Receive => {
             let length = read_length(&mut bytes)?;
-            take_slice(&mut bytes, length)?;
-            take_slice(&mut bytes, 8 + 40 + 8 + 40 * 4)?;
+            bytes.bytes(length)?;
+            bytes.bytes(8 + 40 + 8 + 40 * 4)?;
         }
         GitDurableRecordKindV1::Publication => {
-            take_slice(&mut bytes, 72)?;
+            bytes.bytes(72)?;
         }
         GitDurableRecordKindV1::Export => {
-            take_slice(&mut bytes, 48)?;
+            bytes.bytes(48)?;
             preflight_export(&mut bytes)?;
         }
         GitDurableRecordKindV1::Pack => {
             // The pack codec owns a complete no-allocation body preflight.
-            bytes = &[];
+            bytes = BoundedReader::new(&[], |_| GitModelError::CorruptEncoding);
         }
         GitDurableRecordKindV1::PackLease => {
-            take_slice(&mut bytes, 336)?;
+            bytes.bytes(336)?;
         }
         GitDurableRecordKindV1::CheapFork => {
             preflight_repository(&mut bytes)?;
-            take_slice(&mut bytes, 88 + 336 + 8 + 56)?;
+            bytes.bytes(88 + 336 + 8 + 56)?;
         }
     }
     if bytes.is_empty() {
@@ -554,11 +553,11 @@ fn preflight_payload(kind: GitDurableRecordKindV1, encoded: &[u8]) -> Result<(),
     }
 }
 
-fn preflight_repository(bytes: &mut &[u8]) -> Result<(), GitModelError> {
-    take_slice(bytes, 8 + 16 * 4 + 8 + 40)?;
+fn preflight_repository(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<(), GitModelError> {
+    bytes.bytes(8 + 16 * 4 + 8 + 40)?;
     preflight_whole_database(bytes)?;
     preflight_refs(bytes)?;
-    take_slice(bytes, 32)?;
+    bytes.bytes(32)?;
     Ok(())
 }
 
@@ -572,12 +571,12 @@ fn encode_optional_digest(bytes: &mut Vec<u8>, value: Option<ObjectDigest>) {
     );
 }
 
-fn decode_optional_digest(bytes: &mut &[u8]) -> Result<Option<ObjectDigest>, GitModelError> {
-    let present = take::<1>(bytes)?[0];
-    if take::<7>(bytes)? != [0; 7] {
+fn decode_optional_digest(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<Option<ObjectDigest>, GitModelError> {
+    let present = bytes.array::<1>()?[0];
+    if bytes.array::<7>()? != [0; 7] {
         return Err(GitModelError::CorruptEncoding);
     }
-    let digest = ObjectDigest::from_bytes(take(bytes)?);
+    let digest = ObjectDigest::from_bytes(bytes.array()?);
     match (present, digest.as_bytes()) {
         (0, value) if value == &[0; 32] => Ok(None),
         (1, value) if value != &[0; 32] => Ok(Some(digest)),
@@ -585,8 +584,8 @@ fn decode_optional_digest(bytes: &mut &[u8]) -> Result<Option<ObjectDigest>, Git
     }
 }
 
-fn decode_optional_raw_digest(bytes: &mut &[u8]) -> Result<Option<ObjectDigest>, GitModelError> {
-    let digest = ObjectDigest::from_bytes(take(bytes)?);
+fn decode_optional_raw_digest(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<Option<ObjectDigest>, GitModelError> {
+    let digest = ObjectDigest::from_bytes(bytes.array()?);
     Ok((digest.as_bytes() != &[0; 32]).then_some(digest))
 }
 
@@ -599,8 +598,8 @@ fn push_length(bytes: &mut Vec<u8>, length: usize) -> Result<(), GitModelError> 
     Ok(())
 }
 
-fn read_length(bytes: &mut &[u8]) -> Result<usize, GitModelError> {
-    let length = usize::try_from(u32::from_be_bytes(take(bytes)?))
+fn read_length(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<usize, GitModelError> {
+    let length = usize::try_from(u32::from_be_bytes(bytes.array()?))
         .map_err(|_| GitModelError::CorruptEncoding)?;
     if length == 0 || length > MAXIMUM_GIT_DURABLE_PAYLOAD_BYTES {
         Err(GitModelError::CorruptEncoding)
@@ -626,18 +625,4 @@ fn decode_receive_phase(value: u8) -> Result<GitReceivePhaseV1, GitModelError> {
         5 => Ok(GitReceivePhaseV1::Rejected),
         _ => Err(GitModelError::CorruptEncoding),
     }
-}
-
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], GitModelError> {
-    take_slice(bytes, N)?
-        .try_into()
-        .map_err(|_| GitModelError::CorruptEncoding)
-}
-
-fn take_slice<'a>(bytes: &mut &'a [u8], length: usize) -> Result<&'a [u8], GitModelError> {
-    let (head, tail) = bytes
-        .split_at_checked(length)
-        .ok_or(GitModelError::CorruptEncoding)?;
-    *bytes = tail;
-    Ok(head)
 }
