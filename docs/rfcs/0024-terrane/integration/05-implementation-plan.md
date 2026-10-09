@@ -166,6 +166,19 @@ namespace cases pass. A focused diagnostic reaches post-backfill current
 lookup; repeated held content reads replay the selected publication history.
 A separate implementation workline reuses the existing request-local retained
 read closure while preserving fresh authority and physical closing checks.
+Its source candidate `711c79bf7b` adds seven native/scalar witnesses for bounded
+reads, physical replacement, dictionaries, selected-state changes, supported
+errors and cancellation. The nested materializer candidate `46d7dfda3a` adds
+twenty-four pure witnesses and the D-116 structural correction; its public
+policy value retains independently resolved boundary properties without
+granting authority. Their exact selectors are registered in the owning GET
+and algebra gates. Scoped formatting and whitespace checks pass; compilation
+and runtime qualification remain pending. Native deletion candidate
+`26dc8998b0` passes its required native build and strict all-target Clippy;
+its original test compilation remains in progress. Native overlay review also
+identifies inherited index bindings that need authentication against their
+signed source and recomputation for the actual output. Source corrections
+and fixtures remain in that workline; none of these results accepts a task.
 The owning gates and full current trunk floor remain pending. No diagnostic
 run substitutes for qualification.
 Unchanged-budget runtime tests and the complete current trunk floor remain

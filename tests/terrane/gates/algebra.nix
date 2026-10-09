@@ -13,6 +13,33 @@
     python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output or "test " + sys.argv[2] + " ... ok" not in output)' "$TMPDIR/test.log" "${name}"
   '';
 
+  overlayGraftSelectors = [
+    "overlay_overlapping_grafts_preserve_lower_children_and_recipe_inputs"
+    "overlay_graft_whiteout_suppresses_lower_child_and_emits_only_ordinary_roots"
+    "overlay_repeated_nested_grafts_resolve_each_occurrence"
+    "overlay_inline_and_grafted_directories_merge_in_both_orders"
+    "overlay_graft_policy_mismatch_refuses_materialization"
+    "overlay_flat_preparation_retains_existing_tree_and_recipe_identity"
+    "overlay_missing_graft_target_fails_without_emitting_a_root"
+    "overlay_changed_graft_descriptor_discards_prior_introduction_reference"
+    "overlay_mismatched_graft_resolution_rejects_another_identity"
+    "overlay_excessive_nested_grafts_rejects_the_complete_input_graph"
+    "overlay_virtual_listing_orders_graft_children_and_punctuation_siblings"
+    "overlay_virtual_range_crosses_nested_grafts_and_hides_whiteouts"
+    "overlay_virtual_range_does_not_resolve_disjoint_grafts"
+    "overlay_virtual_ranges_match_independent_slices_at_every_endpoint"
+    "overlay_nondirectory_or_whiteout_parent_does_not_invent_subtree_hiding"
+    "overlay_descriptor_only_range_does_not_require_its_target"
+    "overlay_grafted_hardlinks_share_namespace_identity_across_layers"
+    "overlay_inline_and_grafted_hardlinks_preserve_aliases_when_projected"
+    "overlay_bounded_range_resolves_one_of_many_sibling_grafts"
+    "overlay_one_unchanged_graft_retains_both_root_identities"
+    "overlay_lower_graft_preserves_inherited_trust_under_actual_output_parent"
+    "overlay_lower_graft_override_retains_target_identity_without_snapshot"
+    "overlay_relocated_graft_cannot_remove_actual_parent_administrator"
+    "overlay_policy_acl_comparison_uses_registered_verb_implications"
+  ];
+
   forkSelectors = map (name: "selected_bridge::native_guard::cold_fork::tests::publication::${name}") [
     "root_native_cold_fork_publishes_fresh_signed_namespace_without_nodes"
     "root_native_cold_fork_reuses_after_unrelated_ref_admission"
@@ -78,6 +105,19 @@ in {
     ${runTest "algebra::domain::tests::conflicting_effective_bindings_are_rejected"}
     ${runTest "algebra::domain::tests::graft_retains_graft_override_owner_instead_of_raw_root_domain"}
     ${runTest "algebra::domain::tests::fold_filters_preserve_the_source_owner_before_merging"}
+    cargo test --frozen --offline -p terrane-core --test algebra_overlay_grafts \
+      -- --list > "$TMPDIR/overlay-graft-tests.txt"
+    python3 ../tests/terrane/check_native_gate.py inventory \
+      "$TMPDIR/overlay-graft-tests.txt" '${builtins.toJSON overlayGraftSelectors}'
+    for test_name in ${builtins.concatStringsSep " " overlayGraftSelectors}; do
+      if ! cargo test --frozen --offline -p terrane-core --test algebra_overlay_grafts \
+        "$test_name" -- --exact > "$TMPDIR/overlay-graft-test.log" 2>&1; then
+        cat "$TMPDIR/overlay-graft-test.log"
+        exit 1
+      fi
+      python3 ../tests/terrane/check_native_gate.py execution \
+        "$TMPDIR/overlay-graft-test.log" "[\"$test_name\"]"
+    done
     printf 'PASS: pure graft, split, flatten, overlay and resolved ownership\n' > "$out/result"
   '';
 
