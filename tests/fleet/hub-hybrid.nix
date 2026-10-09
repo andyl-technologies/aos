@@ -221,10 +221,31 @@
         }
       '';
     };
-  nativeHostModule = fleetHostModule nativeTCPPorts;
+  retainedHostModule = name: configuration:
+    pkgs.writeTextFile {
+      inherit name;
+      destination = "/module.nix";
+      text = "{...}: builtins.fromJSON ${builtins.toJSON (builtins.toJSON configuration)}";
+    };
+  # Credential seed files belong to the image adapter; the retained host
+  # namespace owns the role, identities and service effects.
+  nativeHostModule =
+    retainedHostModule "hub-hybrid-fleet-native-policy"
+    (builtins.removeAttrs nativeRuntimeConfiguration ["environment"]);
   edgeHostModule = fleetHostModule edgeTCPPorts;
   clientHostModule = fleetHostModule [];
-  databaseHostModule = fleetHostModule [5432];
+  databaseRuntimeConfiguration = {
+    aos.networkPolicy.allowedTCP = [5432];
+    aos.users.users.aos-hub = {
+      uid = 802;
+      group = "aos-hub";
+      home = "/var/lib/hybrid-postgres";
+      shell = "/sbin/nologin";
+      description = "Disposable fleet PostgreSQL owner";
+    };
+    aos.users.groups.aos-hub.gid = 802;
+  };
+  databaseHostModule = retainedHostModule "hub-hybrid-fleet-database-policy" databaseRuntimeConfiguration;
   garageConfig = writeFixture "hub-hybrid-fleet-garage.toml" ''
     metadata_dir = "/var/lib/hybrid-s3/meta"
     data_dir = "/var/lib/hybrid-s3/data"
@@ -390,34 +411,32 @@
     };
   };
 
-  nativeSystem = fixture.hubSystem.extendModules {
-    modules = [
-      (qualificationImageBudget {
-        rawDownloadMiB = 896;
-        recoveryBundleMiB = 816;
-      })
-      {
-        # Native also retains the full Hub server and initializer payload.
-        aos.image.budgets.maxRuntimeClosureMiB = lib.mkForce 1024;
-
-        # A bounded SQL child is at most 96 KiB, plus the Native log envelope.
-        aos.journald.lineMaxBytes = 128 * 1024;
-
-        aos.registry-hub = {
-          deploymentId = "fleet-hybrid-v1";
-          externalUrl = "https://aos.andyl.org";
-          listen =
-            if externalDirect
-            then "127.0.0.1:4443"
-            else "0.0.0.0:443";
-          releaseReceiptKeyId = "staging-publication-v1";
-          channelReceiptKeyId = "staging-channel-v1";
-          hybrid = {
-            enable = true;
-            workerUrl = "https://aos.andyl.org";
-            originUrl = "https://aos.staging.andyl.org";
-          };
-          credentials = {
+  nativeRuntimeConfiguration = {
+    # A bounded SQL child is at most 96 KiB, plus the Native log envelope.
+    aos.journald.lineMaxBytes = 128 * 1024;
+    aos.security.pki.certificates = [caCertificate s3CaCertificate];
+    aos.networkPolicy.allowedTCP = nativeTCPPorts;
+    environment.etc."tmpfiles.d/native-hub-credentials.conf".text =
+      fixture.hubSystem.config.environment.etc."tmpfiles.d/native-hub-credentials.conf".text;
+    aos.registry-hub =
+      fixture.hubSystem.config.aos.registry-hub
+      // {
+        deploymentId = "fleet-hybrid-v1";
+        externalUrl = "https://aos.andyl.org";
+        listen =
+          if externalDirect
+          then "127.0.0.1:4443"
+          else "0.0.0.0:443";
+        releaseReceiptKeyId = "staging-publication-v1";
+        channelReceiptKeyId = "staging-channel-v1";
+        hybrid = {
+          enable = true;
+          workerUrl = "https://aos.andyl.org";
+          originUrl = "https://aos.staging.andyl.org";
+        };
+        credentials =
+          fixture.hubSystem.config.aos.registry-hub.credentials
+          // {
             databaseUrl = "hybrid-fleet-database-url";
             hybridIngressKey = "hybrid-fleet-ingress-key";
             storageWorkKey = "hybrid-fleet-storage-key";
@@ -430,33 +449,42 @@
             tlsCertificate = "hybrid-fleet-certificate";
             tlsPrivateKey = "hybrid-fleet-private-key";
           };
-        };
-        aos.security.pki.certificates = [caCertificate s3CaCertificate];
-        # Host activation evaluates retained configuration sources. An image
-        # overlay alone does not preserve fixture roots or inbound allowances.
+      };
+    aos.services.hub.environment.variables = {
+      HUB_OCI_PULL_ENABLED = "true";
+      HUB_OCI_PUSH_ENABLED = "true";
+      HUB_OCI_GC_ENABLED = "true";
+    };
+    environment.etc."tmpfiles.d/hub-hybrid-fleet-credentials.conf".text = ''
+      d /run/credentials/@system 0700 root root -
+      C /run/credentials/@system/hybrid-fleet-database-url 0600 root root - ${databaseUrl}/value
+      C /run/credentials/@system/hybrid-fleet-ingress-key 0600 root root - ${ingressKey}/value
+      C /run/credentials/@system/hybrid-fleet-storage-key 0600 root root - ${storageKey}/value
+      C /run/credentials/@system/hybrid-fleet-instance-secret-key 0600 root root - ${instanceSecretKey}/value
+      C /run/credentials/@system/hybrid-fleet-release-receipt-key 0600 root root - ${releaseReceiptKey}/value
+      C /run/credentials/@system/hybrid-fleet-channel-receipt-key 0600 root root - ${channelReceiptKey}/value
+      C /run/credentials/@system/hybrid-fleet-release-publication-keys 0600 root root - ${releasePublicationKeys}/value
+      C /run/credentials/@system/hybrid-fleet-qualification-keys 0600 root root - ${qualificationKeys}/value
+      C /run/credentials/@system/hybrid-fleet-secret-version-manifest 0600 root root - ${secretVersionManifest}/value
+      C /run/credentials/@system/hybrid-fleet-certificate 0600 root root - ${serverCertificate}/value
+      C /run/credentials/@system/hybrid-fleet-private-key 0600 root root - ${serverPrivateKey}/value
+    '';
+  };
+
+  nativeSystem = fixture.hubSystem.extendModules {
+    modules = [
+      (qualificationImageBudget {
+        rawDownloadMiB = 896;
+        recoveryBundleMiB = 816;
+      })
+      nativeRuntimeConfiguration
+      {
+        # Native also retains the full Hub server and initializer payload.
+        aos.image.budgets.maxRuntimeClosureMiB = lib.mkForce 1024;
+        # Runtime roles must survive evaluation of the retained host sources.
         aos.activation.stages.host.configuration = ["${nativeHostModule}/module.nix"];
-        aos.networkPolicy.allowedTCP = nativeTCPPorts;
         aos.kernel.modules = ["9pnet_virtio" "9p"];
         environment.systemPackages = [pkgs.util-linux];
-        aos.services.hub.environment.variables = {
-          HUB_OCI_PULL_ENABLED = "true";
-          HUB_OCI_PUSH_ENABLED = "true";
-          HUB_OCI_GC_ENABLED = "true";
-        };
-        environment.etc."tmpfiles.d/hub-hybrid-fleet-credentials.conf".text = ''
-          d /run/credentials/@system 0700 root root -
-          C /run/credentials/@system/hybrid-fleet-database-url 0600 root root - ${databaseUrl}/value
-          C /run/credentials/@system/hybrid-fleet-ingress-key 0600 root root - ${ingressKey}/value
-          C /run/credentials/@system/hybrid-fleet-storage-key 0600 root root - ${storageKey}/value
-          C /run/credentials/@system/hybrid-fleet-instance-secret-key 0600 root root - ${instanceSecretKey}/value
-          C /run/credentials/@system/hybrid-fleet-release-receipt-key 0600 root root - ${releaseReceiptKey}/value
-          C /run/credentials/@system/hybrid-fleet-channel-receipt-key 0600 root root - ${channelReceiptKey}/value
-          C /run/credentials/@system/hybrid-fleet-release-publication-keys 0600 root root - ${releasePublicationKeys}/value
-          C /run/credentials/@system/hybrid-fleet-qualification-keys 0600 root root - ${qualificationKeys}/value
-          C /run/credentials/@system/hybrid-fleet-secret-version-manifest 0600 root root - ${secretVersionManifest}/value
-          C /run/credentials/@system/hybrid-fleet-certificate 0600 root root - ${serverCertificate}/value
-          C /run/credentials/@system/hybrid-fleet-private-key 0600 root root - ${serverPrivateKey}/value
-        '';
       }
     ];
   };
@@ -491,18 +519,8 @@
 
   databaseSystem = edgeSystem.extendModules {
     modules = [
-      {
-        aos.activation.stages.host.configuration = ["${databaseHostModule}/module.nix"];
-        aos.networkPolicy.allowedTCP = [5432];
-        aos.users.users.aos-hub = {
-          uid = 802;
-          group = "aos-hub";
-          home = "/var/lib/hybrid-postgres";
-          shell = "/sbin/nologin";
-          description = "Disposable fleet PostgreSQL owner";
-        };
-        aos.users.groups.aos-hub.gid = 802;
-      }
+      databaseRuntimeConfiguration
+      {aos.activation.stages.host.configuration = ["${databaseHostModule}/module.nix"];}
     ];
   };
 
