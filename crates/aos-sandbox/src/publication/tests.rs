@@ -21,6 +21,7 @@ use aos_sandbox_core::{
 };
 use buffa::Message as _;
 use ed25519_dalek::SigningKey;
+use sha2::{Digest, Sha256};
 
 use crate::{
     BrokerDispatchSemanticIdentityV1, GuardianPlanRequestV1, OwnershipAuthorityVerifier,
