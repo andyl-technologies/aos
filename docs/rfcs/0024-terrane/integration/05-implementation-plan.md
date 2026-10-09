@@ -3901,6 +3901,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   unchanged committed images. These results preserve the failure and establish
   neither an expiry fix nor complete backfill qualification. The earlier thirteen
   Raw/current regression successes belong to their separately frozen source.
+  The owning index gate now registers all six native 1,024/2,048/4,096-entry
+  ordinary and adversarial batching/resynchronization witnesses. The explicit
+  DRV-29 blocker remains until their execution is reviewed; registration and
+  lazy derivation evaluation do not qualify maintenance or complete this task.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route

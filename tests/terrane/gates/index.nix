@@ -120,9 +120,16 @@
     "ref_advance::active_completion_tests::native_active_completion_divergent_primary_never_promotes"
     "ref_advance::disclosure_tests::disclosure_projection_safe_index_rebuild_requires_current_attribute_producers"
     "guard::index_contract_tests::native_index_key_limit_refuses_before_publication_effects"
+    "guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically"
+    "guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_1024_adversarial"
+    "guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_2048_ordinary"
+    "guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_2048_adversarial"
+    "guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_4096_ordinary"
+    "guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_4096_adversarial"
   ];
 
-  # These gaps need decisive native witnesses before this gate can turn green.
+  # Registered growing-population witnesses must qualify before this blocker
+  # can be removed; an inventory entry alone does not establish DRV-29.
   qualificationBlockers = [
     "DRV-29: native growing-population batched edits and independently bounded canonical resynchronization"
   ];
