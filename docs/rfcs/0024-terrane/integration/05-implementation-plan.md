@@ -329,6 +329,19 @@ Review corrected test helper calls to satisfy the workspace's `expect_used`
 restriction without allowances. Scoped formatting and diff checks pass; compile,
 runtime, portable compatibility and publication-budget qualification remain
 pending. Existing owning witnesses still supply cancellation and owner checks.
+Its first strict std-only all-target Clippy run fails with nineteen native-only
+import and helper diagnostics. Reviewed five-file correction `82183ac620`
+preserves ordinary ancestor-first validation while gating native held readers;
+strict std-only all-target Clippy then passes in 39.83 seconds
+(`/tmp/terrane-portable-history-82183ac-std-clippy-escalated.log`). The subsequent
+native check identifies a missing explicit nested test-module path; shared
+correction `2f3dcec19c` resolves it. Native all-target Clippy on private composition
+`7bb347c194` then fails only on two unused collector proposal test helpers whose
+consumer witnesses are not composed there. This is not a native lint pass.
+The native-index candidate `b2f541b1c3` now composes only the reviewed portability,
+module-path and native feature boundaries, preserving its existing paired
+exclusions and read projection. Its strict native Clippy, sixteen exact
+regressions and unchanged ordinary 1,024-entry witness remain unqualified.
 The reviewed permanent recovery candidate `b0d2b176f0` retains original
 directory continuity while staging fresh, unselected progress proposals and
 restores full canonical candidate enumeration before preselection directory
@@ -362,20 +375,37 @@ handoff and checks the exact unsafe physical-fence refusal, absence of selected
 progress/reclaim and preservation of owner/pass/manifest. The complete eleven
 staging witnesses, owning reconciliation gate and large-family bound remain
 unqualified; this smoke result does not advance T-GC-1.
-The subsequent unchanged eleven-case matrix has started. Its added-cycle
-witness times out at 120.004 seconds after genuine fresh recovery and an actual
-late-pack reclaim return; the final progress seal is submitted but has no return
-before timeout. The whole liveness witness and completed-pass acknowledgment
-remain unqualified. The original matrix process continues for the independent
-remaining cases (`/tmp/terrane-permanent-stage-focused-e3.log`, run
-`cbb1472a-42dc-407d-a4ba-23ef71c2decb`). No per-effect timestamps establish
-which operation caused the elapsed failure.
+The subsequent unchanged eleven-case matrix is terminal: ten cases pass and
+the added-cycle witness times out at 120.004 seconds (994.963 seconds for the
+matrix, 913 unrelated tests skipped; `/tmp/terrane-permanent-stage-focused-e3.log`,
+run `cbb1472a-42dc-407d-a4ba-23ef71c2decb`). Passing witnesses cover requested
+directory replacement and policy, off-batch policy, removed/noncanonical/symlink
+cycles, expired whole-session lease, replaced owner and Original preimages, and
+cancellation with native reopen. The added-cycle case reaches genuine fresh
+recovery and an actual late-pack reclaim return; its final progress seal is
+submitted but has no return before timeout. Whole liveness and completed-pass
+acknowledgment remain unqualified. No per-effect timestamps establish which
+operation caused the elapsed failure.
 Strict native all-target Clippy also passes with warnings denied (5 minutes
 5 seconds, including a recorded wait for an external shared-target lock;
 `/tmp/terrane-permanent-stage-clippy.log`). This elapsed observation does not
 measure source-stage cost. The expanded thirty-four-case owning reconciliation
 gate and the unchanged large-family recovery bound remain unqualified. Neither
 staging continuity nor build and lint results establish collection coverage.
+Four additional isolated T1 workers now carry independent portability,
+recorded-property caller, ext4 workflow and format-conformance work. Their
+source branches remain private qualification candidates. Recorded caller
+coverage `fab8ca3014` invokes actual repository file/view readers for ref and
+fixed-commit targets across revisions 1 to 3, with real Original and current ACL
+refusals. Ext4 workflow source `e1fd4486a9` adds actual guest authority refusals
+and retains the writable image and packaged binary identity; source formatting,
+shell syntax and derivation dry-run pass, but no guest execution is claimed.
+Format source `2779bc9ffb` adds independent nonempty contextual carrier models;
+shared registry `2925be47f4` requires the new exact group, expanding the public
+property catalog from 58 to 59. Structured JSON/catalog consistency and scoped
+formatting checks pass; actual format execution remains pending. Heavy builds
+and deadline tests are serialized while source work proceeds in parallel.
+These source changes and partial results do not advance any T1 checkbox.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
