@@ -135,6 +135,14 @@ canonical coordination-lock exclusion oracle after waiter cancellation and
 remove fixture storage only after actual native workers terminate. Their
 compilation and runtime checks remain pending. No task or exit is accepted by
 these source changes (GC-15, GC-16, GC-24 and GC-29).
+The strict std-only, non-Send all-target Clippy check on private `d03e3b3275`
+failed with two production receipt-sharing diagnostics and twenty-nine Scope
+fixture assertion diagnostics. Feature-appropriate `Rc`/`Arc` retention and a
+test-module-only intentional-panic allowance are privately composed on
+`3cd0f06c1a`; the same actual AOS Clippy command now passes with warnings denied
+(2026-10-09, raw log `/tmp/terrane-std-all-target-clippy-corrections.log`). This
+qualifies that standard-library profile only; the new Tokio recovery fixtures,
+native traversal selection and runtime gates remain unqualified.
 
 All ten
 exact native Active completion cases pass on `4e6c14a7f3`. The eight-case native
