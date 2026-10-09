@@ -199,7 +199,7 @@ fn scenario_builder_keeps_authoring_layers_structurally_orthogonal()
     let authored = ScenarioBuilder::new()
         .node(
             "a",
-            NodeTemplate::from_world_node(
+            ComputeNodeTemplate::from_world_node(
                 manual_world
                     .vm_nodes()
                     .first()
@@ -426,7 +426,10 @@ fn scenario_family_pins_concrete_validated_instances() -> Result<(), Box<dyn std
         TopologySizeRange::new(2, 3)?,
         vec![TopologyShape::Ring, TopologyShape::Mesh],
     )?;
-    let family = ScenarioFamily::new(space, NodeTemplate::fixed_icount(Icount { retired: 24 }));
+    let family = ScenarioFamily::new(
+        space,
+        ComputeNodeTemplate::fixed_icount(Icount { retired: 24 }),
+    );
     let total = family.space().cardinality()?;
     assert_eq!(total, 8);
 
@@ -480,7 +483,7 @@ fn reproduction_artifact_is_self_contained_and_replay_checked()
             TopologySizeRange::new(2, 2)?,
             vec![TopologyShape::Ring],
         )?,
-        NodeTemplate::fixed_icount(Icount { retired: 24 }),
+        ComputeNodeTemplate::fixed_icount(Icount { retired: 24 }),
     );
     let pinned = family.instantiate_sample(0)?.genesis_configuration();
     let pinned_genesis_artifact =
@@ -549,14 +552,14 @@ fn scenario_def_form_rejects_well_formedness_matrix_before_hashing()
         Err(EngineError::DuplicateWorldNodeId { .. }),
     ));
     for (memory_mib, smp_vcpus) in [(0, 1), (512, 0)] {
-        let invalid_node = WorldNode {
+        let invalid_node = ComputeNodeDef {
             memory_mib,
             smp_vcpus,
             ..a.clone()
         };
         assert!(World::from_nodes_and_links(vec![invalid_node], Vec::new()).is_err());
     }
-    let invalid_ready = WorldNode {
+    let invalid_ready = ComputeNodeDef {
         ready_point: ReadyPoint::AgentSignal,
         white_box: WhiteBoxPolicy::Disabled,
         ..a.clone()

@@ -5,18 +5,18 @@ use std::error::Error;
 use super::*;
 use crate::NodeId;
 use crate::model::{
-    FaultCoordinate, FaultOperation, Icount, NodeTemplate, OpportunityPayload, Plan, Properties,
-    ReadyPoint, ScenarioSelectableLimits, ScenarioSelectables, Seed, SignalId, WhiteBoxPolicy,
-    World, WorldFaultDomain, WorldNode,
+    ComputeNodeDef, ComputeNodeTemplate, FaultCoordinate, FaultOperation, Icount,
+    OpportunityPayload, Plan, Properties, ReadyPoint, ScenarioSelectableLimits,
+    ScenarioSelectables, Seed, SignalId, WhiteBoxPolicy, World, WorldFaultDomain,
 };
 
 fn scenario() -> Result<ScenarioDefForm, Box<dyn Error>> {
-    let world = World::from_nodes(vec![WorldNode {
+    let world = World::from_nodes(vec![ComputeNodeDef {
         id: NodeId {
             name: String::from("router-a"),
         },
-        arch: NodeTemplate::DEFAULT_ARCH,
-        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        arch: ComputeNodeTemplate::DEFAULT_ARCH,
+        memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
         cmdline: String::from("network-choice-test"),
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 1 },

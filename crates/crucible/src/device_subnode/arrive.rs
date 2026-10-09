@@ -7,7 +7,7 @@
 
 use super::*;
 
-impl DeviceSchedulingSubNode {
+impl ScheduledIoNode {
     /// Computes one complete modeled ARRIVE phase in canonical request order.
     ///
     /// `arrivals` is the actor's complete device request set for this phase,
@@ -53,9 +53,9 @@ impl DeviceSchedulingSubNode {
 mod tests {
     use super::*;
 
-    fn device() -> DeviceSchedulingSubNode {
+    fn device() -> ScheduledIoNode {
         let core = IoCore::new(7, 16, 16).unwrap_or_else(|error| panic!("model queue: {error}"));
-        DeviceSchedulingSubNode::new(
+        ScheduledIoNode::new(
             SchedulerNodeId {
                 node: NodeId {
                     name: "disk".into(),

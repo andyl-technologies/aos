@@ -1,0 +1,128 @@
+[
+    DeviceDelivery {
+        delivery_icount: 10000,
+        sub_node: SchedulerNodeId {
+            node: NodeId {
+                name: "disk",
+            },
+            kind: Disk,
+        },
+        source_node: 0,
+        sequence: 0,
+        completion: Some(
+            IoCompletion {
+                sub_node: SchedulerNodeId {
+                    node: NodeId {
+                        name: "disk",
+                    },
+                    kind: Disk,
+                },
+                target: NodeId {
+                    name: "a",
+                },
+                delivery_tick: VirtualInstant {
+                    ticks: 10000,
+                },
+                source_delivery: FrameDeliveryKey {
+                    delivery_icount: 10000,
+                    src_node: 0,
+                    seq: 0,
+                },
+                payload: [
+                    0,
+                    4,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    1,
+                    0,
+                    0,
+                    0,
+                    8,
+                    0,
+                    0,
+                    0,
+                    90,
+                    90,
+                    90,
+                    90,
+                    90,
+                    90,
+                    90,
+                    90,
+                ],
+            },
+        ),
+        decisions: [],
+    },
+    DeviceDelivery {
+        delivery_icount: 10200,
+        sub_node: SchedulerNodeId {
+            node: NodeId {
+                name: "disk",
+            },
+            kind: Disk,
+        },
+        source_node: 0,
+        sequence: 1,
+        completion: Some(
+            IoCompletion {
+                sub_node: SchedulerNodeId {
+                    node: NodeId {
+                        name: "disk",
+                    },
+                    kind: Disk,
+                },
+                target: NodeId {
+                    name: "a",
+                },
+                delivery_tick: VirtualInstant {
+                    ticks: 10200,
+                },
+                source_delivery: FrameDeliveryKey {
+                    delivery_icount: 10200,
+                    src_node: 0,
+                    seq: 1,
+                },
+                payload: [
+                    0,
+                    4,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    2,
+                    0,
+                    0,
+                    0,
+                    8,
+                    0,
+                    0,
+                    0,
+                    90,
+                    90,
+                    90,
+                    90,
+                    90,
+                    90,
+                    90,
+                    90,
+                ],
+            },
+        ),
+        decisions: [],
+    },
+]

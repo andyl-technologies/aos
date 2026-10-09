@@ -187,14 +187,14 @@ fn world_logical_topology_ignores_physical_transport_layout() {
 
 #[test]
 fn world_ready_point_rejects_agent_signal_without_white_box_opt_in() {
-    let invalid = World::from_nodes(vec![WorldNode {
+    let invalid = World::from_nodes(vec![ComputeNodeDef {
         id: node_id("agent"),
-        arch: NodeTemplate::DEFAULT_ARCH,
-        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        arch: ComputeNodeTemplate::DEFAULT_ARCH,
+        memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
         cmdline: String::new(),
         ready_point: ReadyPoint::AgentSignal,
         white_box: WhiteBoxPolicy::Disabled,
-        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -213,14 +213,14 @@ fn world_ready_point_rejects_agent_signal_without_white_box_opt_in() {
             },
         ),
     ]);
-    let valid = World::from_nodes(vec![WorldNode {
+    let valid = World::from_nodes(vec![ComputeNodeDef {
         id: node_id("agent"),
-        arch: NodeTemplate::DEFAULT_ARCH,
-        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        arch: ComputeNodeTemplate::DEFAULT_ARCH,
+        memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
         cmdline: String::new(),
         ready_point: ReadyPoint::AgentSignal,
         white_box: WhiteBoxPolicy::Enabled,
-        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -263,14 +263,14 @@ fn bake_is_content_identical_for_each_ready_point_policy() {
 
     for (index, (ready_point, white_box)) in policies.into_iter().enumerate() {
         let node_name = format!("node-{index}");
-        let node = WorldNode {
+        let node = ComputeNodeDef {
             id: node_id(&node_name),
-            arch: NodeTemplate::DEFAULT_ARCH,
-            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            arch: ComputeNodeTemplate::DEFAULT_ARCH,
+            memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
             cmdline: String::new(),
             ready_point,
             white_box,
-            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -315,30 +315,30 @@ fn ready_point_policy_material_affects_baked_genesis() {
     let cases = vec![
         (
             "fixed-icount target",
-            WorldNode {
+            ComputeNodeDef {
                 id: node_id("node"),
-                arch: NodeTemplate::DEFAULT_ARCH,
-                memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                arch: ComputeNodeTemplate::DEFAULT_ARCH,
+                memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
                 cmdline: String::new(),
                 ready_point: ReadyPoint::FixedIcount {
                     icount: Icount { retired: 10 },
                 },
                 white_box: WhiteBoxPolicy::Disabled,
-                smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
                 kernel: None,
                 root_image: None,
                 initrd: None,
             },
-            WorldNode {
+            ComputeNodeDef {
                 id: node_id("node"),
-                arch: NodeTemplate::DEFAULT_ARCH,
-                memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                arch: ComputeNodeTemplate::DEFAULT_ARCH,
+                memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
                 cmdline: String::new(),
                 ready_point: ReadyPoint::FixedIcount {
                     icount: Icount { retired: 11 },
                 },
                 white_box: WhiteBoxPolicy::Disabled,
-                smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
                 kernel: None,
                 root_image: None,
                 initrd: None,
@@ -346,30 +346,30 @@ fn ready_point_policy_material_affects_baked_genesis() {
         ),
         (
             "network-idle window",
-            WorldNode {
+            ComputeNodeDef {
                 id: node_id("node"),
-                arch: NodeTemplate::DEFAULT_ARCH,
-                memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                arch: ComputeNodeTemplate::DEFAULT_ARCH,
+                memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
                 cmdline: String::new(),
                 ready_point: ReadyPoint::NetworkIdle {
                     window: SimDuration { ticks: 250 },
                 },
                 white_box: WhiteBoxPolicy::Disabled,
-                smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
                 kernel: None,
                 root_image: None,
                 initrd: None,
             },
-            WorldNode {
+            ComputeNodeDef {
                 id: node_id("node"),
-                arch: NodeTemplate::DEFAULT_ARCH,
-                memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                arch: ComputeNodeTemplate::DEFAULT_ARCH,
+                memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
                 cmdline: String::new(),
                 ready_point: ReadyPoint::NetworkIdle {
                     window: SimDuration { ticks: 251 },
                 },
                 white_box: WhiteBoxPolicy::Disabled,
-                smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
                 kernel: None,
                 root_image: None,
                 initrd: None,
@@ -377,30 +377,30 @@ fn ready_point_policy_material_affects_baked_genesis() {
         ),
         (
             "console marker",
-            WorldNode {
+            ComputeNodeDef {
                 id: node_id("node"),
-                arch: NodeTemplate::DEFAULT_ARCH,
-                memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                arch: ComputeNodeTemplate::DEFAULT_ARCH,
+                memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
                 cmdline: String::new(),
                 ready_point: ReadyPoint::ConsoleMarker {
                     marker: String::from("ready"),
                 },
                 white_box: WhiteBoxPolicy::Disabled,
-                smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
                 kernel: None,
                 root_image: None,
                 initrd: None,
             },
-            WorldNode {
+            ComputeNodeDef {
                 id: node_id("node"),
-                arch: NodeTemplate::DEFAULT_ARCH,
-                memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                arch: ComputeNodeTemplate::DEFAULT_ARCH,
+                memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
                 cmdline: String::new(),
                 ready_point: ReadyPoint::ConsoleMarker {
                     marker: String::from("ready-v2"),
                 },
                 white_box: WhiteBoxPolicy::Disabled,
-                smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
                 kernel: None,
                 root_image: None,
                 initrd: None,
@@ -408,28 +408,28 @@ fn ready_point_policy_material_affects_baked_genesis() {
         ),
         (
             "agent-signal variant",
-            WorldNode {
+            ComputeNodeDef {
                 id: node_id("node"),
-                arch: NodeTemplate::DEFAULT_ARCH,
-                memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                arch: ComputeNodeTemplate::DEFAULT_ARCH,
+                memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
                 cmdline: String::new(),
                 ready_point: ReadyPoint::AgentSignal,
                 white_box: WhiteBoxPolicy::Enabled,
-                smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
                 kernel: None,
                 root_image: None,
                 initrd: None,
             },
-            WorldNode {
+            ComputeNodeDef {
                 id: node_id("node"),
-                arch: NodeTemplate::DEFAULT_ARCH,
-                memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                arch: ComputeNodeTemplate::DEFAULT_ARCH,
+                memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
                 cmdline: String::new(),
                 ready_point: ReadyPoint::ConsoleMarker {
                     marker: String::from("agent-ready"),
                 },
                 white_box: WhiteBoxPolicy::Enabled,
-                smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
                 kernel: None,
                 root_image: None,
                 initrd: None,
@@ -437,30 +437,30 @@ fn ready_point_policy_material_affects_baked_genesis() {
         ),
         (
             "white-box policy",
-            WorldNode {
+            ComputeNodeDef {
                 id: node_id("node"),
-                arch: NodeTemplate::DEFAULT_ARCH,
-                memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                arch: ComputeNodeTemplate::DEFAULT_ARCH,
+                memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
                 cmdline: String::new(),
                 ready_point: ReadyPoint::FixedIcount {
                     icount: Icount { retired: 10 },
                 },
                 white_box: WhiteBoxPolicy::Disabled,
-                smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
                 kernel: None,
                 root_image: None,
                 initrd: None,
             },
-            WorldNode {
+            ComputeNodeDef {
                 id: node_id("node"),
-                arch: NodeTemplate::DEFAULT_ARCH,
-                memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                arch: ComputeNodeTemplate::DEFAULT_ARCH,
+                memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
                 cmdline: String::new(),
                 ready_point: ReadyPoint::FixedIcount {
                     icount: Icount { retired: 10 },
                 },
                 white_box: WhiteBoxPolicy::Enabled,
-                smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+                smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
                 kernel: None,
                 root_image: None,
                 initrd: None,
