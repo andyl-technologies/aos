@@ -699,6 +699,29 @@ reference package. Raw original archives remain local. This stage does not
 qualify loss during demonstrable native progress, reconnect, full vendor
 conformance or ordinary Ready admission.
 
+## Runtime safety and worker startup repair
+
+The complete 6,465-test controller cohort reports 6,463 passes and two
+source-hygiene failures, with 201 explicit skips. The repair documents the
+native epoch ABI and callback pointer contracts, names unchanged callback
+parameters, and extracts original RUN/teardown worker startup into a focused
+module. Worker order, socket ownership, gates and fatal behavior are preserved.
+`runtime.rs` shrinks from 3,042 to 2,977 lines, below the unchanged limit.
+Only its existing source-review hash, count and cohesion explanation change;
+detectors and ceilings remain unchanged.
+
+Central verification passes all 674 plugin tests, five unsafe-boundary checks,
+the source-size check, all 37 source-quality checks and nine-crate all-target
+strict checks. A complete formatter check then identifies a module declaration
+order mismatch. Its retained successor changes only that order and the exact
+review hash; formatting across all five Rust inputs, the five unsafe checks,
+size check, 37 quality checks and nine-crate strict checks pass again.
+Independent review confirms those final bytes. Eight earlier native diagnostic
+selectors exercise the extracted worker body; they are not installed-package
+qualification of this final version. The broader hermetic gate is rerun
+separately before its result can be extended to the repaired stack. This repair
+does not issue native execution epochs, authorize effects or qualify capture.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
