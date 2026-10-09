@@ -117,9 +117,12 @@ class VerificationSelectionTests(unittest.TestCase):
             root = Path(directory)
             (root / "nar").mkdir()
             (root / "nar/helper.nar.xz").write_bytes(b"controlled retained NAR bytes")
-            narinfo = root / "helper.narinfo"
-            helper = "/nix/store/controlled-helper"
+            store_hash = "0" * 32
+            narinfo = root / (store_hash + ".narinfo")
+            helper = "/nix/store/" + store_hash + "-controlled-helper"
             narinfo.write_text("StorePath: " + helper + "\nURL: nar/helper.nar.xz\n")
+            for number in range(64):
+                (root / f"unrelated-{number}.narinfo").write_text("Unrelated source closure entry\n")
             source.prepare_direct_signed_surface = lambda *args, **kwargs: {
                 "surfaceRoot": str(root), "publisherHome": str(root), "sourceCommit": "b" * 64}
             source.read_direct_guest_file = lambda machine, python, path, maximum: Path(path).read_bytes()

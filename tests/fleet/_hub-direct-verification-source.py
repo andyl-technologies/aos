@@ -39,9 +39,12 @@ def prepare_direct_verification_source(client, tools, organization_slug):
         from pathlib import Path
 
         root=Path(selected['source']['surfaceRoot'])
-        candidates=sorted(root.glob('*.narinfo'))
-        if not candidates or len(candidates)>32:
-            raise ValueError('Ordinary signed timeout source has no bounded narinfo selection')
+        helper=Path(selected['helperStorePath'])
+        if helper.parent!=Path('/nix/store') or re.fullmatch(r'[0-9abcdfghijklmnpqrsvwxyz]{32}-.+',helper.name) is None:
+            raise ValueError('Selected helper is not an exact store root')
+        # A genuine source closure may contain hundreds of narinfos. Read only
+        # the helper's exact cache key, then verify its authenticated StorePath.
+        candidates=[root/(helper.name.split('-',1)[0]+'.narinfo')]
 
         def read_stable(path,maximum):
             descriptor=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
