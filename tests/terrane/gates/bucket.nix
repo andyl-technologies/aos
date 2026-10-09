@@ -19,6 +19,28 @@
     "publication::held_read_tests::content::held_content_catalog_rejects_symlinked_cache_nodes_without_reads_or_repair"
   ];
 
+  selectedGetTests = [
+    "content::selected_get::tests::ordinary_get_closes_selected_and_consumed_artifacts"
+    "content::selected_get::tests::ordinary_get_refuses_changed_selection_before_return"
+    "content::selected_get::tests::ordinary_get_refuses_equal_byte_selected_reincarnation"
+    "content::selected_get::tests::ordinary_get_refuses_equal_byte_pack_or_index_reincarnation"
+    "content::selected_get::tests::ordinary_get_refuses_changed_catalog_artifact_or_ancestor"
+    "content::selected_get::tests::ordinary_get_preserves_ranges_and_corruption_refusals"
+    "content::selected_get::tests::ordinary_get_closes_dictionary_dependency_recipes"
+    "content::selected_get::tests::ordinary_get_cancellation_retains_no_request_authority"
+    "content::selected_get::tests::ordinary_get_preserves_legacy_and_unretained_fallback"
+  ];
+
+  rangedPackTests = [
+    "content::ranged_pack::tests::ranged_chunk_read_uses_bounded_io_with_whole_pack_reads_rejected"
+    "content::ranged_pack::tests::ranged_chunk_read_verifies_bytes_outside_requested_slice"
+    "content::ranged_pack::tests::ranged_chunk_read_rejects_wrong_member_and_detached_index"
+    "content::ranged_pack::tests::ranged_chunk_read_rejects_invalid_bounds_and_overflow"
+    "content::ranged_pack::tests::ranged_chunk_read_rejects_header_trailer_and_body_tampering"
+    "content::ranged_pack::tests::ranged_chunk_read_retains_verified_dictionary_dependencies"
+    "content::ranged_pack::tests::ranged_chunk_read_rejects_original_leaf_and_ancestor_reincarnation"
+  ];
+
   controlFenceTests = [
     "publication::held_read_tests::control_fences::control_recheck_batches_all_three_walks_with_duplicate_entry_parity"
     "publication::held_read_tests::control_fences::control_recheck_short_combined_walk_refuses_before_leaf_reads"
@@ -115,8 +137,8 @@
 in {
   store-idempotent-put = gate "store-idempotent-put" (physicalExclusionTests ++ ["content_tests::repeated_put_preserves_first_encoding_and_survives_reopen" "readmission_tests::verified_reupload_replaces_gc_retired_placement_without_restoring_old_pack"]);
   store-verify-on-put = gate "store-verify-on-put" ["content_tests::admission_validates_identity_length_profile_and_independent_dedup_context"];
-  store-verify-on-get = gate "store-verify-on-get" (heldContentTests ++ indexPolicyTests ++ ["fault_tests::dictionary_backend_unavailability_preserves_put_and_get_failure_kinds" "content_tests::corrupt_bytes_outside_requested_range_are_never_returned"]);
-  store-ranged-get = gate "store-ranged-get" ["content_tests::ranges_address_verified_encoded_bytes_and_check_overflow" "publication::held_read_tests::content::held_content_get_preserves_all_exact_reads_and_reduces_metadata_dispatch" "publication::held_read_tests::content::held_content_get_preserves_unavailable_read_and_complete_body_verification"];
+  store-verify-on-get = gate "store-verify-on-get" (heldContentTests ++ selectedGetTests ++ indexPolicyTests ++ ["fault_tests::dictionary_backend_unavailability_preserves_put_and_get_failure_kinds" "content_tests::corrupt_bytes_outside_requested_range_are_never_returned"]);
+  store-ranged-get = gate "store-ranged-get" (rangedPackTests ++ ["content_tests::ranges_address_verified_encoded_bytes_and_check_overflow" "publication::held_read_tests::content::held_content_get_preserves_all_exact_reads_and_reduces_metadata_dispatch" "publication::held_read_tests::content::held_content_get_preserves_unavailable_read_and_complete_body_verification"]);
   store-has-batched = gate "store-has-batched" ["content_tests::batched_membership_preserves_order_duplicates_and_virtual_empty_chunk"];
   store-ref-cas = gate "store-ref-cas" ["tests::whole_record_cas_has_one_winner_across_independent_opens" "tests::ref_successors_fence_epoch_home_and_sequence" "selection_tests::candidates_bind_the_complete_proposal_and_predecessor_before_head_cas" "selection_tests::independent_candidates_select_one_history_under_concurrent_cas"];
   store-ref-log-append-once = gate "store-ref-log-append-once" ["version_tests::v2_numbered_logs_require_migration_and_preserve_exact_existing_bytes" "tests::tags_and_reflogs_never_replace_existing_bytes" "tests::missing_reflog_with_committed_horizon_is_corruption" "tests::committed_reflog_must_match_the_complete_ref_record" "tests::live_watch_waits_for_authoritative_ref_publication_and_replays_sequences" "selection_tests::abandoned_candidates_leave_the_same_sequence_available_to_a_new_writer" "selection_tests::selected_candidates_coexist_with_legacy_numbered_files"];

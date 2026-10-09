@@ -124,7 +124,7 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress; nine of twenty-two T1 tasks are complete.
+**Status:** In progress; eight of twenty-two T1 tasks are complete.
 The frozen `9d122397a6` native recovery run is terminal: all thirty-one
 registered cases ran, with fourteen passes, eight failures and nine timeouts
 (2,770.386 seconds; run `cf52bbd2-6224-4a3c-bf53-54dba13b7583`, raw log
@@ -484,8 +484,23 @@ inventories and current shared gate metadata. No conflict markers remain.
 This is preparation for the complete T1 floor; it establishes no compiler,
 runtime, gate or milestone result. With the format request terminal, recovery
 qualification has started on its frozen source. Its original strict native
-Clippy process currently waits for the shared Cargo build-directory lock;
-no compiler or recovery runtime result follows from that wait.
+Clippy process first waited for the shared Cargo build-directory lock, then
+terminated with exit 101 on three production references to a test-only tracer
+(`/tmp/terrane-permanent-lookup-clippy-c15.log`). Private `42161fb184` guards
+every added diagnostic call with `cfg(test)` and leaves all physical checks,
+lookup and ACK boundaries unchanged. Scoped source formatting passes; changed
+source compilation and recovery runtime remain unqualified.
+Three additional workers now implement disjoint parts of the ordinary-read
+closure: one request-local selected observation, bounded pack framing/member
+reads, and genuine descriptor-bound original range receipts. Independent
+source review confirms an inherited STORE-4 violation: an intra-chunk range
+currently reads the whole pack before slicing. The existing range gate checks
+returned bytes and overflow but does not refuse whole-pack I/O. T-BKT-1 is
+reopened; its gate now requires seven actual ranged-I/O witnesses, while the
+verified-get gate additionally requires nine request-local closing witnesses.
+Missing selectors fail explicitly. No task or runtime result follows from
+these source prerequisites; deadlines, populations and failure evidence remain
+unchanged.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
@@ -5157,9 +5172,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   PACK-28; `checks.terrane.gates.index-shard-generations`,
   `checks.terrane.gates.index-rebuild`,
   `checks.terrane.gates.bundle-verify`.
-- [x] **T-BKT-1** `bucket` backend over `file://`: key layout, mutability
+- [ ] **T-BKT-1** `bucket` backend over `file://`: key layout, mutability
   classes, atomic writes, filesystem CAS, generation manifests, startup
-  probe. D-77's version-2 ref and migrated-log leaves preserve nested ref names;
+  probe. Conformance is reopened for STORE-4: the existing ranged getter reads
+  the whole pack before slicing. Bounded framing/index/member reads and an
+  actual no-whole-pack I/O witness remain required; previously passing slice
+  and overflow checks do not qualify that requirement. D-77's version-2 ref
+  and migrated-log leaves preserve nested ref names;
   version-1 compatibility is read-only and qualified migration may be refused.
   Actual nested-name collisions, migrated-log coexistence, independent reopen,
   whole-record CAS and cancellation are qualified by the local backend gates.
