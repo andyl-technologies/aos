@@ -31,10 +31,12 @@ PREFIX = r"""// SPDX-License-Identifier: GPL-2.0-only
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#define qatomic_load_acquire(pointer) __atomic_load_n((pointer), __ATOMIC_ACQUIRE)
 
 @EXIT_NUMBERS@
 @ENTRY_DEFINITION@
 
+typedef struct CrucibleKvmResponseService CrucibleKvmResponseService;
 typedef int QemuMutex;
 typedef struct KVMState {
     @STATE_FIELDS@
@@ -318,6 +320,10 @@ def main():
         header.index("#define QEMU_CRUCIBLE_USERSPACE_EXIT_MAX_VCPUS"):
         header.index("int kvm_crucible_userspace_configure")
     ]
+    # Later original-response declarations are outside this legacy-only
+    # transition fixture; its state keeps an opaque, disabled service pointer.
+    if "/* Preallocated original response state" in definition:
+        definition = definition[:definition.index("/* Preallocated original response state")]
     fields = state[
         state.index("    bool crucible_clock_experiment;"):
         state.index("    int coalesced_mmio;")

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import shutil
+import re
 import subprocess
 import sys
 
@@ -62,7 +63,21 @@ changes = {
 }
 
 for name, (old, new) in changes.items():
-    assert body.count(old) == 1, (name, body.count(old))
+    # Completion and response service both inspect the native clock. Select
+    # the original completion function, never an incidental sibling predicate.
+    if name == 'erase-state-put-taint-gate':
+        declaration = 'bool kvm_crucible_userspace_allow_state_put('
+    elif name == 'lose-response-byte-custody':
+        declaration = 'static bool completion_geometry('
+    else:
+        declaration = 'CrucibleKvmCompletionInfo *qmp_x_crucible_kvm_completion('
+    matches = list(re.finditer(re.escape(declaration) + r"[^;{]+\{\n", body))
+    assert len(matches) == 1, declaration
+    start = matches[0].start()
+    end = body.index('\n}\n', start) + 3
+    selected = body[start:end]
+    assert selected.count(old) == 1, (name, selected.count(old))
+    changed = body[:start] + selected.replace(old, new) + body[end:]
     target = root / name
     if target.exists():
         shutil.rmtree(target)
@@ -72,7 +87,7 @@ for name, (old, new) in changes.items():
         (candidate / directory).symlink_to(source / directory)
     path = candidate / 'accel/kvm/crucible-clock.c'
     path.parent.mkdir(parents=True)
-    path.write_text(body.replace(old, new))
+    path.write_text(changed)
     result = subprocess.run([sys.executable, model, str(candidate), cc, str(target / 'proof'), patch], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=90)
     (target / 'log').write_text(result.stdout)
     # A compiler failure cannot count as a negative native policy witness.

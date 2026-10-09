@@ -108,6 +108,7 @@ typedef uint32_t u32;
 @KERNEL@
 @OPERATION@
 @INFO@
+typedef struct CrucibleKvmResponseService CrucibleKvmResponseService;
 typedef int QemuMutex;
 typedef struct KVMState { @FIELDS@ } KVMState;
 typedef struct CPUState {

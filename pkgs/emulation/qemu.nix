@@ -1907,6 +1907,35 @@ in
               ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-completion-refusal.py \
                 "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64" \
                 ${./qemu-patches/_fixtures}/kvm-component-refusal.py
+              # Compile source-owned paused service transitions and actual child
+              # fail-stop boundaries. These component proofs do not qualify KVM.
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-paused-service-model.py} \
+                "$PWD" "$CC" "$PWD/kvm-paused-service-proof"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-paused-service-mutations.py} \
+                "$PWD" "$CC" "$PWD/kvm-paused-service-mutations" \
+                ${./qemu-patches/_fixtures/kvm-paused-service-model.py}
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-response-service}/guards.py "$PWD"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-response-service}/model.py \
+                "$PWD" "$CC" "$PWD/kvm-response-service-proof" \
+                ${../kernel/crucible-controller-completion-stage5-7.2.3.patch} \
+                ${./qemu-patches/_fixtures/kvm-completion-model.py}
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-response-service}/mutations.py \
+                "$PWD" "$CC" "$PWD/kvm-response-service-mutations" \
+                ${../kernel/crucible-controller-completion-stage5-7.2.3.patch} \
+                ${./qemu-patches/_fixtures/kvm-response-service}/model.py \
+                ${./qemu-patches/_fixtures/kvm-completion-model.py}
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-response-service}/lifetime_model.py \
+                "$PWD" "$CC" "$PWD/kvm-response-lifetime-proof" \
+                "$PWD/kvm-response-service-proof/response.c"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-response-service}/lifetime_mutations.py \
+                "$PWD" "$CC" "$PWD/kvm-response-lifetime-mutations" \
+                ${../kernel/crucible-controller-completion-stage5-7.2.3.patch} \
+                ${./qemu-patches/_fixtures/kvm-response-service}/model.py \
+                ${./qemu-patches/_fixtures/kvm-completion-model.py} \
+                ${./qemu-patches/_fixtures/kvm-response-service}/lifetime_model.py
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-response-service}/refusal.py \
+                "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64" \
+                ${./qemu-patches/_fixtures/kvm-component-refusal.py}
               # Use each changed translation unit's actual configured command,
               # then compare the reconstructed prior production bodies. Every
               # negative must compile and fail a native ownership assertion.

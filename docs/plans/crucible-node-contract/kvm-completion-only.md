@@ -176,3 +176,28 @@ The upstream [KVM run ABI](https://docs.kernel.org/virt/kvm/api.html#the-kvm-run
 describes why userspace response completion needs separate treatment. The pinned
 kernel source and these implementation-specific checks define the new component's
 behavior.
+
+## Original userspace service custody
+
+The patched QEMU component now retains an opted-in, finite CPU service slot.
+Only the original stopped CPU may execute that selected work; ordinary queue
+drains and unrelated CPU runs cannot consume or replace it. Consumption retires
+the original slot, while an ambiguous result retains its uncertain history.
+
+Completion-only response handling also retains the actual callback owner while
+a device callback releases the BQL. Clock mutation admission takes the same
+original journal lock and refuses beneath that callback. A lost reply can query
+or retry the retained original result; it cannot dispatch the callback again.
+The older component namespaces and disabled-profile behavior remain unchanged.
+
+The mandatory QEMU source build runs the actual extracted service transitions,
+held pthread callback and clock-admission checks, compiled executable mutation
+controls, and both architecture refusal suites. Existing extracted completion
+checks select their original function bodies explicitly rather than accepting
+an incidental predicate introduced by the new sibling component. Both configured
+QEMU architecture builds and the unchanged native unit suite pass.
+
+These components establish original service and response ownership. They do not
+admit an atomic guest quantum, close device/DMA/input/output state, reconcile all
+interrupted KVM returns, or authorize a complete node or exact continuation. The
+absence of a KVM device on this machine still prevents hardware qualification.

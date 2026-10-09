@@ -126,6 +126,11 @@ def main():
 
     header = (source_root / "include/system/crucible-kvm-clock.h").read_text()
     header = header.replace('#include "system/kvm.h"', "")
+    header = header.replace('#include "exec/memattrs.h"', "")
+    attributes = (source_root / "include/exec/memattrs.h").read_text()
+    start = attributes.index("typedef struct MemTxAttrs {")
+    end = attributes.index(";", attributes.index("\n}", start)) + 1
+    header = attributes[start:end] + "\n" + header
     header = header.replace('int kvm_crucible_clock_configure(KVMState *state);', "")
     header = header.replace('bool kvm_crucible_clock_read_ns(int64_t *nanoseconds);', "")
     source = (source_root / "accel/kvm/crucible-clock.c").read_text()
