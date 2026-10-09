@@ -19,6 +19,7 @@ use std::io::Read as _;
 use std::os::fd::OwnedFd;
 use std::path::Path;
 
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use aos_sandbox_core::{
     AssignmentEpoch, BrokerAssignment, DesiredGeneration, IncarnationId, ObjectDigest, SandboxId,
 };
@@ -270,8 +271,8 @@ impl LoadedStorageResolverPolicyCatalogV1 {
         bytes: &[u8],
         expected_authority: ObjectDigest,
     ) -> Result<Self, StorageResolverPolicyError> {
-        let mut decoder = Decoder::new(bytes);
-        if decoder.take(8)? != MAGIC || decoder.u16()? != VERSION || decoder.u16()? != 0 {
+        let mut decoder = BoundedReader::new(bytes, catalog_read_error);
+        if decoder.bytes(8)? != MAGIC || decoder.u16()? != VERSION || decoder.u16()? != 0 {
             return Err(StorageResolverPolicyError::Malformed);
         }
         let generation = decoder.u64()?;
@@ -293,8 +294,8 @@ impl LoadedStorageResolverPolicyCatalogV1 {
         let mut entries = Vec::with_capacity(entry_count);
         let mut previous_assignment = None;
         for _ in 0..entry_count {
-            let start = decoder.offset();
-            let assignment_bytes = decoder.take(ASSIGNMENT_BYTES)?;
+            let start = bytes.len() - decoder.remaining();
+            let assignment_bytes = decoder.bytes(ASSIGNMENT_BYTES)?;
             if previous_assignment
                 .as_ref()
                 .is_some_and(|previous: &Vec<u8>| previous.as_slice() >= assignment_bytes)
@@ -303,12 +304,12 @@ impl LoadedStorageResolverPolicyCatalogV1 {
             }
             previous_assignment = Some(assignment_bytes.to_vec());
             let assignment = decode_assignment(assignment_bytes)?;
-            let pool = decoder.text()?;
-            let dataset_prefix = decoder.text()?;
+            let pool = decode_text(&mut decoder)?;
+            let dataset_prefix = decode_text(&mut decoder)?;
             let root_guid = decoder.u64()?;
             let expected_pool_guid = decoder.u64()?;
             let domains = decode_domains(&mut decoder)?;
-            let ancestor_name = decoder.text()?;
+            let ancestor_name = decode_text(&mut decoder)?;
             let ancestor_guid = decoder.u64()?;
             let ancestor_handle = decoder.array()?;
             let project_quota = decoder.u64()?;
@@ -344,7 +345,7 @@ impl LoadedStorageResolverPolicyCatalogV1 {
                 maximum_workspace_reservation,
             )
             .map_err(|_| StorageResolverPolicyError::Malformed)?;
-            let entry_digest = digest_entry(&bytes[start..decoder.offset()]);
+            let entry_digest = digest_entry(&bytes[start..bytes.len() - decoder.remaining()]);
             entries.push(LoadedStorageResolverPolicyEntryV1 {
                 assignment_bytes: assignment_bytes.to_vec(),
                 entry_digest,
@@ -477,7 +478,7 @@ fn encode_assignment(assignment: BrokerAssignment) -> [u8; ASSIGNMENT_BYTES] {
 }
 
 fn decode_domains(
-    decoder: &mut Decoder<'_>,
+    decoder: &mut BoundedReader<'_, StorageResolverPolicyError>,
 ) -> Result<StorageDomainsV1, StorageResolverPolicyError> {
     StorageDomainsV1::new(
         ObjectDigest::from_bytes(decoder.array()?),
@@ -517,66 +518,20 @@ fn array_at<const N: usize>(
         .map_err(|_| StorageResolverPolicyError::Malformed)
 }
 
-struct Decoder<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+// Names retain their format-specific byte limit and UTF-8 validation.
+fn decode_text<'a>(
+    decoder: &mut BoundedReader<'a, StorageResolverPolicyError>,
+) -> Result<&'a str, StorageResolverPolicyError> {
+    let length = usize::from(decoder.u16()?);
+    if length == 0 || length > MAXIMUM_NAME_BYTES {
+        return Err(StorageResolverPolicyError::Malformed);
+    }
+    std::str::from_utf8(decoder.bytes(length)?).map_err(|_| StorageResolverPolicyError::Malformed)
 }
 
-impl<'a> Decoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    const fn offset(&self) -> usize {
-        self.offset
-    }
-
-    fn take(&mut self, length: usize) -> Result<&'a [u8], StorageResolverPolicyError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(StorageResolverPolicyError::Malformed)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(StorageResolverPolicyError::Malformed)?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], StorageResolverPolicyError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| StorageResolverPolicyError::Malformed)
-    }
-
-    fn u16(&mut self) -> Result<u16, StorageResolverPolicyError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-
-    fn u32(&mut self) -> Result<u32, StorageResolverPolicyError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-
-    fn u64(&mut self) -> Result<u64, StorageResolverPolicyError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-
-    fn text(&mut self) -> Result<&'a str, StorageResolverPolicyError> {
-        let length = usize::from(self.u16()?);
-        if length == 0 || length > MAXIMUM_NAME_BYTES {
-            return Err(StorageResolverPolicyError::Malformed);
-        }
-        std::str::from_utf8(self.take(length)?).map_err(|_| StorageResolverPolicyError::Malformed)
-    }
-
-    fn finish(self) -> Result<(), StorageResolverPolicyError> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(StorageResolverPolicyError::Malformed)
-        }
-    }
+// Mechanical range and EOF failures retain the catalog's original error class.
+fn catalog_read_error(_: ReadError) -> StorageResolverPolicyError {
+    StorageResolverPolicyError::Malformed
 }
 
 #[cfg(test)]
