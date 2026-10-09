@@ -219,3 +219,71 @@ generic third-party provider.
    altered/missing/foreign/incomplete evidence cases.
 5. Wire accepted evidence into the installed behavioral ledger and selectable
    public CNP factory. Existing unqualified paths continue to refuse.
+
+## Executable qualification candidate and retained population
+
+The daemon's `InstalledReferenceQualifier` loads only the implementation
+descriptor pinned at compilation. Its `start`/`wait` API runs the fixed two-peer
+candidate on one owning native actor. It creates no ordinary executable node
+selection and returns no Ready or accepted-qualification token. One actor slot
+is reserved process-wide; dropping the receiving handle leaves the same actor
+responsible for original cleanup and durable evidence publication.
+
+Before either Child starts, the actor measures the actual harness executable,
+compiled source bodies, kernel/ABI/UID environment, original fixture and
+independent oracle, and the complete normative specification. It regenerates
+the fixed source profiles and direct connection. The reusable unit selects
+immutable fields explicitly: source, configuration, roles, features, resource
+and transport bounds, interfaces, timing and connection custody. Actual
+session, incarnation, PID, world and qualification metadata remain unchanged
+in separate original witness records. They are not stripped or rewritten to
+form the reusable unit.
+
+The native candidate uses the genuine public provider/companion pair. It arms
+the complete common runtime, publishes both prepared owners and the original
+initial coordinator through `StoredWorldActivationPublisher`, executes three
+windows per peer, and authenticates original Begin, Close, input ACK and
+publication-consumption evidence. The independent eight-limb checksum oracle
+checks the actual consumer's 76 input octets. The scheduler consumes the pending
+consumer prefix before releasing another producer window; the original one
+event connection credit is preserved. Actual private process-group census and
+native reaping finish before the original journals are released.
+
+The source-owned criterion inventory contains all 382 compiled obligations.
+The observed complete-world/windows case and original-custody retirement case
+cover only the explicitly enumerated native aspects. Each applicable obligation
+also retains its mandatory complete source-inspection/adverse review case.
+Ten exact conditional conformance obligations have source-scoped exclusions
+for unclaimed exact timing, repeatability, capture, branch and replay classes.
+Universal refusal, ownership, security and lifecycle obligations remain
+applicable even when those classes are unsupported.
+
+The current native run therefore retains 374 distinct original cases: two
+passed native cases and 372 NotExecuted review cases. Its 382 requirement rows
+are 372 NotExecuted and ten NotApplicable. None is Passed. The concrete
+ordinary admission authority remeasures a fresh installed unit and refuses the
+missing mandatory review. Protocol-only reports and positive native windows
+cannot fill those rows.
+
+Original failures remain separate attempts. The first candidate exposed an
+actual one-event credit exhaustion after completed native windows; its failed
+original evidence was retained. Correcting the actor's window order produced
+a separate successful native subset. A further genuine failed setup trial
+refused an overlong Unix socket path before native effects, retained its full
+original failed population, and could not be rewritten as Passed. Neither
+failure was replaced by a later passing retry.
+
+After positive native cleanup, the actor publishes write-once original,
+retirement, unit, criteria, case-result, report and population-manifest roots.
+Storage errors or callback unwinding retain the original journals on the same
+owning thread and retry identical bytes. The population manifest is a sibling
+of its object directory, avoiding a reference-name file/directory collision.
+Secret bootstrap and Hello bytes stay in private custody and are never emitted.
+
+Independent native-backed issuer tests use a genuine candidate result to reject
+changed or missing activation, coordinator, prepared readiness, consumption
+and retirement objects; synthetic passing residual review; altered unit,
+classes or plan; and replacement under an existing original case identity.
+These tests establish the rejection boundary. Completing the residual review
+and independently authenticating its evidence closure remains required before
+an ordinary public factory or release profile can be accepted.

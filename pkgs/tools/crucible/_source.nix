@@ -33,6 +33,11 @@ in
         || pathString == "${repoRootString}/pkgs/emulation"
         || pathString == "${repoRootString}/pkgs/emulation/crucible-qemu-plugin.nix"
         || pathString == "${repoRootString}/pkgs/emulation/qemu.nix"
+        # Installed-profile tests measure these permissive process-protocol
+        # sources; retaining just their text introduces no emulator linkage.
+        || pathString == "${repoRootString}/pkgs/emulation/_gem5"
+        || pathString == "${repoRootString}/pkgs/emulation/_gem5/native-owner.py"
+        || pathString == "${repoRootString}/pkgs/emulation/_gem5/native-owner-model.py"
         || pathString == "${repoRootString}/pkgs/emulation/qemu-patches"
         || lib.hasPrefix "${repoRootString}/pkgs/emulation/qemu-patches" pathString
         || pathString == "${repoRootString}/pkgs/kernel"

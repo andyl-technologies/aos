@@ -5,13 +5,29 @@
 //! images, actual live certificates and fresh owner binding remain backend-owned.
 
 mod archive;
+mod control;
 mod custody;
 mod evidence;
+mod execution;
 mod factory;
 mod host;
 mod installed;
+mod ledger;
 mod profile;
+mod publication;
+mod service;
 mod staging;
+
+pub use control::{
+    InstalledGem5Isa, NativeCapturePoint, NativeWorldOutcome, NativeWorldRecord, NativeWorldRequest,
+};
+pub use service::{NativeWorldRetention, NativeWorldService};
+
+#[cfg(test)]
+mod ledger_tests;
+
+#[cfg(test)]
+mod service_tests;
 
 #[cfg(test)]
 mod tests;

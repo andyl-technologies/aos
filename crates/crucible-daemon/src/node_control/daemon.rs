@@ -12,7 +12,7 @@ use std::{
     collections::BTreeSet,
     fs::{self, File},
     os::unix::{
-        fs::{MetadataExt, PermissionsExt},
+        fs::{DirBuilderExt, MetadataExt, PermissionsExt},
         net::{UnixListener, UnixStream},
     },
     path::PathBuf,
@@ -32,11 +32,47 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     NodeControlCommand, NodeControlError, NodeControlReply, NodeControlRequest, NodeControlResult,
-    execution_id, refused, transport,
+    execution_id,
+    host_state_service::{NodeHostStateRetention, NodeHostStateService},
+    refused, transport,
 };
 use crate::node_observed_executor::{
-    NodeObservationRetention, NodeObservationService, NodeObservationServiceConfig,
+    InstalledIoArtifact, NativeWorldRetention, NativeWorldService, NodeObservationRetention,
+    NodeObservationService, NodeObservationServiceConfig,
 };
+
+/// Binds private operator policy to an independently expected immutable source.
+///
+/// Path entries preserve the original policy representation. Archive-only
+/// entries require policy edition two and authorize authenticated source-closure
+/// lookup only; they never authorize construction of a fresh native source.
+/// Remote requests cannot enroll either form.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum NodeImmutableArtifactPolicy {
+    /// Measures the actual installed file before admitting the local endpoint.
+    Path {
+        /// Names the absolute source file enrolled before endpoint admission.
+        path: PathBuf,
+        /// Gives the independently authenticated complete content identity.
+        expected: ContentRef,
+    },
+    /// Requires source bytes from an authenticated complete host archive.
+    ArchiveOnly {
+        /// Explicitly selects archive-only source enrollment.
+        mode: NodeArchiveArtifactMode,
+        /// Gives the independently authenticated complete content identity.
+        expected: ContentRef,
+    },
+}
+
+/// Explicitly selects source-closure lookup without path or native authority.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeArchiveArtifactMode {
+    /// Permits only authenticated original archive materialization.
+    ArchiveOnly,
+}
 
 /// Selects a private local daemon and independently expected installed companion.
 ///
@@ -64,6 +100,18 @@ pub struct NodeDaemonPolicy {
     pub maximum_worlds: usize,
     /// Bounds queued actor requests (1 through 64).
     pub maximum_pending_requests: usize,
+    /// Enables edition-two exact-state custody with its own finite quota (2 through 64).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum_host_state_worlds: Option<usize>,
+    /// Enables edition-three installed native state requests (1 through 64 queued).
+    ///
+    /// Native custody has eight fixed process-lifetime slots. Kernel reclamation
+    /// retains original journals; this quota never resets that native capacity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum_native_state_requests: Option<usize>,
+    /// Enrolls immutable sources from private operator policy, never remote requests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub immutable_artifacts: Vec<NodeImmutableArtifactPolicy>,
 }
 
 impl NodeDaemonPolicy {
@@ -80,9 +128,23 @@ impl NodeDaemonPolicy {
         Ok(policy)
     }
 
+    fn installed_artifacts(&self) -> Vec<InstalledIoArtifact> {
+        self.immutable_artifacts
+            .iter()
+            .map(|artifact| match artifact {
+                NodeImmutableArtifactPolicy::Path { path, expected } => {
+                    InstalledIoArtifact::path(path.clone(), expected.clone())
+                }
+                NodeImmutableArtifactPolicy::ArchiveOnly { expected, .. } => {
+                    InstalledIoArtifact::archive_only(expected.clone())
+                }
+            })
+            .collect()
+    }
+
     fn validate(&self) -> Result<(), NodeControlError> {
         if self.format != "crucible.node-daemon-policy"
-            || self.version != 1
+            || !matches!(self.version, 1..=3)
             || !self.device_executable.is_absolute()
             || !self.socket.is_absolute()
             || self.socket.parent() != Some(self.state_directory.as_path())
@@ -92,6 +154,43 @@ impl NodeDaemonPolicy {
             || !(1..=64).contains(&self.maximum_pending_requests)
         {
             return Err(refused("invalid installed node daemon policy"));
+        }
+        match (
+            self.version,
+            self.maximum_host_state_worlds,
+            self.maximum_native_state_requests,
+        ) {
+            (1, None, None) => {}
+            (2, Some(capacity), None) if (2..=64).contains(&capacity) => {}
+            (3, host, Some(native))
+                if (1..=64).contains(&native)
+                    && host.is_none_or(|capacity| (2..=64).contains(&capacity)) => {}
+            _ => {
+                return Err(refused(
+                    "state policy requires the exact supported edition and explicit actor quotas",
+                ));
+            }
+        }
+        if self.immutable_artifacts.len() > 64 {
+            return Err(refused("too many installed immutable artifacts"));
+        }
+        for artifact in &self.immutable_artifacts {
+            match artifact {
+                NodeImmutableArtifactPolicy::Path { path, expected } => {
+                    if !path.is_absolute() {
+                        return Err(refused("installed artifact path must be absolute"));
+                    }
+                    expected.validate()?;
+                }
+                NodeImmutableArtifactPolicy::ArchiveOnly { expected, .. } => {
+                    if !matches!(self.version, 2 | 3) {
+                        return Err(refused(
+                            "archive-only enrollment requires policy edition two",
+                        ));
+                    }
+                    expected.validate()?;
+                }
+            }
         }
         self.expected_device.validate()?;
         transport::private_directory(&self.state_directory)
@@ -111,6 +210,10 @@ pub struct NodeControlDaemon {
     socket_identity: (u64, u64),
     service: Option<NodeObservationService>,
     retention: NodeObservationRetention,
+    state_service: Option<NodeHostStateService>,
+    state_retention: Option<NodeHostStateRetention>,
+    native_service: Option<NativeWorldService>,
+    native_retention: Option<NativeWorldRetention>,
     repository: Arc<CampaignRepository>,
     _state_lock: File,
 }
@@ -157,21 +260,62 @@ impl NodeControlDaemon {
         let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs.clone()));
         let service = NodeObservationService::start(
             NodeObservationServiceConfig {
-                device_executable: policy.device_executable,
-                expected_device: policy.expected_device,
+                installed_artifacts: policy.installed_artifacts(),
+                device_executable: policy.device_executable.clone(),
+                expected_device: policy.expected_device.clone(),
                 socket_parent: policy.state_directory.clone(),
                 control_timeout: Duration::from_millis(policy.control_timeout_ms),
                 maximum_worlds: policy.maximum_worlds,
                 maximum_pending_requests: policy.maximum_pending_requests,
             },
             repository.clone(),
-            blobs,
-            refs,
+            Arc::clone(&blobs),
+            Arc::clone(&refs),
         )
         .map_err(refused)?;
 
         // Register the separately owned retention fence before exposing admission.
         let retention = service.retention_owner();
+        let state_service = policy
+            .maximum_host_state_worlds
+            .map(|maximum_worlds| {
+                NodeHostStateService::start(
+                    NodeObservationServiceConfig {
+                        installed_artifacts: policy.installed_artifacts(),
+                        device_executable: policy.device_executable.clone(),
+                        expected_device: policy.expected_device.clone(),
+                        socket_parent: policy.state_directory.clone(),
+                        control_timeout: Duration::from_millis(policy.control_timeout_ms),
+                        maximum_worlds,
+                        maximum_pending_requests: policy.maximum_pending_requests,
+                    },
+                    policy.state_directory.join("host-state-archives"),
+                    Arc::clone(&blobs),
+                    Arc::clone(&refs),
+                )
+            })
+            .transpose()?;
+        let state_retention = state_service
+            .as_ref()
+            .map(NodeHostStateService::retention_owner);
+        let native_service = policy
+            .maximum_native_state_requests
+            .map(|capacity| {
+                let realm = policy.state_directory.join("native-state");
+                match fs::DirBuilder::new().mode(0o700).create(&realm) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(NodeControlError::Io(error)),
+                }
+                // The actor independently checks canonical private ownership and
+                // holds its exclusive realm lock through actual native reclamation.
+                NativeWorldService::start(realm, capacity, Arc::clone(&blobs), Arc::clone(&refs))
+                    .map_err(refused)
+            })
+            .transpose()?;
+        let native_retention = native_service
+            .as_ref()
+            .map(NativeWorldService::retention_owner);
         let listener = UnixListener::bind(&policy.socket)?;
         fs::set_permissions(&policy.socket, fs::Permissions::from_mode(0o600))?;
         listener.set_nonblocking(true)?;
@@ -182,6 +326,10 @@ impl NodeControlDaemon {
             socket_identity: (metadata.dev(), metadata.ino()),
             service: Some(service),
             retention,
+            state_service,
+            state_retention,
+            native_service,
+            native_retention,
             repository,
             _state_lock: state_lock,
         })
@@ -225,7 +373,14 @@ impl NodeControlDaemon {
             .repository
             .acquire_gc_exclusion_guard()
             .map_err(refused)?;
-        self.retention.retention_roots().map_err(refused)
+        let mut roots = self.retention.retention_roots().map_err(refused)?;
+        if let Some(retention) = &self.state_retention {
+            roots.extend(retention.retention_roots()?);
+        }
+        if let Some(retention) = &self.native_retention {
+            roots.extend(retention.retention_roots().map_err(refused)?);
+        }
+        Ok(roots)
     }
 
     /// Copies the independently registered GC owner without granting deletion.
@@ -236,6 +391,22 @@ impl NodeControlDaemon {
     #[must_use]
     pub fn retention_owner(&self) -> NodeObservationRetention {
         self.retention.clone()
+    }
+
+    /// Copies the separately registered exact-state retention owner, when enabled.
+    ///
+    /// The collector keeps it registered until authentic native retirement.
+    #[must_use]
+    pub fn host_state_retention_owner(&self) -> Option<NodeHostStateRetention> {
+        self.state_retention.clone()
+    }
+
+    /// Copies the independent native-state root owner when installed policy enables it.
+    ///
+    /// The collector retains this owner until actual native-group reclamation.
+    #[must_use]
+    pub fn native_state_retention_owner(&self) -> Option<NativeWorldRetention> {
+        self.native_retention.clone()
     }
 
     fn connection(&self, stream: &mut UnixStream) -> Result<(), NodeControlError> {
@@ -276,6 +447,27 @@ impl NodeControlDaemon {
             .as_ref()
             .ok_or_else(|| refused("node actor admission stopped"))?;
         match command {
+            NodeControlCommand::NativeState { request } => {
+                let record = self
+                    .native_service
+                    .as_ref()
+                    .ok_or_else(|| refused("native state is not enabled by installed policy"))?
+                    .submit(*request)
+                    .map_err(refused)?;
+                Ok(NodeControlResult::NativeState {
+                    record: Box::new(record),
+                })
+            }
+            NodeControlCommand::HostState { request } => {
+                let state = self
+                    .state_service
+                    .as_ref()
+                    .ok_or_else(|| refused("exact state is not enabled by installed policy"))?
+                    .submit(*request)?;
+                Ok(NodeControlResult::HostState {
+                    record: Box::new(state),
+                })
+            }
             NodeControlCommand::Compile { selections } => Ok(NodeControlResult::Compiled {
                 scenario: Bytes::new(service.compile(selections).map_err(refused)?),
             }),
@@ -310,7 +502,18 @@ impl NodeControlDaemon {
 
     fn stop_and_reclaim(&mut self) {
         drop(self.service.take());
-        while !self.retention.is_retired() {
+        drop(self.state_service.take());
+        drop(self.native_service.take());
+        while !self.retention.is_retired()
+            || self
+                .state_retention
+                .as_ref()
+                .is_some_and(|owner| !owner.is_retired())
+            || self
+                .native_retention
+                .as_ref()
+                .is_some_and(|owner| !owner.is_retired())
+        {
             std::thread::sleep(Duration::from_millis(10));
         }
     }

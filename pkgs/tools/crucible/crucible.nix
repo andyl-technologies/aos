@@ -15,6 +15,8 @@
   crucible-qemu-plugin,
   linux-crucible,
   crucible-fixtures,
+  gem5-closed-profile,
+  crucible-reference-implementation,
   bash,
   coreutils,
   grep,
@@ -138,18 +140,28 @@
   rpcProtocolMinor = sourceConst "RPC ABI minor version" "pub const RPC_PROTOCOL_MINOR: u16 = " apiRpcAbi;
   rpcProtocolPatch = sourceConst "RPC ABI patch version" "pub const RPC_PROTOCOL_PATCH: u16 = " apiRpcAbi;
   rpcProtocolBuild = sourceStringConst "RPC ABI build tag" "pub const RPC_PROTOCOL_BUILD: &str = \"" apiRpcAbi;
-  controllerCargoEnv = {
-    OPENSSL_DIR = "${openssl}";
-    OPENSSL_LIB_DIR = "${openssl}/lib";
-    OPENSSL_INCLUDE_DIR = "${openssl}/include";
-    OPENSSL_NO_VENDOR = "1";
-    OPENSSL_STATIC = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    PROTOC = "${buildProtobuf}/bin/protoc";
-  };
+  referenceQualificationInputs = lib.optionals (!stdenv.isCross) [crucible-reference-implementation];
+  controllerCargoEnv =
+    {
+      OPENSSL_DIR = "${openssl}";
+      OPENSSL_LIB_DIR = "${openssl}/lib";
+      OPENSSL_INCLUDE_DIR = "${openssl}/include";
+      OPENSSL_NO_VENDOR = "1";
+      OPENSSL_STATIC = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      PROTOC = "${buildProtobuf}/bin/protoc";
+      # Native gem5 qualification comes from the source-owned package whose real
+      # continuation witnesses passed during its build, never a runtime override.
+      CRUCIBLE_GEM5_CLOSED_PROFILE_MANIFEST = "${gem5-closed-profile}/share/crucible/gem5/closed-profile.json";
+    }
+    // lib.optionalAttrs (!stdenv.isCross) {
+      # This descriptor supplies source identity only. Actual native qualification
+      # retains its original complete population and cannot infer passing review.
+      CRUCIBLE_REFERENCE_IMPLEMENTATION_MANIFEST = "${crucible-reference-implementation}/share/crucible/reference/implementation.json";
+    };
   controllerArtifactContract = {
     family = "crucible-apache-host-release-and-test";
-    nativeInputs = map toString [buildRustDev buildPkgConfig openssl sqlite buildProtobuf];
+    nativeInputs = map toString ([buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile] ++ referenceQualificationInputs);
     licenseScope = "Apache-2.0";
   };
   controllerArtifacts = mkCargoArtifacts {
@@ -165,9 +177,10 @@
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags} --features crucible-cli/test-double"
     ];
     buildDeps =
-      [buildRustDev buildPkgConfig openssl sqlite buildProtobuf]
+      [buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile]
+      ++ referenceQualificationInputs
       ++ lib.optionals stdenv.isCross [buildPackages.crucible-controller];
-    runtimeDeps = [openssl sqlite];
+    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs;
   };
   debugGatewayArtifactContract = {
     family = "crucible-gpl-debug-gateway-release-and-test";
@@ -274,8 +287,8 @@
     cargoFlags = packageFlags;
     cargoTestFlags = "${packageFlags} --features crucible-cli/test-double";
     doCheck = true;
-    buildDeps = [buildRustDev buildPkgConfig openssl sqlite buildProtobuf];
-    runtimeDeps = [openssl sqlite];
+    buildDeps = [buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile] ++ referenceQualificationInputs;
+    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs;
     # The controller is the Apache side of a process boundary. Fail the build
     # if any QEMU-side implementation, guest kernel, or fixture enters either
     # its direct references or its runtime closure.
@@ -394,6 +407,9 @@
 
     postInstall = ''
       test -x "$out/bin/crucible"
+      test -x "$out/bin/crucible-node-conformance"
+      test -x "$out/bin/crucible-reference-device"
+      test -x "$out/bin/crucible-reference-provider"
       install_example() {
         name="$1"
         messages="$2"

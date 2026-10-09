@@ -6,9 +6,9 @@ mod host_state;
 mod io;
 mod kvm;
 
-#[cfg(test)]
 mod native_state;
 mod profile;
+mod reference_public;
 mod scripted;
 mod transcript;
 mod trust;
@@ -21,6 +21,14 @@ pub use host_state::InstalledHostStateFactory;
 pub use io::{InstalledHostIoProfile, InstalledIoArtifact, InstalledIoArtifactSource};
 pub use kvm::{
     MAX_KVM_CANDIDATE_POLICY_BYTES, load_installed_kvm_candidate, prepare_installed_kvm_candidate,
+};
+pub use native_state::{
+    InstalledGem5Isa, NativeCapturePoint, NativeWorldOutcome, NativeWorldRecord,
+    NativeWorldRequest, NativeWorldRetention, NativeWorldService,
+};
+pub use reference_public::{
+    InstalledPublicReferencePackage, InstalledReferenceQualifier,
+    ReferenceQualificationObservation, ReferenceQualificationRun,
 };
 pub use scripted::InstalledScriptedSourceProfile;
 pub use transcript::{InstalledRecordedWorld, InstalledReferenceRecording};

@@ -75,6 +75,24 @@ where
             }
             Err(error) => return Err(error.into()),
         };
+        let scheduler = runtime.scheduler(graph, activation)?;
+        let has_deliverable_input = scheduler
+            .pending_inputs(node)?
+            .iter()
+            .any(|delivery| delivery.delivery < cutoff);
+        if !has_deliverable_input {
+            // An empty input acknowledgement cannot remove a producer limit.
+            // Preserve the previous native custody and let another safe owner
+            // advance before allocating or staging a redundant empty batch.
+            match scheduler.preview_exact_limit(node, request.horizon) {
+                Ok(_) => {}
+                Err(SchedulingError::InputBlocked(_) | SchedulingError::NoSafeProgress) => {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+
         let input = match runtime.scheduler(graph, activation)?.prepare_input_batch(
             node,
             request.names.stage,

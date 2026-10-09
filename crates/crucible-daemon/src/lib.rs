@@ -127,6 +127,7 @@ pub mod executor_capability;
 pub mod executor_loopback;
 pub mod executor_node_capabilities;
 pub mod node_scenario;
+pub mod node_qualification;
 pub mod node_observed_executor;
 pub mod node_control;
 pub(crate) mod node_execution;

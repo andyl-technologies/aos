@@ -14,6 +14,11 @@
 //! Compilation and dispatch belong to the actual daemon's installed catalog.
 
 mod daemon;
+mod host_state;
+mod host_state_ledger;
+mod host_state_service;
+#[cfg(test)]
+mod native_state_tests;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -24,8 +29,13 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::node_observed_executor::InstalledNodeSelection;
+use crate::node_observed_executor::{NativeWorldRecord, NativeWorldRequest};
 
-pub use daemon::{NodeControlDaemon, NodeDaemonPolicy};
+pub use daemon::{
+    NodeArchiveArtifactMode, NodeControlDaemon, NodeDaemonPolicy, NodeImmutableArtifactPolicy,
+};
+pub use host_state::{NodeHostStateOutcome, NodeHostStateRecord, NodeHostStateRequest};
+pub use host_state_service::NodeHostStateRetention;
 
 /// Bounds each complete local control frame before body allocation.
 pub const MAX_NODE_CONTROL_BYTES: usize = 16 * 1024 * 1024;
@@ -62,6 +72,16 @@ pub struct NodeControlRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControlCommand {
+    /// Preserves or restores installed native worlds under control edition three.
+    NativeState {
+        /// Contains the original closed native operation without native authority.
+        request: Box<NativeWorldRequest>,
+    },
+    /// Captures, restores, or reads exact state under control edition two.
+    HostState {
+        /// Contains the original state operation, without native authority.
+        request: Box<NodeHostStateRequest>,
+    },
     /// Compiles the exact complete scenario from daemon installation identities.
     Compile {
         /// Selects only implemented profiles already installed by host policy.
@@ -105,6 +125,16 @@ pub struct NodeControlReply {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControlResult {
+    /// Returns the original native-world reservation or authentic preservation result.
+    NativeState {
+        /// Retains the original nonce, archive, actual owner scopes and operation.
+        record: Box<NativeWorldRecord>,
+    },
+    /// Returns the original complete exact-state reservation or result.
+    HostState {
+        /// Retains original request identity and authenticated artifact metadata.
+        record: Box<NodeHostStateRecord>,
+    },
     /// Returns canonical complete authored scenario bytes.
     Compiled {
         /// Binds daemon host and independently admitted native installation.
@@ -138,11 +168,58 @@ impl NodeControlRequest {
         Ok(request)
     }
 
+    /// Builds an edition-two exact-state request without creating native authority.
+    ///
+    /// # Errors
+    /// Refuses invalid identities, unsupported profiles, or oversized requests.
+    pub fn host_state(
+        request_id: &str,
+        request: NodeHostStateRequest,
+    ) -> Result<Self, NodeControlError> {
+        let request = Self {
+            format: "crucible.node-control".into(),
+            version: 2,
+            request_id: Id::new(request_id)?,
+            command: NodeControlCommand::HostState {
+                request: Box::new(request),
+            },
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
+    /// Builds an edition-three native preservation request without issuing authority.
+    ///
+    /// # Errors
+    /// Refuses invalid request identities, original nonces or source references.
+    pub fn native_state(
+        request_id: &str,
+        request: NativeWorldRequest,
+    ) -> Result<Self, NodeControlError> {
+        let request = Self {
+            format: "crucible.node-control".into(),
+            version: 3,
+            request_id: Id::new(request_id)?,
+            command: NodeControlCommand::NativeState {
+                request: Box::new(request),
+            },
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
     fn validate(&self) -> Result<(), NodeControlError> {
-        if self.format != "crucible.node-control" || self.version != 1 {
+        let expected_version = match self.command {
+            NodeControlCommand::NativeState { .. } => 3,
+            NodeControlCommand::HostState { .. } => 2,
+            _ => 1,
+        };
+        if self.format != "crucible.node-control" || self.version != expected_version {
             return Err(refused("unsupported local node control edition"));
         }
         match &self.command {
+            NodeControlCommand::NativeState { request } => request.validate().map_err(refused),
+            NodeControlCommand::HostState { request } => request.validate(),
             NodeControlCommand::Compile { selections } => validate_selections(selections),
             NodeControlCommand::Observe {
                 ledger,
@@ -235,6 +312,12 @@ pub fn decode_node_state(
             ObservedAttemptState::from_canonical_bytes(state.as_slice()).map_err(refused)
         }
         NodeControlResult::Refused { reason } => Err(refused(reason)),
+        NodeControlResult::HostState { .. } => {
+            Err(refused("exact state is not observed execution state"))
+        }
+        NodeControlResult::NativeState { .. } => Err(refused(
+            "native preservation is not observed execution state",
+        )),
         NodeControlResult::Compiled { .. } => {
             Err(refused("compiled scenario is not execution state"))
         }

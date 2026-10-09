@@ -4,6 +4,15 @@
 //! and native cleanup. These commands transport authored bytes and render original
 //! durable state without implementing scheduling or claiming deterministic replay.
 
+#[path = "node_host_state.rs"]
+mod host_state;
+
+#[path = "node_native_state.rs"]
+mod native_state;
+
+#[path = "node_kvm.rs"]
+mod kvm;
+
 use clap::{Args, Subcommand};
 use crucible_campaign::observed_node_attempt::{ObservedAttemptOutcome, ObservedAttemptState};
 use crucible_daemon::node_control::{
@@ -31,6 +40,12 @@ pub(super) struct NodeArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum NodeCommand {
+    #[command(flatten)]
+    ExactState(host_state::NodeHostStateCommand),
+    #[command(flatten)]
+    NativeState(native_state::NodeNativeStateCommand),
+    #[command(flatten)]
+    Kvm(kvm::NodeKvmCommand),
     /// Host the private installed-node observation daemon.
     Serve {
         /// Load the operator's independently authenticated installation policy JSON.
@@ -99,6 +114,9 @@ pub(super) fn run_node_invocation(cli: &Cli, args: &NodeArgs) -> Result<(), CliE
         ));
     }
     match &args.command {
+        NodeCommand::ExactState(command) => host_state::run(command),
+        NodeCommand::NativeState(command) => native_state::run(command),
+        NodeCommand::Kvm(command) => kvm::run(command),
         NodeCommand::Serve { policy } => serve(policy),
         NodeCommand::Compile {
             socket,

@@ -46,7 +46,7 @@ pub(super) fn scripted_profile(
         clock_profile(selected, host, qualification, contents)?;
     descriptor.roles = vec![Id::new("scripted_source")?];
     descriptor.model_ref = put(contents,
-        b"crucible finite scripted public source v1: one immutable ordered script of at most 16 complete native requests; source-owned Reaction microstep zero and Publication microstep one are distinct retained transitions; original cursor, evaluated pending transition, clock, original publication sequence and administrative receipt/ACK custody are captured; no ingress, timers, worker, cancellation or faults".to_vec(), "text/plain")?;
+        b"crucible finite scripted public source v1: one immutable ordered script of at most 16 complete native requests; original Reaction microstep zero births Publication microstep one exactly once, including future publication beyond the original cut; native cursor advances atomically with the retained original outcome; native clock, original publication sequence and complete runtime/coordinator publication and receipt/ACK custody are captured; no ingress, timers, worker, cancellation or faults".to_vec(), "text/plain")?;
     descriptor.configuration_ref = put_json(
         contents,
         &serde_json::json!({

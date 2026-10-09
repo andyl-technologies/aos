@@ -79,6 +79,7 @@ impl NativeBacking {
 /// Original journals, image backing and publication uncertainty remain owned.
 /// The recipient must preserve those obligations; the proof does not authorize
 /// output discard, operation replay or a replacement activation.
+#[cfg(test)]
 pub(super) struct ReclaimedGem5Custody {
     pub(super) scope: NativeOwnerScope,
     pub(super) custody: Gem5NativeCustody,
@@ -137,6 +138,35 @@ pub(super) struct Gem5CustodyQueue {
 }
 
 impl Gem5CustodyQueue {
+    /// Checks original kernel proofs without consuming their retained journals.
+    pub(super) fn all_groups_reclaimed(&self) -> bool {
+        self.owner
+            .shared
+            .lock()
+            .slots
+            .iter()
+            .flatten()
+            .all(|entry| !entry.in_flight && entry.custody.is_some() && entry.proof.is_some())
+    }
+
+    /// Reads only the original reserved activation's publication knowledge.
+    pub(super) fn publication_knowledge(
+        &self,
+        activation: &ActivationRecord,
+    ) -> Result<PublicationKnowledge, NativeCustodyError> {
+        self.owner
+            .shared
+            .lock()
+            .slots
+            .iter()
+            .flatten()
+            .find(|entry| entry.scope.activation == *activation)
+            .map(|entry| entry.scope.publication)
+            .ok_or(NativeCustodyError::Refused(
+                "original native activation reservation is absent",
+            ))
+    }
+
     /// Returns the one process-lifetime installed native supervisor.
     ///
     /// Actor and world factories share this queue. Losing every actor borrower
@@ -312,6 +342,7 @@ impl Gem5CustodyQueue {
     }
 
     /// Returns the number of reserved, retained or reclaimed original capsules.
+    #[cfg(test)]
     pub(super) fn reserved_owners(&self) -> usize {
         self.owner.shared.lock().slots.iter().flatten().count()
     }
@@ -364,6 +395,7 @@ impl Gem5CustodyQueue {
     ///
     /// # Errors
     /// Refuses failure to allocate the bounded return inventory before mutation.
+    #[cfg(test)]
     pub(super) fn take_reclaimed(&self) -> Result<Vec<ReclaimedGem5Custody>, NativeCustodyError> {
         let mut registry = self.owner.shared.lock();
         let count = registry

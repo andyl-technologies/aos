@@ -7,6 +7,8 @@
 #![cfg(target_os = "linux")]
 // crucible-lint: allow rust-allow -- test fixture setup and exact regression assertions deliberately panic on failure.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+// crucible-lint: allow rust-allow -- physical deadlines bound process cleanup and never enter modeled state.
+#![allow(clippy::disallowed_methods)]
 
 use std::{
     fs,
