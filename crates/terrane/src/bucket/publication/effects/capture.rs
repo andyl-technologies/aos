@@ -190,6 +190,9 @@ impl Frame {
         control: &Path,
         owner: u32,
     ) -> Result<(), StoreFailure> {
+        for read in reads {
+            read.require_effect_compatible()?;
+        }
         if reads.iter().any(|read| read.retained_payload().is_some()) {
             for read in reads {
                 let policy = if read.path().starts_with(control) {
@@ -452,6 +455,7 @@ impl Frame {
             names,
             preimages,
             final_check: self.final_check.clone(),
+            pairs: self.pairs.iter().map(Arc::clone).collect(),
             plan,
             #[cfg(test)]
             faults: Vec::new(),
@@ -468,6 +472,11 @@ impl Frame {
     pub(super) fn read_projection(
         &self,
     ) -> Result<crate::store::native_effect::NativeReadProjection, StoreFailure> {
+        // This fixed read recipe owns named and whole-value inputs only.
+        // Collector pair observations keep their separate genuine worker lane.
+        if !self.pairs.is_empty() {
+            return Err(unsupported());
+        }
         let (names, preimages) = self.physical_inputs()?;
         Ok(crate::store::native_effect::NativeReadProjection::new(
             Arc::clone(&self.exclusions),
@@ -562,6 +571,9 @@ impl Frame {
         )
         .await?;
         let reads = observed.physical_reads();
+        for read in reads {
+            read.require_effect_compatible()?;
+        }
         let mut position = 0;
         while position < reads.len() {
             let start = position;

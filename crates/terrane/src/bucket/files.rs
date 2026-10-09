@@ -157,6 +157,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// # Errors
     /// Rejects unsafe coordination paths and propagates unavailable lock or
     /// synchronization primitives. The inode is never unlinked or replaced.
+    #[cfg(all(test, feature = "tokio"))]
     pub(super) async fn exclusive(&self) -> Result<F::Lock, StoreFailure> {
         if self.inner.access.read_only() {
             return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
@@ -284,6 +285,83 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         let retained = capture.finish(&observed)?;
         retained.revalidate(&self.inner.fs).await?;
         Ok(observed.with_retained_payload(retained))
+    }
+
+    /// Retains actual ordinary full bytes through their original descriptor.
+    ///
+    /// Public modes and hardlinks remain ordinary readable inputs. This receipt
+    /// closes DATA reads only and cannot be imported into a protected effect.
+    ///
+    /// # Errors
+    /// Preserves missing keys as absence, rejects incompatible layout nodes,
+    /// and propagates descriptor, range and original-continuity failures.
+    #[cfg(all(feature = "tokio", unix))]
+    pub(super) async fn read_optional_ordinary_retained(
+        &self,
+        key: &BucketKey,
+    ) -> Result<RecordRead, StoreFailure> {
+        use crate::store::native_publication_effects::PayloadRangeCapture;
+        use std::error::Error;
+
+        let path = self.path(key);
+        let mut parent = self.inner.config.root.clone();
+        let relative = Path::new(key.as_str()).parent().ok_or_else(malformed)?;
+        let mut parents = Vec::new();
+        for part in relative.components() {
+            parent.push(part);
+            parents.push(parent.clone());
+        }
+        let observations = self
+            .inner
+            .fs
+            .symlink_metadata_batch(&parents)
+            .await
+            .map_err(io_failure)?;
+        if observations.len() != parents.len() {
+            return Err(layout_corrupt());
+        }
+        for observation in observations {
+            match observation {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => return Err(layout_corrupt()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(RecordRead::observed(path, None, None));
+                }
+                Err(error) => return Err(io_failure(error)),
+            }
+        }
+        match self.inner.fs.symlink_metadata(&path).await {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => return Err(layout_corrupt()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(RecordRead::observed(path, None, None));
+            }
+            Err(error) => return Err(io_failure(error)),
+        }
+
+        let mut capture = match PayloadRangeCapture::capture_ordinary(&self.inner.fs, &path).await {
+            Ok(capture) => capture,
+            Err(error)
+                if error
+                    .source()
+                    .and_then(|source| source.downcast_ref::<std::io::Error>())
+                    .is_some_and(|source| source.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok(RecordRead::observed(path, None, None));
+            }
+            Err(error) => return Err(error),
+        };
+        let metadata = capture.metadata().clone();
+        let range = crate::store::ByteRange {
+            start: 0,
+            length: capture.len(),
+        };
+        let bytes = capture.read_range(&self.inner.fs, range).await?;
+        let retained = capture.finish();
+        Ok(
+            RecordRead::observed(path, Some(bytes), Some(metadata))
+                .with_ordinary_retained(retained),
+        )
     }
 
     /// Reads a registered regular file while rejecting symlinked layout nodes.
@@ -470,31 +548,13 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             Err(error) => Err(io_failure(error)),
         }
     }
-
-    // The caller owns the exclusion guard across this comparison and the
-    // installation's directory sync. Conditions compare bytes, never hashes
-    // or interpretations of provider version tokens.
-    /// Compares complete opaque bytes and installs a conditional replacement.
-    ///
-    /// # Errors
-    /// Propagates invalid layout and filesystem failures. Callers hold stable
-    /// exclusion across this method and its final directory synchronization.
-    pub(super) async fn replace_conditionally(
-        &self,
-        key: &BucketKey,
-        expected: Option<&[u8]>,
-        new: &[u8],
-    ) -> Result<bool, StoreFailure> {
-        if key.mutability() != Mutability::CompareAndSwap {
-            return Err(malformed());
-        }
-        let current = self.read_optional(key).await?;
-        if current.as_deref() != expected {
-            return Ok(false);
-        }
-        self.install(key, new, current.is_some()).await
-    }
 }
 
 #[cfg(all(test, feature = "tokio", unix))]
+mod ordinary_read_tests;
+
+#[cfg(all(test, feature = "tokio", unix))]
 mod payload_namespace_tests;
+
+#[cfg(all(test, feature = "tokio", unix))]
+mod ordinary_receipt_tests;
