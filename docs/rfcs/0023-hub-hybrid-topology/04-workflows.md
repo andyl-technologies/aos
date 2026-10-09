@@ -139,6 +139,14 @@ second publication.
 
 ### Direct multipart, resume and independent metadata
 
+Hybrid defaults to signed direct uploads. An operator may explicitly select
+`HUB_HYBRID_UPLOAD_MODE=worker_proxy` (Nix: `aos.registry-hub.hybrid.uploadMode`)
+for a storage binding without a presigning endpoint. Clients then use the
+existing Worker upload endpoints; Workers stream or verify the bytes and send
+only bounded controls to Native. This compatibility mode preserves hybrid
+storage execution, signed ingress and Native body limits. A direct control or
+provider failure never triggers an automatic switch to proxy uploads.
+
 Direct multipart upload is available in every runtime topology with a compatible
 private R2/S3 binding. The client uploads parts directly to the configured store
 using signed URLs; the Hub handles authorization, multipart control and final

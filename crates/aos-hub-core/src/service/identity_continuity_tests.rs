@@ -107,3 +107,28 @@ async fn direct_policy_requires_identity_without_claiming_provider_readiness() {
     assert_eq!(reply.deployment_id, "deployment-one");
     assert_eq!(reply.principal_id.len(), 64);
 }
+
+#[tokio::test]
+async fn explicit_worker_proxy_preserves_hybrid_and_principal_identity() {
+    let (service, _, bearer) = fixture().await;
+    let service = service
+        .with_deployment_id(Some("deployment-one".into()))
+        .unwrap()
+        .with_hybrid_delivery();
+    let direct = service
+        .who_am_i(Some(&bearer), pb::WhoAmIRequest {})
+        .await
+        .unwrap();
+
+    let proxy =
+        service.with_hybrid_upload_mode(crate::hybrid_upload::HybridUploadMode::WorkerProxy);
+    let identity = proxy
+        .who_am_i(Some(&bearer), pb::WhoAmIRequest {})
+        .await
+        .unwrap();
+
+    assert!(proxy.hybrid_delivery);
+    assert_eq!(identity.transfer_mode, "legacy");
+    assert_eq!(identity.deployment_id, direct.deployment_id);
+    assert_eq!(identity.principal_id, direct.principal_id);
+}
