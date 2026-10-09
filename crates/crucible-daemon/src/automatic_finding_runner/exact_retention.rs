@@ -15,11 +15,11 @@ use crucible_campaign::{
     ScenarioArtifactId, ScenarioDefId, StopOutcome,
 };
 
+use crate::attempt_evidence::AttemptExecutionEvidenceSnapshot;
 use crate::crucible_artifact::{PreparedFindingExactRetention, PreparedSemanticAttemptResult};
 use crate::crucible_measurement::CrucibleMeasurementStopEvidence;
 use crate::crucible_measurement::verified_assertion_transition;
 use crate::exact_checkpoint_store::ExactFindingCheckpointAuthenticator;
-use crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot;
 use crate::{
     AttemptExecutionContext, CapturedAttemptCheckpoint, CrucibleAttemptExecution,
     ExactCheckpointStore, ExecutionCancellation,
@@ -365,7 +365,7 @@ pub(super) fn prepare_finding_exact_retention(
     input: &CrucibleAttemptExecution,
     context: &AttemptExecutionContext,
     result: &PreparedSemanticAttemptResult,
-    execution: Option<&QemuAttemptExecutionEvidenceSnapshot>,
+    execution: Option<&AttemptExecutionEvidenceSnapshot>,
 ) -> Result<(FindingExactPins, PreparedFindingExactRetention), CampaignCodecError> {
     let observation = result.observation();
     let crucible_campaign::AttemptRetentionPolicyDisposition::Required(basis) =
@@ -413,7 +413,7 @@ pub(super) fn prepare_finding_exact_retention(
 fn assertion_failure_boundary(
     input: &CrucibleAttemptExecution,
     result: &PreparedSemanticAttemptResult,
-    execution: &QemuAttemptExecutionEvidenceSnapshot,
+    execution: &AttemptExecutionEvidenceSnapshot,
     property: &str,
 ) -> Option<(FindingAssertionFailureBoundary, Vec<u8>)> {
     let observation = result.observation();

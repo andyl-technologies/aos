@@ -1,17 +1,24 @@
-//! Bounded storage for process-local QEMU execution evidence.
+//! Bounded scheduler progress and reproduction evidence for one attempt.
+//!
+//! Native lifecycle wrappers authenticate the source operations before recording
+//! their exact event material. This storage owns no launch or native authority.
 
 use std::sync::{Arc, Mutex};
 
 use crucible::{FingerprintSample, SchedulerError, SchedulerEventLogEntry};
 
-use super::{
-    MAX_EXECUTION_FINGERPRINT_SAMPLES, MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
-    MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, MAX_TERMINAL_FINGERPRINT_SAMPLES,
-};
+/// Maximum scheduler entries retained by one in-memory attempt projection.
+pub const MAX_ATTEMPT_EVENT_LOG_ENTRIES: usize = 1_000_000;
 
-/// Scheduler progress and reproduction evidence from one QEMU attempt.
+/// Maximum aggregate canonical event material retained by one attempt.
+pub const MAX_ATTEMPT_EVENT_LOG_BYTES: usize = 64 * 1024 * 1024;
+
+pub(crate) const MAX_EXECUTION_FINGERPRINT_SAMPLES: usize = 131_072;
+pub(crate) const MAX_TERMINAL_FINGERPRINT_SAMPLES: usize = 65_536;
+
+/// Scheduler progress and reproduction evidence from one modeled attempt.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct QemuAttemptExecutionEvidenceSnapshot {
+pub struct AttemptExecutionEvidenceSnapshot {
     quanta: u64,
     frontier: crucible::VirtualTime,
     latest_quantum_start_events: Option<u64>,
@@ -23,7 +30,7 @@ pub struct QemuAttemptExecutionEvidenceSnapshot {
     resolved_effect_trace: Option<Vec<u8>>,
 }
 
-impl QemuAttemptExecutionEvidenceSnapshot {
+impl AttemptExecutionEvidenceSnapshot {
     #[cfg(test)]
     pub(crate) fn for_replay_capture_test(
         quanta: u64,
@@ -95,11 +102,11 @@ impl QemuAttemptExecutionEvidenceSnapshot {
 
 /// Shared read-only evidence for the most recently constructed attempt.
 #[derive(Clone, Debug, Default)]
-pub struct QemuAttemptExecutionEvidence {
-    snapshot: Arc<Mutex<QemuAttemptExecutionEvidenceSnapshot>>,
+pub struct AttemptExecutionEvidence {
+    snapshot: Arc<Mutex<AttemptExecutionEvidenceSnapshot>>,
 }
 
-impl QemuAttemptExecutionEvidence {
+impl AttemptExecutionEvidence {
     /// Reads the most recent successfully recorded attempt progress.
     ///
     /// The clone is bounded by the same 64 MiB event-material ceiling used by
@@ -108,20 +115,20 @@ impl QemuAttemptExecutionEvidence {
     /// # Errors
     ///
     /// Returns [`SchedulerError`] when the process-local evidence lock is poisoned.
-    pub fn snapshot(&self) -> Result<QemuAttemptExecutionEvidenceSnapshot, SchedulerError> {
+    pub fn snapshot(&self) -> Result<AttemptExecutionEvidenceSnapshot, SchedulerError> {
         self.snapshot
             .lock()
             .map(|snapshot| snapshot.clone())
             .map_err(|_| evidence_poisoned())
     }
 
-    pub(super) fn reset(&self) -> Result<(), SchedulerError> {
+    pub(crate) fn reset(&self) -> Result<(), SchedulerError> {
         let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
-        *snapshot = QemuAttemptExecutionEvidenceSnapshot::default();
+        *snapshot = AttemptExecutionEvidenceSnapshot::default();
         Ok(())
     }
 
-    pub(super) fn record(
+    pub(crate) fn record(
         &self,
         quanta: u64,
         frontier: crucible::VirtualTime,
@@ -131,12 +138,12 @@ impl QemuAttemptExecutionEvidence {
             quanta,
             frontier,
             entries,
-            MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
-            MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
+            MAX_ATTEMPT_EVENT_LOG_ENTRIES,
+            MAX_ATTEMPT_EVENT_LOG_BYTES,
         )
     }
 
-    pub(super) fn record_appended_entries(
+    pub(crate) fn record_appended_entries(
         &self,
         entries: &[SchedulerEventLogEntry],
     ) -> Result<(), SchedulerError> {
@@ -144,7 +151,7 @@ impl QemuAttemptExecutionEvidence {
         append_event_entries(&mut snapshot, entries)
     }
 
-    pub(super) fn record_preselection_settlement(
+    pub(crate) fn record_preselection_settlement(
         &self,
         entries: &[SchedulerEventLogEntry],
     ) -> Result<usize, SchedulerError> {
@@ -176,7 +183,7 @@ impl QemuAttemptExecutionEvidence {
         Ok(snapshot.event_log_entries.len())
     }
 
-    pub(super) fn record_selected_preselection_suffix(
+    pub(crate) fn record_selected_preselection_suffix(
         &self,
         entries: &[SchedulerEventLogEntry],
         selected_prefix_end: usize,
@@ -208,7 +215,7 @@ impl QemuAttemptExecutionEvidence {
         append_event_entries(&mut snapshot, entries)
     }
 
-    pub(super) fn record_selected_preselection_selection(
+    pub(crate) fn record_selected_preselection_selection(
         &self,
         entries: &[SchedulerEventLogEntry],
     ) -> Result<usize, SchedulerError> {
@@ -227,7 +234,7 @@ impl QemuAttemptExecutionEvidence {
         Ok(snapshot.event_log_entries.len())
     }
 
-    pub(super) fn record_semantic_stop(&self) -> Result<(), SchedulerError> {
+    pub(crate) fn record_semantic_stop(&self) -> Result<(), SchedulerError> {
         let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
         snapshot.semantic_stop_events = Some(snapshot.event_log_entries.len() as u64);
         Ok(())
@@ -255,7 +262,7 @@ impl QemuAttemptExecutionEvidence {
         Ok(())
     }
 
-    pub(super) fn complete(
+    pub(crate) fn complete(
         &self,
         entries: &[SchedulerEventLogEntry],
         resolved_effect_trace: Option<Vec<u8>>,
@@ -265,7 +272,7 @@ impl QemuAttemptExecutionEvidence {
             entries,
             resolved_effect_trace,
             terminal_fingerprints,
-            MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
+            MAX_ATTEMPT_EVENT_LOG_BYTES,
         )
     }
 
@@ -309,7 +316,7 @@ impl QemuAttemptExecutionEvidence {
         Ok(())
     }
 
-    pub(super) fn record_fingerprints(
+    pub(crate) fn record_fingerprints(
         &self,
         samples: Vec<FingerprintSample>,
     ) -> Result<(), SchedulerError> {
@@ -400,19 +407,19 @@ fn validate_contiguous_preselection_entries(
 }
 
 fn append_event_entries(
-    snapshot: &mut QemuAttemptExecutionEvidenceSnapshot,
+    snapshot: &mut AttemptExecutionEvidenceSnapshot,
     entries: &[SchedulerEventLogEntry],
 ) -> Result<(), SchedulerError> {
     append_event_entries_with_limits(
         snapshot,
         entries,
-        MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
-        MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
+        MAX_ATTEMPT_EVENT_LOG_ENTRIES,
+        MAX_ATTEMPT_EVENT_LOG_BYTES,
     )
 }
 
 fn append_event_entries_with_limits(
-    snapshot: &mut QemuAttemptExecutionEvidenceSnapshot,
+    snapshot: &mut AttemptExecutionEvidenceSnapshot,
     entries: &[SchedulerEventLogEntry],
     event_count_limit: usize,
     event_byte_limit: usize,
@@ -483,7 +490,7 @@ fn append_event_entries_with_limits(
 }
 
 fn event_limit(
-    snapshot: &QemuAttemptExecutionEvidenceSnapshot,
+    snapshot: &AttemptExecutionEvidenceSnapshot,
     added_entries: usize,
     added_bytes: usize,
     event_count_limit: usize,
@@ -511,7 +518,7 @@ fn event_limit(
     }
 }
 
-pub(super) fn evidence_limit(
+pub(crate) fn evidence_limit(
     field: &'static str,
     current: u64,
     requested: u64,
@@ -532,6 +539,7 @@ fn evidence_allocation(operation: &'static str) -> SchedulerError {
     }
 }
 
+// Existing diagnostic identifiers remain stable for legacy lifecycle callers.
 fn evidence_poisoned() -> SchedulerError {
     SchedulerError::BoundaryViolation {
         message: String::from("QEMU attempt execution evidence is poisoned"),
@@ -548,7 +556,7 @@ mod tests {
 
     #[test]
     fn post_quantum_entries_extend_evidence_without_advancing_frontier() {
-        let evidence = QemuAttemptExecutionEvidence::default();
+        let evidence = AttemptExecutionEvidence::default();
         let frontier = VirtualTime { ticks: 19 };
         let quantum_entry = SchedulerEventLogEntry::execution_budget_exhausted(
             0,
@@ -576,7 +584,7 @@ mod tests {
 
     #[test]
     fn settled_preselection_records_only_its_authenticated_suffix() {
-        let evidence = QemuAttemptExecutionEvidence::default();
+        let evidence = AttemptExecutionEvidence::default();
         let frontier = VirtualTime { ticks: 19 };
         let prefix =
             SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "preselection-prefix");
@@ -611,7 +619,7 @@ mod tests {
 
     #[test]
     fn preselection_mismatch_reports_first_field_without_payload_values() {
-        let evidence = QemuAttemptExecutionEvidence::default();
+        let evidence = AttemptExecutionEvidence::default();
         let frontier = VirtualTime { ticks: 19 };
         let recorded = SchedulerEventLogEntry::execution_budget_exhausted(
             0,
@@ -639,7 +647,7 @@ mod tests {
     #[test]
     fn selected_preselection_records_only_contiguous_suffix_after_one_or_many_entries() {
         for selected_count in [1, 3] {
-            let evidence = QemuAttemptExecutionEvidence::default();
+            let evidence = AttemptExecutionEvidence::default();
             let frontier = VirtualTime { ticks: 19 };
             let prefix = [
                 SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "first-prefix"),
@@ -691,7 +699,7 @@ mod tests {
 
     #[test]
     fn selected_preselection_rejects_stale_prefix_or_noncontiguous_suffix() {
-        let evidence = QemuAttemptExecutionEvidence::default();
+        let evidence = AttemptExecutionEvidence::default();
         let frontier = VirtualTime { ticks: 19 };
         let prefix = SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "prefix");
         assert!(
@@ -742,7 +750,7 @@ mod tests {
 
     #[test]
     fn event_byte_limit_refusal_preserves_the_complete_snapshot() {
-        let evidence = QemuAttemptExecutionEvidence::default();
+        let evidence = AttemptExecutionEvidence::default();
         let retained_entry = SchedulerEventLogEntry::execution_budget_exhausted(
             0,
             VirtualTime { ticks: 19 },
@@ -768,7 +776,7 @@ mod tests {
                 8,
                 VirtualTime { ticks: 20 },
                 &[entry],
-                MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
+                MAX_ATTEMPT_EVENT_LOG_ENTRIES,
                 byte_limit,
             )
             .expect_err("the event byte ceiling must reject another entry");
@@ -785,7 +793,7 @@ mod tests {
 
     #[test]
     fn effect_trace_limit_refusal_preserves_final_events_and_prior_evidence() {
-        let evidence = QemuAttemptExecutionEvidence::default();
+        let evidence = AttemptExecutionEvidence::default();
         evidence
             .record(3, VirtualTime { ticks: 11 }, &[])
             .expect("seed evidence");
@@ -812,7 +820,7 @@ mod tests {
 
     #[test]
     fn terminal_fingerprint_limit_refusal_preserves_prior_evidence() {
-        let evidence = QemuAttemptExecutionEvidence::default();
+        let evidence = AttemptExecutionEvidence::default();
         evidence
             .record(3, VirtualTime { ticks: 11 }, &[])
             .expect("seed evidence");
@@ -834,7 +842,7 @@ mod tests {
                 &[],
                 Some(vec![0xa5]),
                 Some(terminal_fingerprints),
-                MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
+                MAX_ATTEMPT_EVENT_LOG_BYTES,
             )
             .expect_err("the terminal fingerprint ceiling must reject the final evidence");
 

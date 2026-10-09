@@ -89,7 +89,7 @@ mod private {
 /// Owns immutable deployment inputs and process-local evidence for private replay capture.
 pub(crate) struct QemuFindingReplayCaptureProducer {
     lifecycle: crucible_api::ProductionVmLifecycleConfig,
-    evidence: crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidence,
+    evidence: crate::attempt_evidence::AttemptExecutionEvidence,
     static_byte_limit: u64,
     shared_context: OneEntryCache<
         QemuFindingReplaySharedContextScope,
@@ -156,7 +156,7 @@ impl QemuFindingReplayCaptureProducer {
     /// Creates a capture owner before the production replay runner takes lifecycle authority.
     pub(crate) const fn new(
         lifecycle: crucible_api::ProductionVmLifecycleConfig,
-        evidence: crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidence,
+        evidence: crate::attempt_evidence::AttemptExecutionEvidence,
         static_byte_limit: u64,
     ) -> Self {
         Self {
@@ -205,10 +205,8 @@ impl QemuFindingReplayCaptureProducer {
     /// Returns [`crucible::SchedulerError`] when the process-local evidence lock is poisoned.
     pub(crate) fn execution_snapshot(
         &self,
-    ) -> Result<
-        crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
-        crucible::SchedulerError,
-    > {
+    ) -> Result<crate::attempt_evidence::AttemptExecutionEvidenceSnapshot, crucible::SchedulerError>
+    {
         self.evidence.snapshot()
     }
 }
@@ -492,14 +490,14 @@ where
 }
 
 type QemuFindingReplaySnapshots = Option<(
-    Option<crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot>,
-    Option<crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot>,
+    Option<crate::attempt_evidence::AttemptExecutionEvidenceSnapshot>,
+    Option<crate::attempt_evidence::AttemptExecutionEvidenceSnapshot>,
 )>;
 
 fn qemu_finding_replay_snapshot<F, D>(
     runner: &mut QemuFreshExecutionRunner<F, D>,
 ) -> Result<
-    Option<crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot>,
+    Option<crate::attempt_evidence::AttemptExecutionEvidenceSnapshot>,
     crucible::SchedulerError,
 > {
     runner
@@ -609,7 +607,7 @@ fn capture_qemu_finding_replay_material(
 fn capture_qemu_finding_replay_side(
     outcome: crate::FindingProductionReplayTerminalOutcome,
     complete_log: &[crucible::SchedulerEventLogEntry],
-    snapshot: &crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
+    snapshot: &crate::attempt_evidence::AttemptExecutionEvidenceSnapshot,
     timeout_record: Option<&crucible::FailureTimeoutRecord>,
     policy_timeout: Option<&(
         crucible_campaign::StopCondition,
@@ -668,7 +666,7 @@ fn capture_qemu_finding_replay_side(
 
 fn authenticate_timeout_capture(
     complete_log: &[crucible::SchedulerEventLogEntry],
-    snapshot: &crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
+    snapshot: &crate::attempt_evidence::AttemptExecutionEvidenceSnapshot,
     timeout_record: Option<&crucible::FailureTimeoutRecord>,
     policy_timeout: Option<&(
         crucible_campaign::StopCondition,
@@ -820,7 +818,7 @@ fn divergence_fingerprint(
 pub struct AutomaticFindingExecutionRunner<M, R> {
     store: CampaignExecutorStore,
     exact_retention: Arc<dyn FindingExactRetentionSource>,
-    exact_failure_evidence: Option<crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidence>,
+    exact_failure_evidence: Option<crate::attempt_evidence::AttemptExecutionEvidence>,
     main: M,
     replay: R,
     verify_determinism_findings: bool,
@@ -851,7 +849,7 @@ impl<M, R> AutomaticFindingExecutionRunner<M, R> {
     #[must_use]
     pub(crate) fn with_exact_failure_evidence(
         mut self,
-        evidence: crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidence,
+        evidence: crate::attempt_evidence::AttemptExecutionEvidence,
     ) -> Self {
         self.exact_failure_evidence = Some(evidence);
         self

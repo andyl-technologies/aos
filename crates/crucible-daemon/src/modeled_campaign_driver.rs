@@ -22,6 +22,7 @@ use thiserror::Error;
 
 use crate::{CrucibleMeasurementError, CrucibleObservationBoundaryEvidence};
 
+pub(crate) mod event_log_retention;
 pub(crate) mod selection_projection;
 pub(crate) mod stop_boundary;
 
@@ -37,6 +38,9 @@ pub(crate) enum ModeledCampaignError {
     /// Retained event or proof construction exceeded its admitted bound.
     #[error("campaign projection exceeded `{limit}`")]
     LimitExceeded { limit: &'static str },
+    /// A repeated opportunity ID carried conflicting canonical bodies.
+    #[error("fresh campaign lifecycle returned conflicting bodies for opportunity `{0}`")]
+    ConflictingChoice(ChoiceOpportunityId),
     /// An observation claimed completion without advancing the quantum coordinate.
     #[error("scheduler quantum coordinate did not advance from {before} (reported {after})")]
     QuantumCounterDidNotAdvance { before: u64, after: u64 },

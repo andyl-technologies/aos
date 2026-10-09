@@ -25,11 +25,10 @@ use crucible::{
 };
 use crucible_campaign::{
     AttemptStartMode, BoundedStopProof, CampaignCodecError, CampaignHash, ChoiceDiscovery,
-    ChoiceDomainId, ChoiceOpportunityId, ConfigurationArtifact, ConfigurationId,
-    CoverageProjection, MAX_OBSERVATION_CHOICE_DISCOVERIES, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
-    Observation, ObservationCandidate, ObservationCondition, ObservationStopSatisfaction,
-    PolicyTimeoutKind, PropertyEvidence, PropertyVerdict, PropertyVerdictSet, SelectableId,
-    Selection, SelectionOrigin, StopCondition, StopOutcome,
+    ChoiceOpportunityId, ConfigurationArtifact, ConfigurationId, CoverageProjection, Observation,
+    ObservationCandidate, ObservationCondition, ObservationStopSatisfaction, PolicyTimeoutKind,
+    PropertyEvidence, PropertyVerdict, PropertyVerdictSet, Selection, SelectionOrigin,
+    StopCondition, StopOutcome,
 };
 use crucible_cas::content_store::ContentId;
 use crucible_protocol::SelectionReply;
@@ -97,10 +96,10 @@ use selection_projection::{
 use stop_boundary::{policy_timeout_at, reached_requested_stop, requested_attempt_stop_frontier};
 
 /// Maximum scheduler entries retained by one in-memory fresh-attempt projection.
-pub const MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES: usize = 1_000_000;
+pub use crate::attempt_evidence::MAX_ATTEMPT_EVENT_LOG_ENTRIES as MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES;
 
 /// Maximum aggregate canonical event material retained by one fresh attempt.
-pub const MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES: usize = 64 * 1024 * 1024;
+pub use crate::attempt_evidence::MAX_ATTEMPT_EVENT_LOG_BYTES as MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES;
 
 /// Maximum property-by-event evaluations admitted by one fresh-attempt seal.
 pub const MAX_QEMU_CAMPAIGN_ASSERTION_EVENT_VISITS: usize = 1_000_000;
@@ -1424,7 +1423,7 @@ fn drive_modeled_attempt_inner(
                 stop,
                 event_log,
                 event_log_bytes,
-                discoveries: discoveries.discoveries,
+                discoveries: discoveries.into_discoveries(),
                 preselection: None,
                 terminal_quiescence,
                 terminal_at,
@@ -1460,7 +1459,7 @@ fn drive_modeled_attempt_inner(
                 stop: ModeledStop::ReplayBoundary,
                 event_log,
                 event_log_bytes,
-                discoveries: discoveries.discoveries,
+                discoveries: discoveries.into_discoveries(),
                 preselection: None,
                 terminal_quiescence,
                 terminal_at,
@@ -1490,7 +1489,7 @@ fn drive_modeled_attempt_inner(
                 stop: initial_stop,
                 event_log,
                 event_log_bytes,
-                discoveries: discoveries.discoveries,
+                discoveries: discoveries.into_discoveries(),
                 preselection: None,
                 terminal_quiescence,
                 terminal_at,
@@ -1501,7 +1500,7 @@ fn drive_modeled_attempt_inner(
     }
     if checkpoint_is_ready(lifecycle, context)? {
         return Ok(QemuFreshDriveOutcome::CheckpointRequested(
-            QemuCheckpointChoiceProvenance::new(configuration, discoveries.discoveries),
+            QemuCheckpointChoiceProvenance::new(configuration, discoveries.into_discoveries()),
         ));
     }
 
@@ -1529,7 +1528,7 @@ fn drive_modeled_attempt_inner(
                 stop: primary_stop_at(input.attempt().stop(), terminal_at, completed_quanta),
                 event_log,
                 event_log_bytes,
-                discoveries: discoveries.discoveries,
+                discoveries: discoveries.into_discoveries(),
                 preselection: None,
                 terminal_quiescence,
                 terminal_at,
@@ -1570,7 +1569,7 @@ fn drive_modeled_attempt_inner(
                 stop: ModeledStop::ReplayBoundary,
                 event_log,
                 event_log_bytes,
-                discoveries: discoveries.discoveries,
+                discoveries: discoveries.into_discoveries(),
                 preselection: None,
                 terminal_quiescence,
                 terminal_at,
@@ -1592,7 +1591,7 @@ fn drive_modeled_attempt_inner(
                 stop: primary_stop_at(input.attempt().stop(), terminal_at, completed_quanta),
                 event_log,
                 event_log_bytes,
-                discoveries: discoveries.discoveries,
+                discoveries: discoveries.into_discoveries(),
                 preselection: None,
                 terminal_quiescence,
                 terminal_at,
@@ -1621,7 +1620,7 @@ fn drive_modeled_attempt_inner(
                 stop: primary_stop_at(input.attempt().stop(), terminal_at, completed_quanta),
                 event_log,
                 event_log_bytes,
-                discoveries: discoveries.discoveries,
+                discoveries: discoveries.into_discoveries(),
                 preselection: None,
                 terminal_quiescence,
                 terminal_at,
@@ -1641,7 +1640,7 @@ fn drive_modeled_attempt_inner(
     loop {
         if check_operational_signals(lifecycle, context)? {
             return Ok(QemuFreshDriveOutcome::CheckpointRequested(
-                QemuCheckpointChoiceProvenance::new(configuration, discoveries.discoveries),
+                QemuCheckpointChoiceProvenance::new(configuration, discoveries.into_discoveries()),
             ));
         }
         context.charge_execution_quantum().map_err(|error| {
@@ -1767,7 +1766,7 @@ fn drive_modeled_attempt_inner(
                     stop: ModeledStop::ReplayBoundary,
                     event_log,
                     event_log_bytes,
-                    discoveries: discoveries.discoveries,
+                    discoveries: discoveries.into_discoveries(),
                     preselection: None,
                     terminal_quiescence,
                     terminal_at,
@@ -1865,7 +1864,7 @@ fn drive_modeled_attempt_inner(
                         stop: ModeledStop::ReplayBoundary,
                         event_log,
                         event_log_bytes,
-                        discoveries: discoveries.discoveries,
+                        discoveries: discoveries.into_discoveries(),
                         preselection: None,
                         terminal_quiescence,
                         terminal_at,
@@ -1888,7 +1887,10 @@ fn drive_modeled_attempt_inner(
         let Some(stop) = stop else {
             if checkpoint_is_ready(lifecycle, context)? {
                 return Ok(QemuFreshDriveOutcome::CheckpointRequested(
-                    QemuCheckpointChoiceProvenance::new(configuration, discoveries.discoveries),
+                    QemuCheckpointChoiceProvenance::new(
+                        configuration,
+                        discoveries.into_discoveries(),
+                    ),
                 ));
             }
             continue;
@@ -1914,7 +1916,7 @@ fn drive_modeled_attempt_inner(
                 stop,
                 event_log,
                 event_log_bytes,
-                discoveries: discoveries.discoveries,
+                discoveries: discoveries.into_discoveries(),
                 preselection: preselection_handoff,
                 terminal_quiescence,
                 terminal_at,
@@ -2549,6 +2551,7 @@ impl From<ModeledCampaignError> for QemuFreshModeledDriverError {
         match error {
             ModeledCampaignError::Campaign(error) => Self::Campaign(error),
             ModeledCampaignError::Measurements(error) => Self::Measurements(error),
+            ModeledCampaignError::ConflictingChoice(id) => Self::ConflictingChoice(id),
             ModeledCampaignError::LimitExceeded { limit } => Self::LimitExceeded { limit },
             ModeledCampaignError::QuantumCounterDidNotAdvance { before, after } => {
                 Self::QuantumCounterDidNotAdvance { before, after }
