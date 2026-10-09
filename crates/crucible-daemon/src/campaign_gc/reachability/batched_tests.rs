@@ -287,3 +287,263 @@ fn checked_batch_preserves_final_nibble_and_rejects_invalid_pages_before_storage
     assert_eq!(backend.reads.load(Ordering::Relaxed), reads);
     assert_eq!(backend.publications.load(Ordering::Relaxed), puts);
 }
+
+// Probes the same portable account with temporary real loans. This does not
+// measure allocator payloads or certify a deployed physical quota.
+fn available_resident_bytes(resources: &dyn StorePhysicalQuotaGuard) -> u64 {
+    let mut accepted = 0;
+    let mut refused = 256 * 1024 * 1024 + 1;
+    while refused - accepted > 1 {
+        let candidate = accepted + (refused - accepted) / 2;
+        match resources.reserve_resources(0, candidate) {
+            Ok(loan) => {
+                drop(loan);
+                accepted = candidate;
+            }
+            Err(StoreError::Quota) => refused = candidate,
+            Err(error) => panic!("healthy original counter probe: {error:?}"),
+        }
+    }
+    accepted
+}
+
+#[test]
+fn prefix_staging_prepays_fixed_capacity_and_returns_original_credit() {
+    let mut fixture = super::super::tests::operation::ComponentGcOperation::new();
+    let operation = fixture.context();
+    let resources = operation.marks().metadata_resources().unwrap();
+    let before = available_resident_bytes(resources.as_ref());
+    let initial = PendingMarks::initial_bytes().unwrap();
+    let promoted = PendingMarks::prefix_bytes().unwrap();
+    let mut pending = PendingMarks::new(&operation).unwrap();
+
+    assert!(pending.slots.is_empty());
+    assert_eq!(pending.page.capacity(), MARK_PAGE);
+    assert_eq!(
+        available_resident_bytes(resources.as_ref()),
+        before - initial
+    );
+    let held = resources
+        .reserve_resources(0, before - initial - promoted + 1)
+        .unwrap();
+    assert!(matches!(
+        pending.promote(&operation),
+        Err(StoreError::Quota)
+    ));
+    assert!(pending.slots.is_empty());
+    assert!(pending._prefix_credit.is_none());
+    assert_eq!(available_resident_bytes(resources.as_ref()), promoted - 1);
+    drop(held);
+    pending.promote(&operation).unwrap();
+
+    assert_eq!(pending.slots.len(), MARK_SLOTS);
+    assert_eq!(pending.slots.capacity(), MARK_SLOTS);
+    assert_eq!(
+        available_resident_bytes(resources.as_ref()),
+        before - initial - promoted
+    );
+    assert!(
+        resources
+            .reserve_resources(0, before - initial - promoted + 1)
+            .is_err()
+    );
+    drop(pending);
+    assert_eq!(available_resident_bytes(resources.as_ref()), before);
+
+    let held = resources
+        .reserve_resources(0, before - initial + 1)
+        .unwrap();
+    assert!(matches!(
+        PendingMarks::new(&operation),
+        Err(StoreError::Quota)
+    ));
+    assert_eq!(available_resident_bytes(resources.as_ref()), initial - 1);
+    drop(held);
+    assert_eq!(available_resident_bytes(resources.as_ref()), before);
+    let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut pending = PendingMarks::new(&operation).unwrap();
+        pending.promote(&operation).unwrap();
+        panic!("original staging credit unwind control");
+    }));
+    assert!(observed.is_err());
+    assert_eq!(available_resident_bytes(resources.as_ref()), before);
+    eprintln!(
+        "actual prefix credit initial={initial} promotion={promoted} owner={} entry={}",
+        std::mem::size_of::<PendingMarks>(),
+        std::mem::size_of::<Option<MarkEntry>>()
+    );
+    operation.check().unwrap();
+}
+
+#[test]
+fn mature_prefix_pages_preserve_canonical_root_with_less_storage_work() {
+    let mut fixture = super::super::tests::operation::ComponentGcOperation::new();
+    let source = fixture.context();
+    let backend = counted(source.marks());
+    let mut boundary = || source.check();
+    let operation =
+        CampaignGcOperationContext::new(backend.clone(), source.original(), &mut boundary).unwrap();
+    let mut prefix = Reachability::with_backend(backend.clone(), source.original()).unwrap();
+    let mut pending = PendingMarks::new(&operation).unwrap();
+    for index in 0..4096 {
+        pending
+            .insert(&mut prefix, page(index), &operation)
+            .unwrap();
+    }
+    pending.flush(&mut prefix, &operation).unwrap();
+    let mut consecutive = Reachability::with_backend(backend.clone(), source.original()).unwrap();
+    consecutive.root = prefix.root;
+    backend.reads.store(0, Ordering::Relaxed);
+    backend.publications.store(0, Ordering::Relaxed);
+    backend.objects.store(0, Ordering::Relaxed);
+
+    // Retains one original 64-entry page for the predecessor's actual algorithm.
+    let _page_credit = operation.reserve_array::<MarkEntry>(MARK_PAGE).unwrap();
+    let mut entries = Vec::with_capacity(MARK_PAGE);
+    for start in (4096..8192).step_by(MARK_PAGE) {
+        entries.clear();
+        entries.extend(
+            (start..start + MARK_PAGE as u64).map(|index| (mark_key(page(index)), page(index))),
+        );
+        entries.sort_unstable_by_key(|entry| entry.0);
+        let child = mark_account(source.original()).unwrap();
+        consecutive.root = consecutive
+            .map
+            .insert_batch_with_boundary(
+                consecutive.root.content_id(),
+                &entries,
+                &child,
+                &mut || operation.check(),
+            )
+            .unwrap();
+        operation.check().unwrap();
+    }
+    let consecutive_reads = backend.reads.swap(0, Ordering::Relaxed);
+    let consecutive_puts = backend.publications.swap(0, Ordering::Relaxed);
+    let consecutive_nodes = backend.objects.swap(0, Ordering::Relaxed);
+    for index in 4096..8192 {
+        pending
+            .insert(&mut prefix, page(index), &operation)
+            .unwrap();
+    }
+    pending.flush(&mut prefix, &operation).unwrap();
+    let prefix_reads = backend.reads.load(Ordering::Relaxed);
+    let prefix_puts = backend.publications.load(Ordering::Relaxed);
+    let prefix_nodes = backend.objects.load(Ordering::Relaxed);
+
+    assert_eq!(prefix.root, consecutive.root);
+    assert_eq!(prefix.len(), 8192);
+    assert!(pending.slots.iter().all(Option::is_none));
+    assert!(pending.counts.iter().all(|count| *count == 0));
+    eprintln!(
+        "mature mark work: consecutive reads={consecutive_reads} publications={consecutive_puts} nodes={consecutive_nodes}; prefix reads={prefix_reads} publications={prefix_puts} nodes={prefix_nodes}"
+    );
+    assert!(prefix_reads < consecutive_reads);
+    assert!(prefix_puts < consecutive_puts);
+    assert!(prefix_nodes < consecutive_nodes);
+    for index in [0, 4095, 4096, 8191] {
+        assert!(prefix.contains(&page(index)).unwrap());
+    }
+}
+
+#[test]
+fn full_prefix_publication_refusal_retains_every_slot_and_the_prior_root() {
+    let mut fixture = super::super::tests::operation::ComponentGcOperation::new();
+    let source = fixture.context();
+    let backend = counted(source.marks());
+    let mut boundary = || source.check();
+    let operation =
+        CampaignGcOperationContext::new(backend.clone(), source.original(), &mut boundary).unwrap();
+    let mut marks = Reachability::with_backend(backend.clone(), source.original()).unwrap();
+    let prior = marks.root;
+    let mut pending = PendingMarks::new(&operation).unwrap();
+    pending.promote(&operation).unwrap();
+    let prefix = mark_key(page(0)).as_bytes()[0];
+    let _selected_credit = operation.reserve_array::<ContentId>(MARK_PAGE).unwrap();
+    let mut selected = Vec::with_capacity(MARK_PAGE);
+    for index in 0..65536 {
+        let id = page(index);
+        if mark_key(id).as_bytes()[0] == prefix {
+            selected.push(id);
+            if selected.len() == MARK_PAGE {
+                break;
+            }
+        }
+    }
+    assert_eq!(selected.len(), MARK_PAGE);
+    for id in &selected[..MARK_PAGE - 1] {
+        pending.insert(&mut marks, *id, &operation).unwrap();
+    }
+    assert_eq!(marks.root, prior);
+    backend
+        .refuse_after_publication
+        .store(true, Ordering::Relaxed);
+
+    let error = pending
+        .insert(&mut marks, selected[MARK_PAGE - 1], &operation)
+        .unwrap_err();
+
+    assert!(matches!(&error,
+        StoreError::StreamIo { source, .. }
+        if matches!(source.get_ref().and_then(|source| source.downcast_ref::<crucible_campaign::CampaignStoreError>()),
+            Some(crucible_campaign::CampaignStoreError::Store(StoreError::Unsupported {
+                capability: "actual-mark-publication-then-refusal"
+            })))
+    ));
+    assert_eq!(marks.root, prior);
+    assert_eq!(usize::from(pending.counts[usize::from(prefix)]), MARK_PAGE);
+    assert_eq!(
+        pending.slots.iter().filter(|entry| entry.is_some()).count(),
+        MARK_PAGE
+    );
+    assert!(backend.objects.load(Ordering::Relaxed) > 0);
+    operation.check().unwrap();
+    backend
+        .refuse_after_publication
+        .store(false, Ordering::Relaxed);
+    pending.flush(&mut marks, &operation).unwrap();
+    assert_eq!(marks.len(), MARK_PAGE as u64);
+    assert!(pending.slots.iter().all(Option::is_none));
+    for id in selected {
+        assert!(marks.contains(&id).unwrap());
+    }
+}
+
+#[test]
+fn promotion_refusal_keeps_the_committed_small_root_and_original_page() {
+    let mut fixture = super::super::tests::operation::ComponentGcOperation::new();
+    let operation = fixture.context();
+    let resources = operation.marks().metadata_resources().unwrap();
+    let mut marks = Reachability::with_backend(operation.marks(), operation.original()).unwrap();
+    let mut pending = PendingMarks::new(&operation).unwrap();
+    for index in 0..MARK_PROMOTION as u64 {
+        pending.insert(&mut marks, page(index), &operation).unwrap();
+    }
+    assert_eq!(marks.len(), MARK_PROMOTION as u64);
+    assert!(pending.slots.is_empty());
+    assert_eq!(pending.staged, 0);
+    let prior = marks.root;
+    let available = available_resident_bytes(resources.as_ref());
+    let held = resources
+        .reserve_resources(0, available - PendingMarks::prefix_bytes().unwrap() + 1)
+        .unwrap();
+    let next = page(MARK_PROMOTION as u64);
+
+    assert!(matches!(
+        pending.insert(&mut marks, next, &operation),
+        Err(StoreError::Quota)
+    ));
+
+    assert_eq!(marks.root, prior);
+    assert_eq!(pending.observed, MARK_PROMOTION);
+    assert!(pending.slots.is_empty());
+    assert!(pending.page.is_empty());
+    drop(held);
+    operation.check().unwrap();
+    pending.insert(&mut marks, next, &operation).unwrap();
+    assert_eq!(pending.slots.len(), MARK_SLOTS);
+    assert_eq!(marks.root, prior);
+    pending.flush(&mut marks, &operation).unwrap();
+    assert_eq!(marks.len(), MARK_PROMOTION as u64 + 1);
+    assert!(marks.contains(&next).unwrap());
+}

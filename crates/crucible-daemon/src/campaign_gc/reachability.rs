@@ -216,29 +216,74 @@ impl Reachability {
     }
 }
 
-// One prepaid page survives graph traversal; no complete RAM closure is stored
-// in memory. A batch root becomes authoritative only after checked publication
-// and the same operation's final refusal check both succeed.
+// A fixed first-byte partition makes mature pages share two canonical trie
+// nibbles. Small passes retain the original 64-entry page; promotion begins
+// after observing one page per first-level trie branch. Capacity never follows
+// RAM size. Both vectors close before their original credits, and a failed
+// publication leaves every unaccepted entry intact.
+type MarkEntry = (CampaignHash, ContentId);
+
+const MARK_PREFIXES: usize = 1 << u8::BITS;
+const MARK_PAGE: usize = MerkleMap::MAX_CHECKED_BATCH_UPSERTS;
+const MARK_SLOTS: usize = MARK_PREFIXES * MARK_PAGE;
+const MARK_PROMOTION: usize = (1 << 4) * MARK_PAGE;
+
 struct PendingMarks {
-    entries: Vec<(CampaignHash, ContentId)>,
+    slots: Vec<Option<MarkEntry>>,
+    page: Vec<MarkEntry>,
+    positions: [usize; MARK_PAGE],
+    counts: [u8; MARK_PREFIXES],
+    observed: usize,
+    staged: usize,
+    _prefix_credit: Option<crucible_cas::owned_decode::ResourceLoan>,
     _credit: crucible_cas::owned_decode::ResourceLoan,
 }
 
 impl PendingMarks {
+    fn initial_bytes() -> Result<u64, StoreError> {
+        MARK_PAGE
+            .checked_mul(std::mem::size_of::<MarkEntry>())
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(StoreError::Quota)
+    }
+
+    fn prefix_bytes() -> Result<u64, StoreError> {
+        MARK_SLOTS
+            .checked_mul(std::mem::size_of::<Option<MarkEntry>>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(StoreError::Quota)
+    }
+
     fn new(operation: &CampaignGcOperationContext<'_>) -> Result<Self, StoreError> {
-        let credit = operation
-            .reserve_array::<(CampaignHash, ContentId)>(MerkleMap::MAX_CHECKED_BATCH_UPSERTS)?;
-        let mut entries = Vec::new();
-        entries
-            .try_reserve_exact(MerkleMap::MAX_CHECKED_BATCH_UPSERTS)
-            .map_err(|source| StoreError::StreamIo {
-                operation: "allocate bounded GC mark page",
-                source: io::Error::other(source),
-            })?;
+        let credit = operation.reserve_bytes(Self::initial_bytes()?)?;
+        let mut page = Vec::new();
+        page.try_reserve_exact(MARK_PAGE)
+            .map_err(allocation_error)?;
+        operation.check()?;
         Ok(Self {
-            entries,
+            slots: Vec::new(),
+            page,
+            positions: [0; MARK_PAGE],
+            counts: [0; MARK_PREFIXES],
+            observed: 0,
+            staged: 0,
+            _prefix_credit: None,
             _credit: credit,
         })
+    }
+
+    fn promote(&mut self, operation: &CampaignGcOperationContext<'_>) -> Result<(), StoreError> {
+        let credit = operation.reserve_bytes(Self::prefix_bytes()?)?;
+        let mut slots = Vec::new();
+        slots
+            .try_reserve_exact(MARK_SLOTS)
+            .map_err(allocation_error)?;
+        slots.resize(MARK_SLOTS, None);
+        operation.check()?;
+        self.slots = slots;
+        self._prefix_credit = Some(credit);
+        Ok(())
     }
 
     fn insert(
@@ -248,9 +293,45 @@ impl PendingMarks {
         operation: &CampaignGcOperationContext<'_>,
     ) -> Result<(), StoreError> {
         operation.check()?;
-        self.entries.push((mark_key(id), id));
-        if self.entries.len() == MerkleMap::MAX_CHECKED_BATCH_UPSERTS {
-            self.flush(marks, operation)?;
+        if self.slots.is_empty() && self.observed >= MARK_PROMOTION {
+            // Promotion is allowed only after the initial page has committed.
+            // A retained failed page must complete before admitting another ID.
+            if !self.page.is_empty() {
+                self.publish_page(marks, operation)?;
+            }
+            self.promote(operation)?;
+        }
+        self.observed = self.observed.checked_add(1).ok_or(StoreError::Quota)?;
+        let key = mark_key(id);
+        if self.slots.is_empty() {
+            if self.page.len() == MARK_PAGE {
+                self.publish_page(marks, operation)?;
+            }
+            self.page.push((key, id));
+            self.staged += 1;
+            if self.page.len() == MARK_PAGE {
+                self.publish_page(marks, operation)?;
+            }
+            return Ok(());
+        }
+
+        let prefix = usize::from(key.as_bytes()[0]);
+        let start = prefix * MARK_PAGE;
+        let position = (start..start + MARK_PAGE)
+            .find(|position| self.slots[*position].is_none())
+            .ok_or(StoreError::Quota)?;
+        self.slots[position] = Some((key, id));
+        self.counts[prefix] += 1;
+        self.staged += 1;
+        if usize::from(self.counts[prefix]) == MARK_PAGE {
+            self.page.clear();
+            for position in start..start + MARK_PAGE {
+                if let Some(entry) = self.slots[position] {
+                    self.positions[self.page.len()] = position;
+                    self.page.push(entry);
+                }
+            }
+            self.publish_page(marks, operation)?;
         }
         Ok(())
     }
@@ -260,13 +341,45 @@ impl PendingMarks {
         marks: &mut Reachability,
         operation: &CampaignGcOperationContext<'_>,
     ) -> Result<(), StoreError> {
-        if self.entries.is_empty() {
+        if self.staged == 0 {
             return Ok(());
         }
+        if self.slots.is_empty() {
+            return self.publish_page(marks, operation);
+        }
+        self.page.clear();
+        for prefix in 0..MARK_PREFIXES {
+            if self.counts[prefix] == 0 {
+                continue;
+            }
+            operation.check()?;
+            let start = prefix * MARK_PAGE;
+            for position in start..start + MARK_PAGE {
+                if let Some(entry) = self.slots[position] {
+                    self.positions[self.page.len()] = position;
+                    self.page.push(entry);
+                    if self.page.len() == MARK_PAGE {
+                        self.publish_page(marks, operation)?;
+                    }
+                }
+            }
+        }
+        if !self.page.is_empty() {
+            self.publish_page(marks, operation)?;
+        }
+        Ok(())
+    }
+
+    fn publish_page(
+        &mut self,
+        marks: &mut Reachability,
+        operation: &CampaignGcOperationContext<'_>,
+    ) -> Result<(), StoreError> {
         operation.check()?;
-        self.entries.sort_unstable_by_key(|entry| entry.0);
+        let positions = self.page.len();
+        self.page.sort_unstable_by_key(|entry| entry.0);
         if self
-            .entries
+            .page
             .windows(2)
             .any(|pair| pair[0].0 == pair[1].0 && pair[0].1 != pair[1].1)
         {
@@ -274,16 +387,13 @@ impl PendingMarks {
                 id: marks.root.content_id(),
             });
         }
-        self.entries.dedup_by_key(|entry| entry.0);
+        self.page.dedup_by_key(|entry| entry.0);
         let account = mark_account(&marks.original)?;
         let root = marks
             .map
-            .insert_batch_with_boundary(
-                marks.root.content_id(),
-                &self.entries,
-                &account,
-                &mut || operation.check(),
-            )
+            .insert_batch_with_boundary(marks.root.content_id(), &self.page, &account, &mut || {
+                operation.check()
+            })
             .map_err(|source| marks.failure("insert GC mark batch", source))?;
         account
             .check()
@@ -293,8 +403,26 @@ impl PendingMarks {
             return Err(StoreError::Quota);
         }
         marks.root = root;
-        self.entries.clear();
+        if !self.slots.is_empty() {
+            for position in self.positions[..positions].iter().copied() {
+                self.slots[position] = None;
+                self.counts[position / MARK_PAGE] -= 1;
+            }
+        }
+        if self.slots.is_empty() {
+            self.staged = 0;
+        } else {
+            self.staged -= positions;
+        }
+        self.page.clear();
         Ok(())
+    }
+}
+
+fn allocation_error(source: std::collections::TryReserveError) -> StoreError {
+    StoreError::StreamIo {
+        operation: "allocate bounded GC mark prefixes",
+        source: io::Error::other(source),
     }
 }
 
