@@ -141,8 +141,11 @@ fixture assertion diagnostics. Feature-appropriate `Rc`/`Arc` retention and a
 test-module-only intentional-panic allowance are privately composed on
 `3cd0f06c1a`; the same actual AOS Clippy command now passes with warnings denied
 (2026-10-09, raw log `/tmp/terrane-std-all-target-clippy-corrections.log`). This
-qualifies that standard-library profile only; the new Tokio recovery fixtures,
-native traversal selection and runtime gates remain unqualified.
+qualifies that standard-library profile only. The full matching non-Send library
+Nextest profile also passes all 217 tests with zero skips (run
+`8602f827-a23d-477b-9f6b-8c379e35767a`, raw log
+`/tmp/terrane-3cd-std-nextest.log`). The new Tokio recovery fixtures, native
+traversal selection and runtime gates remain unqualified.
 
 All ten
 exact native Active completion cases pass on `4e6c14a7f3`. The eight-case native
