@@ -9,6 +9,7 @@ in
     filter = path: _type: let
       pathString = toString path;
       base = baseNameOf path;
+      nodeContract = "${repoRootString}/docs/rfcs/0025-crucible-node-contract";
     in
       base
       != ".git"
@@ -22,6 +23,9 @@ in
         == repoRootString
         || pathString == "${repoRootString}/crates"
         || lib.hasPrefix "${repoRootString}/crates" pathString
+        # The qualification catalogue embeds its normative RFC and wire vectors.
+        || pathString == nodeContract
+        || lib.hasPrefix "${nodeContract}/" pathString
         || builtins.elem pathString [
           "${repoRootString}/tests"
           "${repoRootString}/tests/crucible"
@@ -32,9 +36,6 @@ in
           "${repoRootString}/docs/rfcs/0020-crucible-campaigns"
           "${repoRootString}/docs/rfcs/0020-crucible-campaigns/schema-registry.tsv"
           "${repoRootString}/docs/rfcs/0020-crucible-campaigns/11-implementation-plan.md"
-          "${repoRootString}/docs/rfcs/0025-crucible-node-contract"
-          "${repoRootString}/docs/rfcs/0025-crucible-node-contract/reference"
-          "${repoRootString}/docs/rfcs/0025-crucible-node-contract/reference/cnp-v1-vectors.json"
         ]
       );
   }

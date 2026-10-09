@@ -812,8 +812,25 @@ cohorts. The final provider cohort passes 276 default cases and the explicitly
 selected current installed guard passes separately. All 88 owned Rust files
 pass formatting; nine affected crates pass all-target strict checks. Earlier
 zero-selection command errors and failed historical package-binding attempts
-remain local evidence and are excluded from successful counts. Fresh coherent
-hermetic application, installed-package and boundary checks remain pending.
+remain local evidence and are excluded from successful counts.
+
+The current hermetic lineage package passes at
+`2v1m4yrrfz8100i4cgdfsxq9brwimxx9-crucible-reference-lineage-implementation-1`,
+manifest SHA256
+`2a9d9ff686361587bf6362ad3c00195915ca2572291f23a92ae9ed4d20e9f748`.
+Independent streaming verifies all 305 declared content identities and extents
+across 301 distinct paths, including the corrected transport and installed-guard
+sources. Its explicitly selected actual guard passes separately in 0.42 seconds.
+This is a new tuple; earlier installed artifacts remain separate evidence.
+
+The fresh ABI qualification attempt stops while compiling its production-flight
+dependency because its restricted source view omits twelve normative files
+embedded by the qualification catalogue. The production-flight and Cargo-only
+views now retain the RFC-0025 subtree and exclude runtime journals. Independent
+Nix source materialization verifies all twelve embedded leaves byte-for-byte,
+journal and adjacent-prefix exclusions, and two-file formatting. The failed
+build remains retained; ABI, coherent hermetic application and full boundary
+results remain pending.
 
 ## Performance evidence
 
