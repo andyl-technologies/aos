@@ -252,6 +252,7 @@ impl CnpControlledReference {
     }
 
     pub(super) fn verify_native_custody(&self) -> Result<(), ProviderError> {
+        self.guard.require_resolved_lifecycle_probes()?;
         let controller = self.controller()?;
         let provider = self.guard.provider_pid().ok_or(ProviderError::Correlation(
             "original CNP process custody lost",

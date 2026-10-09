@@ -7,6 +7,9 @@
 #[path = "world_tests.rs"]
 mod world;
 
+#[path = "lifecycle_resend_tests.rs"]
+mod lifecycle_resend;
+
 use std::{
     cell::RefCell,
     collections::BTreeMap,

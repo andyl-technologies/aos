@@ -47,6 +47,8 @@ pub(super) struct PublicLaunchRequest {
     pub(super) connection_id: Id,
     pub(super) controller_nonce: Bytes,
     pub(super) observation_limits: ObservationLimits,
+    pub(super) lifecycle_policy:
+        Rc<super::source_lifecycle_resend_policy::SourceLifecycleResendPolicy>,
     pub(super) observation_sink: Rc<RefCell<Option<ObservationHandle>>>,
     pub(super) transmission_sink:
         Rc<RefCell<Option<crucible_node_provider::client::TransmissionObservationHandle>>>,
@@ -306,11 +308,24 @@ pub(super) fn launch(
         Duration::from_secs(3),
         installed.qualifications.clone(),
     )?;
-    let transmissions = controller.observe_resends(super::source_resend_plan::LIMITS)?;
+    let transmissions =
+        controller.observe_resends(crucible_node_provider::client::TransmissionLimits {
+            maximum_transmissions: 13,
+            maximum_bytes: 16 * 1024 * 1024,
+        })?;
     *request.transmission_sink.borrow_mut() = Some(transmissions.clone());
     let observations = controller.observe(request.observation_limits)?;
     *request.observation_sink.borrow_mut() = Some(observations.clone());
+    request
+        .lifecycle_policy
+        .attach_observer(observations.clone())?;
     guard.attach(controller, handshake)?;
+    guard
+        .install_completed_lifecycle_qualification(
+            request.lifecycle_policy.clone(),
+            super::source_lifecycle_resend_plan::MAXIMUM_SELECTED_CONTROLS,
+        )
+        .map_err(|error| ProviderError::Io(std::io::Error::other(error.reason)))?;
     let (probe, original_snapshot) =
         super::source_probe_execution::collect(installed, &mut guard, &probe_plan, &observations)?;
     let probe = serde_json::json!({"premises":probe,"original_snapshot_bytes":original_snapshot});
@@ -325,6 +340,9 @@ pub(super) fn launch(
 
     let mut prepared = CnpReferencePreparation::prepare(guard, installed)
         .map_err(|failure| ProviderError::Io(std::io::Error::other(failure.error.reason)))?;
+    request
+        .lifecycle_policy
+        .record_original_native(installed.enrollment()?)?;
     let (prepared_probe, original_snapshot) = super::source_pre_activation_execution::collect(
         installed,
         &mut prepared,

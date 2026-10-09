@@ -238,6 +238,21 @@ struct WireObservation {
     incomplete: bool,
 }
 
+/// Authenticates a complete bounded original transmission population.
+///
+/// # Errors
+/// Refuses changed source scope, identity, frame bytes, sequence, incomplete
+/// transmission or unassigned archive ranges. This is an observation check.
+pub(super) fn verify_complete_population(
+    wire: &serde_json::Value,
+    original: &RecordedReferenceObservation,
+    requests: &[Id],
+) -> Result<(), ProviderError> {
+    let wire: WireObservation = serde_json::from_value(wire.clone())
+        .map_err(crucible_node_contract::ContractError::from)?;
+    verify_wire(&wire, original, requests)
+}
+
 fn verify_wire(
     wire: &WireObservation,
     original: &RecordedReferenceObservation,

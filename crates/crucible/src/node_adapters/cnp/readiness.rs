@@ -84,6 +84,7 @@ impl CnpControlledReference {
                 "original public activation preparation remains unresolved",
             )));
         };
+        let probe_result = result.clone();
         if !result.staged
             || result.gate_id != bootstrap.gate_id
             || result.staged_owner_ids != [owner.owner.clone()]
@@ -184,6 +185,15 @@ impl CnpControlledReference {
                 ))
             })?
             .registry_complete = true;
+        self.probe_adopted_lifecycle(
+            super::lifecycle_resend::CnpCompletedLifecyclePhase::Prepared,
+            request_id,
+            None,
+            None,
+            vec![ready.ready_receipt.clone()],
+            MethodResult::Activate(probe_result),
+        )
+        .map_err(unknown)?;
         Ok(ready)
     }
 

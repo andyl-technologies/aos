@@ -66,6 +66,15 @@ pub(super) fn measure(
             ["source_probe",include_str!("source_probe.rs")],
             ["source_resend_plan",include_str!("source_resend_plan.rs")],
             ["source_resend_execution",include_str!("source_resend_execution.rs")],
+            ["source_lifecycle_resend_plan",include_str!("source_lifecycle_resend_plan.rs")],
+            ["source_lifecycle_resend_policy",include_str!("source_lifecycle_resend_policy.rs")],
+            ["source_lifecycle_requests",include_str!("source_lifecycle_requests.rs")],
+            ["source_lifecycle_world",include_str!("source_lifecycle_world.rs")],
+            ["source_lifecycle_evidence",include_str!("source_lifecycle_evidence.rs")],
+            ["source_lifecycle_evidence_tests",include_str!("source_lifecycle_evidence_tests.rs")],
+            ["sdk_session_lifecycle_resend",include_str!("../../../../../crucible-node-provider/src/client/session/lifecycle_resend.rs")],
+            ["sdk_reference_lifecycle_resend",include_str!("../../../../../crucible-node-provider/src/client/reference/lifecycle_resend.rs")],
+            ["cnp_lifecycle_resend",include_str!("../../../../../crucible/src/node_adapters/cnp/lifecycle_resend.rs")],
             ["preparation_resend",include_str!("../../../../../crucible/src/node_adapters/cnp/preparation_resend.rs")],
             ["sdk_session_resend",include_str!("../../../../../crucible-node-provider/src/client/session/resend.rs")],
             ["sdk_reference_resend",include_str!("../../../../../crucible-node-provider/src/client/reference/resend.rs")],
@@ -95,7 +104,23 @@ pub(super) fn measure(
         .iter()
         .map(super::source_resend_plan::SourceResendPlan::build)
         .collect::<Result<Vec<_>, _>>()?;
+    let lifecycle_plans = candidate
+        .installations
+        .iter()
+        .map(|installed| {
+            let cases = (0..3)
+                .map(|quantum| super::harness::window_case(installed, quantum))
+                .collect::<Result<Vec<_>, _>>()?;
+            super::source_lifecycle_resend_plan::SourceLifecycleResendPlan::build(
+                installed,
+                &candidate.activation,
+                &cases,
+            )
+        })
+        .collect::<Result<Vec<_>, ProviderError>>()?;
     let fixtures = canonical::canonical_json(&serde_json::json!({
+        "lifecycle_resend_plans":lifecycle_plans.iter().map(|plan|serde_json::json!({"reference":plan.fixture,"bytes":plan.bytes,"objects":plan.objects.iter().map(|(reference,bytes)|serde_json::json!({"reference":reference,"bytes":bytes})).collect::<Vec<_>>() })).collect::<Vec<_>>(),
+        "transmission_archive":{"maximum_transmissions":13,"maximum_bytes":16777216,"before_original_control":true},
         "source_resend_plans":resend_plans.iter().map(|plan|serde_json::json!({"reference":plan.reference,"bytes":plan.bytes,"objects":plan.objects.iter().map(|(reference,bytes)|serde_json::json!({"reference":reference,"bytes":bytes})).collect::<Vec<_>>() })).collect::<Vec<_>>(),
         "source_probe_plans":source_probes.iter().map(|plan|serde_json::json!({"reference":plan.reference,"bytes":plan.bytes,"objects":plan.objects.iter().map(|(reference,bytes)|serde_json::json!({"reference":reference,"bytes":bytes})).collect::<Vec<_>>() })).collect::<Vec<_>>(),
         "prepared_probe_plans":prepared_plans.iter().map(|plan|serde_json::json!({"reference":plan.reference,"bytes":plan.bytes,"objects":plan.fixture_objects().iter().map(|(reference,bytes)|serde_json::json!({"reference":reference,"bytes":bytes})).collect::<Vec<_>>() })).collect::<Vec<_>>(),

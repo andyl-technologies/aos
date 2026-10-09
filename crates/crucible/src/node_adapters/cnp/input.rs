@@ -21,6 +21,9 @@ impl CnpControlledReference {
         original: &RuntimeInputBatch,
         provenance: Option<&crate::node_contract::InputProvenanceClosure>,
     ) -> Result<NativeInputAcknowledgement, OperationFailure> {
+        self.guard
+            .require_resolved_lifecycle_probes()
+            .map_err(unknown)?;
         if !original.deliveries().is_empty() && provenance.is_none() {
             return Err(refused(
                 "public input requires runtime-owned original provenance",
@@ -205,6 +208,7 @@ impl CnpControlledReference {
                 "original public input custody did not complete",
             )));
         };
+        let probe_result = result.clone();
         let mut expected_ids = public
             .events
             .iter()
@@ -300,6 +304,15 @@ impl CnpControlledReference {
             .as_mut()
             .ok_or_else(|| unknown(ProviderError::Correlation("original input custody lost")))?;
         staged.acknowledgement = Some(acknowledgement.clone());
+        self.probe_adopted_lifecycle(
+            super::lifecycle_resend::CnpCompletedLifecyclePhase::InputAccepted,
+            request,
+            None,
+            None,
+            vec![acknowledgement.proof_ref.clone()],
+            MethodResult::Input(probe_result),
+        )
+        .map_err(unknown)?;
         Ok(acknowledgement)
     }
 }

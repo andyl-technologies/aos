@@ -161,8 +161,9 @@ impl CnpControlledReference {
                 "public quantum arguments are not an object",
             ))?;
         let binding_hash = self.owner_binding.identity()?;
+        let request_id = original_id("begin", &operation)?;
         let response = self.controller_mut()?.call(
-            original_id("begin", &operation)?,
+            request_id.clone(),
             Some(operation.clone()),
             Method::Begin,
             true,
@@ -286,11 +287,25 @@ impl CnpControlledReference {
             .windows
             .get_mut(&grant.window_id)
             .ok_or(ProviderError::Correlation("public window custody lost"))?;
+        let probe_result = result.clone();
         window.receipt = Some(native);
         window.result = Some(result);
         window.observations = Some(observations);
         self.checksum = expected_checksum;
         self.status = DeviceStatus::Active;
+        self.probe_adopted_lifecycle(
+            super::lifecycle_resend::CnpCompletedLifecyclePhase::WindowCompleted,
+            request_id,
+            Some(operation),
+            Some(grant.clone()),
+            vec![
+                probe_result.stop_receipt.clone(),
+                probe_result.observation_batch.clone(),
+                probe_result.pending_inventory.clone(),
+                probe_result.physical_measurement_ref.clone(),
+            ],
+            MethodResult::QuantumBegin(probe_result),
+        )?;
         Ok(())
     }
 
@@ -356,9 +371,10 @@ impl CnpControlledReference {
             deadline_disposition: BudgetOutcome::WithinBudget,
             extensions: Extensions::new(),
         };
+        let request_id = original_id("close", &operation)?;
         let response = self.controller_mut()?.call(
-            original_id("close", &operation)?,
-            Some(operation),
+            request_id.clone(),
+            Some(operation.clone()),
             Method::QuantumClose,
             true,
             &request,
@@ -392,6 +408,18 @@ impl CnpControlledReference {
             .ok_or(ProviderError::Correlation("public window lost"))?
             .closed = true;
         self.status = DeviceStatus::ClosedPending;
+        self.probe_adopted_lifecycle(
+            super::lifecycle_resend::CnpCompletedLifecyclePhase::PublicationClosed,
+            request_id,
+            Some(operation),
+            Some(grant.clone()),
+            vec![
+                closed.committed_batch.clone(),
+                closed.stop_receipt.clone(),
+                closed.pending_inventory.clone(),
+            ],
+            MethodResult::QuantumClose(closed),
+        )?;
         Ok(receipt)
     }
 
@@ -434,9 +462,15 @@ impl CnpControlledReference {
             extensions: Extensions::new(),
         };
         let (reference, bytes) = content(&consumption)?;
+        let probe_roots = vec![
+            reference.clone(),
+            result.stop_receipt.clone(),
+            result.observation_batch.clone(),
+        ];
         self.controller_mut()?.upload(&reference, &bytes)?;
+        let request_id = original_id("consume", &operation)?;
         let response = self.controller_mut()?.call(
-            original_id("consume", &operation)?,
+            request_id.clone(),
             Some(operation.clone()),
             Method::Retire,
             true,
@@ -466,8 +500,17 @@ impl CnpControlledReference {
                 "original publication custody lost",
             ))?
             .consumed = true;
-        self.input = None;
         self.status = DeviceStatus::Parked;
+        self.probe_adopted_lifecycle(
+            super::lifecycle_resend::CnpCompletedLifecyclePhase::PublicationConsumed,
+            request_id,
+            Some(operation),
+            Some(grant.clone()),
+            probe_roots,
+            MethodResult::Retire(retired),
+        )?;
+        // Preserve the accepted input if duplicate observation became ambiguous.
+        self.input = None;
         Ok(())
     }
 }

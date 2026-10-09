@@ -324,3 +324,12 @@ crucible-daemon	src/node_observed_executor/service/conditional_preparation/tests
 crucible-daemon	src/node_observed_executor/service/replay	retry	1
 crucible-daemon	src/node_observed_executor/tests/seeded_storage	thread::sleep	1
 crucible-daemon	src/node_observed_executor/tests/seeded_storage	std::thread::sleep	1
+
+# The exact source-qualified completed-lifecycle fixture waits for its one
+# private provider socket and positively reclaimed original process group.
+# run_original uses separate fixed 300-by-10ms watchdogs; it never repeats a
+# failed case or assertion, and no elapsed time enters model Position/state.
+# Source: crates/crucible/src/node_adapters/cnp/lifecycle_resend_tests.rs
+# SHA-256: b48638a941e1e1d930f0c52808b57acaffcfc0cdcf2618026ea993128713e608
+crucible	src/node_adapters/cnp/lifecycle_resend_tests	thread::sleep	1
+crucible	src/node_adapters/cnp/lifecycle_resend_tests	std::thread::sleep	1

@@ -437,6 +437,34 @@ Runtime `run-state` journals are excluded from both Cargo rebuild inputs and
 corresponding-source exports, with mandatory export-absence checks. No raw
 process evidence or runtime journal is committed.
 
+## Original completed lifecycle repetitions
+
+The CNP adapter retains optional, separately qualified repetition hooks for
+completed Realize, Admit, WorldCommit, Ready, Input, Begin, Close and Consumed
+requests. The default path retains its original no-repeat policy. A repetition
+authenticates the actual original request, response, preparation, native owner
+and closed-window custody; it cannot invent a replacement operation or reuse
+another peer's authority. Ready is adopted before post-adoption qualification,
+so a qualification error, unwind or provider death retains its actual custody.
+
+The installed reference witness records thirteen real transmissions per archive
+under the original two-provider world. It repeats two native Input/Begin/Close/
+Consumed cycles, checks the independently computed nonempty input and checksum
+oracle across three windows, and reclaims both original groups. Its recording
+credit is reserved before child creation. Six separate adverse reader controls
+are data-only checks, not substitute executions of a vendor criterion. The
+source report remains four passes, 368 unexecuted requirements and ten
+inapplicable requirements; these repetitions do not authorize ordinary vendor
+admission.
+
+Central verification passes 55 targeted tests: the actual source witness, actual
+Ready/adoption failure-custody witness, eight legacy CNP cases, eight SDK cases
+and 37 source-quality cases. All-target strict checks pass across nine crates.
+The required current-master application test-target build remains running at
+this checkpoint. Its result and broader subsequent qualification must be
+recorded separately. Raw original evidence, including failed precursor
+recordings, remains local and is never replaced by a successful later cohort.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

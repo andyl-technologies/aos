@@ -136,6 +136,9 @@ impl CnpReferencePreparation {
         mut guard: CnpLaunchGuard,
         qualification: &dyn CnpReferenceQualification,
     ) -> Result<Self, CnpPreparationFailure> {
+        if let Some(custody) = guard.custody.as_mut() {
+            custody.preparation_started = true;
+        }
         match prepare(&mut guard, qualification) {
             Ok((realization, binding, owner_binding, gate, companion_pid)) => Ok(Self {
                 guard,

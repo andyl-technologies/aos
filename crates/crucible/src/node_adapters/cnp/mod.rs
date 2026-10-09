@@ -13,6 +13,7 @@ mod control;
 mod implementation;
 mod input;
 mod lifecycle;
+mod lifecycle_resend;
 mod pending;
 mod preparation;
 mod preparation_adverse;
@@ -36,3 +37,5 @@ mod tests;
 pub use preparation_probe::{CnpPreRealizationProbeBody, CnpPreRealizationProbeRequest};
 
 pub use preparation_adverse::{CnpPreparedAdverseBody, CnpPreparedAdverseRequest};
+
+pub use lifecycle_resend::{CnpCompletedLifecyclePhase, CnpCompletedLifecycleQualification, CnpCompletedLifecycleScope};

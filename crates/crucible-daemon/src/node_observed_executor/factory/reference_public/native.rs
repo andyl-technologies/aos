@@ -38,6 +38,33 @@ struct NativeProcess {
 }
 
 impl NativePublicEnrollment {
+    /// Measures the exact original provider and its sole native companion.
+    ///
+    /// # Errors
+    /// Refuses changed ancestry, process group, installed executable closure,
+    /// limits or kernel lifetime. No cached guard child label is consulted.
+    pub(super) fn enroll_original_group(
+        provider: u32,
+        supervision: U64,
+        package: &InstalledPublicReferencePackage,
+        limits: &ResourceLimits,
+    ) -> Result<Self, ProviderError> {
+        let children = children(provider)?;
+        if children.len() != 1 {
+            return Err(ProviderError::Correlation(
+                "original provider companion roster differs",
+            ));
+        }
+        let companion = children
+            .iter()
+            .next()
+            .copied()
+            .ok_or(ProviderError::Correlation(
+                "original provider companion absent",
+            ))?;
+        Self::enroll(provider, companion, supervision, package, limits)
+    }
+
     pub(super) fn enroll(
         provider: u32,
         companion: u32,
@@ -81,6 +108,15 @@ impl NativePublicEnrollment {
             ));
         }
         Ok(result)
+    }
+
+    /// Returns the companion PID retained by the original kernel enrollment.
+    ///
+    /// # Errors
+    /// Refuses an original numeric identity that cannot fit the kernel PID type.
+    pub(super) fn original_companion_pid(&self) -> Result<u32, ProviderError> {
+        u32::try_from(self.companion.pid.get())
+            .map_err(|_| ProviderError::Correlation("original companion PID overflow"))
     }
 
     pub(super) fn authenticate(

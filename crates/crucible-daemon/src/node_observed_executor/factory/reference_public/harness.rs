@@ -172,6 +172,8 @@ struct Actor {
     probes: Vec<serde_json::Value>,
     prepared_probes: Vec<serde_json::Value>,
     resends: Vec<serde_json::Value>,
+    lifecycle_policies: Vec<Rc<super::source_lifecycle_resend_policy::SourceLifecycleResendPolicy>>,
+    lifecycle_native_origins: Vec<Rc<RefCell<Option<super::native::NativePublicEnrollment>>>>,
     phase: &'static str,
     planned: Vec<Vec<ReferenceWindowCase>>,
     oracles: Vec<ReferenceOracleContract>,
@@ -208,6 +210,8 @@ fn run_actor(
         probes: Vec::with_capacity(2),
         prepared_probes: Vec::with_capacity(2),
         resends: Vec::with_capacity(2),
+        lifecycle_policies: Vec::with_capacity(2),
+        lifecycle_native_origins: (0..2).map(|_| Rc::new(RefCell::new(None))).collect(),
         phase: "source-enrollment",
         planned: Vec::with_capacity(2),
         oracles: Vec::with_capacity(2),
@@ -543,7 +547,7 @@ impl Actor {
         }));
         serde_json::json!({"schema":"crucible.reference.candidate-failure.v1","phase":self.phase,
             "error":error,"candidate":candidate,"original_observations":observations,"original_transmission_observations":transmission_observations,
-            "original_completed_windows":self.windows,"original_runtime_retries":self.runtime_retries,"source_probes":self.probes,"prepared_probes":self.prepared_probes,"wire_resends":self.resends,"qualification_accepted":false})
+            "original_completed_windows":self.windows,"original_runtime_retries":self.runtime_retries,"source_probes":self.probes,"prepared_probes":self.prepared_probes,"wire_resends":self.resends,"lifecycle_resend_premises":self.lifecycle_policies.iter().map(|policy|policy.retained_premises()).collect::<Vec<_>>(),"qualification_accepted":false})
     }
 
     fn persist(&self, bytes: &[u8], name: &str) -> Result<ContentId, ProviderError> {
@@ -598,6 +602,42 @@ impl Actor {
             ReferenceQualificationCriteria::build(unit.identity.clone()).map_err(failure)?;
         self.unit = Some(unit);
         self.criteria = Some(criteria);
+        let lifecycle_world = Rc::new(super::source_lifecycle_world::SourceLifecycleWorld::new(
+            candidate.activation.clone(),
+        ));
+        let bindings = candidate
+            .installations
+            .iter()
+            .map(|installed| {
+                installed.profile.bind_qualified(
+                    installed.bootstrap.authority.clone(),
+                    &installed.qualifications,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let grants = self
+            .planned
+            .iter()
+            .flatten()
+            .map(|case| case.grant.clone())
+            .collect::<Vec<_>>();
+        for (installed, cases) in candidate.installations.iter().zip(&self.planned) {
+            self.lifecycle_policies.push(Rc::new(
+                super::source_lifecycle_resend_policy::SourceLifecycleResendPolicy::new(
+                    installed,
+                    super::source_lifecycle_resend_plan::SourceLifecycleResendPlan::build(
+                        installed,
+                        &candidate.activation,
+                        cases,
+                    )?,
+                    bindings.clone(),
+                    grants.clone(),
+                    Rc::clone(&lifecycle_world),
+                    self.observers.clone(),
+                    self.lifecycle_native_origins.clone(),
+                )?,
+            ));
+        }
         self.phase = "native-preparation";
         let slot = self
             .worlds
@@ -622,6 +662,7 @@ impl Actor {
                     controller_nonce: entropy()?,
                     observation_sink: Rc::clone(&self.observers[index]),
                     transmission_sink: Rc::clone(&self.transmission_observers[index]),
+                    lifecycle_policy: Rc::clone(&self.lifecycle_policies[index]),
                     observation_limits: ObservationLimits {
                         maximum_requests: 1024,
                         maximum_objects: 1024,
@@ -693,6 +734,7 @@ impl Actor {
             stored,
             peers: self.peers.clone(),
             original: None,
+            lifecycle_world: Rc::clone(&lifecycle_world),
         };
         self.phase = "complete-world-publication";
         let activation = runtime.activate(&mut publisher).map_err(failure)?;
@@ -744,13 +786,30 @@ impl Actor {
                 &self.windows[index],
             )?);
         }
+        let mut lifecycle_resends = Vec::with_capacity(2);
+        for (index, installed) in candidate.installations.iter().enumerate() {
+            let safe = super::source_resend_plan::SourceResendPlan::build(installed)?;
+            let transmissions = self.transmission_observers[index].borrow();
+            let transmissions = transmissions.as_ref().ok_or(ProviderError::Correlation(
+                "original lifecycle transmission archive absent",
+            ))?;
+            let cohort = self.lifecycle_policies[index].collect(transmissions, safe.requests())?;
+            #[cfg(test)]
+            let cohort = {
+                let mut retained = cohort;
+                retained["reader_adverse_controls"] = self.lifecycle_policies[index]
+                    .verify_reader_adverse_controls(&self.lifecycle_policies[(index + 1) % 2])?;
+                retained
+            };
+            lifecycle_resends.push(cohort);
+        }
         let original = publisher
             .original
             .ok_or(ProviderError::Frame("actual complete publication absent"))?;
         Ok(
             serde_json::json!({"schema":"crucible.reference.candidate-original.v1","implementation":package.identity(),
                 "activation":crucible::node_contract::SavedRuntimeActivation::from(activation.record()),
-                "source_probes":self.probes,"prepared_probes":self.prepared_probes,"wire_resends":self.resends,"runtime_cached_recovery":self.runtime_retries,"prepared_nodes":original.nodes(),"prepared_owners":original.prepared_owners(),"coordinator":coordinator,"windows":witnesses.iter().map(|witness|serde_json::json!({
+                "source_probes":self.probes,"prepared_probes":self.prepared_probes,"wire_resends":self.resends,"lifecycle_resend_premises":self.lifecycle_policies.iter().map(|policy|policy.retained_premises()).collect::<Vec<_>>(),"lifecycle_resends":lifecycle_resends,"runtime_cached_recovery":self.runtime_retries,"prepared_nodes":original.nodes(),"prepared_owners":original.prepared_owners(),"coordinator":coordinator,"windows":witnesses.iter().map(|witness|serde_json::json!({
                     "reference":witness.reference,"bytes":witness.bytes})).collect::<Vec<_>>()
             }),
         )
@@ -761,6 +820,7 @@ struct Publisher {
     stored: StoredWorldActivationPublisher,
     peers: PublicReferenceCustodyQueue,
     original: Option<PreparedWorldPublication>,
+    lifecycle_world: Rc<super::source_lifecycle_world::SourceLifecycleWorld>,
 }
 impl ActivationPublisher for Publisher {
     fn prepare_coordinator(
@@ -791,6 +851,14 @@ impl ActivationPublisher for Publisher {
         {
             return PublicationStatus::Unknown;
         }
+        if status == PublicationStatus::Committed
+            && self
+                .lifecycle_world
+                .record_committed(record, prepared, status)
+                .is_err()
+        {
+            return PublicationStatus::Unknown;
+        }
         status
     }
     fn reconcile_complete(
@@ -811,6 +879,14 @@ impl ActivationPublisher for Publisher {
             .peers
             .record_publication(record, prepared, status)
             .is_err()
+        {
+            return PublicationStatus::Unknown;
+        }
+        if status == PublicationStatus::Committed
+            && self
+                .lifecycle_world
+                .record_committed(record, prepared, status)
+                .is_err()
         {
             return PublicationStatus::Unknown;
         }
@@ -1135,6 +1211,102 @@ mod prepared_adverse_native_test {
         assert_eq!(retired["world_reservations"], 0);
         eprintln!(
             "source-built original prepared cohort persisted at {}: twelve controls, authentic unsupported and body-scope refusals, original gates and pending revision-zero oracle, six independently checked native windows, original groups reclaimed; partial qualification only",
+            path.display()
+        );
+    }
+}
+
+#[cfg(test)]
+// crucible-lint: allow panic-shortcut -- A failed authentic native cohort must fail its test
+// crucible-lint: allow rust-allow -- A failed authentic native cohort must fail its test
+#[allow(
+    clippy::unwrap_used,
+    reason = "A failed authentic native cohort must fail its test"
+)]
+mod completed_lifecycle_resend_native_test {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires compiled installed source-built reference implementation package"]
+    fn actual_completed_lifecycle_duplicates_preserve_nonempty_native_input() {
+        let nonce = super::super::candidate::entropy().unwrap();
+        let short = nonce
+            .as_slice()
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let path = PathBuf::from(format!("/tmp/lc-resends-{short}"));
+        let original = super::start(path.clone()).unwrap().recv().unwrap().unwrap();
+        assert!(
+            original.succeeded(),
+            "failed original retained at {}",
+            path.display()
+        );
+        let value = canonical::parse_json(original.original_bytes(), 16 * 1024 * 1024).unwrap();
+        let cohorts = value["lifecycle_resends"].as_array().unwrap();
+        assert_eq!(cohorts.len(), 2);
+        for cohort in cohorts {
+            assert_eq!(cohort["selected"].as_array().unwrap().len(), 10);
+            assert_eq!(cohort["reader_adverse_controls"]["data_only"], true);
+            let reader_cases = cohort["reader_adverse_controls"]["cases"]
+                .as_array()
+                .unwrap();
+            assert_eq!(reader_cases.len(), 6);
+            assert!(
+                reader_cases
+                    .iter()
+                    .all(|case| case["data_only"] == true && case["refused"] == true)
+            );
+            let originals: Bytes =
+                serde_json::from_value(cohort["original_snapshot_bytes"].clone()).unwrap();
+            let originals = canonical::parse_json(originals.as_slice(), 8 * 1024 * 1024).unwrap();
+            assert_eq!(originals["recording_complete"], true);
+            assert_eq!(originals["observed_unknown"], false);
+            assert_eq!(
+                originals["evidence"]["requests"].as_array().unwrap().len(),
+                13
+            );
+            let wire: Bytes =
+                serde_json::from_value(cohort["transmitted_snapshot_bytes"].clone()).unwrap();
+            let wire = canonical::parse_json(wire.as_slice(), 8 * 1024 * 1024).unwrap();
+            assert_eq!(wire["incomplete"], false);
+            assert_eq!(wire["rows"].as_array().unwrap().len(), 13);
+            assert!(
+                wire["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|row| row["write_completed"] == true
+                        && row["semantic_response_verified"] == true)
+            );
+        }
+        assert_eq!(value["windows"].as_array().unwrap().len(), 2);
+        let report = super::super::issuer::issue_report(&original).unwrap();
+        let report: crate::node_qualification::QualificationClaim =
+            serde_json::from_value(canonical::parse_json(report.bytes(), 4 * 1024 * 1024).unwrap())
+                .unwrap();
+        assert_eq!(
+            report
+                .requirements
+                .iter()
+                .filter(|row| row.disposition
+                    == crate::node_qualification::RequirementDisposition::Passed)
+                .count(),
+            4
+        );
+        assert_eq!(
+            report
+                .requirements
+                .iter()
+                .filter(|row| row.disposition
+                    == crate::node_qualification::RequirementDisposition::NotExecuted)
+                .count(),
+            368
+        );
+        eprintln!(
+            "actual original lifecycle duplicates: two Ready/world controls and two native Input/Begin/Close/Consumed cycles per provider, thirteen real transmissions per archive; three-window independent checksum/input oracle and original process reclamation; partial original {} at {}",
+            original.original_result().encode(),
             path.display()
         );
     }

@@ -40,5 +40,12 @@ pub use qualification::{
     InstalledReferenceQualifier, ReferenceQualificationObservation, ReferenceQualificationRun,
 };
 
+mod source_lifecycle_evidence;
+#[cfg(test)]
+mod source_lifecycle_evidence_tests;
+mod source_lifecycle_requests;
+mod source_lifecycle_resend_plan;
+mod source_lifecycle_resend_policy;
+mod source_lifecycle_world;
 mod source_resend_execution;
 mod source_resend_plan;

@@ -132,6 +132,15 @@ impl CnpControlledReference {
         }
         self.verify_native_custody().map_err(unknown)?;
         self.active = Some(world.record().clone());
+        self.probe_adopted_lifecycle(
+            super::lifecycle_resend::CnpCompletedLifecyclePhase::WorldActivated,
+            request,
+            None,
+            None,
+            vec![result.activation_receipt.clone()],
+            MethodResult::WorldActivate(result),
+        )
+        .map_err(unknown)?;
         Ok(())
     }
 }
