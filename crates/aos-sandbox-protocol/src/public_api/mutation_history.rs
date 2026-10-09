@@ -4,6 +4,15 @@
 //!
 //! The three original framing domains remain distinct; recognized Nix/FUSE
 //! failures never fall back to the plain AOSPME01 decoder.
+//!
+//! ```text
+//! AOSNCA02 -> Nix Start history containing an AOSPME01 context
+//! AOSFCA01 -> FUSE admission history containing an AOSPME01 context
+//! AOSPME01 -> plain public-mutation context
+//! ```
+//!
+//! Selection checks Nix, then FUSE, then plain framing. Context binding compares
+//! the complete nested plain bytes; Nix binding also preflights the whole carrier.
 
 mod nix;
 mod fuse;

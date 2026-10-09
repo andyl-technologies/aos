@@ -193,6 +193,23 @@ checks and current public authorization remain Domain-owned. Historical DATA
 construction and projection grant no authority and do not complete the
 Controller ledger or protected Journal dependency cut.
 
+Protocol's `public_api::mutation_history` owns complete plain/Nix/FUSE historical
+DATA selection and context binding, Nix and FUSE canonical carriers, original
+authority coordinates and assignment preimages. Canonical codecs, historical
+joins, whole preimage comparisons and compiler resource-version hashing share
+this owner. Its public DATA constructors and comparisons are an explicit
+undeployed API cutover; decoded or assembled history grants no current authority.
+The former Native Nix carrier module is removed and callers use the shared owner.
+
+Native retains authenticated capture, protected Journal selection, paid resource
+owners, writer/descriptor loans, clocks and all current-authority rechecks. The
+public Native FUSE identity keeps a private historical enclosure and its existing
+read surface; there is no public raw-history conversion to that identity. This
+complete historical-family prerequisite adds API and adapter code and earns no
+deletion credit for relocation. It does not complete the durable Effect or
+OwnershipGate extraction, remove protected Controller/Journal admission
+backreferences, or establish production lifecycle qualification.
+
 Protocol's complete `domain_ledger::operation` DATA owner now holds both native
 Operation record versions, their full decoder and unchecked encoder, all five
 private Copy fields, and the Operation/Effect key grammar. Public DATA getters,

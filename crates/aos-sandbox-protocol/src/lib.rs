@@ -25,6 +25,8 @@
 //! record/replay DATA; protected custody, currentness, and role admission stay upper.
 //! [`public_api`] owns checked public-message projections, feature registries,
 //! and bounded client-state reducers without adopting requests or authorizing effects.
+//! [`public_api::mutation_history`] owns complete plain/Nix/FUSE historical DATA,
+//! format selection and context binding; protected admission stays Native.
 //! [`cache_state`] owns pure Cache quota/reservation, catalog, and physical
 //! partition DATA without native custody, protected currentness, or admission.
 //! [`dispatch_template`] owns immutable template DATA, digests and deadline framing.
