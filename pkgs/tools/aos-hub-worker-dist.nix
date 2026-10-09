@@ -56,7 +56,7 @@
 ##! *before* invoking the Worker, so `GET /_assets/*` is answered from the CDN
 ##! edge with no wasm instantiation — eliminating the per-request Worker spin-up
 ##! that an embedded-bytes handler would pay. The same bytes are embedded in the
-##! native hub via `aos_hub_core::web::assets`, so the files in
+##! native hub via `aos_hub_service::web::assets`, so the files in
 ##! `crates/hub/aos-hub-service/src/web/static_assets/` are the single source of truth;
 ##! only the delivery differs (the native hub has no CDN and serves them itself).
 {
@@ -302,9 +302,9 @@ in
         name = "build-wasm";
         script = ''
           export CARGO_HOME="$TMPDIR/cargo"
-          # aos-proto-types' build script runs protoc to generate the
+          # aos-hub-api's build script runs protoc to generate the
           # aos.hub.v1 message structs (the worker depends on it via
-          # aos-hub-core), so point prost-build at the hermetic protoc.
+          # aos-hub-service), so point prost-build at the hermetic protoc.
           export PROTOC="${buildProtobuf}/bin/protoc"
           export AOS_HUB_CONSOLE_JS="${buildConsoleDist}/hub-console.js"
           export AOS_HUB_CONSOLE_WASM="${buildConsoleDist}/hub-console_bg.wasm"

@@ -30,7 +30,7 @@
       }
       {
         label = "guest emitter implementation note";
-        needle = "`crucible-guest::GuestCommand`";
+        needle = "`crucible_guest::GuestCommand`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -196,7 +196,7 @@
       }
       {
         label = "single-source ABI source";
-        needle = "abi_source=crucible_qemu_protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS";
+        needle = "abi_source=crucible-protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS";
       }
     ]
     ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs" protocolDoorbellAbi [
@@ -314,7 +314,7 @@ in
               *) echo "crucible-guest package missing static Rust flags" >&2; exit 1 ;;
             esac
             case "$build_info_content" in
-              *"abi_source=crucible_qemu_protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS"*) ;;
+              *"abi_source=crucible-protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS"*) ;;
               *) echo "crucible-guest package missing ABI source proof" >&2; exit 1 ;;
             esac
             case "$build_info_content" in
@@ -344,7 +344,7 @@ in
             static_contract=target-feature=+crt-static
             packaged_guest_system=${pkgs.stdenv.hostPlatform.system}
             instruction_abi_architectures=x86_64,aarch64
-            abi_source=crucible_qemu_protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS
+            abi_source=crucible-protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS
             marker_source=crucible_qemu_protocol::doorbell_marker
             RESULT
           '';

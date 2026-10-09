@@ -55,12 +55,14 @@ without an alias. See [release stages](../../registry/release-stages.md).
 
 ## New crates and module layout
 
-### `aos-release`
+### `aos-release-format`
 
-Add a pure, no-I/O, wasm-clean workspace crate at `crates/aos/release/aos-release-format`. It may
-depend on `aos-registry-surface` and dependency-light serialization,
-cryptography, hashing, and version crates. It must not depend on `aos`,
-`aos-package`, `aos-hub-core`, Git, Nix, an async runtime, or a provider SDK.
+The pure, no-I/O, wasm-clean workspace crate at
+`crates/aos/release/aos-release-format` owns portable release records and policy.
+It may depend on `aos-registry-format` and dependency-light serialization,
+cryptography, hashing, and version crates. It must not depend on `aos-cli`,
+`aos-package-manager`, `aos-hub-model`, `aos-hub-db`, `aos-hub-service`, Git,
+Nix, an async runtime, or a provider SDK.
 
 ```text
 crates/aos/release/aos-release-format/src/

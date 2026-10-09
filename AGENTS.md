@@ -253,6 +253,20 @@ crates/target/debug/aos <subcommand>
   and `nix run` use the hermetic package, while any installed CLI keeps its
   last packaged build until rebuilt.
 
+Native doctests need the same library paths baked into their temporary
+executables. Cargo does not forward its target `RUSTFLAGS` to rustdoc. Copy the
+host flags for that invocation; avoid `LD_LIBRARY_PATH` and keep these native
+linker flags separate from WebAssembly documentation:
+
+```sh
+AOS_DEV_ROOT="$PWD" nix develop --accept-flake-config --file cargo-shell.nix -c bash -c '
+  aos_doc_host=$(rustc -vV | sed -n "s/^host: //p")
+  aos_doc_flags_key="CARGO_TARGET_$(printf "%s" "$aos_doc_host" | tr "[:lower:]-" "[:upper:]_")_RUSTFLAGS"
+  export RUSTDOCFLAGS="${!aos_doc_flags_key}${RUSTDOCFLAGS:+ $RUSTDOCFLAGS}"
+  cargo test --manifest-path crates/Cargo.toml --workspace --doc --locked --offline --no-fail-fast
+'
+```
+
 ### Subcommands
 
 | Command       | Description                                             |

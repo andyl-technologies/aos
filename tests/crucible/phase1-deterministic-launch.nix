@@ -593,11 +593,11 @@
   qemuCargoRequirements = [
     {
       label = "production engine dependency";
-      needle = "crucible = { path = \"../crucible\" }";
+      needle = "crucible-engine = { path = \"../../engine/crucible-engine\" }";
     }
     {
       label = "explicit deterministic test-support feature";
-      needle = "test-support = [\"crucible/test-double\"]";
+      needle = "test-support = [\"crucible-engine/test-double\"]";
     }
   ];
 

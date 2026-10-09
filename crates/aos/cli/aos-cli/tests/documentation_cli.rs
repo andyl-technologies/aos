@@ -146,7 +146,11 @@ fn installed_exact_selectors_reach_local_lookup() {
         false,
     );
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("no installed documentation"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no native installed documentation matches 'missing'"),
+        "{stderr}",
+    );
 }
 
 #[test]

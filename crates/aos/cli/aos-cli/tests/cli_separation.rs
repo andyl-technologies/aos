@@ -231,8 +231,10 @@ fn image_preparation_is_public_and_rejects_container_before_state_access() -> Re
         .env("AOS_RUNTIME", "container")
         .output()?;
     assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("AOS containers support only user-scope")
+        stderr.contains("requires host boot or TPM facilities unavailable in an AOS container"),
+        "{stderr}",
     );
     assert_eq!(std::fs::read_dir(home.path())?.count(), 0);
     Ok(())
