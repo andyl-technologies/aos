@@ -11,6 +11,9 @@
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_new_barrier_journal_precedes_full_g_and_d"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_same_holder_renewal_preserves_barrier_wait"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_queued_whole_lease_change_or_expiry_refuses_owner"
+    "gc::runner::copied_retirement_tests::gc_copied_retirement_native_skipped_renewal_whole_lease_change_refuses_owner"
+    "gc::runner::copied_retirement_tests::gc_copied_retirement_native_skipped_renewal_guard_change_refuses_owner"
+    "gc::runner::copied_retirement_tests::gc_copied_retirement_native_skipped_renewal_expiry_or_clock_regression_refuses_owner"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_changed_guard_or_consumed_control_refuses_owner"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_replaced_barrier_or_clock_regression_resets_wait"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_reopen_restarts_full_same_clock_wait"
@@ -41,6 +44,6 @@ in
       python3 ../tests/terrane/check_native_gate.py execution \
         "$TMPDIR/copied-retirement-test.log" "[\"$test_name\"]"
     done
-    printf 'PASS: local copied-destination first ownership (20 exact cases)\n' \
+    printf 'PASS: local copied-destination first ownership (23 exact cases)\n' \
       > "$out/result"
   ''

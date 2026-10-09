@@ -175,6 +175,22 @@ reviewed producer correction retains an empty portable delta with its genuine
 predecessor and preserves every GC transaction change and cache repair. Both
 corrections and the smaller copied-sync scan reduction await changed-source
 qualification. Restore-preservation remains timed out; no task or exit is green.
+Private composition `1d4405cf78` passes strict native all-target Clippy with
+warnings denied (16.71 seconds; `/tmp/terrane-recurring-snapshot-copied-sync-clippy.log`).
+Its changed-source focused run is terminal: one pass and two timeouts
+(264.052 seconds; run `db52253a-36d6-4c17-91d9-29c4196cbcdc`,
+`/tmp/terrane-recurring-snapshot-copied-sync-focused-nextest.log`). The public
+whole-lease renewal and expiry case passes, including its exact physical and
+source postconditions. Recurring reconciliation now completes its first pass
+with genuine progress and reclaim acknowledgments; its next empty pass times
+out during checkpoint installation. Restore-preservation also times out.
+Independent normative reviews find no one-second durable renewal requirement
+in GC-22 or D-82. A separate cadence task preserves immediate first-loop and
+final renewal, full G/D, one-second immutable/clock checks and complete current
+authority before every actual effect. Three parent-registered skipped-renewal
+refusal witnesses extend the copied-first-ownership auxiliary from twenty to
+twenty-three cases; their implementation and qualification remain pending.
+No collector task or T1 exit is accepted by these results.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
