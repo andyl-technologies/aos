@@ -10,7 +10,7 @@ use tokio_rustls::TlsAcceptor;
 
 use super::*;
 
-fn plan() -> Result<ProviderWorkPlanV1> {
+pub(crate) fn plan() -> Result<ProviderWorkPlanV1> {
     let issued_at = PhysicalClock.now()?;
     let expires_at = Timestamp::from_unix_seconds(issued_at.unix_seconds() + 60)?;
     let operation = ProviderOperation::ObserveTags {
