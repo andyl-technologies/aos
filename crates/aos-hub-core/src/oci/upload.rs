@@ -946,7 +946,10 @@ impl RpcService {
         } else {
             false
         };
-        if self.hybrid_delivery && !external {
+        if self.hybrid_delivery
+            && !external
+            && self.hybrid_upload_mode == crate::hybrid_upload::HybridUploadMode::Direct
+        {
             return self
                 .begin_direct_blob_upload(registry, repository, authority, headers, query, body)
                 .await;

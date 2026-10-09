@@ -378,6 +378,48 @@ async fn reserve(
 }
 
 #[tokio::test]
+async fn managed_blob_allocation_requires_direct_controls_unless_worker_proxy_is_explicit() {
+    use crate::hybrid_upload::HybridUploadMode;
+    use axum::http::{
+        Method,
+        header::{AUTHORIZATION, LOCATION},
+    };
+
+    for (mode, expected) in [
+        (HybridUploadMode::Direct, StatusCode::BAD_REQUEST),
+        (HybridUploadMode::WorkerProxy, StatusCode::ACCEPTED),
+    ] {
+        let (service, registry, repository, storage) = fixture().await;
+        let service = service
+            .with_deployment_id(Some("managed-oci-upload-test".into()))
+            .unwrap()
+            .with_hybrid_upload_mode(mode);
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, storage.authorization.parse().unwrap());
+        let request = crate::oci::parse_oci_path("/v2/aos/blobs/uploads/").unwrap();
+
+        let response = service
+            .serve_oci_write(
+                &registry,
+                &repository,
+                "hub.example.test",
+                request,
+                Method::POST,
+                headers,
+                None,
+                Body::empty(),
+            )
+            .await;
+
+        assert_eq!(response.status(), expected, "configured mode: {mode:?}");
+        assert!(storage.objects.lock().unwrap().is_empty());
+        if mode == HybridUploadMode::WorkerProxy {
+            assert!(response.headers().contains_key(LOCATION));
+        }
+    }
+}
+
+#[tokio::test]
 async fn manifest_preflight_reserves_quota_and_cleanup_before_any_storage_write() {
     let (service, registry, repository, storage) = fixture().await;
     let bytes = vec![42; MAX_MANIFEST_BYTES];

@@ -972,13 +972,26 @@ impl RpcService {
                 (OciRequest::BlobUploadCollection { .. }, &Method::POST)
             )
         {
-            // Direct initial control must authenticate its original live owner
-            // and empty body before even creating a repository in the catalog.
-            match self.hybrid_external_oci_writer(&registry).await {
-                Ok(true) => return self.begin_external_oci_allocation_request(
-                    &registry, repository_name, &resolved.authority, &headers, query, body).await,
-                Ok(false) => {},
+            // Both transports authenticate the original owner and empty body
+            // before creating a repository. Explicit proxy mode uses the
+            // Distribution session whose chunks remain in the Worker.
+            let external = match self.hybrid_external_oci_writer(&registry).await {
+                Ok(external) => external,
                 Err(response) => return response,
+            };
+            if external
+                || self.hybrid_upload_mode == crate::hybrid_upload::HybridUploadMode::WorkerProxy
+            {
+                return self
+                    .begin_worker_oci_allocation_request(
+                        &registry,
+                        repository_name,
+                        &resolved.authority,
+                        &headers,
+                        query,
+                        body,
+                    )
+                    .await;
             }
             return self
                 .begin_direct_oci_allocation_request(
