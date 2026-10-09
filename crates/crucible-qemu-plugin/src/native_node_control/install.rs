@@ -49,7 +49,8 @@ pub(crate) fn install(
     let writer_query = match config.edition() {
         crucible_protocol::node_control::NativeControlEdition::Original => None,
         crucible_protocol::node_control::NativeControlEdition::OwnedCustody
-        | crucible_protocol::node_control::NativeControlEdition::PhaseProjection => Some(
+        | crucible_protocol::node_control::NativeControlEdition::PhaseProjection
+        | crucible_protocol::node_control::NativeControlEdition::PreparationSuccessor => Some(
             super::writer_abi::resolve_query_writers()
                 .ok_or(NativeControlInstallError::MissingCapability)?,
         ),
@@ -110,6 +111,13 @@ pub(crate) fn install(
     let control = match phase {
         Some(preparation) => control.with_phase_projection(preparation)?,
         None => control,
+    };
+    let control = if config.edition()
+        == crucible_protocol::node_control::NativeControlEdition::PreparationSuccessor
+    {
+        control.with_preparation_successor()?
+    } else {
+        control
     };
     // Callback ownership lasts until process termination. A leaked transport
     // token cannot drop this controller or its unresolved native journal.

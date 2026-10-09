@@ -27,6 +27,9 @@ mod journal;
 mod phase;
 mod phase_timer_frames;
 mod phase_timers;
+mod preparation_successor;
+mod preparation_successor_frames;
+mod preparation_successor_object;
 mod source_fault;
 mod timers;
 mod types;
@@ -55,6 +58,14 @@ pub use journal::{
     CommandJournal, CommandJournalDisposition, CommandJournalSnapshot,
     NATIVE_COMMAND_JOURNAL_MAX_BYTES, NATIVE_COMMAND_JOURNAL_MAX_ENTRIES,
 };
+pub use preparation_successor::{
+    NATIVE_PREPARATION_SUCCESSOR_MAX_BYTES, NativePreparationSuccessorFacts,
+};
+pub use preparation_successor_frames::{
+    NATIVE_PREPARATION_SUCCESSOR_CHUNK_BYTES, NativePreparationSuccessorChunk,
+    NativePreparationSuccessorQuery,
+};
+pub use preparation_successor_object::NativePreparationSuccessorObservation;
 pub use source_fault::{SOURCE_FAULT_BYTES, SourceFaultFacts};
 pub use types::{
     BoundaryPolicy, ExecutionCommand, ExecutionKind, NODE_CONTROL_HEADER_BYTES,

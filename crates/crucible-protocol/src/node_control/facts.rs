@@ -105,6 +105,10 @@ impl NativePreparation {
 /// Selects a closed frame of the independently negotiated native channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeFrame {
+    /// Recovers a separately identified historical post-initialization object.
+    QueryPreparationSuccessor(super::NativePreparationSuccessorQuery),
+    /// Preserves bounded original source bytes without ACK or readiness claims.
+    PreparationSuccessorChunk(Box<super::NativePreparationSuccessorChunk>),
     /// Pins the original fresh mapping policy on an explicitly prepared edition-three peer.
     PreparePhase(Box<super::NativePhasePreparation>),
     /// Selects retained original phase-timer bytes, without authorizing execution.

@@ -87,6 +87,18 @@ impl InitializationJournal {
 }
 
 impl NativeQemuControlTransport {
+    pub(super) fn acknowledged_initialization_receipt(
+        &self,
+    ) -> Result<&NativeInitializationReceipt, NativeCommandError> {
+        let journal = self
+            .initialization
+            .as_ref()
+            .ok_or(NativeCommandError::Conflict)?;
+        if self.source_fault.is_some() || !journal.permits_execution() {
+            return Err(NativeCommandError::Conflict);
+        }
+        journal.receipt.as_ref().ok_or(NativeCommandError::Conflict)
+    }
     /// Pins construction authorization before the emulator creates startup objects.
     ///
     /// The installed provider must authenticate the original Realize envelope and

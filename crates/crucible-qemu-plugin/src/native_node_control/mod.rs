@@ -13,6 +13,8 @@ mod install;
 mod manifest;
 mod phase_abi;
 mod phase_custody;
+mod preparation_successor_abi;
+mod preparation_successor_custody;
 mod source_fault_abi;
 mod writer_abi;
 pub(crate) use install::{install, registered_owner};

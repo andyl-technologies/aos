@@ -42,6 +42,8 @@ pub(crate) struct NativeNodeControl {
     initialization: Option<super::initialization_custody::InitializationCustody>,
     initialization_registered: AtomicBool,
     phase_projection: Option<super::phase_custody::PhaseProjectionCustody>,
+    preparation_successor:
+        Option<super::preparation_successor_custody::PreparationSuccessorCustody>,
     state: Mutex<State>,
     protocol_worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     worker_gate: OnceLock<Arc<crate::runtime::worker_quiescence::LiveWorkerQuiescence>>,
@@ -65,6 +67,7 @@ impl NativeNodeControl {
         Ok(Self {
             initialization: None,
             phase_projection: None,
+            preparation_successor: None,
             initialization_registered: AtomicBool::new(false),
             prepared_scope_hash,
             cpu_query: None,
@@ -164,6 +167,9 @@ impl NativeNodeControl {
             }
             Some(NativeFrame::QueryTimers(query)) => self.send_timer_chunk(&query),
             Some(NativeFrame::QueryPhaseTimers(query)) => self.send_phase_timer_chunk(&query),
+            Some(NativeFrame::QueryPreparationSuccessor(query)) => {
+                self.send_preparation_successor_chunk(&query)
+            }
             Some(NativeFrame::QueryWriters(query)) => self.send_writer_chunk(&query),
             Some(NativeFrame::QueryCpuPark(scope)) => {
                 if scope != self.prepared_scope_hash {
@@ -181,6 +187,7 @@ impl NativeNodeControl {
                 | NativeFrame::SourceFault(_)
                 | NativeFrame::PreparePhase(_)
                 | NativeFrame::PhaseTimerChunk(_)
+                | NativeFrame::PreparationSuccessorChunk(_)
                 | NativeFrame::PrepareInitialization(_)
                 | NativeFrame::InitializationCut(_)
                 | NativeFrame::InitializationStopped(_)
@@ -737,3 +744,6 @@ mod initialization_callbacks;
 
 #[path = "phase_callbacks.rs"]
 mod phase_callbacks;
+
+#[path = "preparation_successor_callbacks.rs"]
+mod preparation_successor_callbacks;

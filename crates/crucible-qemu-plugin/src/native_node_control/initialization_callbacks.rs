@@ -229,6 +229,12 @@ extern "C" fn publish_initialization_receipt(
     {
         owner.fail_initialization();
     }
+    if retained.status == crucible_protocol::node_control::NativeInitializationStatus::Applied
+        && owner.observe_preparation_successor(&retained).is_err()
+    {
+        owner.fail_initialization();
+        return;
+    }
     if let Some(channel) = &owner.channel
         && channel
             .send(&NativeFrame::InitializationStopped(Box::new(retained)))

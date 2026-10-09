@@ -1,4 +1,4 @@
-From 903e56f421bab51f3c45a6b2770441d590bd4006 Mon Sep 17 00:00:00 2001
+From 0729c9712e25c18ae8a9c537900412a6a9222713 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0700
 Subject: [PATCH] Integrate deterministic execution and validated TSC source
@@ -216,6 +216,14 @@ pass. Current aggregate source verification preserves all unchanged files,
 and nineteen existing extracted proofs and the mandatory source predicates
 pass. Both ISA command-refusal suites pass without a KVM device. These
 component checks do not qualify live hardware execution or native snapshots.
+
+Retain the original post-initialization preparation observation as a bounded,
+immutable source object. Encode the Applied receipt, CPU park, writer inventory
+and timer births explicitly in big-endian form, compare two native observations,
+and publish the original bytes with release/acquire ordering. Chunk readers
+authenticate the original scope, sequence and content digest and never resample
+later execution state. Creation requires the original RR/BQL hold before any
+execution command; cached observations grant neither acknowledgment nor Ready.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -3024,6 +3032,558 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..4b7b3f9e442a941df9ba23e4169a34a7
  /* Code access functions.  */
  
  uint8_t cpu_ldb_code_mmu(CPUArchState *env, vaddr addr,
+diff --git a/accel/tcg/crucible-node-preparation.c b/accel/tcg/crucible-node-preparation.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..9039ccc655e5e477e404940c51071d2211e96362
+--- /dev/null
++++ b/accel/tcg/crucible-node-preparation.c
+@@ -0,0 +1,546 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Retained, source-specific post-initialization observations. */
++#include "qemu/osdep.h"
++#include "qemu/atomic.h"
++#include "qemu/bswap.h"
++#include "qemu/main-loop.h"
++#include "qemu/plugin.h"
++#include "crypto/hash.h"
++#include "tcg-accel-ops-rr.h"
++
++/* This one process-lifetime object retains bytes, never model pointers. Native
++ * capture/fork remains unsupported; no cleanup releases an unresolved owner. */
++typedef struct PreparationObject {
++    QemuPluginCrucibleNodePreparationSuccessor facts;
++    uint8_t bytes[];
++} PreparationObject;
++
++static PreparationObject *preparation_object;
++
++/* Every array has a native source-defined ceiling before allocation. The two
++ * temporary samples and two encoding buffers are freed before publication. */
++typedef struct PreparationSample {
++    QemuPluginCrucibleNodeInitializationReceipt receipt;
++    QemuPluginCrucibleNodeCpuParkFacts park;
++    QemuPluginCrucibleNodeWriterCut writer;
++    QemuPluginCrucibleNodeTimerBirthInventory timer;
++    QemuPluginCrucibleNodeWriterCpu cpus[
++        QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_CPU_MAX];
++    QemuPluginCrucibleNodeWriterWork work[
++        QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_WORK_MAX];
++    QemuPluginCrucibleNodeWriterAio aio[
++        QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_AIO_MAX];
++    QemuPluginCrucibleNodeWriterBh bhs[
++        QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_BH_MAX];
++    QemuPluginCrucibleNodeWriterHandler handlers[
++        QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_HANDLER_MAX];
++    QemuPluginCrucibleNodeTimerList lists[
++        QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_LIST_MAX];
++    QemuPluginCrucibleNodeTimerBirth timers[
++        QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_MAX];
++} PreparationSample;
++
++typedef struct PreparationEncoding {
++    uint8_t *bytes;
++    size_t length;
++    size_t capacity;
++    bool valid;
++} PreparationEncoding;
++
++static void preparation_bytes(PreparationEncoding *out, const void *bytes,
++                              size_t length)
++{
++    if (!out->valid || length > out->capacity - out->length) {
++        out->valid = false;
++        return;
++    }
++    memcpy(out->bytes + out->length, bytes, length);
++    out->length += length;
++}
++
++static void preparation_u32(PreparationEncoding *out, uint32_t value)
++{
++    uint8_t bytes[4];
++
++    stl_be_p(bytes, value);
++    preparation_bytes(out, bytes, sizeof(bytes));
++}
++
++static void preparation_u64(PreparationEncoding *out, uint64_t value)
++{
++    uint8_t bytes[8];
++
++    stq_be_p(bytes, value);
++    preparation_bytes(out, bytes, sizeof(bytes));
++}
++
++static void preparation_encode_facts(PreparationEncoding *out,
++    const QemuPluginCrucibleNodePreparationSuccessor *row)
++{
++    preparation_u32(out, row->version);
++    preparation_u32(out, row->size);
++    preparation_u32(out, row->flags);
++    preparation_u32(out, row->reserved);
++    preparation_u64(out, row->initialization_sequence);
++    preparation_u64(out, row->hold_generation);
++    preparation_u64(out, row->current_ps);
++    preparation_u64(out, row->raw_icount);
++    preparation_bytes(out, row->prepared_scope_hash, 32);
++    preparation_bytes(out, row->initialization_commitment, 32);
++    preparation_bytes(out, row->realize_request_digest, 32);
++    preparation_bytes(out, row->original_cut_digest, 32);
++    preparation_bytes(out, row->applied_receipt_digest, 32);
++}
++
++static void preparation_encode_receipt(PreparationEncoding *out,
++    const QemuPluginCrucibleNodeInitializationReceipt *row)
++{
++    preparation_u32(out, row->version);
++    preparation_u32(out, row->size);
++    preparation_u32(out, row->status);
++    preparation_u32(out, row->applied_callbacks);
++    preparation_u64(out, row->sequence);
++    preparation_u64(out, row->hold_generation);
++    preparation_bytes(out, row->prepared_scope_hash, 32);
++    preparation_bytes(out, row->initialization_commitment, 32);
++    preparation_bytes(out, row->original_cut_digest, 32);
++    preparation_bytes(out, row->realize_request_digest, 32);
++}
++
++static void preparation_encode_park(PreparationEncoding *out,
++    const QemuPluginCrucibleNodeCpuParkFacts *row)
++{
++    preparation_u32(out, row->version);
++    preparation_u32(out, row->size);
++    preparation_u32(out, row->coverage);
++    preparation_u32(out, row->cpu_count);
++    preparation_u64(out, row->current_ps);
++    preparation_u64(out, row->raw_icount);
++    preparation_u64(out, row->next_service_deadline_ps);
++    preparation_u64(out, row->pending_service_credit_ps);
++    preparation_bytes(out, row->prepared_scope_hash, 32);
++    preparation_bytes(out, row->roster_hash, 32);
++}
++
++static void preparation_encode_writer(PreparationEncoding *out,
++    const QemuPluginCrucibleNodeWriterCut *row)
++{
++    preparation_u32(out, row->version);
++    preparation_u32(out, row->size);
++    preparation_u32(out, row->coverage);
++    preparation_u32(out, row->flags);
++    preparation_u32(out, row->cpu_count);
++    preparation_u32(out, row->work_count);
++    preparation_u32(out, row->aio_count);
++    preparation_u32(out, row->bh_count);
++    preparation_u32(out, row->handler_count);
++    preparation_u32(out, row->reserved);
++    preparation_u64(out, row->gate_generation);
++    preparation_u64(out, row->current_ps);
++    preparation_u64(out, row->raw_icount);
++    preparation_u64(out, row->aio_generation);
++    preparation_u64(out, row->bh_generation);
++    preparation_u64(out, row->handler_generation);
++    preparation_u64(out, row->admissions_in_flight);
++    preparation_bytes(out, row->prepared_scope_hash, 32);
++    preparation_bytes(out, row->roster_hash, 32);
++}
++
++static void preparation_encode_cpu(PreparationEncoding *out,
++    const QemuPluginCrucibleNodeWriterCpu *row)
++{
++    preparation_u32(out, row->cpu_index);
++    preparation_u32(out, row->interrupt_mask);
++    preparation_u32(out, row->exception_index);
++    preparation_u32(out, row->flags);
++    preparation_u64(out, row->work_count);
++    preparation_u64(out, row->next_work_sequence);
++}
++
++static void preparation_encode_work(PreparationEncoding *out,
++    const QemuPluginCrucibleNodeWriterWork *row)
++{
++    preparation_u32(out, row->cpu_index);
++    preparation_u32(out, row->flags);
++    preparation_u64(out, row->work_id);
++    preparation_u64(out, row->fifo_ordinal);
++}
++
++static void preparation_encode_aio(PreparationEncoding *out,
++    const QemuPluginCrucibleNodeWriterAio *row)
++{
++    preparation_u64(out, row->context_id);
++    preparation_u64(out, row->home_thread_id);
++    preparation_u32(out, row->active_polls);
++    preparation_u32(out, row->active_dispatches);
++    preparation_u32(out, row->pending_bhs);
++    preparation_u32(out, row->active_bhs);
++    preparation_u32(out, row->queued_coroutines);
++    preparation_u32(out, row->flags);
++}
++
++static void preparation_encode_bh(PreparationEncoding *out,
++    const QemuPluginCrucibleNodeWriterBh *row)
++{
++    preparation_u64(out, row->bh_id);
++    preparation_u64(out, row->context_id);
++    preparation_u32(out, row->active_callbacks);
++    preparation_u32(out, row->flags);
++}
++
++static void preparation_encode_handler(PreparationEncoding *out,
++    const QemuPluginCrucibleNodeWriterHandler *row)
++{
++    preparation_u64(out, row->handler_id);
++    preparation_u64(out, row->context_id);
++    preparation_u64(out, row->fd);
++    preparation_u32(out, row->active_callbacks);
++    preparation_u32(out, row->flags);
++}
++
++static void preparation_encode_timer_summary(PreparationEncoding *out,
++    const QemuPluginCrucibleNodeTimerBirthInventory *row)
++{
++    preparation_u32(out, row->version);
++    preparation_u32(out, row->size);
++    preparation_u32(out, row->list_count);
++    preparation_u32(out, row->timer_count);
++    preparation_u64(out, row->current_ps);
++    preparation_u64(out, row->mutation_generation);
++    preparation_u64(out, row->gate_generation);
++    preparation_u64(out, row->source_original_sequence);
++    preparation_bytes(out, row->prepared_scope_hash, 32);
++    preparation_bytes(out, row->source_original_digest, 32);
++}
++
++static void preparation_encode_list(PreparationEncoding *out,
++    const QemuPluginCrucibleNodeTimerList *row)
++{
++    preparation_u64(out, row->list_id);
++    preparation_u32(out, row->timer_count);
++    preparation_u32(out, row->flags);
++}
++
++static void preparation_encode_timer(PreparationEncoding *out,
++    const QemuPluginCrucibleNodeTimer *row)
++{
++    preparation_u64(out, row->timer_id);
++    preparation_u64(out, row->list_id);
++    preparation_u64(out, row->arm_generation);
++    preparation_u64(out, row->expiry_ps);
++    preparation_u64(out, row->fifo_ordinal);
++    preparation_u32(out, row->attributes);
++    preparation_u32(out, row->scale);
++}
++
++static void preparation_encode_birth(PreparationEncoding *out,
++    const QemuPluginCrucibleNodeTimerBirth *row)
++{
++    preparation_encode_timer(out, &row->timer);
++
++    preparation_u32(out, row->birth_kind);
++    preparation_u32(out, row->birth_phase);
++    preparation_u32(out, row->birth_flags);
++    preparation_u32(out, row->reserved);
++    preparation_u64(out, row->birth_time_ps);
++    preparation_u64(out, row->birth_microstep);
++    preparation_u64(out, row->source_original_sequence);
++    preparation_u64(out, row->parent_timer_id);
++    preparation_u64(out, row->parent_arm_generation);
++    preparation_bytes(out, row->prepared_scope_hash, 32);
++    preparation_bytes(out, row->source_original_digest, 32);
++    preparation_bytes(out, row->construction_commitment, 32);
++}
++
++static int preparation_sha256(const uint8_t *bytes, size_t length,
++                              uint8_t digest[32])
++{
++    uint8_t *hash = digest;
++    size_t size = 32;
++
++    if (qcrypto_hash_bytes(QCRYPTO_HASH_ALGO_SHA256, bytes, length,
++                          &hash, &size, NULL) < 0 || size != 32) {
++        return -EIO;
++    }
++    return hash == digest ? 0 : -EIO;
++}
++
++static int preparation_sample(const uint8_t scope[32], uint64_t sequence,
++                              const uint8_t cut_digest[32],
++                              PreparationSample *sample)
++{
++    int result;
++
++    memset(sample, 0, sizeof(*sample));
++    result = rr_crucible_node_preparation_successor_origin(
++        scope, sequence, cut_digest, &sample->receipt, &sample->park);
++    if (result < 0) {
++        return result;
++    }
++    result = qemu_plugin_crucible_node_query_writer_cut(
++        scope, sample->receipt.hold_generation, &sample->writer,
++        sample->cpus, QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_CPU_MAX,
++        sample->work, QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_WORK_MAX,
++        sample->aio, QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_AIO_MAX,
++        sample->bhs, QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_BH_MAX,
++        sample->handlers, QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_HANDLER_MAX);
++    if (result < 0) {
++        return result;
++    }
++    result = qemu_plugin_crucible_node_query_timer_births(
++        scope, sample->receipt.hold_generation, &sample->timer,
++        sample->lists, QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_LIST_MAX,
++        sample->timers, QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_MAX);
++    if (result < 0) {
++        return result;
++    }
++    if (sample->writer.cpu_count > QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_CPU_MAX ||
++        sample->writer.work_count > QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_WORK_MAX ||
++        sample->writer.aio_count > QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_AIO_MAX ||
++        sample->writer.bh_count > QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_BH_MAX ||
++        sample->writer.handler_count >
++            QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_HANDLER_MAX ||
++        sample->timer.list_count > QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_LIST_MAX ||
++        sample->timer.timer_count > QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_MAX) {
++        /* Keep the encoding loop bounds local even though each native query
++         * already refuses a count exceeding its supplied array capacity. */
++        return -EOVERFLOW;
++    }
++    if (sample->writer.gate_generation != sample->receipt.hold_generation ||
++        sample->timer.gate_generation != sample->receipt.hold_generation ||
++        sample->writer.current_ps || sample->writer.raw_icount ||
++        sample->timer.current_ps || sample->timer.source_original_sequence ||
++        sample->writer.cpu_count != sample->park.cpu_count ||
++        memcmp(sample->writer.roster_hash, sample->park.roster_hash, 32)) {
++        return -EAGAIN;
++    }
++    for (uint32_t index = 0; index < sample->timer.timer_count; index++) {
++        QemuPluginCrucibleNodeTimerBirth *birth = &sample->timers[index];
++
++        if (birth->birth_kind ==
++                QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_BIRTH_CONSTRUCTION) {
++            if (memcmp(birth->prepared_scope_hash, scope, 32) ||
++                memcmp(birth->construction_commitment,
++                       sample->receipt.initialization_commitment, 32)) {
++                return -ESTALE;
++            }
++        } else if (birth->birth_kind !=
++                   QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_BIRTH_UNKNOWN) {
++            /* No instruction command has ever been accepted at this origin.
++             * A positive Reaction record cannot be adopted as preparation. */
++            return -ENOTSUP;
++        }
++    }
++    return 0;
++}
++
++static int preparation_encode_object(
++    PreparationEncoding *out,
++    const QemuPluginCrucibleNodePreparationSuccessor *facts,
++    const PreparationSample *sample)
++{
++    static const char tag[] =
++        "crucible.qemu-native-preparation-successor.v1";
++
++    preparation_bytes(out, tag, sizeof(tag));
++    preparation_encode_facts(out, facts);
++    preparation_encode_receipt(out, &sample->receipt);
++    preparation_encode_park(out, &sample->park);
++    preparation_encode_writer(out, &sample->writer);
++    preparation_encode_timer_summary(out, &sample->timer);
++
++    for (uint32_t index = 0; index < sample->writer.cpu_count; index++) {
++        preparation_encode_cpu(out, &sample->cpus[index]);
++    }
++    for (uint32_t index = 0; index < sample->writer.work_count; index++) {
++        preparation_encode_work(out, &sample->work[index]);
++    }
++    for (uint32_t index = 0; index < sample->writer.aio_count; index++) {
++        preparation_encode_aio(out, &sample->aio[index]);
++    }
++    for (uint32_t index = 0; index < sample->writer.bh_count; index++) {
++        preparation_encode_bh(out, &sample->bhs[index]);
++    }
++    for (uint32_t index = 0; index < sample->writer.handler_count; index++) {
++        preparation_encode_handler(out, &sample->handlers[index]);
++    }
++    for (uint32_t index = 0; index < sample->timer.list_count; index++) {
++        preparation_encode_list(out, &sample->lists[index]);
++    }
++    for (uint32_t index = 0; index < sample->timer.timer_count; index++) {
++        preparation_encode_birth(out, &sample->timers[index]);
++    }
++    return out->valid ? 0 : -EOVERFLOW;
++}
++
++static bool preparation_original_matches(const PreparationObject *object,
++                                         const uint8_t scope[32],
++                                         uint64_t sequence,
++                                         const uint8_t cut_digest[32])
++{
++    return sequence == object->facts.initialization_sequence &&
++        !memcmp(scope, object->facts.prepared_scope_hash, 32) &&
++        !memcmp(cut_digest, object->facts.original_cut_digest, 32);
++}
++
++int qemu_plugin_crucible_node_query_preparation_successor(
++    const uint8_t scope[32], uint64_t initialization_sequence,
++    const uint8_t original_cut_digest[32],
++    QemuPluginCrucibleNodePreparationSuccessor *successor)
++{
++    static const char receipt_tag[] =
++        "crucible.qemu-native-applied-receipt.v1";
++    PreparationObject *existing;
++    g_autofree PreparationObject *candidate = NULL;
++    g_autofree PreparationSample *before = NULL;
++    g_autofree PreparationSample *after = NULL;
++    g_autofree uint8_t *comparison = NULL;
++    QemuPluginCrucibleNodePreparationSuccessor facts;
++    uint8_t receipt_bytes[sizeof(receipt_tag) + 160];
++    PreparationEncoding receipt = {
++        .bytes = receipt_bytes, .capacity = sizeof(receipt_bytes), .valid = true,
++    };
++    PreparationEncoding encoding, repeated;
++    int result;
++
++    G_STATIC_ASSERT(sizeof(*successor) == 248);
++    G_STATIC_ASSERT(sizeof(before->receipt) == 160);
++    if (!successor) {
++        return -EINVAL;
++    }
++    memset(successor, 0, sizeof(*successor));
++    if (!scope || !original_cut_digest || !initialization_sequence) {
++        return -EINVAL;
++    }
++    existing = qatomic_load_acquire(&preparation_object);
++    if (existing) {
++        if (!preparation_original_matches(existing, scope,
++                initialization_sequence, original_cut_digest)) {
++            return -ESTALE;
++        }
++        *successor = existing->facts;
++        return 0;
++    }
++    /* BQL serializes the sole creation seam; ordinary reader threads cannot
++     * create an object, or turn later state into the original preparation. */
++    if (!bql_locked()) {
++        return -EPERM;
++    }
++    before = g_try_new0(PreparationSample, 1);
++    after = g_try_new0(PreparationSample, 1);
++    candidate = g_try_malloc0(sizeof(*candidate) +
++        QEMU_PLUGIN_CRUCIBLE_NODE_PREPARATION_SUCCESSOR_MAX);
++    comparison = g_try_malloc0(
++        QEMU_PLUGIN_CRUCIBLE_NODE_PREPARATION_SUCCESSOR_MAX);
++    if (!before || !after || !candidate || !comparison) {
++        return -ENOMEM;
++    }
++    result = preparation_sample(scope, initialization_sequence,
++                                original_cut_digest, before);
++    if (result < 0) {
++        return result;
++    }
++    facts = (QemuPluginCrucibleNodePreparationSuccessor) {
++        .version = QEMU_PLUGIN_CRUCIBLE_NODE_PREPARATION_SUCCESSOR_VERSION,
++        .size = sizeof(facts),
++        .flags = QEMU_PLUGIN_CRUCIBLE_NODE_PREPARATION_SUCCESSOR_APPLIED |
++                 QEMU_PLUGIN_CRUCIBLE_NODE_PREPARATION_SUCCESSOR_NO_EXECUTION_AT_CAPTURE,
++        .initialization_sequence = initialization_sequence,
++        .hold_generation = before->receipt.hold_generation,
++        .current_ps = before->park.current_ps,
++        .raw_icount = before->park.raw_icount,
++    };
++    memcpy(facts.prepared_scope_hash, before->receipt.prepared_scope_hash, 32);
++    memcpy(facts.initialization_commitment,
++           before->receipt.initialization_commitment, 32);
++    memcpy(facts.realize_request_digest, before->receipt.realize_request_digest, 32);
++    memcpy(facts.original_cut_digest, before->receipt.original_cut_digest, 32);
++    preparation_bytes(&receipt, receipt_tag, sizeof(receipt_tag));
++    preparation_encode_receipt(&receipt, &before->receipt);
++    if (!receipt.valid || receipt.length != sizeof(receipt_bytes)) {
++        return -EOVERFLOW;
++    }
++    result = preparation_sha256(receipt.bytes, receipt.length,
++                                facts.applied_receipt_digest);
++    if (result < 0) {
++        return result;
++    }
++    encoding = (PreparationEncoding) {
++        .bytes = candidate->bytes,
++        .capacity = QEMU_PLUGIN_CRUCIBLE_NODE_PREPARATION_SUCCESSOR_MAX,
++        .valid = true,
++    };
++    result = preparation_encode_object(&encoding, &facts, before);
++    if (result < 0) {
++        return result;
++    }
++    /* Compare two independently collected, explicitly encoded observations.
++     * This proves stability of the observed rows, not future producer closure. */
++    result = preparation_sample(scope, initialization_sequence,
++                                original_cut_digest, after);
++    if (result < 0) {
++        return result;
++    }
++    repeated = (PreparationEncoding) {
++        .bytes = comparison,
++        .capacity = QEMU_PLUGIN_CRUCIBLE_NODE_PREPARATION_SUCCESSOR_MAX,
++        .valid = true,
++    };
++    result = preparation_encode_object(&repeated, &facts, after);
++    if (result < 0) {
++        return result;
++    }
++    if (encoding.length != repeated.length ||
++        memcmp(encoding.bytes, repeated.bytes, encoding.length)) {
++        return -EAGAIN;
++    }
++    facts.content_length = encoding.length;
++    result = preparation_sha256(encoding.bytes, encoding.length,
++                                facts.content_digest);
++    if (result < 0) {
++        return result;
++    }
++    candidate->facts = facts;
++    /* The release publishes the complete immutable object, including its exact
++     * content identity. No subsequent source operation mutates these bytes. */
++    qatomic_store_release(&preparation_object, g_steal_pointer(&candidate));
++    *successor = facts;
++    return 0;
++}
++
++int qemu_plugin_crucible_node_read_preparation_successor(
++    const uint8_t scope[32], uint64_t initialization_sequence,
++    const uint8_t content_digest[32], uint64_t offset,
++    uint8_t *bytes, uint32_t capacity, uint32_t *copied)
++{
++    PreparationObject *object;
++    uint32_t length;
++
++    if (!copied) {
++        return -EINVAL;
++    }
++    *copied = 0;
++    if (!scope || !content_digest || !bytes || !capacity ||
++        capacity > QEMU_PLUGIN_CRUCIBLE_NODE_PREPARATION_SUCCESSOR_CHUNK_MAX ||
++        !initialization_sequence) {
++        return -EINVAL;
++    }
++    object = qatomic_load_acquire(&preparation_object);
++    if (!object) {
++        return -EAGAIN;
++    }
++    if (initialization_sequence != object->facts.initialization_sequence ||
++        memcmp(scope, object->facts.prepared_scope_hash, 32) ||
++        memcmp(content_digest, object->facts.content_digest, 32)) {
++        return -ESTALE;
++    }
++    if (offset > object->facts.content_length) {
++        return -ERANGE;
++    }
++    length = MIN((uint64_t)capacity, object->facts.content_length - offset);
++    if (length) {
++        memcpy(bytes, object->bytes + offset, length);
++    }
++    *copied = length;
++    return 0;
++}
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
 index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..4700693ecce00d1b9afd7d5edc5b1cb9ea58fabe 100644
 --- a/accel/tcg/icount-common.c
@@ -4146,13 +4706,14 @@ index 9e7be2d78dfd6739e01d81bccd03664b4ae0001a..3dd837e173648e4e5f3c8c5f4e49429c
  /**
   * tlb_init - initialize a CPU's TLB
 diff --git a/accel/tcg/meson.build b/accel/tcg/meson.build
-index 002aa8f4588e6335f5151136f1dec33f3bc4c018..aa1aa17fa9d7276ead7af3f09aff79df085d9b34 100644
+index 002aa8f4588e6335f5151136f1dec33f3bc4c018..6a81c1c3ca7772e7469f54f072e4b9fd9d61f1cf 100644
 --- a/accel/tcg/meson.build
 +++ b/accel/tcg/meson.build
-@@ -35,5 +35,8 @@ system_ss.add(files(
+@@ -35,5 +35,9 @@ system_ss.add(files(
    'tcg-accel-ops-icount.c',
    'tcg-accel-ops-mttcg.c',
    'tcg-accel-ops-rr.c',
++  'crucible-node-preparation.c',
 +  'tcg-accel-ops-sim.c',
 +  'tcg-accel-ops-preemption.c',
 +  'tcg-accel-ops-sim-shmem.c',
@@ -5124,10 +5685,10 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..7980f8a6cfe55b9d09a81eb30c9d3b0dfb7da418 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..cb3a992403eff358834c7308e89f11249e38b06f 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,2957 @@
+@@ -27,45 +27,3002 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -6543,6 +7104,51 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..7980f8a6cfe55b9d09a81eb30c9d3b0d
 +static bool rr_initialization_home_pending;
 +static bool rr_initialization_result_retained;
 +static bool rr_initialization_complete;
++
++int rr_crucible_node_preparation_successor_origin(
++    const uint8_t scope[32], uint64_t sequence, const uint8_t cut_digest[32],
++    QemuPluginCrucibleNodeInitializationReceipt *receipt,
++    QemuPluginCrucibleNodeCpuParkFacts *park)
++{
++    int result;
++
++    if (!scope || !cut_digest || !receipt || !park || !sequence) {
++        return -EINVAL;
++    }
++    memset(receipt, 0, sizeof(*receipt));
++    memset(park, 0, sizeof(*park));
++    if (!bql_locked() || !first_cpu || !qemu_cpu_is_self(first_cpu)) {
++        return -EPERM;
++    }
++    if (!crucible_node_phase_registered() ||
++        !rr_initialization_complete || !rr_initialization_result_retained ||
++        rr_initialization_home_pending || rr_node_command_valid ||
++        rr_node_writer_dispatch || qemu_cpu_node_source_failed() ||
++        rr_initialization_receipt.status !=
++            QEMU_PLUGIN_CRUCIBLE_NODE_INITIALIZATION_APPLIED) {
++        return -ENOTSUP;
++    }
++    if (sequence != rr_initialization_receipt.sequence ||
++        memcmp(scope, rr_initialization_receipt.prepared_scope_hash, 32) ||
++        memcmp(cut_digest, rr_initialization_receipt.original_cut_digest, 32)) {
++        return -ESTALE;
++    }
++    result = qemu_plugin_crucible_node_query_cpu_park(scope, park);
++    if (result < 0) {
++        return result;
++    }
++    if (park->current_ps || park->raw_icount || !rr_node_writer_gate ||
++        park->next_service_deadline_ps != UINT64_MAX ||
++        park->pending_service_credit_ps ||
++        rr_initialization_receipt.hold_generation != rr_node_writer_gate) {
++        memset(park, 0, sizeof(*park));
++        return -EAGAIN;
++    }
++    /* Applied is source-owned. Acknowledgement belongs to the plugin's actual
++     * original journal and is deliberately absent from this source record. */
++    *receipt = rr_initialization_receipt;
++    return 0;
++}
 +
 +int qemu_plugin_crucible_node_query_initialization_cut(
 +    const uint8_t scope[32], const uint8_t commitment[32],
@@ -8104,7 +8710,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..7980f8a6cfe55b9d09a81eb30c9d3b0d
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +2996,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +3041,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -8137,7 +8743,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..7980f8a6cfe55b9d09a81eb30c9d3b0d
      }
  }
  
-@@ -110,15 +3034,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +3079,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -8271,7 +8877,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..7980f8a6cfe55b9d09a81eb30c9d3b0d
      }
  }
  
-@@ -140,6 +3180,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +3225,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -8290,7 +8896,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..7980f8a6cfe55b9d09a81eb30c9d3b0d
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +3236,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +3281,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -8299,7 +8905,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..7980f8a6cfe55b9d09a81eb30c9d3b0d
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +3258,209 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +3303,209 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -8527,7 +9133,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..7980f8a6cfe55b9d09a81eb30c9d3b0d
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -252,13 +3474,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -252,13 +3519,34 @@ static void *rr_cpu_thread_fn(void *arg)
              icount_handle_deadline();
  
              cpu_budget = icount_percpu_budget(cpu_count);
@@ -8563,7 +9169,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..7980f8a6cfe55b9d09a81eb30c9d3b0d
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +3519,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +3564,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -8702,7 +9308,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..7980f8a6cfe55b9d09a81eb30c9d3b0d
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +3643,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +3688,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -8842,7 +9448,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..7980f8a6cfe55b9d09a81eb30c9d3b0d
      }
  
      g_assert_not_reached();
-@@ -318,13 +3782,39 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +3827,39 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -8885,10 +9491,10 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..7980f8a6cfe55b9d09a81eb30c9d3b0d
          single_tcg_cpu_thread = cpu->thread;
  
 diff --git a/accel/tcg/tcg-accel-ops-rr.h b/accel/tcg/tcg-accel-ops-rr.h
-index 2a76a296127e81edc61f45a59785a89705daae90..6838434940bdc20cd6b71bc9fb3a78b9a91f6e4f 100644
+index 2a76a296127e81edc61f45a59785a89705daae90..cee022c189b36ad77f77b6d75bd223e675705308 100644
 --- a/accel/tcg/tcg-accel-ops-rr.h
 +++ b/accel/tcg/tcg-accel-ops-rr.h
-@@ -10,12 +10,243 @@
+@@ -10,12 +10,251 @@
  #ifndef TCG_ACCEL_OPS_RR_H
  #define TCG_ACCEL_OPS_RR_H
  
@@ -9130,6 +9736,14 @@ index 2a76a296127e81edc61f45a59785a89705daae90..6838434940bdc20cd6b71bc9fb3a78b9
  void rr_start_vcpu_thread(CPUState *cpu);
 +/* Crucible hot fork: restart the shared vCPU thread in the immediate child. */
 +int rr_hot_fork_restart_vcpu_thread(void);
++
++/* Observational source lineage only; no ACK or execution permission. */
++struct QemuPluginCrucibleNodeInitializationReceipt;
++struct QemuPluginCrucibleNodeCpuParkFacts;
++int rr_crucible_node_preparation_successor_origin(
++    const uint8_t scope[32], uint64_t sequence, const uint8_t cut_digest[32],
++    struct QemuPluginCrucibleNodeInitializationReceipt *receipt,
++    struct QemuPluginCrucibleNodeCpuParkFacts *park);
  
  #endif /* TCG_ACCEL_OPS_RR_H */
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
@@ -62250,7 +62864,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..36c355bf303715c91112dcceb32fb779
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..fcfe0f64c001d30a929d1760433000ab97d36b81 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229c26dbd49 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -64216,7 +64830,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..fcfe0f64c001d30a929d1760433000ab
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
-@@ -1363,6 +3298,556 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
+@@ -1363,6 +3298,636 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry);
  
@@ -64690,6 +65304,86 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..fcfe0f64c001d30a929d1760433000ab
 +    QemuPluginCrucibleNodeTimerBirthInventory *inventory,
 +    QemuPluginCrucibleNodeTimerList *lists, uint32_t list_capacity,
 +    QemuPluginCrucibleNodeTimerBirth *timers, uint32_t timer_capacity);
++
++/* The source successor is historical Applied evidence, never ACK or Ready. */
++#define QEMU_PLUGIN_CRUCIBLE_NODE_PREPARATION_SUCCESSOR_VERSION 1
++#define QEMU_PLUGIN_CRUCIBLE_NODE_PREPARATION_SUCCESSOR_MAX (2U * 1024U * 1024U)
++#define QEMU_PLUGIN_CRUCIBLE_NODE_PREPARATION_SUCCESSOR_CHUNK_MAX 3000
++#define QEMU_PLUGIN_CRUCIBLE_NODE_PREPARATION_SUCCESSOR_APPLIED 1
++#define QEMU_PLUGIN_CRUCIBLE_NODE_PREPARATION_SUCCESSOR_NO_EXECUTION_AT_CAPTURE 2
++
++typedef struct QemuPluginCrucibleNodePreparationSuccessor {
++    uint32_t version;
++    uint32_t size;
++    uint32_t flags;
++    uint32_t reserved;
++    uint64_t initialization_sequence;
++    uint64_t hold_generation;
++    uint64_t current_ps;
++    uint64_t raw_icount;
++    uint8_t prepared_scope_hash[32];
++    uint8_t initialization_commitment[32];
++    uint8_t realize_request_digest[32];
++    uint8_t original_cut_digest[32];
++    uint8_t applied_receipt_digest[32];
++    uint64_t content_length;
++    uint8_t content_digest[32];
++} QemuPluginCrucibleNodePreparationSuccessor;
++
++/**
++ * qemu_plugin_crucible_node_query_preparation_successor() - retain Applied cut
++ * @scope: exact original prepared scope
++ * @initialization_sequence: original native initialization command sequence
++ * @original_cut_digest: original source-selected initialization cut
++ * @successor: receives the immutable source-specific content identity
++ *
++ * The first query is restricted to the genuine BQL-held RR callback seam,
++ * after its original initialization result is Applied and before any execution
++ * command. It captures actual CPU, held writer and timer observations once.
++ * Later queries return that same historical object; they never resample it.
++ *
++ * Its tagged big-endian content contains the summary's first 208 bytes, the
++ * original Applied receipt, CPU park, writer and timer summaries, followed by
++ * CPU, work, Aio, BH, handler, timer-list and timer-birth rows in their existing
++ * native inventory order. Integers are explicitly encoded without padding;
++ * signed fields use their fixed-width two's-complement bit representation.
++ * The tag is "crucible.qemu-native-preparation-successor.v1" including NUL.
++ * The receipt digest hashes "crucible.qemu-native-applied-receipt.v1" including
++ * NUL followed by its exact big-endian 160-byte field encoding.
++ *
++ * The process retains one bounded object until exit. Scope, original cut and
++ * sequence remain immutable. No query grants execution, initialization, ACK,
++ * input/output, capture or all-source readiness authority. The GPL plugin must
++ * independently bind its actual original ACK, worker and input/output journals.
++ *
++ * Returns zero or negative errno-style status. Failure zeroes the summary,
++ * retains any existing native HOLD and never replaces the historical object.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_node_query_preparation_successor(
++    const uint8_t scope[32], uint64_t initialization_sequence,
++    const uint8_t original_cut_digest[32],
++    QemuPluginCrucibleNodePreparationSuccessor *successor);
++
++/**
++ * qemu_plugin_crucible_node_read_preparation_successor() - copy original bytes
++ * @scope: exact original scope
++ * @initialization_sequence: original initializer identity
++ * @content_digest: exact returned SHA-256 content identity
++ * @offset: checked byte offset in the retained original object
++ * @bytes: caller-owned GPL-local output storage
++ * @capacity: output capacity, at most 3000 bytes
++ * @copied: receives the actual bounded byte count
++ *
++ * Reads only an already-retained immutable object. An exact retry copies the
++ * same bytes, including after execution; no source state is regenerated.
++ * Returns zero or negative errno-style status. Failure sets copied to zero.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_node_read_preparation_successor(
++    const uint8_t scope[32], uint64_t initialization_sequence,
++    const uint8_t content_digest[32], uint64_t offset,
++    uint8_t *bytes, uint32_t capacity, uint32_t *copied);
 +
 +/**
 + * typedef qemu_plugin_crucible_node_command_cb_t - copy original native command

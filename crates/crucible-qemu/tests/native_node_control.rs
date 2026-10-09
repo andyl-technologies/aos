@@ -237,8 +237,14 @@ fn run_probe(
         writer_custody,
         expect_source_fault,
         false,
-        false,
+        ProjectionProbe::Disabled,
     )
+}
+
+enum ProjectionProbe {
+    Disabled,
+    Phase,
+    Successor,
 }
 
 fn run_initialized_probe(
@@ -248,8 +254,10 @@ fn run_initialized_probe(
     writer_custody: bool,
     expect_source_fault: bool,
     initialize: bool,
-    phase_projection: bool,
+    projection: ProjectionProbe,
 ) -> Result<Vec<NativeStopFacts>, Box<dyn Error>> {
+    let phase_projection = !matches!(projection, ProjectionProbe::Disabled);
+    let successor_recovery = matches!(projection, ProjectionProbe::Successor);
     let qemu = artifact("CRUCIBLE_NATIVE_PROBE_QEMU")?;
     let plugin = artifact("CRUCIBLE_NATIVE_PROBE_PLUGIN")?;
     let mut pit_firmware = None;
@@ -280,7 +288,9 @@ fn run_initialized_probe(
     } else {
         artifact("CRUCIBLE_NATIVE_PROBE_BIOS")?
     };
-    let edition = if phase_projection {
+    let edition = if successor_recovery {
+        NativeControlEdition::PreparationSuccessor
+    } else if phase_projection {
         NativeControlEdition::PhaseProjection
     } else if writer_custody {
         NativeControlEdition::OwnedCustody
@@ -317,7 +327,11 @@ fn run_initialized_probe(
                 },
             );
     let (mut native, endpoint) = if let Some(phase) = &phase_preparation {
-        NativeQemuControlTransport::prepare_phase(phase.clone())?
+        if successor_recovery {
+            NativeQemuControlTransport::prepare_successor(phase.clone())?
+        } else {
+            NativeQemuControlTransport::prepare_phase(phase.clone())?
+        }
     } else if let Some(initialization) = &initialization {
         NativeQemuControlTransport::prepare_initialization(initialization.clone())?
     } else {
@@ -663,6 +677,9 @@ fn run_initialized_probe(
         assert_eq!(receipt.hold_generation, cut.hold_generation);
         assert_eq!(native.initialization_cut(), Some(cut));
         assert!(!native.initialization_acknowledged());
+        if successor_recovery {
+            assert!(native.request_preparation_successor().is_err());
+        }
         assert!(
             native
                 .transmit_original(self::original(1, 0, limits[0]))
@@ -696,11 +713,29 @@ fn run_initialized_probe(
         }
         assert!(native.initialization_acknowledged());
         assert_eq!(native.initialization_receipt(), Some(&receipt));
+        if successor_recovery {
+            let successor = read_successor(&mut native, &mut child.0)?;
+            assert_eq!(successor.initialization, receipt);
+            assert_eq!(successor.facts.original_cut_digest, cut.original_cut_digest);
+            assert_eq!(successor.facts.hold_generation, cut.hold_generation);
+            assert!(
+                successor
+                    .writers
+                    .aio
+                    .iter()
+                    .all(|context| context.pending_bhs == 0 && context.queued_coroutines == 0)
+            );
+            assert_eq!(
+                native.writer_observation(U64::new(0)),
+                original_writers.as_ref()
+            );
+        }
         let retained = mapped.fault_command_transport_mut(PROBE_VM_SLOT)?;
         assert_eq!(retained.ring.read_index(), 0);
         assert_eq!(retained.ring.write_index(), 1);
     }
     let mut start = 0;
+    let retained_successor = native.preparation_successor().cloned();
     let mut outcomes = Vec::new();
     let mut windows = limits.to_vec();
     let mut index = 0;
@@ -843,6 +878,16 @@ fn run_initialized_probe(
             next_frame(&mut native, &mut child.0)?,
             NativeFrame::Acknowledged(_)
         ));
+        if successor_recovery {
+            assert_eq!(
+                Some(read_successor(&mut native, &mut child.0)?),
+                retained_successor
+            );
+            assert_eq!(
+                native.writer_observation(U64::new(0)),
+                original_writers.as_ref()
+            );
+        }
         start = facts.reached.time_ps.get();
         outcomes.push(facts);
         index += 1;
@@ -982,7 +1027,15 @@ fn actual_native_source_fault_requires_independent_child_containment() -> Result
 #[ignore = "requires source-built native initialization QEMU and matching GPL plugin"]
 fn original_construction_epoch_applies_finite_home_cut_and_retains_ack_custody()
 -> Result<(), Box<dyn Error>> {
-    let outcomes = run_initialized_probe(&[110, 200], true, false, true, false, true, false)?;
+    let outcomes = run_initialized_probe(
+        &[110, 200],
+        true,
+        false,
+        true,
+        false,
+        true,
+        ProjectionProbe::Disabled,
+    )?;
     assert_eq!(outcomes.len(), 2);
     assert_eq!(outcomes[0].kind, NativeStopKind::HorizonPark);
     assert_eq!(outcomes[0].retired_count.get(), 2);
@@ -1022,7 +1075,71 @@ fn read_phase_timers(
 #[ignore = "requires genuine V6 source phase policy, matched GPL plugin and original construction pin"]
 fn actual_native_pit_instruction_birth_is_excluded_at350_and_mapped_at351()
 -> Result<(), Box<dyn Error>> {
-    let stops = run_initialized_probe(&[350, 351], true, true, true, false, true, true)?;
+    let stops = run_initialized_probe(
+        &[350, 351],
+        true,
+        true,
+        true,
+        false,
+        true,
+        ProjectionProbe::Phase,
+    )?;
+    assert_eq!(stops.len(), 2);
+    assert_eq!(stops[0].retired_count.get(), 6);
+    assert_eq!(stops[1].retired_count.get(), 7);
+    Ok(())
+}
+
+// Wall time bounds only the native child watchdog; no modeled clock uses it.
+#[allow(clippy::disallowed_methods)]
+fn read_successor(
+    native: &mut NativeQemuControlTransport,
+    child: &mut Child,
+) -> Result<crucible_protocol::node_control::NativePreparationSuccessorObservation, Box<dyn Error>>
+{
+    let deadline = Instant::now() + Duration::from_secs(10);
+    assert!(native.request_preparation_successor()?);
+    let mut received = false;
+    loop {
+        while let Some(frame) = native.poll_original()? {
+            if matches!(frame, NativeFrame::PreparationSuccessorChunk(_)) {
+                received = true;
+            }
+        }
+        if received {
+            if let Some(original) = native.preparation_successor() {
+                return Ok(original.clone());
+            }
+            assert!(native.request_preparation_successor()?);
+            received = false;
+        }
+        if let Some(status) = child.try_wait()? {
+            return Err(io::Error::other(format!("native QEMU exited: {status}")).into());
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "original preparation successor unavailable",
+            )
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+#[ignore = "requires actual source successor API and explicitly negotiated edition-four GPL plugin"]
+fn actual_native_successor_keeps_pre_home_evidence_and_original_ack_distinct()
+-> Result<(), Box<dyn Error>> {
+    let stops = run_initialized_probe(
+        &[350, 351],
+        true,
+        true,
+        true,
+        false,
+        true,
+        ProjectionProbe::Successor,
+    )?;
     assert_eq!(stops.len(), 2);
     assert_eq!(stops[0].retired_count.get(), 6);
     assert_eq!(stops[1].retired_count.get(), 7);

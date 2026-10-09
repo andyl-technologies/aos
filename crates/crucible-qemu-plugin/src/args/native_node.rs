@@ -70,14 +70,17 @@ pub(super) fn parse(
         Some("3") if phase.is_some() => {
             crucible_protocol::node_control::NativeControlEdition::PhaseProjection
         }
+        Some("4") if phase.is_some() => {
+            crucible_protocol::node_control::NativeControlEdition::PreparationSuccessor
+        }
         _ => return Err(PluginArgsParseError::InvalidNativeNodeControl),
     };
     if (initialization.is_some()
         && edition == crucible_protocol::node_control::NativeControlEdition::Original)
         || (phase.is_some()
             && (initialization.is_none()
-                || edition
-                    != crucible_protocol::node_control::NativeControlEdition::PhaseProjection))
+                || !matches!(edition, crucible_protocol::node_control::NativeControlEdition::PhaseProjection
+                    | crucible_protocol::node_control::NativeControlEdition::PreparationSuccessor)))
     {
         return Err(PluginArgsParseError::InvalidNativeNodeControl);
     }

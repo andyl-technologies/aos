@@ -19,6 +19,8 @@ pub enum NativeControlEdition {
     OwnedCustody,
     /// Selects raw source phase projection with a fresh original pinned mapping.
     PhaseProjection,
+    /// Recovers original post-initialization observations with separate identities.
+    PreparationSuccessor,
 }
 
 impl NativeControlEdition {
@@ -28,6 +30,7 @@ impl NativeControlEdition {
             Self::Original => 1,
             Self::OwnedCustody => 2,
             Self::PhaseProjection => 3,
+            Self::PreparationSuccessor => 4,
         }
     }
 }
@@ -44,6 +47,28 @@ pub fn encode_frame_for_edition(
     edition: NativeControlEdition,
     frame: &NativeFrame,
 ) -> Result<Vec<u8>, NativeCommandError> {
+    if edition == NativeControlEdition::PreparationSuccessor {
+        let (kind, body) = match frame {
+            NativeFrame::QueryPreparationSuccessor(query) => (24u16, query.encode()?.to_vec()),
+            NativeFrame::PreparationSuccessorChunk(chunk) => (25u16, chunk.encode()?),
+            _ => {
+                let mut bytes =
+                    encode_frame_for_edition(NativeControlEdition::PhaseProjection, frame)?;
+                bytes[8..10].copy_from_slice(&edition.version().to_be_bytes());
+                return Ok(bytes);
+            }
+        };
+        if body.len() > NODE_CONTROL_MAX_BODY_BYTES {
+            return Err(NativeCommandError::ResourceLimit);
+        }
+        let mut bytes = Vec::with_capacity(NODE_CONTROL_HEADER_BYTES + body.len());
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&edition.version().to_be_bytes());
+        bytes.extend_from_slice(&kind.to_be_bytes());
+        bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&body);
+        return Ok(bytes);
+    }
     if edition == NativeControlEdition::PhaseProjection {
         let (kind, body) = match frame {
             NativeFrame::PreparePhase(preparation) => (21u16, preparation.encode()?),
@@ -153,6 +178,25 @@ pub fn decode_frame_for_edition(
     if cursor.0.len() != length {
         return Err(NativeCommandError::Invalid("native frame length mismatch"));
     }
+    if edition == NativeControlEdition::PreparationSuccessor {
+        return match kind {
+            24 => Ok(NativeFrame::QueryPreparationSuccessor(
+                super::NativePreparationSuccessorQuery::decode(cursor.take(length)?)?,
+            )),
+            25 => Ok(NativeFrame::PreparationSuccessorChunk(Box::new(
+                super::NativePreparationSuccessorChunk::decode(cursor.take(length)?)?,
+            ))),
+            _ => {
+                let mut prior = bytes.to_vec();
+                prior[8..10].copy_from_slice(
+                    &NativeControlEdition::PhaseProjection
+                        .version()
+                        .to_be_bytes(),
+                );
+                decode_frame_for_edition(NativeControlEdition::PhaseProjection, &prior)
+            }
+        };
+    }
     if edition == NativeControlEdition::PhaseProjection {
         let frame = match kind {
             21 => NativeFrame::PreparePhase(Box::new(super::NativePhasePreparation::decode(
@@ -177,6 +221,7 @@ pub fn decode_frame_for_edition(
         return Ok(frame);
     }
     let frame = match kind {
+        24..=25 => return Err(NativeCommandError::UnsupportedVersion(4)),
         21..=23 => return Err(NativeCommandError::UnsupportedVersion(3)),
         14 => NativeFrame::PrepareInitialization(Box::new(
             super::NativeInitializationPreparation::decode(cursor.take(cursor.0.len())?)?,

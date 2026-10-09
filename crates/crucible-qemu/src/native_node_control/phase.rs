@@ -43,10 +43,17 @@ impl NativeQemuControlTransport {
     pub fn prepare_phase(
         preparation: NativePhasePreparation,
     ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
+        Self::prepare_phase_for_edition(preparation, NativeControlEdition::PhaseProjection)
+    }
+
+    pub(super) fn prepare_phase_for_edition(
+        preparation: NativePhasePreparation,
+        edition: NativeControlEdition,
+    ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
         preparation.validate()?;
         let (mut transport, mut endpoint) = Self::prepare_channel(
             preparation.initialization.preparation.clone(),
-            NativeControlEdition::PhaseProjection,
+            edition,
             NativeFrame::PreparePhase(Box::new(preparation.clone())),
             Some(preparation.initialization.clone()),
         )?;
@@ -71,8 +78,10 @@ impl NativeQemuControlTransport {
         &mut self,
         sequence: U64,
     ) -> Result<bool, NativeQemuControlError> {
-        if self.channel.edition() != NativeControlEdition::PhaseProjection
-            || self.source_fault.is_some()
+        if !matches!(
+            self.channel.edition(),
+            NativeControlEdition::PhaseProjection | NativeControlEdition::PreparationSuccessor
+        ) || self.source_fault.is_some()
             || (sequence.get() == 0 && self.cpu_park.is_none())
             || (sequence.get() != 0 && !self.facts.contains_key(&sequence.get()))
         {

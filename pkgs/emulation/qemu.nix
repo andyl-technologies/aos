@@ -1869,6 +1869,8 @@ in
               grep -q '^PASS healthy ordinary 8->3 cycles per CPU' rr-sim-barriers.result
               # Check the optional KVM response ledger independently of native
               # execution. Compiled mutation failures must reach actual assertions.
+              # Historical Applied evidence cannot grant acknowledgment or Ready.
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-preparation-successor-guards.py "$PWD"
               ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-guards.py "$PWD"
               ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-model.py \
                 "$PWD" "$CC" "$PWD/kvm-userspace-exit-proof"

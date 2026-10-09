@@ -192,13 +192,14 @@ mod tests {
             NativeControlEdition::Original,
             NativeControlEdition::OwnedCustody,
             NativeControlEdition::PhaseProjection,
+            NativeControlEdition::PreparationSuccessor,
         ] {
             let (host, provider) = NativeChannel::supervised_pair_for_edition(edition).unwrap();
             let other = match edition {
                 NativeControlEdition::Original => NativeControlEdition::OwnedCustody,
-                NativeControlEdition::OwnedCustody | NativeControlEdition::PhaseProjection => {
-                    NativeControlEdition::Original
-                }
+                NativeControlEdition::OwnedCustody
+                | NativeControlEdition::PhaseProjection
+                | NativeControlEdition::PreparationSuccessor => NativeControlEdition::Original,
             };
             let frame = NativeFrame::QueryCpuPark([7; 32]);
             let foreign = super::super::encode_frame_for_edition(other, &frame).unwrap();

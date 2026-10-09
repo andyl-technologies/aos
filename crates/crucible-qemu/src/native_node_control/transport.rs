@@ -75,6 +75,7 @@ pub struct NativeQemuControlTransport {
     pub(super) timer_objects: BTreeMap<u64, super::timers::TimerAssembly>,
     pub(super) initialization: Option<super::initialization::InitializationJournal>,
     pub(super) phase_projection: Option<super::phase::PhaseJournal>,
+    pub(super) preparation_successor: Option<super::preparation_successor::SuccessorAssembly>,
     pub(super) writer_objects: BTreeMap<u64, super::writers::WriterAssembly>,
 }
 
@@ -104,7 +105,10 @@ impl NativeQemuControlTransport {
         preparation: NativePreparation,
         edition: NativeControlEdition,
     ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
-        if edition == NativeControlEdition::PhaseProjection {
+        if matches!(
+            edition,
+            NativeControlEdition::PhaseProjection | NativeControlEdition::PreparationSuccessor
+        ) {
             // This edition requires the complete original construction companion.
             return Err(NativeCommandError::Conflict.into());
         }
@@ -147,6 +151,7 @@ impl NativeQemuControlTransport {
                 timer_objects: BTreeMap::new(),
                 writer_objects: BTreeMap::new(),
                 phase_projection: None,
+                preparation_successor: None,
                 initialization: initialization
                     .clone()
                     .map(super::initialization::InitializationJournal::new),
@@ -233,6 +238,9 @@ impl NativeQemuControlTransport {
             NativeFrame::SourceFault(facts) => self.accept_source_fault(facts)?,
             NativeFrame::TimerChunk(chunk) => self.accept_timer_chunk(chunk)?,
             NativeFrame::PhaseTimerChunk(chunk) => self.accept_phase_timer_chunk(chunk)?,
+            NativeFrame::PreparationSuccessorChunk(chunk) => {
+                self.accept_preparation_successor_chunk(chunk)?
+            }
             NativeFrame::WriterChunk(chunk) => self.accept_writer_chunk(chunk)?,
             NativeFrame::CpuPark(facts) => {
                 if facts.prepared_scope_hash != self.prepared_scope_hash
