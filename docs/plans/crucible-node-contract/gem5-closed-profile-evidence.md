@@ -29,8 +29,13 @@ emulator and source-built DMTCP/helper/auditor:
   kernel resource census, immutable source assets, and private file custody.
 - Actual guest stdout publication birth inside the native callback, with
   native tick, global event ordinal, tick ordinal, and original bytes.
-- Source process exit and deletion of the original owned resource root before
-  two concurrent fresh reconstructions, each with new control identity.
+- Source process exit and deletion of the entire original namespace, including
+  owned resources, primary images, supplementary saved copies and temporary
+  files, before two concurrent fresh reconstructions with new control identities.
+- Independent copies of unchanged historical image bytes and complete saved-file
+  rosters, with private per-child saved-copy roots. The native restart hook
+  verifies canonical custody, exact file census, SHA-256 and lengths before
+  resolving a saved-copy path. It never opens or recreates the original root.
 - New captures in each restored owner's private image directory, independently
   authenticated against its own native map, thread, descriptor and resource
   ledgers without changing the historical image or advancing a native event.
@@ -65,6 +70,54 @@ unchanged continuation and group reaping. The independently checked private
 controller copies have the same SHA-256 as the corrected installed bundle.
 No missing-file or image-body check was relaxed.
 
+A later mixed-world archive test deleted the entire original namespace,
+including the historical checkpoint image directory. That stronger test refused
+restoration: native DMTCP `FileConnection::postRestart` retained an absolute
+`_savedFilePath` beneath the deleted original image's supplementary-files
+directory. Rebinding the live resource path does not rebind this saved copy.
+The `05fw` witnesses removed the original live resource root but retained the
+historical image namespace; they therefore establish their documented native
+continuation mechanism, not portable archive restoration after removal of that
+entire namespace. Production durable archive portability remains refused until
+authenticated saved-copy relocation and both architecture witnesses pass the
+stronger source-namespace deletion gate. Signed checkpoint bytes must remain
+unchanged, and the original namespace must not be recreated.
+
+The subsequent source-built `s7b4` package passes that stronger gate for both
+fixed guest architectures. The native DMTCP hook resolves a saved checkpoint
+copy before `FileConnection::postRestart` probes it. The independently licensed
+custody helper accepts only the sealed launcher's complete historical roster;
+it refuses partial bindings, unrelated prefixes, source/target ancestor aliases,
+noncanonical or nonprivate roots, writable or aliased manifests, changed or
+missing bytes, duplicate/reordered records, and unlisted leaves. Twenty-five
+compiled native positive/adversarial cases pass. The toolkit binary co-retains
+its matching complete patched source tree, all patches, recipe, toolchain
+manifest and LGPL notices through `share/corresponding-source`.
+
+The package's own witnesses and independent installed host witnesses both remove
+the complete original namespace before two concurrent restorations. Every fresh
+owner captures again under a distinct future image directory; its current native
+map/thread/FD/file ledger and raw image bodies pass the independent auditor.
+Original cuts, continuation suffixes, stdout birth positions and checksum bytes
+remain equal, and all three process groups are reaped. The signed historical
+primary image remains unchanged. These tests do not qualify full-system devices,
+arbitrary guest programs, other host ABIs or complete typed diagnostics.
+
+The updated installed manifest is
+`/nix/store/s7b4cpcc10agfrwsvpd7sdpz5hqb4fx0-gem5-closed-profile-1/share/crucible/gem5/closed-profile.json`:
+12,686 bytes, SHA-256
+`306477da3442f63bba3d7a361da3af730862b45c3b3b6907b06639b142c37df7`.
+All 26 installed artifact SHA-256/length bindings were independently remeasured.
+The native executable remains the `rzrp` artifact below. New tools are
+`36fqyiycwrc7d0izhpi5hjrnqcfwq9x3-dmtcp-4.2.0`,
+`x3wf7wgfj04g03m03pv0x4wqp3vg8mcm-gem5-process-custody-1`, and
+`25qysinm1pxdlwvzm0i9bfcr0ln0sz8h-gem5-process-image-inventory-1`.
+The full DMTCP source output is
+`976hj6x3sdxn4nky0zhbnch60bm5iv55-dmtcp-4.2.0-source`.
+The manifest requires `original_image_namespace_absent` and
+`authenticated_saved_copy_relocation` in each architecture's witness; missing
+historical evidence cannot acquire these facts from artifact remeasurement.
+
 Command, executed on this machine with remote builders disabled:
 
 ```text
@@ -72,7 +125,7 @@ aos-dev --release build package gem5-closed-profile --no-out-link \
   --builders ''
 ```
 
-The passing output is
+The earlier passing output, whose archive portability limitation is above, is
 `/nix/store/05fw6c809l3j12yp37ip9bld71byk353-gem5-closed-profile-1`.
 Its installed `share/crucible/gem5/closed-profile.json` is 12,230 bytes with SHA-256
 `ada655580bb5262f09c4abb710eab6bb3c2a6be35ff3aaad383b60dff88435a9`.

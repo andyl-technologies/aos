@@ -24,7 +24,9 @@ if process_tools and len(process_tools) != 2:
     raise ValueError("process-image witness requires DMTCP root and resource helper")
 root = Path(directory).resolve()
 root.mkdir(mode=0o700)
-resource = root / "origin"
+source_namespace = root / "source"
+source_namespace.mkdir(mode=0o700)
+resource = source_namespace / "origin"
 resource.mkdir(mode=0o700)
 expected_output = subprocess.check_output([native_guest])
 guest_copy = resource / "guest.elf"
@@ -191,9 +193,9 @@ command = [gem5, f"--outdir={resource / 'output'}", str(installed_owner)]
 environment = os.environ.copy()
 if process_tools:
     dmtcp, resource_helper = process_tools
-    images = root / "images"
+    images = source_namespace / "images"
     images.mkdir(mode=0o700)
-    temporary = root / "tmp"
+    temporary = source_namespace / "tmp"
     temporary.mkdir(mode=0o700)
     environment["CRUCIBLE_CAPTURE_RESOURCE_ROOT"] = str(resource)
     command = [
@@ -311,6 +313,31 @@ try:
         # continuation can write future guest output into the preserved files.
         preserved = root / "preserved-files"
         shutil.copytree(resource, preserved)
+        # The primary's authenticated saved-file naming scheme is verified by
+        # the actual closure auditor above. Preserve its full leaf census now,
+        # while the native capture and supplementary bytes remain unchanged.
+        source_saved_root = image_files[0].with_name(image_files[0].stem + "_files")
+        assert source_saved_root.is_dir() and not source_saved_root.is_symlink()
+        saved_records = []
+        archive = root / "archive"
+        archive.mkdir(mode=0o700)
+        historical_image = archive / image_files[0].name
+        shutil.copyfile(image_files[0], historical_image)
+        historical_image.chmod(0o400)
+        saved_archive = archive / source_saved_root.name
+        saved_archive.mkdir(mode=0o700)
+        for leaf in sorted(source_saved_root.iterdir(), key=lambda path: path.name):
+            metadata = leaf.lstat()
+            assert leaf.is_file() and not leaf.is_symlink() and metadata.st_nlink == 1
+            assert metadata.st_uid == os.getuid() and metadata.st_size <= 64 * 1024**3
+            digest = artifact_digest(leaf)
+            destination = saved_archive / leaf.name
+            shutil.copyfile(leaf, destination)
+            destination.chmod(0o400)
+            assert artifact_digest(destination) == digest
+            saved_records.append((leaf.name, metadata.st_size, digest))
+        assert 0 < len(saved_records) <= 4096
+        assert artifact_digest(historical_image) == image_digest
 
     def finish(original_stream):
         output = bytearray()
@@ -350,7 +377,8 @@ try:
     assert child.wait(timeout=10) == 0
     source_group_reclaimed = reclaim_group(child)
     if process_tools:
-        shutil.rmtree(resource)
+        shutil.rmtree(source_namespace)
+        assert not source_namespace.exists() and not images.exists() and not resource.exists()
 
         def reconstruct(name):
             branch = root / name
@@ -365,19 +393,41 @@ try:
             scratch.mkdir(mode=0o700)
             fresh_images = root / f"images-{name}"
             fresh_images.mkdir(mode=0o700)
+            imported_saved = root / f"historical-{name}" / source_saved_root.name
+            imported_saved.parent.mkdir(mode=0o700)
+            imported_saved.mkdir(mode=0o700)
+            roster_lines = ["crucible-saved-files-v1", str(source_saved_root), str(imported_saved)]
+            for leaf_name, leaf_length, leaf_digest in saved_records:
+                destination = imported_saved / leaf_name
+                shutil.copyfile(saved_archive / leaf_name, destination)
+                destination.chmod(0o400)
+                assert artifact_digest(destination) == leaf_digest
+                assert destination.stat().st_ino != (saved_archive / leaf_name).stat().st_ino
+                roster_lines.append(f"{leaf_digest}\t{leaf_length}\t{leaf_name}")
+            roster = root / f"saved-files-{name}.manifest"
+            roster_bytes = ("\n".join(roster_lines) + "\n").encode()
+            assert len(roster_bytes) <= 2 * 1024**2
+            with roster.open("xb") as roster_file:
+                roster_file.write(roster_bytes)
+                roster_file.flush()
+                os.fsync(roster_file.fileno())
+            roster.chmod(0o400)
             restart_environment = os.environ.copy()
             restart_environment.update({
                 "CRUCIBLE_RESTORE_RESOURCE_ROOT": str(branch),
                 "CRUCIBLE_GEM5_OPERATIONAL_ROOT": str(scratch),
                 "DMTCP_PATH_MAPPING": f"{resource}:{branch}",
                 "CRUCIBLE_GEM5_CONTROL_SOCKET": str(fresh_socket),
+                "CRUCIBLE_RESTORE_SAVED_FILES_SOURCE_ROOT": str(source_saved_root),
+                "CRUCIBLE_RESTORE_SAVED_FILES_TARGET_ROOT": str(imported_saved),
+                "CRUCIBLE_RESTORE_SAVED_FILES_MANIFEST": str(roster),
             })
             error_path = root / f"{name}.restore.stderr"
             restart_errors = error_path.open("wb")
             restored = subprocess.Popen([
                 f"{dmtcp}/bin/dmtcp_restart", "--new-coordinator", "--coord-port", "0",
                 "--interval", "0", "--ckptdir", str(fresh_images),
-                "--tmpdir", str(scratch), str(image_files[0]),
+                "--tmpdir", str(scratch), str(historical_image),
             ], env=restart_environment, stdout=subprocess.DEVNULL, stderr=restart_errors,
                cwd=scratch, start_new_session=True)
             try:
@@ -394,7 +444,8 @@ try:
                             )
                 fresh.settimeout(180)
                 fresh_identity = authenticate_peer(fresh, restored, restored=True)
-                assert artifact_digest(image_files[0]) == image_digest
+                assert not source_namespace.exists()
+                assert artifact_digest(historical_image) == image_digest
                 send(fresh, {
                     "kind": "restore_bind", "owner": "machine",
                     "source_incarnation": "native/source", "source_generation": "1",
@@ -426,7 +477,7 @@ try:
                     assert len(current_images) == 1
                     assert current_images[0].parent != image_files[0].parent
                     audit_capture(fresh, restored, branch, current_images[0], cut["after"], name)
-                    assert artifact_digest(image_files[0]) == image_digest
+                    assert artifact_digest(historical_image) == image_digest
                     fresh_closure = True
                 branch_output, branch_suffix = finish(fresh)
                 assert branch_output == output and branch_suffix == suffix
@@ -438,6 +489,7 @@ try:
                 return {"branch": name, "fresh_control": True, "unchanged_cut": True,
                         "native_identity": fresh_identity, "image_sha256": image_digest,
                         "group_reclaimed": group_reclaimed,
+                        "restored_with_original_image_namespace_absent": not source_namespace.exists(),
                         "fresh_capture_closure": fresh_closure}
             finally:
                 fresh_listener.close()
@@ -452,6 +504,7 @@ try:
         "guest_isa": guest_isa, "cut": cut["after"], "suffix": suffix,
         "actual_checksum_matches_native": True, "exact_profile_qualified": False,
         "source_dead_before_restore": bool(process_tools),
+        "source_image_namespace_removed_before_restore": bool(process_tools),
         "private_concurrent_reconstructions": restored_results if process_tools else [],
         "original_native_identity": original_identity,
         "group_reclaimed": source_group_reclaimed,

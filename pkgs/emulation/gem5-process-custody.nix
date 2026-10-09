@@ -5,6 +5,8 @@
   dmtcp,
   coreutils,
   diffutils,
+  openssl,
+  python3,
 }:
 mkDerivation {
   pname = "gem5-process-custody";
@@ -26,22 +28,27 @@ mkDerivation {
     target = [];
     role = "public-package";
   };
-  buildDeps = [dmtcp coreutils diffutils];
-  runtimeDeps = [dmtcp];
+  buildDeps = [dmtcp coreutils diffutils python3];
+  runtimeDeps = [dmtcp openssl];
   phases = [
     {
       name = "build";
       script = ''
         mkdir -p "$out/lib"
         cc -std=gnu11 -Wall -Wextra -Werror -fPIC -shared \
-          ${./_gem5/resource-custody.c} -o "$out/lib/libcrucible-resource-custody.so"
+          ${./_gem5/resource-custody.c} ${./_gem5/saved-file-relocation.c} \
+          -lcrypto -o "$out/lib/libcrucible-resource-custody.so"
         cc -std=gnu11 -Wall -Wextra -Werror -fPIC \
           ${./_gem5/resource-custody-check.c} -o application
+        cc -std=gnu11 -Wall -Wextra -Werror \
+          ${./_gem5/saved-file-relocation.c} ${./_gem5/saved-file-relocation-check.c} \
+          -lcrypto -o saved-copy-check
       '';
     }
     {
       name = "check";
       script = ''
+        ${python3}/bin/python3 -B ${./_gem5/saved-file-relocation-check.py} "$PWD/saved-copy-check"
         mkdir -p origin child-a child-b images tmp tmp-a tmp-b
         CRUCIBLE_CAPTURE_RESOURCE_ROOT="$PWD/origin" \
           ${coreutils}/bin/timeout 60 ${dmtcp}/bin/dmtcp_launch \
@@ -138,6 +145,11 @@ mkDerivation {
         mkdir -p "$out/share"
         mkdir -p "$out/share/licenses/gem5-process-custody"
         cp ${../../LICENSES/MIT.txt} "$out/share/licenses/gem5-process-custody/LICENSE"
+        mkdir -p "$out/share/corresponding-source/gem5-process-custody"
+        cp ${./gem5-process-custody.nix} "$out/share/corresponding-source/gem5-process-custody/recipe.nix"
+        cp ${./_gem5/resource-custody.c} ${./_gem5/resource-custody-check.c} \
+          ${./_gem5/saved-file-relocation.c} ${./_gem5/saved-file-relocation-check.c} \
+          ${./_gem5/saved-file-relocation-check.py} "$out/share/corresponding-source/gem5-process-custody/"
         cat > "$out/share/result.json" <<'EOF'
         {"schema":"crucible.native-custody.mechanism-check.v1","scope":"owned-open-files-and-future-paths","sourceExitedBeforeRestore":true,"concurrentDivergentRestores":2,"restoreWithoutOriginalOwnedFiles":true,"refusesFileAliases":true,"exactProfileQualified":false,"liveForkQualified":false}
         EOF

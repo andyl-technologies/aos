@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   stdenv,
+  buildPackages,
   gnumake,
   bash,
   python3,
@@ -41,6 +42,7 @@ in
 
     pname = "dmtcp";
     inherit version;
+    outputs = ["out" "source"];
     src = fetchurl {
       urls = ["https://codeload.github.com/dmtcp/dmtcp/tar.gz/refs/tags/v${version}"];
       hash = "sha256-BDQQVm/XwJ8h4OxIXPculIFyJinqh3ZQFCt1BeDX8tI=";
@@ -63,6 +65,7 @@ in
           patch --fuzz=0 -p1 < ${./_dmtcp/capture-descriptor-ledger.patch}
           patch --fuzz=0 -p1 < ${./_dmtcp/capture-mapping-ledger.patch}
           patch --fuzz=0 -p1 < ${./_dmtcp/capture-file-mapping-ledger.patch}
+          patch --fuzz=0 -p1 < ${./_dmtcp/restore-saved-file-relocation.patch}
           ${findutils}/bin/find . -type f -name '*.py' \
             -exec ${sed}/bin/sed -i "1s|^#!.*python.*$|#!${python3}/bin/python3|" {} +
           ${findutils}/bin/find . -type f -name '*.sh' \
@@ -82,6 +85,31 @@ in
           # buffer. Keep loader discovery bounded by the platform path limit.
           ${sed}/bin/sed -i 's|char buf\[80\];|char buf[PATH_MAX];|' \
             src/util_exec.cpp
+        '';
+      }
+      {
+        name = "corresponding-source";
+        script = ''
+          mkdir -p "$source/patches" "$source/build" "$source/licenses"
+          cp "$src" "$source/dmtcp-upstream.tar.gz"
+          cp ${./_dmtcp}/*.patch "$source/patches/"
+          cp ${./_dmtcp/LICENSES.md} "$source/licenses/patch-inventory.md"
+          cp COPYING COPYING.LESSER "$source/licenses/"
+          cp ${./dmtcp.nix} "$source/build/recipe.nix"
+          cp ${./_dmtcp/continuation-check.c} "$source/build/continuation-check.c"
+          # Retain the actual tree after all patches and hermetic substitutions,
+          # before generated build objects or installed binaries enter it.
+          tar --sort=name --mtime=@1 --owner=0 --group=0 --numeric-owner \
+            -czf "$source/dmtcp-patched-source.tar.gz" .
+          cat > "$source/build/toolchain.json" <<'EOF'
+          ${builtins.toJSON {
+            compiler = "${buildPackages.cc}";
+            inherit gnumake bash python3 coreutils findutils diffutils sed binutils grep patch;
+            upstreamRevision = "f8009ce7b4ad211311ca2f72a929b975e4aa1155";
+            license = "LGPL-3.0-or-later";
+            relinkModel = "shared-preload-library-with-matching-complete-source";
+          }}
+          EOF
         '';
       }
       {
@@ -105,6 +133,7 @@ in
           cp include/dmtcp/version.h "$out/include/dmtcp/version.h"
           mkdir -p "$out/share/licenses/dmtcp"
           cp COPYING COPYING.LESSER "$out/share/licenses/dmtcp/"
+          ln -s "$source" "$out/share/corresponding-source"
         '';
       }
       {
