@@ -361,12 +361,15 @@ fn handshake(protocol: BrokerSessionProtocolV1, major: u16) -> Handshake {
     };
     let mut features = vec![feature(), signed_plan_feature()];
     if protocol == BrokerSessionProtocolV1::Nix {
-        features.push(Feature {
-            namespace: aos_sandbox_core::NIX_NARROWING_PROXY_FEATURE_NAMESPACE.to_owned(),
-            major: 1,
-            minor: 0,
-            ..Default::default()
-        });
+        features.insert(
+            0,
+            Feature {
+                namespace: aos_sandbox_core::NIX_NARROWING_PROXY_FEATURE_NAMESPACE.to_owned(),
+                major: 1,
+                minor: 0,
+                ..Default::default()
+            },
+        );
     }
 
     let client_message = aos_proto::aos::sandbox::local::v1::BrokerClientHello {
