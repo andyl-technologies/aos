@@ -84,8 +84,8 @@ fn sqlite_lock_error(error: &sqlx::Error) -> bool {
     )
 }
 
-/// Retries the migration writer lock before any schema statement takes effect.
-async fn begin_sqlite_migration(
+/// Retries the writer lock before any transaction statement takes effect.
+async fn begin_sqlite_write(
     pool: &sqlx::SqlitePool,
 ) -> Result<sqlx::Transaction<'_, sqlx::Sqlite>> {
     let retry_deadline = tokio::time::Instant::now() + SQLITE_LOCK_RETRY_LIMIT;
@@ -98,7 +98,7 @@ async fn begin_sqlite_migration(
             {
                 tokio::time::sleep(SQLITE_LOCK_RETRY_INTERVAL).await;
             }
-            Err(error) => return Err(error).context("locking sqlite schema version"),
+            Err(error) => return Err(error).context("acquiring sqlite writer lock"),
         }
     }
 }
@@ -389,7 +389,7 @@ mod sqlite {
     use super::super::super::dialect::Dialect;
     use super::super::super::value::{Row, Value};
     use super::super::{prepare, CheckedStatement, Statement};
-    use super::begin_sqlite_migration;
+    use super::begin_sqlite_write;
 
     /// Binds `params` onto a sqlite query, encoding each [`Value`] in its
     /// native type.
@@ -490,7 +490,7 @@ mod sqlite {
         // Take the writer lock before reading the ledger. Concurrent starters
         // can hold it beyond SQLite's per-statement busy timeout; retry only
         // acquisition, before any migration statement can have taken effect.
-        let mut tx = begin_sqlite_migration(pool).await?;
+        let mut tx = begin_sqlite_write(pool).await?;
         let versions = sqlx::query_scalar::<_, i64>("SELECT version FROM schema_version")
             .fetch_all(&mut *tx)
             .await
@@ -523,7 +523,10 @@ mod sqlite {
 
     /// Runs a checked sqlite transaction, rolling back on a row-count mismatch.
     pub(super) async fn checked_batch(pool: &SqlitePool, stmts: &[CheckedStatement]) -> Result<()> {
-        let mut tx = pool.begin().await.context("beginning sqlite transaction")?;
+        // Parallel upload completions contend for SQLite's single writer.
+        // Retry acquisition before any effect, without replaying checked
+        // mutations or holding a transaction while waiting for another writer.
+        let mut tx = begin_sqlite_write(pool).await?;
         for checked in stmts {
             let (sql, params) = prepare(
                 Dialect::Sqlite,
