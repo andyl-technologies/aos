@@ -124,7 +124,19 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress; nine of twenty-two T1 tasks are complete. All ten
+**Status:** In progress; nine of twenty-two T1 tasks are complete.
+The shared final-check producer now retains the native permanent-family
+traversal through pre-selection handoffs. Its typed receipt refreshes actual
+enumeration and directory continuity between current-authority checks;
+selected current-pass history remains the separate coverage proof. This shared
+prerequisite is source-only until the task's receipt implementation is composed
+and qualified. The five permanent fault fixtures now include an independent
+canonical coordination-lock exclusion oracle after waiter cancellation and
+remove fixture storage only after actual native workers terminate. Their
+compilation and runtime checks remain pending. No task or exit is accepted by
+these source changes (GC-15, GC-16, GC-24 and GC-29).
+
+All ten
 exact native Active completion cases pass on `4e6c14a7f3`. The eight-case native
 Legacy cold-fork gate now passes on `e2416dcdec`, including the exact fresh
 Commit catalog Raw-to-Candidate sequence; its earlier predecessor-revision

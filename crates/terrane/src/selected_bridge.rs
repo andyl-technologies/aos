@@ -118,6 +118,29 @@ impl OwnedFinalCheck {
         }
     }
 
+    /// Retains genuine candidate-family traversal beside current authority.
+    ///
+    /// The opaque native receipt refreshes its complete family enumeration and
+    /// retained directory continuity before selecting progress. Selected history
+    /// still determines pass coverage; physical evidence alone cannot complete
+    /// a pass or grant permission to reclaim an artifact.
+    pub(crate) fn with_permanent_traversal(
+        &self,
+        source: &Arc<NativePermanentObservation>,
+    ) -> Self {
+        let current = self.clone();
+        let source = Arc::clone(source);
+        Self {
+            check: SharedOwned::new(move || {
+                current.recheck()?;
+                source
+                    .recheck_candidate_walk()
+                    .map_err(native_restore_failure)?;
+                current.recheck()
+            }),
+        }
+    }
+
     /// Refreshes genuine requests against their retained clock, keys and limits.
     ///
     /// # Errors
