@@ -18,7 +18,7 @@ pub(super) fn validate_policy_resources(
     // Publisher-policy v1 admits cache publication only for one explicitly
     // bound logical resource. Broader path, tree, or profile selectors cannot
     // establish the immutable project/domain cross-link and fail closed.
-    for grant in policy.policy.effective_grants() {
+    for grant in policy.policy().effective_grants() {
         if grant.resource_kind() == ResourceKind::CachePublish
             && grant.operations().contains(Operation::Publish)
         {
@@ -29,8 +29,8 @@ pub(super) fn validate_policy_resources(
                 .get(RecordNamespace::PublisherPolicy, &resource_key(*resource))
                 .ok_or(PublisherPolicyError::ResourcePolicyMismatch)?;
             let binding = decode_resource(bytes)?;
-            if binding.project != policy.project
-                || binding.cache_domain != policy.policy.cache_domain()
+            if binding.project != policy.project()
+                || binding.cache_domain != policy.policy().cache_domain()
             {
                 return Err(PublisherPolicyError::ResourcePolicyMismatch);
             }
@@ -91,14 +91,14 @@ pub(super) fn validate_namespace(
         if key.starts_with(POLICY_REVISION_PREFIX) && key.len() == POLICY_REVISION_PREFIX.len() + 24
         {
             let revision = decode_policy_revision(value)?;
-            if key != policy_revision_key(revision.project, revision.generation) {
+            if key != policy_revision_key(revision.project(), revision.generation()) {
                 return Err(PublisherPolicyError::CorruptState);
             }
             validate_policy_resources(journal, &revision)
                 .map_err(|_| PublisherPolicyError::CorruptState)?;
             add_chain(
-                policies.entry(revision.project).or_default(),
-                revision.generation,
+                policies.entry(revision.project()).or_default(),
+                revision.generation(),
             )?;
         } else if key.starts_with(POLICY_CURRENT_PREFIX)
             && key.len() == POLICY_CURRENT_PREFIX.len() + 16
@@ -208,7 +208,7 @@ pub(super) fn validate_namespace(
                 &policy_revision_key(*project, head.generation),
             )
             .ok_or(PublisherPolicyError::CorruptState)?;
-        if decode_policy_revision(bytes)?.descriptor.digest() != head.digest {
+        if decode_policy_revision(bytes)?.descriptor().digest() != head.digest {
             return Err(PublisherPolicyError::CorruptState);
         }
     }

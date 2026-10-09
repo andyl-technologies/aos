@@ -165,7 +165,7 @@ fn encode_closed_proposal(
     root_base: ClosedPolicyRootCasBaseV2,
     checked_draft: ObjectDigest,
 ) -> Result<Vec<u8>, PolicyCompilerJournalErrorV1> {
-    let normalized_input = normalized_policy_input_digest_v1(input)?;
+    let normalized_input = normalized_policy_input_digest_v1(input).map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
     let candidate = PolicyCompilerV1::compile(input.clone())
         .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
         .commitment()

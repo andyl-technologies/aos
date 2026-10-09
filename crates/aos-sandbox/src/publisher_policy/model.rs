@@ -6,7 +6,6 @@
 //! those mechanisms available; online admission must establish that separate
 //! platform-readiness fact.
 
-use super::record::{bounded_decode_limits, policy_media_type};
 use super::*;
 
 /// Bounds replay and retained policy work below fixed implementation ceilings.
@@ -52,139 +51,6 @@ impl Default for PublisherPolicyLimits {
             maximum_record_bytes: MAXIMUM_RECORD_BYTES,
             maximum_materialized_bytes: MAXIMUM_MATERIALIZED_BYTES,
         }
-    }
-}
-
-/// Freezes one bounded canonical resolved policy revision.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedPublisherPolicyRevisionV1 {
-    pub(super) project: ProjectId,
-    pub(super) generation: u64,
-    pub(super) not_before: i64,
-    pub(super) expires_at: i64,
-    pub(super) policy: Policy,
-    pub(super) descriptor: ObjectDescriptor,
-    pub(super) canonical_policy: Vec<u8>,
-    pub(super) compiler_origin: Option<crate::policy_compiler::RetainedPublisherCompilerOriginV3>,
-}
-
-impl PreparedPublisherPolicyRevisionV1 {
-    /// Decodes and freezes controller-resolved canonical policy bytes.
-    ///
-    /// Caller limits are clamped to publisher-policy hard ceilings before the
-    /// core decoder allocates or performs normalized grant validation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PublisherPolicyError`] for a zero project or generation, an
-    /// invalid interval, oversized or malformed policy, non-project cache
-    /// domain, or noncanonical bytes.
-    pub fn from_canonical_bytes(
-        project: ProjectId,
-        generation: u64,
-        not_before: i64,
-        expires_at: i64,
-        canonical_policy: &[u8],
-        requested_limits: DecodeLimits,
-    ) -> Result<Self, PublisherPolicyError> {
-        if project.as_bytes() == &[0; 16] || generation == 0 || not_before >= expires_at {
-            return Err(PublisherPolicyError::InvalidPolicyRevision);
-        }
-        if canonical_policy.len() > MAXIMUM_POLICY_BYTES {
-            return Err(PublisherPolicyError::LimitExceeded("policy bytes"));
-        }
-        let policy = decode_policy(canonical_policy, bounded_decode_limits(requested_limits))
-            .map_err(|_| PublisherPolicyError::InvalidPolicyRevision)?;
-        validate_required_features(policy.required_features())
-            .map_err(|_| PublisherPolicyError::InvalidPolicyRevision)?;
-        for limit in policy.limits().limits() {
-            validate_required_features(std::slice::from_ref(limit.enforcement()))
-                .map_err(|_| PublisherPolicyError::InvalidPolicyRevision)?;
-        }
-        if policy.cache_domain().kind() != CacheDomainKind::Project
-            || policy.cache_domain().domain_id().as_bytes() == &[0; 16]
-            || encode_policy(&policy) != canonical_policy
-        {
-            return Err(PublisherPolicyError::InvalidPolicyRevision);
-        }
-        let canonical_policy = canonical_policy.to_vec();
-        let descriptor = descriptor_for_bytes(policy_media_type()?, &canonical_policy);
-        Ok(Self {
-            project,
-            generation,
-            not_before,
-            expires_at,
-            policy,
-            descriptor,
-            canonical_policy,
-            compiler_origin: None,
-        })
-    }
-
-    /// Returns the project authority domain.
-    #[must_use]
-    pub const fn project(&self) -> ProjectId {
-        self.project
-    }
-
-    /// Returns the contiguous policy generation.
-    #[must_use]
-    pub const fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    /// Returns the inclusive policy start time.
-    #[must_use]
-    pub const fn not_before(&self) -> i64 {
-        self.not_before
-    }
-
-    /// Returns the exclusive policy expiry time.
-    #[must_use]
-    pub const fn expires_at(&self) -> i64 {
-        self.expires_at
-    }
-
-    /// Returns the normalized policy.
-    #[must_use]
-    pub const fn policy(&self) -> &Policy {
-        &self.policy
-    }
-
-    /// Returns the exact canonical policy descriptor.
-    #[must_use]
-    pub const fn descriptor(&self) -> &ObjectDescriptor {
-        &self.descriptor
-    }
-
-    /// Returns exact canonical policy bytes.
-    #[must_use]
-    pub fn canonical_policy(&self) -> &[u8] {
-        &self.canonical_policy
-    }
-
-    /// Returns retained compiler provenance data, when the revision is V2.
-    ///
-    /// The decoded value is not authenticated input or live publication
-    /// authority. Legacy resolved-policy revisions intentionally return `None`.
-    #[must_use]
-    pub const fn compiler_origin(
-        &self,
-    ) -> Option<&crate::policy_compiler::RetainedPublisherCompilerOriginV3> {
-        self.compiler_origin.as_ref()
-    }
-
-    pub(crate) fn retain_compiler_origin(
-        &mut self,
-        origin: crate::policy_compiler::RetainedPublisherCompilerOriginV3,
-    ) -> Result<(), PublisherPolicyError> {
-        if origin.project() != self.project
-            || origin.output_bytes()[0] != self.canonical_policy.as_slice()
-        {
-            return Err(PublisherPolicyError::InvalidPolicyRevision);
-        }
-        self.compiler_origin = Some(origin);
-        Ok(())
     }
 }
 
@@ -343,6 +209,16 @@ impl PublisherProjectRevocationHeadV1 {
     #[must_use]
     pub const fn digest(self) -> ObjectDigest {
         self.digest
+    }
+}
+
+impl From<aos_sandbox_policy::PublisherPolicyDataError> for PublisherPolicyError {
+    fn from(error: aos_sandbox_policy::PublisherPolicyDataError) -> Self {
+        match error {
+            aos_sandbox_policy::PublisherPolicyDataError::LimitExceeded(dimension) => Self::LimitExceeded(dimension),
+            aos_sandbox_policy::PublisherPolicyDataError::InvalidPolicyRevision => Self::InvalidPolicyRevision,
+            aos_sandbox_policy::PublisherPolicyDataError::CorruptState => Self::CorruptState,
+        }
     }
 }
 

@@ -374,7 +374,7 @@ pub use protected_journal::{
     PolicyPublicationColdRecoveryV1, PolicyPublicationCommitOutcomeV1,
     PolicyPublicationOutcomeUnknownV1, PolicyPublicationPrerequisitesV1,
     PolicyPublicationRecoveryV1, PreparedPolicyCheckpointV1, PreparedPolicyEffectObservationV1,
-    PreparedPolicyPublicationV1, normalized_policy_input_digest_v1,
+    PreparedPolicyPublicationV1,
 };
 pub use protected_owner::{
     PolicyCompilerProtectedOpenReportV1, PolicyCompilerProtectedOwnerV1,
@@ -403,8 +403,9 @@ pub use public_create_source::{
     with_current_create_policy_source_barrier_v3, with_current_create_policy_source_barrier_v4,
     with_current_parentless_create_ancestry_v1,
 };
+pub use aos_sandbox_policy::{RetainedPublisherCompilerOriginV3, normalized_policy_input_digest_v1};
 pub use publisher_origin::{
-    CompiledPublisherPolicyRevisionV2, RetainedPublisherCompilerOriginV3,
+    CompiledPublisherPolicyRevisionV2,
     compile_publisher_policy_revision_v2,
 };
 pub use resolved_policy::{HeldResolvedRuntimePolicyV1, PolicyCompilerStateReadbackOwnerV1};

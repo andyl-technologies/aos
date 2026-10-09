@@ -33,30 +33,6 @@ pub(super) struct PolicyHead {
     pub(super) digest: ObjectDigest,
 }
 
-pub(super) fn bounded_decode_limits(requested: DecodeLimits) -> DecodeLimits {
-    DecodeLimits {
-        maximum_bytes: requested.maximum_bytes.min(MAXIMUM_POLICY_BYTES),
-        maximum_collection_items: requested
-            .maximum_collection_items
-            .min(MAXIMUM_COLLECTION_ITEMS),
-        maximum_total_items: requested.maximum_total_items.min(MAXIMUM_TOTAL_ITEMS),
-        maximum_byte_string_bytes: requested
-            .maximum_byte_string_bytes
-            .min(MAXIMUM_STRING_BYTES),
-        maximum_text_bytes: requested.maximum_text_bytes.min(MAXIMUM_STRING_BYTES),
-        maximum_depth: requested.maximum_depth.min(MAXIMUM_DEPTH),
-    }
-}
-
-pub(super) fn policy_media_type() -> Result<MediaType, PublisherPolicyError> {
-    MediaType::new(
-        aos_sandbox_core::PortableMediaType::Policy
-            .as_str()
-            .to_owned(),
-    )
-    .map_err(|_| PublisherPolicyError::InvalidPolicyRevision)
-}
-
 pub(super) fn validate_successor(
     current: Option<u64>,
     expected: Option<u64>,
@@ -140,23 +116,23 @@ pub(super) fn decode_project_revocation_binding(
 pub(super) fn encode_policy_revision(
     value: &PreparedPublisherPolicyRevisionV1,
 ) -> Result<Vec<u8>, PublisherPolicyError> {
-    let length = u32::try_from(value.canonical_policy.len())
+    let length = u32::try_from(value.canonical_policy().len())
         .map_err(|_| PublisherPolicyError::LimitExceeded("policy bytes"))?;
-    let mut bytes = Vec::with_capacity(84 + value.canonical_policy.len());
-    bytes.extend_from_slice(if value.compiler_origin.is_some() {
+    let mut bytes = Vec::with_capacity(84 + value.canonical_policy().len());
+    bytes.extend_from_slice(if value.compiler_origin().is_some() {
         b"AOSPOLR2"
     } else {
         POLICY_REVISION_MAGIC
     });
-    bytes.extend_from_slice(value.project.as_bytes());
-    bytes.extend_from_slice(&value.generation.to_be_bytes());
-    bytes.extend_from_slice(&value.not_before.to_be_bytes());
-    bytes.extend_from_slice(&value.expires_at.to_be_bytes());
-    bytes.extend_from_slice(value.descriptor.digest().as_bytes());
+    bytes.extend_from_slice(value.project().as_bytes());
+    bytes.extend_from_slice(&value.generation().to_be_bytes());
+    bytes.extend_from_slice(&value.not_before().to_be_bytes());
+    bytes.extend_from_slice(&value.expires_at().to_be_bytes());
+    bytes.extend_from_slice(value.descriptor().digest().as_bytes());
     bytes.extend_from_slice(&length.to_be_bytes());
-    bytes.extend_from_slice(&value.canonical_policy);
-    if let Some(origin) = &value.compiler_origin {
-        let origin_bytes = origin.to_record_bytes()?;
+    bytes.extend_from_slice(value.canonical_policy());
+    if let Some(origin) = value.compiler_origin() {
+        let origin_bytes = origin.to_record_bytes().map_err(PublisherPolicyError::from)?;
         let length = u32::try_from(origin_bytes.len())
             .map_err(|_| PublisherPolicyError::LimitExceeded("compiler origin bytes"))?;
         bytes.extend_from_slice(&length.to_be_bytes());
@@ -195,7 +171,7 @@ pub(super) fn decode_policy_revision(
         DecodeLimits::default(),
     )
     .map_err(|_| PublisherPolicyError::CorruptState)?;
-    if value.descriptor.digest() != digest {
+    if value.descriptor().digest() != digest {
         return Err(PublisherPolicyError::CorruptState);
     }
     if &bytes[..8] == b"AOSPOLR2" {
@@ -208,7 +184,7 @@ pub(super) fn decode_policy_revision(
         }
         let origin = crate::policy_compiler::RetainedPublisherCompilerOriginV3::from_record_bytes(
             &bytes[origin_start..],
-        )?;
+        ).map_err(PublisherPolicyError::from)?;
         value
             .retain_compiler_origin(origin)
             .map_err(|_| PublisherPolicyError::CorruptState)?;
@@ -218,9 +194,9 @@ pub(super) fn decode_policy_revision(
 pub(super) fn encode_policy_head(value: &PreparedPublisherPolicyRevisionV1) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(64);
     bytes.extend_from_slice(POLICY_CURRENT_MAGIC);
-    bytes.extend_from_slice(value.project.as_bytes());
-    bytes.extend_from_slice(&value.generation.to_be_bytes());
-    bytes.extend_from_slice(value.descriptor.digest().as_bytes());
+    bytes.extend_from_slice(value.project().as_bytes());
+    bytes.extend_from_slice(&value.generation().to_be_bytes());
+    bytes.extend_from_slice(value.descriptor().digest().as_bytes());
     bytes
 }
 pub(super) fn decode_policy_head(bytes: &[u8]) -> Result<PolicyHead, PublisherPolicyError> {

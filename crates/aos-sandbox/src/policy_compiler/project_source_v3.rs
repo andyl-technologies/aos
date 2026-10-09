@@ -79,7 +79,7 @@ impl ProjectPolicyAssociationV3 {
         let origin = revision
             .compiler_origin()
             .ok_or(PolicyDeploymentHeadErrorV1::InvalidHead)?;
-        origin.verify_original_derivation(original_input)?;
+        origin.verify_original_derivation(original_input).map_err(crate::publisher_policy::PublisherPolicyError::from)?;
         Ok(Self {
             project: revision.project(),
             generation: source_generation,
@@ -266,7 +266,7 @@ fn with_current_inputs_at<R>(
     {
         return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
     }
-    origin.verify_original_derivation(original_input)?;
+    origin.verify_original_derivation(original_input).map_err(crate::publisher_policy::PublisherPolicyError::from)?;
     let held = HeldCurrentCreatePolicyInputsV3 {
         sequence: controller.snapshot_sequence(),
         controller,
@@ -355,7 +355,7 @@ fn verify_association_at_held_cut(
     {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
-    let revision_descriptor = held.origin.output_descriptors()?[0].clone();
+    let revision_descriptor = held.origin.output_descriptors().map_err(crate::publisher_policy::PublisherPolicyError::from)?[0].clone();
     let source_generation = read_u64(packet, 24)?;
     let association = association_bytes(
         source_generation,
@@ -399,7 +399,7 @@ fn association_bytes(
             generation,
             publisher_generation,
             policy,
-            origin.record_digest()?,
+            origin.record_digest().map_err(crate::publisher_policy::PublisherPolicyError::from)?,
             origin.original_target(),
             origin.normalized_input(),
             input.project().descriptor(),

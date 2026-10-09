@@ -48,8 +48,8 @@ impl Q04PreparedInputOriginV1 {
         input: &aos_sandbox_policy::PolicyCompilerInputV1,
         candidate: &aos_sandbox_policy::CompiledPolicyCandidateV1,
     ) -> Result<Self, CreateQ04ErrorV1> {
-        let original = super::super::publisher_origin::retain_q04_original_derivation(input, candidate)?;
-        Ok(Self { bytes: original.to_record_bytes()? })
+        let original = aos_sandbox_policy::retain_publisher_compiler_derivation_v3(input, candidate).map_err(crate::publisher_policy::PublisherPolicyError::from)?;
+        Ok(Self { bytes: original.to_record_bytes().map_err(crate::publisher_policy::PublisherPolicyError::from)? })
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
@@ -72,7 +72,7 @@ pub(crate) fn require_origin_identity(
     bytes: &[u8],
     identity: &super::Q04CutIdentityV1,
 ) -> Result<(), CreateQ04ErrorV1> {
-    let original = super::super::RetainedPublisherCompilerOriginV3::from_record_bytes(bytes)?;
+    let original = super::super::RetainedPublisherCompilerOriginV3::from_record_bytes(bytes).map_err(crate::publisher_policy::PublisherPolicyError::from)?;
     if original.project() != identity.project() || original.original_target() != identity.sandbox()
         || original.normalized_input() != ObjectDigest::from_bytes(super::fixed(identity.bytes(), 456))
         || original.candidate() != ObjectDigest::from_bytes(super::fixed(identity.bytes(), 488))

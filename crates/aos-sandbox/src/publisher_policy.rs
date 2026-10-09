@@ -14,11 +14,10 @@
 //! cryptographic anti-rollback protection and cannot detect a validly encoded
 //! rewrite performed through lower-level journal access.
 
-use aos_sandbox_core::format::{decode_policy, encode_policy};
-use aos_sandbox_core::model::{CacheDomain, CacheDomainKind, Policy};
+use aos_sandbox_core::model::{CacheDomain, CacheDomainKind};
 use aos_sandbox_core::{
-    DecodeLimits, MediaType, ObjectDescriptor, ObjectDigest, Operation, PrincipalId, ProjectId,
-    ResourceId, ResourceKind, RevocationScopeId, descriptor_for_bytes, validate_required_features,
+    DecodeLimits, ObjectDescriptor, ObjectDigest, Operation, PrincipalId, ProjectId,
+    ResourceId, ResourceKind, RevocationScopeId,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -55,12 +54,9 @@ const MAXIMUM_POLICY_BYTES: usize = 4 * 1024 * 1024;
 const MAXIMUM_RECORDS: usize = 65_536;
 const MAXIMUM_RECORD_BYTES: usize = MAXIMUM_POLICY_BYTES + 128;
 const MAXIMUM_MATERIALIZED_BYTES: usize = 512 * 1024 * 1024;
-const MAXIMUM_COLLECTION_ITEMS: usize = 1_024;
-const MAXIMUM_TOTAL_ITEMS: usize = 65_536;
-const MAXIMUM_STRING_BYTES: usize = 64 * 1024;
-const MAXIMUM_DEPTH: usize = 64;
 
 mod model;
+pub use aos_sandbox_policy::PreparedPublisherPolicyRevisionV1;
 mod account_coverage;
 mod git_upload_capacity;
 pub use git_upload_capacity::{
@@ -78,7 +74,7 @@ pub(crate) use project_authorization_store_v2::CurrentSourceTreeSeedPreflightErr
 #[cfg(test)]
 mod project_authorization_test_fixture;
 pub use model::{
-    PreparedPublisherPolicyRevisionV1, PublisherControllerHeadV1, PublisherPolicyError,
+    PublisherControllerHeadV1, PublisherPolicyError,
     PublisherPolicyLimits, PublisherProjectCacheDomainHeadV1, PublisherProjectRevocationHeadV1,
     PublisherResourceBindingV1, PublisherRevocationHeadV1,
 };
@@ -150,9 +146,9 @@ impl<'journal> PublisherPolicyStore<'journal> {
             )
             .ok_or(PublisherPolicyError::CorruptState)?;
         let revision = decode_policy_revision(bytes)?;
-        if revision.project != project
-            || revision.generation != head.generation
-            || revision.descriptor.digest() != head.digest
+        if revision.project() != project
+            || revision.generation() != head.generation
+            || revision.descriptor().digest() != head.digest
         {
             return Err(PublisherPolicyError::CorruptState);
         }
@@ -333,15 +329,15 @@ impl<'journal> PublisherPolicyStore<'journal> {
     ) -> Result<CommitResult, PublisherPolicyError> {
         self.journal.ensure_protected_authority()?;
         validate_policy_resources(self.journal, prepared)?;
-        let current = self.current_policy(prepared.project)?;
+        let current = self.current_policy(prepared.project())?;
         validate_successor(
             current
                 .as_ref()
                 .map(PreparedPublisherPolicyRevisionV1::generation),
             expected_generation,
-            prepared.generation,
+            prepared.generation(),
         )?;
-        let revision_key = policy_revision_key(prepared.project, prepared.generation);
+        let revision_key = policy_revision_key(prepared.project(), prepared.generation());
         if self
             .journal
             .get(RecordNamespace::PublisherPolicy, &revision_key)
@@ -361,7 +357,7 @@ impl<'journal> PublisherPolicyStore<'journal> {
             ),
             JournalRecord::put(
                 RecordNamespace::PublisherPolicy,
-                policy_current_key(prepared.project),
+                policy_current_key(prepared.project()),
                 encode_policy_head(prepared),
             ),
         ];

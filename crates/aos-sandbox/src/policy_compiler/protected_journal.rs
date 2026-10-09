@@ -44,6 +44,7 @@ use aos_sandbox_policy::{
 };
 
 mod canonical_output;
+use aos_sandbox_policy::normalized_policy_input_digest_v1;
 
 const CURRENT_MAGIC: &[u8; 8] = b"AOSPCU01";
 const CANDIDATE_MAGIC: &[u8; 8] = b"AOSPCC01";
@@ -51,7 +52,6 @@ const CANDIDATE_V2_FIXED_BYTES: usize = 478;
 const CANDIDATE_V3_FIXED_BYTES: usize = CANDIDATE_V2_FIXED_BYTES + 5 * 32;
 const MAXIMUM_AUTHENTICATED_REPLAY_PREREQUISITES: usize = 4_096;
 const DIAGNOSTICS_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.diagnostics.v1";
-const INPUT_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.normalized-input.v1\0";
 const PREREQUISITE_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.prerequisites.v1\0";
 
 #[cfg(test)]
@@ -645,7 +645,7 @@ pub(super) fn q04_independent_publication_data_v1(
 ) -> Result<Q04IndependentPublicationRecipeV1, PolicyCompilerJournalErrorV1> {
     let project = input.project().project();
     let sandbox = input.sandbox();
-    let normalized_input = normalized_policy_input_digest_v1(input)?;
+    let normalized_input = normalized_policy_input_digest_v1(input).map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
     let diagnostics = aos_sandbox_policy::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
     if candidate.authority_status() != CandidateAuthorityV1::NonAuthoritativeAncestry {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
@@ -709,7 +709,7 @@ impl VerifiedPolicyPublicationV1 {
     ) -> Result<Self, PolicyCompilerJournalErrorV1> {
         let project = input.project().project();
         let sandbox = input.sandbox();
-        let normalized_input = normalized_policy_input_digest_v1(input)?;
+        let normalized_input = normalized_policy_input_digest_v1(input).map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
         let candidate_digest = candidate.commitment().digest();
         let diagnostics =
             aos_sandbox_policy::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
@@ -1033,7 +1033,7 @@ impl<'journal> PolicyCompilerProtectedJournalV1<'journal> {
     ) -> Result<Q04IndependentPublicationRecipeV1, PolicyCompilerJournalErrorV1> {
         let project = input.project().project();
         let sandbox = input.sandbox();
-        let normalized_input = normalized_policy_input_digest_v1(input)?;
+        let normalized_input = normalized_policy_input_digest_v1(input).map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
         let canonical_diagnostics =
             aos_sandbox_policy::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
         if candidate.authority_status() != CandidateAuthorityV1::NonAuthoritativeAncestry
@@ -1081,7 +1081,7 @@ impl<'journal> PolicyCompilerProtectedJournalV1<'journal> {
     ) -> Result<Q04PublicationCapacityV1, PolicyCompilerJournalErrorV1> {
         let project = input.project().project();
         let sandbox = input.sandbox();
-        let normalized_input = normalized_policy_input_digest_v1(input)?;
+        let normalized_input = normalized_policy_input_digest_v1(input).map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
         if !self.validator.contains(prerequisites)
             || recipe.project != project
             || recipe.sandbox != sandbox
@@ -1843,41 +1843,6 @@ struct CurrentPolicyHeadV1 {
     generation: u64,
     envelope_revision: u64,
     envelope_digest: ObjectDigest,
-}
-
-/// Computes the canonical normalized-input digest used by publication checks.
-///
-/// # Errors
-///
-/// Returns [`PolicyCompilerJournalErrorV1::NonCanonicalPublication`] if an
-/// input descriptor or target identity is sentinel-valued.
-pub fn normalized_policy_input_digest_v1(
-    input: &PolicyCompilerInputV1,
-) -> Result<ObjectDigest, PolicyCompilerJournalErrorV1> {
-    if input.sandbox().as_bytes() == &[0; 16] || input.project().project().as_bytes() == &[0; 16] {
-        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-    }
-    let mut hasher = Sha256::new();
-    hasher.update(INPUT_DOMAIN);
-    hasher.update(input.sandbox().as_bytes());
-    hasher.update(input.project().project().as_bytes());
-    update_descriptor(&mut hasher, input.relation().descriptor())?;
-    update_descriptor(&mut hasher, input.node().descriptor())?;
-    update_descriptor(&mut hasher, input.site().descriptor())?;
-    update_descriptor(&mut hasher, input.project().descriptor())?;
-    for ancestor in input.ancestors() {
-        update_descriptor(&mut hasher, ancestor.descriptor())?;
-    }
-    update_descriptor(&mut hasher, input.request().descriptor())?;
-    update_descriptor(&mut hasher, input.endpoints().descriptor())?;
-    update_descriptor(&mut hasher, input.destinations().descriptor())?;
-    update_descriptor(&mut hasher, input.backend().descriptor())?;
-    hasher.update(input.limits().work().to_be_bytes());
-    hasher.update(input.limits().dag_depth().to_be_bytes());
-    let rule_limit = u64::try_from(input.limits().rules())
-        .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    hasher.update(rule_limit.to_be_bytes());
-    Ok(ObjectDigest::from_bytes(hasher.finalize().into()))
 }
 
 fn validate_policy_projection(
@@ -2890,7 +2855,7 @@ pub(super) fn compare_recompiled_candidate_derivation_v1(
         || header.generation != generation
         || header.prerequisite_tuple != *prerequisites
         || header.prerequisites != prerequisites.digest()
-        || header.normalized_input != normalized_policy_input_digest_v1(input)?
+        || header.normalized_input != normalized_policy_input_digest_v1(input).map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?
         || header.candidate != candidate.commitment().digest()
         || header.preimage != Some(candidate.commitment_plan_digests())
         || header.diagnostics != digest_bytes(DIAGNOSTICS_DOMAIN, &diagnostics)
@@ -3075,20 +3040,6 @@ fn decode_prerequisite_tuple(
         return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
     }
     Ok(prerequisites)
-}
-
-fn update_descriptor(
-    hasher: &mut Sha256,
-    descriptor: &ObjectDescriptor,
-) -> Result<(), PolicyCompilerJournalErrorV1> {
-    if descriptor.digest().as_bytes() == &[0; 32] || descriptor.encoded_size() == 0 {
-        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-    }
-    hasher.update((descriptor.media_type().as_str().len() as u64).to_be_bytes());
-    hasher.update(descriptor.media_type().as_str().as_bytes());
-    hasher.update(descriptor.digest().as_bytes());
-    hasher.update(descriptor.encoded_size().to_be_bytes());
-    Ok(())
 }
 
 fn prerequisite_digest(value: &PolicyPublicationPrerequisitesV1) -> ObjectDigest {
