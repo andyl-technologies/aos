@@ -109,16 +109,9 @@ Cancellation of a solve does not revoke a previously applied allocation.
 Likewise, releasing a session does not release resources managed by the
 consumer. These lifecycles MUST remain distinguishable.
 
-# 13. IANA considerations
+# 13. References
 
-This specification requests no IANA assignments. It defines no global service
-port, URI scheme, media type registration, or Internet protocol registry.
-Dispatch model, message, and capability identifiers belong to a published
-Dispatch schema registry whose evolution follows Section 7.
-
-# 14. References
-
-## 14.1. Normative references
+## 13.1. Normative references
 
 - **[BCP14]** Bradner, S., "Key words for use in RFCs to Indicate Requirement
   Levels", BCP 14, RFC 2119, March 1997,
@@ -147,7 +140,7 @@ the corresponding mechanisms. Deployments MUST identify the versions whose
 behavior they qualify; a moving documentation URL does not authorize silent
 changes in a session's negotiated guarantees.
 
-## 14.2. Informative references
+## 13.2. Informative references
 
 - **[REBALANCER]** Meta, "Rebalancer",
   <https://github.com/facebook/rebalancer>.

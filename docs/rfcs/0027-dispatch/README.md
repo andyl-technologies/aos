@@ -26,8 +26,7 @@ resource authority and execution of those proposals remain with consumers.
 
 ## Status of this memo
 
-This document is an AOS design proposal. It does not claim IETF approval or
-define an Internet standard. Sections 1 through 12 specify the target
+This document is an AOS design proposal. Sections 1 through 12 specify the target
 architecture and its conformance requirements. Informative examples illustrate
 those requirements without establishing application-specific policy.
 
@@ -49,8 +48,7 @@ profiles.
 10. [AOS and application interfaces](05-platform-and-consumers.md#10-aos-and-application-interfaces)
 11. [Operational considerations](05-platform-and-consumers.md#11-operational-considerations)
 12. [Security considerations](06-security-and-references.md#12-security-considerations)
-13. [IANA considerations](06-security-and-references.md#13-iana-considerations)
-14. [References](06-security-and-references.md#14-references)
+13. [References](06-security-and-references.md#13-references)
 
 ## 1. Introduction
 
