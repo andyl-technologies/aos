@@ -41,6 +41,10 @@ mod artifact_seal;
 #[path = "../bucket/publication/effects.rs"]
 pub(crate) mod publication;
 
+#[cfg(unix)]
+#[path = "../bucket/domain_deletion.rs"]
+pub(crate) mod domain_deletion;
+
 /// Retains a duplicate descriptor of an actually acquired native exclusion.
 ///
 /// Its constructor and descriptor stay private. Retention preserves exclusion;

@@ -133,8 +133,13 @@ corrected with full-identity ordered storage. The generic closing-pause fixture
 now uses its actual content observer. After removing the unused test accessor,
 frozen candidate `05b1e3916e` passes strict native all-target Clippy with
 warnings denied. Its original test compilation and fresh executable-bound
-inventory pass; the selected twenty-nine native cases are running under the
-unchanged deadlines. Runtime results remain incomplete. Its registry Nix gate
+inventory pass. The selected twenty-nine native cases finish with twenty-six
+passes, two failures and one timeout at the unchanged deadlines (190.181
+seconds; run `804a89f5-c11d-4aec-adf8-7be70d3bba6e`,
+`/tmp/terrane-t1-read-05b1e391-qualification/read-runtime.log`). The failures
+expose colliding hardlink fixture names and an absent prior-range comparison;
+the dictionary dependency case times out at 120.004 seconds. Public SDK and
+dependent qualification remain unrun. The candidate's registry Nix gate
 passes all 292 mappings and 69 current plan citations.
 Six isolated workers now complete chunking/codecs, pure algebra, pure
 properties, native provenance disclosure, domains and native cold forks with

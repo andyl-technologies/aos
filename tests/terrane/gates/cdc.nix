@@ -48,6 +48,7 @@ in {
     ${runTests}
     run_tests -p terrane codec::tests::rejects_bomb_header_truncated_frame_and_trailing_frame
     run_tests -p terrane codec::tests::bounded_decoder_rejects_a_frame_with_false_content_size
+    run_tests -p terrane --lib codec::tests::public_decoder_rejects_false_content_sizes_for_both_compressed_codecs -- --exact
     printf 'PASS: declared length and bounded decompression\n' > "$out/result"
   '';
 

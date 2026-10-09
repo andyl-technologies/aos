@@ -28,6 +28,14 @@ mod held_history;
 #[path = "selected/cold_fork.rs"]
 pub(crate) mod cold_fork;
 
+#[cfg(all(feature = "std", unix))]
+#[path = "selected/disclosure_rotation.rs"]
+pub(crate) mod disclosure_rotation;
+
+#[cfg(all(feature = "std", unix))]
+#[path = "selected/domain_deletion.rs"]
+pub(crate) mod domain_deletion;
+
 #[cfg(not(feature = "send"))]
 use std::rc::Rc as SharedCheck;
 #[cfg(feature = "send")]

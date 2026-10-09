@@ -11,6 +11,10 @@ mod audit_codec;
 #[cfg(all(feature = "surface-sdk", unix))]
 mod checkout;
 mod diff;
+#[cfg(unix)]
+mod disclosure_rotation;
+#[cfg(unix)]
+mod domain_deletion;
 mod error;
 #[cfg(feature = "std")]
 mod import;
@@ -19,6 +23,8 @@ mod local;
 #[cfg(all(feature = "std", unix))]
 /// Persists protected local signing and retained original-authority evidence.
 pub(crate) mod local_authority;
+#[cfg(unix)]
+mod overlay;
 mod path;
 mod prepared;
 pub(crate) mod read;

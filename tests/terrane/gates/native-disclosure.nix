@@ -28,6 +28,8 @@
     "disclosure_boundary_rejects_uncovered_siblings_attributes_and_unanchored_parents"
     "disclosure_boundary_uses_public_introducer_and_public_ancestry"
     "disclosure_boundary_preserves_historical_key_windows_and_current_revocation"
+    "disclosure_rotation_retains_historical_certificates_and_issues_with_new_key"
+    "disclosure_rotation_denies_current_admin_and_ambiguous_issue_time_without_effects"
     "disclosure_original_binding_rejects_copied_or_conflicting_import_controls"
     "disclosure_current_authority_rechecks_both_whole_heads_tokens_epochs_and_root_acls"
     "disclosure_projection_rejects_tree_whiteout_conflict_and_index_entries"
@@ -80,6 +82,10 @@ in {
   dom-dedup-scope = sourceGate "dom-dedup-scope" ''
     cd crates
     ${domainCore}
+    ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "domain::native_storage_tests::" [
+      "domain::native_storage_tests::dom_dedup_scope_native_chunks_manifests_and_nodes_are_independent_after_reopen"
+      "domain::native_storage_tests::dom_dedup_scope_native_disclosure_verifies_recompressed_plaintext"
+    ]}
     ${nativeSuite "ref_advance::disclosure_tests::" [
       "disclosure_domain_reference_order_and_dedup_remain_scoped"
       "disclosure_current_authority_rechecks_both_whole_heads_tokens_epochs_and_root_acls"

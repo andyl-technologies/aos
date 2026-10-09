@@ -31,6 +31,8 @@ pub(crate) use native_clock::gc_test_clock::TestClock;
 pub(crate) use native_effect::LeaseSyncEvent;
 #[cfg(all(feature = "std", test, feature = "tokio", unix))]
 pub(crate) use native_effect::MutationSyncEvent;
+#[cfg(all(feature = "std", unix))]
+pub(crate) use native_effect::domain_deletion as native_domain_deletion;
 #[cfg(feature = "std")]
 pub(crate) use native_effect::publication as native_publication_effects;
 #[cfg(feature = "std")]

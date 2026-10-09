@@ -12,7 +12,11 @@ pub(crate) use phase_trace::PhaseTrace;
 
 mod coordinator;
 mod disclosure;
+#[cfg(unix)]
+mod disclosure_rotation;
 mod native;
+#[cfg(unix)]
+mod overlay;
 mod prepared;
 mod watch;
 

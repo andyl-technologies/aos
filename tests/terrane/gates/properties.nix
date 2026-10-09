@@ -55,9 +55,9 @@ in {
   property-required-attrs = sourceGate "property-required-attrs" ''
     cd crates
     ${runTests "properties::tests::required_attrs"}
-    ${runTests "properties::tests::required_attrs_structured_classification_rejects_invalid_inline_and_side_values -- --exact"}
-    ${runTests "properties::tests::required_attrs_structured_classification_accepts_valid_values_and_nonmatching_magic -- --exact"}
-    ${runTests "properties::tests::required_attrs_completeness_rejects_nonrequirement_properties_without_files -- --exact"}
+    ${runTests "properties::tests::classification::required_attrs_structured_classification_rejects_invalid_inline_and_side_values -- --exact"}
+    ${runTests "properties::tests::classification::required_attrs_structured_classification_accepts_valid_values_and_nonmatching_magic -- --exact"}
+    ${runTests "properties::tests::classification::required_attrs_completeness_rejects_nonrequirement_properties_without_files -- --exact"}
     printf 'PASS: changed-entry attribute requirements and completeness\n' > "$out/result"
   '';
 

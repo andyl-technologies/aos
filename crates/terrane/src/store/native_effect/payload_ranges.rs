@@ -217,6 +217,22 @@ impl PayloadRangeCapture {
                 "incomplete native payload range",
             )));
         }
+
+        // A fresh read must preserve bytes already consumed by this capture,
+        // even when file timestamps do not distinguish two writes. Compare
+        // only the overlap actually returned by the native worker; closing
+        // still rereads every retained range through the original descriptor.
+        if self
+            .retained
+            .ranges
+            .iter()
+            .any(|expected| !preserves_overlap(range, &bytes, expected))
+        {
+            return Err(io_failure(io::Error::other(
+                "previously consumed native payload bytes changed",
+            )));
+        }
+
         self.retained.ranges.push(ExpectedRange {
             range,
             bytes: bytes.clone(),
@@ -228,6 +244,41 @@ impl PayloadRangeCapture {
     pub(crate) fn finish(self) -> RetainedPayloadRanges {
         self.retained
     }
+}
+
+#[cfg(all(feature = "tokio", unix))]
+fn preserves_overlap(range: ByteRange, bytes: &[u8], expected: &ExpectedRange) -> bool {
+    let (Some(end), Some(expected_end)) = (
+        range.start.checked_add(range.length),
+        expected.range.start.checked_add(expected.range.length),
+    ) else {
+        return false;
+    };
+
+    let start = range.start.max(expected.range.start);
+    let end = end.min(expected_end);
+    if start >= end {
+        return true;
+    }
+
+    let (Ok(offset), Ok(expected_offset), Ok(length)) = (
+        usize::try_from(start - range.start),
+        usize::try_from(start - expected.range.start),
+        usize::try_from(end - start),
+    ) else {
+        return false;
+    };
+    let (Some(end), Some(expected_end)) = (
+        offset.checked_add(length),
+        expected_offset.checked_add(length),
+    ) else {
+        return false;
+    };
+
+    bytes
+        .get(offset..end)
+        .zip(expected.bytes.get(expected_offset..expected_end))
+        .is_some_and(|(current, prior)| current == prior)
 }
 
 #[cfg(all(feature = "tokio", unix))]
