@@ -464,6 +464,11 @@ a public integration consumer; shared gate prerequisite `5162673a56` retains
 all existing attribute tests and requires that consumer. This is source
 registration, not API or runtime qualification. Remote verbs and tree jobs
 remain in their later milestones and branch worklines.
+The reviewed attribute SDK candidate `376328f9ad` now implements documented
+`SideTable::get` over the existing exact metadata lookup. Its public consumer
+uses signed producer/tree evidence, retains unsupported and unsigned records,
+checks metadata-only reads and pins storage and invalid-signature failures.
+Scoped source formatting passes; compilation and runtime remain queued.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
