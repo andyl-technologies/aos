@@ -125,6 +125,18 @@ empty `terrane` binary.
 ### T1 — Local repository
 
 **Status:** In progress; nine of twenty-two T1 tasks are complete.
+The frozen `9d122397a6` native recovery run is terminal: all thirty-one
+registered cases ran, with fourteen passes, eight failures and nine timeouts
+(2,770.386 seconds; run `cf52bbd2-6224-4a3c-bf53-54dba13b7583`, raw log
+`/tmp/terrane-native-recovery-corrected-full-nextest.log`). The public queued
+renewal exposes a genuine namespace/Original-lock cycle. Existing-only shared
+and exclusive nonblocking primitives now preserve actual inode checks and
+retained native duplicates; both modes also have replaced-open-name witnesses.
+This additive shared prerequisite does not yet change Original acquisition,
+and its build and runtime checks remain pending. The reviewed next change
+chooses read or write access before acquisition, refuses busy coordination
+without retaining the namespace holder, and preserves exclusive live record
+writers. No task acceptance or T1 exit follows from these source changes.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;

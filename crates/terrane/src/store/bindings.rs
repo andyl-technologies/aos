@@ -117,11 +117,20 @@ enum LockOpenMode {
     Existing,
 }
 
+/// Chooses lock access before acquisition without upgrading a retained holder.
+#[cfg(feature = "tokio")]
+enum LockAccess {
+    Exclusive,
+    TryShared,
+    TryExclusive,
+}
+
 /// Opens coordination with the requested creation policy and verifies its lock.
 #[cfg(feature = "tokio")]
 async fn native_file_lock(
     path: &std::path::Path,
     mode: LockOpenMode,
+    access: LockAccess,
 ) -> std::io::Result<TokioFileLock> {
     let path = path.to_owned();
 
@@ -142,12 +151,12 @@ async fn native_file_lock(
                 .mode(0o600)
                 .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
                 .open(&path)?;
-            lock_opened(&path, file)
+            lock_opened_with_access(&path, file, access)
         }
 
         #[cfg(not(unix))]
         {
-            let _ = (path, mode);
+            let _ = (path, mode, access);
             Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "nofollow coordination locking unavailable",
@@ -159,8 +168,18 @@ async fn native_file_lock(
 }
 
 /// Locks the opened regular inode and verifies that its pathname still names it.
-#[cfg(all(feature = "tokio", unix))]
+#[cfg(all(test, feature = "tokio", unix))]
 fn lock_opened(path: &std::path::Path, file: std::fs::File) -> std::io::Result<TokioFileLock> {
+    lock_opened_with_access(path, file, LockAccess::Exclusive)
+}
+
+/// Applies the chosen access and rechecks the same actual opened coordination inode.
+#[cfg(all(feature = "tokio", unix))]
+fn lock_opened_with_access(
+    path: &std::path::Path,
+    file: std::fs::File,
+    access: LockAccess,
+) -> std::io::Result<TokioFileLock> {
     use std::os::unix::fs::MetadataExt;
 
     let before = file.metadata()?;
@@ -171,7 +190,24 @@ fn lock_opened(path: &std::path::Path, file: std::fs::File) -> std::io::Result<T
         ));
     }
 
-    file.lock()?;
+    let try_result = match access {
+        LockAccess::Exclusive => {
+            file.lock()?;
+            Ok(())
+        }
+        LockAccess::TryShared => file.try_lock_shared(),
+        LockAccess::TryExclusive => file.try_lock(),
+    };
+    match try_result {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "coordination inode is already held",
+            ));
+        }
+        Err(std::fs::TryLockError::Error(error)) => return Err(error),
+    }
 
     // A waiter may resume after the name has been replaced. Holding the old
     // inode's kernel lock cannot establish exclusion at that new pathname.
@@ -254,11 +290,25 @@ impl LocalFs for TokioLocalFs {
     }
 
     async fn lock_exclusive(&self, path: &std::path::Path) -> std::io::Result<Self::Lock> {
-        native_file_lock(path, LockOpenMode::Create).await
+        native_file_lock(path, LockOpenMode::Create, LockAccess::Exclusive).await
     }
 
     async fn lock_existing_exclusive(&self, path: &std::path::Path) -> std::io::Result<Self::Lock> {
-        native_file_lock(path, LockOpenMode::Existing).await
+        native_file_lock(path, LockOpenMode::Existing, LockAccess::Exclusive).await
+    }
+
+    async fn try_lock_existing_shared(
+        &self,
+        path: &std::path::Path,
+    ) -> std::io::Result<Self::Lock> {
+        native_file_lock(path, LockOpenMode::Existing, LockAccess::TryShared).await
+    }
+
+    async fn try_lock_existing_exclusive(
+        &self,
+        path: &std::path::Path,
+    ) -> std::io::Result<Self::Lock> {
+        native_file_lock(path, LockOpenMode::Existing, LockAccess::TryExclusive).await
     }
 
     async fn read(&self, path: &std::path::Path) -> std::io::Result<Vec<u8>> {
@@ -806,6 +856,139 @@ mod tests {
             );
             assert!(!path.exists());
             fs.remove_file(&link).await.unwrap();
+            fs.remove_dir(&root).await.unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_existing_try_locks_preserve_readers_writers_and_retained_duplicates() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let fs = TokioLocalFs;
+            let entropy = fs.random_bytes(16).await.unwrap();
+            let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+            let root = std::env::temp_dir().join(format!("terrane-try-lock-{suffix}"));
+            fs.create_dir_new(&root).await.unwrap();
+            let path = root.join("coordination");
+
+            assert_eq!(
+                fs.try_lock_existing_shared(&path).await.unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+            assert_eq!(
+                fs.try_lock_existing_exclusive(&path)
+                    .await
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::NotFound
+            );
+            assert!(!path.exists());
+            fs.write_new(&path, b"registered coordination")
+                .await
+                .unwrap();
+
+            let first = fs.try_lock_existing_shared(&path).await.unwrap();
+            let retained = fs.retain_native_exclusion(&first).unwrap();
+            let second = fs.try_lock_existing_shared(&path).await.unwrap();
+            assert_eq!(
+                fs.try_lock_existing_exclusive(&path)
+                    .await
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            drop(first);
+            drop(second);
+
+            // The genuine native duplicate still excludes an administrative
+            // writer after every logical reader guard has been released.
+            assert_eq!(
+                fs.try_lock_existing_exclusive(&path)
+                    .await
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            drop(retained);
+
+            let writer = fs.try_lock_existing_exclusive(&path).await.unwrap();
+            assert_eq!(
+                fs.try_lock_existing_shared(&path).await.unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            drop(writer);
+            let reader = fs.try_lock_existing_shared(&path).await.unwrap();
+            drop(reader);
+
+            let alias = root.join("alias");
+            fs.symlink(&path, &alias).await.unwrap();
+            assert!(fs.try_lock_existing_shared(&alias).await.is_err());
+            assert!(fs.try_lock_existing_exclusive(&alias).await.is_err());
+            fs.remove_file(&alias).await.unwrap();
+            fs.hard_link(&path, &alias).await.unwrap();
+            assert!(fs.try_lock_existing_shared(&path).await.is_err());
+            assert!(fs.try_lock_existing_exclusive(&path).await.is_err());
+            fs.remove_file(&alias).await.unwrap();
+            assert_eq!(fs.read(&path).await.unwrap(), b"registered coordination");
+            fs.remove_file(&path).await.unwrap();
+            fs.remove_dir(&root).await.unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_try_locks_reject_replaced_open_names_in_both_modes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let fs = TokioLocalFs;
+            let entropy = fs.random_bytes(16).await.unwrap();
+            let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+            let root = std::env::temp_dir().join(format!("terrane-try-lock-replacement-{suffix}"));
+            fs.create_dir_new(&root).await.unwrap();
+
+            for (access, label) in [
+                (LockAccess::TryShared, "shared"),
+                (LockAccess::TryExclusive, "exclusive"),
+            ] {
+                let path = root.join(label);
+                let retained = root.join(format!("{label}-retained"));
+                fs.write_new(&path, b"original").await.unwrap();
+                let opened = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&path)
+                    .unwrap();
+
+                // Neither mode may treat exclusion on the old descriptor as
+                // exclusion on a replacement now occupying the same name.
+                fs.rename(&path, &retained).await.unwrap();
+                fs.write_new(&path, b"replacement").await.unwrap();
+                assert_eq!(
+                    lock_opened_with_access(&path, opened, access)
+                        .unwrap_err()
+                        .kind(),
+                    std::io::ErrorKind::InvalidInput
+                );
+                assert_eq!(fs.read(&retained).await.unwrap(), b"original");
+                assert_eq!(fs.read(&path).await.unwrap(), b"replacement");
+
+                let current = if label == "shared" {
+                    fs.try_lock_existing_shared(&path).await.unwrap()
+                } else {
+                    fs.try_lock_existing_exclusive(&path).await.unwrap()
+                };
+                drop(current);
+                fs.remove_file(&retained).await.unwrap();
+                fs.remove_file(&path).await.unwrap();
+            }
+
             fs.remove_dir(&root).await.unwrap();
         });
     }

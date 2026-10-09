@@ -837,6 +837,49 @@ pub trait LocalFs {
         ))
     }
 
+    /// Attempts shared exclusion on an existing stable inode without waiting.
+    ///
+    /// Concurrent readers may retain this exclusion while exclusive writers
+    /// remain excluded. Implementations use the same nofollow, single-link and
+    /// post-acquisition pathname checks as existing exclusive coordination.
+    /// An unsuccessful attempt never creates a file or retains a lock. The
+    /// default refuses unsupported bindings without filesystem effects.
+    ///
+    /// # Errors
+    /// Returns `WouldBlock` when an exclusive holder prevents acquisition,
+    /// `NotFound` for missing coordination, an I/O error for unsafe or replaced
+    /// inodes or failed locking, and `Unsupported` when unavailable.
+    async fn try_lock_existing_shared(
+        &self,
+        _path: &std::path::Path,
+    ) -> std::io::Result<Self::Lock> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "existing-only shared coordination locking unavailable",
+        ))
+    }
+
+    /// Attempts exclusive exclusion on an existing stable inode without waiting.
+    ///
+    /// A producer holding namespace exclusion can refuse busy administrative
+    /// coordination and release its holder instead of waiting in the opposite
+    /// lock order. Existing-only safety checks remain identical to blocking
+    /// acquisition. The default refuses without filesystem effects.
+    ///
+    /// # Errors
+    /// Returns `WouldBlock` when another holder prevents acquisition,
+    /// `NotFound` for missing coordination, an I/O error for unsafe or replaced
+    /// inodes or failed locking, and `Unsupported` when unavailable.
+    async fn try_lock_existing_exclusive(
+        &self,
+        _path: &std::path::Path,
+    ) -> std::io::Result<Self::Lock> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "existing-only nonblocking coordination locking unavailable",
+        ))
+    }
+
     /// Retains exclusion by duplicating an actual already held native guard.
     ///
     /// The opaque result has no public constructor or descriptor accessor. This
