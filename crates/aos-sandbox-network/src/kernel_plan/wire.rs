@@ -949,9 +949,7 @@ pub(super) fn read_error(error: ReadError) -> NetworkKernelPlanError {
     match error {
         ReadError::LengthOverflow => NetworkKernelPlanError::TooLarge,
         ReadError::Truncated => NetworkKernelPlanError::Truncated,
-        ReadError::NonzeroReserved => {
-            NetworkKernelPlanError::Invalid("reserved bytes are nonzero")
-        }
+        ReadError::NonzeroReserved => NetworkKernelPlanError::Invalid("reserved bytes are nonzero"),
         ReadError::TrailingBytes => NetworkKernelPlanError::LengthMismatch,
     }
 }
