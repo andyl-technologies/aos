@@ -11,8 +11,8 @@
 //! ```text
 //! cancellation[112]: AOSQPX01 | version:u16=1 | reserved[6]=0 |
 //!   reservation:32 | client-nonce:16 | project:16 | checksum:32
-//! outcome[312]: AOSQPO01 | version:u16=1 | kind:u8 | reserved[5]=0 |
-//!   stage:32 | Source-row:32 | Controller-packet:32 | operation:16 |
+//! outcome[312]: AOSQPO01 | version:u16=1 | reserved[6]=0 | stage:32 |
+//!   kind:u8 | reserved[7]=0 | Source-row:32 | Controller-packet:32 | operation:16 |
 //!   sandbox:16 | source-commitment:32 | project:16 | project-packet:32 |
 //!   project-input:32 | client-nonce:16 | checksum:32
 //! floor[392]: AOSQPF01 | version:u16=1 | kind:u8 | reserved[5]=0 | issue:u64 |
