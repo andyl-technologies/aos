@@ -8,7 +8,7 @@ pub use graft::{
     GraftResult, PreparedGraft, graft, graft_certified, graft_certified_with_domains,
     graft_with_domains, prepare_graft, prepare_graft_with_domains,
 };
-pub use overlay::Overlay;
+pub use overlay::{MaterializedOverlay, Overlay, OverlayPolicy, PreparedOverlay};
 pub use subtree::{
     PreparedFlatten, PreparedSplit, flatten, prepare_split, prepare_split_with_domains, split,
     split_with_domains,

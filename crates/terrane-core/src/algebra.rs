@@ -22,10 +22,11 @@ pub use compare::{
     diff_descend, diff_descend_with_work, diff_with_work,
 };
 pub use compose::{
-    Error, GraftResult, MaterializedRoot, Overlay, PreparedFlatten, PreparedGraft, PreparedSplit,
-    Roots, flatten, graft, graft_certified, graft_certified_with_domains, graft_with_domains,
-    lookup, prepare_graft, prepare_graft_with_domains, prepare_split, prepare_split_with_domains,
-    split, split_with_domains, validate_acyclic,
+    Error, GraftResult, MaterializedOverlay, MaterializedRoot, Overlay, OverlayPolicy,
+    PreparedFlatten, PreparedGraft, PreparedOverlay, PreparedSplit, Roots, flatten, graft,
+    graft_certified, graft_certified_with_domains, graft_with_domains, lookup, prepare_graft,
+    prepare_graft_with_domains, prepare_split, prepare_split_with_domains, split,
+    split_with_domains, validate_acyclic,
 };
 pub use domain::{DomainError, OperationDomains};
 pub use graph::{GraphWork, RootGraph};

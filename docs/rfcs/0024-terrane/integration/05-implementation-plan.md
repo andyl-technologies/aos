@@ -141,10 +141,10 @@ expose colliding hardlink fixture names and an absent prior-range comparison;
 the dictionary dependency case times out at 120.004 seconds. Public SDK and
 dependent qualification remain unrun. The candidate's registry Nix gate
 passes all 292 mappings and 69 current plan citations.
-Eight isolated implementation worklines cover chunking/codecs, contextual
+Nine isolated implementation worklines cover chunking/codecs, contextual
 algebra, pure properties, native provenance disclosure, domains, native cold
-forks, contextual indexes and nested overlay materialization with disjoint file
-ownership. The codec correction
+forks, contextual indexes, nested overlay materialization and held content reads
+with disjoint file ownership. The codec correction
 passes ten focused tests and strict native all-target Clippy; its owning Nix
 gates remain pending. Corrected read candidate `f87a19175a` passes fresh strict
 native all-target Clippy, fresh test compilation and executable-bound inventory
@@ -159,8 +159,15 @@ before reopening. Fresh strict Clippy, compilation and executable-bound
 inventory pass. The mandatory twenty-nine cases all pass in 32.162 seconds
 at their unchanged deadlines, and the exact public SDK case passes in 0.009
 seconds. All source and bound executable seals remain unchanged. The separate
-ninety-three-case read qualification, owning gates and full current trunk floor
-remain pending. No diagnostic run substitutes for qualification.
+ninety-three-case read qualification finishes with ninety-two passes and one
+backfill timeout at 120.043 seconds (310.037 seconds overall;
+run `8c7e618d-f331-492a-a90a-7ef74225d49e`). All seventeen ordinary-read and
+namespace cases pass. A focused diagnostic reaches post-backfill current
+lookup; repeated held content reads replay the selected publication history.
+A separate implementation workline reuses the existing request-local retained
+read closure while preserving fresh authority and physical closing checks.
+The owning gates and full current trunk floor remain pending. No diagnostic
+run substitutes for qualification.
 Unchanged-budget runtime tests and the complete current trunk floor remain
 required before task acceptance.
 The frozen `9d122397a6` native recovery run is terminal: all thirty-one
