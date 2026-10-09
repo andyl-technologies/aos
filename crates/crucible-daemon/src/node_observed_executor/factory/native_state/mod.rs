@@ -4,7 +4,7 @@
 //! key. Original complete runtime and coordinator state remains common; native
 //! images, actual live certificates and fresh owner binding remain backend-owned.
 
-mod archive;
+pub(super) mod archive;
 mod control;
 mod custody;
 mod evidence;
@@ -13,7 +13,7 @@ mod factory;
 pub(super) mod host;
 mod installed;
 mod ledger;
-mod profile;
+pub(super) mod profile;
 pub(super) mod public_catalog;
 mod publication;
 mod scheduling_epochs;

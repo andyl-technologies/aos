@@ -115,6 +115,11 @@ pub struct ArmRootNativeCustody {
 }
 
 impl ArmRootNativeCustody {
+    /// Borrows the actual retained launch for original supervisor-slot correlation.
+    pub fn launch(&self) -> &ArmRootLaunch {
+        &self.launch
+    }
+
     /// Borrows the entire original and uncertain host continuation on transfer.
     pub fn host_ledger(&self) -> &ArmRootHostLedger {
         &self.host_ledger
@@ -227,6 +232,7 @@ impl ArmRootHostLedger {
 
 /// Owns one supervised stopped ARM native process and its original Ready packet.
 pub struct ArmRootNativeProcess {
+    pub(crate) quarantined: bool,
     pub(crate) custody: Option<ArmRootNativeCustody>,
     pub(crate) slot: Option<Box<dyn ArmRootCustodySlot>>,
     pub(crate) ready: Gem5ArmNativeReady,
@@ -439,6 +445,7 @@ impl ArmRootNativeProcess {
                 custody.host_ledger.unresolved = None;
                 let boundary = ready.boundary.clone();
                 Ok(Self {
+                    quarantined: false,
                     custody: Some(custody),
                     slot: Some(slot),
                     ready,
@@ -456,6 +463,11 @@ impl ArmRootNativeProcess {
     }
 
     pub(crate) fn exchange(&mut self, request: Value) -> Result<Value, ProviderError> {
+        if self.quarantined {
+            return Err(ProviderError::Conflict(
+                "ARM original custody is quarantined",
+            ));
+        }
         let custody = self
             .custody
             .as_mut()
@@ -522,9 +534,56 @@ impl ArmRootNativeProcess {
         &self.boundary
     }
 
+    /// Borrows exact retained successful/refused outcomes without native execution.
+    pub fn outcomes(&self) -> impl ExactSizeIterator<Item = (&Id, &super::ArmRootRunOutcome)> {
+        self.completed.iter()
+    }
+
+    /// Borrows the original pending native output or refusal administration identity.
+    pub fn pending_operation(&self) -> Option<&Id> {
+        self.pending.as_ref()
+    }
+
+    /// Borrows the most recently acknowledged original native identity.
+    pub fn last_acknowledged_operation(&self) -> Option<&Id> {
+        self.last_acknowledged.as_ref()
+    }
+
     /// Borrows the original typed private readiness without granting public authority.
     pub fn native_ready(&self) -> &Gem5ArmNativeReady {
         &self.ready
+    }
+
+    /// Stops admission before requesting retirement of the retained actual groups.
+    ///
+    /// The process and every original host/control record remain owned here on
+    /// error. This operation never acknowledges pending Serial publication.
+    ///
+    /// # Errors
+    /// Refuses missing custody, changed group anchors or failed kernel signaling.
+    pub fn begin_quarantine(&mut self) -> Result<(), ProviderError> {
+        self.quarantined = true;
+        self.custody
+            .as_mut()
+            .ok_or(ProviderError::Frame("ARM original custody transferred"))?
+            .begin_quarantine()
+    }
+
+    /// Polls the actual retained leader and all helper groups without losing journals.
+    ///
+    /// A true result follows original-child waiting and complete private-group
+    /// disappearance. It does not discharge any modeled output obligation.
+    ///
+    /// # Errors
+    /// Refuses polling before quarantine, absent custody or failed retirement proof.
+    pub fn poll_reclamation(&mut self) -> Result<bool, ProviderError> {
+        if !self.quarantined {
+            return Err(ProviderError::Conflict("ARM retirement was not requested"));
+        }
+        self.custody
+            .as_mut()
+            .ok_or(ProviderError::Frame("ARM original custody transferred"))?
+            .poll_reclamation()
     }
 }
 

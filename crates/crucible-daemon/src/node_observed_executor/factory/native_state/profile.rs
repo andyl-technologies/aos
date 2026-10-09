@@ -340,7 +340,7 @@ impl MixedProfile {
 }
 
 /// Selects live public readiness while explicitly refusing every preservation capability.
-fn select_public_preparation(
+pub(in crate::node_observed_executor::factory) fn select_public_preparation(
     descriptor: &mut NodeDescriptor,
     binding: &mut BindingCompatibility,
     contents: &mut BTreeMap<String, ScenarioContent>,

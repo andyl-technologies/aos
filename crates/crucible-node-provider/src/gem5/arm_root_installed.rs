@@ -145,6 +145,29 @@ impl InstalledArmRootMechanism {
         super::images::measure_file(Path::new(path))
     }
 
+    /// Returns an independently remeasured source-owned artifact binding.
+    ///
+    /// This value identifies installed bytes only. It carries no live process,
+    /// execution certificate or native preparation authority.
+    ///
+    /// # Errors
+    /// Refuses unknown roles, changed installed bytes or extents, unavailable
+    /// source artifacts and measurement errors.
+    pub fn artifact_binding(&self, role: &str) -> Result<super::Gem5LaunchArtifact, ProviderError> {
+        self.artifact(role)
+    }
+
+    /// Returns the complete original installed manifest's measured binding.
+    ///
+    /// The binding supplies immutable selection data, never execution or
+    /// readiness authority for a process.
+    ///
+    /// # Errors
+    /// Refuses an absent source-installed manifest or failed byte measurement.
+    pub fn manifest_binding(&self) -> Result<crucible_node_contract::ContentRef, ProviderError> {
+        self.manifest_content()
+    }
+
     /// Refuses execution admission until actual common-node qualification exists.
     ///
     /// # Errors

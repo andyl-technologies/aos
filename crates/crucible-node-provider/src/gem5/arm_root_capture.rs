@@ -130,7 +130,7 @@ impl ArmRootNativeProcess {
         capture: Id,
         preserved: &Path,
     ) -> Result<ArmRootCapturedImage, ProviderError> {
-        if self.unresolved.is_some() || self.unresolved_capture.is_some() {
+        if self.quarantined || self.unresolved.is_some() || self.unresolved_capture.is_some() {
             return Err(ProviderError::Conflict(
                 "ARM capture has unresolved original effects",
             ));

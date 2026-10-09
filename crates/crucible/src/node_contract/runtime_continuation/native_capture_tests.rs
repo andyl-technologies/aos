@@ -167,3 +167,27 @@ fn later_owner_receives_remaining_streamed_artifact_credits_before_effect() {
     );
     assert_eq!(second.native_capture_limits[0].maximum_artifact_bytes, 1);
 }
+
+#[test]
+fn shared_pinned_artifact_readers_keep_independent_byte_ranges() {
+    let original = retained_artifact(b"original image range");
+    let sibling = original.clone();
+    let mut first = original.reader();
+    let mut second = sibling.reader();
+    let mut first_prefix = [0; 3];
+    let mut second_prefix = [0; 8];
+
+    std::io::Read::read_exact(&mut first, &mut first_prefix).unwrap();
+    std::io::Read::read_exact(&mut second, &mut second_prefix).unwrap();
+    original.verify().unwrap();
+    let mut first_suffix = Vec::new();
+    let mut second_suffix = Vec::new();
+    std::io::Read::read_to_end(&mut first, &mut first_suffix).unwrap();
+    std::io::Read::read_to_end(&mut second, &mut second_suffix).unwrap();
+
+    assert_eq!(&first_prefix, b"ori");
+    assert_eq!(&second_prefix, b"original");
+    assert_eq!(first_suffix, b"ginal image range");
+    assert_eq!(second_suffix, b" image range");
+    sibling.verify().unwrap();
+}

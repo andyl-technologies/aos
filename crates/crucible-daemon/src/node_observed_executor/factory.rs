@@ -1,6 +1,7 @@
 //! Host-owned installed providers and native enrollment before graph sealing.
 
 mod archive_artifacts;
+mod arm_root;
 mod cached_artifacts;
 mod capabilities;
 mod clock_label;
@@ -30,6 +31,9 @@ mod semantic_profile_tests;
 
 pub(super) use transcript::replay_stepper::{ReplayStep, ReplayStepper};
 
+pub use arm_root::public_catalog::{
+    InstalledPreparedRootWorld, InstalledRootPreservation, InstalledRootRestore,
+};
 pub use capabilities::{
     InstalledCapabilityCandidate, InstalledCapabilityClockFactory, ResolvedCapabilityWorld,
 };
@@ -103,6 +107,8 @@ pub enum InstalledNodeKind {
         /// Binds immutable compact properties and qualified input projections.
         profile: InstalledHostSemanticProfile,
     },
+    /// Selects the fixed parent-zero ARM Linux Root/Clock model and its distinct codec.
+    Gem5ArmRoot,
     /// Runs the installed closed gem5 model with original live public readiness.
     /// Preservation remains unsupported in this distinct initial edition.
     Gem5Closed {
@@ -176,6 +182,7 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
         Ok(match wire {
             InstalledNodeKindWire::HostClock {} => Self::HostClock,
             InstalledNodeKindWire::HostSemantics { profile } => Self::HostSemantics { profile },
+            InstalledNodeKindWire::Gem5ArmRoot {} => Self::Gem5ArmRoot,
             InstalledNodeKindWire::Gem5Closed { isa } => Self::Gem5Closed { isa },
             InstalledNodeKindWire::Gem5ClosedPreserving { isa } => {
                 Self::Gem5ClosedPreserving { isa }
@@ -230,6 +237,7 @@ enum InstalledNodeKindWire {
     HostSemantics {
         profile: InstalledHostSemanticProfile,
     },
+    Gem5ArmRoot {},
     Gem5Closed {
         isa: InstalledGem5Isa,
     },
@@ -462,6 +470,12 @@ impl InstalledNodeCatalog {
         &self,
         selections: &[InstalledNodeSelection],
     ) -> Result<NodeScenario, NodeObservedError> {
+        if selections
+            .iter()
+            .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5ArmRoot))
+        {
+            return arm_root::public_catalog::scenario(self, selections);
+        }
         if selections.iter().any(|selection| {
             matches!(
                 selection.kind,
@@ -538,6 +552,11 @@ impl InstalledNodeCatalog {
                 )
             }) {
                 native_state::public_catalog::publisher(stored)?
+            } else if selections
+                .iter()
+                .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5ArmRoot))
+            {
+                arm_root::public_catalog::publisher(stored)?
             } else {
                 Box::new(stored)
             };
@@ -572,6 +591,15 @@ impl InstalledNodeCatalog {
         scenario: NodeScenario,
         execution: ExecutionId,
     ) -> Result<InstalledPreparedWorld, NodeObservedError> {
+        if selections
+            .iter()
+            .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5ArmRoot))
+        {
+            return Ok(arm_root::public_catalog::prepare_native(
+                self, selections, scenario, execution,
+            )?
+            .world);
+        }
         if selections.iter().any(|selection| {
             matches!(
                 selection.kind,
@@ -612,6 +640,40 @@ impl InstalledNodeCatalog {
         execution: ExecutionId,
     ) -> Result<InstalledPreparedNativeWorld, NodeObservedError> {
         native_state::public_catalog::prepare_native(self, selections, scenario, execution)
+    }
+
+    /// Prepares the distinct fixed ARM Root world with original native custody.
+    ///
+    /// The complete public barrier still requires actual native Ready and current
+    /// opaque qualification. The returned signer retains only installed policy.
+    ///
+    /// # Errors
+    /// Refuses a foreign roster or authored world, changed installed artifacts,
+    /// unavailable finite custody, startup or current native audit failure.
+    pub fn prepare_root_native_world(
+        &mut self,
+        selections: &[InstalledNodeSelection],
+        scenario: NodeScenario,
+        execution: ExecutionId,
+    ) -> Result<InstalledPreparedRootWorld, NodeObservedError> {
+        arm_root::public_catalog::prepare_native(self, selections, scenario, execution)
+    }
+
+    /// Reserves an ordinary Root restore plan from its complete authenticated archive.
+    ///
+    /// The returned plan owns inactive source backing and fresh owner identities.
+    /// Its driver must independently reconstruct, recapture and audit each native
+    /// peer before the complete publisher can activate the world.
+    ///
+    /// # Errors
+    /// Refuses a foreign selection/source, changed installed assets, unsupported
+    /// native codecs, exhausted custody, or mismatched original preparation.
+    pub fn prepare_root_native_restore(
+        &mut self,
+        selections: &[InstalledNodeSelection],
+        archive: crucible::node_state::NativeArchiveRecord,
+    ) -> Result<InstalledRootRestore, NodeObservedError> {
+        arm_root::public_catalog::prepare_restore(self, selections, archive)
     }
 
     /// Seals fresh installed host authority for an authenticated complete source.
@@ -879,7 +941,8 @@ impl InstalledNodeCatalog {
                         scripted::build_model(selection, profile, artifacts)?,
                     );
                 }
-                InstalledNodeKind::Gem5Closed { .. }
+                InstalledNodeKind::Gem5ArmRoot
+                | InstalledNodeKind::Gem5Closed { .. }
                 | InstalledNodeKind::Gem5ClosedPreserving { .. }
                 | InstalledNodeKind::Gem5ClosedEpochPreserving { .. } => {
                     return Err(refused(
@@ -975,7 +1038,8 @@ impl InstalledNodeCatalog {
         let mut nodes: Vec<Box<dyn SimulationNode>> = Vec::new();
         for selection in selections {
             match &selection.kind {
-                InstalledNodeKind::Gem5Closed { .. }
+                InstalledNodeKind::Gem5ArmRoot
+                | InstalledNodeKind::Gem5Closed { .. }
                 | InstalledNodeKind::Gem5ClosedPreserving { .. }
                 | InstalledNodeKind::Gem5ClosedEpochPreserving { .. } => {
                     return Err(refused(

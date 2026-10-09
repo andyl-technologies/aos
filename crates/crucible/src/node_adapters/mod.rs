@@ -7,6 +7,7 @@
 //! Native gem5 preparation retains real resources beneath a qualification gate.
 
 pub mod cnp;
+pub mod arm_root;
 pub mod gem5;
 mod host;
 mod host_ingress;

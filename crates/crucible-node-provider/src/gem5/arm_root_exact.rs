@@ -34,6 +34,11 @@ impl ArmRootExactAuthority {
     }
 
     pub(crate) fn require_live(&self, process: &ArmRootNativeProcess) -> Result<(), ProviderError> {
+        if process.quarantined {
+            return Err(ProviderError::Conflict(
+                "ARM original custody is quarantined",
+            ));
+        }
         self.evidence.verify(&self.bytes)?;
         let custody = process
             .custody
@@ -70,6 +75,11 @@ impl ArmRootNativeProcess {
         image: &ArmRootCapturedImage,
         certificate: &ArmRootProcessClosure,
     ) -> Result<ArmRootExactAuthority, ProviderError> {
+        if self.quarantined {
+            return Err(ProviderError::Conflict(
+                "ARM original custody is quarantined",
+            ));
+        }
         certificate.verify_image(image)?;
         certificate.require_current(self)?;
         let launch = self.launch()?;

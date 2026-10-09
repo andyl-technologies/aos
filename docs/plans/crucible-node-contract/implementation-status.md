@@ -829,8 +829,38 @@ embedded by the qualification catalogue. The production-flight and Cargo-only
 views now retain the RFC-0025 subtree and exclude runtime journals. Independent
 Nix source materialization verifies all twelve embedded leaves byte-for-byte,
 journal and adjacent-prefix exclusions, and two-file formatting. The failed
-build remains retained; ABI, coherent hermetic application and full boundary
-results remain pending.
+build remains retained; ABI and full boundary results remain pending. The
+coherent hermetic application unit/integration target build passes for the
+lineage, recorded-ingress, guard and KVM stack before the following ARM stage,
+at `1lzi2560kfix1mqpiqrl3ydar7r09hfk-aos-test-targets-0.1.0`.
+
+## Ordinary closed ARM Root and Clock preservation
+
+The installed catalogue now selects the measured ARM Root and integer Clock
+world through the ordinary public preparation path. Its original scheduler-one
+permission remains distinct from generic epoch-two and conditional-replay
+permissions. Preparation and restoration require actual owner custody and the
+complete publication procedure; the existing reference, recorded-ingress,
+Clock and conditional selectors remain available.
+
+The frozen current-source native witness passes in 521.75 seconds: original
+source removal, two fresh restored owners, recapture and third-generation
+continuation preserve the original permission, native history and UART output.
+This is the closed, no-input, no-edge installed model. Its committed Clock cut
+is `(1000000000, 0, BoundaryControl)` while the original held Root output was
+born at `(1166530000, 1)`; the archive retains that in-flight operation rather
+than relabeling native time or claiming a quiescent common cut. General devices,
+external ingress, CPU timing fidelity and universal peak descriptor reservation
+remain separate qualification requirements.
+
+Central current-union verification passes six encoding/ancestry cases, one
+actual initial public preparation and reclamation case in 75.25 seconds, 37
+source-quality cases and nine-crate all-target strict checks. The exact 43-path
+integration preserves the independently enrolled current installed guard and
+its testing inventory. Complete formatting exposed two mechanical changes in
+widened helper signatures and module ordering; these are retained as a separate
+formatting follow-up. The earlier hermetic target and boundary results do not
+qualify this subsequent source stage.
 
 ## Performance evidence
 

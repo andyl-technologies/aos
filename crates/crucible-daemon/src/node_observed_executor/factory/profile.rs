@@ -225,7 +225,8 @@ fn build_world_once(
                     &mut contents,
                 )?
             }
-            InstalledNodeKind::Gem5Closed { .. }
+            InstalledNodeKind::Gem5ArmRoot
+            | InstalledNodeKind::Gem5Closed { .. }
             | InstalledNodeKind::Gem5ClosedPreserving { .. }
             | InstalledNodeKind::Gem5ClosedEpochPreserving { .. } => {
                 return Err(refused(

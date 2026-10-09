@@ -119,7 +119,8 @@ impl ArmRootNativeProcess {
     ) -> Result<ArmRootProcessClosure, ProviderError> {
         validate_private_directory(owned)?;
         let launch = self.launch()?.clone();
-        if self.unresolved.is_some()
+        if self.quarantined
+            || self.unresolved.is_some()
             || self.unresolved_capture.is_some()
             || image.boundary() != &self.boundary
             || image.source().scope()? != launch.scope()?

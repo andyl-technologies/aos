@@ -254,6 +254,7 @@ impl ArmRootNativeProcess {
         let (mut custody, slot) = construction.adopt()?;
         custody.host_ledger.unresolved = None;
         let mut process = Self {
+            quarantined: false,
             custody: Some(custody),
             slot: Some(slot),
             boundary: ready.boundary.clone(),
