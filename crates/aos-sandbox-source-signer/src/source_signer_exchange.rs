@@ -7,8 +7,9 @@
 //! This transport neither adopts Controller's writer nor authorizes Q04/Create.
 //!
 //! The private service owner contains fixed activation and complete daemon
-//! request dispatch. Root client verification and shared wire codecs remain
-//! here; the public service entry directly exposes that same recipe.
+//! request dispatch. The private Root client owner retains complete request,
+//! transport and verification recipes. Shared wire codecs remain here, and
+//! the public entries directly expose the existing recipes.
 //!
 //! ```text
 //! AOSSSR01 | nonce[16] | root-cut[32] | project[16]

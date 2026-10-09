@@ -1,3 +1,14 @@
+//! Fixed Root-client exchanges with the independently pinned Source signer.
+//!
+//! Each complete recipe retains its original signer stream through request
+//! send, write shutdown, exact reply framing/EOF and purpose verification.
+//! Public entries are directly reexported by the parent, which owns canonical
+//! wire codecs and fixed socket custody checks.
+//!
+//! Returned packets remain nonauthorizing DATA. Protected Root and Controller
+//! loans, currentness decisions and retained result reservoirs stay with the
+//! existing upper callers; this owner creates no writer or paid grant.
+
 use std::io::{self, Read as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
@@ -637,4 +648,3 @@ fn connect_source_signer(signer_uid: u32, socket_gid: u32) -> io::Result<UnixStr
     stream.set_write_timeout(Some(FLIGHT_TIMEOUT))?;
     Ok(stream)
 }
-
