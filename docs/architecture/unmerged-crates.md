@@ -7,17 +7,20 @@ checked PR heads; it does not merge or modify owning PRs. The [workspace
 design](crate-workspace.md) and [active inventory](crate-inventory.md) describe implemented
 ownership.
 
+The open-PR heads are pinned at `2026-10-09T21:52:35.570559+00:00`; later commits are outside
+this audit.
+
 | PR | Audited head | Added top-level / fixture crates | Ownership |
 |---|---|---|---|
-| [#713](https://github.com/andyl-technologies/aos/pull/713) | `4baf11f742e3bf3904bd01c34f7420c334765076` | 3 / 0 | AOS maintenance |
-| [#711](https://github.com/andyl-technologies/aos/pull/711) | `fa3508865aba6ed03ca3ac08e7eb2df314e41f79` | 2 / 0 | Crucible node protocol/transport |
-| [#696](https://github.com/andyl-technologies/aos/pull/696) | `b9aa885eb16e2b799f178be44aba4a6dfa69cd3a` | 2 / 0 | Crucible RAM/host resources |
+| [#713](https://github.com/andyl-technologies/aos/pull/713) | `14c9c156fa77f347340692e4093f305a982fe09e` | 3 / 0 | AOS maintenance |
+| [#711](https://github.com/andyl-technologies/aos/pull/711) | `f4ad8a311629b5bb89d2894ff31f8014f5457e5d` | 2 / 0 | Crucible node protocol/transport |
+| [#696](https://github.com/andyl-technologies/aos/pull/696) | `f94a8c9a9f6dbe4d0e81e53f31bed3fee48f1cc4` | 2 / 0 | Crucible RAM/host resources |
 | [#673](https://github.com/andyl-technologies/aos/pull/673) | `b01ddab52230194645697efc4397d812b3fd6d6c` | 0 / 0 | Crucible campaigns |
 | [#420](https://github.com/andyl-technologies/aos/pull/420) | `412bc8cd1f75fa3b851f5cd1186ab9c21b7d1430` | 5 / 0 | Terrane |
-| [#374](https://github.com/andyl-technologies/aos/pull/374) | `81679049e6cdda9e6a7ee44ec6f238d54c84f38a` | 0 / 0 | Hub |
-| [#232](https://github.com/andyl-technologies/aos/pull/232) | `4280e3ba24cc15ae8f302de14b654649ef69b748` | 34 / 6 | Sandbox |
+| [#374](https://github.com/andyl-technologies/aos/pull/374) | `cf28dac8015ac69f8a19c18bc9e5b7ab9c4d008f` | 0 / 0 | Hub |
+| [#232](https://github.com/andyl-technologies/aos/pull/232) | `840658431930dc94a51653b2f0f9eaea98d51d95` | 34 / 6 | Sandbox |
 | [#231](https://github.com/andyl-technologies/aos/pull/231) | `69cc082e8c1b7be564556a4ef2d4c70fb9c67b78` | 0 / 0 | Darwin tooling |
-| [#716](https://github.com/andyl-technologies/aos/pull/716) | `8cc3be107abd3b7e53e6875d831f513530e2a533` | 0 / 0 | Dispatch RFC/native dependency preparation |
+| [#716](https://github.com/andyl-technologies/aos/pull/716) | `a048a32b44f7a6652a02944d82bd1ae03e3115ef` | 5 / 0 | Dispatch assignment SDK/runtime/conformance |
 
 Future names below are proposed for code outside the base workspace. Generic journal,
 descriptor and SQLite promotion require API review; base extractions are already implemented.
@@ -78,6 +81,24 @@ descriptor and SQLite promotion require API review; base extractions are already
 | #232 | `aos-sandbox-source-signer` | `aos-sandbox-source-signer` | `crates/sandbox/security/aos-sandbox-source-signer` |
 | #232 | `aos-sandbox-storage` | `aos-sandbox-storage` | `crates/sandbox/storage/aos-sandbox-storage` |
 | #232 | `aos-sandbox-verity-backing-probe` | `aos-sandbox-verity-backing-probe` | `crates/sandbox/host/aos-sandbox-linux/tests/fixtures/verity-backing` |
+| #716 | `dispatch-model` | `dispatch-model` | `crates/dispatch/model/dispatch-model` |
+| #716 | `dispatch-protocol` | `dispatch-protocol` | `crates/dispatch/protocol/dispatch-protocol` |
+| #716 | `dispatch-runtime` | `dispatch-runtime` | `crates/dispatch/runtime/dispatch-runtime` |
+| #716 | `dispatch` | `dispatch-sdk` | `crates/dispatch/sdk/dispatch-sdk` |
+| #716 | `dispatch-conformance` | `dispatch-conformance` | `crates/dispatch/testing/dispatch-conformance` |
+
+## Uncommitted local crate observed separately
+
+The #713 owning checkout also contains implemented, uncommitted `aos-assessment-http` at
+`crates/aos-assessment-http/Cargo.toml`, separate from its three committed added crates.
+Proposed name/path: `aos-package-assessment-http` under `crates/aos/maintenance/`. It owns
+bounded native HTTPS source effects, explicit physical time and scoped credentials, with
+reqwest/async-trait/zeroize dependencies and Apache-2.0 licensing. Keep it outside Worker
+and portable coordinator dependencies. The scratch handoff records exact local source
+fingerprints; this observation is not a PR-head member or a build/test claim. Review existing
+`aos-transfer` bounded transport primitives where exact timeout/streaming/TLS/redirect/proxy
+semantics fit; keep assessment credential custody, installed source profiles and domain policy
+with this adapter. Do not merge responsibilities merely because both implement HTTP.
 
 ## Additional required future extractions
 
@@ -107,7 +128,8 @@ descriptor and SQLite promotion require API review; base extractions are already
 
 `crates/terrane/{sdk,linux,cli,integration}` and
 `crates/sandbox/{model,protocol,controller,host,guest,storage,security,filesystem,testing}`
-group their owning projects. Assessment uses `crates/aos/maintenance`. Full Cargo package names
+group their owning projects. Assessment uses `crates/aos/maintenance`; Dispatch uses
+`crates/dispatch/{model,protocol,runtime,sdk,testing}`. Full Cargo package names
 carry scope; leaf directories retain those full names. Nested fixture packages stay beside
 owner tests.
 
@@ -209,25 +231,39 @@ decoding, integer range, duplicate handling, canonical ordering and identity dom
 sharing an implementation. Likewise portable node/RAM process formats and Terrane formats
 retain their existing license/encoding contracts.
 
-## Dispatch names reserved by RFC-0027
+## Dispatch implementation and boundaries
 
-PR #716 currently changes no Rust source or Cargo manifests. Its planned independent library
-family is `dispatch-model`, `dispatch-protocol`, `dispatch-runtime` and a consumer facade
-presently called `dispatch` in the RFC. Proposed package naming makes that facade
-`dispatch-sdk`, under `crates/dispatch/{model,protocol,runtime,sdk}`. An eventual
-`dispatch-cli` package may own the unchanged `dispatch` executable. The trusted worker can
-initially remain with its runtime owner; the C++ Rebalancer backend stays a separate process.
-These are planned classifications, not current workspace members. Pure model/evaluation must
-remain independent of native engines and async runtimes; AOS/Hub/Crucible application policy
-stays outside Dispatch libraries. Explicit package licenses and exact field-level schema reuse
-require review when implementation is created.
+PR #716 now implements five Apache-2.0 packages: model, protocol, runtime, facade and
+publish=false conformance. Rename the facade `dispatch` to `dispatch-sdk`; keep its installed
+`dispatch` executable and optional CLI/runtime/protocol features. Defaults currently enable
+CLI/runtime; pure consumers select `default-features = false`. Keep the worker with runtime
+and the systemd probe with conformance. The native C++ Rebalancer stays a separate process.
 
-## Final open-head refresh
+Pure model validation/evaluation uses exact integer/rational arithmetic and has no native
+engine or async dependency. Protocol currently has unconditional Tokio: its canonical/wire
+DATA does not make the whole package async-free. Review feature isolation if consumers need
+it; do not create another crate without a concrete boundary. Runtime owns scoped sessions,
+providers and supervision, with opt-in systemd support and Unix process dependencies.
+Conformance independently checks finite mathematical oracles, strict interchange and real
+processes, and must remain outside the production dependency graph.
 
-The final snapshot contains ten open PRs, including migration PR #715 and nine owning PRs
-above. Advanced heads for #713, #711, #696, #673 and #374 were inspected as exact local Git
-objects. None changes the added-package manifests or full crate inventory relative to the
-preceding audit. #711 expands native gem5/custody and CNP lifecycle code under existing owners;
-#696 additionally exports `crucible_device::DeviceSnapshotAllocation`; the latter remains a
-device capability. Updated handoffs retain those changes and the existing 242-symbol control
-API ownership map. Owning branch builds/tests remain required after migration.
+Compare Dispatch integer normalization/bounds, duplicate handling, canonical commitments and
+identity/version domains against shared JSON/digest APIs before reuse. Keep application
+reservation/effect authority outside Dispatch. Preserve metadata source inputs
+`protocol/dispatch` and `docs/users/dispatch.md` while moving manifests.
+
+## Final pinned open-head review
+
+The snapshot contains ten open PRs, including migration #715 and nine owning PRs above.
+Exact local objects for six advanced heads (#716, #713, #711, #696, #374 and #232) were read;
+the other three retain their prior pins. #716 adds the five implemented packages above.
+#713 adds real Hub consumers for its coordinator and policy/source crates, with durable
+assessment and scoped source contracts; its local native HTTP adapter is recorded separately.
+#232 protocol adds portable `dispatch_template`/`publication` DATA and an ownership-protocol
+dependency, while accepted publication/currentness/activation remain controller operations.
+#696 adds a private measurement-workflow daemon executable; its shared quota extraction
+must stay separate from Crucible host resource authority. #711 and #374 add no new packages.
+
+All nine handoffs retain the implemented export table and 242-symbol Crucible ownership map.
+Owning-branch builds/tests remain required after migration; this audit made no owning checkout
+changes or validation claim.
