@@ -29,6 +29,8 @@ in {
     ${runTests}
     run_tests -p terrane-core chunking::tests
     run_tests -p terrane codec::tests::admission_requires_identity_size_and_first_nonfinal_boundary
+    run_tests -p terrane --no-default-features --features tokio,surface-sdk --lib bucket::manifest_tests::manifest_admission_rechecks_nonfinal_context_after_inventory_only_import -- --exact
+    run_tests -p terrane --no-default-features --features tokio,surface-sdk --lib bucket::manifest_tests::canonical_final::manifest_admission_rejects_a_final_chunk_with_an_earlier_boundary -- --exact
     printf 'PASS: seeded FastCDC boundaries and profile edge cases\n' > "$out/result"
   '';
 

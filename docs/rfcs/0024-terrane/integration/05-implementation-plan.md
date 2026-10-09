@@ -180,8 +180,19 @@ deletion cases pass in 124.015 seconds overall and the two native domain
 storage cases pass in 5.070 seconds, using the default profile, one test worker
 and no phase tracing. Source, inventory and all three executable seals remain
 unchanged. The held-read candidate `45dbc23e3c` now includes the reviewed
-materializer prerequisite and owning gate registrations; its fresh native
-build is in progress. Native overlay review also
+materializer prerequisite and owning gate registrations. Its native build and
+actual all-target test compilation pass; strict Clippy refuses the imported
+materializer's complex private property type. The reviewed named alias resolves
+that source issue. Candidate `b57d9af689` preserves all seven held selectors
+while adding actual read-only, legacy refusal, member-body coverage and existing
+lock continuity assertions. Its native build passes; strict Clippy detects the
+same fixture source included twice. A parent-owned test-only visibility change
+allows reuse of the original fixture without copying it or suppressing the lint;
+fresh qualification remains pending. Parallel review also identifies CDC-19's
+final manifest chunk boundary gap in admission, restoration and guarded reads.
+An isolated codec/manifest witness workline owns the correction; the exact native
+nonfinal and final admission selectors are registered in `cdc-boundaries`.
+Native overlay review also
 identifies inherited index bindings that need authentication against their
 signed source and recomputation for the actual output. Source corrections
 and fixtures remain in that workline; none of these results accepts a task.

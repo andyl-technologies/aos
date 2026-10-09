@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 use terrane_core::identity::{IdentityKind, TERRANE_V1};
 use terrane_core::manifest::{ChunkRef, Manifest};
 
+mod canonical_final;
+
 #[tokio::test]
 async fn manifest_references_accept_an_honest_nonfinal_boundary_and_verified_lengths() {
     let bucket = fixture().await;
