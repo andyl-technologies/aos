@@ -50,9 +50,9 @@ use sparse::{
     validate_sparse_artifact_manifest_with_lifecycle_boundary,
     validate_sparse_artifact_manifest_with_scheduler_boundary, validate_sparse_artifact_shape,
 };
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 mod test_support;
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub use test_support::{
     AuthenticatedProductionCheckpointCodecFixture, AuthenticatedProductionExactRamCodecFixture,
     build_authenticated_production_checkpoint_codec_fixture,

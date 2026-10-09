@@ -259,8 +259,8 @@
     ++ forbiddenFor "crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs" controlServerGateTest qemuBackendForbidden
     ++ failuresFor "crates/crucible/control/crucible-daemon/Cargo.toml" daemonManifest [
       {
-        label = "daemon test-double dev feature";
-        needle = "crucible-engine = { path = \"../../engine/crucible-engine\", features = [\"test-double\"] }";
+        label = "daemon test-double and test-support dev features";
+        needle = "crucible-engine = { path = \"../../engine/crucible-engine\", features = [\"test-double\", \"test-support\"] }";
       }
       {
         label = "daemon protocol dependency";

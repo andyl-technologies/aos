@@ -630,7 +630,7 @@ pub use repository_admission::RepositoryAttemptAdmission;
 
 #[cfg(target_os = "linux")]
 pub mod vm_lifecycle;
-#[cfg(all(feature = "test-support", target_os = "linux"))]
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
 pub use vm_lifecycle::{
     AuthenticatedProductionCheckpointCodecFixture, AuthenticatedProductionExactRamCodecFixture,
     build_authenticated_production_checkpoint_codec_fixture,

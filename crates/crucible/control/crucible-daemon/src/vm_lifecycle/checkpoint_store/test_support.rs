@@ -1,4 +1,4 @@
-//! Production exact-checkpoint codec fixtures for cross-crate integration tests.
+//! Production exact-checkpoint codec fixtures for unit and cross-crate integration tests.
 
 use super::*;
 use std::io::SeekFrom;
@@ -98,8 +98,8 @@ impl AuthenticatedProductionCheckpointCodecFixture {
 /// The fixture uses the real production manifest, scheduler, sparse-artifact,
 /// fault-runtime, portable-closure, and replay-oracle authentication paths. Its
 /// placeholder overlay and VMState bytes are deliberately not launchable. It
-/// neither advances a scheduler nor restores QEMU and is available only through
-/// the `test-support` feature.
+/// neither advances a scheduler nor restores QEMU. Daemon unit tests compile it
+/// directly; external test consumers enable the `test-support` feature.
 ///
 /// # Errors
 ///
