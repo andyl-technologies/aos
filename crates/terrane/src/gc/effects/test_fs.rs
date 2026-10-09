@@ -20,6 +20,9 @@ use std::sync::{
 #[path = "test_fs/permanent.rs"]
 mod permanent;
 
+#[path = "test_fs/gc_proposal.rs"]
+mod gc_proposal;
+
 /// Selects real permanent native requests and their existing test boundaries.
 pub(crate) use permanent::{PermanentBoundary, PermanentPhase};
 
@@ -36,6 +39,7 @@ struct State {
     forbidden_data_reads: Mutex<std::collections::BTreeSet<PathBuf>>,
     data_read_attempts: AtomicUsize,
     permanent: permanent::PermanentHooks,
+    gc_proposal: gc_proposal::GcProposalHooks,
 }
 
 /// Selects an actual closed native retirement or Trash creator request.
@@ -304,6 +308,7 @@ impl LocalFs for TestFs {
         mut effect: crate::store::NativeFsEffect,
     ) -> Result<(), crate::store::NativeEffectFailure> {
         self.state.effects.fetch_add(1, Ordering::SeqCst);
+        self.state.gc_proposal.prepare(&mut effect);
         let permanent = self.state.permanent.prepare(&mut effect);
         if matches!(
             effect.fault_probe(),
