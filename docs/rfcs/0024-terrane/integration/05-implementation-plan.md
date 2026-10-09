@@ -150,6 +150,17 @@ classification, actual syscall, freshness, refusal and cancellation cases
 These are prerequisite results only. The public Original-mode conversion,
 restore corrections, owning gates and complete current trunk floor remain
 unqualified.
+The reviewed public Original conversion and restore corrections are composed
+on private `7b4689fcbc`. Its strict native all-target Clippy passes with warnings
+denied (58.95 seconds; `/tmp/terrane-original-lock-restore-composition-clippy-corrected.log`).
+The initial check exposed an incorrect directory-sync enum qualifier in the
+restore producer; its existing imported closed `Plan` now resolves that effect.
+Workspace Rust formatting also passes after a separate barrier let-chain
+format-only correction. Seven native renewal, administrative-exclusion,
+reconciliation and restore cases are running from this frozen source; no runtime
+result is inferred before terminal evidence. A separately reviewed copied-sync
+change removes only redundant whole-projection scans after complete worker
+refreshes; it retains every consumed input and remains unqualified.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
