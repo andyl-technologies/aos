@@ -556,6 +556,8 @@ pub struct QemuNode {
     next_network_output_sequence: u64,
     #[cfg(target_os = "linux")]
     native_console: Option<native_console::QemuNativeConsoleObservation>,
+    #[cfg(target_os = "linux")]
+    authenticated_launch: Option<crate::QemuLaunchArtifactIdentity>,
     fault_capabilities: Vec<FaultCapabilityRowV1>,
     ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
     exact_fault_manifests: Option<crate::fault_capability::QemuExactFaultManifests>,
@@ -822,6 +824,8 @@ impl QemuNode {
             next_network_output_sequence: 0,
             #[cfg(target_os = "linux")]
             native_console: None,
+            #[cfg(target_os = "linux")]
+            authenticated_launch: None,
             fault_capabilities: Vec::new(),
             ready_markers: std::collections::BTreeSet::new(),
             exact_fault_manifests: None,
@@ -2134,6 +2138,20 @@ impl QemuNode {
             .virtual_timer_fire_witness()
             .map_err(|source| {
                 QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })
+    }
+
+    pub(crate) fn prepare_terminal_fingerprint(&mut self) -> Result<(), QemuNodeError> {
+        self.host_io_runtime
+            .prepare_terminal_fingerprint(
+                self.last_step_completed_boundary,
+                Icount {
+                    retired: self.last_observed_time.ticks,
+                },
+                self.async_policy.advance_completion_timeout,
+            )
+            .map_err(|source| {
+                QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
             })
     }
 

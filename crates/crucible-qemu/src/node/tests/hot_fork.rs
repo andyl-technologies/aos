@@ -212,6 +212,7 @@ fn hot_fork_scheduler_continuation_owns_exact_private_planes() -> Result<(), Box
         QemuShutdownPolicy::fast_test(),
         QemuAsyncDriverPolicy::fast_test(),
         QemuCrashDetector::new("child"),
+        None,
     )?;
     assert_eq!(installed.process_id(), 321);
     assert!(!installed.child_reaped());
@@ -280,6 +281,7 @@ fn hot_fork_first_advance_retains_activation_after_resume_rejection() -> Result<
         QemuShutdownPolicy::fast_test(),
         QemuAsyncDriverPolicy::fast_test(),
         QemuCrashDetector::new("child"),
+        None,
     )?;
 
     log.lock().unwrap().clear();

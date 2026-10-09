@@ -460,6 +460,10 @@ pub(super) fn authenticate_packaged_hot_fork_launch(
     profile: &ExecutorCompatibilityProfile,
 ) -> Result<(), PackagedQemuExecutorError> {
     let launch = hot_fork.launch_identity();
+    hot_fork
+        .stopped_restore_ack()
+        .require_launch(launch)
+        .map_err(PackagedQemuExecutorError::StoppedRestoreAck)?;
     if lifecycle.executable() != launch.qemu() || lifecycle.plugin() != launch.plugin() {
         return Err(PackagedQemuExecutorError::HotForkLaunchPathMismatch);
     }
@@ -706,6 +710,7 @@ where
                     hot_fork.shutdown_policy(),
                     hot_fork.async_policy(),
                 )
+                .with_stopped_restore_ack(hot_fork.stopped_restore_ack().clone())
                 .with_terminal_checkpoints(Arc::clone(checkpoints))
                 .with_auxiliary_resources(finding_replay_broker);
                 let hot_factory = PackagedStatusHotForkFactory {

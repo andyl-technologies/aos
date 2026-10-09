@@ -32,6 +32,10 @@ impl QemuLogicalTimeRestoreBoundary {
         self.logical_generation
     }
 
+    pub(crate) const fn control_request(self) -> u32 {
+        self.control_request
+    }
+
     pub(crate) fn validate_console_frontier(
         self,
         backing: crucible_shmem::SetupRegionBackingIdentity,

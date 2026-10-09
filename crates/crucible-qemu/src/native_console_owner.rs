@@ -28,6 +28,7 @@ mod clamp_observation;
 mod control_observation;
 mod observation;
 mod operation_stop;
+mod terminal_fingerprint;
 pub(crate) use operation_stop::ConsoleStoppedOperation;
 mod restore;
 pub(crate) use continuation::ConsoleOriginContinuation;

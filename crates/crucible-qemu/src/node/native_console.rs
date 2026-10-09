@@ -7,6 +7,7 @@
 use crucible::{BackendError, NodeCounter, NodeId, ObservableEvent, PreparedRunAdmission};
 
 use super::QemuNode;
+use crate::QemuNodeChannelError;
 use crate::native_console_owner::ConsoleLaunchCustody;
 
 pub(super) struct QemuNativeConsoleObservation {
@@ -99,6 +100,35 @@ impl QemuNativeConsoleObservation {
 }
 
 impl QemuNode {
+    /// Retains the actual selected launch behind this node's console custody.
+    ///
+    /// Generic nodes without console custody need no operation receipt. Only
+    /// the live constructor calls this method with its selected executable and
+    /// plugin paths; public callers cannot attach a foreign capability here.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unavailable, malformed or inconsistent selected artifact markers
+    /// when the node owns native console custody.
+    pub(crate) fn bind_native_console_launch_artifacts(
+        &mut self,
+        qemu: &std::path::Path,
+        plugin: &std::path::Path,
+    ) -> Result<(), QemuNodeChannelError> {
+        if self.native_console.is_some() {
+            let launch = crate::QemuLaunchArtifactIdentity::authenticate(qemu, plugin).map_err(
+                |source| {
+                    QemuNodeChannelError::new(
+                        "authenticate retained console source launch",
+                        source.to_string(),
+                    )
+                },
+            )?;
+            self.authenticated_launch = Some(launch);
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn native_console_emission_for_test(
         &self,

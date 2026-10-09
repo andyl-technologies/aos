@@ -668,7 +668,7 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
     }
 
     fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError> {
-        Ok(())
+        ProductionVmLifecycleLoop::prepare_terminal_fingerprints(self)
     }
 
     fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {

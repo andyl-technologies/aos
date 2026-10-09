@@ -12,6 +12,8 @@ use thiserror::Error;
 
 const CONTENT_ADDRESS_PREFIX: &str = "sha256:";
 
+const STOPPED_RESTORE_ACK_VERSION: &str = "1";
+
 /// Opaque identity of one marker-authenticated QEMU and plugin launch pair.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLaunchArtifactIdentity {
@@ -21,6 +23,7 @@ pub struct QemuLaunchArtifactIdentity {
     qemu_atomic_patch_hash: String,
     plugin_abi: String,
     shmem_abi_version: String,
+    stopped_restore_ack_version: Option<String>,
 }
 
 impl QemuLaunchArtifactIdentity {
@@ -121,7 +124,37 @@ impl QemuLaunchArtifactIdentity {
             qemu_atomic_patch_hash: patch_hash,
             plugin_abi,
             shmem_abi_version: plugin_abi_version,
+            stopped_restore_ack_version: plugin_fields
+                .get("stopped_restore_ack_notification_version")
+                .cloned(),
         })
+    }
+
+    /// Authenticates support for the stopped-Restore ACK notification operation.
+    ///
+    /// Cold launches do not require this capability. The receipt binds the
+    /// advertised operation to this deployment-trusted immutable launch pair;
+    /// it provides no native phase, clock, prefix or grant authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuStoppedRestoreAckCapabilityError`] when the selected
+    /// plugin's marker omits the capability, advertises an unsupported version,
+    /// or the host does not support the Linux shared-futex notification contract.
+    pub fn stopped_restore_ack_capability(
+        &self,
+    ) -> Result<QemuStoppedRestoreAckCapability, QemuStoppedRestoreAckCapabilityError> {
+        match self.stopped_restore_ack_version.as_deref() {
+            Some(STOPPED_RESTORE_ACK_VERSION) if cfg!(target_os = "linux") => {
+                Ok(QemuStoppedRestoreAckCapability {
+                    launch: self.clone(),
+                })
+            }
+            version => Err(QemuStoppedRestoreAckCapabilityError::Unsupported {
+                plugin: self.plugin.clone(),
+                version: version.map(str::to_owned),
+            }),
+        }
     }
 
     /// Returns the exact selected QEMU executable path.
@@ -159,6 +192,59 @@ impl QemuLaunchArtifactIdentity {
     pub fn shmem_abi_version(&self) -> &str {
         &self.shmem_abi_version
     }
+}
+
+/// Immutable selected-launch support for the stopped-Restore notification edge.
+///
+/// Only an authenticated plugin marker can construct this receipt. Deployment
+/// owners retain the immutable artifacts and must use the receipt from the
+/// same launch pair as their captured source. It never authenticates an ACK.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuStoppedRestoreAckCapability {
+    launch: QemuLaunchArtifactIdentity,
+}
+
+impl QemuStoppedRestoreAckCapability {
+    /// Returns the exact launch pair whose marker advertised this operation.
+    #[must_use]
+    pub const fn launch_identity(&self) -> &QemuLaunchArtifactIdentity {
+        &self.launch
+    }
+
+    /// Checks that this receipt belongs to the selected launch identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuStoppedRestoreAckCapabilityError::LaunchMismatch`] when
+    /// paths or authenticated marker contents differ from the original receipt.
+    pub fn require_launch(
+        &self,
+        launch: &QemuLaunchArtifactIdentity,
+    ) -> Result<(), QemuStoppedRestoreAckCapabilityError> {
+        if self.launch == *launch {
+            Ok(())
+        } else {
+            Err(QemuStoppedRestoreAckCapabilityError::LaunchMismatch)
+        }
+    }
+}
+
+/// Unsupported or mismatched stopped-Restore notification capability.
+#[derive(Debug, Error)]
+pub enum QemuStoppedRestoreAckCapabilityError {
+    /// The selected plugin omitted the operation or used an unsupported version.
+    #[error(
+        "plugin `{plugin}` lacks supported stopped-Restore ACK notification (advertised {version:?})"
+    )]
+    Unsupported {
+        /// Selected immutable plugin path.
+        plugin: PathBuf,
+        /// Advertised version, if present.
+        version: Option<String>,
+    },
+    /// The operation receipt belongs to another selected launch pair.
+    #[error("stopped-Restore ACK capability differs from the selected launch identity")]
+    LaunchMismatch,
 }
 
 /// Failure while authenticating one QEMU and plugin launch pair.
@@ -408,7 +494,7 @@ fn hex_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- fixture setup and assertions fail loudly at their exact source.
 #[allow(clippy::expect_used)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     struct ArtifactFixture {
@@ -486,6 +572,114 @@ mod tests {
 
     fn required_abi_version() -> String {
         crucible::SHMEM_ABI_VERSION.to_string()
+    }
+
+    /// Retains an old cold-legal launch whose plugin advertises no ACK wake.
+    pub(crate) fn modeled_cold_launch_identity()
+    -> Result<(tempfile::TempDir, QemuLaunchArtifactIdentity), Box<dyn std::error::Error>> {
+        let fixture = ArtifactFixture::new();
+        let launch = QemuLaunchArtifactIdentity::authenticate(&fixture.qemu, &fixture.plugin)?;
+        Ok((fixture._directory, launch))
+    }
+
+    /// Owns modeled immutable artifacts through one component operation.
+    /// Native completion remains an independent explicit fixture provider.
+    pub(crate) fn modeled_stopped_restore_ack_capability()
+    -> Result<(tempfile::TempDir, QemuStoppedRestoreAckCapability), Box<dyn std::error::Error>>
+    {
+        let fixture = ArtifactFixture::new();
+        let marker = fs::read_to_string(&fixture.plugin_marker)?;
+        fs::write(
+            &fixture.plugin_marker,
+            format!("{marker}stopped_restore_ack_notification_version=1\n"),
+        )?;
+        let launch = QemuLaunchArtifactIdentity::authenticate(&fixture.qemu, &fixture.plugin)?;
+        let capability = launch.stopped_restore_ack_capability()?;
+        Ok((fixture._directory, capability))
+    }
+
+    #[test]
+    fn cold_identity_accepts_missing_and_unknown_operation_but_restore_refuses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = ArtifactFixture::new();
+        let original_marker = fs::read_to_string(&fixture.plugin_marker)?;
+        for value in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("2"),
+            Some("01"),
+            Some("invalid"),
+        ] {
+            let suffix = value.map_or_else(String::new, |value| {
+                format!("stopped_restore_ack_notification_version={value}\n")
+            });
+            fs::write(&fixture.plugin_marker, format!("{original_marker}{suffix}"))?;
+            let launch = QemuLaunchArtifactIdentity::authenticate(&fixture.qemu, &fixture.plugin)?;
+            assert!(matches!(
+                launch.stopped_restore_ack_capability(),
+                Err(QemuStoppedRestoreAckCapabilityError::Unsupported { .. })
+            ));
+            assert_eq!(launch.plugin(), fixture.plugin);
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stopped_operation_receipt_rejects_other_launch_and_marker_drift()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_owner, capability) = modeled_stopped_restore_ack_capability()?;
+        capability.require_launch(capability.launch_identity())?;
+        let (_other_owner, other) = modeled_stopped_restore_ack_capability()?;
+        assert!(matches!(
+            capability.require_launch(other.launch_identity()),
+            Err(QemuStoppedRestoreAckCapabilityError::LaunchMismatch)
+        ));
+
+        let marker = find_marker(plugin_marker_paths(capability.launch_identity().plugin()))
+            .ok_or("original fixture marker absent")?;
+        let original = fs::read_to_string(&marker)?;
+        fs::write(
+            &marker,
+            original.replace("notification_version=1", "notification_version=2"),
+        )?;
+        let changed = QemuLaunchArtifactIdentity::authenticate(
+            capability.launch_identity().qemu(),
+            capability.launch_identity().plugin(),
+        )?;
+        assert!(matches!(
+            capability.require_launch(&changed),
+            Err(QemuStoppedRestoreAckCapabilityError::LaunchMismatch)
+        ));
+        assert!(changed.stopped_restore_ack_capability().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn stopped_operation_duplicate_and_malformed_markers_fail_authentication()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = ArtifactFixture::new();
+        let original = fs::read_to_string(&fixture.plugin_marker)?;
+        fs::write(
+            &fixture.plugin_marker,
+            format!(
+                "{original}stopped_restore_ack_notification_version=1\nstopped_restore_ack_notification_version=1\n"
+            ),
+        )?;
+        assert!(matches!(
+            QemuLaunchArtifactIdentity::authenticate(&fixture.qemu, &fixture.plugin),
+            Err(QemuLaunchArtifactIdentityError::DuplicateField { .. })
+        ));
+        fs::write(
+            &fixture.plugin_marker,
+            format!("{original}stopped_restore_ack_notification_version\n"),
+        )?;
+        assert!(matches!(
+            QemuLaunchArtifactIdentity::authenticate(&fixture.qemu, &fixture.plugin),
+            Err(QemuLaunchArtifactIdentityError::MalformedMarker { .. })
+        ));
+        Ok(())
     }
 
     #[test]

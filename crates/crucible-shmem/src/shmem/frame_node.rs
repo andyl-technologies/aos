@@ -33,6 +33,8 @@ impl PreparedControlBoundaryRequest {
     }
 }
 
+#[path = "frame_node/control_boundary_wait.rs"]
+mod control_boundary_wait;
 #[path = "frame_node/frame_entry.rs"]
 mod frame_entry;
 #[path = "frame_node/futex.rs"]
@@ -40,6 +42,7 @@ mod futex;
 #[path = "frame_node/preemption_mailbox.rs"]
 mod preemption_mailbox;
 
+pub use control_boundary_wait::ControlBoundaryWaitOutcome;
 pub use frame_entry::{
     FRAME_DELIVERY_PENDING, FRAME_DELIVERY_RETAINED, FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT,
     FRAME_ENTRY_ALIGN, FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET,

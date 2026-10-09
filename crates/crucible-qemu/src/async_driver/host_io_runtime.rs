@@ -254,6 +254,26 @@ pub trait QemuHostIoRuntime: Send {
         self.checkpoint_device_io_is_quiescent()
     }
 
+    /// Prepares an original completed node boundary for terminal fingerprint capture.
+    ///
+    /// The completed receipt and coordinate belong to the node's last actual
+    /// scheduler step. A live console runtime must settle any later original
+    /// input grant without executing another RUN or changing that coordinate.
+    /// Providers without native console custody have no additional work.
+    ///
+    /// # Errors
+    ///
+    /// Refuses missing or changed completion custody, an unsettled old request,
+    /// or a native prefix that cannot settle within the original timeout.
+    fn prepare_terminal_fingerprint(
+        &mut self,
+        _completed: Option<crate::QemuCompletedQuantumBoundary>,
+        _at: Icount,
+        _timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Ok(())
+    }
+
     /// Publishes the current exact execution fingerprint at a control boundary.
     ///
     /// The runtime must wake the external executor and wait until the plugin has

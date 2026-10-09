@@ -26,6 +26,7 @@ pub struct QemuHotForkConsoleAdmission {
     pub(crate) saved: ConsoleOriginContinuation,
     pub(crate) calibration: QemuLogicalTimeCalibration,
     pub(crate) deadline: HostSupervisionAbsoluteDeadline,
+    pub(crate) stopped_restore_ack: crate::QemuStoppedRestoreAckCapability,
 }
 
 /// Linear stopped Restore custody retained until exact child acceptance.
@@ -39,8 +40,10 @@ pub struct QemuHotForkConsoleRestore {
     calibration: QemuLogicalTimeCalibration,
     node: crucible::NodeId,
     boundary: Option<crate::mapped_quantum::restore::QemuLogicalTimeRestoreBoundary>,
+    stopped_control_notified: bool,
     accepted_ready: Option<crucible::NodeCounter>,
     deadline: HostSupervisionAbsoluteDeadline,
+    stopped_restore_ack: crate::QemuStoppedRestoreAckCapability,
 }
 
 impl std::fmt::Debug for QemuHotForkConsoleRestore {
@@ -75,8 +78,10 @@ impl QemuHotForkConsoleRestore {
             calibration: admission.calibration,
             node: admission.saved.node().clone(),
             boundary: None,
+            stopped_control_notified: false,
             accepted_ready: None,
             deadline: admission.deadline,
+            stopped_restore_ack: admission.stopped_restore_ack.clone(),
         })
     }
 
@@ -120,6 +125,35 @@ impl QemuHotForkConsoleRestore {
                 QemuNodeChannelError::publication_unavailable("observe child console restore")
             })?;
         boundary.acknowledged(snapshot, self.calibration)
+    }
+
+    fn await_ack_notification(
+        &self,
+        remaining: std::time::Duration,
+    ) -> Result<crucible_shmem::ControlBoundaryWaitOutcome, QemuNodeChannelError> {
+        let boundary = self.boundary.ok_or_else(|| {
+            QemuNodeChannelError::new("wait for child console restore", "Restore is not armed")
+        })?;
+        let slot = self
+            .custody
+            .hot_fork_region()
+            .node_slot(self.custody.slot_index())
+            .map_err(|source| child_error("wait for child console restore", source))?;
+        // The exact producer releases coherent custody before the odd ACK. A
+        // changed token with an unavailable or inconsistent full boundary is
+        // a refusal, not another word on which to park without a promised wake.
+        if slot.control_boundary_token() != boundary.control_request() {
+            return match self.acknowledged() {
+                Ok(true) => Ok(crucible_shmem::ControlBoundaryWaitOutcome::ValueChanged),
+                Ok(false) => Err(QemuNodeChannelError::new(
+                    "wait for child console restore",
+                    "the changed control ACK lacks the original logical Restore completion",
+                )),
+                Err(source) => Err(source),
+            };
+        }
+        slot.wait_control_boundary_ack(boundary.control_request(), remaining)
+            .map_err(|source| child_error("wait for child console restore", source))
     }
 
     pub(crate) fn accept(&mut self) -> Result<(), QemuNodeChannelError> {
@@ -193,6 +227,7 @@ pub(super) struct StoppedChildRestore<'a> {
     pub(super) saved: &'a ConsoleOriginContinuation,
     pub(super) calibration: QemuLogicalTimeCalibration,
     pub(super) policy: QemuAsyncDriverPolicy,
+    pub(super) stopped_restore_ack: &'a crate::QemuStoppedRestoreAckCapability,
 }
 
 /// Completes the existing child installation while its guest remains stopped.
@@ -203,6 +238,7 @@ pub(super) struct StoppedChildRestore<'a> {
 pub(super) fn complete_restore(
     channels: &mut QemuNodeChannels,
     host_io_runtime: &mut dyn crate::QemuHostIoRuntime,
+    process: &mut dyn QemuNodeExternalProcessControl,
     original: StoppedChildRestore<'_>,
     pending: &mut Option<QemuHotForkConsoleRestore>,
 ) -> Result<super::native_console::QemuNativeConsoleObservation, QemuNodeChannelError> {
@@ -213,7 +249,16 @@ pub(super) fn complete_restore(
         saved,
         calibration,
         policy,
+        stopped_restore_ack,
     } = original;
+    if let Some(restore) = pending.as_ref() {
+        restore
+            .stopped_restore_ack
+            .require_launch(stopped_restore_ack.launch_identity())
+            .map_err(|source| {
+                child_error("retain stopped-Restore notification capability", source)
+            })?;
+    }
     // An issued request keeps its first absolute deadline through retry. A
     // rejected pre-publication attempt has no outstanding native transaction.
     let deadline = if let Some(restore) = pending.as_ref() {
@@ -266,6 +311,7 @@ pub(super) fn complete_restore(
             saved: saved.clone(),
             calibration,
             deadline,
+            stopped_restore_ack: stopped_restore_ack.clone(),
         };
         *pending = Some(
             channels
@@ -283,25 +329,14 @@ pub(super) fn complete_restore(
         ));
     }
     restore.arm()?;
-    channels.plugin_control.signal_stopped_control()?;
-
-    loop {
-        match restore.acknowledged() {
-            Ok(true) => break,
-            Ok(false) => {}
-            Err(source) if source.is_publication_unavailable() => {}
-            Err(source) => return Err(source),
-        }
-        let remaining = deadline.remaining();
-        if remaining.is_zero() {
-            return Err(QemuNodeChannelError::new(
-                "restore child console",
-                "the exact Restore ACK was absent at the original absolute deadline",
-            ));
-        }
+    ensure_child_live(process)?;
+    if !restore.stopped_control_notified {
         channels.plugin_control.signal_stopped_control()?;
-        std::thread::sleep(remaining.min(std::time::Duration::from_millis(1)));
+        // A failed signal leaves this false. Once a wake succeeds, every
+        // retained-custody continuation waits on the same public ACK edge.
+        restore.stopped_control_notified = true;
     }
+    await_restore_ack(restore, process)?;
     if !channels
         .qmp_machine_control
         .is_paused_for_hot_fork_template()?
@@ -328,3 +363,61 @@ pub(super) fn complete_restore(
     })?;
     restored.into_observation()
 }
+
+/// Waits only on the issued Restore's ACK and never renews its original budget.
+///
+/// The process loan observes the real parent's terminal status before and
+/// after each bounded wait. Exit without an ACK wake is discovered at the
+/// original deadline; this is not an immediate process-exit interrupt.
+fn await_restore_ack(
+    restore: &QemuHotForkConsoleRestore,
+    process: &mut dyn QemuNodeExternalProcessControl,
+) -> Result<(), QemuNodeChannelError> {
+    loop {
+        ensure_child_live(process)?;
+        let remaining = restore.deadline.remaining();
+        if remaining.is_zero() {
+            return Err(QemuNodeChannelError::new(
+                "restore child console",
+                "the exact Restore ACK was absent at the original absolute deadline",
+            ));
+        }
+        match restore.acknowledged() {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(source) if source.is_publication_unavailable() => {}
+            Err(source) => return Err(source),
+        }
+
+        // Expected-word FUTEX_WAIT closes an ACK racing this park. EINTR and
+        // spurious wakes return to the same predicate and absolute deadline.
+        // No second doorbell, Restore body, ceiling or authorization is issued.
+        let remaining = restore.deadline.remaining();
+        if remaining.is_zero() {
+            continue;
+        }
+        restore.await_ack_notification(remaining)?;
+        ensure_child_live(process)?;
+    }
+}
+
+fn ensure_child_live(
+    process: &mut dyn QemuNodeExternalProcessControl,
+) -> Result<(), QemuNodeChannelError> {
+    if process.reaped()
+        || process
+            .try_wait_natural_exit()
+            .map_err(|source| child_error("observe child during console restore", source))?
+            .is_some()
+    {
+        return Err(QemuNodeChannelError::new(
+            "restore child console",
+            "the retained child process exited before Restore acceptance",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "hot_fork_native_console/ack_wait_tests.rs"]
+mod ack_wait_tests;

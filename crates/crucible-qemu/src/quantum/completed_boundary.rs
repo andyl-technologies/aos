@@ -165,6 +165,36 @@ impl QemuCompletedQuantumBoundary {
         }
     }
 
+    /// Rejoins the original physical coordinate before a terminal-only fence.
+    pub(crate) fn validate_terminal_coordinate(
+        self,
+        backing: SetupRegionBackingIdentity,
+        vm_slot: u32,
+        at: Icount,
+        live: NodeSlotSnapshot,
+    ) -> Result<(), crucible_protocol::native_console::NativeConsoleError> {
+        use crucible_protocol::native_console::NativeConsoleError;
+
+        if self.backing != backing
+            || self.vm_slot != vm_slot
+            || at.retired != self.snapshot.current_icount
+            || live.current_icount != self.snapshot.current_icount
+            || live.logical_time_raw_icount != self.snapshot.logical_time_raw_icount
+            || live.max_advance_icount != at.retired
+            || live.publish_gen & 1 != 0
+            || live.control_boundary_ack & 1 == 0
+            || live.device_io_active != 0
+            || live.logical_time_restore_request != live.logical_time_restore_ack
+            || !matches!(
+                live.status,
+                crucible_shmem::STATUS_IDLE | crucible_shmem::STATUS_RUNNING
+            )
+        {
+            return Err(NativeConsoleError::Binding);
+        }
+        Ok(())
+    }
+
     /// Returns the exact idle deadline retained by the accepted clamp.
     ///
     /// The original ceiling-control publication establishes this deadline even

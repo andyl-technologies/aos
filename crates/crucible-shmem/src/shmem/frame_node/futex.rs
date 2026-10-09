@@ -179,7 +179,7 @@ pub enum RegionControlError {
 }
 
 #[cfg(target_os = "linux")]
-fn futex_wake_nonprivate(
+pub(super) fn futex_wake_nonprivate(
     wake_signal: &AtomicU32,
     max_waiters: u32,
 ) -> Result<FutexWakeResult, FutexError> {
@@ -207,7 +207,7 @@ fn futex_wake_nonprivate(
 }
 
 #[cfg(not(target_os = "linux"))]
-fn futex_wake_nonprivate(
+pub(super) fn futex_wake_nonprivate(
     _wake_signal: &AtomicU32,
     _max_waiters: u32,
 ) -> Result<FutexWakeResult, FutexError> {

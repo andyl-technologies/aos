@@ -99,7 +99,8 @@ mod supervision;
 mod unix_socket_path;
 
 pub use artifact_identity::{
-    QemuLaunchArtifactIdentity, QemuLaunchArtifactIdentityError, normalize_qemu_build_id,
+    QemuLaunchArtifactIdentity, QemuLaunchArtifactIdentityError, QemuStoppedRestoreAckCapability,
+    QemuStoppedRestoreAckCapabilityError, normalize_qemu_build_id,
 };
 pub use async_driver::{
     QemuAdvanceCompletionFence, QemuAsyncCrashEscalationTarget, QemuAsyncDriverError,

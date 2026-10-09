@@ -495,7 +495,8 @@ impl LiveVcpuTimeCallbackState {
                 .require_committed()
                 .map_err(|source| LiveVcpuTimeCallbackError::ConsoleControl { source })?;
         }
-        PluginShmemOrdering::acknowledge_control_boundary(self.slot.get());
+        PluginShmemOrdering::acknowledge_control_boundary(self.slot.get(), self.header.get())
+            .map_err(|source| LiveVcpuTimeCallbackError::ControlBoundaryNotification { source })?;
         self.control_boundary_dispatch_generation
             .store(u32::MAX, Ordering::Release);
         Ok(())

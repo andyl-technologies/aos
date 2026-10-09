@@ -414,6 +414,20 @@ impl QemuLiveHostIoRuntime {
         self.clamp_completed_quantum_with_deadline(snapshot, timeout, None, None)
     }
 
+    /// Borrows the terminal caller's single deadline for the original full body.
+    pub(super) fn fence_terminal_console_completion(
+        &mut self,
+        snapshot: &crucible_shmem::NodeSlotSnapshot,
+        deadline: &HostSupervisionDeadline,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.clamp_completed_quantum_with_deadline(
+            snapshot,
+            deadline.remaining().unwrap_or_default(),
+            Some(deadline),
+            None,
+        )
+    }
+
     fn clamp_completed_quantum_with_deadline(
         &mut self,
         snapshot: &crucible_shmem::NodeSlotSnapshot,

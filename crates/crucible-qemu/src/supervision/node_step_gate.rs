@@ -1544,6 +1544,15 @@ fn build_live_node_with_authority(
         };
     }
 
+    #[cfg(target_os = "linux")]
+    node_try!(
+        node.bind_native_console_launch_artifacts(&config.qemu_executable, &config.plugin)
+            .map_err(|source| QemuLiveNodeStepGateError::prime(
+                "bind actual console source launch",
+                source
+            ))
+    );
+
     if let Some(gdbstub) = &config.gdbstub {
         node = node.with_gdbstub(gdbstub.clone());
     }

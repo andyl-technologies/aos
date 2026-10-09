@@ -180,8 +180,13 @@ fn serve_released_qmp(mut socket: UnixStream, status: serde_json::Value) -> std:
 #[test]
 fn child_installer_retains_ceiling_and_restore_receipt_after_failed_wake()
 -> Result<(), Box<dyn Error>> {
+    let (_operation_artifacts, stopped_restore_ack) =
+        crate::artifact_identity::tests::modeled_stopped_restore_ack_capability()?;
+
     let (mut source, mut scheduler, process, mut diagnostics) =
-        crate::node::tests::console_retry_scheduler_continuation()?;
+        crate::node::tests::console_retry_scheduler_continuation(Some(
+            stopped_restore_ack.launch_identity(),
+        ))?;
     let fixture = crate::native_console_owner::ChildFixture::with_request(scheduler.request())?;
     fixture.publish_capability()?;
     let descriptor = fixture.descriptor()?;
@@ -241,6 +246,7 @@ fn child_installer_retains_ceiling_and_restore_receipt_after_failed_wake()
                 QemuShutdownPolicy::fast_test(),
                 QemuAsyncDriverPolicy::fast_test(),
                 QemuCrashDetector::new("child"),
+                Some(&stopped_restore_ack),
             )
             .err()
             .ok_or("stale inherited ceiling did not refuse initial arming")?;
@@ -296,6 +302,7 @@ fn child_installer_retains_ceiling_and_restore_receipt_after_failed_wake()
                 QemuShutdownPolicy::fast_test(),
                 QemuAsyncDriverPolicy::fast_test(),
                 QemuCrashDetector::new("child"),
+                Some(&stopped_restore_ack),
             )
             .err()
             .ok_or("first real installer wake was not refused")?;
@@ -318,12 +325,42 @@ fn child_installer_retains_ceiling_and_restore_receipt_after_failed_wake()
         assert_eq!(body.advance, pair.advance);
         assert_eq!(body.advance, slot.advance_publication_sequence);
 
+        // Possession of another supported receipt cannot replace the launch
+        // pair retained by this already-published Restore transaction.
+        let (_foreign_artifacts, foreign_capability) =
+            crate::artifact_identity::tests::modeled_stopped_restore_ack_capability()?;
+        let failure = scheduler
+            .into_qemu_node(
+                crucible::NodeId { name: "vm".into() },
+                RetainedProcess(process),
+                QemuShutdownPolicy::fast_test(),
+                QemuAsyncDriverPolicy::fast_test(),
+                QemuCrashDetector::new("child"),
+                Some(&foreign_capability),
+            )
+            .err()
+            .ok_or("retained Restore accepted another launch receipt")?;
+        let (scheduler, process, error) = failure.into_parts();
+        assert!(error.to_string().contains("selected launch identity"));
+        assert_eq!(region.node_slot(0)?.snapshot(), slot);
+        assert_eq!(segment.authorization.snapshot()?, body);
+        assert_eq!(segment.clamp.snapshot()?, pair);
+        assert_eq!(
+            scheduler
+                .console_restore
+                .as_ref()
+                .ok_or("Restore custody absent")?
+                .retained_deadline_for_test(),
+            deadline,
+        );
+
         let installed = scheduler.into_qemu_node(
             crucible::NodeId { name: "vm".into() },
             RetainedProcess(process),
             QemuShutdownPolicy::fast_test(),
             QemuAsyncDriverPolicy::fast_test(),
             QemuCrashDetector::new("child"),
+            Some(&stopped_restore_ack),
         )?;
         assert_eq!(segment.authorization.snapshot()?, body);
         assert_eq!(segment.clamp.snapshot()?, pair);
@@ -408,10 +445,118 @@ fn child_installer_retains_ceiling_and_restore_receipt_after_failed_wake()
 }
 
 #[test]
+fn missing_operation_capability_refuses_before_ceiling_pause_or_restore_publication()
+-> Result<(), Box<dyn Error>> {
+    let (_source_artifacts, source_launch) =
+        crate::artifact_identity::tests::modeled_cold_launch_identity()?;
+    let (mut source, mut scheduler, process, mut diagnostics) =
+        crate::node::tests::console_retry_scheduler_continuation(Some(&source_launch))?;
+    let fixture = crate::native_console_owner::ChildFixture::with_request(scheduler.request())?;
+    fixture.publish_capability()?;
+    let descriptor = fixture.descriptor()?;
+    let region =
+        crucible_shmem::mmap_setup_region(descriptor.as_fd(), fixture.region.region_len())?;
+    scheduler.state.last_observed_time = VirtualTime { ticks: 100 };
+    scheduler.state.last_step_ceiling = Some(Icount { retired: 200 });
+    scheduler.state.native_console = Some(fixture.saved.clone());
+    scheduler.state.console_calibration = Some(QemuLogicalTimeCalibration {
+        logical_icount: 100,
+        raw_icount: 2,
+    });
+    scheduler.ring_descriptor = descriptor;
+    scheduler.channels.shmem_hot_path = Box::new(fixture.channel);
+
+    assert_eq!(
+        scheduler.authenticated_launch.as_ref(),
+        Some(&source_launch)
+    );
+    let slot_before = region.node_slot(0)?.snapshot();
+    let header_before = region.header_snapshot();
+    let segment = region.native_console_segment(0)?;
+    let body_before = segment.authorization.snapshot();
+    let pair_before = segment.clamp.snapshot();
+    let request_before = scheduler.request();
+    let failure = scheduler
+        .into_qemu_node(
+            crucible::NodeId { name: "vm".into() },
+            RetainedProcess(process),
+            QemuShutdownPolicy::fast_test(),
+            QemuAsyncDriverPolicy::fast_test(),
+            QemuCrashDetector::new("child"),
+            None,
+        )
+        .err()
+        .ok_or("console Restore accepted an absent operation capability")?;
+    let (scheduler, process, error) = failure.into_parts();
+
+    assert!(
+        error
+            .to_string()
+            .contains("authenticated stopped-Restore ACK")
+    );
+    assert_eq!(scheduler.request(), request_before);
+    assert!(!scheduler.child_ceiling_armed);
+    assert!(scheduler.console_restore.is_none());
+    assert_eq!(region.node_slot(0)?.snapshot(), slot_before);
+    assert_eq!(region.header_snapshot(), header_before);
+    assert_eq!(segment.authorization.snapshot(), body_before);
+    assert_eq!(segment.clamp.snapshot(), pair_before);
+    assert_eq!(
+        (segment.ring.read_index(), segment.ring.write_index()),
+        (23, 23)
+    );
+
+    let (_foreign_artifacts, foreign) =
+        crate::artifact_identity::tests::modeled_stopped_restore_ack_capability()?;
+    let failure = scheduler
+        .into_qemu_node(
+            crucible::NodeId { name: "vm".into() },
+            RetainedProcess(process),
+            QemuShutdownPolicy::fast_test(),
+            QemuAsyncDriverPolicy::fast_test(),
+            QemuCrashDetector::new("child"),
+            Some(&foreign),
+        )
+        .err()
+        .ok_or("first-entry foreign capability authorized console Restore")?;
+    let (scheduler, process, error) = failure.into_parts();
+    assert!(
+        error
+            .to_string()
+            .contains("differs from the selected launch identity")
+    );
+    assert!(!scheduler.child_ceiling_armed);
+    assert!(scheduler.console_restore.is_none());
+    assert_eq!(scheduler.request(), request_before);
+    assert_eq!(region.node_slot(0)?.snapshot(), slot_before);
+    assert_eq!(region.header_snapshot(), header_before);
+    assert_eq!(segment.authorization.snapshot(), body_before);
+    assert_eq!(segment.clamp.snapshot(), pair_before);
+    assert_eq!(
+        (segment.ring.read_index(), segment.ring.write_index()),
+        (23, 23)
+    );
+
+    drop(scheduler);
+    drop(process);
+    source.release_hot_fork_plugin_endpoints()?;
+    source.release_hot_fork_child_qmp()?;
+    source.release_hot_fork_child_diagnostics_with_consumer(&mut diagnostics)?;
+    drop(source.release_hot_fork_private_ring_mapping()?);
+    source.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
 fn child_installer_error_reaps_qmp_peer_while_continuation_is_retained()
 -> Result<(), Box<dyn Error>> {
+    let (_operation_artifacts, stopped_restore_ack) =
+        crate::artifact_identity::tests::modeled_stopped_restore_ack_capability()?;
+
     let (mut source, mut scheduler, process, mut diagnostics) =
-        crate::node::tests::console_retry_scheduler_continuation()?;
+        crate::node::tests::console_retry_scheduler_continuation(Some(
+            stopped_restore_ack.launch_identity(),
+        ))?;
     let fixture = crate::native_console_owner::ChildFixture::with_request(scheduler.request())?;
     fixture.publish_capability()?;
     let descriptor = fixture.descriptor()?;
@@ -459,6 +604,7 @@ fn child_installer_error_reaps_qmp_peer_while_continuation_is_retained()
             QemuShutdownPolicy::fast_test(),
             QemuAsyncDriverPolicy::fast_test(),
             QemuCrashDetector::new("child"),
+            Some(&stopped_restore_ack),
         )?;
         Ok(())
     });
@@ -498,8 +644,13 @@ fn child_installer_error_reaps_qmp_peer_while_continuation_is_retained()
 #[test]
 fn child_installer_retains_restore_after_late_unavailable_publication() -> Result<(), Box<dyn Error>>
 {
+    let (_operation_artifacts, stopped_restore_ack) =
+        crate::artifact_identity::tests::modeled_stopped_restore_ack_capability()?;
+
     let (mut source, mut scheduler, process, mut diagnostics) =
-        crate::node::tests::console_retry_scheduler_continuation()?;
+        crate::node::tests::console_retry_scheduler_continuation(Some(
+            stopped_restore_ack.launch_identity(),
+        ))?;
     let fixture = crate::native_console_owner::ChildFixture::with_request(scheduler.request())?;
     fixture.publish_capability()?;
     let descriptor = fixture.descriptor()?;
@@ -560,6 +711,7 @@ fn child_installer_retains_restore_after_late_unavailable_publication() -> Resul
                             QemuShutdownPolicy::fast_test(),
                             QemuAsyncDriverPolicy::fast_test(),
                             QemuCrashDetector::new("child"),
+                            Some(&stopped_restore_ack),
                         )
                         .err()
                         .ok_or("odd console publication was not refused")?,
@@ -602,6 +754,7 @@ fn child_installer_retains_restore_after_late_unavailable_publication() -> Resul
                 QemuShutdownPolicy::fast_test(),
                 QemuAsyncDriverPolicy::fast_test(),
                 QemuCrashDetector::new("child"),
+                Some(&stopped_restore_ack),
             )
             .err()
             .ok_or("first real installer wake was not refused")?;
@@ -679,6 +832,7 @@ fn child_installer_retains_restore_after_late_unavailable_publication() -> Resul
             QemuShutdownPolicy::fast_test(),
             QemuAsyncDriverPolicy::fast_test(),
             QemuCrashDetector::new("child"),
+            Some(&stopped_restore_ack),
         )?;
         assert_eq!(segment.authorization.snapshot()?, body);
         assert_eq!(segment.clamp.snapshot()?, pair);
@@ -713,8 +867,12 @@ fn child_installer_retains_restore_after_late_unavailable_publication() -> Resul
 
 #[test]
 fn child_console_capability_refusal_remains_fatal() -> Result<(), Box<dyn Error>> {
+    let (_source_artifacts, stopped_restore_ack) =
+        crate::artifact_identity::tests::modeled_stopped_restore_ack_capability()?;
     let (mut source, scheduler, process, mut diagnostics) =
-        crate::node::tests::console_retry_scheduler_continuation()?;
+        crate::node::tests::console_retry_scheduler_continuation(Some(
+            stopped_restore_ack.launch_identity(),
+        ))?;
     let request = scheduler.request();
     let mut fixture = crate::native_console_owner::ChildFixture::with_request(request)?;
     let descriptor = fixture.descriptor()?;
@@ -739,6 +897,7 @@ fn child_console_capability_refusal_remains_fatal() -> Result<(), Box<dyn Error>
             std::time::Duration::from_secs(1),
         )
         .ok_or("test host deadline overflows")?,
+        stopped_restore_ack,
     };
 
     // Absent installation framing is a real mapped capability refusal, not

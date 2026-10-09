@@ -31,7 +31,8 @@ use crucible_cas::content_store::ImmutableBlobBackend;
 use crucible_qemu::{
     LinuxQemuAttemptHostConfig, LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverError,
     QemuAsyncDriverPolicy, QemuHotForkChildProcessOwner, QemuLaunchArtifactIdentity,
-    QemuLaunchArtifactIdentityError, QemuShutdownPolicy, QemuVmRealizationError,
+    QemuLaunchArtifactIdentityError, QemuShutdownPolicy, QemuStoppedRestoreAckCapability,
+    QemuStoppedRestoreAckCapabilityError, QemuVmRealizationError,
 };
 
 #[cfg(test)]
@@ -153,6 +154,7 @@ pub(crate) fn packaged_finding_replay_runner<F>(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PackagedQemuHotForkConfig {
     launch: QemuLaunchArtifactIdentity,
+    stopped_restore_ack: QemuStoppedRestoreAckCapability,
     limits: HotCheckpointLimits,
     initial_signals: HotCheckpointHotnessSignals,
     shutdown_policy: QemuShutdownPolicy,
@@ -165,7 +167,8 @@ impl PackagedQemuHotForkConfig {
     /// # Errors
     ///
     /// Returns [`PackagedQemuHotForkConfigError`] when the selected QEMU and
-    /// plugin markers do not authenticate, or a host timeout is zero.
+    /// plugin markers do not authenticate, stopped-Restore notification support
+    /// is missing or unsupported, or a host timeout is zero.
     pub fn authenticate(
         lifecycle: &ProductionVmLifecycleConfig,
         limits: HotCheckpointLimits,
@@ -199,37 +202,50 @@ impl PackagedQemuHotForkConfig {
             .validate()
             .map_err(PackagedQemuHotForkConfigError::HostIo)?;
 
-        Ok(Self::new(
+        Self::new(
             launch,
             limits,
             initial_signals,
             shutdown_policy,
             async_policy,
-        ))
+        )
     }
 
     /// Creates an already-authenticated retained-source policy internally.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selected launch lacks supported stopped-Restore
+    /// ACK notification. Authentication alone remains sufficient for cold use.
     pub(crate) fn new(
         launch: QemuLaunchArtifactIdentity,
         limits: HotCheckpointLimits,
         initial_signals: HotCheckpointHotnessSignals,
         shutdown_policy: QemuShutdownPolicy,
         async_policy: QemuAsyncDriverPolicy,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, PackagedQemuHotForkConfigError> {
+        let stopped_restore_ack = launch
+            .stopped_restore_ack_capability()
+            .map_err(PackagedQemuHotForkConfigError::StoppedRestoreAck)?;
+        Ok(Self {
             launch,
+            stopped_restore_ack,
             limits,
             initial_signals,
             shutdown_policy,
             async_policy,
-        }
+        })
     }
 
     /// Returns the marker-authenticated QEMU and plugin launch identity.
     #[must_use]
     pub(crate) const fn launch_identity(&self) -> &QemuLaunchArtifactIdentity {
         &self.launch
+    }
+
+    /// Returns operation support authenticated for this exact launch pair.
+    pub(crate) const fn stopped_restore_ack(&self) -> &QemuStoppedRestoreAckCapability {
+        &self.stopped_restore_ack
     }
 
     /// Returns the process-wide retained-source and fork-rate ceilings.
@@ -260,6 +276,9 @@ impl PackagedQemuHotForkConfig {
 /// Invalid packaged retained-source deployment policy.
 #[derive(Debug, thiserror::Error)]
 pub enum PackagedQemuHotForkConfigError {
+    /// The selected plugin cannot notify a stopped Restore completion.
+    #[error("authenticate stopped-Restore ACK operation: {0}")]
+    StoppedRestoreAck(#[source] QemuStoppedRestoreAckCapabilityError),
     /// The selected QEMU and plugin markers did not authenticate.
     #[error("authenticate packaged QEMU launch pair: {0}")]
     Launch(#[source] QemuLaunchArtifactIdentityError),
@@ -1679,6 +1698,9 @@ fn completion_validation_failure(error: CampaignRepositoryError) -> CompletionVa
 /// Failure to acquire or compose one packaged local QEMU executor.
 #[derive(Debug, thiserror::Error)]
 pub enum PackagedQemuExecutorError {
+    /// A retained operation receipt differs from the selected launch pair.
+    #[error("authenticate packaged stopped-Restore operation: {0}")]
+    StoppedRestoreAck(#[source] QemuStoppedRestoreAckCapabilityError),
     /// The internal deployment contract named no campaign.
     #[error("packaged QEMU executor has no campaign")]
     NoCampaigns,

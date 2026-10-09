@@ -55,6 +55,7 @@ mod device_service;
 mod device_wait_observation;
 mod performance;
 mod publication;
+mod terminal_fingerprint;
 mod wait_observation;
 use boundary::*;
 
@@ -604,6 +605,15 @@ impl QemuLiveHostIoRuntime {
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
+    fn prepare_terminal_fingerprint(
+        &mut self,
+        completed: Option<crate::QemuCompletedQuantumBoundary>,
+        at: crucible::Icount,
+        timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.fence_terminal_console_regrant(completed, at, timeout)
+    }
+
     fn prepare_advance_completion(
         &mut self,
         timeout: Duration,

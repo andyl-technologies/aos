@@ -29,7 +29,7 @@ pub(super) fn worked_network_world(boot: Option<WorkedNetworkBoot>) -> Result<Wo
             // The fixed 50 ps instruction clock makes Linux LAPIC calibration
             // dominate this workload; phase0's focused LAPIC gate covers it.
             format!(
-                "root=/dev/vda rw init=/init console=ttyS0 noapic nolapic network.role={name} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2"
+                "root=/dev/vda rw init=/init console=ttyS0 quiet loglevel=4 noapic nolapic network.role={name} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2"
             )
         } else {
             format!("console=ttyS0 quiet network.role={role} network.fixture=worked-recovery")

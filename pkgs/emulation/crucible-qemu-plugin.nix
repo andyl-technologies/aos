@@ -1,6 +1,7 @@
 ##! crucible-qemu-plugin — RFC-0010 QEMU plugin cdylib
 {
   lib,
+  stdenv,
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
@@ -188,6 +189,24 @@ in
       test -n "$shmem_abi_version"
 
       mkdir -p "$out/nix-support"
+      ${lib.optionalString stdenv.hostPlatform.isLinux ''
+        # Advertise only the operation owned by this exact compiled GPL source.
+        # Older same-ABI plugins remain usable for cold launches without Restore.
+        stopped_restore_ack_version=
+        stopped_restore_ack_version_count=0
+        while IFS= read -r line; do
+          case "$line" in
+            "pub const STOPPED_RESTORE_ACK_NOTIFICATION_VERSION: u32 = "*";")
+              stopped_restore_ack_version=''${line#pub const STOPPED_RESTORE_ACK_NOTIFICATION_VERSION: u32 = }
+              stopped_restore_ack_version=''${stopped_restore_ack_version%;}
+              stopped_restore_ack_version_count=$((stopped_restore_ack_version_count + 1))
+              ;;
+          esac
+        done < crucible-qemu-plugin/src/shmem_ordering.rs
+        test "$stopped_restore_ack_version_count" -eq 1
+        test "$stopped_restore_ack_version" = 1
+      ''}
+
       cat > "$out/nix-support/crucible-qemu-plugin-build-info" <<INFO
       package=crucible-qemu-plugin
       build_system=mkCargoPackage
@@ -200,6 +219,7 @@ in
       qemu_plugin_abi=qemu-plugin-api-v$qemu_plugin_api_version
       control_protocol_version=4
       plugin_setup_plan_version=3
+      ${lib.optionalString stdenv.hostPlatform.isLinux "stopped_restore_ack_notification_version=$stopped_restore_ack_version"}
       shmem_abi_version=$shmem_abi_version
       shmem_abi=crucible-shmem-abi-v$shmem_abi_version
       qemu_shmem_abi=${qemu-crucible.passthru.shmemAbi}

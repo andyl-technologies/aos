@@ -41,6 +41,8 @@ use crucible_qemu::{
 
 pub(crate) mod committed_source;
 
+mod stopped_restore_ack;
+
 use super::*;
 use crate::{
     AssignmentLedger, AttemptExecutionContext, AttemptExecutionKey, AttemptExecutionOrigin,

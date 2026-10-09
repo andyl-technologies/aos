@@ -522,6 +522,7 @@ where
     run_state_root: PathBuf,
     shutdown_policy: QemuShutdownPolicy,
     async_policy: QemuAsyncDriverPolicy,
+    stopped_restore_ack: Option<crucible_qemu::QemuStoppedRestoreAckCapability>,
     #[cfg(test)]
     node_launch_nanoseconds: Vec<(String, u64)>,
 }
@@ -548,9 +549,24 @@ where
             run_state_root: run_state_root.into(),
             shutdown_policy,
             async_policy,
+            stopped_restore_ack: None,
             #[cfg(test)]
             node_launch_nanoseconds: Vec::new(),
         }
+    }
+
+    /// Retains stopped-Restore support from the selected source launch pair.
+    ///
+    /// The packaged executor checks that pair against its actual lifecycle
+    /// paths before constructing this factory. A missing receipt keeps
+    /// console Restore unsupported; non-console installation remains valid.
+    #[must_use]
+    pub fn with_stopped_restore_ack(
+        mut self,
+        capability: crucible_qemu::QemuStoppedRestoreAckCapability,
+    ) -> Self {
+        self.stopped_restore_ack = Some(capability);
+        self
     }
 
     /// Selects the campaign store used for recoverable terminal restarts.
@@ -1096,6 +1112,7 @@ where
                 self.shutdown_policy,
                 async_policy,
                 QemuCrashDetector::new(node.name.clone()),
+                self.stopped_restore_ack.as_ref(),
             ) {
                 let message = error.to_string();
                 quarantine_failed_assembly(source_world, resources, assembly, Some(child));

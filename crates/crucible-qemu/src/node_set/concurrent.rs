@@ -107,6 +107,23 @@ fn fingerprint_selected_nodes<T: Send>(
 }
 
 impl QemuNodeSet {
+    /// Prepares live nodes' original completed boundaries for terminal sampling.
+    ///
+    /// This settles only existing physical console grants. It dispatches no RUN
+    /// and publishes no additional canonical scheduler evidence.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a node whose original completion or console custody cannot settle.
+    pub fn prepare_terminal_fingerprints(&mut self) -> Result<(), BackendError> {
+        for (node, backend) in &mut self.nodes {
+            if !self.permanently_closed.contains(node) {
+                backend.prepare_terminal_fingerprint()?;
+            }
+        }
+        Ok(())
+    }
+
     /// Checks that one node can be sampled at the current paused boundary.
     ///
     /// # Errors

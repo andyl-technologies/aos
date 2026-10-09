@@ -1508,9 +1508,13 @@ type ConsoleRetrySchedulerContinuation = (
 
 /// Retains the original scripted fork's typed planes for installer controls.
 #[cfg(target_os = "linux")]
-pub(in crate::node) fn console_retry_scheduler_continuation()
--> Result<ConsoleRetrySchedulerContinuation, Box<dyn Error>> {
+pub(in crate::node) fn console_retry_scheduler_continuation(
+    launch: Option<&crate::QemuLaunchArtifactIdentity>,
+) -> Result<ConsoleRetrySchedulerContinuation, Box<dyn Error>> {
     let (mut node, _log) = sealed_hot_fork_node_with_log(DescriptorScript::SchedulerContinuation)?;
+    // The scripted process owns modeled immutable artifacts, not a real plugin.
+    // Bind the source before its genuine fork/host-continuation capture.
+    node.authenticated_launch = launch.cloned();
     let mut process_owner = ScriptedHotForkChildOwner::default();
     let launch = node.fork_prepared_hot_fork_template(&mut process_owner)?;
     let (_parent, process, child_qmp, diagnostics, continuation) = launch.into_parts();

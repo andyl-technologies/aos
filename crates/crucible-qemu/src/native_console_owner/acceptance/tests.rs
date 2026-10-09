@@ -18,6 +18,8 @@ use super::*;
 use crate::native_console_owner::tests::{FixtureError, LaunchFixture};
 use crate::{QemuHostIoRuntime, QemuShmemHotPathChannel};
 
+mod terminal_fingerprint;
+
 fn custody(fixture: &LaunchFixture) -> Result<&ConsoleLaunchCustody, FixtureError> {
     fixture
         .setup

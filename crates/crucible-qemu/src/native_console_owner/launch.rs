@@ -213,6 +213,17 @@ impl ConsoleLaunchCustody {
         Some(owner.accepted.advisory_byte_tail())
     }
 
+    /// Authenticates outstanding same-coordinate grants before terminal capture.
+    pub(crate) fn terminal_regrant_pending(
+        &self,
+        region: &MappedSetupRegion,
+        snapshot: crucible_shmem::NodeSlotSnapshot,
+    ) -> Result<bool, ConsoleOwnerError> {
+        self.validate_mapping(region, self.slot)?;
+        self.lock()?
+            .validate_terminal_regrant(region, self.authorization_table()?, snapshot)
+    }
+
     /// Reserves before inbox effects and retains the exact writer's full body.
     pub(crate) fn publish_inputs(
         &self,

@@ -151,6 +151,7 @@ pub struct QemuHotForkSchedulerNodeContinuation {
     channels: QemuNodeChannels,
     host_io_runtime: Box<dyn QemuHostIoRuntime>,
     state: QemuHotForkNodeStateContinuation,
+    authenticated_launch: Option<crate::QemuLaunchArtifactIdentity>,
     ring_descriptor: OwnedFd,
     ring: QemuHotForkPrivateRingStageProof,
     endpoint_stage: QemuHotForkPluginEndpointStageProof,
@@ -187,6 +188,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             host_io_binding,
             host_io_runtime,
             node_state,
+            authenticated_launch,
             checkpoint_cancellation,
         } = continuation;
         let channels = QemuNodeChannels {
@@ -201,6 +203,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             channels,
             host_io_runtime,
             state: node_state,
+            authenticated_launch,
             ring_descriptor,
             ring,
             endpoint_stage,
@@ -257,6 +260,9 @@ impl QemuHotForkSchedulerNodeContinuation {
     ///
     /// Returns [`QemuHotForkSchedulerNodeInstallError`] with both linear inputs
     /// when the process-control basis differs from this continuation.
+    /// A console-enabled continuation also requires the stopped-ACK capability
+    /// authenticated for its actual retained source launch pair. Missing
+    /// support refuses before any inherited ceiling or Restore publication.
     pub fn into_qemu_node(
         mut self,
         node: crucible::NodeId,
@@ -264,8 +270,9 @@ impl QemuHotForkSchedulerNodeContinuation {
         shutdown_policy: QemuShutdownPolicy,
         async_policy: QemuAsyncDriverPolicy,
         crash_detector: QemuCrashDetector,
+        stopped_restore_ack: Option<&crate::QemuStoppedRestoreAckCapability>,
     ) -> Result<QemuNode, QemuHotForkSchedulerNodeInstallError> {
-        let process = Box::new(process);
+        let mut process = Box::new(process);
         let basis = process.hot_fork_process_basis();
         if basis.request() != self.request || basis.child_process_id() != process.process_id() {
             return Err(QemuHotForkSchedulerNodeInstallError::new(
@@ -276,6 +283,24 @@ impl QemuHotForkSchedulerNodeContinuation {
                     "external process control does not match the retained fork basis",
                 ),
             ));
+        }
+
+        if self.state.native_console.is_some() {
+            let support = match (&self.authenticated_launch, stopped_restore_ack) {
+                (Some(source), Some(capability)) => capability
+                    .require_launch(source)
+                    .map_err(|source| source.to_string()),
+                _ => Err(String::from(
+                    "selected source lacks authenticated stopped-Restore ACK notification",
+                )),
+            };
+            if let Err(source) = support {
+                return Err(QemuHotForkSchedulerNodeInstallError::new(
+                    self,
+                    process,
+                    QemuNodeChannelError::new("install child console", source),
+                ));
+            }
         }
 
         // The source's last ceiling is an upper bound, not its stopped
@@ -307,10 +332,11 @@ impl QemuHotForkSchedulerNodeContinuation {
                         "install child console",
                         "logical node differs from captured origins",
                     ))
-                } else {
+                } else if let Some(stopped_restore_ack) = stopped_restore_ack {
                     super::hot_fork_native_console::complete_restore(
                         &mut self.channels,
                         self.host_io_runtime.as_mut(),
+                        process.as_mut(),
                         super::hot_fork_native_console::StoppedChildRestore {
                             request: self.request,
                             descriptor: &self.ring_descriptor,
@@ -318,10 +344,16 @@ impl QemuHotForkSchedulerNodeContinuation {
                             saved,
                             calibration,
                             policy: async_policy,
+                            stopped_restore_ack,
                         },
                         &mut self.console_restore,
                     )
                     .map(Some)
+                } else {
+                    Err(QemuNodeChannelError::new(
+                        "install child console",
+                        "stopped-Restore ACK capability is absent",
+                    ))
                 }
             }
             (None, None) => Ok(None),
@@ -344,6 +376,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             channels,
             host_io_runtime,
             state,
+            authenticated_launch,
             ring_descriptor,
             ring,
             endpoint_stage,
@@ -392,6 +425,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             pending_priming_observations: Vec::new(),
             next_network_output_sequence: state.next_network_output_sequence,
             native_console,
+            authenticated_launch,
             fault_capabilities: state.fault_capabilities,
             ready_markers: state.ready_markers,
             exact_fault_manifests: state.exact_fault_manifests,

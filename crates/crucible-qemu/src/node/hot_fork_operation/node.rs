@@ -531,6 +531,7 @@ impl QemuNode {
             host_io_binding,
             host_io_runtime,
             node_state,
+            authenticated_launch: self.authenticated_launch.clone(),
             checkpoint_cancellation,
         };
         Ok(QemuHotForkChildLaunch {

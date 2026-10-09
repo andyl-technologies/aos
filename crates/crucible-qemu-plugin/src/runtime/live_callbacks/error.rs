@@ -6,6 +6,12 @@ use thiserror::Error;
 /// An error in live production callback setup or dispatch.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LiveVcpuTimeCallbackError {
+    /// The completed boundary was released but its hostward notification failed.
+    #[error("control boundary ACK notification failed: {source}")]
+    ControlBoundaryNotification {
+        /// Shared-futex transport failure after coherent state publication.
+        source: crucible_shmem::FutexError,
+    },
     /// A required QEMU callback registration symbol is absent.
     #[error("required live callback capability `{symbol}` is unavailable")]
     CapabilityUnavailable {

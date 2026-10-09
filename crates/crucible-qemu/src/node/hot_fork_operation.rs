@@ -99,6 +99,7 @@ pub struct QemuHotForkHostContinuation {
     pub(super) host_io_binding: crucible::model::ContentHash,
     pub(super) host_io_runtime: Box<dyn QemuHostIoRuntime>,
     pub(super) node_state: QemuHotForkNodeStateContinuation,
+    pub(super) authenticated_launch: Option<crate::QemuLaunchArtifactIdentity>,
     pub(super) checkpoint_cancellation: OwnedFd,
 }
 

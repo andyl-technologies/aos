@@ -8,6 +8,21 @@
 use super::*;
 
 impl ProductionVmLifecycleLoop {
+    /// Prepares original physical completions for terminal fingerprint sampling.
+    ///
+    /// Canonically held peer evidence remains held. This operation admits no
+    /// guest reply, marker release, scheduler input, or additional RUN.
+    ///
+    /// # Errors
+    ///
+    /// Refuses changed or unsettled original console completion custody.
+    pub fn prepare_terminal_fingerprints(&mut self) -> Result<(), SchedulerError> {
+        self.inner
+            .backend_mut()
+            .prepare_terminal_fingerprints()
+            .map_err(SchedulerError::from)
+    }
+
     /// Drains node-qualified guest selectable requests at the paused boundary.
     ///
     /// The returned requests remain untrusted guest input. Callers must bind

@@ -422,6 +422,7 @@ where
         shutdown_policy: QemuShutdownPolicy,
         async_policy: QemuAsyncDriverPolicy,
         crash_detector: QemuCrashDetector,
+        stopped_restore_ack: Option<&crucible_qemu::QemuStoppedRestoreAckCapability>,
     ) -> Result<(), LinuxQemuHotForkReconciliationError> {
         if self.installed_node.is_some() {
             return Err(LinuxQemuHotForkReconciliationError::BasisMismatch);
@@ -436,6 +437,7 @@ where
             shutdown_policy,
             async_policy,
             crash_detector,
+            stopped_restore_ack,
         ) {
             Ok(installed_node) => {
                 self.installed_node = Some(installed_node);
@@ -813,6 +815,7 @@ where
         shutdown_policy: QemuShutdownPolicy,
         async_policy: QemuAsyncDriverPolicy,
         crash_detector: QemuCrashDetector,
+        stopped_restore_ack: Option<&crucible_qemu::QemuStoppedRestoreAckCapability>,
     ) -> Result<(), Box<QemuHotForkAttemptReconciliationError<LinuxQemuHotForkReconciliationError>>>
     {
         self.require_phase(
@@ -822,7 +825,13 @@ where
         .map_err(Box::new)?;
         self.backend_mut()
             .map_err(Box::new)?
-            .install_scheduler_node(node, shutdown_policy, async_policy, crash_detector)
+            .install_scheduler_node(
+                node,
+                shutdown_policy,
+                async_policy,
+                crash_detector,
+                stopped_restore_ack,
+            )
             .map_err(|source| {
                 Box::new(QemuHotForkAttemptReconciliationError::Operation {
                     operation: "install hot-fork scheduler node",

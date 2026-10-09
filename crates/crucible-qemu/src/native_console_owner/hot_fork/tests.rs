@@ -20,6 +20,8 @@ pub(crate) struct ChildFixture {
     pub(crate) channel: crate::QemuMappedQuantumShmemHotPath,
     pub(crate) saved: ConsoleOriginContinuation,
     request: crate::QmpHotForkRequest,
+    stopped_restore_ack: crate::QemuStoppedRestoreAckCapability,
+    _stopped_operation_artifacts: tempfile::TempDir,
 }
 
 impl ChildFixture {
@@ -98,6 +100,10 @@ impl ChildFixture {
                 child.setup.shmem_as_fd(),
                 child.setup.region().region_len,
             )?)?;
+        let (operation_artifacts, stopped_restore_ack) =
+            crate::artifact_identity::tests::modeled_stopped_restore_ack_capability().map_err(
+                |error| FixtureError::Peer(format!("modeled plugin operation marker: {error}")),
+            )?;
         Ok(Self {
             parent,
             child,
@@ -105,6 +111,8 @@ impl ChildFixture {
             channel,
             saved,
             request,
+            stopped_restore_ack,
+            _stopped_operation_artifacts: operation_artifacts,
         })
     }
 
@@ -160,11 +168,22 @@ impl ChildFixture {
                 std::time::Duration::from_secs(1),
             )
             .ok_or_else(|| std::io::Error::other("test host deadline overflows"))?,
+            stopped_restore_ack: self.stopped_restore_ack.clone(),
         })
     }
 
     fn prepare(&mut self) -> Result<QemuHotForkConsoleRestore, FixtureError> {
         let admission = self.admission()?;
+        Ok(self.channel.prepare_hot_fork_console_restore(&admission)?)
+    }
+
+    /// Supplies a finite test budget before any Restore body is issued.
+    pub(crate) fn prepare_with_deadline(
+        &mut self,
+        deadline: crate::supervision::HostSupervisionAbsoluteDeadline,
+    ) -> Result<QemuHotForkConsoleRestore, FixtureError> {
+        let mut admission = self.admission()?;
+        admission.deadline = deadline;
         Ok(self.channel.prepare_hot_fork_console_restore(&admission)?)
     }
 
@@ -182,7 +201,7 @@ impl ChildFixture {
         Ok(())
     }
 
-    fn modeled_ack(&self, raw: u64) -> Result<NativeConsoleFrontier, FixtureError> {
+    pub(crate) fn modeled_ack(&self, raw: u64) -> Result<NativeConsoleFrontier, FixtureError> {
         let segment = self.region.native_console_segment(0)?;
         let pair = self.region.native_console_clamp_for_request(0)?;
         let body = segment.authorization.snapshot()?;
@@ -204,7 +223,10 @@ impl ChildFixture {
         };
         segment.frontier.store(frontier)?;
         assert_eq!(
-            slot.acknowledge_control_boundary(),
+            slot.acknowledge_control_boundary_and_notify()
+                .map_err(|error| FixtureError::Peer(format!(
+                    "modeled Restore ACK wake: {error}"
+                )))?,
             pair.request.wrapping_add(1)
         );
         Ok(frontier)
