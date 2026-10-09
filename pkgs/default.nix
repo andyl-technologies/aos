@@ -1995,6 +1995,20 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       linux-controller-completion-stage5-check = callPackage ./kernel/linux-controller-completion-stage5-check.nix {
         inherit linuxSource;
       };
+      linux-controller-run-return-stage6 = callPackage ./kernel/linux.nix {
+        inherit linuxSource;
+        extraPatches = [
+          ./kernel/crucible-controller-clock-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage2-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage3-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage4-7.2.3.patch
+          ./kernel/crucible-controller-completion-stage5-7.2.3.patch
+          ./kernel/crucible-controller-run-return-stage6-7.2.3.patch
+        ];
+      };
+      linux-controller-run-return-stage6-check = callPackage ./kernel/linux-controller-run-return-stage6-check.nix {
+        inherit linuxSource;
+      };
       # Build a kernel variant with extra kconfig appended. Use this — not
       # `linux.override { extraConfig = …; }` — for deployment kernels:
       # `extraConfig` is a linux.nix function arg consumed before

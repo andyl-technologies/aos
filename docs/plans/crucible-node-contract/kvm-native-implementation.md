@@ -228,3 +228,55 @@ halt/wakeup, pending I/O, exact output membership, disconnect containment and
 fresh-handle architectural restoration. Missing `/dev/kvm` is an operational
 failure, never a passing native conformance result. AArch64 requires a separate
 native AArch64 machine and its measured qualification identity.
+## Original native RUN return custody (stage six)
+
+The separate `linux-controller-run-return-stage6` source variant adds the private
+immutable pre-vCPU capability `KVM_CAP_CRUCIBLE_RUN_RETURN_V1` (`0xa029`) and the
+128-byte `KVM_CRUCIBLE_RUN_RETURN` vCPU ioctl (`0xd7`). The opt-in takes the same
+VM lock that publishes actual vCPU creation and the controller configuration
+lock before enabling the component. Stages one through five and their package
+variants remain unchanged.
+
+The actual original architecture RUN invocation receives finite receipt and
+VM-wide custody credits before native entry. Its actual signed return value,
+original and final clock generation/time samples, native vCPU ID, response ledger
+and private pending-state mask are retained before userspace can observe the
+return. x86 checks its actual completion callback, MMIO and PIO state;
+AArch64 checks actual MMIO, pending external abort and reset. Protected and nested
+state remains opaque. Public mapped `exit_reason` is not evidence that private
+state is empty. Another RUN refuses private pending state; negative pending
+returns retain Uncertain and positive unwhitelisted pending returns retain Opaque.
+No custody ACK clears those historical conditions.
+
+A closed Query or ACK request names the exact expected original invocation.
+Query copy failure leaves custody unchanged. ACK commits once before copyout,
+preserves the original record for exact retry, and cannot release another vCPU's
+reservation. Uncollected original returns block a new clock Begin or Step;
+Freeze and Query remain available. The caller must retain the original receipt
+before ACK and know that ACK's outcome before issuing another RUN.
+
+`CLOCK_ENTERED` reports native clock-owner admission, not guest instruction
+retirement. `CLOCK_STOPPED` samples the native RUN/timer/effect-owner counters
+when that invocation returned. These facts do not prove physical CPU-thread
+acknowledgment, QEMU device or DMA closure, input/output custody, complete
+architectural preservation or whole-node readiness. An empty zero-invocation
+Query is not original execution evidence.
+
+`linux-controller-run-return-stage6-check` compiles the actual x86 and AArch64
+kernel objects and retains the stage-five arithmetic, policy/ioctl and six
+compiled mutation checks. Additional tests compile the actual 128-byte ABI,
+common receipt functions, both architecture selectors/snapshots and both complete
+clock transition bodies. Multiple-vCPU custody, lost copyout/exact retry, foreign
+invocations, finite counters and legacy-disabled behavior are checked. A real
+held pthread tests the actual creation/configuration lock ordering. Seventeen
+changed production predicates must compile and then fail their custody assertion;
+the mutation harness copies only its nine required source files.
+
+The receipt and transition tests model native syscall, clock and VM plumbing;
+they do not execute a guest or KVM ioctl. The registered source-built
+`linux-controller-run-return-stage6-check` passes both ISA object checks,
+the original custody oracles and all seventeen compiled mutation controls.
+The current machine has no `/dev/kvm`; neither ISA has native hardware or complete
+profile qualification. The upcoming atomic QEMU window must bind these original
+receipts to its fixed owner roster, admitted input cut and retained prefix ledger
+before normal ceiling interruption can become source-owned reconciliation.
