@@ -1055,7 +1055,7 @@ fn validate_original_projection(
         .ok_or_else(invalid_metadata)?;
     if projection.operation() != operation
         || projection.project() != metadata.project
-        || projection.revision() != metadata.source_heads.projection_revision
+        || projection.revision() != metadata.source_heads.projection_revision()
         || !sandbox.parent_sandbox_id.is_empty()
         || !request.parent_sandbox_id.is_empty()
         || sandbox.sandbox_id.as_slice() != metadata.sandbox.as_bytes()
@@ -1064,7 +1064,7 @@ fn validate_original_projection(
         || desired.specification.as_option() != request.specification.as_option()
         || desired.requested_policy.as_option() != request.requested_policy.as_option()
         || sandbox.effective_policy.as_option() != Some(policy)
-        || policy.sha256.as_slice() != metadata.source_heads.publisher_digest.as_bytes()
+        || policy.sha256.as_slice() != metadata.source_heads.publisher_digest().as_bytes()
         || sandbox.resource_version
             != crate::production_operation_compiler::admitted_public_resource_version_v1(
                 operation,
@@ -1082,7 +1082,7 @@ fn validate_original_projection(
         let current = PublicProjectionStoreV1::new(journal)
             .one_parentless_create_sandbox(operation, metadata.project)
             .map_err(|_| invalid_metadata())?;
-        if current != Some((metadata.sandbox, metadata.source_heads.projection_revision)) {
+        if current != Some((metadata.sandbox, metadata.source_heads.projection_revision())) {
             return Err(invalid_metadata());
         }
     }

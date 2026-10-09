@@ -110,7 +110,10 @@ impl aos_sandbox_policy::SandboxProjectRelationVerifierV1 for CurrentCreateRelat
     }
 }
 
-const SOURCE_DOMAIN: &[u8] = b"aos.sandbox.public-create-project-source.v2\0";
+pub(crate) use aos_sandbox_protocol::domain_ledger::project_source::{
+    HistoricalCreateProjectSourceHeadsV1, create_project_source_commitment_v1,
+};
+
 const DRAFT_DOMAIN: &[u8] = b"aos.sandbox.public-create-policy-draft.v1\0";
 const EXPLICIT_DRAFT_DOMAIN: &[u8] = b"aos.sandbox.public-create-policy-draft.v2\0";
 
@@ -275,15 +278,15 @@ impl CurrentCreateProjectPolicySourceV1 {
     }
 
     pub(crate) fn historical_heads(&self) -> HistoricalCreateProjectSourceHeadsV1 {
-        HistoricalCreateProjectSourceHeadsV1 {
-            projection_revision: self.projection_revision,
-            publisher_generation: self.policy_generation,
-            publisher_digest: self.policy_digest,
-            cache_domain_head: self.cache_domain_head,
-            revocation_scope: self.revocation_scope,
-            revocation_generation: self.revocation_generation,
-            revocation_head: self.revocation_head,
-        }
+        HistoricalCreateProjectSourceHeadsV1::from_historical_fields(
+            self.projection_revision,
+            self.policy_generation,
+            self.policy_digest,
+            self.cache_domain_head,
+            self.revocation_scope,
+            self.revocation_generation,
+            self.revocation_head,
+        )
     }
 
     /// Returns the admitted public Create operation identity.
@@ -376,80 +379,6 @@ impl CurrentCreateProjectPolicySourceV1 {
     pub const fn commitment(&self) -> ObjectDigest {
         self.commitment
     }
-}
-
-/// Retains source hash inputs only; it cannot establish current publisher heads.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct HistoricalCreateProjectSourceHeadsV1 {
-    pub(crate) projection_revision: ObjectDigest,
-    pub(crate) publisher_generation: u64,
-    pub(crate) publisher_digest: ObjectDigest,
-    pub(crate) cache_domain_head: ObjectDigest,
-    pub(crate) revocation_scope: RevocationScopeId,
-    pub(crate) revocation_generation: u64,
-    pub(crate) revocation_head: ObjectDigest,
-}
-
-impl HistoricalCreateProjectSourceHeadsV1 {
-    pub(crate) fn record_bytes(self) -> [u8; 160] {
-        let mut bytes = [0; 160];
-        bytes[..32].copy_from_slice(self.projection_revision.as_bytes());
-        bytes[32..40].copy_from_slice(&self.publisher_generation.to_be_bytes());
-        bytes[40..72].copy_from_slice(self.publisher_digest.as_bytes());
-        bytes[72..104].copy_from_slice(self.cache_domain_head.as_bytes());
-        bytes[104..120].copy_from_slice(self.revocation_scope.as_bytes());
-        bytes[120..128].copy_from_slice(&self.revocation_generation.to_be_bytes());
-        bytes[128..].copy_from_slice(self.revocation_head.as_bytes());
-        bytes
-    }
-
-    pub(crate) fn from_record_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != 160 {
-            return None;
-        }
-        let row = Self {
-            projection_revision: ObjectDigest::from_bytes(bytes[..32].try_into().ok()?),
-            publisher_generation: u64::from_be_bytes(bytes[32..40].try_into().ok()?),
-            publisher_digest: ObjectDigest::from_bytes(bytes[40..72].try_into().ok()?),
-            cache_domain_head: ObjectDigest::from_bytes(bytes[72..104].try_into().ok()?),
-            revocation_scope: RevocationScopeId::from_bytes(bytes[104..120].try_into().ok()?),
-            revocation_generation: u64::from_be_bytes(bytes[120..128].try_into().ok()?),
-            revocation_head: ObjectDigest::from_bytes(bytes[128..].try_into().ok()?),
-        };
-        row.is_valid().then_some(row)
-    }
-
-    pub(crate) fn is_valid(self) -> bool {
-        self.projection_revision.as_bytes() != &[0; 32]
-            && self.publisher_generation != 0
-            && self.publisher_digest.as_bytes() != &[0; 32]
-            && self.cache_domain_head.as_bytes() != &[0; 32]
-            && self.revocation_scope.as_bytes() != &[0; 16]
-            && self.revocation_generation != 0
-            && self.revocation_head.as_bytes() != &[0; 32]
-    }
-}
-
-pub(crate) fn create_project_source_commitment_v1(
-    operation: OperationId,
-    admission_revision: ObjectDigest,
-    admission_generation: u64,
-    sandbox: SandboxId,
-    project: ProjectId,
-    heads: HistoricalCreateProjectSourceHeadsV1,
-) -> ObjectDigest {
-    ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(SOURCE_DOMAIN)
-            .chain_update(operation.as_bytes())
-            .chain_update(admission_revision.as_bytes())
-            .chain_update(admission_generation.to_be_bytes())
-            .chain_update(sandbox.as_bytes())
-            .chain_update(project.as_bytes())
-            .chain_update(heads.record_bytes())
-            .finalize()
-            .into(),
-    )
 }
 
 /// Checks one complete parentless Create compiler draft against selected sources.
@@ -851,15 +780,15 @@ pub fn current_parentless_create_project_source_v1(
         accepted_generation,
         sandbox,
         project,
-        HistoricalCreateProjectSourceHeadsV1 {
+        HistoricalCreateProjectSourceHeadsV1::from_historical_fields(
             projection_revision,
-            publisher_generation: policy_generation,
-            publisher_digest: policy_digest,
+            policy_generation,
+            policy_digest,
             cache_domain_head,
             revocation_scope,
             revocation_generation,
             revocation_head,
-        },
+        ),
     );
     Ok(CurrentCreateProjectPolicySourceV1 {
         operation,

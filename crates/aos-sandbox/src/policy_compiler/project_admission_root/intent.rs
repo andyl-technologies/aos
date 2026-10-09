@@ -528,7 +528,7 @@ fn require_decision_state(
         .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
     let outcome = authority
         .get(&outcome_key(stage.record_digest()))?
-        .map(super::RootProjectAdmissionOutcomeV1::decode)
+        .map(super::RootProjectAdmissionOutcomeV1::from_record_bytes)
         .transpose()?
         .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
     if !intent.matches_stage(stage) || outcome.record_digest() != intent.decision {
@@ -709,9 +709,9 @@ fn decision_digest(
     if terminal.key() == reservation_cancellation_key(intent.source_reservation) {
         let marker = RootProjectReservationCancellationV1::from_record_bytes(bytes)?;
         if records.len() != 1
-            || marker.reservation != intent.source_reservation
-            || marker.project != intent.project
-            || marker.client_nonce != intent.client_nonce
+            || marker.reservation() != intent.source_reservation
+            || marker.project() != intent.project
+            || marker.client_nonce() != intent.client_nonce
             || authority
                 .get(STAGE_KEY)?
                 .map(RootProjectAdmissionStageV1::decode)
@@ -730,20 +730,20 @@ fn decision_digest(
     let outcome = super::RootProjectAdmissionOutcomeV1::from_record_bytes(bytes)?;
     if !intent.matches_stage(stage)
         || terminal.key() != outcome_key(stage.record_digest())
-        || outcome.stage != stage.record_digest()
-        || outcome.client_nonce != intent.client_nonce
-        || outcome.project != intent.project
-        || outcome.project_packet != intent.project_packet
-        || outcome.project_input != intent.project_input
+        || outcome.stage() != stage.record_digest()
+        || outcome.client_nonce() != intent.client_nonce
+        || outcome.project() != intent.project
+        || outcome.project_packet() != intent.project_packet
+        || outcome.project_input() != intent.project_input
     {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
     match &records[..records.len() - 1] {
-        [] if outcome.kind == super::RootProjectAdmissionOutcomeKindV1::Aborted
+        [] if outcome.kind() == super::RootProjectAdmissionOutcomeKindV1::Aborted
             || (current_packet == intent.project_packet
                 && current_input == intent.project_input) => {}
         [packet, input]
-            if outcome.kind == super::RootProjectAdmissionOutcomeKindV1::Committed
+            if outcome.kind() == super::RootProjectAdmissionOutcomeKindV1::Committed
                 && packet.namespace() == RecordNamespace::DesiredState
                 && packet.key() == HEAD_KEY_V2
                 && packet.value().map(digest) == Some(intent.project_packet)
@@ -1073,11 +1073,11 @@ fn cancel_intent_with_journal(
     journal: &mut Journal,
     intent: RootProjectAdmissionIntentV1,
 ) -> Result<RootProjectReservationCancellationV1, PolicyDeploymentHeadErrorV1> {
-    let marker = RootProjectReservationCancellationV1 {
-        reservation: intent.source_reservation,
-        client_nonce: intent.client_nonce,
-        project: intent.project,
-    };
+    let marker = RootProjectReservationCancellationV1::from_historical_fields(
+        intent.source_reservation,
+        intent.client_nonce,
+        intent.project,
+    );
     let key = reservation_cancellation_key(marker.reservation());
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     super::super::binding_v2::ensure_root_binding_unheld(&authority)

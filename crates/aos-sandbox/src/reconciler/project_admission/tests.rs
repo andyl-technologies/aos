@@ -129,15 +129,15 @@ impl Fixture {
             retained_create_sandbox_admission_revision_v1(&journal, operation, false)
                 .unwrap()
                 .unwrap();
-        let heads = HistoricalCreateProjectSourceHeadsV1 {
+        let heads = HistoricalCreateProjectSourceHeadsV1::from_historical_fields(
             projection_revision,
-            publisher_generation: 1,
-            publisher_digest: ObjectDigest::from_bytes([0xd1; 32]),
-            cache_domain_head: ObjectDigest::from_bytes([6; 32]),
-            revocation_scope: RevocationScopeId::from_bytes([7; 16]),
-            revocation_generation: 1,
-            revocation_head: ObjectDigest::from_bytes([8; 32]),
-        };
+            1,
+            ObjectDigest::from_bytes([0xd1; 32]),
+            ObjectDigest::from_bytes([6; 32]),
+            RevocationScopeId::from_bytes([7; 16]),
+            1,
+            ObjectDigest::from_bytes([8; 32]),
+        );
         let commitment = create_project_source_commitment_v1(
             operation,
             revision,

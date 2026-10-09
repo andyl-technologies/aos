@@ -160,6 +160,7 @@ fn decode_floor_reply(
         0 if reply[32..].iter().all(|byte| *byte == 0) => Ok(None),
         1 => {
             let floor = RootProjectHistoryFloorV1::from_record_bytes(&reply[32..])
+                .map_err(super::PolicyDeploymentHeadErrorV1::from)
                 .map_err(io::Error::other)?;
             require_floor_reservation(floor, reservation)?;
             Ok(Some(RootProjectHistoryFloorProofV1 { floor }))
@@ -303,6 +304,7 @@ fn decode_reservation_cancel_reply(
         0 if reply[64..] == [0; 112] => Ok(None),
         1 => {
             let marker = RootProjectReservationCancellationV1::from_record_bytes(&reply[64..])
+                .map_err(super::PolicyDeploymentHeadErrorV1::from)
                 .map_err(io::Error::other)?;
             if marker.reservation() != expected {
                 return Err(invalid_reply());
@@ -791,7 +793,9 @@ fn read_terminal_reply_for_stage(
         return Err(invalid_reply());
     }
     let outcome =
-        RootProjectAdmissionOutcomeV1::from_record_bytes(&reply[24..]).map_err(io::Error::other)?;
+        RootProjectAdmissionOutcomeV1::from_record_bytes(&reply[24..])
+                .map_err(super::PolicyDeploymentHeadErrorV1::from)
+                .map_err(io::Error::other)?;
     if outcome.stage() != stage_digest || outcome.source_row() != source_row.record_digest() {
         return Err(invalid_reply());
     }
@@ -916,6 +920,7 @@ fn decode_reply(
         0 if reply[64..].iter().all(|byte| *byte == 0) => Ok(None),
         1 | 2 => {
             let outcome = RootProjectAdmissionOutcomeV1::from_record_bytes(&reply[64..])
+                .map_err(super::PolicyDeploymentHeadErrorV1::from)
                 .map_err(io::Error::other)?;
             let status = match outcome.kind() {
                 RootProjectAdmissionOutcomeKindV1::Committed => 1,
@@ -956,7 +961,7 @@ mod tests {
 
     #[test]
     fn reservation_cancellation_reply_requires_exact_nonce_and_marker() {
-        let marker = RootProjectReservationCancellationV1::from_test_claims(
+        let marker = RootProjectReservationCancellationV1::from_historical_fields(
             ObjectDigest::from_bytes([1; 32]),
             [2; 16],
             ProjectId::from_bytes([3; 16]),

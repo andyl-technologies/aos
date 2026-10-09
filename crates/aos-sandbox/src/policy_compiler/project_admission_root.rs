@@ -16,6 +16,12 @@
 //! SHA-256(Root-project-stage-domain || preceding 304 bytes):32
 //! ```
 
+pub use aos_sandbox_protocol::domain_ledger::root_project_history::{
+    RootProjectReservationCancellationV1, RootProjectAdmissionOutcomeKindV1,
+    RootProjectAdmissionOutcomeV1, project_admission_client_nonce_v1,
+};
+use aos_sandbox_protocol::domain_ledger::root_project_history::RESERVATION_CANCELLATION_DOMAIN;
+
 mod history;
 mod intent;
 
@@ -91,19 +97,10 @@ const STAGE_TRANSACTION_DOMAIN: &[u8] =
 const STAGE_BYTES: usize = 336;
 const MAXIMUM_STAGE_SECONDS: i64 = 300;
 const OUTCOME_PREFIX: &[u8] = b"\0aos-policy-project-admission-outcome-v1\0";
-const OUTCOME_MAGIC: &[u8; 8] = b"AOSQPO01";
-const OUTCOME_CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.policy-project-admission-outcome.v1\0";
 const OUTCOME_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.policy-project-admission-outcome-transaction.v1\0";
-const OUTCOME_BYTES: usize = 312;
-const CLIENT_NONCE_DOMAIN: &[u8] = b"aos.sandbox.policy-project-admission-client.v1\0";
 const RESERVATION_CANCELLATION_PREFIX: &[u8] =
     b"\0aos-policy-project-reservation-cancellation-v1\0";
-const RESERVATION_CANCELLATION_MAGIC: &[u8; 8] = b"AOSQPX01";
-const RESERVATION_CANCELLATION_DOMAIN: &[u8] =
-    b"aos.sandbox.policy-project-reservation-cancellation.v1\0";
-const RESERVATION_CANCELLATION_BYTES: usize = 112;
-
 // This opener grants no caller-selected path or journal authority.
 fn open_fixed_root_project_journal() -> Result<Journal, PolicyDeploymentHeadErrorV1> {
     let (journal, _) = Journal::open_protected_at(
@@ -112,103 +109,6 @@ fn open_fixed_root_project_journal() -> Result<Journal, PolicyDeploymentHeadErro
         policy_authority_journal_limits(),
     )?;
     Ok(journal)
-}
-
-/// Retains Root's irreversible refusal to stage one Source reservation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RootProjectReservationCancellationV1 {
-    reservation: ObjectDigest,
-    client_nonce: [u8; 16],
-    project: ProjectId,
-}
-
-impl RootProjectReservationCancellationV1 {
-    #[cfg(test)]
-    pub(crate) const fn from_test_claims(
-        reservation: ObjectDigest,
-        client_nonce: [u8; 16],
-        project: ProjectId,
-    ) -> Self {
-        Self {
-            reservation,
-            client_nonce,
-            project,
-        }
-    }
-
-    /// Returns the exact Source reservation that Root will never stage.
-    pub const fn reservation(self) -> ObjectDigest {
-        self.reservation
-    }
-
-    /// Returns the effect-owned reservation nonce.
-    pub const fn client_nonce(self) -> [u8; 16] {
-        self.client_nonce
-    }
-
-    /// Returns the reserved project.
-    pub const fn project(self) -> ProjectId {
-        self.project
-    }
-
-    /// Returns the digest of the canonical durable cancellation row.
-    #[must_use]
-    pub fn record_digest(self) -> ObjectDigest {
-        digest(&self.encode())
-    }
-
-    /// Returns the canonical row for a fixed Root socket replay.
-    #[must_use]
-    pub fn record_bytes(self) -> [u8; RESERVATION_CANCELLATION_BYTES] {
-        self.encode()
-    }
-
-    /// Decodes hostile bytes without authenticating Root custody.
-    ///
-    /// # Errors
-    ///
-    /// Rejects changed framing, claims, or checksum.
-    pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, PolicyDeploymentHeadErrorV1> {
-        Self::decode(bytes)
-    }
-
-    fn encode(self) -> [u8; RESERVATION_CANCELLATION_BYTES] {
-        let mut bytes = [0; RESERVATION_CANCELLATION_BYTES];
-        bytes[..8].copy_from_slice(RESERVATION_CANCELLATION_MAGIC);
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        bytes[16..48].copy_from_slice(self.reservation.as_bytes());
-        bytes[48..64].copy_from_slice(&self.client_nonce);
-        bytes[64..80].copy_from_slice(self.project.as_bytes());
-        let checksum = Sha256::new()
-            .chain_update(RESERVATION_CANCELLATION_DOMAIN)
-            .chain_update(&bytes[..80])
-            .finalize();
-        bytes[80..].copy_from_slice(&checksum);
-        bytes
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, PolicyDeploymentHeadErrorV1> {
-        if bytes.len() != RESERVATION_CANCELLATION_BYTES
-            || bytes.get(..8) != Some(RESERVATION_CANCELLATION_MAGIC.as_slice())
-            || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
-            || bytes[10..16] != [0; 6]
-        {
-            return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-        }
-        let row = Self {
-            reservation: ObjectDigest::from_bytes(take::<32>(bytes, 16)?),
-            client_nonce: take::<16>(bytes, 48)?,
-            project: ProjectId::from_bytes(take::<16>(bytes, 64)?),
-        };
-        if row.reservation.as_bytes() == &[0; 32]
-            || row.client_nonce == [0; 16]
-            || row.project.as_bytes() == &[0; 16]
-            || row.encode().as_slice() != bytes
-        {
-            return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-        }
-        Ok(row)
-    }
 }
 
 fn reservation_cancellation_key(reservation: ObjectDigest) -> Vec<u8> {
@@ -235,245 +135,50 @@ fn require_reservation_not_canceled(
 pub(crate) fn test_root_project_reservation_cancellation_v1(
     reservation: SourceProjectAdmissionReservationV1,
 ) -> RootProjectReservationCancellationV1 {
-    RootProjectReservationCancellationV1 {
-        reservation: reservation.record_digest(),
-        client_nonce: reservation.client_nonce(),
-        project: reservation.project(),
-    }
+    RootProjectReservationCancellationV1::from_historical_fields(
+        reservation.record_digest(),
+        reservation.client_nonce(),
+        reservation.project(),
+    )
 }
 
-/// Selects an immutable Root terminal outcome for one project-admission stage.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RootProjectAdmissionOutcomeKindV1 {
-    /// Root atomically admitted the exact signed V2 packet/input.
-    Committed,
-    /// Root durably abandoned the stage without changing the V2 head.
-    Aborted,
-}
-
-/// Retains the exact terminal Root decision bound to a single stage.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RootProjectAdmissionOutcomeV1 {
-    stage: ObjectDigest,
-    kind: RootProjectAdmissionOutcomeKindV1,
+fn committed_outcome(
+    stage: RootProjectAdmissionStageV1,
     source_row: ObjectDigest,
     controller_packet: ObjectDigest,
     operation: [u8; 16],
     sandbox: [u8; 16],
     source_commitment: ObjectDigest,
-    project: ProjectId,
-    project_packet: ObjectDigest,
-    project_input: ObjectDigest,
-    client_nonce: [u8; 16],
+) -> RootProjectAdmissionOutcomeV1 {
+    RootProjectAdmissionOutcomeV1::from_historical_fields(
+        stage.record_digest(),
+        RootProjectAdmissionOutcomeKindV1::Committed,
+        source_row,
+        controller_packet,
+        operation,
+        sandbox,
+        source_commitment,
+        stage.project,
+        stage.packet_digest,
+        stage.input_digest,
+        stage.client_nonce,
+    )
 }
 
-impl RootProjectAdmissionOutcomeV1 {
-    /// Returns the exact stage row digest consumed by this decision.
-    #[must_use]
-    pub const fn stage(self) -> ObjectDigest {
-        self.stage
-    }
-
-    /// Returns the durable commit or abort result.
-    #[must_use]
-    pub const fn kind(self) -> RootProjectAdmissionOutcomeKindV1 {
-        self.kind
-    }
-
-    /// Returns the challenged Source row digest, if one was spent.
-    #[must_use]
-    pub const fn source_row(self) -> ObjectDigest {
-        self.source_row
-    }
-
-    /// Returns the admitted Controller source commitment on commit.
-    #[must_use]
-    pub const fn source_commitment(self) -> ObjectDigest {
-        self.source_commitment
-    }
-
-    /// Returns the accepted Create operation on a committed outcome.
-    #[must_use]
-    pub const fn operation(self) -> [u8; 16] {
-        self.operation
-    }
-
-    /// Returns the accepted Sandbox identity on a committed outcome.
-    #[must_use]
-    pub const fn sandbox(self) -> [u8; 16] {
-        self.sandbox
-    }
-
-    /// Returns the exact project fixed by the stage.
-    #[must_use]
-    pub const fn project(self) -> ProjectId {
-        self.project
-    }
-
-    /// Returns the effect-owned stage nonce on either terminal outcome.
-    #[must_use]
-    pub const fn client_nonce(self) -> [u8; 16] {
-        self.client_nonce
-    }
-
-    /// Returns the digest of the canonical Root outcome row.
-    #[must_use]
-    pub fn record_digest(self) -> ObjectDigest {
-        digest(&self.encode())
-    }
-
-    /// Returns the canonical outcome row for a peer-checked Root reply.
-    #[must_use]
-    pub fn record_bytes(self) -> [u8; OUTCOME_BYTES] {
-        self.encode()
-    }
-
-    /// Decodes a hostile record without authenticating Root socket custody.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed status, missing claims, changed framing or checksum.
-    pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, PolicyDeploymentHeadErrorV1> {
-        Self::decode(bytes)
-    }
-
-    fn committed(
-        stage: RootProjectAdmissionStageV1,
-        source_row: ObjectDigest,
-        controller_packet: ObjectDigest,
-        operation: [u8; 16],
-        sandbox: [u8; 16],
-        source_commitment: ObjectDigest,
-    ) -> Self {
-        Self {
-            stage: stage.record_digest(),
-            kind: RootProjectAdmissionOutcomeKindV1::Committed,
-            source_row,
-            controller_packet,
-            operation,
-            sandbox,
-            source_commitment,
-            project: stage.project,
-            project_packet: stage.packet_digest,
-            project_input: stage.input_digest,
-            client_nonce: stage.client_nonce,
-        }
-    }
-
-    fn aborted(stage: RootProjectAdmissionStageV1, source_row: ObjectDigest) -> Self {
-        Self {
-            stage: stage.record_digest(),
-            kind: RootProjectAdmissionOutcomeKindV1::Aborted,
-            source_row,
-            controller_packet: zero_digest(),
-            operation: [0; 16],
-            sandbox: [0; 16],
-            source_commitment: zero_digest(),
-            project: stage.project,
-            project_packet: stage.packet_digest,
-            project_input: stage.input_digest,
-            client_nonce: stage.client_nonce,
-        }
-    }
-
-    fn encode(self) -> [u8; OUTCOME_BYTES] {
-        let mut bytes = [0; OUTCOME_BYTES];
-        bytes[..8].copy_from_slice(OUTCOME_MAGIC);
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        bytes[16..48].copy_from_slice(self.stage.as_bytes());
-        bytes[48] = match self.kind {
-            RootProjectAdmissionOutcomeKindV1::Committed => 1,
-            RootProjectAdmissionOutcomeKindV1::Aborted => 2,
-        };
-        bytes[56..88].copy_from_slice(self.source_row.as_bytes());
-        bytes[88..120].copy_from_slice(self.controller_packet.as_bytes());
-        bytes[120..136].copy_from_slice(&self.operation);
-        bytes[136..152].copy_from_slice(&self.sandbox);
-        bytes[152..184].copy_from_slice(self.source_commitment.as_bytes());
-        bytes[184..200].copy_from_slice(self.project.as_bytes());
-        bytes[200..232].copy_from_slice(self.project_packet.as_bytes());
-        bytes[232..264].copy_from_slice(self.project_input.as_bytes());
-        bytes[264..280].copy_from_slice(&self.client_nonce);
-        let checksum = Sha256::new()
-            .chain_update(OUTCOME_CHECKSUM_DOMAIN)
-            .chain_update(&bytes[..280])
-            .finalize();
-        bytes[280..].copy_from_slice(&checksum);
-        bytes
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, PolicyDeploymentHeadErrorV1> {
-        if bytes.len() != OUTCOME_BYTES
-            || bytes.get(..8) != Some(OUTCOME_MAGIC.as_slice())
-            || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
-            || bytes[10..16] != [0; 6]
-            || bytes[49..56] != [0; 7]
-            || bytes[280..]
-                != Sha256::new()
-                    .chain_update(OUTCOME_CHECKSUM_DOMAIN)
-                    .chain_update(&bytes[..280])
-                    .finalize()[..]
-        {
-            return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-        }
-        let kind = match bytes[48] {
-            1 => RootProjectAdmissionOutcomeKindV1::Committed,
-            2 => RootProjectAdmissionOutcomeKindV1::Aborted,
-            _ => return Err(PolicyDeploymentHeadErrorV1::InvalidHead),
-        };
-        let row = Self {
-            stage: ObjectDigest::from_bytes(take::<32>(bytes, 16)?),
-            kind,
-            source_row: ObjectDigest::from_bytes(take::<32>(bytes, 56)?),
-            controller_packet: ObjectDigest::from_bytes(take::<32>(bytes, 88)?),
-            operation: take::<16>(bytes, 120)?,
-            sandbox: take::<16>(bytes, 136)?,
-            source_commitment: ObjectDigest::from_bytes(take::<32>(bytes, 152)?),
-            project: ProjectId::from_bytes(take::<16>(bytes, 184)?),
-            project_packet: ObjectDigest::from_bytes(take::<32>(bytes, 200)?),
-            project_input: ObjectDigest::from_bytes(take::<32>(bytes, 232)?),
-            client_nonce: take::<16>(bytes, 264)?,
-        };
-        let committed = kind == RootProjectAdmissionOutcomeKindV1::Committed;
-        if row.stage.as_bytes() == &[0; 32]
-            || row.project.as_bytes() == &[0; 16]
-            || row.project_packet.as_bytes() == &[0; 32]
-            || row.project_input.as_bytes() == &[0; 32]
-            || row.client_nonce == [0; 16]
-            || row.source_row.as_bytes() == &[0; 32]
-            || committed && row.controller_packet.as_bytes() == &[0; 32]
-            || committed && row.operation == [0; 16]
-            || committed && row.sandbox == [0; 16]
-            || committed && row.source_commitment.as_bytes() == &[0; 32]
-            || !committed && row.controller_packet.as_bytes() != &[0; 32]
-            || !committed && row.operation != [0; 16]
-            || !committed && row.sandbox != [0; 16]
-            || !committed && row.source_commitment.as_bytes() != &[0; 32]
-            || row.encode().as_slice() != bytes
-        {
-            return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-        }
-        Ok(row)
-    }
-}
-
-/// Derives an effect-stable stage nonce from the exact accepted Create source.
-///
-/// The Controller's protected selector establishes both inputs. Root checks
-/// this derivation against the signed AOSCTP03 packet at final submission.
-#[must_use]
-pub fn project_admission_client_nonce_v1(
-    operation: aos_sandbox_core::OperationId,
-    source_commitment: ObjectDigest,
-) -> [u8; 16] {
-    let digest = Sha256::new()
-        .chain_update(CLIENT_NONCE_DOMAIN)
-        .chain_update(operation.as_bytes())
-        .chain_update(source_commitment.as_bytes())
-        .finalize();
-    let mut nonce = [0; 16];
-    nonce.copy_from_slice(&digest[..16]);
-    nonce
+fn aborted_outcome(stage: RootProjectAdmissionStageV1, source_row: ObjectDigest) -> RootProjectAdmissionOutcomeV1 {
+    RootProjectAdmissionOutcomeV1::from_historical_fields(
+        stage.record_digest(),
+        RootProjectAdmissionOutcomeKindV1::Aborted,
+        source_row,
+        zero_digest(),
+        [0; 16],
+        [0; 16],
+        zero_digest(),
+        stage.project,
+        stage.packet_digest,
+        stage.input_digest,
+        stage.client_nonce,
+    )
 }
 
 fn outcome_key(stage: ObjectDigest) -> Vec<u8> {
@@ -696,7 +401,7 @@ fn admit_root_project_source_from_owner_proofs_with_journal(
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
 
-    let outcome = RootProjectAdmissionOutcomeV1::committed(
+    let outcome = committed_outcome(
         stage,
         source_row.record_digest(),
         digest(controller_packet),
@@ -707,7 +412,7 @@ fn admit_root_project_source_from_owner_proofs_with_journal(
     let key = outcome_key(stage_digest);
     let prior_outcome = authority
         .get(&key)?
-        .map(RootProjectAdmissionOutcomeV1::decode)
+        .map(RootProjectAdmissionOutcomeV1::from_record_bytes)
         .transpose()?;
     let prior_packet = authority.get(HEAD_KEY_V2)?;
     let prior_input = authority.get(INPUT_KEY_V2)?;
@@ -776,7 +481,7 @@ fn admit_root_project_source_from_owner_proofs_with_journal(
     let intent = intent::require_terminal_intent(journal, stage)?;
     intent::commit_reserved_terminal(journal, intent, transaction)?;
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
-    if authority.get(&key)? != Some(outcome.encode().as_slice())
+    if authority.get(&key)? != Some(outcome.record_bytes().as_slice())
         || authority.get(HEAD_KEY_V2)? != Some(project_packet)
         || authority.get(INPUT_KEY_V2)? != Some(project_input)
         || authority.get(CONTROLLER_HOLD_PIN_KEY)? != Some(controller_pin)
@@ -842,11 +547,11 @@ pub fn abort_fixed_root_project_admission_v1(
         stage.source_reservation_digest,
     )
     .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
-    let outcome = RootProjectAdmissionOutcomeV1::aborted(stage, source_row.record_digest());
+    let outcome = aborted_outcome(stage, source_row.record_digest());
     let key = outcome_key(stage_digest);
     if let Some(prior) = authority
         .get(&key)?
-        .map(RootProjectAdmissionOutcomeV1::decode)
+        .map(RootProjectAdmissionOutcomeV1::from_record_bytes)
         .transpose()?
     {
         return if prior == outcome {
@@ -864,7 +569,7 @@ pub fn abort_fixed_root_project_admission_v1(
     let intent = intent::require_terminal_intent(&mut journal, stage)?;
     intent::commit_reserved_terminal(&mut journal, intent, transaction)?;
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
-    if authority.get(&key)? != Some(outcome.encode().as_slice()) {
+    if authority.get(&key)? != Some(outcome.record_bytes().as_slice()) {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
     Ok(outcome)
@@ -888,7 +593,7 @@ pub fn recover_fixed_root_project_admission_outcome_v1(
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     let outcome = authority
         .get(&outcome_key(stage_digest))?
-        .map(RootProjectAdmissionOutcomeV1::decode)
+        .map(RootProjectAdmissionOutcomeV1::from_record_bytes)
         .transpose()?;
     if outcome.is_some_and(|row| row.stage != stage_digest) {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
@@ -900,10 +605,10 @@ fn outcome_transaction(
     outcome: RootProjectAdmissionOutcomeV1,
     mut records: Vec<JournalRecord>,
 ) -> Result<JournalTransaction, PolicyDeploymentHeadErrorV1> {
-    let bytes = outcome.encode();
+    let bytes = outcome.record_bytes();
     records.push(JournalRecord::put(
         RecordNamespace::DesiredState,
-        outcome_key(outcome.stage),
+        outcome_key(outcome.stage()),
         bytes.to_vec(),
     ));
     let transaction_digest = Sha256::new()
@@ -1231,7 +936,7 @@ pub fn stage_fixed_root_project_admission_v1(
         let key = outcome_key(prior.record_digest());
         let outcome = authority
             .get(&key)?
-            .map(RootProjectAdmissionOutcomeV1::decode)
+            .map(RootProjectAdmissionOutcomeV1::from_record_bytes)
             .transpose()?;
         if let Some(outcome) = outcome {
             require_exact_root_outcome_state(
@@ -1457,7 +1162,7 @@ pub fn recover_fixed_root_project_reservation_cancellation_v1(
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     let marker = authority
         .get(&reservation_cancellation_key(reservation))?
-        .map(RootProjectReservationCancellationV1::decode)
+        .map(RootProjectReservationCancellationV1::from_record_bytes)
         .transpose()?;
     if marker.is_some_and(|marker| marker.reservation() != reservation) {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
@@ -1508,7 +1213,7 @@ pub fn recover_fixed_root_current_project_admission_stage_v1()
     };
     let outcome = authority
         .get(&outcome_key(stage.record_digest()))?
-        .map(RootProjectAdmissionOutcomeV1::decode)
+        .map(RootProjectAdmissionOutcomeV1::from_record_bytes)
         .transpose()?;
     if let Some(outcome) = outcome {
         let (current_packet, current_input) = current_project_head_digests(&authority)?;
@@ -1547,19 +1252,19 @@ pub(crate) fn test_source_project_admission_outcome_v1(
     row: SourceProjectAdmissionChallengeV1,
     stage: ObjectDigest,
 ) -> RootProjectAdmissionOutcomeV1 {
-    RootProjectAdmissionOutcomeV1 {
+    RootProjectAdmissionOutcomeV1::from_historical_fields(
         stage,
-        kind: RootProjectAdmissionOutcomeKindV1::Aborted,
-        source_row: row.record_digest(),
-        controller_packet: zero_digest(),
-        operation: [0; 16],
-        sandbox: [0; 16],
-        source_commitment: zero_digest(),
-        project: row.project(),
-        project_packet: ObjectDigest::from_bytes([2; 32]),
-        project_input: ObjectDigest::from_bytes([3; 32]),
-        client_nonce: [4; 16],
-    }
+        RootProjectAdmissionOutcomeKindV1::Aborted,
+        row.record_digest(),
+        zero_digest(),
+        [0; 16],
+        [0; 16],
+        zero_digest(),
+        row.project(),
+        ObjectDigest::from_bytes([2; 32]),
+        ObjectDigest::from_bytes([3; 32]),
+        [4; 16],
+    )
 }
 
 fn require_exact_root_outcome_state(
@@ -1568,15 +1273,15 @@ fn require_exact_root_outcome_state(
     current_packet: ObjectDigest,
     current_input: ObjectDigest,
 ) -> Result<(), PolicyDeploymentHeadErrorV1> {
-    if outcome.stage != stage.record_digest()
-        || outcome.project != stage.project
-        || outcome.project_packet != stage.packet_digest
-        || outcome.project_input != stage.input_digest
-        || outcome.client_nonce != stage.client_nonce
+    if outcome.stage() != stage.record_digest()
+        || outcome.project() != stage.project
+        || outcome.project_packet() != stage.packet_digest
+        || outcome.project_input() != stage.input_digest
+        || outcome.client_nonce() != stage.client_nonce
     {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
-    let expected = match outcome.kind {
+    let expected = match outcome.kind() {
         RootProjectAdmissionOutcomeKindV1::Committed => (stage.packet_digest, stage.input_digest),
         RootProjectAdmissionOutcomeKindV1::Aborted => {
             (stage.prior_packet_digest, stage.prior_input_digest)
@@ -1726,7 +1431,7 @@ mod tests {
         let replay = authority
             .get(&reservation_cancellation_key(reservation.record_digest()))
             .unwrap()
-            .map(RootProjectReservationCancellationV1::decode)
+            .map(RootProjectReservationCancellationV1::from_record_bytes)
             .transpose()
             .unwrap();
         assert_eq!(replay, Some(marker));
@@ -1954,7 +1659,7 @@ mod tests {
         );
 
         let stage = stage();
-        let committed = RootProjectAdmissionOutcomeV1::committed(
+        let committed = committed_outcome(
             stage,
             ObjectDigest::from_bytes([9; 32]),
             ObjectDigest::from_bytes([10; 32]),
@@ -1963,12 +1668,12 @@ mod tests {
             ObjectDigest::from_bytes([13; 32]),
         );
         let aborted =
-            RootProjectAdmissionOutcomeV1::aborted(stage, ObjectDigest::from_bytes([14; 32]));
-        let marker = RootProjectReservationCancellationV1 {
-            reservation: ObjectDigest::from_bytes([15; 32]),
-            client_nonce: [16; 16],
-            project: ProjectId::from_bytes([17; 16]),
-        };
+            aborted_outcome(stage, ObjectDigest::from_bytes([14; 32]));
+        let marker = RootProjectReservationCancellationV1::from_historical_fields(
+            ObjectDigest::from_bytes([15; 32]),
+            [16; 16],
+            ProjectId::from_bytes([17; 16]),
+        );
         for (key, value) in [
             (STAGE_KEY.to_vec(), stage.record_bytes().to_vec()),
             (
@@ -2115,11 +1820,11 @@ mod tests {
 
     #[test]
     fn reservation_cancellation_codec_binds_exact_source_row() {
-        let marker = RootProjectReservationCancellationV1 {
-            reservation: ObjectDigest::from_bytes([1; 32]),
-            client_nonce: [2; 16],
-            project: ProjectId::from_bytes([3; 16]),
-        };
+        let marker = RootProjectReservationCancellationV1::from_historical_fields(
+            ObjectDigest::from_bytes([1; 32]),
+            [2; 16],
+            ProjectId::from_bytes([3; 16]),
+        );
         let bytes = marker.record_bytes();
         assert_eq!(
             RootProjectReservationCancellationV1::from_record_bytes(&bytes).unwrap(),
@@ -2135,7 +1840,7 @@ mod tests {
     #[test]
     fn root_terminal_codec_distinguishes_atomic_commit_from_abort() {
         let stage = stage();
-        let committed = RootProjectAdmissionOutcomeV1::committed(
+        let committed = committed_outcome(
             stage,
             ObjectDigest::from_bytes([10; 32]),
             ObjectDigest::from_bytes([11; 32]),
@@ -2144,20 +1849,20 @@ mod tests {
             ObjectDigest::from_bytes([14; 32]),
         );
         let aborted =
-            RootProjectAdmissionOutcomeV1::aborted(stage, ObjectDigest::from_bytes([15; 32]));
+            aborted_outcome(stage, ObjectDigest::from_bytes([15; 32]));
         assert_eq!(
-            RootProjectAdmissionOutcomeV1::decode(&committed.encode()).unwrap(),
+            RootProjectAdmissionOutcomeV1::from_record_bytes(&committed.record_bytes()).unwrap(),
             committed
         );
         assert_eq!(
-            RootProjectAdmissionOutcomeV1::decode(&aborted.encode()).unwrap(),
+            RootProjectAdmissionOutcomeV1::from_record_bytes(&aborted.record_bytes()).unwrap(),
             aborted
         );
         assert_ne!(committed.record_digest(), aborted.record_digest());
         for offset in [16, 48, 56, 88, 120, 136, 152, 184, 200, 232, 264, 280] {
-            let mut changed = committed.encode();
+            let mut changed = committed.record_bytes();
             changed[offset] ^= 1;
-            assert!(RootProjectAdmissionOutcomeV1::decode(&changed).is_err());
+            assert!(RootProjectAdmissionOutcomeV1::from_record_bytes(&changed).is_err());
         }
     }
 }

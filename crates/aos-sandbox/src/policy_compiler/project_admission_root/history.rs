@@ -14,12 +14,12 @@
 //! SHA-256(Root-history-floor-domain || preceding 360 bytes):32
 //! ```
 
-use aos_sandbox_core::{ObjectDigest, ProjectId};
+use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::{
     GlobalCapacityReservationRequestV1, Journal, JournalError, JournalTransaction,
-    ProtectedJournalNamesV1, RecordNamespace,
+    RecordNamespace,
 };
 
 use super::super::controller_project_terminal_readback::verify_controller_project_terminal_readback_v1;
@@ -27,70 +27,22 @@ use super::super::{
     PinnedControllerHoldSignerV1, PinnedSourceHoldReadbackSignerV1, SourceHoldReadbackChallengeV1,
     verify_source_project_completed_terminal_readback_v1,
 };
+pub use aos_sandbox_protocol::domain_ledger::root_project_history::{
+    RootProjectHistoryFloorV1, RootProjectHistoryTerminalKindV1,
+};
+pub(crate) use aos_sandbox_protocol::domain_ledger::root_project_history::ROOT_PROJECT_HISTORY_FLOOR_BYTES_V1;
+
 use super::{
     PolicyDeploymentHeadErrorV1, RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeV1,
     RootProjectAdmissionStageV1, RootProjectReservationCancellationV1, STAGE_KEY, digest, intent,
-    outcome_key, reservation_cancellation_key, take, zero_digest,
+    outcome_key, reservation_cancellation_key, zero_digest,
 };
 
 pub(super) const KEY: &[u8] = b"\0aos-policy-project-history-floor-v1\0";
-const MAGIC: &[u8; 8] = b"AOSQPF01";
-const DOMAIN: &[u8] = b"aos.sandbox.policy-project-history-floor.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-project-history-retirement-cut.v1\0";
-pub(crate) const ROOT_PROJECT_HISTORY_FLOOR_BYTES_V1: usize = 392;
-
 #[cfg(test)]
 #[path = "history_tests.rs"]
 mod tests;
-
-/// Distinguishes the exact historical terminal covered by one Root floor.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RootProjectHistoryTerminalKindV1 {
-    /// The exact signed project packet/input was admitted.
-    Committed,
-    /// The staged attempt was durably abandoned.
-    Aborted,
-    /// The prospective Source reservation was permanently denied staging.
-    CanceledReservation,
-}
-
-impl RootProjectHistoryTerminalKindV1 {
-    pub(crate) const fn byte(self) -> u8 {
-        match self {
-            Self::Committed => 1,
-            Self::Aborted => 2,
-            Self::CanceledReservation => 3,
-        }
-    }
-
-    pub(crate) const fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            1 => Some(Self::Committed),
-            2 => Some(Self::Aborted),
-            3 => Some(Self::CanceledReservation),
-            _ => None,
-        }
-    }
-}
-
-/// Retains a decoded historical join without establishing Root transport.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RootProjectHistoryFloorV1 {
-    pub(super) kind: RootProjectHistoryTerminalKindV1,
-    pub(super) issue: u64,
-    pub(super) reservation: ObjectDigest,
-    pub(super) challenge: ObjectDigest,
-    pub(super) source_terminal: ObjectDigest,
-    pub(super) root_terminal: ObjectDigest,
-    pub(super) controller_acceptance: ObjectDigest,
-    pub(super) source_pin: ObjectDigest,
-    pub(super) operation: [u8; 16],
-    pub(super) sandbox: [u8; 16],
-    pub(super) project: ProjectId,
-    pub(super) source_commitment: ObjectDigest,
-    pub(super) client_nonce: [u8; 16],
-    pub(super) names: ProtectedJournalNamesV1,
-}
 
 /// Retires only the exact Root history accepted by both protected owners.
 ///
@@ -177,25 +129,25 @@ pub(super) fn retire_root_project_history_with_journal(
     {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
-    let floor = RootProjectHistoryFloorV1 {
-        kind: controller.kind,
-        issue: reservation.issue(),
-        reservation: reservation.record_digest(),
-        challenge: controller.challenge,
-        source_terminal: source.source_terminal_digest(),
-        root_terminal: controller.root_terminal,
-        controller_acceptance: controller.accepted_metadata,
-        source_pin: digest(source_pin),
-        operation: *controller.operation.as_bytes(),
-        sandbox: *controller.sandbox.as_bytes(),
-        project: controller.project,
-        source_commitment: controller.source_commitment,
-        client_nonce: controller.client_nonce,
-        names: source.names(),
-    };
+    let floor = RootProjectHistoryFloorV1::from_historical_fields(
+        controller.kind,
+        reservation.issue(),
+        reservation.record_digest(),
+        controller.challenge,
+        source.source_terminal_digest(),
+        controller.root_terminal,
+        controller.accepted_metadata,
+        digest(source_pin),
+        *controller.operation.as_bytes(),
+        *controller.sandbox.as_bytes(),
+        controller.project,
+        controller.source_commitment,
+        controller.client_nonce,
+        source.names(),
+    );
     RootProjectHistoryFloorV1::from_record_bytes(&floor.record_bytes())?;
     if let Some(prior) = prior {
-        if prior.issue >= floor.issue {
+        if prior.issue() >= floor.issue() {
             return if prior == floor {
                 Ok(prior)
             } else {
@@ -205,16 +157,16 @@ pub(super) fn retire_root_project_history_with_journal(
     }
     let current = current.ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
     if !current.retains_history()
-        || current.decision() != floor.root_terminal
-        || current.source_reservation() != floor.reservation
-        || current.client_nonce() != floor.client_nonce
-        || current.project() != floor.project
+        || current.decision() != floor.root_terminal_digest()
+        || current.source_reservation() != floor.reservation_digest()
+        || current.client_nonce() != floor.client_nonce()
+        || current.project() != floor.project()
     {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
-    let covered = match floor.kind {
+    let covered = match floor.kind() {
         RootProjectHistoryTerminalKindV1::CanceledReservation => {
-            vec![reservation_cancellation_key(floor.reservation)]
+            vec![reservation_cancellation_key(floor.reservation_digest())]
         }
         RootProjectHistoryTerminalKindV1::Committed | RootProjectHistoryTerminalKindV1::Aborted => {
             let stage = authority
@@ -293,17 +245,17 @@ pub fn recover_fixed_root_project_history_floor_v1(
     let Some(floor) = floor else {
         return Ok(None);
     };
-    if authority.get(super::SOURCE_HOLD_PIN_KEY)?.map(digest) != Some(floor.source_pin) {
+    if authority.get(super::SOURCE_HOLD_PIN_KEY)?.map(digest) != Some(floor.source_pin_digest()) {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
-    if floor.issue < reservation.issue() {
+    if floor.issue() < reservation.issue() {
         return Ok(None);
     }
-    if floor.issue != reservation.issue()
-        || floor.reservation != reservation.record_digest()
-        || floor.project != reservation.project()
-        || floor.client_nonce != reservation.client_nonce()
-        || floor.names != reservation.names()
+    if floor.issue() != reservation.issue()
+        || floor.reservation_digest() != reservation.record_digest()
+        || floor.project() != reservation.project()
+        || floor.client_nonce() != reservation.client_nonce()
+        || floor.names() != reservation.names()
     {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
@@ -326,7 +278,7 @@ pub fn fixed_root_project_history_readback_available_v1()
     else {
         return Ok(false);
     };
-    if authority.get(super::SOURCE_HOLD_PIN_KEY)?.map(digest) != Some(floor.source_pin) {
+    if authority.get(super::SOURCE_HOLD_PIN_KEY)?.map(digest) != Some(floor.source_pin_digest()) {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
     Ok(true)
@@ -342,180 +294,14 @@ pub(super) fn require_successor_source_issue(
         .transpose()?
     {
         Some(floor)
-            if floor.issue.checked_add(1) == Some(reservation.issue())
+            if floor.issue().checked_add(1) == Some(reservation.issue())
                 && authority.get(super::SOURCE_HOLD_PIN_KEY)?.map(digest)
-                    == Some(floor.source_pin) =>
+                    == Some(floor.source_pin_digest()) =>
         {
             Ok(())
         }
         None if reservation.issue() == 1 => Ok(()),
         _ => Err(PolicyDeploymentHeadErrorV1::StaleHead),
-    }
-}
-
-impl RootProjectHistoryFloorV1 {
-    /// Returns the historical decision class, not admission readiness.
-    pub const fn kind(self) -> RootProjectHistoryTerminalKindV1 {
-        self.kind
-    }
-
-    /// Returns the exact monotonically retired Source issue.
-    pub const fn issue(self) -> u64 {
-        self.issue
-    }
-
-    /// Returns the canonical Source reservation commitment.
-    pub const fn reservation_digest(self) -> ObjectDigest {
-        self.reservation
-    }
-
-    /// Returns the challenged Source row commitment, or zero for cancellation.
-    pub const fn challenge_digest(self) -> ObjectDigest {
-        self.challenge
-    }
-
-    /// Returns the canonical Source settlement or cancellation commitment.
-    pub const fn source_terminal_digest(self) -> ObjectDigest {
-        self.source_terminal
-    }
-
-    /// Returns the exact historical Root outcome or cancellation commitment.
-    pub const fn root_terminal_digest(self) -> ObjectDigest {
-        self.root_terminal
-    }
-
-    /// Returns the accepted original-Effect metadata commitment at Controller.
-    pub const fn controller_acceptance_digest(self) -> ObjectDigest {
-        self.controller_acceptance
-    }
-
-    /// Returns Root's immutable Source-only signer pin commitment.
-    pub const fn source_pin_digest(self) -> ObjectDigest {
-        self.source_pin
-    }
-
-    /// Returns the immutable original Create operation.
-    pub const fn operation(self) -> [u8; 16] {
-        self.operation
-    }
-
-    /// Returns the immutable original child identity, including on abort.
-    pub const fn sandbox(self) -> [u8; 16] {
-        self.sandbox
-    }
-
-    /// Returns the exact project partition.
-    pub const fn project(self) -> ProjectId {
-        self.project
-    }
-
-    /// Returns the original admitted Create/project-source commitment.
-    pub const fn source_commitment(self) -> ObjectDigest {
-        self.source_commitment
-    }
-
-    /// Returns the original effect-owned admission nonce.
-    pub const fn client_nonce(self) -> [u8; 16] {
-        self.client_nonce
-    }
-
-    /// Returns the exact Source fixed-name identities covered by the floor.
-    pub const fn names(self) -> ProtectedJournalNamesV1 {
-        self.names
-    }
-
-    /// Returns SHA-256 of the complete canonical historical row.
-    pub fn record_digest(self) -> ObjectDigest {
-        digest(&self.record_bytes())
-    }
-
-    /// Returns the canonical row without authenticating its transport.
-    pub fn record_bytes(self) -> [u8; ROOT_PROJECT_HISTORY_FLOOR_BYTES_V1] {
-        let mut bytes = [0; ROOT_PROJECT_HISTORY_FLOOR_BYTES_V1];
-        bytes[..8].copy_from_slice(MAGIC);
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        bytes[10] = self.kind.byte();
-        bytes[16..24].copy_from_slice(&self.issue.to_be_bytes());
-        for (index, field) in [
-            self.reservation,
-            self.challenge,
-            self.source_terminal,
-            self.root_terminal,
-            self.controller_acceptance,
-            self.source_pin,
-        ]
-        .iter()
-        .enumerate()
-        {
-            let start = 24 + index * 32;
-            bytes[start..start + 32].copy_from_slice(field.as_bytes());
-        }
-        bytes[216..232].copy_from_slice(&self.operation);
-        bytes[232..248].copy_from_slice(&self.sandbox);
-        bytes[248..264].copy_from_slice(self.project.as_bytes());
-        bytes[264..296].copy_from_slice(self.source_commitment.as_bytes());
-        bytes[296..312].copy_from_slice(&self.client_nonce);
-        bytes[312..360].copy_from_slice(&self.names.to_bytes());
-        let checksum = Sha256::new()
-            .chain_update(DOMAIN)
-            .chain_update(&bytes[..360])
-            .finalize();
-        bytes[360..].copy_from_slice(&checksum);
-        bytes
-    }
-
-    /// Decodes historical bytes without granting append or release authority.
-    ///
-    /// # Errors
-    ///
-    /// Rejects changed framing, sentinel identities, contradictory terminal
-    /// class, fixed names, or canonical checksum.
-    pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, PolicyDeploymentHeadErrorV1> {
-        if bytes.len() != ROOT_PROJECT_HISTORY_FLOOR_BYTES_V1
-            || bytes.get(..8) != Some(MAGIC.as_slice())
-            || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
-            || bytes[11..16] != [0; 5]
-        {
-            return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-        }
-        let kind = RootProjectHistoryTerminalKindV1::from_byte(bytes[10])
-            .ok_or(PolicyDeploymentHeadErrorV1::InvalidHead)?;
-        let field = |start| take::<32>(bytes, start).map(ObjectDigest::from_bytes);
-        let row = Self {
-            kind,
-            issue: u64::from_be_bytes(take::<8>(bytes, 16)?),
-            reservation: field(24)?,
-            challenge: field(56)?,
-            source_terminal: field(88)?,
-            root_terminal: field(120)?,
-            controller_acceptance: field(152)?,
-            source_pin: field(184)?,
-            operation: take::<16>(bytes, 216)?,
-            sandbox: take::<16>(bytes, 232)?,
-            project: ProjectId::from_bytes(take::<16>(bytes, 248)?),
-            source_commitment: field(264)?,
-            client_nonce: take::<16>(bytes, 296)?,
-            names: ProtectedJournalNamesV1::from_bytes(&bytes[312..360])
-                .map_err(crate::journal::JournalError::from)?,
-        };
-        if row.issue == 0
-            || row.reservation == zero_digest()
-            || row.source_terminal == zero_digest()
-            || row.root_terminal == zero_digest()
-            || row.controller_acceptance == zero_digest()
-            || row.source_pin == zero_digest()
-            || row.source_commitment == zero_digest()
-            || row.operation == [0; 16]
-            || row.sandbox == [0; 16]
-            || row.project.as_bytes() == &[0; 16]
-            || row.client_nonce == [0; 16]
-            || ((kind == RootProjectHistoryTerminalKindV1::CanceledReservation)
-                != (row.challenge == zero_digest()))
-            || row.record_bytes().as_slice() != bytes
-        {
-            return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-        }
-        Ok(row)
     }
 }
 
@@ -561,10 +347,10 @@ pub(crate) fn validate_capacity_settlement(
         if floor_record.key() != KEY
             || delete_intent.key() != intent::KEY
             || delete_intent.value().is_some()
-            || floor.root_terminal != current.decision()
-            || floor.reservation != current.source_reservation()
-            || floor.project != current.project()
-            || floor.client_nonce != current.client_nonce()
+            || floor.root_terminal_digest() != current.decision()
+            || floor.reservation_digest() != current.source_reservation()
+            || floor.project() != current.project()
+            || floor.client_nonce() != current.client_nonce()
             || transaction.records().len() != records.len() + 1
         {
             return Err(PolicyDeploymentHeadErrorV1::StaleHead);
@@ -575,21 +361,21 @@ pub(crate) fn validate_capacity_settlement(
             .transpose()?
         {
             Some(prior)
-                if prior.issue.checked_add(1) == Some(floor.issue)
-                    && prior.source_pin == floor.source_pin => {}
-            None if floor.issue == 1 => {}
+                if prior.issue().checked_add(1) == Some(floor.issue())
+                    && prior.source_pin_digest() == floor.source_pin_digest() => {}
+            None if floor.issue() == 1 => {}
             _ => return Err(PolicyDeploymentHeadErrorV1::StaleHead),
         }
         if journal
             .get(RecordNamespace::DesiredState, super::SOURCE_HOLD_PIN_KEY)
             .map(digest)
-            != Some(floor.source_pin)
+            != Some(floor.source_pin_digest())
         {
             return Err(PolicyDeploymentHeadErrorV1::StaleHead);
         }
-        match (floor.kind, deletion) {
+        match (floor.kind(), deletion) {
             (RootProjectHistoryTerminalKindV1::CanceledReservation, [delete_marker]) => {
-                let key = reservation_cancellation_key(floor.reservation);
+                let key = reservation_cancellation_key(floor.reservation_digest());
                 let marker = journal
                     .get(RecordNamespace::DesiredState, &key)
                     .map(RootProjectReservationCancellationV1::from_record_bytes)
@@ -597,7 +383,7 @@ pub(crate) fn validate_capacity_settlement(
                     .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
                 if delete_marker.key() != key
                     || delete_marker.value().is_some()
-                    || marker.record_digest() != floor.root_terminal
+                    || marker.record_digest() != floor.root_terminal_digest()
                 {
                     return Err(PolicyDeploymentHeadErrorV1::StaleHead);
                 }
@@ -622,15 +408,15 @@ pub(crate) fn validate_capacity_settlement(
                     || delete_stage.value().is_some()
                     || delete_outcome.key() != key
                     || delete_outcome.value().is_some()
-                    || stage.source_reservation_digest() != floor.reservation
-                    || outcome.record_digest() != floor.root_terminal
-                    || outcome.source_row() != floor.challenge
+                    || stage.source_reservation_digest() != floor.reservation_digest()
+                    || outcome.record_digest() != floor.root_terminal_digest()
+                    || outcome.source_row() != floor.challenge_digest()
                     || (outcome.kind() == RootProjectAdmissionOutcomeKindV1::Committed)
-                        != (floor.kind == RootProjectHistoryTerminalKindV1::Committed)
+                        != (floor.kind() == RootProjectHistoryTerminalKindV1::Committed)
                     || (outcome.kind() == RootProjectAdmissionOutcomeKindV1::Committed
-                        && (outcome.operation() != floor.operation
-                            || outcome.sandbox() != floor.sandbox
-                            || outcome.source_commitment() != floor.source_commitment))
+                        && (outcome.operation() != floor.operation()
+                            || outcome.sandbox() != floor.sandbox()
+                            || outcome.source_commitment() != floor.source_commitment()))
                 {
                     return Err(PolicyDeploymentHeadErrorV1::StaleHead);
                 }

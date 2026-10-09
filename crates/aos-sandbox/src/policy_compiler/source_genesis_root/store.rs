@@ -1214,15 +1214,15 @@ impl RootSourceGenesisAuthorityV1 {
         let expected_source = create_project_source_commitment_v1(
             *view.operation, *view.operation_revision, *view.accepted_generation,
             *view.sandbox, *view.project,
-            HistoricalCreateProjectSourceHeadsV1 {
-                projection_revision: *view.projection_revision,
-                publisher_generation: controller.publisher_generation(),
-                publisher_digest: controller.publisher_digest(),
-                cache_domain_head: controller.cache_domain_head(),
-                revocation_scope: controller.revocation_scope(),
-                revocation_generation: controller.revocation_generation(),
-                revocation_head: controller.revocation_head(),
-            },
+            HistoricalCreateProjectSourceHeadsV1::from_historical_fields(
+                *view.projection_revision,
+                controller.publisher_generation(),
+                controller.publisher_digest(),
+                controller.cache_domain_head(),
+                controller.revocation_scope(),
+                controller.revocation_generation(),
+                controller.revocation_head(),
+            ),
         );
         if *view.operation != controller.operation()
             || *view.sandbox != controller.sandbox()

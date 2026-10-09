@@ -38,15 +38,15 @@ fn metadata() -> ProjectAdmissionMetadata {
         challenge: None,
         terminal: None,
         retired_floor: None,
-        source_heads: HistoricalCreateProjectSourceHeadsV1 {
-            projection_revision: ObjectDigest::from_bytes([6; 32]),
-            publisher_generation: 1,
-            publisher_digest: ObjectDigest::from_bytes([7; 32]),
-            cache_domain_head: ObjectDigest::from_bytes([8; 32]),
-            revocation_scope: RevocationScopeId::from_bytes([9; 16]),
-            revocation_generation: 1,
-            revocation_head: ObjectDigest::from_bytes([10; 32]),
-        },
+        source_heads: HistoricalCreateProjectSourceHeadsV1::from_historical_fields(
+            ObjectDigest::from_bytes([6; 32]),
+            1,
+            ObjectDigest::from_bytes([7; 32]),
+            ObjectDigest::from_bytes([8; 32]),
+            RevocationScopeId::from_bytes([9; 16]),
+            1,
+            ObjectDigest::from_bytes([10; 32]),
+        ),
         // The codec retains bytes but intentionally cannot authenticate or
         // validate an original projection. The parent's full graph must do so.
         original_projection: vec![11, 12, 13],

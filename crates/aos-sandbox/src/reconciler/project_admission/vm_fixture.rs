@@ -137,15 +137,15 @@ pub fn prepare_project_history_vm_flight_v1(
         return Err("VM original request digest changed".into());
     }
 
-    let heads = HistoricalCreateProjectSourceHeadsV1 {
+    let heads = HistoricalCreateProjectSourceHeadsV1::from_historical_fields(
         projection_revision,
-        publisher_generation: 1,
+        1,
         publisher_digest,
-        cache_domain_head: ObjectDigest::from_bytes([6; 32]),
-        revocation_scope: RevocationScopeId::from_bytes([7; 16]),
-        revocation_generation: 1,
-        revocation_head: ObjectDigest::from_bytes([8; 32]),
-    };
+        ObjectDigest::from_bytes([6; 32]),
+        RevocationScopeId::from_bytes([7; 16]),
+        1,
+        ObjectDigest::from_bytes([8; 32]),
+    );
     let commitment = create_project_source_commitment_v1(
         operation, revision, generation, sandbox, PROJECT, heads,
     );

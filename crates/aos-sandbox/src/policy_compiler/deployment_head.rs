@@ -155,6 +155,19 @@ pub enum PolicyDeploymentHeadErrorV1 {
     Hierarchy(#[from] HierarchyProtectedJournalErrorV1),
 }
 
+impl From<aos_sandbox_protocol::domain_ledger::root_project_history::RootProjectHistoryDataErrorV1>
+    for PolicyDeploymentHeadErrorV1
+{
+    fn from(error: aos_sandbox_protocol::domain_ledger::root_project_history::RootProjectHistoryDataErrorV1) -> Self {
+        use aos_sandbox_protocol::domain_ledger::root_project_history::RootProjectHistoryDataErrorV1;
+
+        match error {
+            RootProjectHistoryDataErrorV1::InvalidHead => Self::InvalidHead,
+            RootProjectHistoryDataErrorV1::Names(error) => Self::Journal(JournalError::from(error)),
+        }
+    }
+}
+
 impl From<JournalTransactionDataError> for PolicyDeploymentHeadErrorV1 {
     fn from(error: JournalTransactionDataError) -> Self {
         <Self as From<JournalError>>::from(JournalError::from(error))
