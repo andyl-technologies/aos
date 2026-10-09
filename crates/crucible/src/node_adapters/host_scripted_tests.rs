@@ -1,4 +1,4 @@
-//! Actual host-adapter grants retain evaluated unpublished source work and retries.
+//! Original source grants retain future publications across cuts and cold retries.
 
 use super::*;
 use crucible_device::BlockRequest;
@@ -21,7 +21,7 @@ fn scripted_source_split_cut_and_original_retry_preserve_actual_output_custody()
         authority: Rc::new(()),
         record,
     };
-    let limit = Position::new(10.into(), 1.into(), Phase::Publication);
+    let limit = Position::new(10.into(), 1.into(), Phase::BoundaryControl);
     let evaluation = OperationAdmission {
         token: OperationToken {
             authority: Rc::clone(&activation.authority),
@@ -43,12 +43,30 @@ fn scripted_source_split_cut_and_original_retry_preserve_actual_output_custody()
         panic!("source evaluation failed")
     };
     adapter.validate_outcome(&evaluation, &evaluated).unwrap();
-    assert!(evaluated.retained_outputs.is_empty());
+    assert_eq!(evaluated.retained_outputs.len(), 1);
+    let observation = evaluated.scheduling.as_ref().unwrap();
+    let original = &observation.publications[0];
+    assert_eq!(
+        original.publication,
+        Position::new(10.into(), 1.into(), Phase::Publication)
+    );
+    assert!(original.publication >= limit);
+    assert_eq!(
+        original.evaluation,
+        Some(Position::new(10.into(), 0.into(), Phase::Reaction))
+    );
+    assert!(original.causal_parents.is_empty());
+    assert!(observation.external_inputs.is_empty());
+    assert_eq!(original.native_sequence.get(), 0);
+    assert_eq!(
+        original.payload_bytes,
+        BlockRequest::get_length(77).encode().unwrap()
+    );
     let HostModel::ScriptedSource(native) = adapter.model.as_ref().unwrap() else {
         unreachable!()
     };
-    assert!(native.evaluated());
-    assert_eq!(native.cursor(), 0);
+    assert!(!native.evaluated());
+    assert_eq!(native.cursor(), 1);
     let captured_pending = adapter.continuation_bytes().unwrap();
     let script = native.script_bytes().unwrap();
     let snapshot = RuntimeSnapshot {
@@ -108,26 +126,24 @@ fn scripted_source_split_cut_and_original_retry_preserve_actual_output_custody()
         activation: activation.clone(),
         inputs: None,
     };
+    assert!(matches!(
+        adapter.begin_operation(&publication),
+        Submission::Refused(_)
+    ));
+    adapter
+        .acknowledge_publication(evaluation.token(), &evaluated.retained_outputs)
+        .unwrap();
     assert_eq!(adapter.begin_operation(&publication), Submission::Accepted);
     let Poll::Ready(Ok(published)) = adapter.poll_operation(publication.token(), &mut context)
     else {
         panic!("source publication failed")
     };
     adapter.validate_outcome(&publication, &published).unwrap();
-    let observation = published.scheduling.as_ref().unwrap();
-    assert_eq!(observation.publications.len(), 1);
-    let original = &observation.publications[0];
-    assert_eq!(original.publication, limit);
+    let suffix_observation = published.scheduling.as_ref().unwrap();
+    assert!(suffix_observation.publications.is_empty());
     assert_eq!(
-        original.evaluation,
-        Some(Position::new(10.into(), 0.into(), Phase::Reaction))
-    );
-    assert!(original.causal_parents.is_empty());
-    assert!(observation.external_inputs.is_empty());
-    assert_eq!(original.native_sequence.get(), 0);
-    assert_eq!(
-        original.payload_bytes,
-        BlockRequest::get_length(77).encode().unwrap()
+        suffix_observation.bounds[0].bound,
+        crate::node_scheduling::NativeOutputBound::AfterInstant(u64::MAX.into())
     );
     let captured_published = adapter.continuation_bytes().unwrap();
     assert!(matches!(
@@ -140,8 +156,8 @@ fn scripted_source_split_cut_and_original_retry_preserve_actual_output_custody()
     assert_eq!(retried, published);
     assert_eq!(adapter.continuation_bytes().unwrap(), captured_published);
 
-    // Construct two genuinely fresh adapters with different live owners from
-    // the frozen source. No original model or receipt registry is shared.
+    // Construct two independently owned fresh adapters from the frozen source.
+    // No original model or receipt registry is shared.
     for _ in 0..2 {
         let fresh_model = HostModel::ScriptedSource(Box::new(
             ScriptedSource::from_script_bytes(&script).unwrap(),
@@ -194,23 +210,32 @@ fn scripted_source_split_cut_and_original_retry_preserve_actual_output_custody()
             )
             .unwrap();
         let before = restored.continuation_bytes().unwrap();
-        assert!(matches!(
-            restored.poll_operation(fresh_evaluation.token(), &mut context),
-            Poll::Ready(Ok(_))
-        ));
+        let Poll::Ready(Ok(original_retry)) =
+            restored.poll_operation(fresh_evaluation.token(), &mut context)
+        else {
+            panic!("restored source future-publication receipt disappeared")
+        };
+        let mut rebound_original = evaluated.clone();
+        rebound_original.owners = restored.route.owners.clone();
+        rebound_original.scheduling.as_mut().unwrap().owners = restored.route.owners.clone();
+        assert_eq!(original_retry, rebound_original);
         assert_eq!(restored.continuation_bytes().unwrap(), before);
         let mut suffix = publication.clone();
         suffix.activation = fresh_activation.clone();
         suffix.token.authority = Rc::clone(&fresh_activation.authority);
         suffix.token.route = restored.route.clone();
+        assert!(matches!(
+            restored.begin_operation(&suffix),
+            Submission::Refused(_)
+        ));
+        restored
+            .acknowledge_publication(fresh_evaluation.token(), &original_retry.retained_outputs)
+            .unwrap();
         assert_eq!(restored.begin_operation(&suffix), Submission::Accepted);
         let Poll::Ready(Ok(outcome)) = restored.poll_operation(suffix.token(), &mut context) else {
             panic!("restored source publication failed")
         };
         restored.validate_outcome(&suffix, &outcome).unwrap();
-        assert_eq!(
-            outcome.scheduling.unwrap().publications,
-            observation.publications
-        );
+        assert!(outcome.scheduling.unwrap().publications.is_empty());
     }
 }

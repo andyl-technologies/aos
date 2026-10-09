@@ -1396,3 +1396,9 @@ fn exact_previews_retain_closure_checks_without_reserving_native_operations() {
 
 #[path = "tests/quantized_parents.rs"]
 mod quantized_parents;
+
+#[path = "tests/complete_future_bound.rs"]
+mod complete_future_bound;
+
+#[path = "tests/future_birth.rs"]
+mod future_birth;

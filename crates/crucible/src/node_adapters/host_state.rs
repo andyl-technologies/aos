@@ -851,6 +851,7 @@ impl HostModelNode {
         let finalize = (|| -> Result<(Vec<u8>, ContentRef), OperationFailure> {
             if let Some(HostModel::ScriptedSource(source)) = self.model.as_ref()
                 && (source.time_ps() != captured.boundary.time_ps.get()
+                    || source.evaluated()
                     || source.cursor() as u64 != captured.native_sequence.get()
                     || source
                         .next_position()

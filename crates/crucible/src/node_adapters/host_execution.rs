@@ -488,8 +488,11 @@ impl HostModelNode {
                     && !source.evaluated()
                 {
                     source.evaluate();
-                    continue;
                 }
+                // Source evaluation births the immutable future publication in
+                // this original grant. Transfer its bytes now even when the
+                // phase-one visibility lies beyond the exclusive cut; common
+                // coordinator custody schedules it later without reevaluation.
                 let evaluation = if matches!(self.model, Some(HostModel::ScriptedSource(_))) {
                     root_reaction(next.time_ps.get())
                 } else {
@@ -776,8 +779,10 @@ impl HostModelNode {
             // timers or autonomous worker, so this covers its entire inventory.
             NativeOutputBound::AfterInstant(U64::new(u64::MAX))
         } else if let Some(HostModel::ScriptedSource(source)) = self.model.as_ref() {
-            // No ingress or autonomous transition can create an earlier output.
-            // This retained cursor covers the entire immutable future inventory.
+            // This original cursor covers all immutable future publications.
+            // At EOF, with no ingress or autonomy, the complete observation
+            // closes every representable instant. The scheduler represents that
+            // strict bound as mathematical top rather than computing MAX + 1.
             source.next_time().map_or(
                 NativeOutputBound::AfterInstant(U64::new(u64::MAX)),
                 |time| {

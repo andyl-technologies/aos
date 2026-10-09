@@ -417,7 +417,9 @@ impl CausalScheduler {
         }
         let mut cutoff = Position::new(horizon, U64::new(0), Phase::BoundaryControl);
         for path in &schedule.inputs {
-            cutoff = cutoff.min(self.earliest_delivery(path)?);
+            if let Some(arrival) = self.earliest_delivery(path)? {
+                cutoff = cutoff.min(arrival);
+            }
         }
         if cutoff <= schedule.cursor {
             return Err(SchedulingError::NoSafeProgress);
@@ -456,7 +458,9 @@ impl CausalScheduler {
         let mut safe = horizon;
         let mut earliest_input: Option<U64> = None;
         for path in &schedule.inputs {
-            let arrival = self.earliest_arrival(path)?;
+            let Some(arrival) = self.earliest_arrival(path)? else {
+                continue;
+            };
             earliest_input = Some(earliest_input.map_or(arrival, |previous| previous.min(arrival)));
             let stop = match ceiling {
                 ExactCeiling::StrictPredecessor => {
@@ -661,7 +665,10 @@ impl CausalScheduler {
             return Err(SchedulingError::SameTimeNonconvergence);
         }
         for path in &schedule.inputs {
-            if self.earliest_delivery(path)? < limit {
+            if self
+                .earliest_delivery(path)?
+                .is_some_and(|arrival| arrival < limit)
+            {
                 return Err(SchedulingError::InputBlocked(path.producer.clone()));
             }
         }
@@ -920,41 +927,46 @@ impl CausalScheduler {
         Ok(())
     }
 
-    fn earliest_arrival(&self, path: &InputPath) -> Result<U64, SchedulingError> {
+    // None is mathematical top only for an authenticated all-instant closure.
+    // Finite coordinates retain checked transport arithmetic and cannot become top.
+    fn earliest_arrival(&self, path: &InputPath) -> Result<Option<U64>, SchedulingError> {
         if path.external {
             return path
                 .external_endpoint
                 .as_ref()
                 .and_then(|endpoint| self.external_closed_prefixes.get(endpoint))
-                .map(|position| position.time_ps)
+                .map(|position| Some(position.time_ps))
                 .ok_or_else(|| SchedulingError::InputBlocked(path.producer.clone()));
         }
         let earliest = match self.bounds.get(&path.producer) {
             Some(OutputBound::At(position)) => position.time_ps,
+            Some(OutputBound::AfterInstant(time)) if time.get() == u64::MAX => return Ok(None),
             Some(OutputBound::AfterInstant(time)) => time.checked_add(U64::new(1))?,
             _ => return Err(SchedulingError::InputBlocked(path.producer.clone())),
         };
-        Ok(earliest.checked_add(path.latency_ps)?)
+        Ok(Some(earliest.checked_add(path.latency_ps)?))
     }
 
-    fn earliest_delivery(&self, path: &InputPath) -> Result<Position, SchedulingError> {
+    fn earliest_delivery(&self, path: &InputPath) -> Result<Option<Position>, SchedulingError> {
         if path.external {
             return path
                 .external_endpoint
                 .as_ref()
                 .and_then(|endpoint| self.external_closed_prefixes.get(endpoint))
                 .copied()
+                .map(Some)
                 .ok_or_else(|| SchedulingError::InputBlocked(path.producer.clone()));
         }
         match self.bounds.get(&path.producer) {
             Some(OutputBound::At(position)) => {
-                super::event::direct_delivery(*position, path.latency_ps, None)
+                super::event::direct_delivery(*position, path.latency_ps, None).map(Some)
             }
+            Some(OutputBound::AfterInstant(time)) if time.get() == u64::MAX => Ok(None),
             Some(OutputBound::AfterInstant(time)) => {
                 let arrival = time
                     .checked_add(U64::new(1))?
                     .checked_add(path.latency_ps)?;
-                Ok(Position::new(arrival, U64::new(0), Phase::Delivery))
+                Ok(Some(Position::new(arrival, U64::new(0), Phase::Delivery)))
             }
             _ => Err(SchedulingError::InputBlocked(path.producer.clone())),
         }
@@ -963,7 +975,10 @@ impl CausalScheduler {
     fn require_boundary_closed(&self, owner: &Id, boundary: U64) -> Result<(), SchedulingError> {
         let schedule = self.owners.get(owner).ok_or(SchedulingError::UnknownNode)?;
         for path in &schedule.inputs {
-            if self.earliest_arrival(path)? <= boundary {
+            if self
+                .earliest_arrival(path)?
+                .is_some_and(|arrival| arrival <= boundary)
+            {
                 return Err(SchedulingError::InputBlocked(path.producer.clone()));
             }
         }
@@ -1025,7 +1040,7 @@ mod tests;
 mod snapshot_impl;
 
 pub use snapshot_impl::PreparedSchedulingRestore;
-pub(crate) use snapshot_impl::validate_saved_source;
+pub use snapshot_impl::validate_saved_source;
 
 #[path = "observed_impl.rs"]
 mod observed_impl;

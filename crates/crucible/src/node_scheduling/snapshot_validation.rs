@@ -35,7 +35,12 @@ pub(super) fn validate_snapshot(
 ///
 /// Historical source provenance is authenticated separately from fresh live
 /// graph incarnations. This structural check never issues native authority.
-pub(crate) fn validate_saved_source(
+///
+/// # Errors
+/// Refuses malformed or incompatible snapshots, incomplete owner/producer
+/// rosters, invalid causal positions, contradictory original FIFO inventory,
+/// exceeded finite custody limits, and unqualified connection conversions.
+pub fn validate_saved_source(
     graph: &AdmittedGraph,
     snapshot: &SchedulingSnapshot,
 ) -> Result<(), SchedulingError> {

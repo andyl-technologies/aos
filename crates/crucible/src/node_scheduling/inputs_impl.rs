@@ -51,7 +51,10 @@ impl CausalScheduler {
         match schedule.policy {
             ExecutionPolicy::Exact { .. } => {
                 for path in &schedule.inputs {
-                    if self.earliest_delivery(path)? < cutoff {
+                    if self
+                        .earliest_delivery(path)?
+                        .is_some_and(|arrival| arrival < cutoff)
+                    {
                         return Err(SchedulingError::InputBlocked(path.producer.clone()));
                     }
                 }

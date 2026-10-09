@@ -20,28 +20,6 @@ pub struct PreparedSchedulingRestore {
 }
 
 impl PreparedSchedulingRestore {
-    /// Validates complete coordinator continuation before world publication.
-    ///
-    /// # Errors
-    /// Refuses malformed or incompatible snapshots, stale source identities,
-    /// unresolved native grants, incomplete rosters and unqualified reconstruction.
-    #[cfg(test)]
-    pub(crate) fn prepare(
-        graph: &AdmittedGraph,
-        target: &ActivationRecord,
-        snapshot: SchedulingSnapshot,
-    ) -> Result<Self, SchedulingError> {
-        validate_snapshot(graph, target, &snapshot)?;
-        if !snapshot.reservations.is_empty() || !snapshot.input_batches.is_empty() {
-            return Err(SchedulingError::UnresolvedCustody);
-        }
-        Ok(Self {
-            target: target.clone(),
-            snapshot,
-            input_acknowledgements: Vec::new(),
-        })
-    }
-
     /// Validates unresolved original operations under mandatory native continuation proof.
     ///
     /// # Errors
@@ -427,7 +405,7 @@ fn saved_request(permission: &SavedPermission) -> OperationRequest {
 #[path = "snapshot_validation.rs"]
 mod validation;
 
-pub(crate) use validation::validate_saved_source;
+pub use validation::validate_saved_source;
 use validation::validate_snapshot;
 #[cfg(test)]
 pub(super) use validation::validate_structure;

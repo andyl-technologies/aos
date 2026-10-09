@@ -146,6 +146,16 @@ fn quantum_publication_accepts_only_original_consumed_input_parents() {
     ));
     assert_eq!(scheduler.pending.len(), 1);
 
+    scheduler.sequences.restore_next(id("A"), None);
+    assert!(matches!(
+        scheduler.accept_receipt(copy_receipt(&receipt)),
+        Err(SchedulingError::SequenceExhausted)
+    ));
+    assert_eq!(scheduler.pending.len(), 1);
+    assert!(scheduler.operations.contains_key(&id("run/original")));
+    assert_eq!(scheduler.position(&id("A")).unwrap(), grant.start());
+    scheduler.sequences.restore_next(id("A"), Some(U64::new(0)));
+
     scheduler.accept_receipt(receipt).unwrap();
     assert!(scheduler.pending.is_empty());
     assert_eq!(scheduler.position(&id("A")).unwrap().time_ps, U64::new(100));
