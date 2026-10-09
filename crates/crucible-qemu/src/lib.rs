@@ -182,6 +182,9 @@ pub use launch::{
     ROOT_DRIVE_ID, ROOT_OVERLAY_NODE_NAME, qemu_fault_target_hash, validate_aarch64_whitebox_setup,
     validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
 };
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+#[doc(hidden)]
+pub use linux_attempt_host::OriginalNativeControlRetirement;
 #[cfg(target_os = "linux")]
 pub use linux_attempt_host::{
     LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory, LinuxQemuAttemptHostOwner,

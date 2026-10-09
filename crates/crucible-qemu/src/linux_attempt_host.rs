@@ -14,6 +14,8 @@ use std::sync::Arc;
 
 mod native_resources;
 use native_resources::NativeResourceState;
+#[cfg(feature = "private-measurement-domain")]
+pub use native_resources::OriginalNativeControlRetirement;
 pub use native_resources::{LinuxQemuNativeResourceController, LinuxQemuNativeResourceError};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::thread;
@@ -341,6 +343,8 @@ impl LinuxQemuAttemptHostFactory {
             maximum_writable_bytes,
             quarantine: None,
             native_resources: None,
+            #[cfg(feature = "private-measurement-domain")]
+            original_retirement_pinned: false,
             terminal: false,
         })
     }
@@ -363,6 +367,8 @@ pub struct LinuxQemuAttemptHostOwner {
     maximum_writable_bytes: u64,
     quarantine: Option<LinuxQemuAttemptHostQuarantine>,
     native_resources: Option<Arc<NativeResourceState>>,
+    #[cfg(feature = "private-measurement-domain")]
+    original_retirement_pinned: bool,
     terminal: bool,
 }
 
@@ -428,6 +434,35 @@ fn finish_native_owned_resources(
 }
 
 impl LinuxQemuAttemptHostOwner {
+    /// Pins an already-created native control for private original retirement.
+    ///
+    /// This method clones only the same existing allocation. It does not
+    /// initialize a controller, perform I/O, issue a purpose or attest physical
+    /// cleanup. The actor must retain the charged original pair externally
+    /// through the pin's successful close and genuine factory deallocation.
+    ///
+    /// # Errors
+    /// Refuses an owner that has not created its actual native resource state,
+    /// has already transferred or retired that state, or has already issued
+    /// its one nonduplicable terminal pin.
+    #[cfg(feature = "private-measurement-domain")]
+    pub fn retain_original_native_control(
+        &mut self,
+    ) -> Result<OriginalNativeControlRetirement, LinuxQemuNativeResourceError> {
+        let state = self
+            .native_resources
+            .as_ref()
+            .ok_or(LinuxQemuNativeResourceError::Retired)?;
+        if self.terminal
+            || self.original_retirement_pinned
+            || !NativeResourceState::available(state)
+        {
+            return Err(LinuxQemuNativeResourceError::Retired);
+        }
+        self.original_retirement_pinned = true;
+        Ok(OriginalNativeControlRetirement::retain(state))
+    }
+
     /// Lends weak concrete resource control for this exact live attempt.
     ///
     /// # Errors
