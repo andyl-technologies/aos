@@ -20,7 +20,10 @@ crucible = { path = "../crucible" }
 crucible-api = { path = "../crucible-api" }
 crucible-campaign = { path = "../crucible-campaign" }
 crucible-cas = { workspace = true }
+crucible-device = { path = "../crucible-device" }
 crucible-linux-resource = { workspace = true }
+crucible-node-contract = { path = "../crucible-node-contract" }
+crucible-node-provider = { workspace = true }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu" }
 crucible-shmem = { path = "../crucible-shmem" }

@@ -1,2 +1,2 @@
-# Fixed-output hash for the vendored crates/Cargo.lock dependency set.
-"sha256-tuipMofs2eVNdKDPGCYznQQ45N/IytLEHPBvDLVsID4="
+# Crucible and application compilation use the same complete workspace lockfile.
+import ../../build-support/_workspace-cargo-deps-hash.nix

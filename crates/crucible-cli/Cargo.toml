@@ -50,6 +50,7 @@ url = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+crucible-node-contract = { path = "../crucible-node-contract" }
 crucible-api = { path = "../crucible-api", features = ["test-support"] }
 crucible-cas = { path = "../crucible-cas" }
 crucible-core = { package = "crucible", path = "../crucible", features = ["test-support"] }
