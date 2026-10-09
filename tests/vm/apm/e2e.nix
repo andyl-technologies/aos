@@ -121,7 +121,10 @@
       # Retained publication inventories also refer to the unused payload.
       # Remove its fixture referrers so this test exercises a real download.
       local -a referring_paths
-      mapfile -t referring_paths < <(nix-store --query --referrers-closure "$path")
+      local referrers_file="/tmp/e2e-referrers-$label"
+      nix-store --query --referrers-closure "$path" > "$referrers_file"
+      mapfile -t referring_paths < "$referrers_file"
+      rm "$referrers_file"
       if nix-store --delete --ignore-liveness "''${referring_paths[@]}" > "/tmp/e2e-delete-$label.out" 2>&1; then
         pass "$label deleted before APM download"
       else
