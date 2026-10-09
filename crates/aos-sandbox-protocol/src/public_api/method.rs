@@ -1,8 +1,11 @@
-//! Closed public RPC methods.
+//! Closed public RPC methods shared by request DATA and native authorization.
+//!
+//! Serde names retain the exact public service paths. Selecting a method does
+//! not authenticate its body or admit an operation.
 
 use serde::{Deserialize, Serialize};
 
-/// Selects one public read RPC whose exact body can be authorized.
+/// Selects one closed public read or mutation RPC method.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum PublicApiAuditMethodV1 {
     /// Plans sandbox creation without admitting a mutation.
@@ -138,4 +141,3 @@ pub enum PublicApiAuditMethodV1 {
     #[serde(rename = "/aos.sandbox.v1.OperatorService/Recover")]
     OperatorRecover,
 }
-

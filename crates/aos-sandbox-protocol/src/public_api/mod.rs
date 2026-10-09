@@ -11,6 +11,8 @@
 //! claims without granting admission, adoption, or effect authority.
 //! [`request`] owns the sole structurally checked public request DATA and
 //! untrusted client proposals under the shared [`limits`].
+//! [`method`] and [`mutation`] preserve exact mutation envelopes and resolve
+//! historical endpoint selectors without adopting current native authority.
 
 pub mod attach_holder_proof;
 pub mod audit_event;

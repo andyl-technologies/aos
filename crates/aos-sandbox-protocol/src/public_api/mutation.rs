@@ -1,8 +1,11 @@
-//! Exact public mutation request envelopes.
+//! Exact public mutation envelopes and historical endpoint selectors.
 //!
-//! The controller compiler needs both a closed RPC method and the exact
-//! protobuf bytes received on its authenticated HTTP/2 stream. This envelope
-//! preserves those bytes without decoding and re-encoding them first:
+//! The envelope retains the closed RPC method and exact received protobuf bytes.
+//! Method-selected decoding reuses the full public request validator before
+//! selecting capability operations, resource identities, and idempotency DATA.
+//! Supplied historical identities do not authenticate a request or authorize a
+//! mutation; the native Controller retains protected lookup and current admission.
+//! The envelope preserves its body without decoding and re-encoding it first:
 //!
 //! ```text
 //! +----------------+----------------+----------------+-------------------+
@@ -276,7 +279,10 @@ fn mutation_method(code: u16) -> Result<PublicApiAuditMethodV1, PublicMutationRe
     }
 }
 
-/// Carries a validated public mutation and its closed authorization semantics.
+/// Carries a structurally validated mutation and its closed endpoint semantics.
+///
+/// The selectors and request bytes are historical DATA, not protected lookup
+/// evidence or current mutation authorization.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedPublicMutationRequestV1 {
     method: PublicApiAuditMethodV1,
@@ -303,6 +309,19 @@ impl ResolvedPublicMutationRequestV1 {
         Self::decode_with_historical_capability_id(encoded, None)
     }
 
+    /// Decodes an envelope with an unchecked historical capability identity.
+    ///
+    /// Capability attenuation and renewal use the supplied identity as their
+    /// logical selector; `None` leaves that selector unresolved. The original
+    /// handle is still structurally checked, but this function does not verify
+    /// the handle-to-identity relationship or grant protected authorization.
+    /// Native admission retains that lookup and its current decision checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublicMutationResolutionErrorV1`] for an invalid envelope or
+    /// endpoint, identity, descriptor, or idempotency key. Operator recovery
+    /// remains outside ordinary endpoint resolution.
     pub fn decode_with_historical_capability_id(
         encoded: &[u8],
         capability_id: Option<CapabilityId>,
@@ -350,10 +369,11 @@ impl ResolvedPublicMutationRequestV1 {
         self.operation
     }
 
-    /// Returns the exact logical selector when protected identity resolution ran.
+    /// Returns the logical selector selected from structurally checked DATA.
     ///
-    /// Structural decoding of a 32-byte capability handle leaves this unset;
-    /// only authenticated protected lookup can select its capability UID.
+    /// Structural decoding of a capability handle leaves this unset unless a
+    /// historical identity was supplied. A populated selector is not proof of
+    /// authenticated protected lookup or current authorization.
     #[must_use]
     pub const fn selector(&self) -> Option<&Selector> {
         self.selector.as_ref()
@@ -730,6 +750,13 @@ fn exact_identity(bytes: &[u8]) -> Result<[u8; 16], PublicMutationResolutionErro
     Ok(identity)
 }
 
+/// Converts a protobuf descriptor through the established mutation checks.
+///
+/// # Errors
+///
+/// Returns [`PublicMutationResolutionErrorV1::InvalidDescriptor`] when the
+/// digest is not exactly32 bytes or is all zero, size is zero, or media type is
+/// invalid.
 pub fn object_descriptor(
     value: &ProtoObjectDescriptor,
 ) -> Result<ObjectDescriptor, PublicMutationResolutionErrorV1> {

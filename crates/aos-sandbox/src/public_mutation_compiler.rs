@@ -1,9 +1,10 @@
-//! Authenticated public mutation decoding and semantic resolution.
+//! Current protected admission for exact public mutation requests.
 //!
-//! This boundary turns an exact mutation envelope into the closed capability
-//! operation selected by its RPC. It does not synthesize broker requests or
-//! claim that requested state is observed. Domain lowering consumes this
-//! checked value together with protected current state.
+//! Protocol owns the complete envelope and historical endpoint selector DATA.
+//! This native boundary retains authenticated peer and protected registry
+//! checks, the current Controller decision, and fixed FUSE/Nix original capture.
+//! Domain lowering consumes the private admitted value with current state;
+//! structural request decoding does not produce that authority.
 
 use aos_sandbox_core::{CapabilityId, PrincipalId, ProjectId};
 #[cfg(test)]
