@@ -25,9 +25,16 @@ use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, fcntl_get_seals, memfd_
 
 use serde::Deserialize;
 
+mod actor_partition;
 mod issuer_custody;
+mod parent_evidence;
 
+pub use actor_partition::{CertifiedActorPartition, CertifiedNativeStage};
 pub use issuer_custody::IssuerCustodyRefusal;
+pub use parent_evidence::{
+    AuthenticatedParentInvocation, CertifiedMeasurementMode, CertifiedNativeRoleEvidence,
+    VerifiedImageInventory,
+};
 
 const POLICY_PATH: &str = "/etc/crucible/measurement-operator.json";
 const ISSUER_PATH: &str = "/run/crucible-measurement-issuer.sock";
@@ -325,6 +332,9 @@ pub struct MeasurementInvocationOrigin {
     // Authenticated role values move with the descriptor-owning origin. They
     // remain ceilings, not a certificate for Source or constructor costs.
     policy: OperatorPolicy,
+    // Retain the digest verified by load_policy and the sealed issuance record;
+    // later parent binding must not authenticate a caller-supplied digest.
+    policy_digest: [u8; 32],
 }
 
 /// Immutable authored ceilings borrowed from the authenticated actor policy.
@@ -457,6 +467,7 @@ impl MeasurementInvocationOrigin {
             _policy: policy_file,
             _issuer: issuer,
             policy,
+            policy_digest: digest,
         })
     }
 
@@ -1211,6 +1222,7 @@ mod tests {
             _policy: tempfile::tempfile().unwrap(),
             _issuer: issuer,
             policy: policy(),
+            policy_digest: [0; 32],
         }
     }
 

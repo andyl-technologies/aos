@@ -38,6 +38,7 @@ use control::QuotaControlState;
 #[cfg(feature = "private-measurement-domain")]
 pub use measurement_storage::{
     MeasurementStorageContract, MeasurementStorageError, MeasurementStoragePins,
+    OwnedMeasurementStoragePins,
 };
 
 const EXT4_QUOTA_BLOCK_BYTES: u64 = 1 << 10;

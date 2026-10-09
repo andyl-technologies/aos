@@ -46,4 +46,5 @@ pub use linux_project_quota::{
 #[cfg(feature = "private-measurement-domain")]
 pub use linux_project_quota::{
     MeasurementStorageContract, MeasurementStorageError, MeasurementStoragePins,
+    OwnedMeasurementStoragePins,
 };

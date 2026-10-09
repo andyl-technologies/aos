@@ -77,10 +77,17 @@ mod linux_attempt_storage;
 // sealed process owner needed by the still-separate quota/session composition.
 mod linux_cgroup;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+mod private_parent_vm;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 #[doc(hidden)]
 pub use linux_cgroup::measurement_domain::{
     MeasurementCgroupContract, MeasurementCgroupError, MeasurementCgroupOwner,
     OwnedMeasurementCgroupOwner,
+};
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+#[doc(hidden)]
+pub use private_parent_vm::{
+    OriginalParentRefusal, retain_original_parent_quarantine, run_original_parent_operator,
 };
 #[cfg(target_os = "linux")]
 mod live_plugin_gate;
@@ -182,13 +189,16 @@ pub use launch::{
     ROOT_DRIVE_ID, ROOT_OVERLAY_NODE_NAME, qemu_fault_target_hash, validate_aarch64_whitebox_setup,
     validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
 };
-#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-#[doc(hidden)]
-pub use linux_attempt_host::OriginalNativeControlRetirement;
 #[cfg(target_os = "linux")]
 pub use linux_attempt_host::{
     LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory, LinuxQemuAttemptHostOwner,
     LinuxQemuNativeResourceController, LinuxQemuNativeResourceError,
+};
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+#[doc(hidden)]
+pub use linux_attempt_host::{
+    OriginalActorAccountCustody, OriginalActorAccountError, OriginalNativeAccountCredit,
+    OriginalNativeControlRetirement,
 };
 #[cfg(target_os = "linux")]
 pub use linux_attempt_process::{

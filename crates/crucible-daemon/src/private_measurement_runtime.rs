@@ -16,6 +16,10 @@ use crucible_linux_resource::measurement_origin::{
     MeasurementInvocationOrigin, MeasurementOriginError,
 };
 
+mod actor_roles;
+
+pub use actor_roles::OriginalActorRoleIssuer;
+
 /// First refusal while deriving the closed original actor from its actual issuer.
 #[derive(Debug, thiserror::Error)]
 pub enum MeasurementRuntimeAdmissionError {
@@ -39,6 +43,9 @@ pub enum MeasurementRuntimeAdmissionError {
     /// The same original supervisor or preparation refused publication.
     #[error("original actor supervision refused: {0}")]
     Supervision(#[from] HostSupervisionError),
+    /// The same closed actor publication or external native credit refused.
+    #[error("original actor account custody refused: {0}")]
+    ActorAccounts(#[from] crucible_qemu::OriginalActorAccountError),
 }
 
 // These closed facts must come from the compiled trusted purpose table, never

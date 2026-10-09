@@ -1984,6 +1984,20 @@ fn install_attempt_process_contract(contract: ChildProcessContractRaw) -> io::Re
     Ok(())
 }
 
+/// Installs the existing sealed birth contract for the private outer VM.
+///
+/// The operator retains the original account and process owner before calling
+/// this helper. The child joins that already limited domain before exec; the
+/// helper exports neither a raw cgroup descriptor nor new launch authority.
+#[cfg(feature = "private-measurement-domain")]
+pub(super) fn install_original_parent_birth(
+    command: &mut Command,
+    run_directory: &QemuPreparedRunDirectory,
+    process_contract: &QemuChildProcessContract,
+) {
+    install_guarded_helper_authority(command, run_directory, process_contract);
+}
+
 fn install_child_credentials(credentials: QemuChildCredentials) -> io::Result<()> {
     let groups_cleared = unsafe {
         // SAFETY: the raw Linux syscall receives a zero count and null array,

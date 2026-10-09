@@ -13,10 +13,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod native_resources;
+#[cfg(feature = "private-measurement-domain")]
+mod original_actor;
 use native_resources::NativeResourceState;
 #[cfg(feature = "private-measurement-domain")]
 pub use native_resources::OriginalNativeControlRetirement;
 pub use native_resources::{LinuxQemuNativeResourceController, LinuxQemuNativeResourceError};
+#[cfg(feature = "private-measurement-domain")]
+pub use original_actor::{
+    OriginalActorAccountCustody, OriginalActorAccountError, OriginalNativeAccountCredit,
+};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::thread;
 use std::time::Duration;

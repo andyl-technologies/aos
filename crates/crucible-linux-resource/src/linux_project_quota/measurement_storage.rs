@@ -108,7 +108,7 @@ pub enum MeasurementStorageError {
 #[derive(Debug)]
 #[must_use = "static storage pins require original physical retirement"]
 pub struct MeasurementStoragePins<'operation> {
-    operation: &'operation HostOperationGuard,
+    operation: Option<PreparationCustody<'operation>>,
     image: Option<OwnedFd>,
     device: Option<OwnedFd>,
     root: Option<OwnedFd>,
@@ -117,6 +117,80 @@ pub struct MeasurementStoragePins<'operation> {
     authenticated: bool,
     // Last: no original refund can precede physical descriptor destruction.
     original: Option<HostServiceLease>,
+}
+
+#[derive(Debug)]
+enum PreparationCustody<'operation> {
+    Borrowed(&'operation HostOperationGuard),
+    Shared(Arc<HostOperationGuard>),
+}
+
+impl PreparationCustody<'_> {
+    fn guard(&self) -> &HostOperationGuard {
+        match self {
+            Self::Borrowed(guard) => guard,
+            Self::Shared(guard) => guard,
+        }
+    }
+}
+
+/// Retains static storage with the same already-published owned preparation.
+///
+/// This owner accepts an alias of the existing guard allocation. It creates no
+/// guard, bank, clock or retirement certificate and exports no descriptor or
+/// borrowed inner owner. Failed installed custody retains that same guard along
+/// with the pins and original loan through process-lifetime quarantine.
+#[derive(Debug)]
+#[must_use = "owned static storage requires genuine physical retirement"]
+pub struct OwnedMeasurementStoragePins {
+    inner: MeasurementStoragePins<'static>,
+}
+
+impl OwnedMeasurementStoragePins {
+    /// Moves the same preparation alias and original storage loan into custody.
+    ///
+    /// The caller must account for this expanded inline body and the existing
+    /// guard allocation before publication. This method creates no shared
+    /// allocation and does not authenticate a filesystem or backing grant.
+    ///
+    /// # Errors
+    /// Refuses a non-running preparation or an insufficient original loan.
+    pub fn retain_original(
+        original: HostServiceLease,
+        contract: MeasurementStorageContract,
+        operation: Arc<HostOperationGuard>,
+    ) -> Result<Self, MeasurementStorageError> {
+        Ok(Self {
+            inner: MeasurementStoragePins::retain_custody(
+                original,
+                contract,
+                PreparationCustody::Shared(operation),
+            )?,
+        })
+    }
+
+    /// Saves all existing pins before authenticating their exact binding.
+    ///
+    /// # Errors
+    /// Refuses reuse, original cancellation or expiry, failed kernel reads, or
+    /// an image, device, filesystem or quota binding outside the contract.
+    pub fn bind(
+        &mut self,
+        image: OwnedFd,
+        device: OwnedFd,
+        root: OwnedFd,
+    ) -> Result<(), MeasurementStorageError> {
+        self.inner.bind(image, device, root)
+    }
+
+    /// Reauthenticates the same pins under the same retained original interval.
+    ///
+    /// # Errors
+    /// Refuses absent pins, changed physical state, insufficient capacity,
+    /// kernel read failures or the original operation's sticky refusal.
+    pub fn verify(&self) -> Result<(), MeasurementStorageError> {
+        self.inner.verify()
+    }
 }
 
 impl<'operation> MeasurementStoragePins<'operation> {
@@ -132,12 +206,20 @@ impl<'operation> MeasurementStoragePins<'operation> {
         contract: MeasurementStorageContract,
         operation: &'operation HostOperationGuard,
     ) -> Result<Self, MeasurementStorageError> {
-        preparation_boundary(operation)?;
+        Self::retain_custody(original, contract, PreparationCustody::Borrowed(operation))
+    }
+
+    fn retain_custody(
+        original: HostServiceLease,
+        contract: MeasurementStorageContract,
+        operation: PreparationCustody<'operation>,
+    ) -> Result<Self, MeasurementStorageError> {
+        preparation_boundary(operation.guard())?;
         if original.file_descriptors() < 3 || original.resident_bytes() < 4096 {
             return Err(MeasurementStorageError::Original);
         }
         Ok(Self {
-            operation,
+            operation: Some(operation),
             image: None,
             device: None,
             root: None,
@@ -185,19 +267,24 @@ impl<'operation> MeasurementStoragePins<'operation> {
     /// Refuses absent pins, a changed physical binding, insufficient usable
     /// space/inodes, kernel read failure, or original cancellation/expiry.
     pub fn verify(&self) -> Result<(), MeasurementStorageError> {
+        let operation = self
+            .operation
+            .as_ref()
+            .ok_or(MeasurementStorageError::State)?
+            .guard();
         // Operation classes are immutable; construction already authenticated
-        // this exact borrowed preparation guard. Live checks use its original
+        // this exact retained preparation guard. Live checks use its original
         // scalar boundary without allocating monitoring-history vectors.
-        self.operation.wait_slice()?;
+        operation.wait_slice()?;
         let image = self.image.as_ref().ok_or(MeasurementStorageError::State)?;
         let device = self.device.as_ref().ok_or(MeasurementStorageError::State)?;
         let root = self.root.as_ref().ok_or(MeasurementStorageError::State)?;
-        let image_stat = kernel_read(self.operation, "inspect original image", fstat(image))?;
-        self.operation.wait_slice()?;
-        let device_stat = kernel_read(self.operation, "inspect original device", fstat(device))?;
-        self.operation.wait_slice()?;
-        let root_stat = kernel_read(self.operation, "inspect original root", fstat(root))?;
-        self.operation.wait_slice()?;
+        let image_stat = kernel_read(operation, "inspect original image", fstat(image))?;
+        operation.wait_slice()?;
+        let device_stat = kernel_read(operation, "inspect original device", fstat(device))?;
+        operation.wait_slice()?;
+        let root_stat = kernel_read(operation, "inspect original root", fstat(root))?;
+        operation.wait_slice()?;
         if FileType::from_raw_mode(image_stat.st_mode) != FileType::RegularFile
             || FileType::from_raw_mode(device_stat.st_mode) != FileType::BlockDevice
             || FileType::from_raw_mode(root_stat.st_mode) != FileType::Directory
@@ -213,41 +300,30 @@ impl<'operation> MeasurementStoragePins<'operation> {
         let blocks =
             u64::try_from(image_stat.st_blocks).map_err(|_| MeasurementStorageError::Contract)?;
         check_image_extent(self.contract, length, blocks)?;
-        verify_image_coverage(image, length, self.operation)?;
-        self.operation.wait_slice()?;
+        verify_image_coverage(image, length, operation)?;
+        operation.wait_slice()?;
 
-        let loop_info = kernel_read(
-            self.operation,
-            "read original loop binding",
-            loop_status(device),
-        )?;
+        let loop_info = kernel_read(operation, "read original loop binding", loop_status(device))?;
         check_loop_binding(&loop_info, image_stat.st_dev, image_stat.st_ino)?;
-        self.operation.wait_slice()?;
-        if kernel_read(
-            self.operation,
-            "read original block extent",
-            block_bytes(device),
-        )? != self.contract.raw_bytes
+        operation.wait_slice()?;
+        if kernel_read(operation, "read original block extent", block_bytes(device))?
+            != self.contract.raw_bytes
         {
             return Err(MeasurementStorageError::Binding("loop block length"));
         }
-        self.operation.wait_slice()?;
+        operation.wait_slice()?;
 
-        let filesystem = kernel_read(self.operation, "identify original ext4 root", fstatfs(root))?;
-        self.operation.wait_slice()?;
+        let filesystem = kernel_read(operation, "identify original ext4 root", fstatfs(root))?;
+        operation.wait_slice()?;
         if filesystem.f_type != libc::EXT4_SUPER_MAGIC {
             return Err(MeasurementStorageError::Binding("original ext4 filesystem"));
         }
         quota_read(
-            self.operation,
+            operation,
             project_quota_info(root, Path::new("static native root")),
         )?;
-        self.operation.wait_slice()?;
-        let capacity = kernel_read(
-            self.operation,
-            "inspect usable ext4 capacity",
-            fstatvfs(root),
-        )?;
+        operation.wait_slice()?;
+        let capacity = kernel_read(operation, "inspect usable ext4 capacity", fstatvfs(root))?;
         check_usable_capacity(
             self.contract,
             capacity.f_bavail,
@@ -255,7 +331,7 @@ impl<'operation> MeasurementStoragePins<'operation> {
             capacity.f_favail,
             capacity.f_flag,
         )?;
-        self.operation.wait_slice()?;
+        operation.wait_slice()?;
         Ok(())
     }
 }
@@ -272,6 +348,11 @@ impl Drop for MeasurementStoragePins<'_> {
             }
             if let Some(original) = self.original.take() {
                 std::mem::forget(original);
+            }
+            if let Some(operation) = self.operation.take() {
+                // An installed failure cannot release the same original guard
+                // while retained descriptor/loan authority still survives.
+                std::mem::forget(operation);
             }
         }
     }
@@ -781,6 +862,75 @@ mod tests {
         drop(owner);
         // No failed readback or destructor proves mount/loop retirement.
         assert!(bank.reserve_resources(0, 1, 0).is_err());
+    }
+
+    #[test]
+    fn owned_uninstalled_drop_releases_only_its_same_guard_and_loan() {
+        use crate::host_services::HostServiceAllocator;
+        use crate::host_supervision::HostOperationBudgets;
+
+        fn requires_send_static<T: Send + 'static>() {}
+        requires_send_static::<OwnedMeasurementStoragePins>();
+        let supervisor =
+            HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+        let operation = Arc::new(supervisor.begin(HostOperationClass::Preparation).unwrap());
+        let same = Arc::downgrade(&operation);
+        let bank = HostServiceAllocator::new(1, 3, 4096).unwrap();
+        let loan = bank.reserve_resources(0, 3, 4096).unwrap();
+        let contract = MeasurementStorageContract::new(8192, 4096, 1).unwrap();
+
+        let owner =
+            OwnedMeasurementStoragePins::retain_original(loan, contract, operation).unwrap();
+        assert!(same.upgrade().is_some());
+        assert!(bank.reserve_resources(0, 1, 0).is_err());
+        drop(owner);
+
+        assert!(same.upgrade().is_none());
+        assert!(bank.reserve_resources(0, 3, 4096).is_ok());
+    }
+
+    #[test]
+    fn installed_owned_refusal_and_unwind_retain_same_guard_pins_and_credit() {
+        use crate::host_services::HostServiceAllocator;
+        use crate::host_supervision::HostOperationBudgets;
+
+        for unwind in [false, true] {
+            let supervisor =
+                HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+            let operation = Arc::new(supervisor.begin(HostOperationClass::Preparation).unwrap());
+            let same = Arc::downgrade(&operation);
+            let bank = HostServiceAllocator::new(1, 3, 4096).unwrap();
+            let loan = bank.reserve_resources(0, 3, 4096).unwrap();
+            let contract = MeasurementStorageContract::new(8192, 4096, 1).unwrap();
+            let mut owner =
+                OwnedMeasurementStoragePins::retain_original(loan, contract, operation).unwrap();
+            let image: OwnedFd = tempfile::tempfile().unwrap().into();
+            let device: OwnedFd = tempfile::tempfile().unwrap().into();
+            let root: OwnedFd = tempfile::tempfile().unwrap().into();
+            supervisor.cancel().unwrap();
+
+            // Real pins are saved before cancellation refuses any read. These
+            // regular files establish custody, not loop/ext4 authentication.
+            assert!(matches!(
+                owner.bind(image, device, root),
+                Err(MeasurementStorageError::Supervision(_))
+            ));
+            let result = std::panic::catch_unwind(move || {
+                let _retained = owner;
+                if unwind {
+                    panic!("actual unwind with installed original storage custody");
+                }
+            });
+
+            assert_eq!(result.is_err(), unwind);
+            assert!(same.upgrade().is_some());
+            assert!(bank.reserve_resources(0, 1, 0).is_err());
+        }
+        eprintln!(
+            "owned_storage_inline={} borrowed_storage_inline={}",
+            std::mem::size_of::<OwnedMeasurementStoragePins>(),
+            std::mem::size_of::<MeasurementStoragePins<'static>>()
+        );
     }
 
     #[test]
