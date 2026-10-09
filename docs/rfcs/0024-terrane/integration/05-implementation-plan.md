@@ -2362,7 +2362,21 @@ additive correction changes only those three selectors to their discovered
 names; independent review verifies all 28 exact nonignored matches and the
 current executable hash. All 22 exact behavior cases then pass once, with
 distinct run IDs and one-case passing summaries; the first case is not repeated.
-Growing-population and whole-gate results remain pending.
+The whole native-profile quality check passes, but atomic-write stops at
+`partial_generation_is_unpublished_and_retry_uses_a_fresh_generation`: the
+unacknowledged write succeeds instead of returning the intended injected error.
+The original gate exits one, with builder exit 101 and one failed case; all six
+population cases and the remaining qualification stages stay unrun.
+Read-only diagnosis proves the wrapper only injects MANIFEST faults for a
+standalone rename probe. Actual immutable cohort dispatch reports `Other`, so
+this execution never injects the intended MANIFEST error. This is not evidence
+that production acknowledges a genuinely injected rename failure.
+The parent registers two exact targeted-rename witnesses in the atomic-write
+gate and creates an isolated corrective worktree. Its test-only destination
+fault must execute at the existing pre-syscall boundary, preserve earlier cohort
+installs and refuse native acknowledgment; a nonmatching destination must still
+complete. Existing generation visibility, independent reopen and fresh-retry
+assertions remain required. The correction has no runtime result yet.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
 the shared executable as fresh while it still contains the class candidate's
