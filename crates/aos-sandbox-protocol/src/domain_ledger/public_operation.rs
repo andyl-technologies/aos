@@ -1,9 +1,55 @@
-//! Durable public metadata and established operation-resource projection.
+//! Owns public-operation ledger metadata, authorization DATA and resource projection.
 //!
 //! Public metadata is appended only to V2 operation records. The fixed-width
 //! representation keeps method, accepted generation, audit identity, and
 //! timestamps restart-stable while the enclosing operation record remains the
 //! atomic state-transition authority.
+//!
+//! These values contain immutable historical DATA. Construction, decoding and
+//! projection do not authenticate a caller, sample a protected clock, validate
+//! the enclosing Effect ledger, or grant current admission or mutation authority.
+//! The Domain owner supplies those checks before consuming the projected resource.
+//! The durable method registry is separate from the public wire registry.
+//!
+//! The 64-byte metadata uses little-endian integers:
+//!
+//! ```text
+//! method:u8 | reserved[7]=0 | accepted-generation:u64 | observation-sequence:u64 |
+//! audit-id[16] | accepted-wall:i64 | last-reconciliation-wall:i64 | completed-wall:i64
+//! ```
+//!
+//! An absent completion is encoded as `i64::MIN`. Authorization uses canonical
+//! selector JSON and big-endian framing:
+//!
+//! ```text
+//! AOSOPAU1 | version:u16=1 | reserved[2]=0 | project[16] | resource-kind:u8 |
+//! reserved[3]=0 | selector-length:u32 | selector-json | domain-separated-SHA256[32]
+//! ```
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use aos_sandbox_core::{ProjectId, ResourceId, ResourceKind, Selector};
+//! use aos_sandbox_protocol::domain_ledger::public_operation::{
+//!     OperationState, PublicOperationAdmissionV1, PublicOperationAuthorizationV1,
+//! };
+//! use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
+//!
+//! # fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let scope = PublicOperationAuthorizationV1::new(
+//!     ProjectId::from_bytes([1; 16]), ResourceKind::Sandbox,
+//!     Selector::Resource { resource: ResourceId::from_bytes([3; 16]) },
+//! )?;
+//! let metadata = PublicOperationAdmissionV1::new(
+//!     PublicOperationMethodV1::CreateSandbox, 1, [2; 16], 100, scope,
+//! )?.durable();
+//! let next = metadata.advance(OperationState::Applying, 101)?;
+//! let mut bytes = Vec::new();
+//! next.encode(&mut bytes);
+//! assert_eq!(bytes.len(), 64);
+//! # Ok(())
+//! # }
+//! ```
 
 use aos_proto::aos::sandbox::v1::{
     Operation, OperationPhase, OperationProgress, RetryClass, Timestamp,
@@ -13,31 +59,48 @@ use sha2::{Digest as _, Sha256};
 
 use crate::public_api::PublicOperationMethodV1;
 
+/// Reports invalid public-operation DATA without wrapping a protected owner cause.
 #[derive(Debug, thiserror::Error)]
 pub enum PublicOperationDataError {
+    /// A supplied metadata or selector value violates the durable DATA bounds.
     #[error("invalid reconciliation plan: {0}")]
     InvalidPlan(&'static str),
+    /// Encoded history violates the closed durable format or its canonical binding.
     #[error("corrupt durable effect ledger: {0}")]
     CorruptLedger(&'static str),
+    /// A supplied transition timestamp is invalid or moves backward.
     #[error("public operation clock observation is missing or invalid")]
     PublicOperationClock,
+    /// A transition would overflow the monotone observation sequence.
     #[error("public operation observation sequence is exhausted")]
     PublicOperationSequenceExhausted,
 }
 
+/// Identifies the durable operation state without admitting a state transition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum OperationState {
+    /// Work was durably accepted and has not started reconciliation.
     Accepted = 1,
+    /// Reconciliation has started and remains nonterminal.
     Applying = 2,
+    /// The enclosing ledger records successful completion.
     Succeeded = 3,
+    /// The enclosing ledger records a permanent block.
     PermanentlyBlocked = 4,
+    /// Work remains blocked on its original ownership gate.
     OwnershipPending = 5,
+    /// The operation was canceled before its commit boundary.
     CanceledBeforeCommit = 6,
+    /// The operation failed before its commit boundary.
     FailedBeforeCommit = 7,
 }
 
 impl OperationState {
+    /// Decodes the closed native operation-state discriminant.
+    ///
+    /// # Errors
+    /// Returns [`PublicOperationDataError::CorruptLedger`] for an unknown code.
     pub fn from_byte(value: u8) -> Result<Self, PublicOperationDataError> {
         match value {
             1 => Ok(Self::Accepted),
@@ -51,6 +114,7 @@ impl OperationState {
         }
     }
 
+    /// Reports whether the durable state requires a completion timestamp.
     pub const fn is_terminal(self) -> bool {
         matches!(
             self,
@@ -62,6 +126,7 @@ impl OperationState {
     }
 }
 
+/// Bounds the complete fixed-width public metadata appended to a V2 Operation row.
 pub const PUBLIC_OPERATION_RECORD_BYTES: usize = 64;
 const PUBLIC_OPERATION_RESOURCE_VERSION_DOMAIN: &[u8] =
     b"aos.sandbox.public-operation-resource-version.v1\0";
@@ -76,6 +141,9 @@ const MINIMUM_PROTO_SECONDS: i64 = -62_135_596_800;
 const MAXIMUM_PROTO_SECONDS: i64 = 253_402_300_799;
 
 // These discriminants belong to the native durable record, not the public wire registry.
+/// Decodes one of the 26 closed native durable method codes.
+///
+/// Unknown codes return `None`; this registry does not select a public wire route.
 pub const fn public_operation_method_from_record_code_v1(
     value: u8,
 ) -> Option<PublicOperationMethodV1> {
@@ -110,6 +178,7 @@ pub const fn public_operation_method_from_record_code_v1(
     }
 }
 
+/// Returns the native durable method code, independently of the public wire registry.
 pub const fn public_operation_method_record_code_v1(method: PublicOperationMethodV1) -> u8 {
     method as u8
 }
@@ -133,7 +202,9 @@ pub struct PublicOperationAuthorizationV1 {
 }
 
 impl PublicOperationAuthorizationV1 {
-    /// Constructs an immutable current-authorization scope.
+    /// Constructs checked immutable authorization-scope DATA.
+    ///
+    /// The stored scope does not prove current capability or policy authorization.
     ///
     /// # Errors
     ///
@@ -183,6 +254,11 @@ impl PublicOperationAuthorizationV1 {
         &self.selector
     }
 
+    /// Encodes the canonical bounded authorization row and its digest.
+    ///
+    /// # Errors
+    /// Returns [`PublicOperationDataError::InvalidPlan`] if selector encoding
+    /// fails or exceeds its durable bound.
     pub fn encode(&self) -> Result<Vec<u8>, PublicOperationDataError> {
         let selector = serde_json::to_vec(&self.selector).map_err(|_| {
             PublicOperationDataError::InvalidPlan("public operation selector cannot be encoded")
@@ -214,6 +290,11 @@ impl PublicOperationAuthorizationV1 {
         Ok(bytes)
     }
 
+    /// Decodes an exact canonical historical authorization row.
+    ///
+    /// # Errors
+    /// Returns [`PublicOperationDataError::CorruptLedger`] for malformed framing,
+    /// reserved bytes, identities, resource kind, selector JSON or digest binding.
     pub fn decode(bytes: &[u8]) -> Result<Self, PublicOperationDataError> {
         if bytes.len() < PUBLIC_OPERATION_AUTHORIZATION_FIXED_BYTES
             || &bytes[..8] != PUBLIC_OPERATION_AUTHORIZATION_MAGIC
@@ -308,22 +389,29 @@ impl PublicOperationAdmissionV1 {
         })
     }
 
+    /// Borrows the immutable authorization scope fixed in this metadata.
     pub const fn authorization(&self) -> &PublicOperationAuthorizationV1 {
         &self.authorization
     }
 
+    /// Returns the immutable public method stored at admission.
     pub const fn method(&self) -> PublicOperationMethodV1 {
         self.method
     }
 
+    /// Returns the supplied second-precision admission timestamp.
     pub const fn accepted_wall_seconds(&self) -> i64 {
         self.accepted_wall_seconds
     }
 
+    /// Returns the project from the stored authorization scope.
     pub const fn project(&self) -> ProjectId {
         self.authorization.project()
     }
 
+    /// Produces initial nonterminal metadata with observation sequence one.
+    ///
+    /// The enclosing operation owner must separately admit and persist its state.
     pub const fn durable(&self) -> DurablePublicOperationV1 {
         DurablePublicOperationV1 {
             method: self.method,
@@ -336,6 +424,9 @@ impl PublicOperationAdmissionV1 {
         }
     }
 
+    /// Produces initial completed metadata for an independently admitted local result.
+    ///
+    /// Completion uses the original accepted timestamp and observation sequence one.
     pub const fn durable_completed(&self) -> DurablePublicOperationV1 {
         DurablePublicOperationV1 {
             method: self.method,
@@ -349,6 +440,10 @@ impl PublicOperationAdmissionV1 {
     }
 }
 
+/// Retains the exact 64-byte public metadata of a separately validated Operation row.
+///
+/// Decoding validates metadata consistency, not the surrounding ledger or current
+/// authority. Its private fields preserve checked metadata construction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DurablePublicOperationV1 {
     method: PublicOperationMethodV1,
@@ -361,14 +456,19 @@ pub struct DurablePublicOperationV1 {
 }
 
 impl DurablePublicOperationV1 {
+    /// Returns the immutable public method stored in the durable metadata.
     pub const fn method(self) -> PublicOperationMethodV1 {
         self.method
     }
 
+    /// Returns the immutable generation fixed at original admission.
     pub const fn accepted_generation(self) -> u64 {
         self.accepted_generation
     }
 
+    /// Reconstructs historical admission DATA with a separately decoded scope.
+    ///
+    /// The caller verifies the scope's original enclosing ledger association.
     pub const fn into_admission(
         self,
         authorization: PublicOperationAuthorizationV1,
@@ -382,6 +482,15 @@ impl DurablePublicOperationV1 {
         }
     }
 
+    /// Advances observation metadata using a supplied state and wall timestamp.
+    ///
+    /// This pure transition does not acquire a protected clock or admit work.
+    /// It checks the timestamp before sequence overflow and then records completion.
+    ///
+    /// # Errors
+    /// Returns [`PublicOperationDataError::PublicOperationClock`] for an invalid
+    /// or backward timestamp, or [`PublicOperationDataError::PublicOperationSequenceExhausted`]
+    /// when the observation sequence cannot advance.
     pub fn advance(
         self,
         state: OperationState,
@@ -408,6 +517,7 @@ impl DurablePublicOperationV1 {
         })
     }
 
+    /// Appends the exact 64-byte native metadata encoding to the supplied buffer.
     pub fn encode(self, bytes: &mut Vec<u8>) {
         bytes.push(public_operation_method_record_code_v1(self.method));
         bytes.extend_from_slice(&[0; 7]);
@@ -424,6 +534,12 @@ impl DurablePublicOperationV1 {
         );
     }
 
+    /// Decodes fixed-width metadata consistent with the supplied durable state.
+    ///
+    /// # Errors
+    /// Returns [`PublicOperationDataError::CorruptLedger`] for an incorrect width,
+    /// unknown method, reserved bytes, sentinel identity, invalid timestamp or
+    /// generation/sequence, or inconsistent completion and terminal state.
     pub fn decode(bytes: &[u8], state: OperationState) -> Result<Self, PublicOperationDataError> {
         let bytes: &[u8; PUBLIC_OPERATION_RECORD_BYTES] = bytes.try_into().map_err(|_| {
             PublicOperationDataError::CorruptLedger("invalid public operation metadata length")
@@ -474,7 +590,10 @@ impl DurablePublicOperationV1 {
         })
     }
 
-    /// Projects only a separately validated Repair failure, not generic blocked work.
+    /// Projects the established resource for a separately validated Repair failure.
+    ///
+    /// The caller retains the original ledger checks; this changes only the
+    /// projected milestone to `original-precondition-replaced`.
     pub fn project_original_precondition_replaced(
         self,
         operation_id: OperationId,
@@ -492,6 +611,11 @@ impl DurablePublicOperationV1 {
         operation
     }
 
+    /// Projects public Operation DATA from the supplied validated ledger observations.
+    ///
+    /// The caller verifies the enclosing Operation and Effect rows, counts, state
+    /// and cancelability. The resourceVersion binds those exact ordered bytes;
+    /// the returned protobuf conveys no current authorization.
     pub fn project(
         self,
         operation_id: OperationId,
@@ -597,6 +721,10 @@ fn timestamp(seconds: i64) -> Timestamp {
     }
 }
 
+/// Commits the operation identity and exact ordered native Operation/Effect bytes.
+///
+/// Length framing and the domain separator are fixed. This digest is an
+/// observation version, never evidence of protected custody or current admission.
 pub fn resource_version(
     operation_id: OperationId,
     operation_record: &[u8],

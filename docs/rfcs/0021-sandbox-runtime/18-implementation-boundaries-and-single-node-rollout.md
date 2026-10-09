@@ -180,6 +180,19 @@ full capacity-family dispatch, and closed authority factories. This shared
 DATA boundary is a prerequisite for further role migration, not removal of the
 whole protected Journal/Policy/Source/Cache/Publisher dependency cycle.
 
+Protocol's `domain_ledger::public_operation` also owns the complete immutable
+public admission/authorization DATA, 64-byte durable metadata, separate closed
+durable method registry, shared Operation state DATA and established resource
+projection/resourceVersion. Private fields remain private. Its checked DATA
+constructors, codecs and projections are publicly accessible across the crate
+boundary and return the lower DATA error; Domain directly uses those identities
+and converts errors to the original Reconciler variants. This is an explicit
+undeployed API cutover, not identical prior visibility. The actual Journal,
+protected admission, authentic clock acquisition, Effect/Repair consistency
+checks and current public authorization remain Domain-owned. Historical DATA
+construction and projection grant no authority and do not complete the
+Controller ledger or protected Journal dependency cut.
+
 Its bounded native extent accounting and duplicate-key index share the lower
 journal's `NativeRecordValidation` owner with native suffix measurement. Keys
 borrow the actual records; domain Idempotency checks remain between the extent

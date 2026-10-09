@@ -7,6 +7,8 @@
 //! current cut, grants capacity, or manufactures a postcommit capability.
 //! The generic Journal dependency supplies framing and checked mechanics;
 //! physical custody and role-specific admission stay with their actual owners.
+//! [`public_operation`] owns immutable public-operation metadata, authorization
+//! scope DATA, the durable method/state registry and established resource projection.
 
 pub mod capacity;
 pub mod public_operation;
