@@ -25,6 +25,8 @@ use std::{fs::File, path::PathBuf, sync::Arc};
 /// retains the descriptor through worker completion, including cancellation of
 /// its waiting future. The request grants no namespace or publication authority.
 pub struct NativePayloadRangeRead {
+    #[cfg(not(all(feature = "tokio", unix)))]
+    _sealed: (),
     #[cfg(all(feature = "tokio", unix))]
     recipe: Recipe,
     #[cfg(all(test, feature = "tokio", unix))]
@@ -36,6 +38,8 @@ pub struct NativePayloadRangeRead {
 /// Its private outcome cannot be constructed from caller-supplied bytes. A
 /// successful check supplies neither an actor decision nor a durability ACK.
 pub struct NativePayloadRangeRecord {
+    #[cfg(not(all(feature = "tokio", unix)))]
+    _sealed: (),
     #[cfg(all(feature = "tokio", unix))]
     outcome: Outcome,
 }

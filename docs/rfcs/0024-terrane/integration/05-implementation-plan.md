@@ -530,8 +530,15 @@ Four exact ordinary-receipt witnesses join runtime-agnostic. Source composition
 preserves current trunk functions and excludes unrelated private GC changes;
 compilation, witness execution and task acceptance remain pending.
 Corrected ordinary-read candidate `3ff271f871` passes strict native all-target
-Clippy. Its fresh inventory and exact runtime witness set remain in progress;
-the original native missing-method failure is retained as failure evidence.
+Clippy and fresh inventory binding of all 93 required witnesses. Its unchanged
+default-profile run completes in 307.586 seconds: 92 PASS and one existing
+required-inline/index backfill TIMEOUT at 120.006 seconds. All three new
+namespace witnesses and fourteen original ordinary-read witnesses pass; this
+does not qualify the whole candidate. Its source and executable hashes remain
+unchanged. Owning gates, the 1,024-record witness and full application/format
+checks remain unrun. The original native missing-method failure remains
+separate failure evidence. The new bounded/read-only integration is being
+composed with reviewed diagnostic and fixture corrections for fresh qualification.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
