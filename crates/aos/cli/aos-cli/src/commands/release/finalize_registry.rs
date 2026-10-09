@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use aos_oci_types::CONTAINER_RELEASE_SIDECAR_PATH;
+use aos_registry_authoring::provenance::{ProvenanceSignature, ProvenanceSigner};
 use aos_registry_authoring::registry::container_stage::prepare_container_stage;
 use aos_registry_authoring::registry::release::{
     CanonicalRegistryEntryAuthor, INTENT_SCHEMA, RegistryCommitIdentity, RegistryGitObjectKind,
@@ -22,11 +23,9 @@ use aos_registry_authoring::registry_ops::{
     ContainerReleaseAttachment, load_container_release_attachment, local_registry_name,
 };
 use aos_registry_client::config::ApmConfig;
-use aos_registry_client::provenance::{
-    DSSE_SIGNATURE_NAMESPACE, ProvenanceSignature, ProvenanceSigner,
-};
 use aos_registry_client::registry::support::SupportSectionWrite;
 use aos_registry_client::types::ProfileScope;
+use aos_registry_format::provenance::DSSE_SIGNATURE_NAMESPACE;
 use aos_registry_format::tuf::REGISTRY_METADATA_SIGNATURE_NAMESPACE;
 use aos_release_format::build::BuildReportV1;
 use aos_release_format::canonical;

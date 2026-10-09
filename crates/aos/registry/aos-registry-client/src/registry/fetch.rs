@@ -25,7 +25,7 @@ use anyhow::{Context, Result};
 
 use crate::registry::pack;
 use crate::registry::transport::{RegistryRead, RegistryTransport};
-use aos_cli_ui::output::{Printer, TransferProgress};
+use aos_transfer::progress::{TransferObserver, TransferProgress};
 
 /// The ordered fetch steps chosen to materialize a target release.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,9 +223,9 @@ pub async fn resolve_objects(
     origin: &str,
     target: &semver::Version,
     retained: &[semver::Version],
-    printer: &Printer,
+    observer: &dyn TransferObserver,
 ) -> Result<FetchPlan> {
-    resolve_objects_with_progress(repo_dir, origin, target, retained, printer, None).await
+    resolve_objects_with_progress(repo_dir, origin, target, retained, observer, None).await
 }
 
 /// Resolves release objects while reporting into a caller-owned transfer.
@@ -239,7 +239,7 @@ pub async fn resolve_objects_with_progress(
     origin: &str,
     target: &semver::Version,
     retained: &[semver::Version],
-    printer: &Printer,
+    observer: &dyn TransferObserver,
     progress: Option<&TransferProgress>,
 ) -> Result<FetchPlan> {
     // Ref synchronization may already have fetched this complete release.
@@ -277,7 +277,7 @@ pub async fn resolve_objects_with_progress(
         set_phase(progress, "Downloading registry delta");
         match fetch_delta(repo_dir, &transport, target, &base, progress).await {
             Ok(Some(step)) => {
-                printer.info(&format!(
+                observer.info(&format!(
                     "Fetched registry delta {base} -> {target} via AOS pack"
                 ));
                 return Ok(FetchPlan {
@@ -287,7 +287,7 @@ pub async fn resolve_objects_with_progress(
             }
             Ok(None) => {}
             Err(err) => {
-                printer.warning(&format!(
+                observer.warning(&format!(
                     "Skipping unusable registry delta {base} -> {target}: {err:#}"
                 ));
             }
@@ -309,7 +309,7 @@ pub async fn resolve_objects_with_progress(
                         steps.push(fallback);
                     }
                     Err(err) => {
-                        printer.warning(&format!(
+                        observer.warning(&format!(
                             "Skipping unusable registry delta {anchor} -> {target}: {err:#}"
                         ));
                         let fallback =
@@ -318,7 +318,7 @@ pub async fn resolve_objects_with_progress(
                     }
                 }
             }
-            printer.info(&format!("Fetched registry full-pack anchor {anchor}"));
+            observer.info(&format!("Fetched registry full-pack anchor {anchor}"));
             return Ok(FetchPlan {
                 target: target.clone(),
                 steps,
@@ -326,7 +326,7 @@ pub async fn resolve_objects_with_progress(
         }
         Ok(None) => {}
         Err(err) => {
-            printer.warning(&format!(
+            observer.warning(&format!(
                 "Skipping unusable registry full-pack anchor {anchor}: {err:#}"
             ));
         }
@@ -554,14 +554,14 @@ mod tests {
     async fn complete_local_release_needs_no_origin_requests() {
         let tmp = tempfile::tempdir().unwrap();
         local_release(tmp.path());
-        let printer = Printer::new(0, true, false);
+        let observer = aos_transfer::progress::NoopObserver;
 
         let plan = resolve_objects(
             tmp.path(),
             "http://127.0.0.1:1",
             &version("1.0.0"),
             &[],
-            &printer,
+            &observer,
         )
         .await
         .unwrap();
@@ -574,14 +574,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let blob = local_release(tmp.path()).to_string();
         std::fs::remove_file(tmp.path().join("objects").join(&blob[..2]).join(&blob[2..])).unwrap();
-        let printer = Printer::new(0, true, false);
+        let observer = aos_transfer::progress::NoopObserver;
 
         let result = resolve_objects(
             tmp.path(),
             "http://127.0.0.1:1",
             &version("1.0.0"),
             &[version("1.0.0")],
-            &printer,
+            &observer,
         )
         .await;
 

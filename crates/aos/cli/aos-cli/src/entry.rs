@@ -527,7 +527,11 @@ fn handle_error(printer: &Printer, err: anyhow::Error) -> i32 {
         return 1;
     }
     let code = crate::error::exit_code(&err);
-    printer.error(&format!("{err:#}"));
+    let message = err
+        .downcast_ref::<aos_registry_client::sync::RegistryVerificationError>()
+        .map(aos_package_manager::update::verification_message)
+        .unwrap_or_else(|| format!("{err:#}"));
+    printer.error(&message);
     code
 }
 

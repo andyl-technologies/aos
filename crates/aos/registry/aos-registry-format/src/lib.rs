@@ -14,6 +14,7 @@
 //! - [`consumer`] - package records and registry source configuration.
 //! - [`release`] - planned release coordinates shared by publication projects.
 //! - [`tuf`] - signed catalog metadata envelopes and role policies.
+//! - [`provenance`] - DSSE envelopes and shared pre-authentication framing.
 //! - [`measurement`] - stable package attestation identity framing.
 //! - [`platform`] - target platform normalization.
 //! - [`channel`] - pure rollout selection, floors, frontiers, and partition tags.
@@ -78,3 +79,6 @@ pub mod platform;
 
 /// Stable package attestation measurement identities.
 pub mod measurement;
+
+/// DSSE provenance envelopes and shared pre-authentication framing.
+pub mod provenance;

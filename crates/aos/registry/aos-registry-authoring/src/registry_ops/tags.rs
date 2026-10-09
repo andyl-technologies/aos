@@ -274,11 +274,7 @@ pub(in crate::registry_ops) fn sign_tag(
     payload.extend_from_slice(message.as_bytes());
     payload.push(b'\n');
 
-    let armored = aos_registry_client::security::sign_payload_signature(
-        Path::new(signing_key),
-        "git",
-        &payload,
-    )?;
+    let armored = crate::security::sign_payload_signature(Path::new(signing_key), "git", &payload)?;
     payload.extend_from_slice(armored.as_bytes());
 
     let odb = repo.odb().context("opening object database")?;

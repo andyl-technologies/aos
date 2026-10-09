@@ -10,7 +10,7 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use aos_registry_client::sshkey::Ed25519Keypair;
+use aos_registry_authoring::sshkey::Ed25519Keypair;
 use serde_json::Value;
 
 #[test]
@@ -672,6 +672,72 @@ fn all_registry_update_fails_after_attempting_invalid_registries() -> Result<()>
         "registry error: failed to update 2 registry(s): first, second"
     );
 
+    Ok(())
+}
+
+#[test]
+fn registry_update_reports_missing_trust_guidance_without_writing_state() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let system_dir = tmp.path().join("etc-apm");
+    let registries_dir = system_dir.join("registries.d");
+    fs::create_dir_all(&registries_dir)?;
+    let seed = registries_dir.join("untrusted.toml");
+    let definition =
+        "[registry]\nname = \"untrusted\"\nurl = \"https://registry.invalid/untrusted\"\n";
+    fs::write(&seed, definition)?;
+
+    for args in [
+        vec![
+            "--quiet",
+            "--progress",
+            "off",
+            "update",
+            "--registry",
+            "untrusted",
+        ],
+        vec![
+            "--json",
+            "--progress",
+            "off",
+            "update",
+            "--registry",
+            "untrusted",
+        ],
+    ] {
+        let output = run_aos_package_output(&home, &system_dir, &args)?;
+        assert!(
+            !output.status.success(),
+            "unsigned metadata must fail closed"
+        );
+        let message = if args[0] == "--json" {
+            assert!(
+                output.stderr.is_empty(),
+                "JSON failures must keep stderr clean"
+            );
+            let value: Value = serde_json::from_slice(&output.stdout)?;
+            value["error"]
+                .as_str()
+                .context("JSON failure has no error message")?
+                .to_owned()
+        } else {
+            String::from_utf8(output.stderr)?
+        };
+
+        assert!(
+            message.contains("requires signed metadata but no trusted key is available"),
+            "{message}"
+        );
+        assert!(
+            message.contains("apr trust pin untrusted <untrusted:Ed25519:base64key>"),
+            "{message}"
+        );
+        assert_eq!(fs::read_to_string(&seed)?, definition);
+        assert!(
+            !home.exists(),
+            "untrusted metadata must not create user state"
+        );
+    }
     Ok(())
 }
 

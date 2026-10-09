@@ -1,5 +1,6 @@
 //! Package publication orchestration and its exclusive authoring-clone lock.
 
+use crate::provenance::ProvenanceSigner;
 use crate::registry::{objectstore, store};
 use crate::registry_ops::config::{format_size, registry_content_addressed, resolve_registry_name};
 use crate::registry_ops::git::{
@@ -17,7 +18,6 @@ use crate::registry_ops::workflow::{current_git_branch, git_branch_entries};
 use anyhow::{Context, Result, bail};
 use aos_cli_ui::output::{OutputMode, Printer};
 use aos_registry_client::config::ApmConfig;
-use aos_registry_client::provenance::ProvenanceSigner;
 use aos_registry_format::consumer::{validate_package_name, validate_registry_name};
 use std::collections::BTreeSet;
 use std::fs;

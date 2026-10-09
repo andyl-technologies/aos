@@ -723,6 +723,70 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+// Library operations report through neutral observers; this adapter preserves
+// the printer's output mode and the lifetime of its existing progress renderer.
+impl aos_transfer::progress::TransferObserver for Printer {
+    fn info(&self, message: &str) {
+        Printer::info(self, message);
+    }
+
+    fn warning(&self, message: &str) {
+        Printer::warning(self, message);
+    }
+
+    fn transfer(&self, label: &str, total_bytes: u64) -> aos_transfer::progress::TransferProgress {
+        Printer::transfer(self, label, total_bytes).into()
+    }
+}
+
+impl aos_transfer::progress::ProgressSink for TransferProgress {
+    fn phase(&self, label: &str) {
+        TransferProgress::phase(self, label);
+    }
+
+    fn activity_phase(&self, label: &str) {
+        TransferProgress::activity_phase(self, label);
+    }
+
+    fn set_total(&self, bytes: u64) {
+        TransferProgress::set_total(self, bytes);
+    }
+
+    fn set_position(&self, bytes: u64) {
+        TransferProgress::set_position(self, bytes);
+    }
+
+    fn inc(&self, bytes: u64) {
+        TransferProgress::inc(self, bytes);
+    }
+
+    fn warning(&self, message: &str) {
+        TransferProgress::warning(self, message);
+    }
+
+    fn finish(&self) {
+        TransferProgress::finish(self);
+    }
+
+    fn abandon(&self, message: &str) {
+        TransferProgress::abandon(self, message);
+    }
+
+    fn elapsed(&self) -> Duration {
+        TransferProgress::elapsed(self)
+    }
+
+    fn position(&self) -> u64 {
+        TransferProgress::position(self)
+    }
+}
+
+impl From<TransferProgress> for aos_transfer::progress::TransferProgress {
+    fn from(progress: TransferProgress) -> Self {
+        Self::new(progress)
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -782,15 +846,16 @@ mod tests {
             printer
                 .progress
                 .set_draw_target(ProgressDrawTarget::term_like(Box::new(terminal.clone())));
-            let progress = printer.transfer("Downloading", total);
-            progress.inner.progress.disable_steady_tick();
+            let rendered = printer.transfer("Downloading", total);
+            rendered.inner.progress.disable_steady_tick();
+            let progress: aos_transfer::progress::TransferProgress = rendered.clone().into();
             progress.inc(1024);
-            progress.inner.progress.tick();
+            rendered.inner.progress.tick();
             assert!(terminal.0.lock().unwrap().contains("/s"));
 
             terminal.0.lock().unwrap().clear();
             progress.activity_phase("Installing registry catalog");
-            progress.inner.progress.tick();
+            rendered.inner.progress.tick();
             let processing = terminal.0.lock().unwrap().clone();
             assert!(processing.contains("Installing registry catalog"));
             assert!(!processing.contains("/s"));
@@ -799,7 +864,7 @@ mod tests {
 
             terminal.0.lock().unwrap().clear();
             progress.phase("Downloading more objects");
-            progress.inner.progress.tick();
+            rendered.inner.progress.tick();
             assert!(terminal.0.lock().unwrap().contains("/s"));
             assert_eq!(progress.position(), 1024);
         }
@@ -826,7 +891,8 @@ mod tests {
 
     #[test]
     fn unknown_transfer_counts_bytes_across_clones() {
-        let progress = Printer::new(0, true, false).transfer("test", 0);
+        let printer = Printer::new(0, true, false);
+        let progress = aos_transfer::progress::TransferObserver::transfer(&printer, "test", 0);
         let worker = progress.clone();
 
         progress.inc(512);

@@ -142,6 +142,17 @@ fn reusable_project_libraries_do_not_depend_on_their_applications() -> Result<()
         "aos-registry-authoring",
         &["aos-package-manager", "aos-cli"],
     );
+    workspace.assert_independent(
+        "aos-registry-client",
+        &[
+            "aos-package-manager",
+            "aos-cli",
+            "aos-cli-ui",
+            "indicatif",
+            "console",
+            "terminal_size",
+        ],
+    );
     workspace.assert_independent("aos-hub-db", &["aos-hub-service", "aos-hub-native"]);
     workspace.assert_independent("crucible-control-api", &["crucible-qemu-host"]);
     workspace.assert_independent("crucible-control-client", &["crucible-qemu-host"]);

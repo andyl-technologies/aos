@@ -1,8 +1,6 @@
-//! Creates OpenSSH Ed25519 keys for authenticated reader test fixtures.
+//! OpenSSH Ed25519 keypair generation and serialization.
 //!
-//! Available only for tests and the `test-support` feature. Production key
-//! generation belongs to `aos_registry_authoring::sshkey`. Fixture keys are
-//! ordinary OpenSSH Ed25519 keys: git signs
+//! Registry maintainer keys are ordinary OpenSSH Ed25519 keys: git signs
 //! tags and commits with them (`gpg.format=ssh`), and clients verify
 //! signatures against the SSH wire-format public key blob embedded in
 //! `registry:Ed25519:<base64>` trust-key lines. This module produces both
@@ -127,7 +125,7 @@ fn push_u32(out: &mut Vec<u8>, value: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::security::parse_signing_key;
+    use aos_registry_client::security::parse_signing_key;
 
     #[test]
     fn trust_key_line_parses() {

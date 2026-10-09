@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use anyhow::{Context, Result, bail};
-use aos_registry_client::sshkey::Ed25519Keypair;
+use aos_registry_authoring::sshkey::Ed25519Keypair;
 
 #[test]
 fn apr_keys_register_requires_registry_config_before_running_key_command() -> Result<()> {

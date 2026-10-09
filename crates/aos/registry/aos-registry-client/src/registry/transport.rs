@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use aos_cli_ui::output::TransferProgress;
+use aos_transfer::progress::TransferProgress;
 use aos_transfer::{TransferEngine, TransferEngineConfig, TransferRequest};
 use aos_transfer::{TransferEvent, TransferObserver};
 use async_trait::async_trait;

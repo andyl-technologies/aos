@@ -265,7 +265,7 @@ key = "{}"
     /// Generate an additional maintainer keypair, returning its trust-key
     /// line and private key path.
     pub fn make_keypair(&self, seed: [u8; 32], name: &str) -> Result<(String, PathBuf)> {
-        let keypair = aos_registry_client::sshkey::Ed25519Keypair::from_seed(seed);
+        let keypair = aos_registry_authoring::sshkey::Ed25519Keypair::from_seed(seed);
         let dir = self.tmp.path().join("signing");
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         let path = dir.join(name);
@@ -497,7 +497,7 @@ impl SigningFixture {
             .with_context(|| format!("creating {}", signing_dir.display()))?;
 
         let seed = [7u8; 32];
-        let keypair = aos_registry_client::sshkey::Ed25519Keypair::from_seed(seed);
+        let keypair = aos_registry_authoring::sshkey::Ed25519Keypair::from_seed(seed);
         let public_blob_b64 = keypair.public_key_base64();
         let private_key = signing_dir.join("registry_ed25519");
         let allowed_signers = signing_dir.join("allowed_signers");

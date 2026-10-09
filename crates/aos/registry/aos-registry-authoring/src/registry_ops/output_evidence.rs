@@ -15,7 +15,7 @@ use super::provenance::{
     publish_provenance_statement, validate_external_provenance_signer,
 };
 use super::store_paths::{StoreQueries, first_letter};
-use aos_registry_client::provenance::{ProvenanceSigner, sign_statement_dsse_jsonl_external};
+use crate::provenance::{ProvenanceSigner, sign_statement_dsse_jsonl_external};
 use aos_registry_format::consumer::{AttestationMeta, NativeArtifactMeta};
 
 /// Updates exact output facts without copying another output's authority.

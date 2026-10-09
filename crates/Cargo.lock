@@ -511,6 +511,7 @@ dependencies = [
 name = "aos-cli-ui"
 version = "0.1.0"
 dependencies = [
+ "aos-transfer",
  "console",
  "indicatif",
  "serde_json",
@@ -1143,13 +1144,16 @@ dependencies = [
  "aos-release-format",
  "aos-transfer",
  "async-trait",
+ "base64 0.22.1",
  "clap",
  "crc32fast",
+ "ed25519-dalek",
  "flate2",
  "futures-util",
  "git2",
  "hex",
  "libc",
+ "rand 0.9.4",
  "rayon",
  "reqwest",
  "rustix 1.1.4",
@@ -1157,6 +1161,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "ssh-key",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -1170,7 +1175,6 @@ name = "aos-registry-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-cli-ui",
  "aos-core",
  "aos-hub-client",
  "aos-nar",

@@ -19,8 +19,8 @@ ed25519-dalek = { workspace = true }
 serde = { workspace = true }
 # The committed-file TOML schemas (registry.toml root config, keys.toml trust
 # roster) and the package-TOML document parser used by the wasm-clean indexer
-# (RFC-0004 Phase 5). Pure-Rust and wasm32-clean; `aos-package` re-exports these
-# so its native git-CLI path keeps the same paths.
+# (RFC-0004 Phase 5). Pure-Rust and wasm32-clean; native registry clients and
+# authoring tools consume these shared documents directly.
 toml = { workspace = true }
 # JSON (de)serialization for the cache-stack database storage form
 # (`stack::StackNode::to_json`). Pure-Rust and wasm32-clean.

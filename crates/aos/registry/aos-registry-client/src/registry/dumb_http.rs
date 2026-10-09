@@ -47,7 +47,9 @@ use std::io::Read;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use aos_cli_ui::output::TransferProgress;
+#[cfg(test)]
+use aos_transfer::progress::TransferObserver;
+use aos_transfer::progress::TransferProgress;
 use futures_util::stream::{self, StreamExt};
 use sha2::{Digest, Sha256};
 
@@ -759,8 +761,7 @@ mod tests {
         };
         let client_dir = origin._tmp.path().join("client-progress.git");
         repo::init_bare_sha256(&client_dir).await.unwrap();
-        let progress =
-            aos_cli_ui::output::Printer::new(0, true, false).transfer("test registry fetch", 0);
+        let progress = aos_transfer::progress::NoopObserver.transfer("test registry fetch", 0);
 
         fetch_with_progress(
             &client_dir,

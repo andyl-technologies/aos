@@ -13,6 +13,8 @@ pub mod hub_auth;
 pub mod provenance;
 pub mod registry;
 pub mod security;
+/// Creates authenticated reader fixtures when test support is enabled.
+#[cfg(any(test, feature = "test-support"))]
 pub mod sshkey;
 pub mod sync;
 #[cfg(test)]

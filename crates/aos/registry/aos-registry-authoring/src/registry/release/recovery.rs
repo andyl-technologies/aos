@@ -291,7 +291,7 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         let directory = temporary.path().join("registry");
         let key_path = temporary.path().join("authority");
-        let key = aos_registry_client::sshkey::Ed25519Keypair::from_seed([71; 32]);
+        let key = crate::sshkey::Ed25519Keypair::from_seed([71; 32]);
         fs::write(&key_path, key.to_openssh_private_key("local"))?;
         fs::create_dir(&directory)?;
         let mut options = git2::RepositoryInitOptions::new();

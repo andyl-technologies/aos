@@ -1,63 +1,14 @@
-//! `aos-net` -- Low-level networking/transport library.
+//! Reusable transport operations and caller-owned progress observation.
 //!
-//! Provides transport primitives for the AOS ecosystem:
+//! [`progress`] defines presentation-neutral observers and shared progress
+//! handles and is available without default features. The default `transfer`
+//! feature enables connection pooling, resumable downloads, multipart uploads,
+//! authentication, integrity verification, and HTTP, S3, SFTP, and file transports.
 //!
-//! - Per-domain connection pooling and reuse
-//! - Parallel transfers with concurrency control
-//! - Resumable/incomplete download support
-//! - HTTP/1.1 + HTTP/2 (ALPN negotiation)
-//! - Multi-protocol support (HTTP, S3, SFTP, and `file://`)
-//! - Backend-neutral multipart uploads with continuation policy
-//! - Per-operation structured progress observation
-//! - Auth management (per-domain credential store)
-//! - Bandwidth limiting
-//! - Retry with exponential backoff
-//!
-//! # Architecture
-//!
-//! The crate is organized in layers:
-//!
-//! - [`transfer`] -- the [`TransferEngine`], which orchestrates every
-//!   transfer: it picks a protocol from the URL scheme, acquires a
-//!   connection-pool permit, applies credentials, retries on transient
-//!   failures, and runs the streaming pipeline (per-chunk hashing,
-//!   bandwidth limiting, and progress callbacks).
-//! - [`managed`] -- identity-bound durable downloads, atomic installation,
-//!   mirror fallback, streaming hash-only downloads, and rewindable uploads.
-//! - [`multipart`] -- the [`MultipartBackend`] adapter contract and shared
-//!   multipart session orchestration.
-//! - [`protocol`] -- the [`protocol::Protocol`] trait plus per-scheme
-//!   implementations for HTTP(S), S3, SFTP/SSH, and `file://`.
-//! - [`types`] -- request/response types ([`TransferRequest`],
-//!   [`TransferResult`], [`TransferOutput`], ...).
-//! - Supporting services: [`auth`] (per-domain [`AuthStore`]), [`pool`]
-//!   (per-host/global concurrency limits), [`retry`] (backoff with
-//!   jitter and error classification), [`bandwidth`] (token-bucket
-//!   [`BandwidthLimiter`]), [`hash`] (streaming SHA-256/SHA-512
-//!   verification), and [`progress`] (callback traits).
-//!
-//! # Usage
-//!
-//! The primary API is [`TransferManager`], which orchestrates all transfers:
-//!
-//! ```ignore
-//! use aos_transfer::{TransferManager, TransferManagerConfig, TransferRequest};
-//!
-//! let manager = TransferManager::new(TransferManagerConfig::default());
-//!
-//! // Simple GET to memory
-//! let result = manager.execute(TransferRequest::get("https://example.com/file.tar.gz")).await?;
-//!
-//! // HEAD to check existence
-//! let result = manager.head("https://example.com/file.tar.gz").await?;
-//!
-//! // Batch parallel downloads
-//! let requests = vec![
-//!     TransferRequest::get("https://example.com/a.tar.gz"),
-//!     TransferRequest::get("https://example.com/b.tar.gz"),
-//! ];
-//! let results = manager.execute_batch(requests, None).await;
-//! ```
+//! With `transfer` enabled, the `transfer` module owns orchestration, `managed`
+//! provides durable downloads and uploads, `multipart` coordinates upload
+//! sessions, and `protocol` implements transport backends. Supporting modules
+//! own request types, authentication, pooling, retry policy, and bandwidth limits.
 
 #[cfg(feature = "transfer")]
 pub mod auth;
@@ -71,7 +22,6 @@ pub mod managed;
 pub mod multipart;
 #[cfg(feature = "transfer")]
 pub mod pool;
-#[cfg(feature = "transfer")]
 pub mod progress;
 #[cfg(feature = "transfer")]
 pub mod protocol;
@@ -103,10 +53,9 @@ pub use multipart::{
 };
 #[cfg(feature = "transfer")]
 pub use pool::{ConnectionPool, PoolConfig};
-#[cfg(feature = "transfer")]
 pub use progress::{
-    BatchProgressHandler, NoopObserver, NoopProgress, ProgressHandler, TransferEvent,
-    TransferObserver,
+    BatchProgressHandler, NoopObserver, NoopProgress, ProgressHandler, ProgressSink, TransferEvent,
+    TransferObserver, TransferProgress,
 };
 #[cfg(feature = "transfer")]
 pub use retry::RetryConfig;

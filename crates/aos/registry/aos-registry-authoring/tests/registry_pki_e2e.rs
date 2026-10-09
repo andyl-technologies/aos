@@ -35,7 +35,7 @@ async fn sync(
     fixture: &RegistryFixture,
     config: &RegistryConfig,
     state: &mut RegistryState,
-) -> Result<git::SyncResult> {
+) -> Result<aos_registry_client::sync::SyncResult> {
     git::sync_git(
         config,
         &TrackingMode::Branch("main".into()),
@@ -369,10 +369,10 @@ async fn tuf_failure_does_not_persist_roster_change() -> Result<()> {
 }
 
 /// §11 item 6: verification is fail-closed — with no pinned key and no
-/// bootstrap anchor the sync aborts with an instructive error, both with
+/// bootstrap anchor the sync aborts with a typed trust refusal, both with
 /// an explicit `required = true` and with the signing section absent.
 #[tokio::test]
-async fn no_anchor_sync_fails_with_instructive_error() -> Result<()> {
+async fn no_anchor_sync_fails_with_typed_trust_error() -> Result<()> {
     let fixture = RegistryFixture::new("aos-core")?;
     fixture.write_registry_toml_with_caches(&[("https://cache.example/nar", 50)])?;
     fixture.write_keys_toml()?;
@@ -389,8 +389,18 @@ async fn no_anchor_sync_fails_with_instructive_error() -> Result<()> {
         .await
         .expect_err("enforced sync without any trusted key must fail");
     let text = format!("{err:#}");
-    assert!(text.contains("no trusted key"), "{text}");
-    assert!(text.contains("apr trust pin"), "{text}");
+    assert_eq!(
+        text,
+        "registry 'aos-core' requires signed metadata but no trusted key is available"
+    );
+    assert!(
+        matches!(
+            err.downcast_ref::<aos_registry_client::sync::RegistryVerificationError>(),
+            Some(aos_registry_client::sync::RegistryVerificationError::MissingTrustedKey { registry }) if registry == "aos-core"
+        ),
+        "{text}"
+    );
+    assert!(state.last_commit.is_none());
 
     // An absent [registry.signing] section enforces as well.
     let mut config = fixture.registry_config(server.base_url());
@@ -398,7 +408,14 @@ async fn no_anchor_sync_fails_with_instructive_error() -> Result<()> {
     let err = sync(&fixture, &config, &mut state)
         .await
         .expect_err("absent signing section must fail closed");
-    assert!(format!("{err:#}").contains("no trusted key"), "{err:#}");
+    assert!(
+        matches!(
+            err.downcast_ref::<aos_registry_client::sync::RegistryVerificationError>(),
+            Some(aos_registry_client::sync::RegistryVerificationError::MissingTrustedKey { registry }) if registry == "aos-core"
+        ),
+        "{err:#}"
+    );
+    assert!(state.last_commit.is_none());
     Ok(())
 }
 

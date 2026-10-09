@@ -64,6 +64,13 @@ depend on common primitives. Shared libraries must not import an application's
 CLI, runtime, or deployment policy. Portable format libraries do not acquire
 native drivers merely because their native consumers use those drivers.
 
+Transfer reporting follows that direction: `aos-transfer::progress` defines
+observers and cloneable progress handles without terminal or transport drivers.
+`aos-cli-ui` implements the renderer adapter with transfer defaults disabled;
+registry acquisition accepts observers and retains no terminal dependency.
+Registry refresh selection, state persistence, aggregate errors, JSON output,
+and recovery commands belong to `aos-package-manager::update`.
+
 Crucible's permissive QEMU protocol and shared-memory components remain separate
 from Apache host code and GPL plugin/debugger code. A directory move does not
 change license scope or authorize an otherwise invalid dependency.
@@ -93,7 +100,10 @@ AOS JSON; exact validation behavior is part of the format contract.
 `aos-deployment` evaluates inputs, retains store references, and performs
 activation, accepting inventory data from callers. Registry authoring and release
 coordination are independently consumable without importing package installation
-or a CLI parser. Format libraries remain separate from native signing processes.
+or a CLI parser. The native registry-authoring crate also owns APR command
+adapters, which use terminal presentation; its signing adapters and local staging
+operations accept domain inputs without a printer. Format libraries remain
+separate from native signing processes.
 
 `aos-linux-project-quota` is shared for its implemented quota capability. Crucible
 storage retains its project scope: its object kinds and persisted identities are

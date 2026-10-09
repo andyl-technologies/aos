@@ -1,6 +1,11 @@
 # Unmerged crate migration inventory
 
-The implemented base is [PR #715](https://github.com/andyl-technologies/aos/pull/715), branch `dplecki/crate-monorepo`, with 77 workspace packages. Original master comparison: `2ee6311aea39bef7aef6ba4b566f9f502649f3f2`. This inventory classifies future packages at exact checked PR heads; it does not merge or modify owning PRs. The [workspace design](crate-workspace.md) and [active inventory](crate-inventory.md) describe implemented ownership.
+The implemented base is [PR #715](https://github.com/andyl-technologies/aos/pull/715), branch
+`dplecki/crate-monorepo`, with 77 workspace packages. Original master comparison:
+`2ee6311aea39bef7aef6ba4b566f9f502649f3f2`. This inventory classifies future packages at exact
+checked PR heads; it does not merge or modify owning PRs. The [workspace
+design](crate-workspace.md) and [active inventory](crate-inventory.md) describe implemented
+ownership.
 
 | PR | Audited head | Added top-level / fixture crates | Ownership |
 |---|---|---|---|
@@ -14,7 +19,8 @@ The implemented base is [PR #715](https://github.com/andyl-technologies/aos/pull
 | [#231](https://github.com/andyl-technologies/aos/pull/231) | `69cc082e8c1b7be564556a4ef2d4c70fb9c67b78` | 0 / 0 | Darwin tooling |
 | [#716](https://github.com/andyl-technologies/aos/pull/716) | `8cc3be107abd3b7e53e6875d831f513530e2a533` | 0 / 0 | Dispatch RFC/native dependency preparation |
 
-Future names below are proposed for code outside the base workspace. Generic journal, descriptor and SQLite promotion require API review; base extractions are already implemented.
+Future names below are proposed for code outside the base workspace. Generic journal,
+descriptor and SQLite promotion require API review; base extractions are already implemented.
 
 ## Proposed names for added packages
 
@@ -82,25 +88,44 @@ Future names below are proposed for code outside the base workspace. Generic jou
 
 ## Required cross-PR boundaries
 
-- #696: `aos-linux-project-quota` stays generic; new supervision/RAM policy/measurement authority belongs in separate `crucible-host-resources`.
-- #232: generated sandbox data belongs in distinct `aos-sandbox-api` sourced from `api/proto/`; `aos-build-api` is not a universal API umbrella.
-- #232: review generic Linux descriptor extraction so `aos-systemd-client` does not depend on sandbox implementation.
-- #232: generic journal promotion and #696 SQLite memory-control promotion remain API-review decisions before shared ownership is claimed.
-- #711/#696: portable boundary components retain `MIT OR Apache-2.0`; GPL-loaded code must not acquire Apache-only library dependencies.
-- #420: Terrane SDK/format remain independent of AOS integration. Keep no_std plus alloc for formats.
-- #713: package assessment policy/sources/coordinator are shared local/Hub domain code under AOS maintenance.
+- #696: `aos-linux-project-quota` stays generic; new supervision/RAM policy/measurement
+  authority belongs in separate `crucible-host-resources`.
+- #232: generated sandbox data belongs in distinct `aos-sandbox-api` sourced from `api/proto/`;
+  `aos-build-api` is not a universal API umbrella.
+- #232: review generic Linux descriptor extraction so `aos-systemd-client` does not depend on
+  sandbox implementation.
+- #232: generic journal promotion and #696 SQLite memory-control promotion remain API-review
+  decisions before shared ownership is claimed.
+- #711/#696: portable boundary components retain `MIT OR Apache-2.0`; GPL-loaded code must not
+  acquire Apache-only library dependencies.
+- #420: Terrane SDK/format remain independent of AOS integration. Keep no_std plus alloc for
+  formats.
+- #713: package assessment policy/sources/coordinator are shared local/Hub domain code under
+  AOS maintenance.
 
 ## Directory classification
 
-`crates/terrane/{sdk,linux,cli,integration}` and `crates/sandbox/{model,protocol,controller,host,guest,storage,security,filesystem,testing}` group their owning projects. Assessment uses `crates/aos/maintenance`. Full Cargo package names carry scope; leaf directories retain those full names. Nested fixture packages stay beside owner tests.
+`crates/terrane/{sdk,linux,cli,integration}` and
+`crates/sandbox/{model,protocol,controller,host,guest,storage,security,filesystem,testing}`
+group their owning projects. Assessment uses `crates/aos/maintenance`. Full Cargo package names
+carry scope; leaf directories retain those full names. Nested fixture packages stay beside
+owner tests.
 
 ## Validation status
 
-Static inventory only. No owning checkout was edited and no PR-branch build/test claims are made. Owning branches must rebase and run local hermetic builds plus project-specific integration, portability and process/license gates after migration. Base names and exported namespaces were verified against the actual 77-member workspace. Future package moves and shared-library promotions remain work for owning branches.
+Static inventory only. No owning checkout was edited and no PR-branch build/test claims are
+made. Owning branches must rebase and run local hermetic builds plus project-specific
+integration, portability and process/license gates after migration. Base names and exported
+namespaces were verified against the actual 77-member workspace. Future package moves and
+shared-library promotions remain work for owning branches.
 
 ## Implemented exported namespaces and schema reuse
 
-The implemented base is PR [#715](https://github.com/andyl-technologies/aos/pull/715), branch `dplecki/crate-monorepo`. Its current workspace has 77 packages. The authoritative design is `docs/architecture/crate-workspace.md`, and active paths are in `docs/architecture/crate-inventory.md`. The table below describes implemented packages. Future packages in this inventory remain work for their owning PRs.
+The implemented base is PR [#715](https://github.com/andyl-technologies/aos/pull/715), branch
+`dplecki/crate-monorepo`. Its current workspace has 77 packages. The authoritative design is
+`docs/architecture/crate-workspace.md`, and active paths are in
+`docs/architecture/crate-inventory.md`. The table below describes implemented packages. Future
+packages in this inventory remain work for their owning PRs.
 
 | Former ownership | Current dependency / namespace |
 |---|---|
@@ -110,6 +135,11 @@ The implemented base is PR [#715](https://github.com/andyl-technologies/aos/pull
 | Registry readers and producers | `aos_registry_client::{config,registry,security,...}` for verified reads; `aos_registry_authoring::{registry_ops,RegistryCommand,...}` for production and publication |
 | Registry shared contracts | `aos_registry_format::{consumer,release,measurement}`; release entries and measurement digests remain portable format contracts |
 | Terminal presentation and command hints | `aos_cli_ui::{output,invocation}`; command error/exit policy stays with CLI |
+| Neutral registry/transfer reporting | `aos_transfer::progress::{TransferObserver,ProgressSink,TransferProgress,NoopObserver}`; available with `default-features = false`, separate from optional transport engines |
+| Registry refresh outcomes versus package command | `aos_registry_client::sync::{SyncResult,RegistrySyncError,RegistryVerificationError}`; command orchestration/recovery guidance is `aos_package_manager::update::{run,verification_message}` |
+| Shared DSSE framing/contracts | `aos_registry_format::provenance::{DsseEnvelope,DsseSignature,dsse_pae,DSSE_PAYLOAD_TYPE,DSSE_SIGNATURE_NAMESPACE}` |
+| Producer provenance signing | `aos_registry_authoring::provenance::{ProvenanceSignature,ProvenanceSigner,sign_statement_dsse_jsonl_external}` |
+| Producer private-key operations | `aos_registry_authoring::security::{public_ed25519_blob,sign_payload_signature}` and `aos_registry_authoring::sshkey::Ed25519Keypair` |
 | Ability model and plan | `aos_module_format`; graph validation is `aos_module_format::graph` |
 | Artifact evidence formats/readers | `aos_artifact_evidence::{document,model,identity,consumption,diagnostic,limits}` plus root exports; do not route through module-format |
 | Deployment schemas and inventory | `aos_deployment_format::{model,input,admission,resolution_lock,locator,inventory}` |
@@ -119,26 +149,85 @@ The implemented base is PR [#715](https://github.com/andyl-technologies/aos/pull
 | Hub orchestration/client/API | `aos_hub_service`, `aos_hub_client::{hub,login}`, and `aos_hub_api::{hub_v1,...}` |
 | Crucible control | `crucible_control_api`, `crucible_control_client`, `crucible_control_server`; VM creation/lifecycle implementation is `crucible_daemon::vm_lifecycle` |
 
-The CLI Rust library is `aos_cli`; installed command names remain unchanged.
-Deployment input acquisition uses
+The CLI Rust library is `aos_cli`; installed command names remain unchanged. Deployment input
+acquisition uses
 `aos_deployment::input::{read_evaluation_input,read_evaluation_input_in,import_evaluation_input,import_evaluation_input_retained}`.
 
-The control API supports native clients and services and retains session/engine
-dependencies; it is not a WebAssembly format library. Live
-`SessionEventLogHub` and `SessionEventLogStream` exports now belong to
-`crucible_control_server`. Client control/watch stream `Rpc` variants contain
-`Box<RpcControlStream>` / `Box<RpcWatchStream>`; wrap direct construction in
-`Box::new` when adapting incoming code. The scratch handoffs include the
-242-symbol ownership map for the former `crucible-api` exports.
+The control API supports native clients and services and retains session/engine dependencies;
+it is not a WebAssembly format library. Live `SessionEventLogHub` and `SessionEventLogStream`
+exports now belong to `crucible_control_server`. Client control/watch stream `Rpc` variants
+contain `Box<RpcControlStream>` / `Box<RpcWatchStream>`; wrap direct construction in `Box::new`
+when adapting incoming code. The scratch handoffs include the 242-symbol ownership map for the
+former `crucible-api` exports.
 
-Reuse schemas field by field without changing bytes or acceptance behavior. `InstalledPackageRecord` and `PackageInventoryDetails` now live in `aos_deployment_format::inventory`; supply immutable inventory to deployment/image verification rather than depending on package-manager state APIs. Outer installed records retain their established Serde behavior and defaults for `expires_at` and `apm`. The nested `PackageInventoryDetails` retains `deny_unknown_fields`, including optional deployment/module-documentation/qualification metadata and attestation defaults. Do not tighten the outer record or alter omissions/defaults as a side effect of type movement.
+Registry transport receives `&dyn aos_transfer::progress::TransferObserver`, not a terminal
+`Printer`. `TransferObserver` supplies default no-op `observe`, `info`, `warning` and a neutral
+`transfer(label, total_bytes)` handle. `TransferProgress::new` accepts a `ProgressSink`; its
+default retains silent counters, and clones share the sink. Sinks expose phase/activity-phase,
+total/position/count, warning, finish/abandon and elapsed/position operations.
+`aos_cli_ui::output::Printer` implements the observer directly, so CLI callers pass `&printer`;
+UI transfer handles convert to neutral handles without discarding their renderer. Headless
+consumers can use `NoopObserver` and disable the optional transfer-engine feature.
 
-OCI canonical JSON intentionally stays in `aos_oci_types::canonical`: it admits extension keys outside ASCII and full-width integer values, and follows its existing Serde schema/duplicate behavior. Strict authenticated AOS JSON in `aos_core::json` has different rules. Compare exact decoding, integer range, duplicate handling, canonical ordering and identity domains before sharing an implementation. Likewise portable node/RAM process formats and Terrane formats retain their existing license/encoding contracts.
+Registry `sync_git`, `sync_git_with_continuity`, and fetch
+`resolve_objects`/`resolve_objects_with_progress` consume the neutral observer. Command
+selection, consumer state persistence, aggregated errors, diagnostics and JSON output live in
+`aos_package_manager::update::run(&ApmConfig, Option<&str>, &Printer) -> Result<()>`.
+`aos_registry_client::sync` retains only result/error data; its old command
+`run`/`run_with_options` entry points are removed. Do not restore a CLI UI dependency in
+registry-client when rebasing.
+
+Both Git acquisition APIs return the single canonical `aos_registry_client::sync::SyncResult`;
+the duplicate `registry::git::SyncResult` is removed, so update explicit return
+annotations/imports to the sync owner. `RegistryVerificationError` carries typed trust-roster,
+signing-key and continuity refusals without terminal recovery instructions. CLI recovery text
+is supplied by `aos_package_manager::update::verification_message(&RegistryVerificationError)
+-> String`.
+
+Shared DSSE envelope types, pre-authentication encoding and signature/payload namespace
+constants belong to `aos_registry_format::provenance`. Production signer traits, external
+signing orchestration, private-key operations and Ed25519 key generation belong to
+`aos_registry_authoring`. Reader-side signing/key-generation helpers are available only under
+explicit test/test-support configuration for authenticated fixtures; do not enable that feature
+to restore production authoring or add private-key operations to registry-client. Keep
+established DSSE payload/namespace strings and signature bytes unchanged when updating Rust
+imports.
+
+Reuse schemas field by field without changing bytes or acceptance behavior.
+`InstalledPackageRecord` and `PackageInventoryDetails` now live in
+`aos_deployment_format::inventory`; supply immutable inventory to deployment/image verification
+rather than depending on package-manager state APIs. Outer installed records retain their
+established Serde behavior and defaults for `expires_at` and `apm`. The nested
+`PackageInventoryDetails` retains `deny_unknown_fields`, including optional
+deployment/module-documentation/qualification metadata and attestation defaults. Do not tighten
+the outer record or alter omissions/defaults as a side effect of type movement.
+
+OCI canonical JSON intentionally stays in `aos_oci_types::canonical`: it admits extension keys
+outside ASCII and full-width integer values, and follows its existing Serde schema/duplicate
+behavior. Strict authenticated AOS JSON in `aos_core::json` has different rules. Compare exact
+decoding, integer range, duplicate handling, canonical ordering and identity domains before
+sharing an implementation. Likewise portable node/RAM process formats and Terrane formats
+retain their existing license/encoding contracts.
 
 ## Dispatch names reserved by RFC-0027
 
-PR #716 currently changes no Rust source or Cargo manifests. Its planned independent library family is `dispatch-model`, `dispatch-protocol`, `dispatch-runtime` and a consumer facade presently called `dispatch` in the RFC. Proposed package naming makes that facade `dispatch-sdk`, under `crates/dispatch/{model,protocol,runtime,sdk}`. An eventual `dispatch-cli` package may own the unchanged `dispatch` executable. The trusted worker can initially remain with its runtime owner; the C++ Rebalancer backend stays a separate process. These are planned classifications, not current workspace members. Pure model/evaluation must remain independent of native engines and async runtimes; AOS/Hub/Crucible application policy stays outside Dispatch libraries. Explicit package licenses and exact field-level schema reuse require review when implementation is created.
+PR #716 currently changes no Rust source or Cargo manifests. Its planned independent library
+family is `dispatch-model`, `dispatch-protocol`, `dispatch-runtime` and a consumer facade
+presently called `dispatch` in the RFC. Proposed package naming makes that facade
+`dispatch-sdk`, under `crates/dispatch/{model,protocol,runtime,sdk}`. An eventual
+`dispatch-cli` package may own the unchanged `dispatch` executable. The trusted worker can
+initially remain with its runtime owner; the C++ Rebalancer backend stays a separate process.
+These are planned classifications, not current workspace members. Pure model/evaluation must
+remain independent of native engines and async runtimes; AOS/Hub/Crucible application policy
+stays outside Dispatch libraries. Explicit package licenses and exact field-level schema reuse
+require review when implementation is created.
 
 ## Final open-head refresh
 
-The final snapshot contains ten open PRs, including migration PR #715 and nine owning PRs above. Advanced heads for #713, #711, #696, #673 and #374 were inspected as exact local Git objects. None changes the added-package manifests or full crate inventory relative to the preceding audit. #711 expands native gem5/custody and CNP lifecycle code under existing owners; #696 additionally exports `crucible_device::DeviceSnapshotAllocation`; the latter remains a device capability. Updated handoffs retain those changes and the existing 242-symbol control API ownership map. Owning branch builds/tests remain required after migration.
+The final snapshot contains ten open PRs, including migration PR #715 and nine owning PRs
+above. Advanced heads for #713, #711, #696, #673 and #374 were inspected as exact local Git
+objects. None changes the added-package manifests or full crate inventory relative to the
+preceding audit. #711 expands native gem5/custody and CNP lifecycle code under existing owners;
+#696 additionally exports `crucible_device::DeviceSnapshotAllocation`; the latter remains a
+device capability. Updated handoffs retain those changes and the existing 242-symbol control
+API ownership map. Owning branch builds/tests remain required after migration.

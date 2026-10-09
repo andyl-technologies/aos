@@ -432,7 +432,7 @@ pub(in crate::registry_ops) fn write_channel_partition_tag(
     );
     let partition_tag = PartitionTag::new(channel_name, &release_tag, &tagger, &message)?;
     let payload = partition_tag.sign_with(|bytes| {
-        aos_registry_client::security::sign_payload_signature(Path::new(signing_key), "git", bytes)
+        crate::security::sign_payload_signature(Path::new(signing_key), "git", bytes)
     })?;
     repo.odb()
         .context("opening object database")?

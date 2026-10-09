@@ -21,8 +21,8 @@ use sha2::{Digest as _, Sha256};
 
 use super::parse::{parse_package_file, parse_registry_matching};
 use super::store::StoreMap;
+use crate::provenance::ProvenanceSigner;
 use aos_registry_client::config::ApmConfig;
-use aos_registry_client::provenance::ProvenanceSigner;
 use aos_registry_format::consumer::{
     package_name_bucket, validate_package_name, validate_registry_name,
 };
@@ -186,7 +186,7 @@ impl KeyPathRegistryObjectSigner {
     pub fn new(directory: &Path, registry: &str, key_path: &Path, key_id: &str) -> Result<Self> {
         let trusted_key = format!(
             "{registry}:Ed25519:{}",
-            aos_registry_client::security::public_ed25519_blob(key_path)?
+            crate::security::public_ed25519_blob(key_path)?
         );
         require_active_signing_key(directory, key_id, &trusted_key)?;
         Ok(Self {
@@ -213,11 +213,8 @@ impl RegistryObjectSigner for KeyPathRegistryObjectSigner {
         }
         semver::Version::parse(&request.release)?;
         require_sha256(&request.plan_digest, "signing plan digest")?;
-        let armored_signature = aos_registry_client::security::sign_payload_signature(
-            &self.key_path,
-            "git",
-            &request.payload,
-        )?;
+        let armored_signature =
+            crate::security::sign_payload_signature(&self.key_path, "git", &request.payload)?;
         if !aos_registry_client::security::verify_payload_signature(
             &request.payload,
             &armored_signature,

@@ -78,8 +78,7 @@ impl Fixture {
         let key = temporary.path().join("signing-key");
         fs::write(
             &key,
-            aos_registry_client::sshkey::Ed25519Keypair::from_seed([47; 32])
-                .to_openssh_private_key("example"),
+            crate::sshkey::Ed25519Keypair::from_seed([47; 32]).to_openssh_private_key("example"),
         )
         .unwrap();
         #[cfg(unix)]
@@ -96,8 +95,7 @@ impl Fixture {
         )
         .unwrap();
         let armor =
-            aos_registry_client::security::sign_payload_signature(&key, "git", payload.as_bytes())
-                .unwrap();
+            crate::security::sign_payload_signature(&key, "git", payload.as_bytes()).unwrap();
         let tag = prepared
             .odb()
             .unwrap()
@@ -555,9 +553,7 @@ async fn completed_release_retry_preserves_a_newer_publication() {
     )
     .unwrap();
     let key = fixture._temporary.path().join("signing-key");
-    let armor =
-        aos_registry_client::security::sign_payload_signature(&key, "git", payload.as_bytes())
-            .unwrap();
+    let armor = crate::security::sign_payload_signature(&key, "git", payload.as_bytes()).unwrap();
     let tag = repository
         .odb()
         .unwrap()

@@ -27,7 +27,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use aos_cli_ui::output::TransferProgress;
+use aos_transfer::progress::TransferProgress;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 

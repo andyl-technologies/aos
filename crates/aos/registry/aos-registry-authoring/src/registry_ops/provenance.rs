@@ -8,6 +8,7 @@
 //!   one signed statement binding per line, chained by entry hash
 //! ```
 
+use crate::provenance::{ProvenanceSignature, ProvenanceSigner};
 use crate::registry_ops::git::{git_try, registry_relative_path};
 use crate::registry_ops::provenance::staged::git_tree_file_bytes;
 use crate::registry_ops::provenance::statement::{
@@ -19,8 +20,8 @@ use crate::registry_ops::store_paths::StorePathInfo;
 use crate::registry_ops::trust::{derive_trust_key, load_committed_roster, validate_roster_key_id};
 use anyhow::{Context, Result, bail};
 use aos_registry_client::provenance::{
-    ProvenanceSignature, ProvenanceSigner, TrustedProvenanceKey,
-    builder_id as provenance_builder_id, digest_map as provenance_digest_map, sha256_hex_payload,
+    TrustedProvenanceKey, builder_id as provenance_builder_id, digest_map as provenance_digest_map,
+    sha256_hex_payload,
 };
 use aos_registry_client::registry::keys;
 use aos_registry_client::registry::mirrors::read_registry_toml;
@@ -72,9 +73,9 @@ impl ProvenanceSigner for LocalPackageProvenanceSigner {
     }
 
     async fn sign_provenance(&mut self, payload: &[u8]) -> Result<ProvenanceSignature> {
-        let armored_signature = aos_registry_client::security::sign_payload_signature(
+        let armored_signature = crate::security::sign_payload_signature(
             &self.key_path,
-            aos_registry_client::provenance::DSSE_SIGNATURE_NAMESPACE,
+            aos_registry_format::provenance::DSSE_SIGNATURE_NAMESPACE,
             payload,
         )?;
         Ok(ProvenanceSignature {

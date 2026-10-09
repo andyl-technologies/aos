@@ -6,12 +6,11 @@ license.workspace = true
 description = "Native registry acquisition, verified catalog reads, trust pins, and provenance verification"
 
 [features]
-test-support = []
+test-support = ["dep:ed25519-dalek"]
 
 [dependencies]
 thiserror.workspace = true
 aos-nar.workspace = true
-aos-cli-ui.workspace = true
 aos-core = { workspace = true }
 aos-transfer = { workspace = true, features = ["transfer"] }
 aos-hub-client = { workspace = true }
@@ -21,7 +20,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
-ed25519-dalek = { workspace = true }
+ed25519-dalek = { workspace = true, optional = true }
 toml = { workspace = true }
 sha2 = { workspace = true }
 sha1 = { workspace = true }
@@ -40,3 +39,4 @@ ssh-key = { workspace = true }
 flate2 = { workspace = true }
 
 [dev-dependencies]
+ed25519-dalek.workspace = true

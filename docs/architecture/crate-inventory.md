@@ -104,7 +104,11 @@ exception; its installed name remains `aos-boot-preparations`.
 - `aos-package` separates package installation in `aos-package-manager`, registry
   reading in `aos-registry-client`, registry authoring in `aos-registry-authoring`,
   portable deployment documents and inventory in `aos-deployment-format`, and
-  deployment evaluation/activation in `aos-deployment`. Image finalization uses
+  deployment evaluation/activation in `aos-deployment`. Registry acquisition
+  reports through neutral `aos_transfer::progress` observers; the package manager
+  owns update command orchestration. Private-key loading, key generation, and
+  external provenance signing belong to authoring; common DSSE framing remains
+  in the portable registry format. Image finalization uses
   immutable inventory data without depending on package-manager installation.
 - `aos-remote` separates build RPC in `aos-build-client` and Hub access in
   `aos-hub-client`. Canonical protocol sources live under `api/proto/`; generated

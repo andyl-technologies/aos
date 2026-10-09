@@ -1032,12 +1032,12 @@ fn register_roster_key(
 ///
 /// The base64 field is the SSH wire-format public key the trust line carries,
 /// read from the private key with the `ssh-key` crate (see
-/// [`aos_registry_client::security::public_ed25519_blob`]).
+/// [`crate::security::public_ed25519_blob`]).
 pub(in crate::registry_ops) fn derive_trust_key(
     registry_name: &str,
     key_path: &str,
 ) -> Result<String> {
-    let blob = aos_registry_client::security::public_ed25519_blob(Path::new(key_path))
+    let blob = crate::security::public_ed25519_blob(Path::new(key_path))
         .context("deriving the public key from the signing key")?;
     Ok(format!("{registry_name}:Ed25519:{blob}"))
 }

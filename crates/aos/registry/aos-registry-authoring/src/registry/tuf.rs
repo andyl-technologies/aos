@@ -469,9 +469,9 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::security::sign_payload_signature;
+    use crate::sshkey::Ed25519Keypair;
     use crate::testutil;
-    use aos_registry_client::security::sign_payload_signature;
-    use aos_registry_client::sshkey::Ed25519Keypair;
     use aos_registry_format::consumer::RegistryState;
     use std::path::PathBuf;
     use tempfile::TempDir;

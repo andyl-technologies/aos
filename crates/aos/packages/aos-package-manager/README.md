@@ -18,5 +18,7 @@ Shared responsibilities have separate owners:
   deployment transactions independently of package-manager state.
 
 Package selection, profile publication, credentials, package attestation, and
-system-image rollout policy remain here. Consumers that only need a registry
+system-image rollout policy remain here. `update` orchestrates configured
+registry refreshes, consumer state persistence, aggregate errors, and the
+`apm update` presentation. Consumers that only need a registry
 document or deployment operation should depend on its owning library directly.

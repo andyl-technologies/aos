@@ -7,7 +7,7 @@
 use anyhow::{Context as _, Result};
 
 use super::{MetadataSigningKey, REGISTRY_METADATA_SIGNATURE_NAMESPACE};
-use aos_registry_client::security::sign_payload_signature;
+use crate::security::sign_payload_signature;
 
 /// Public identity available to sign registry catalog metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]

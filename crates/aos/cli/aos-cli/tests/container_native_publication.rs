@@ -575,7 +575,7 @@ fn signed_container_envelope(
         }],
     };
     let pae = envelope.pae()?;
-    let armor = aos_registry_client::security::sign_payload_signature(
+    let armor = aos_registry_authoring::security::sign_payload_signature(
         key_path,
         CONTAINER_DSSE_SIGNATURE_NAMESPACE,
         &pae,

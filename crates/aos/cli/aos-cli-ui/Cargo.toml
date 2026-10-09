@@ -6,6 +6,7 @@ license.workspace = true
 description = "Terminal presentation, structured results, progress, and command hints"
 
 [dependencies]
+aos-transfer = { workspace = true, default-features = false }
 console.workspace = true
 indicatif.workspace = true
 serde_json.workspace = true

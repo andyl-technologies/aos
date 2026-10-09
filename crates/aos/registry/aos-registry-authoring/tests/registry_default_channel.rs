@@ -57,7 +57,7 @@ async fn sync(
     config: &RegistryConfig,
     tracking: &TrackingMode,
     state: &mut RegistryState,
-) -> Result<git::SyncResult> {
+) -> Result<aos_registry_client::sync::SyncResult> {
     git::sync_git(
         config,
         tracking,

@@ -222,7 +222,7 @@ fn create_signed_commit(dir: &Path, message: &str, signing_key: &str) -> Result<
         .commit_create_buffer(&sig, &sig, message, &tree, &parent_refs)
         .context("building commit object")?;
     let buffer_str = std::str::from_utf8(&buffer).context("commit object is not valid UTF-8")?;
-    let armored = aos_registry_client::security::sign_payload_signature(
+    let armored = crate::security::sign_payload_signature(
         Path::new(signing_key),
         "git",
         buffer_str.as_bytes(),

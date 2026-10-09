@@ -33,29 +33,15 @@ use crate::registry::transport::join_cache_url;
 use crate::registry::transport::{RegistryRead, RegistryTransport};
 use crate::registry::{channel, fetch, keys, repo, tuf, verify};
 use crate::security::{self, KeyStore, TrustedKey, key_fingerprint};
+use crate::sync::{RegistryVerificationError, SyncResult};
 use crate::types::{
     RegistryConfig, RegistryState, TrackingMode, validate_attestation_provenance_ref,
 };
-use aos_cli_ui::output::{Printer, TransferProgress};
+use aos_transfer::progress::{TransferObserver, TransferProgress};
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-/// Result of a git transport sync operation.
-#[derive(Debug)]
-pub struct SyncResult {
-    /// The new HEAD commit SHA after sync.
-    pub new_commit: String,
-    /// Total number of packages in the registry after sync.
-    pub packages_count: usize,
-    /// Number of new packages added.
-    pub packages_added: usize,
-    /// Number of packages with updated metadata.
-    pub packages_updated: usize,
-    /// Number of packages removed.
-    pub packages_removed: usize,
-}
 
 /// A tracking target resolved to a concrete commit, plus the release tag
 /// it came from when the target was tag-shaped.
@@ -119,7 +105,7 @@ pub async fn sync_git(
     registries_dir: &Path,
     trusted_keys_dirs: &[PathBuf],
     state: &mut RegistryState,
-    printer: &Printer,
+    observer: &dyn TransferObserver,
 ) -> Result<SyncResult> {
     sync_git_with_continuity(
         config,
@@ -128,7 +114,7 @@ pub async fn sync_git(
         registries_dir,
         trusted_keys_dirs,
         state,
-        printer,
+        observer,
         SyncContinuity::default(),
     )
     .await
@@ -162,12 +148,12 @@ pub async fn sync_git_with_continuity(
     registries_dir: &Path,
     trusted_keys_dirs: &[PathBuf],
     state: &mut RegistryState,
-    printer: &Printer,
+    observer: &dyn TransferObserver,
     continuity: SyncContinuity<'_>,
 ) -> Result<SyncResult> {
     let git_url = normalize_git_url(&config.url);
     let repo_dir = cache_dir.join(&config.name).join("repo.git");
-    let progress = printer.transfer(&format!("Updating registry '{}'", config.name), 0);
+    let progress = observer.transfer(&format!("Updating registry '{}'", config.name), 0);
 
     // Step 1: Ensure repo; assemble the trusted key set.
     progress.activity_phase("Preparing registry update");
@@ -175,15 +161,10 @@ pub async fn sync_git_with_continuity(
     let enforcing = signing_enforced(config);
     let trusted_keys = assemble_trusted_set(&key_store, config);
     if enforcing && trusted_keys.is_empty() {
-        bail!(
-            "registry '{}' requires signed metadata but no trusted key is available.\n\
-             Pin a maintainer key with `apr trust pin {} <{}:Ed25519:base64key>`, or set\n\
-             [registry.signing] public_key in the registry config.\n\
-             (Setting [registry.signing] required = false disables verification.)",
-            config.name,
-            config.name,
-            config.name,
-        );
+        return Err(RegistryVerificationError::MissingTrustedKey {
+            registry: config.name.clone(),
+        }
+        .into());
     }
     let client = reqwest::Client::new();
     if is_plain_http_url(&config.url) {
@@ -378,7 +359,7 @@ pub async fn sync_git_with_continuity(
                 &git_url,
                 &target,
                 &retained_before,
-                printer,
+                observer,
                 Some(&progress),
             )
             .await?;
@@ -517,7 +498,7 @@ pub async fn sync_git_with_continuity(
     if let Some(roster) = pending_roster.as_ref() {
         let report = keys::pin_rotated_keys(&key_store, &config.name, roster)?;
         if !report.is_noop() {
-            printer.info(&format!(
+            observer.info(&format!(
                 "Registry '{}': trust roster updated ({} pinned, {} unpinned, {} masked)",
                 config.name, report.pinned, report.unpinned, report.masked,
             ));
@@ -733,20 +714,18 @@ fn load_verified_roster(
     commit: &str,
 ) -> Result<keys::KeysToml> {
     let Some(roster) = keys::load_keys_toml_at_commit(repo_dir, commit)? else {
-        bail!(
-            "registry '{}' requires signed metadata but commit {commit} has no keys.toml \
-             trust roster.\n\
-             Publish a roster with `apr keys add`, or set [registry.signing] required = false.",
-            config.name,
-        );
+        return Err(RegistryVerificationError::MissingTrustRoster {
+            registry: config.name.clone(),
+            commit: commit.to_string(),
+        }
+        .into());
     };
     if roster.active.is_empty() {
-        bail!(
-            "registry '{}' requires signed metadata but its keys.toml roster has no active \
-             keys at {commit}.\n\
-             Publish a roster with `apr keys add`, or set [registry.signing] required = false.",
-            config.name,
-        );
+        return Err(RegistryVerificationError::EmptyTrustRoster {
+            registry: config.name.clone(),
+            commit: commit.to_string(),
+        }
+        .into());
     }
     trusted_keys_from_roster(config, &roster)?;
     Ok(roster)
@@ -1078,11 +1057,10 @@ async fn resolve_channel_head(
     client: &reqwest::Client,
 ) -> Result<(verify::VerifiedRelease, String)> {
     if trusted_keys.is_empty() {
-        bail!(
-            "channel tracking for '{}' requires a trusted key: pin one with `apr trust pin` \
-             or set [registry.signing] public_key",
-            config.name,
-        );
+        return Err(RegistryVerificationError::MissingChannelTrustedKey {
+            registry: config.name.clone(),
+        }
+        .into());
     }
     let release_tags = semver_tag_object_map(repo_dir).await?;
     let assigned_bucket = match state.bucket {
@@ -1329,14 +1307,11 @@ async fn enforce_fast_forward(repo_dir: &Path, old_commit: &str, new_commit: &st
         .with_context(|| format!("checking ancestry of {old_commit}..{new_commit}"))?;
 
     if !is_descendant {
-        bail!(
-            "registry downgrade detected: commit {new_commit} is not a \
-             descendant of previously verified commit {old_commit}.\n\n\
-             This could indicate a downgrade attack or a force-pushed \
-             registry. If you trust this change, delete the registry state \
-             and run `{} update` again.",
-            aos_cli_ui::invocation::package_manager_command()
-        );
+        return Err(RegistryVerificationError::NonFastForward {
+            previous_commit: old_commit.to_string(),
+            selected_commit: new_commit.to_string(),
+        }
+        .into());
     }
 
     Ok(())
@@ -2507,7 +2482,7 @@ mod tests {
         ensure_repo(&repo_dir, &origin_dir.to_string_lossy())
             .await
             .unwrap();
-        let progress = Printer::new(0, true, false).transfer("test registry fetch", 0);
+        let progress = aos_transfer::progress::NoopObserver.transfer("test registry fetch", 0);
         fetch_refs(
             &repo_dir,
             &origin_dir.to_string_lossy(),

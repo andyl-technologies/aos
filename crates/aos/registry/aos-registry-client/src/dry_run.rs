@@ -1,21 +1,14 @@
-//! Process-wide dry-run mode for the `apr` registry-authoring CLI.
+//! Process-wide preview policy for shared registry mutation primitives.
 //!
-//! `--dry-run` promises that a command writes nothing. Honoring that promise
-//! command by command is fragile: the registry tooling mutates through several
-//! hundred filesystem and Git call sites, and a single missed one turns a
-//! preview into a real, signed change — which is precisely the failure this
-//! mode exists to prevent.
+//! Registry operations mutate through filesystem and Git primitives shared by
+//! consumers and authoring tools. A preview handler reports proposed changes;
+//! the primitives independently refuse mutation so a missed early return cannot
+//! turn that preview into a signed or persisted change.
 //!
-//! So the promise is enforced at the mutation primitives instead of trusted to
-//! each handler. A command handler still stops early and prints what it would
-//! do, but if one forgets, the primitive underneath refuses rather than
-//! writing. The barrier and the handler are deliberately redundant: the
-//! handler produces a good preview, the barrier makes the preview honest.
-//!
-//! The flag is process-global because `apr` decides it once, from a
-//! command-line argument, before dispatching a single subcommand. Tests that
-//! need it in-process use [`ScopedDryRun`], which restores the previous value
-//! on drop; tests that spawn the binary get the real thing.
+//! This policy is process-global. Applications set it before dispatching a
+//! single operation; it is not isolation between concurrent tasks. In-process
+//! callers using [`ScopedDryRun`] must serialize policy changes: the guard
+//! restores the previous setting, but does not lock other operations out.
 //!
 //! ```no_run
 //! # use aos_registry_client::dry_run;
@@ -30,8 +23,8 @@ static DRY_RUN: AtomicBool = AtomicBool::new(false);
 
 /// Sets process-wide dry-run mode.
 ///
-/// `apr` calls this once, before dispatching, from the parsed `--dry-run`
-/// flag.
+/// Applications set this before dispatching a preview operation. The setting
+/// applies to all registry primitives in the process, including other tasks.
 pub fn set(active: bool) {
     DRY_RUN.store(active, Ordering::SeqCst);
 }

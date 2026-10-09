@@ -2,14 +2,28 @@
 //!
 //! Consumer acquisition and verification live in `aos-registry-client`; this
 //! crate owns mutations and the APR command vocabulary without package runtime policy.
+//! Command workflows use terminal presentation; signing adapters and local stage
+//! operations expose domain inputs independently of that presentation.
 
 mod commands;
 mod error;
+mod initial_sync;
+
 pub use commands::*;
-use error::RegistryAuthoringError;
+
+/// DSSE provenance signing adapters and envelope creation.
+pub mod provenance;
+
+/// Producer private-key loading and OpenSSH detached signing.
+pub mod security;
+
+/// Generates and serializes registry maintainer Ed25519 keys.
+pub mod sshkey;
+
 pub mod registry;
 pub mod registry_ops;
-use aos_registry_client::{config, security, sshkey, sync as update};
+use aos_registry_client::{config, security as client_security};
+use error::RegistryAuthoringError;
 #[cfg(test)]
 mod gitcmd;
 #[cfg(test)]
@@ -25,7 +39,7 @@ use std::path::{Path, PathBuf};
 /// `--dry-run` is a promise that nothing is written, so a command that accepts
 /// the flag and mutates anyway breaks it in the most damaging direction. The
 /// dispatcher refuses the flag for anything absent from this list rather than
-/// silently ignoring it, and [`crate::dry_run`] enforces the promise beneath
+/// silently ignoring it, and [`aos_registry_client::dry_run`] enforces the promise beneath
 /// the handlers.
 ///
 /// Read-only subcommands are absent on purpose. `--dry-run` means nothing for
@@ -655,7 +669,7 @@ struct RegistryAddConfigToml<'a> {
     channel: Option<&'a str>,
     tag: Option<&'a str>,
     version: Option<&'a str>,
-    trusted_key: Option<&'a security::TrustedKey>,
+    trusted_key: Option<&'a client_security::TrustedKey>,
     no_verify: bool,
 }
 
@@ -760,7 +774,7 @@ pub async fn registry_add(
     let trusted_keys = trust_keys
         .iter()
         .map(|key| {
-            let (registry, algorithm, public_key) = security::parse_signing_key(key)?;
+            let (registry, algorithm, public_key) = client_security::parse_signing_key(key)?;
             if registry != name {
                 bail!(
                     "--trust-key belongs to registry '{}', expected '{}'",
@@ -768,12 +782,12 @@ pub async fn registry_add(
                     name,
                 );
             }
-            Ok(security::TrustedKey {
+            Ok(client_security::TrustedKey {
                 registry,
                 algorithm,
-                fingerprint: security::key_fingerprint(&public_key),
+                fingerprint: client_security::key_fingerprint(&public_key),
                 public_key,
-                source: security::KeySource::Tofu,
+                source: client_security::KeySource::Tofu,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -829,7 +843,7 @@ pub async fn registry_add(
     fs::write(&toml_path, &toml_content)
         .with_context(|| format!("writing {}", toml_path.display()))?;
     for key in &trusted_keys {
-        security::KeyStore::new(config.scope.trusted_keys_dirs()).store(key)?;
+        client_security::KeyStore::new(config.scope.trusted_keys_dirs()).store(key)?;
     }
     if !trusted_keys.is_empty() {
         printer.kv(
@@ -875,8 +889,8 @@ pub async fn registry_add(
 
     // Materialise the local clone under the scope's registry-storage directory
     // by syncing now. The config was just written to disk, so reload the scope
-    // to pick it up and reuse the regular update path (clone/fetch + state
-    // save-back). A sync failure is non-fatal: the registry is registered and
+    // to pick it up, acquire its metadata, and save its verified state. A sync
+    // failure is non-fatal: the registry is registered and
     // can be retried with `<pkg> update`.
     let synced = config::ApmConfig::load(config.scope)?;
     let sync_printer = if printer.mode() == OutputMode::Json {
@@ -884,7 +898,7 @@ pub async fn registry_add(
     } else {
         printer.clone()
     };
-    let sync_result = update::run(&synced, Some(&name), &sync_printer).await;
+    let sync_result = initial_sync::run(&synced, &name, &sync_printer).await;
     if let Err(e) = sync_result {
         if printer.mode() == OutputMode::Json {
             let packages_dir = config.cache_path().join(&name).join("packages");
@@ -1206,7 +1220,7 @@ pub async fn registry_remove(
     // Remove the runtime pin from the writable trusted-keys store and mask any
     // colocated read-only seed anchor.
     let trusted_keys_removed =
-        security::KeyStore::new(config.scope.trusted_keys_dirs()).remove(name)?;
+        client_security::KeyStore::new(config.scope.trusted_keys_dirs()).remove(name)?;
 
     if printer.mode() == OutputMode::Json {
         printer.json(&serde_json::json!({

@@ -464,7 +464,7 @@ pub(in crate::registry_ops) fn write_seeded_signing_key(
     let signing_dir = root.join("signing");
     fs::create_dir_all(&signing_dir).unwrap();
 
-    let keypair = aos_registry_client::sshkey::Ed25519Keypair::from_seed(seed);
+    let keypair = crate::sshkey::Ed25519Keypair::from_seed(seed);
     let private_key = signing_dir.join(name);
 
     fs::write(&private_key, keypair.to_openssh_private_key(registry)).unwrap();
@@ -651,7 +651,7 @@ pub(in crate::registry_ops) fn init_test_transparency_repo(repo: &Path) {
         format!("[registry]\nname = \"{TEST_PROVENANCE_REGISTRY}\"\n"),
     )
     .unwrap();
-    let keypair = aos_registry_client::sshkey::Ed25519Keypair::from_seed([42_u8; 32]);
+    let keypair = crate::sshkey::Ed25519Keypair::from_seed([42_u8; 32]);
     keys::write_keys_toml(
         repo,
         &KeysToml {
