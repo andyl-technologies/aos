@@ -313,11 +313,16 @@ impl QualifiedGem5Node {
                 .is_none_or(|authority| Rc::ptr_eq(authority, &activation.authority))
     }
 
-    fn readiness_boundary(&self) -> crucible_node_contract::Position {
-        self.restored.as_ref().map_or_else(
-            || self.preparation.native.logical_position(),
-            |restored| restored.source.capture_cut,
-        )
+    fn readiness_boundary(&self) -> Result<crucible_node_contract::Position, OperationFailure> {
+        if let Some(restored) = &self.restored {
+            // A latent original operation may be ahead of the coordinator cut.
+            // That original Ready applies only while the entire native journal
+            // remains unchanged, including zero-event operations and ACKs.
+            super::restore::validate_fresh_continuation(&self.preparation, restored)?;
+            Ok(restored.source.capture_cut)
+        } else {
+            Ok(self.preparation.native.logical_position())
+        }
     }
 
     pub(super) fn scheduling(
@@ -394,7 +399,7 @@ impl SimulationNode for QualifiedGem5Node {
         if self.quarantined
             || self.active.is_some()
             || world.world_binding_hash != self.preparation.world_binding_hash
-            || world.boundary != self.readiness_boundary()
+            || world.boundary != self.readiness_boundary()?
             || !self
                 .preparation
                 .route
@@ -407,6 +412,11 @@ impl SimulationNode for QualifiedGem5Node {
             ));
         }
         self.preparation.native.observe().map_err(native_refusal)?;
+        if world.boundary != self.readiness_boundary()? {
+            return Err(refusal(
+                "gem5 original readiness changed during native observation",
+            ));
+        }
         self.preparation
             .native
             .next_publication_bound(&self.authority)
@@ -443,7 +453,7 @@ impl SimulationNode for QualifiedGem5Node {
         if self.quarantined
             || self.active.is_some()
             || self.world.as_ref() != Some(&(world.clone(), ready.clone()))
-            || self.readiness_boundary() != ready.boundary
+            || self.readiness_boundary()? != ready.boundary
         {
             return Err(refusal("gem5 authentic parked readiness custody changed"));
         }

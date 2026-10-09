@@ -332,6 +332,7 @@ pub fn decode_gem5_continuation(
         return Err(refusal("gem5 native independent closure body is missing"));
     }
     let mut prefixes = BTreeMap::new();
+    let mut prefix_ids = BTreeMap::new();
     for reference in &wire.native_prefixes {
         let object = objects
             .get(reference)
@@ -340,6 +341,7 @@ pub fn decode_gem5_continuation(
             .map_err(|error| refusal(&error.to_string()))?;
         let prefix: Gem5Completion =
             serde_json::from_value(value).map_err(|error| refusal(&error.to_string()))?;
+        prefix_ids.insert(reference.clone(), prefix.operation.clone());
         if prefixes.insert(prefix.operation.clone(), prefix).is_some() {
             return Err(refusal("gem5 native receipt identity was repeated"));
         }
@@ -362,18 +364,13 @@ pub fn decode_gem5_continuation(
         for (index, (reference, scope)) in
             saved.prefixes.iter().zip(&saved.prefix_scopes).enumerate()
         {
-            let object = objects
+            let prefix = prefix_ids
                 .get(reference)
+                .and_then(|identity| prefixes.get(identity))
                 .ok_or_else(|| refusal("gem5 original Poll evidence is missing"))?;
-            let prefix: Gem5Completion = serde_json::from_value(
-                canonical::parse_json(&object.bytes, maximum_record_bytes)
-                    .map_err(|error| refusal(&error.to_string()))?,
-            )
-            .map_err(|error| refusal(&error.to_string()))?;
             let identity = canonical::json_hash("crucible.gem5.original-prefix.v1", &serde_json::json!({"operation":saved.original.operation,"owners":scope.route.owners,"activation":scope.activation.activation_id,"prefix":index}))
                 .map_err(|error| refusal(&error.to_string()))?;
             if prefix.operation.as_str() != format!("gem5-prefix/{}", identity.digest)
-                || prefixes.get(&prefix.operation) != Some(&prefix)
                 || scope.route.node != *node
                 || scope.activation.world_binding_hash != wire.source_activation.world_binding_hash
                 || previous.is_some_and(|before| before != prefix.before.logical_position)
@@ -399,6 +396,7 @@ pub fn decode_gem5_continuation(
             if range.limit != limit
                 || range.start != prefix.before.logical_position
                 || range.start < start
+                || (index == 0 && range.start != start)
                 || range.maximum_microsteps != maximum_microsteps
                 || prefix.after.logical_position < range.start
                 || prefix.after.logical_position > limit
@@ -419,6 +417,7 @@ pub fn decode_gem5_continuation(
             ));
         }
     }
+    super::reconciliation::reconcile_native_cache(&wire, &prefixes, &prefix_ids, &objects)?;
     let mut names = BTreeSet::new();
     for artifact in &wire.artifacts {
         crate::node_contract::validate_native_artifact_name(&artifact.name)?;

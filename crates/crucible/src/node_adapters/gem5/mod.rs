@@ -5,7 +5,8 @@
 //! public input closure, guest-output birth, same-time phases or world readiness.
 //! Qualified conversion consumes a sealed independently audited live authority.
 //! Closed exact execution and backend-bound native capture retain original
-//! receipts; unavailable input and fresh continuation facets remain refused.
+//! receipts. Fresh continuation requires independently authenticated original
+//! journals and genuine fresh native authority; unavailable input remains refused.
 
 use crucible_node_contract::{HashRef, Id, NodeBinding, NodeDescriptor};
 use crucible_node_provider::gem5::{Gem5Boundary, Gem5NativeProcess};
@@ -21,6 +22,7 @@ mod execution;
 mod ledger;
 mod node;
 mod positions;
+mod reconciliation;
 mod restore;
 
 pub use capture::{

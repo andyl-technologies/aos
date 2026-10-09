@@ -215,6 +215,7 @@ impl QualifiedGem5Node {
         self.captures
             .try_reserve(1)
             .map_err(|_| refusal("gem5 owning capture seal slot allocation refused"))?;
+        let retained_source = source.clone();
         self.capture_roots.push(root.clone());
         std::fs::DirBuilder::new()
             .mode(0o700)
@@ -230,12 +231,17 @@ impl QualifiedGem5Node {
             verifier: verifier.as_ref(),
             limits,
         })?;
-        let installed = copy_installed(&native.installed, limits)?;
         self.captures.push(RetainedCapture {
-            source: source.clone(),
+            source: retained_source,
             native,
         });
-        Ok(installed)
+        // A failed returned-copy allocation must not discard a successful
+        // native capture or its pinned files. Retries use this original seal.
+        let retained = self
+            .captures
+            .last()
+            .ok_or_else(|| refusal("gem5 successful capture retention entry absent"))?;
+        copy_installed(&retained.native.installed, limits)
     }
 
     fn capture_original_continuation(

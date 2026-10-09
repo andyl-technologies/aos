@@ -165,7 +165,10 @@ impl QualifiedGem5Node {
                 "gem5 legacy file-polled output has no qualified native birth".to_owned(),
             )));
         }
-        if receipt.reason == "event_budget" && receipt.publications.is_empty() {
+        if receipt.reason == "event_budget"
+            && receipt.publications.is_empty()
+            && receipt.after.logical_position < limit
+        {
             if let Err(error) = self.preparation.native.acknowledge(&receipt.operation) {
                 return Poll::Ready(Err(self.contain_failure(token, error.to_string())));
             }

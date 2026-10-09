@@ -4,6 +4,9 @@ use crucible_node_contract::{HashRef, Phase};
 
 use super::*;
 
+#[path = "reconciliation_tests.rs"]
+mod reconciliation;
+
 fn fixture() -> (Wire, RuntimeSnapshot, Vec<InputPayload>) {
     let owner = OwnerIdentity {
         owner: Id::new("owner").unwrap(),
