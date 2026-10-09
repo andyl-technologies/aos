@@ -106,9 +106,14 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         &self,
         name: &str,
         selected: &RefRecord,
+        retain_original: bool,
     ) -> Result<(RefLogRecord, super::publication::receipts::RecordRead), StoreFailure> {
         let key = log_key(name, selected, self.inner.access.version())?;
-        let read = self.read_optional_observed(&key).await?;
+        let read = if retain_original {
+            self.read_optional_retained(&key).await?
+        } else {
+            self.read_optional_observed(&key).await?
+        };
         let bytes = read.bytes().ok_or_else(|| corrupt(name))?;
         let log = RefLogRecord::decode(bytes).map_err(|_| corrupt(name))?;
         if &log.record != selected {
@@ -144,18 +149,49 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     pub(in crate::bucket) async fn committed_logs_observed(
         &self,
         name: &str,
+        selected: RefRecord,
+        reads: &mut Vec<super::publication::receipts::RecordRead>,
+    ) -> Result<Vec<RefLogRecord>, StoreFailure> {
+        self.committed_logs_observed_mode(name, selected, reads, false)
+            .await
+    }
+
+    /// Preserves original physical recipes for every consumed committed log.
+    ///
+    /// # Errors
+    /// Preserves all chain failures and refuses changed or unsafe original reads.
+    pub(in crate::bucket) async fn committed_logs_observed_retained(
+        &self,
+        name: &str,
+        selected: RefRecord,
+        reads: &mut Vec<super::publication::receipts::RecordRead>,
+    ) -> Result<Vec<RefLogRecord>, StoreFailure> {
+        self.committed_logs_observed_mode(name, selected, reads, true)
+            .await
+    }
+
+    async fn committed_logs_observed_mode(
+        &self,
+        name: &str,
         mut selected: RefRecord,
         reads: &mut Vec<super::publication::receipts::RecordRead>,
+        retain_original: bool,
     ) -> Result<Vec<RefLogRecord>, StoreFailure> {
         let mut records = Vec::new();
         loop {
-            let (log, read) = self.read_log_observed(name, &selected).await?;
+            let (log, read) = self
+                .read_log_observed(name, &selected, retain_original)
+                .await?;
             reads.push(read);
             let previous = if selected.candidate_id.is_some() {
                 log.selected_previous().map_err(|_| corrupt(name))?.cloned()
             } else if selected.seq > 1 {
                 let key = BucketKey::reflog(name, selected.seq - 1).map_err(|_| corrupt(name))?;
-                let read = self.read_optional_observed(&key).await?;
+                let read = if retain_original {
+                    self.read_optional_retained(&key).await?
+                } else {
+                    self.read_optional_observed(&key).await?
+                };
                 let bytes = read.bytes().ok_or_else(|| corrupt(name))?;
                 let previous = RefLogRecord::decode(bytes)
                     .map_err(|_| corrupt(name))?

@@ -32,9 +32,16 @@ pub(super) struct HeldReads<'scope, F> {
     control: &'scope Control,
     fs: &'scope F,
     _held: &'scope HeldIdentity<'scope>,
+    retain_original: bool,
 }
 
 impl<F: LocalFs + BucketBinding> HeldReads<'_, F> {
+    /// Enables original physical recipes before any batch record is consumed.
+    pub(super) fn retaining_original(mut self) -> Self {
+        self.retain_original = true;
+        self
+    }
+
     /// Reads exact protected record bytes while retaining the actual exclusion.
     ///
     /// # Errors
@@ -49,7 +56,23 @@ impl<F: LocalFs + BucketBinding> HeldReads<'_, F> {
     /// Rejects malformed keys, unsafe or replaced parents and leaves, and
     /// propagates unavailable exact reads.
     pub(super) async fn read_observed(&self, key: &str) -> Result<RecordRead, StoreFailure> {
-        self.control.read_record_observed(self.fs, key).await
+        if !self.retain_original {
+            return self.control.read_record_observed(self.fs, key).await;
+        }
+        if !registered(key) {
+            return Err(corrupt());
+        }
+        let capture =
+            crate::store::native_publication_effects::PayloadReadCapture::capture_protected(
+                self.fs,
+                &self.control.path.join(key),
+                self.control.owner,
+            )
+            .await?;
+        let read = self.control.read_record_observed(self.fs, key).await?;
+        let retained = capture.finish(&read)?;
+        retained.revalidate(self.fs).await?;
+        Ok(read.with_retained_payload(retained))
     }
 
     /// Rechecks all physical bindings and ancestry after the complete batch.
@@ -453,6 +476,7 @@ impl Control {
             control: self,
             fs,
             _held: held,
+            retain_original: false,
         })
     }
 

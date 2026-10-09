@@ -15,6 +15,7 @@ pub(crate) struct PayloadReadCapture {
     path: PathBuf,
     parents: Vec<ParentFence>,
     owner: u32,
+    policy: FencePolicy,
 }
 
 /// Retains the exact original payload recipe without granting mutation authority.
@@ -47,7 +48,22 @@ impl PayloadReadCapture {
             path: path.to_owned(),
             parents,
             owner,
+            policy: FencePolicy::Payload { owner },
         })
+    }
+
+    /// Captures original ancestry for a protected selected record.
+    ///
+    /// # Errors
+    /// Refuses missing, unsafe or unavailable ancestors and noncanonical paths.
+    pub(crate) async fn capture_protected<F: LocalFs + BucketBinding>(
+        fs: &F,
+        path: &Path,
+        owner: u32,
+    ) -> Result<Self, StoreFailure> {
+        let mut captured = Self::capture(fs, path, owner).await?;
+        captured.policy = FencePolicy::ProtectedRecord { owner };
+        Ok(captured)
     }
 
     /// Attaches the original ancestors to the independently observed leaf.
@@ -66,7 +82,7 @@ impl PayloadReadCapture {
         if observed.bytes().is_some() != metadata.is_some() {
             return Err(corrupt());
         }
-        let policy = FencePolicy::Payload { owner: self.owner };
+        let policy = self.policy;
         if let Some(stamp) = metadata {
             policy.validate(stamp).map_err(io_failure)?;
         }
@@ -189,17 +205,27 @@ impl Frame {
         &mut self,
         retained: &RetainedPayloadRead,
     ) -> Result<(), StoreFailure> {
+        self.retained_record_read(retained, FencePolicy::Payload { owner: self.owner })
+    }
+
+    /// Imports one original recipe under its independently configured role.
+    ///
+    /// # Errors
+    /// Refuses a role or owner mismatch and changed original ancestor stamps.
+    pub(super) fn retained_record_read(
+        &mut self,
+        retained: &RetainedPayloadRead,
+        policy: FencePolicy,
+    ) -> Result<(), StoreFailure> {
         let read = &retained.read;
-        if read.owner != self.owner || read.policy != (FencePolicy::Payload { owner: self.owner }) {
+        if read.owner != policy.configured_owner() || read.policy != policy {
             return Err(corrupt());
         }
         for parent in &read.parents {
             if self
                 .parents
                 .get(&parent.path)
-                .is_some_and(|(stamp, owner)| {
-                    *owner != read.owner || !stamp.same_incarnation(parent.stamp)
-                })
+                .is_some_and(|(stamp, _)| !stamp.same_incarnation(parent.stamp))
             {
                 return Err(corrupt());
             }

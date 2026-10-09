@@ -24,6 +24,7 @@ enum ReadScope<'scope, F> {
 struct ChainReads<'scope, F> {
     scope: ReadScope<'scope, F>,
     records: Mutex<Vec<RecordRead>>,
+    retain_original: bool,
 }
 
 impl<'scope, F: LocalFs + BucketBinding> ChainReads<'scope, F> {
@@ -31,6 +32,7 @@ impl<'scope, F: LocalFs + BucketBinding> ChainReads<'scope, F> {
         Self {
             scope: ReadScope::Ordinary { control, fs },
             records: Mutex::new(Vec::new()),
+            retain_original: false,
         }
     }
 
@@ -38,6 +40,15 @@ impl<'scope, F: LocalFs + BucketBinding> ChainReads<'scope, F> {
         Self {
             scope: ReadScope::Held(reads),
             records: Mutex::new(Vec::new()),
+            retain_original: false,
+        }
+    }
+
+    fn held_retained(reads: HeldReads<'scope, F>) -> Self {
+        Self {
+            scope: ReadScope::Held(reads.retaining_original()),
+            records: Mutex::new(Vec::new()),
+            retain_original: true,
         }
     }
 
@@ -106,7 +117,41 @@ pub(super) async fn resolve_held<
     control: &Control,
     held: &HeldIdentity<'_>,
 ) -> Result<Selected, StoreFailure> {
-    let reads = ChainReads::held(control.held_reads(&bucket.inner.fs, held).await?);
+    resolve_held_mode(bucket, control, held, false).await
+}
+
+/// Retains original physical recipes during the actual held selected resolution.
+///
+/// # Errors
+/// Refuses malformed selected evidence and unsafe, changed or missing ancestry.
+pub(super) async fn resolve_held_retained<
+    F: LocalFs + BucketBinding,
+    C: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+>(
+    bucket: &FileBucket<F, C, V>,
+    control: &Control,
+    held: &HeldIdentity<'_>,
+) -> Result<Selected, StoreFailure> {
+    resolve_held_mode(bucket, control, held, true).await
+}
+
+async fn resolve_held_mode<
+    F: LocalFs + BucketBinding,
+    C: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+>(
+    bucket: &FileBucket<F, C, V>,
+    control: &Control,
+    held: &HeldIdentity<'_>,
+    retain_original: bool,
+) -> Result<Selected, StoreFailure> {
+    let held_reads = control.held_reads(&bucket.inner.fs, held).await?;
+    let reads = if retain_original {
+        ChainReads::held_retained(held_reads)
+    } else {
+        ChainReads::held(held_reads)
+    };
     let bytes = reads
         .read("backend-registration.cbor")
         .await?
@@ -157,9 +202,23 @@ async fn resolve_with_reads<
                 if let terrane_core::gc::publication::CommittedSelection::Selected(record) =
                     &row.selection
                 {
-                    bucket
-                        .committed_logs_observed(&row.name, record.as_ref().clone(), &mut log_reads)
-                        .await?;
+                    if reads.retain_original {
+                        bucket
+                            .committed_logs_observed_retained(
+                                &row.name,
+                                record.as_ref().clone(),
+                                &mut log_reads,
+                            )
+                            .await?;
+                    } else {
+                        bucket
+                            .committed_logs_observed(
+                                &row.name,
+                                record.as_ref().clone(),
+                                &mut log_reads,
+                            )
+                            .await?;
+                    }
                 }
             }
             for read in log_reads {
@@ -209,7 +268,11 @@ async fn resolve_with_reads<
 
         let snapshot_key = terrane_core::bucket::BucketKey::parse(&transaction.snapshot.key)
             .map_err(|_| corrupt())?;
-        let snapshot_read = bucket.read_optional_observed(&snapshot_key).await?;
+        let snapshot_read = if reads.retain_original {
+            bucket.read_optional_retained(&snapshot_key).await?
+        } else {
+            bucket.read_optional_observed(&snapshot_key).await?
+        };
         let snapshot_bytes = reads.remember(snapshot_read)?.ok_or_else(corrupt)?;
         transaction
             .snapshot

@@ -121,6 +121,22 @@ impl SelectedObservation<'_> {
         self.revalidate_against(&self.selected).await
     }
 
+    /// Rechecks original physical recipes around the complete current selection.
+    ///
+    /// # Errors
+    /// Refuses an observation without original recipes, changed selected evidence,
+    /// physical reincarnation, unsafe ancestry or unavailable whole-value reads.
+    pub(crate) async fn revalidate_physical_reads<F: LocalFs + BucketBinding>(
+        &self,
+        fs: &F,
+    ) -> Result<(), StoreFailure> {
+        self.revalidate().await?;
+        for read in self.physical_reads() {
+            read.revalidate_retained(fs).await?;
+        }
+        self.revalidate().await
+    }
+
     async fn revalidate_against(&self, expected: &Selected) -> Result<(), StoreFailure> {
         let current = (self.recheck)().await?;
         if current.state != expected.state
@@ -273,6 +289,37 @@ impl<
         &self,
     ) -> Result<SelectedObservation<'_>, StoreFailure> {
         let observed = self.observe_for_read().await?;
+        if WRITABLE {
+            self.retained_namespace()?;
+            crate::store::native_publication_effects::repair(self.fs(), &observed).await?;
+        }
+        Ok(observed)
+    }
+
+    /// Resolves selected authority with original physical recipes for scoped reads.
+    ///
+    /// The retained mode captures each ancestor before consuming its record;
+    /// ordinary selection remains available for callers without this scope.
+    ///
+    /// # Errors
+    /// Refuses invalid selected evidence, changed physical bindings or ancestry,
+    /// unavailable reads and failed materialized-cache repair.
+    pub(crate) async fn observe_publication_retained(
+        &self,
+    ) -> Result<SelectedObservation<'_>, StoreFailure> {
+        let held = self.identity_proof();
+        let control = control::Control::open(self.bucket(), false).await?;
+        let selected = selection::resolve_held_retained(self.bucket(), &control, &held).await?;
+        let recheck: SelectedRecheck<'_> = Box::new(move || Box::pin(self.selected_held()));
+        let observed = SelectedObservation {
+            selected,
+            operator_uid: self
+                .bucket()
+                .publication_operator_uid()
+                .ok_or_else(unsupported)?,
+            identity: self.identity_proof(),
+            recheck,
+        };
         if WRITABLE {
             self.retained_namespace()?;
             crate::store::native_publication_effects::repair(self.fs(), &observed).await?;

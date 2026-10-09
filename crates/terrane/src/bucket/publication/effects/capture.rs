@@ -153,6 +153,20 @@ impl Frame {
         control: &Path,
         owner: u32,
     ) -> Result<(), StoreFailure> {
+        if reads.iter().any(|read| read.retained_payload().is_some()) {
+            for read in reads {
+                let policy = if read.path().starts_with(control) {
+                    FencePolicy::ProtectedRecord { owner }
+                } else if read.path().starts_with(root) {
+                    FencePolicy::Payload { owner }
+                } else {
+                    return Err(corrupt());
+                };
+                let retained = read.retained_payload().ok_or_else(unsupported)?;
+                self.retained_record_read(retained, policy)?;
+            }
+            return Ok(());
+        }
         let mut paths = Vec::new();
         let mut lengths = Vec::with_capacity(reads.len());
         for read in reads {
@@ -471,7 +485,10 @@ impl Frame {
                 } else {
                     return Err(corrupt());
                 };
-                if self.actual_read(fs, read.path(), policy).await?.is_some() {
+                if let Some(retained) = read.retained_payload() {
+                    read.revalidate_retained(fs).await?;
+                    self.retained_record_read(retained, policy)?;
+                } else if self.actual_read(fs, read.path(), policy).await?.is_some() {
                     return Err(corrupt());
                 }
                 position += 1;
