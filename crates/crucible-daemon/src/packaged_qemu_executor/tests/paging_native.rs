@@ -22,6 +22,7 @@ pub(super) mod accepted_promotion;
 mod blocked_control;
 mod byte_service;
 mod companion_measurements;
+mod complete_write_oracle;
 pub(super) mod environment;
 mod equivalence;
 mod faults;
