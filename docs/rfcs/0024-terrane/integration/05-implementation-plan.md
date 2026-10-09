@@ -340,8 +340,31 @@ correction `2f3dcec19c` resolves it. Native all-target Clippy on private composi
 consumer witnesses are not composed there. This is not a native lint pass.
 The native-index candidate `b2f541b1c3` now composes only the reviewed portability,
 module-path and native feature boundaries, preserving its existing paired
-exclusions and read projection. Its strict native Clippy, sixteen exact
-regressions and unchanged ordinary 1,024-entry witness remain unqualified.
+exclusions and read projection. Its strict native all-target Clippy passes with
+warnings denied (1 minute 3 seconds;
+`/tmp/terrane-predicate-b2f541-native-clippy.log`). All sixteen exact regressions
+pass, including the three actual-filesystem predicate witnesses (63.275 seconds,
+913 unrelated tests skipped; run `6ca5db87-1002-482d-9158-954b34f689a2`,
+`/tmp/terrane-predicate-b2f541-scope-16-nextest.log`). Test-target compilation
+takes 6 minutes 32 seconds. The unchanged ordinary 1,024-entry witness, other
+five populations, owning twenty-three-case gate and full T1 floor remain
+unqualified; these focused results do not advance task acceptance.
+The first unchanged ordinary 1,024-entry execution is now terminal with one
+timeout at 120.011 seconds, zero passes and 928 unrelated tests skipped
+(run `48fea501-2356-4977-a579-5584f7669f5a`,
+`/tmp/terrane-predicate-b2f541-1024-ordinary-phase-nextest.log`). Its baseline
+publication reaches an actual selected durable acknowledgment in 26.003029672
+seconds, within unchanged C30. The final raw durability scope retains 69 names
+and 534 exact reads and performs 224,711 fresh attempts across 745 refreshes;
+the earlier `c0f87d4e56` scope retained 94 names and 954 reads and performed
+394,955 attempts. These are actual row reductions, while cross-run elapsed
+differences do not establish calibrated attribution. After acknowledgment,
+ordinary history verification takes 43.632733163 seconds; 1,033 subsequent
+plain-read scope entries precede timeout. Independent-work and maintained
+publication phases are not reached. No retained deadline refusal appears in
+this execution before timeout. The whole witness remains failed; no population
+or deadline is omitted or relaxed. Source diagnosis now targets the measured
+ordinary history and immutable-read interval.
 The reviewed permanent recovery candidate `b0d2b176f0` retains original
 directory continuity while staging fresh, unselected progress proposals and
 restores full canonical candidate enumeration before preselection directory
@@ -386,6 +409,14 @@ recovery and an actual late-pack reclaim return; its final progress seal is
 submitted but has no return before timeout. Whole liveness and completed-pass
 acknowledgment remain unqualified. No per-effect timestamps establish which
 operation caused the elapsed failure.
+Reviewed collector source `c15c9349c1` now borrows a first-match path index for
+retained directory recipes, preserving the first actual recipe and all duplicate
+rows, fresh physical checks, full enumeration and synchronization boundaries.
+Opt-in phase observations cover genuine reconciliation, proposal staging,
+native progress sealing and completed-state reopen. Lookup complexity motivates
+the change; no measured timeout cause or runtime benefit is claimed. Its scoped
+formatting and diff checks pass, but changed-source compilation and the unchanged
+added-cycle liveness witness remain pending.
 Strict native all-target Clippy also passes with warnings denied (5 minutes
 5 seconds, including a recorded wait for an external shared-target lock;
 `/tmp/terrane-permanent-stage-clippy.log`). This elapsed observation does not
