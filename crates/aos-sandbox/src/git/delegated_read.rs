@@ -1070,10 +1070,12 @@ impl GitReadRequestOwnerV1 {
                 if bytes[11] == 1 {
                     let decision = decision.as_ref().and_then(|result| result.as_ref().ok()).ok_or(CauseV1::Closed)?;
                     let coordinates = decision.original_coordinates(array(request, 160)?);
-                    bytes[128..136].copy_from_slice(&coordinates.policy_generation.to_be_bytes());
-                    bytes[136..144].copy_from_slice(&coordinates.revocation_generation.to_be_bytes());
-                    bytes[144..152].copy_from_slice(&coordinates.controller_generation.to_be_bytes());
-                    bytes[152..184].copy_from_slice(&coordinates.policy_digest);
+                    bytes[128..136].copy_from_slice(&coordinates.policy_generation().to_be_bytes());
+                    bytes[136..144].copy_from_slice(
+                        &decision.capability().claims().revocation_generation.get().to_be_bytes(),
+                    );
+                    bytes[144..152].copy_from_slice(&coordinates.controller_generation().to_be_bytes());
+                    bytes[152..184].copy_from_slice(decision.capability().claims().policy_digest.as_bytes());
                     bytes[184..192].copy_from_slice(&decision.authorized_wall_seconds().to_be_bytes());
                 }
                 *result = Some(bytes);

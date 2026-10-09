@@ -208,7 +208,7 @@ impl<'source> CurrentNixInputAttemptV1<'source> {
         self.entered = true;
 
         self.controller_names = Some(controller.protected_writer_physical_names_v1());
-        self.carrier = Some(original.encode());
+        self.carrier = Some(original.encode().map_err(NixStartAdmissionErrorV2::from));
         self.context = Some(PublicMutationEffectV1::decode_plain(original.ordinary_effect()));
         if let Some(Ok(Some(context))) = self.context.as_ref() {
             self.request = Some(context.validated_request());
