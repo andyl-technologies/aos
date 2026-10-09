@@ -4,6 +4,8 @@
   ...
 }: let
   nativeTests = [
+    "guard::original::control::lock_mode_tests::original_retained_readers_refuse_actual_writer_and_release_namespace"
+    "guard::original::control::lock_mode_tests::original_read_and_write_attempts_refuse_live_writer_without_waiting"
     "gc::lease::tests::native_gc_independent_collectors_have_one_selected_winner"
     "gc::lease::tests::native_gc_renewal_uses_exact_whole_value_and_increases_revision"
     "gc::lease::tests::native_gc_live_other_holder_refuses_without_cache_repair_or_effects"
@@ -108,7 +110,7 @@ in {
     cd crates
     ${focusedTests "tokio,surface-sdk" nativeTests}
     ${focusedTests "std,surface-sdk" localTests}
-    printf 'PASS: selected singleton lease, runner fencing, takeover and non-Send bindings (19 exact cases)\n' \
+    printf 'PASS: selected singleton lease, administrative exclusion, runner fencing, takeover and non-Send bindings (21 exact cases)\n' \
       > "$out/result"
   '';
 }
