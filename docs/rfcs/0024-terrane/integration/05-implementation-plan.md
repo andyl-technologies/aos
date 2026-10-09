@@ -2329,6 +2329,25 @@ execution is not assumed. A proposed direct syscall substitution is deferred
 because the pinned standard library's flags, retries and stat fallback behavior
 are not equivalent to that proposal.
 
+The class candidate's focused native witness, whole `derived-attr-record`
+gate and all five CDC gates now pass on `7c71e91bc5`. Its application-target
+compilation is running, with the formatter pair still queued. These results
+do not establish the complete current floor. A receiving-contract review also
+confirms that the broader store gates select real final-to-nonfinal dedup and
+inventory-only manifest refusals; their current-source executions remain
+required. Existing held-upload effect-counter cases are outside those gate
+selectors and have no inferred runtime result.
+
+A separate read-only publication review finds that every bounded cohort
+deep-copies the same immutable candidate-body map. Private `79719bc59b` replaces
+those copies with shared immutable ownership, retaining per-cohort promotion,
+active names and conflict classification. It changes only the private scope
+implementation and preserves every fresh observation and current check. Its
+source diff is reviewed; builds and runtime qualification remain unrun.
+The single diagnostic prepared for the earlier masked index denial also remains
+unrun until the class candidate releases the team's heavy lane. It preserves
+the original thirty-second writer and 120-second process settings.
+
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
 finds `gc-two-phase-delete` explicitly pending. Output validity establishes no
@@ -2404,7 +2423,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   evidence before selecting the corresponding chunk-domain dictionary. Ordinary
   dictionary fetch and verified decoding exercise the selected bytes. This
   candidate includes the reviewed parent-path buffer prerequisite. Its focused
-  witness, whole derived-data gate and all five CDC gates remain unrun.
+  witness, whole derived-data gate and all five CDC gates now pass on that
+  frozen candidate. Application-target compilation and the formatter pair
+  remain in progress or queued; the complete current floor and task acceptance
+  remain unqualified.
   — satisfies
   OBJ-11 to OBJ-18, CDC-1 to CDC-20;
   `checks.terrane.gates.object-identity-from-manifest`,
