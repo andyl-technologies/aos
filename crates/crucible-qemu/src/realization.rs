@@ -176,6 +176,25 @@ impl QemuVmSnapshot {
         })
     }
 
+    /// Compares the complete Apache node and device continuation of two captures.
+    ///
+    /// Both continuations must retain their own authenticated capture binding.
+    /// Only those bindings are excluded from equality; all modeled fields stay
+    /// exact. Native CPU/device state, physical RAM, enclosing World/scheduler
+    /// state and observed ownership require separate comparison evidence.
+    #[must_use]
+    pub fn same_host_continuation(&self, other: &Self) -> bool {
+        let own_bindings_valid = self.host_io.execution_binding() == self.checkpoint.id
+            && self.node.execution_binding() == self.checkpoint.id;
+        let peer_bindings_valid = other.host_io.execution_binding() == other.checkpoint.id
+            && other.node.execution_binding() == other.checkpoint.id;
+
+        own_bindings_valid
+            && peer_bindings_valid
+            && self.host_io.same_device_continuation(&other.host_io)
+            && self.node.same_scheduler_continuation(&other.node)
+    }
+
     /// Returns the materialized scheduler checkpoint paired with this snapshot.
     #[must_use]
     pub fn checkpoint(&self) -> &Checkpoint {

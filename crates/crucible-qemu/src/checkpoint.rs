@@ -149,6 +149,36 @@ pub struct QemuNodeContinuationCheckpoint {
 }
 
 impl QemuNodeContinuationCheckpoint {
+    /// Compares every modeled scheduler field apart from the capture binding.
+    ///
+    /// Each input must first be authenticated against its own complete capture.
+    /// Capture bindings can differ across representation editions. Logical and
+    /// raw time, pending work, queues and sequence cursors remain exact. This
+    /// comparison does not certify physical origin or whole-World state.
+    #[must_use]
+    pub fn same_scheduler_continuation(&self, other: &Self) -> bool {
+        let Self {
+            execution_binding: _,
+            last_observed_time,
+            logical_time_calibration,
+            console_observation_boundary,
+            pending_preemption,
+            pending_network_outputs,
+            network_transport,
+            next_fault_command_sequence,
+            next_fault_event_sequence,
+        } = other;
+
+        self.last_observed_time == *last_observed_time
+            && self.logical_time_calibration == *logical_time_calibration
+            && self.console_observation_boundary == *console_observation_boundary
+            && self.pending_preemption == *pending_preemption
+            && self.pending_network_outputs == *pending_network_outputs
+            && self.network_transport == *network_transport
+            && self.next_fault_command_sequence == *next_fault_command_sequence
+            && self.next_fault_event_sequence == *next_fault_event_sequence
+    }
+
     /// Returns the QEMU VMState identity paired with this continuation.
     #[must_use]
     pub const fn execution_binding(&self) -> ContentHash {
@@ -580,3 +610,7 @@ impl QemuNodeContinuationCheckpoint {
 #[cfg(test)]
 #[path = "checkpoint/tests.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "checkpoint/comparison_tests.rs"]
+mod comparison_tests;
