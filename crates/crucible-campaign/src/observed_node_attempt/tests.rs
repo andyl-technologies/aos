@@ -3,6 +3,8 @@
 //! Fixture adapters exercise host transaction semantics only. They do not qualify
 //! any native provider, transcript replay, clock pacing or exact state capture.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

@@ -125,6 +125,8 @@ pub fn roster_from_admitted_graph(
 }
 
 #[cfg(test)]
+// crucible-lint: allow rust-allow -- synthetic codec tests deliberately panic without issuing native evidence.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     //! Checks conversion from a genuinely sealed synthetic graph admission.
 

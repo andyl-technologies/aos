@@ -1,5 +1,8 @@
 //! Fail-closed guarantee checks before legacy replay and native worker admission.
 
+// crucible-lint: allow rust-allow -- test setup and exact authority regressions deliberately panic on failure.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crucible_campaign::executor_node_capabilities::{

@@ -1,5 +1,7 @@
 //! Regression tests for versioned realization identity and conservative guarantees.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::cell::Cell;
 
 use crucible_cas::content_store::{ContentId, ObjectKind};

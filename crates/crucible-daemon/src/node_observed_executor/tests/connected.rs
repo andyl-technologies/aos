@@ -152,8 +152,7 @@ fn actual_native_linked_world_preserves_payloads_and_never_outruns_input() {
         .collect();
     let final_consumer = outcomes
         .iter()
-        .filter(|outcome| outcome.node == id("consumer"))
-        .next_back()
+        .rfind(|outcome| outcome.node == id("consumer"))
         .unwrap();
     let publication = &final_consumer.scheduling.as_ref().unwrap().publications[0];
     assert_eq!(publication.publication.time_ps, U64::new(150));
