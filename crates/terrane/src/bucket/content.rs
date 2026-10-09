@@ -824,9 +824,23 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         identity: &Identity,
         range: Option<ByteRange>,
     ) -> Result<Vec<u8>, StoreFailure> {
+        #[cfg(test)]
+        let mut trace = crate::ref_advance::PhaseTrace::new(
+            &self.inner.clock,
+            "content-get",
+            identity.terrane_v1_digest().ok(),
+            None,
+            "content-get-exclusion-submitted",
+        );
         let _guard = self.read_exclusion().await?;
+        #[cfg(test)]
+        trace.mark("content-get-exclusion-acquired");
         let value = self.get_locked(identity, range).await?;
+        #[cfg(test)]
+        trace.mark("content-get-value-returned");
         self.ensure_layout().await?;
+        #[cfg(test)]
+        trace.mark("content-get-closing-layout-checked");
         Ok(value)
     }
 

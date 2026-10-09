@@ -56,12 +56,25 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// Rejects symlinked ancestors and nonregular present payload nodes while
     /// preserving exact absence and unavailable metadata as distinct outcomes.
     /// Rejects incomplete metadata batches before observing a payload leaf.
+    ///
+    /// # Panics
+    /// Test builds can panic if enabled phase diagnostics cannot write to stderr.
     pub(super) async fn check_payload_namespace(
         &self,
         key: &BucketKey,
     ) -> Result<(), StoreFailure> {
+        #[cfg(test)]
+        let mut trace = crate::ref_advance::PhaseTrace::new(
+            &self.inner.clock,
+            key.as_str(),
+            None,
+            None,
+            "payload-namespace-start",
+        );
         let mut path = self.inner.config.root.clone();
         self.check_directory(&path).await?;
+        #[cfg(test)]
+        trace.mark("payload-namespace-root-checked");
         let relative = Path::new(key.as_str()).parent().ok_or_else(malformed)?;
         let mut parents = Vec::new();
         for part in relative.components() {
@@ -70,12 +83,16 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         }
 
         if !parents.is_empty() {
+            #[cfg(test)]
+            trace.mark("payload-namespace-ancestor-batch-submitted");
             let observations = self
                 .inner
                 .fs
                 .symlink_metadata_batch(&parents)
                 .await
                 .map_err(io_failure)?;
+            #[cfg(test)]
+            trace.mark("payload-namespace-ancestor-batch-returned");
             if observations.len() != parents.len() {
                 return Err(layout_corrupt());
             }
@@ -91,7 +108,14 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             }
         }
 
-        match self.inner.fs.symlink_metadata(&self.path(key)).await {
+        #[cfg(test)]
+        trace.mark("payload-namespace-ancestors-classified");
+        #[cfg(test)]
+        trace.mark("payload-namespace-leaf-metadata-submitted");
+        let observation = self.inner.fs.symlink_metadata(&self.path(key)).await;
+        #[cfg(test)]
+        trace.mark("payload-namespace-leaf-metadata-returned");
+        match observation {
             Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => Ok(()),
             Ok(_) => Err(layout_corrupt()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -267,10 +291,21 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// # Errors
     /// Returns corruption for incompatible nodes and propagates read failures;
     /// a missing registered key returns `None`.
+    ///
+    /// # Panics
+    /// Test builds can panic if enabled phase diagnostics cannot write to stderr.
     pub(super) async fn read_optional_observed(
         &self,
         key: &BucketKey,
     ) -> Result<RecordRead, StoreFailure> {
+        #[cfg(test)]
+        let mut trace = crate::ref_advance::PhaseTrace::new(
+            &self.inner.clock,
+            key.as_str(),
+            None,
+            None,
+            "ordinary-record-start",
+        );
         let path = self.path(key);
         let mut parent = self.inner.config.root.clone();
         let relative = Path::new(key.as_str()).parent().ok_or_else(malformed)?;
@@ -279,12 +314,16 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             parent.push(part);
             parents.push(parent.clone());
         }
+        #[cfg(test)]
+        trace.mark("ordinary-record-ancestor-batch-submitted");
         let observations = self
             .inner
             .fs
             .symlink_metadata_batch(&parents)
             .await
             .map_err(io_failure)?;
+        #[cfg(test)]
+        trace.mark("ordinary-record-ancestor-batch-returned");
         if observations.len() != parents.len() {
             return Err(layout_corrupt());
         }
@@ -298,13 +337,19 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 Err(error) => return Err(io_failure(error)),
             }
         }
-        if let Some(record) = self
+        #[cfg(test)]
+        trace.mark("ordinary-record-ancestors-classified");
+        #[cfg(test)]
+        trace.mark("ordinary-record-native-leaf-submitted");
+        let record = self
             .inner
             .fs
             .read_ordinary_record(crate::store::NativeOrdinaryRead::for_leaf(&path))
             .await
-            .map_err(io_failure)?
-        {
+            .map_err(io_failure)?;
+        #[cfg(test)]
+        trace.mark("ordinary-record-native-leaf-returned");
+        if let Some(record) = record {
             match record.into_outcome() {
                 #[cfg(all(feature = "tokio", unix))]
                 crate::store::OrdinaryReadOutcome::ProjectionChecked => {
