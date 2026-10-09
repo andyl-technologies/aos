@@ -693,3 +693,297 @@ fn early_child_accepts_only_recorded_initial_retry_before_native_runtime_ready()
     assert_eq!(state.resources, resources);
     assert_eq!(controller.operations.load(Ordering::Acquire), 0);
 }
+
+#[test]
+fn fingerprint_loan_retains_live_slot_until_return_and_callback_unwind() {
+    let controller = controller();
+    let mut calls = 0;
+    controller
+        .with_fingerprint_operation(&mut |operation| {
+            calls += 1;
+            assert_eq!(controller.operations.load(Ordering::Acquire), 1);
+            assert!(operation.wait_slice_for_observation().is_ok());
+            assert!(operation.complete_observation().is_ok());
+            assert!(operation.complete_observation().is_err());
+            assert_eq!(controller.operations.load(Ordering::Acquire), 1);
+        })
+        .unwrap();
+    assert_eq!(calls, 1);
+    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = controller.with_fingerprint_operation(&mut |_| {
+            assert_eq!(controller.operations.load(Ordering::Acquire), 1);
+            panic!("callback unwind control");
+        });
+    }));
+    assert!(unwind.is_err());
+    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn fingerprint_loan_refuses_before_callback_and_keeps_original_terminal_cause() {
+    let controller = controller();
+    controller.canceled.store(true, Ordering::Release);
+    let mut calls = 0;
+    let error = controller
+        .with_fingerprint_operation(&mut |_| calls += 1)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ObservationOperationError::Static {
+            kind: io::ErrorKind::Interrupted,
+            message: "RAM operation canceled",
+        }
+    ));
+    assert_eq!(calls, 0);
+    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+
+    controller.canceled.store(false, Ordering::Release);
+    controller
+        .operations
+        .store(MAX_OPERATIONS, Ordering::Release);
+    assert!(matches!(
+        controller.with_fingerprint_operation(&mut |_| calls += 1),
+        Err(ObservationOperationError::Static {
+            message: "RAM operation slots exhausted",
+            ..
+        })
+    ));
+    assert_eq!(calls, 0);
+    assert_eq!(
+        controller.operations.load(Ordering::Acquire),
+        MAX_OPERATIONS
+    );
+    controller.operations.store(0, Ordering::Release);
+
+    controller.state.lock().unwrap().budgets[5].poll_ms = 0;
+    assert!(matches!(
+        controller.with_fingerprint_operation(&mut |_| calls += 1),
+        Err(ObservationOperationError::Static {
+            kind: io::ErrorKind::TimedOut,
+            ..
+        })
+    ));
+    assert_eq!(calls, 0);
+    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+
+    controller.state.lock().unwrap().budgets[5].poll_ms = 10;
+    controller
+        .with_fingerprint_operation(&mut |operation| {
+            controller.canceled.store(true, Ordering::Release);
+            assert!(matches!(
+                operation.wait_slice_for_observation(),
+                Err(ObservationOperationError::Static {
+                    message: "RAM operation canceled",
+                    ..
+                })
+            ));
+            controller.canceled.store(false, Ordering::Release);
+            assert!(matches!(
+                operation.complete_observation(),
+                Err(ObservationOperationError::Static {
+                    message: "RAM operation already canceled",
+                    ..
+                })
+            ));
+        })
+        .unwrap();
+    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn restore_page_exchange_forwards_the_live_loan_and_releases_source_custody() {
+    use super::super::restore::{RestorePageSource, ValidatedRestoreSource};
+    use super::super::source::{SourceDiagnostic, SourceFetchError};
+    use crucible_protocol::ram_page::{
+        RamPageBinding, RamPageResponse, RamPageStatus, read_ram_page_request,
+        write_ram_page_response,
+    };
+    use crucible_ram::{
+        Limits, MetadataBudget, PageDigest, RegionClass, RegionDescriptor, RegionTree, RootRecord,
+        Scope, Topology,
+    };
+    use std::sync::Weak;
+
+    struct AuditedLoan {
+        controller: Arc<LivePagerController>,
+        source: Mutex<Weak<RestorePageSource>>,
+        mode: u8,
+        callbacks: AtomicUsize,
+    }
+
+    impl SourceOperationFactory for AuditedLoan {
+        fn begin(&self, _: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>> {
+            panic!("borrowed restore must not enter the owned operation factory");
+        }
+
+        fn with_fingerprint_operation(
+            &self,
+            exchange: &mut dyn FnMut(&dyn SourceOperation),
+        ) -> Result<(), ObservationOperationError> {
+            self.controller
+                .with_fingerprint_operation(&mut |operation| {
+                    self.callbacks.fetch_add(1, Ordering::AcqRel);
+                    exchange(operation);
+                    let source = self.source.lock().unwrap().upgrade().unwrap();
+                    // This is still inside the actual LiveOperation loan. The
+                    // page exchange must have returned the connection lock first.
+                    assert!(source.endpoint_descriptors().is_ok());
+                    assert_eq!(self.controller.operations.load(Ordering::Acquire), 1);
+                    if self.mode == 2 {
+                        exchange(operation);
+                    }
+                    if self.mode == 3 {
+                        panic!("factory unwind after the production page exchange");
+                    }
+                })?;
+            if self.mode == 1 {
+                return Err(io::Error::from_raw_os_error(libc::EPIPE).into());
+            }
+            Ok(())
+        }
+    }
+
+    // The source is authenticated through the real fork-source constructor;
+    // this does not prepare mappings or claim native capture/restore authority.
+    for (mode, corrupt, canceled) in [
+        (0, false, false),
+        (0, true, false),
+        (1, true, false),
+        (1, false, false),
+        (2, false, false),
+        (3, false, false),
+        (0, false, true),
+    ] {
+        let controller = Arc::new(controller());
+        let factory = Arc::new(AuditedLoan {
+            controller: controller.clone(),
+            source: Mutex::new(Weak::new()),
+            mode,
+            callbacks: AtomicUsize::new(0),
+        });
+        let owner = PausedPagingOwner::new(
+            crate::args::PluginRamResources {
+                resident_peak_bytes: 8192,
+                backing_peak_bytes: 16384,
+                metadata_bytes: 4096,
+                staging_bytes: 4096,
+                paging_io_slots: 1,
+                cpu_slots: 1,
+                task_slots: 1,
+                file_descriptors: 3,
+            },
+            factory.clone(),
+        )
+        .unwrap();
+        let budget = MetadataBudget::new(1024 * 1024);
+        let digest = PageDigest::hash(b"content").unwrap();
+        let tree = RegionTree::from_page_digests(7, &[digest], &budget).unwrap();
+        let descriptor = RegionDescriptor::new("ram", RegionClass::MutableMain, 7).unwrap();
+        let topology = Topology::new(vec![descriptor], Limits::default()).unwrap();
+        let record = RootRecord::new(topology, Scope::Exact, vec![tree.digest()]).unwrap();
+        let binding = RamPageBinding {
+            session: [1; 16],
+            owner_incarnation: [2; 16],
+            source_generation: 3,
+            root_digest: *record.digest().as_bytes(),
+        };
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let (cancel_read, _cancel_write) = UnixStream::pair().unwrap();
+        let source = ValidatedRestoreSource::bind_fork_source(
+            7,
+            budget,
+            client,
+            cancel_read.into(),
+            binding,
+            &record.encode(),
+            owner,
+        )
+        .unwrap()
+        .into_page_source();
+        *factory.source.lock().unwrap() = Arc::downgrade(&source);
+        controller.canceled.store(canceled, Ordering::Release);
+        let worker = if canceled {
+            server.set_nonblocking(true).unwrap();
+            None
+        } else {
+            let source = source.clone();
+            let controller = controller.clone();
+            Some(std::thread::spawn(move || {
+                let request = read_ram_page_request(&mut server).unwrap();
+                assert_eq!(request.region_ordinal, 0);
+                assert_eq!(request.page_index, 0);
+                assert_eq!(request.sequence, 1);
+                assert!(source.endpoint_descriptors().is_err());
+                assert_eq!(controller.operations.load(Ordering::Acquire), 1);
+                let proof = tree.proof("ram", 0).unwrap().encode();
+                write_ram_page_response(
+                    &mut server,
+                    RamPageResponse {
+                        binding,
+                        sequence: request.sequence,
+                        status: RamPageStatus::Page,
+                        page: if corrupt { b"corrupt" } else { b"content" },
+                        proof: &proof,
+                    },
+                )
+                .unwrap();
+            }))
+        };
+        let mut output = [0xa5; super::super::PAGE_BYTES];
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            source.fetch_with_borrowed_hasher(0, 0, &mut output, None)
+        }));
+        if mode == 3 {
+            assert!(outcome.is_err());
+        } else {
+            let result = outcome.unwrap();
+            if canceled {
+                assert!(matches!(
+                    result,
+                    Err(SourceFetchError::Diagnostic(SourceDiagnostic::Operation {
+                        kind: io::ErrorKind::Interrupted,
+                        message: "RAM operation canceled",
+                    }))
+                ));
+                assert_eq!(factory.callbacks.load(Ordering::Acquire), 0);
+                assert!(output.iter().all(|byte| *byte == 0xa5));
+            } else if corrupt {
+                // The exchange's initiating authentication error wins even
+                // when the factory subsequently supplies a different error.
+                assert!(matches!(
+                    result,
+                    Err(SourceFetchError::Core(
+                        crucible_ram::RamError::DigestMismatch
+                    ))
+                ));
+                assert!(output.iter().all(|byte| *byte == 0xa5));
+            } else if mode == 1 {
+                assert!(
+                    matches!(result, Err(SourceFetchError::Io(error)) if error.raw_os_error() == Some(libc::EPIPE))
+                );
+            } else if mode == 2 {
+                assert!(matches!(
+                    result,
+                    Err(SourceFetchError::Diagnostic(SourceDiagnostic::Operation {
+                        message: "fingerprint operation exchange repeated",
+                        ..
+                    }))
+                ));
+            } else {
+                assert!(matches!(result, Ok((7, actual)) if actual == digest));
+                assert_eq!(&output[..7], b"content");
+                assert!(output[7..].iter().all(|byte| *byte == 0));
+            }
+        }
+        if let Some(worker) = worker {
+            worker.join().unwrap();
+        }
+        assert!(source.endpoint_descriptors().is_ok());
+        assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+        if !canceled {
+            assert_eq!(factory.callbacks.load(Ordering::Acquire), 1);
+        }
+    }
+}

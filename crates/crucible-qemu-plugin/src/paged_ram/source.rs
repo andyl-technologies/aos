@@ -60,6 +60,44 @@ impl NativePageHasher {
     }
 }
 
+/// Owns a supervision refusal without formatting on the observation stack.
+#[derive(Debug)]
+pub(crate) enum ObservationOperationError {
+    /// Moves the original kernel or supervised I/O cause without wrapping it.
+    Io(io::Error),
+    /// Keeps a known refusal unformatted until deferred owner inspection.
+    Static {
+        kind: io::ErrorKind,
+        message: &'static str,
+    },
+}
+
+impl ObservationOperationError {
+    pub(super) fn static_error<const BORROWED: bool>(
+        kind: io::ErrorKind,
+        message: &'static str,
+    ) -> Self {
+        if BORROWED {
+            Self::Static { kind, message }
+        } else {
+            Self::Io(io::Error::new(kind, message))
+        }
+    }
+
+    pub(super) fn into_io(self) -> io::Error {
+        match self {
+            Self::Io(error) => error,
+            Self::Static { kind, message } => io::Error::new(kind, message),
+        }
+    }
+}
+
+impl From<io::Error> for ObservationOperationError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
 /// Live supervision token for one original-start authenticated page exchange.
 ///
 /// Socket bytes, polling, retries and proof CPU work do not renew progress.
@@ -90,6 +128,18 @@ pub(crate) trait SourceOperation: Send + Sync {
     /// # Errors
     /// Refuses expired/canceled authority or a changed original-start cap.
     fn complete(&self) -> io::Result<()>;
+
+    /// Checks observation supervision without constructing owned diagnostics.
+    ///
+    /// # Errors
+    /// Returns the original typed cancellation, expiration or authority cause.
+    fn wait_slice_for_observation(&self) -> Result<Duration, ObservationOperationError>;
+
+    /// Completes an observation while retaining its original typed refusal.
+    ///
+    /// # Errors
+    /// Refuses terminal or changed original-start authority.
+    fn complete_observation(&self) -> Result<(), ObservationOperationError>;
 }
 
 /// Purpose of an authenticated source exchange, independent of RAM placement.
@@ -121,6 +171,18 @@ pub(crate) trait SourceOperationFactory: Send + Sync {
     /// # Errors
     /// Refuses expired/canceled authority, unbounded infrastructure, or capacity.
     fn begin(&self, class: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>>;
+
+    /// Lends one stack-owned fingerprint operation to a synchronous exchange.
+    ///
+    /// The exchange is called exactly once after admission and cannot retain the
+    /// operation reference. The operation closes before this method returns.
+    ///
+    /// # Errors
+    /// Refuses canceled, expired, unavailable or exhausted operation authority.
+    fn with_fingerprint_operation(
+        &self,
+        exchange: &mut dyn FnMut(&dyn SourceOperation),
+    ) -> Result<(), ObservationOperationError>;
 }
 
 /// Keeps logical validation typed until the caller selects its error boundary.
@@ -128,6 +190,8 @@ pub(crate) trait SourceOperationFactory: Send + Sync {
 /// Ordinary reads retain their historical I/O diagnostics. Root-scratch reads
 /// move a logical cause directly into the existing operational failure owner.
 pub(super) enum SourceFetchError {
+    // Spill-lock and counter failures keep their original owner error projection.
+    Owner(crate::ram_error::RamError),
     Core(crucible_ram::RamError),
     Io(io::Error),
     Diagnostic(SourceDiagnostic),
@@ -143,6 +207,14 @@ pub(super) enum SourceDiagnostic {
         kind: io::ErrorKind,
         message: &'static str,
     },
+    Operation {
+        kind: io::ErrorKind,
+        message: &'static str,
+    },
+    Storage {
+        kind: io::ErrorKind,
+        message: &'static str,
+    },
 }
 
 impl std::fmt::Display for SourceDiagnostic {
@@ -150,7 +222,9 @@ impl std::fmt::Display for SourceDiagnostic {
         match self {
             Self::Invalid(message) | Self::Unavailable(message) => formatter.write_str(message),
             Self::Protocol(error) => std::fmt::Display::fmt(error, formatter),
-            Self::Transport { message, .. } => formatter.write_str(message),
+            Self::Transport { message, .. }
+            | Self::Operation { message, .. }
+            | Self::Storage { message, .. } => formatter.write_str(message),
         }
     }
 }
@@ -161,7 +235,9 @@ impl SourceDiagnostic {
             Self::Invalid(message) => invalid(message),
             Self::Unavailable(message) => io::Error::other(message),
             Self::Protocol(error) => invalid(error),
-            Self::Transport { kind, message } => io::Error::new(kind, message),
+            Self::Transport { kind, message }
+            | Self::Operation { kind, message }
+            | Self::Storage { kind, message } => io::Error::new(kind, message),
         }
     }
 }
@@ -178,6 +254,26 @@ impl SourceFetchError {
             Self::Diagnostic(SourceDiagnostic::Invalid(message))
         } else {
             Self::Io(invalid(message))
+        }
+    }
+
+    pub(super) fn storage<const BORROWED: bool>(
+        kind: io::ErrorKind,
+        message: &'static str,
+    ) -> Self {
+        if BORROWED {
+            Self::Diagnostic(SourceDiagnostic::Storage { kind, message })
+        } else {
+            Self::Io(io::Error::new(kind, message))
+        }
+    }
+
+    pub(super) fn from_storage(error: ObservationOperationError) -> Self {
+        match error {
+            ObservationOperationError::Io(error) => Self::Io(error),
+            ObservationOperationError::Static { kind, message } => {
+                Self::Diagnostic(SourceDiagnostic::Storage { kind, message })
+            }
         }
     }
 
@@ -218,8 +314,9 @@ impl SourceFetchError {
         }
     }
 
-    fn into_io(self) -> io::Error {
+    pub(super) fn into_io(self) -> io::Error {
         match self {
+            Self::Owner(error) => io::Error::other(error),
             Self::Core(error) => invalid(error),
             Self::Io(error) => error,
             Self::Diagnostic(error) => error.into_io(),
@@ -228,6 +325,7 @@ impl SourceFetchError {
 
     pub(super) fn into_ram(self) -> crate::ram_error::RamError {
         match self {
+            Self::Owner(error) => error,
             Self::Core(error) => crate::ram_error::RamError::Core(error),
             Self::Io(error) => error.into(),
             Self::Diagnostic(error) => error.into_io().into(),
@@ -238,6 +336,54 @@ impl SourceFetchError {
 impl From<io::Error> for SourceFetchError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
+    }
+}
+
+impl From<ObservationOperationError> for SourceFetchError {
+    fn from(error: ObservationOperationError) -> Self {
+        match error {
+            ObservationOperationError::Io(error) => Self::Io(error),
+            ObservationOperationError::Static { kind, message } => {
+                Self::Diagnostic(SourceDiagnostic::Operation { kind, message })
+            }
+        }
+    }
+}
+
+/// Enforces one exchange and keeps its first cause through factory disposition.
+///
+/// A nonconforming factory cannot perform a second exchange. Successful private
+/// scratch is discarded by the native caller if the factory later refuses.
+pub(super) fn with_observation_operation<T>(
+    factory: &dyn SourceOperationFactory,
+    exchange: impl FnOnce(&dyn SourceOperation) -> Result<T, SourceFetchError>,
+) -> Result<T, SourceFetchError> {
+    let mut exchange = Some(exchange);
+    let mut result = None;
+    let disposition = factory.with_fingerprint_operation(&mut |operation| {
+        let Some(exchange) = exchange.take() else {
+            if !matches!(result, Some(Err(_))) {
+                result = Some(Err(ObservationOperationError::Static {
+                    kind: io::ErrorKind::Other,
+                    message: "fingerprint operation exchange repeated",
+                }
+                .into()));
+            }
+            return;
+        };
+        result = Some(exchange(operation));
+    });
+    match result {
+        Some(Err(error)) => Err(error),
+        Some(Ok(value)) => disposition.map(|()| value).map_err(Into::into),
+        None => match disposition {
+            Err(error) => Err(error.into()),
+            Ok(()) => Err(ObservationOperationError::Static {
+                kind: io::ErrorKind::Other,
+                message: "fingerprint operation exchange absent",
+            }
+            .into()),
+        },
     }
 }
 
@@ -446,7 +592,11 @@ impl LazyPageSource {
                 "source authority is unavailable",
             ));
         }
-        operation.wait_slice()?;
+        if BORROWED {
+            operation.wait_slice_for_observation()?;
+        } else {
+            operation.wait_slice()?;
+        }
         let region = self
             .root
             .topology()
@@ -539,7 +689,11 @@ impl LazyPageSource {
         transport
             .ready(libc::POLLOUT)
             .map_err(|error| transport.source_io_error(error))?;
-        operation.complete()?;
+        if BORROWED {
+            operation.complete_observation()?;
+        } else {
+            operation.complete()?;
+        }
 
         output.fill(0);
         output[..valid_length as usize].copy_from_slice(response.page);
@@ -553,7 +707,7 @@ struct DeadlineTransport<'a, const BORROWED: bool> {
     stream: &'a mut UnixStream,
     cancellation: &'a OwnedFd,
     operation: &'a dyn SourceOperation,
-    diagnostic: Option<SourceDiagnostic>,
+    diagnostic: Option<SourceFetchError>,
 }
 
 impl<const BORROWED: bool> DeadlineTransport<'_, BORROWED> {
@@ -561,7 +715,10 @@ impl<const BORROWED: bool> DeadlineTransport<'_, BORROWED> {
     fn static_error(&mut self, kind: io::ErrorKind, message: &'static str) -> io::Error {
         if BORROWED {
             if self.diagnostic.is_none() {
-                self.diagnostic = Some(SourceDiagnostic::Transport { kind, message });
+                self.diagnostic = Some(SourceFetchError::Diagnostic(SourceDiagnostic::Transport {
+                    kind,
+                    message,
+                }));
             }
             io::Error::from(kind)
         } else {
@@ -571,7 +728,7 @@ impl<const BORROWED: bool> DeadlineTransport<'_, BORROWED> {
 
     fn source_io_error(&mut self, error: io::Error) -> SourceFetchError {
         match self.diagnostic.take() {
-            Some(diagnostic) => SourceFetchError::Diagnostic(diagnostic),
+            Some(error) => error,
             None => SourceFetchError::Io(error),
         }
     }
@@ -581,14 +738,41 @@ impl<const BORROWED: bool> DeadlineTransport<'_, BORROWED> {
         error: crucible_protocol::ram_page::RamPageProtocolError,
     ) -> SourceFetchError {
         match self.diagnostic.take() {
-            Some(diagnostic) => SourceFetchError::Diagnostic(diagnostic),
+            Some(error) => error,
             None => SourceFetchError::from_transport::<BORROWED>(error),
+        }
+    }
+
+    fn supervised_slice(&mut self) -> io::Result<Duration> {
+        let result = if BORROWED {
+            self.operation
+                .wait_slice_for_observation()
+                .map_err(SourceFetchError::from)
+        } else {
+            self.operation.wait_slice().map_err(SourceFetchError::Io)
+        };
+        match result {
+            Ok(slice) => Ok(slice),
+            Err(SourceFetchError::Io(error))
+                if !BORROWED && error.kind() != io::ErrorKind::Interrupted =>
+            {
+                Err(error)
+            }
+            Err(error) => {
+                // read_exact/write_all retry Interrupted. A terminal supervisor
+                // cause must leave the trait loop instead; the exact cause stays
+                // owned until the surrounding source conversion boundary.
+                if self.diagnostic.is_none() {
+                    self.diagnostic = Some(error);
+                }
+                Err(io::ErrorKind::Other.into())
+            }
         }
     }
 
     fn ready(&mut self, events: libc::c_short) -> io::Result<()> {
         loop {
-            let remaining = self.operation.wait_slice()?;
+            let remaining = self.supervised_slice()?;
             if remaining.is_zero() {
                 return Err(
                     self.static_error(io::ErrorKind::TimedOut, "RAM page source deadline expired")
@@ -626,7 +810,7 @@ impl<const BORROWED: bool> DeadlineTransport<'_, BORROWED> {
                 return Err(self.static_error(io::ErrorKind::BrokenPipe, "RAM page source failed"));
             }
             if descriptors[0].revents & (events | libc::POLLHUP) != 0 {
-                self.operation.wait_slice()?;
+                self.supervised_slice()?;
                 return Ok(());
             }
         }
@@ -640,6 +824,14 @@ struct FixedDeadline {
 
 #[cfg(test)]
 impl SourceOperation for FixedDeadline {
+    fn wait_slice_for_observation(&self) -> Result<Duration, ObservationOperationError> {
+        self.wait_slice().map_err(ObservationOperationError::Io)
+    }
+
+    fn complete_observation(&self) -> Result<(), ObservationOperationError> {
+        self.complete().map_err(ObservationOperationError::Io)
+    }
+
     fn wait_slice(&self) -> io::Result<Duration> {
         self.deadline.remaining()
     }
@@ -790,6 +982,14 @@ mod tests {
     struct PollAllowance(Duration);
 
     impl SourceOperation for PollAllowance {
+        fn wait_slice_for_observation(&self) -> Result<Duration, ObservationOperationError> {
+            self.wait_slice().map_err(ObservationOperationError::Io)
+        }
+
+        fn complete_observation(&self) -> Result<(), ObservationOperationError> {
+            self.complete().map_err(ObservationOperationError::Io)
+        }
+
         fn wait_slice(&self) -> io::Result<Duration> {
             Ok(self.0)
         }
@@ -1336,6 +1536,14 @@ mod tests {
     }
 
     impl SourceOperation for LiveOperation {
+        fn wait_slice_for_observation(&self) -> Result<Duration, ObservationOperationError> {
+            self.wait_slice().map_err(ObservationOperationError::Io)
+        }
+
+        fn complete_observation(&self) -> Result<(), ObservationOperationError> {
+            self.complete().map_err(ObservationOperationError::Io)
+        }
+
         // crucible-lint: allow clippy-disallowed-method -- This test-only transport operation checks its original monotonic start against the live allowance.
         #[allow(
             clippy::disallowed_methods,
@@ -1494,5 +1702,205 @@ mod tests {
         assert!(operation.started.elapsed() < Duration::from_secs(1));
         release.send(()).unwrap();
         worker.join().unwrap();
+    }
+
+    struct OneCanceledWait(std::sync::atomic::AtomicUsize, bool);
+
+    impl SourceOperation for OneCanceledWait {
+        fn wait_slice(&self) -> io::Result<Duration> {
+            assert_eq!(
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                0,
+                "owned canceled supervision was retried"
+            );
+            Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "first operation cancellation",
+            ))
+        }
+
+        fn wait_slice_for_observation(&self) -> Result<Duration, ObservationOperationError> {
+            assert_eq!(
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                0,
+                "borrowed canceled supervision was retried"
+            );
+            if self.1 {
+                Err(io::Error::from_raw_os_error(libc::EINTR).into())
+            } else {
+                Err(ObservationOperationError::Static {
+                    kind: io::ErrorKind::Interrupted,
+                    message: "first operation cancellation",
+                })
+            }
+        }
+
+        fn complete(&self) -> io::Result<()> {
+            panic!("canceled exchange completed")
+        }
+        fn complete_observation(&self) -> Result<(), ObservationOperationError> {
+            panic!("canceled exchange completed")
+        }
+    }
+
+    fn canceled_trait_exchange<const BORROWED: bool>(reading: bool, raw: bool) {
+        let (mut client, _server) = UnixStream::pair().unwrap();
+        let (cancel, _held_cancel) = UnixStream::pair().unwrap();
+        let cancellation = OwnedFd::from(cancel);
+        let operation = OneCanceledWait(std::sync::atomic::AtomicUsize::new(0), raw);
+        let mut transport = DeadlineTransport::<BORROWED> {
+            stream: &mut client,
+            cancellation: &cancellation,
+            operation: &operation,
+            diagnostic: None,
+        };
+        let error = if reading {
+            transport.read_exact(&mut [0; 1]).unwrap_err()
+        } else {
+            transport.write_all(&[1]).unwrap_err()
+        };
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(operation.0.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let cause = transport.source_io_error(error);
+        match cause {
+            SourceFetchError::Diagnostic(SourceDiagnostic::Operation { kind, message })
+                if BORROWED && !raw =>
+            {
+                assert_eq!(kind, io::ErrorKind::Interrupted);
+                assert_eq!(message, "first operation cancellation");
+            }
+            SourceFetchError::Io(error) => {
+                assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+                if BORROWED && raw {
+                    assert_eq!(error.raw_os_error(), Some(libc::EINTR));
+                } else {
+                    assert_eq!(error.to_string(), "first operation cancellation");
+                }
+            }
+            _ => panic!("operation cancellation lost its exact original cause"),
+        }
+        assert!(transport.diagnostic.is_none());
+    }
+
+    #[test]
+    fn terminal_supervisor_interrupted_exits_actual_read_and_write_trait_loops() {
+        for reading in [false, true] {
+            canceled_trait_exchange::<false>(reading, false);
+            canceled_trait_exchange::<true>(reading, false);
+            canceled_trait_exchange::<true>(reading, true);
+        }
+    }
+
+    struct InterruptedRead<R> {
+        reader: R,
+        interrupted: bool,
+    }
+
+    impl<R: Read> Read for InterruptedRead<R> {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            self.reader.read(output)
+        }
+    }
+
+    #[test]
+    fn raw_interrupted_read_still_retries_into_actual_socket_transport() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        let (cancel, _held_cancel) = UnixStream::pair().unwrap();
+        let cancellation = OwnedFd::from(cancel);
+        server.write_all(&[7]).unwrap();
+        let operation = PollAllowance(Duration::from_millis(10));
+        let transport = DeadlineTransport::<true> {
+            stream: &mut client,
+            cancellation: &cancellation,
+            operation: &operation,
+            diagnostic: None,
+        };
+        let mut reader = InterruptedRead {
+            reader: transport,
+            interrupted: false,
+        };
+        let mut output = [0];
+        reader.read_exact(&mut output).unwrap();
+        assert!(reader.interrupted);
+        assert_eq!(output, [7]);
+        assert!(reader.reader.diagnostic.is_none());
+    }
+
+    struct LoanFixture {
+        calls: usize,
+        fails_after: bool,
+    }
+
+    impl SourceOperationFactory for LoanFixture {
+        fn begin(&self, _: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>> {
+            panic!("borrowed factory invoked the ordinary owned operation")
+        }
+
+        fn with_fingerprint_operation(
+            &self,
+            exchange: &mut dyn FnMut(&dyn SourceOperation),
+        ) -> Result<(), ObservationOperationError> {
+            let operation = PollAllowance(Duration::from_millis(10));
+            for _ in 0..self.calls {
+                exchange(&operation);
+            }
+            if self.fails_after {
+                Err(ObservationOperationError::Static {
+                    kind: io::ErrorKind::Other,
+                    message: "factory disposition refused",
+                })
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn observation_adapter_refuses_absent_repeat_and_post_callback_failure() {
+        for (calls, fails_after, expected) in [
+            (0, false, "fingerprint operation exchange absent"),
+            (1, true, "factory disposition refused"),
+            (2, false, "fingerprint operation exchange repeated"),
+        ] {
+            let mut effects = 0;
+            let result = with_observation_operation(&LoanFixture { calls, fails_after }, |_| {
+                effects += 1;
+                Ok(12_u32)
+            });
+            assert_eq!(effects, usize::from(calls != 0));
+            assert!(
+                matches!(result, Err(SourceFetchError::Diagnostic(SourceDiagnostic::Operation { message, .. })) if message == expected)
+            );
+        }
+        assert!(matches!(
+            with_observation_operation(
+                &LoanFixture {
+                    calls: 1,
+                    fails_after: false
+                },
+                |_| Ok(17)
+            ),
+            Ok(17)
+        ));
+    }
+
+    #[test]
+    fn observation_adapter_keeps_first_exchange_error_over_factory_and_repeat() {
+        for (calls, fails_after) in [(1, true), (2, false), (2, true)] {
+            let mut effects = 0;
+            let result: Result<(), _> =
+                with_observation_operation(&LoanFixture { calls, fails_after }, |_| {
+                    effects += 1;
+                    Err(io::Error::from_raw_os_error(libc::EIO).into())
+                });
+            assert_eq!(effects, 1);
+            assert!(
+                matches!(result, Err(SourceFetchError::Io(error)) if error.raw_os_error() == Some(libc::EIO))
+            );
+        }
     }
 }

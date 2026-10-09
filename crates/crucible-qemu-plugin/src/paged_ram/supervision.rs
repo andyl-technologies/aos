@@ -71,27 +71,49 @@ impl TransportDeadline {
 /// # Errors
 /// Refuses unavailable or unrepresentable kernel monotonic time.
 pub(super) fn monotonic_ns() -> std::io::Result<u64> {
+    monotonic_ns_for::<false>().map_err(super::source::ObservationOperationError::into_io)
+}
+
+/// Keeps observation clock refusals typed at the original validation point.
+pub(super) fn monotonic_ns_for<const BORROWED: bool>()
+-> Result<u64, super::source::ObservationOperationError> {
+    use super::source::ObservationOperationError;
+
     let mut value = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
     };
     // SAFETY: clock_gettime initializes this live stack value and retains no pointer.
     if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut value) } != 0 {
-        return Err(std::io::Error::last_os_error());
+        return Err(std::io::Error::last_os_error().into());
     }
-    let seconds = u64::try_from(value.tv_sec)
-        .map_err(|_| std::io::Error::other("negative operational monotonic time"))?;
-    let nanos = u64::try_from(value.tv_nsec)
-        .map_err(|_| std::io::Error::other("negative operational monotonic fraction"))?;
+    let seconds = u64::try_from(value.tv_sec).map_err(|_| {
+        ObservationOperationError::static_error::<BORROWED>(
+            std::io::ErrorKind::Other,
+            "negative operational monotonic time",
+        )
+    })?;
+    let nanos = u64::try_from(value.tv_nsec).map_err(|_| {
+        ObservationOperationError::static_error::<BORROWED>(
+            std::io::ErrorKind::Other,
+            "negative operational monotonic fraction",
+        )
+    })?;
     if nanos >= 1_000_000_000 {
-        return Err(std::io::Error::other(
+        return Err(ObservationOperationError::static_error::<BORROWED>(
+            std::io::ErrorKind::Other,
             "invalid operational monotonic fraction",
         ));
     }
     seconds
         .checked_mul(1_000_000_000)
         .and_then(|value| value.checked_add(nanos))
-        .ok_or_else(|| std::io::Error::other("operational monotonic coordinate overflow"))
+        .ok_or_else(|| {
+            ObservationOperationError::static_error::<BORROWED>(
+                std::io::ErrorKind::Other,
+                "operational monotonic coordinate overflow",
+            )
+        })
 }
 
 // crucible-lint: allow clippy-disallowed-method -- This private operational pager deadline samples host monotonic time; its opaque token never enters guest execution state.

@@ -480,7 +480,11 @@ impl PageProof {
         if reader.take(8)? != PROOF_MAGIC {
             return Err(RamError::InvalidEncoding);
         }
-        let id = reader.string(255)?.to_owned();
+        let encoded_id = reader.string(255)?;
+        let mut id = String::new();
+        id.try_reserve_exact(encoded_id.len())
+            .map_err(|_| RamError::Allocation)?;
+        id.push_str(encoded_id);
         let index = reader.u64()?;
         let length = reader.u32()?;
         let page = PageDigest::from_bytes(reader.digest()?);

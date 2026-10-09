@@ -352,6 +352,29 @@ mod tests {
     }
 
     impl SourceOperation for TestOperation {
+        fn wait_slice_for_observation(
+            &self,
+        ) -> Result<std::time::Duration, crate::paged_ram::source::ObservationOperationError>
+        {
+            Err(
+                crate::paged_ram::source::ObservationOperationError::Static {
+                    kind: std::io::ErrorKind::Unsupported,
+                    message: "fixture has no observation authority",
+                },
+            )
+        }
+
+        fn complete_observation(
+            &self,
+        ) -> Result<(), crate::paged_ram::source::ObservationOperationError> {
+            Err(
+                crate::paged_ram::source::ObservationOperationError::Static {
+                    kind: std::io::ErrorKind::Unsupported,
+                    message: "fixture has no observation authority",
+                },
+            )
+        }
+
         fn wait_slice(&self) -> io::Result<std::time::Duration> {
             if self.polls.fetch_add(1, Ordering::Relaxed) >= self.limit {
                 return Err(io::Error::new(

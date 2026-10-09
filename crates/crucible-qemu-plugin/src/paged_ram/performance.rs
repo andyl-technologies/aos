@@ -10,7 +10,8 @@ use crucible_protocol::ram_control::{
 };
 use crucible_ram::{MetadataBudget, MetadataReservation};
 
-use super::supervision::monotonic_ns;
+use super::source::ObservationOperationError;
+use super::supervision::{monotonic_ns, monotonic_ns_for};
 
 /// Holds one fixed interval; no operation samples or queues are retained.
 #[derive(Debug)]
@@ -130,6 +131,30 @@ impl<'a> MeasuredIo<'a> {
         Self::begin_with_clock(bank, class, monotonic_ns)
     }
 
+    pub(super) fn begin_observation(
+        bank: Option<&'a PerformanceBank>,
+        class: RamControlIoClass,
+    ) -> Self {
+        let bank = bank.filter(|bank| bank.begin());
+        let started = bank.and_then(|_| monotonic_ns_for::<true>().ok());
+        Self {
+            bank,
+            started,
+            class,
+        }
+    }
+
+    pub(super) fn finish_observation(self, work: IoWork, success: bool) {
+        if let Some(bank) = self.bank {
+            let elapsed = self.started.and_then(|start| {
+                monotonic_ns_for::<true>()
+                    .ok()
+                    .and_then(|end| end.checked_sub(start))
+            });
+            bank.finish(self.class, work, elapsed, success);
+        }
+    }
+
     fn begin_with_clock(
         bank: Option<&'a PerformanceBank>,
         class: RamControlIoClass,
@@ -185,13 +210,43 @@ pub(super) fn write_all_at(
 fn transfer(
     length: usize,
     offset: u64,
-    mut syscall: impl FnMut(usize, u64) -> io::Result<usize>,
+    syscall: impl FnMut(usize, u64) -> io::Result<usize>,
     writing: bool,
 ) -> (IoWork, io::Result<()>) {
+    let (work, result) = transfer_for::<false>(length, offset, syscall, writing);
+    (work, result.map_err(ObservationOperationError::into_io))
+}
+
+/// Keeps observation transfer refusals owned without constructing diagnostics.
+pub(super) fn read_exact_at_observation(
+    bytes: &mut [u8],
+    offset: u64,
+    mut read: impl FnMut(&mut [u8], u64) -> io::Result<usize>,
+) -> (IoWork, Result<(), ObservationOperationError>) {
+    transfer_for::<true>(
+        bytes.len(),
+        offset,
+        |position, address| read(&mut bytes[position..], address),
+        false,
+    )
+}
+
+fn transfer_for<const BORROWED: bool>(
+    length: usize,
+    offset: u64,
+    mut syscall: impl FnMut(usize, u64) -> io::Result<usize>,
+    writing: bool,
+) -> (IoWork, Result<(), ObservationOperationError>) {
     let mut work = IoWork::default();
     while work.bytes < length as u64 {
         let Some(address) = offset.checked_add(work.bytes) else {
-            return (work, Err(io::Error::other("measured I/O offset overflow")));
+            return (
+                work,
+                Err(ObservationOperationError::static_error::<BORROWED>(
+                    io::ErrorKind::Other,
+                    "measured I/O offset overflow",
+                )),
+            );
         };
         if let Some(next) = work.syscalls.checked_add(1) {
             work.syscalls = next;
@@ -205,12 +260,26 @@ fn transfer(
                 } else {
                     io::ErrorKind::UnexpectedEof
                 };
-                return (work, Err(io::Error::new(kind, "incomplete spill transfer")));
+                return (
+                    work,
+                    Err(ObservationOperationError::static_error::<BORROWED>(
+                        kind,
+                        "incomplete spill transfer",
+                    )),
+                );
             }
             Ok(count) if count <= length - work.bytes as usize => work.bytes += count as u64,
-            Ok(_) => return (work, Err(io::Error::other("invalid syscall byte count"))),
+            Ok(_) => {
+                return (
+                    work,
+                    Err(ObservationOperationError::static_error::<BORROWED>(
+                        io::ErrorKind::Other,
+                        "invalid syscall byte count",
+                    )),
+                );
+            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return (work, Err(error)),
+            Err(error) => return (work, Err(error.into())),
         }
     }
     (work, Ok(()))
@@ -352,5 +421,39 @@ mod tests {
         assert!(!observed.active);
         assert_eq!(observed.pending_operations, 0);
         assert_eq!(observed.io[0].operations, u64::MAX);
+    }
+
+    #[test]
+    fn observation_transfer_retains_partial_work_and_static_errors_before_conversion() {
+        let mut bytes = [0; 9];
+        let mut calls = 0;
+        let (work, result) = read_exact_at_observation(&mut bytes, 4096, |output, offset| {
+            calls += 1;
+            match calls {
+                1 => Err(io::ErrorKind::Interrupted.into()),
+                2 => {
+                    assert_eq!(offset, 4096);
+                    output[..4].fill(1);
+                    Ok(4)
+                }
+                _ => {
+                    assert_eq!(offset, 4100);
+                    Err(io::Error::from_raw_os_error(libc::EIO))
+                }
+            }
+        });
+        assert_eq!((work.bytes, work.syscalls), (4, 3));
+        assert!(
+            matches!(result, Err(ObservationOperationError::Io(error)) if error.raw_os_error() == Some(libc::EIO))
+        );
+        let (work, result) = read_exact_at_observation(&mut bytes, 0, |_, _| Ok(0));
+        assert_eq!((work.bytes, work.syscalls), (0, 1));
+        assert!(matches!(
+            result,
+            Err(ObservationOperationError::Static {
+                kind: io::ErrorKind::UnexpectedEof,
+                message: "incomplete spill transfer",
+            })
+        ));
     }
 }

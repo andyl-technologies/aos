@@ -251,6 +251,18 @@ mod tests {
     struct NoOperationalCalls;
 
     impl SourceOperationFactory for NoOperationalCalls {
+        fn with_fingerprint_operation(
+            &self,
+            _: &mut dyn FnMut(&dyn crate::paged_ram::source::SourceOperation),
+        ) -> Result<(), crate::paged_ram::source::ObservationOperationError> {
+            Err(
+                crate::paged_ram::source::ObservationOperationError::Static {
+                    kind: io::ErrorKind::Unsupported,
+                    message: "fixture has no observation authority",
+                },
+            )
+        }
+
         fn begin(&self, _: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>> {
             Err(io::Error::other(
                 "admission cannot perform operational work",

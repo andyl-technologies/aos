@@ -24,7 +24,9 @@ use crucible_ram::RegionDescriptor;
 
 use super::control::{PagerControl, PagerControlWorker, QuiescedRamControl};
 use super::engine::PausedPagingOwner;
-use super::source::{SourceOperation, SourceOperationClass, SourceOperationFactory};
+use super::source::{
+    ObservationOperationError, SourceOperation, SourceOperationClass, SourceOperationFactory,
+};
 use crate::PluginArgs;
 
 mod admission;
@@ -789,8 +791,14 @@ impl LivePagerController {
 }
 
 fn outer_remaining(cap: RamControlOuterCap) -> io::Result<Option<Duration>> {
+    outer_remaining_for::<false>(cap).map_err(ObservationOperationError::into_io)
+}
+
+fn outer_remaining_for<const BORROWED: bool>(
+    cap: RamControlOuterCap,
+) -> Result<Option<Duration>, ObservationOperationError> {
     if cap.state != RamControlOuterState::Running {
-        return Err(io::Error::new(
+        return Err(ObservationOperationError::static_error::<BORROWED>(
             if cap.state == RamControlOuterState::Canceled {
                 io::ErrorKind::Interrupted
             } else {
@@ -805,11 +813,21 @@ fn outer_remaining(cap: RamControlOuterCap) -> io::Result<Option<Duration>> {
     let deadline = cap
         .original_monotonic_ns
         .checked_add(allowance)
-        .ok_or_else(|| io::Error::other("RAM outer deadline overflow"))?;
+        .ok_or_else(|| {
+            ObservationOperationError::static_error::<BORROWED>(
+                io::ErrorKind::Other,
+                "RAM outer deadline overflow",
+            )
+        })?;
     let remaining = deadline
-        .checked_sub(super::supervision::monotonic_ns()?)
+        .checked_sub(super::supervision::monotonic_ns_for::<BORROWED>()?)
         .filter(|remaining| *remaining > 0)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "RAM original-start cap expired"))?;
+        .ok_or_else(|| {
+            ObservationOperationError::static_error::<BORROWED>(
+                io::ErrorKind::TimedOut,
+                "RAM original-start cap expired",
+            )
+        })?;
     Ok(Some(Duration::from_nanos(remaining)))
 }
 
@@ -860,29 +878,72 @@ impl SourceOperationFactory for LivePagerController {
         operation.wait_slice()?;
         Ok(Box::new(operation))
     }
+
+    fn with_fingerprint_operation(
+        &self,
+        exchange: &mut dyn FnMut(&dyn SourceOperation),
+    ) -> Result<(), ObservationOperationError> {
+        self.operations
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_OPERATIONS).then_some(count + 1)
+            })
+            .map_err(|_| ObservationOperationError::Static {
+                kind: io::ErrorKind::Other,
+                message: "RAM operation slots exhausted",
+            })?;
+        let started = OperationalStart::begin();
+        let operation = LiveOperation {
+            state: self.state.clone(),
+            canceled: self.canceled.clone(),
+            operations: self.operations.clone(),
+            class: 5,
+            started,
+            progress: Mutex::new(OperationProgress {
+                completed_units: 0,
+                last_completed: started,
+            }),
+            terminal: AtomicU8::new(0),
+        };
+        operation.wait_slice_for_observation()?;
+        exchange(&operation);
+        Ok(())
+    }
 }
 
 impl LiveOperation {
     fn current_slice(&self, state: &mut State) -> io::Result<Duration> {
+        self.current_slice_for::<false>(state)
+            .map_err(ObservationOperationError::into_io)
+    }
+
+    fn current_slice_for<const BORROWED: bool>(
+        &self,
+        state: &mut State,
+    ) -> Result<Duration, ObservationOperationError> {
         match self.terminal.load(Ordering::Acquire) {
             0 => {}
             2 => {
-                return Err(io::Error::new(
+                return Err(ObservationOperationError::static_error::<BORROWED>(
                     io::ErrorKind::TimedOut,
                     "RAM operation already expired",
                 ));
             }
             3 => {
-                return Err(io::Error::new(
+                return Err(ObservationOperationError::static_error::<BORROWED>(
                     io::ErrorKind::Interrupted,
                     "RAM operation already canceled",
                 ));
             }
-            _ => return Err(io::Error::other("RAM operation already disposed")),
+            _ => {
+                return Err(ObservationOperationError::static_error::<BORROWED>(
+                    io::ErrorKind::Other,
+                    "RAM operation already disposed",
+                ));
+            }
         }
         if self.class != 0 && self.class != 13 && self.canceled.load(Ordering::Acquire) {
             self.terminal.store(3, Ordering::Release);
-            return Err(io::Error::new(
+            return Err(ObservationOperationError::static_error::<BORROWED>(
                 io::ErrorKind::Interrupted,
                 "RAM operation canceled",
             ));
@@ -891,19 +952,22 @@ impl LiveOperation {
         // control reader to report failure and dispose its retained endpoint.
         if state.failed && self.class != 13 {
             self.terminal.store(4, Ordering::Release);
-            return Err(io::Error::other("RAM authority failed"));
+            return Err(ObservationOperationError::static_error::<BORROWED>(
+                io::ErrorKind::Other,
+                "RAM authority failed",
+            ));
         }
         let outer = if self.class == 13 {
             None
         } else if let Some(cap) = state.outer {
             if state.outer_expired {
                 self.terminal.store(2, Ordering::Release);
-                return Err(io::Error::new(
+                return Err(ObservationOperationError::static_error::<BORROWED>(
                     io::ErrorKind::TimedOut,
                     "RAM original-start cap already terminal",
                 ));
             }
-            match outer_remaining(cap) {
+            match outer_remaining_for::<BORROWED>(cap) {
                 Ok(remaining) => remaining,
                 Err(error) => {
                     state.outer_expired = true;
@@ -918,7 +982,12 @@ impl LiveOperation {
         let progress_elapsed = self
             .progress
             .lock()
-            .map_err(|_| io::Error::other("RAM work progress poisoned"))?
+            .map_err(|_| {
+                ObservationOperationError::static_error::<BORROWED>(
+                    io::ErrorKind::Other,
+                    "RAM work progress poisoned",
+                )
+            })?
             .last_completed
             .elapsed();
         let mut slice = Duration::from_millis(budget.poll_ms);
@@ -937,12 +1006,15 @@ impl LiveOperation {
                 .filter(|remaining| !remaining.is_zero())
                 .ok_or_else(|| {
                     self.terminal.store(2, Ordering::Release);
-                    io::Error::new(io::ErrorKind::TimedOut, "RAM operation allowance expired")
+                    ObservationOperationError::static_error::<BORROWED>(
+                        io::ErrorKind::TimedOut,
+                        "RAM operation allowance expired",
+                    )
                 })?;
             slice = slice.min(remaining);
         }
         if slice.is_zero() {
-            return Err(io::Error::new(
+            return Err(ObservationOperationError::static_error::<BORROWED>(
                 io::ErrorKind::TimedOut,
                 "RAM polling allowance expired",
             ));
@@ -952,6 +1024,39 @@ impl LiveOperation {
 }
 
 impl SourceOperation for LiveOperation {
+    fn wait_slice_for_observation(&self) -> Result<Duration, ObservationOperationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ObservationOperationError::Static {
+                kind: io::ErrorKind::Other,
+                message: "RAM budget ownership poisoned",
+            })?;
+        self.current_slice_for::<true>(&mut state)
+    }
+
+    fn complete_observation(&self) -> Result<(), ObservationOperationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ObservationOperationError::Static {
+                kind: io::ErrorKind::Other,
+                message: "RAM budget ownership poisoned",
+            })?;
+        self.current_slice_for::<true>(&mut state)?;
+        if self
+            .terminal
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(ObservationOperationError::Static {
+                kind: io::ErrorKind::Other,
+                message: "RAM operation already completed",
+            });
+        }
+        Ok(())
+    }
+
     fn wait_slice(&self) -> io::Result<Duration> {
         let mut state = self
             .state

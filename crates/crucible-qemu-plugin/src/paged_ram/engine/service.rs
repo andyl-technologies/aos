@@ -294,6 +294,30 @@ impl FaultService {
             .preserved
             .clone();
         if let Some(record) = record {
+            if BORROWED {
+                let (hasher, root_failure) = match root {
+                    Some(root) => (root.hasher, Some(root.failure)),
+                    None => (None, None),
+                };
+                super::super::source::with_observation_operation(
+                    self.operations.as_ref(),
+                    |operation| {
+                        let spill = self.spill.try_lock().map_err(|_| {
+                            SourceFetchError::Owner(RamError::Invariant(
+                                "spill ownership unavailable",
+                            ))
+                        })?;
+                        spill.read_with_borrowed_hasher(&record, scratch, hasher)?;
+                        drop(spill);
+                        operation.complete_observation()?;
+                        count_completed(&self.counters.preserved_reads)
+                            .map_err(SourceFetchError::Owner)?;
+                        Ok(())
+                    },
+                )
+                .map_err(|error| source_read_failure(error, root_failure))?;
+                return Ok(record.valid_length());
+            }
             let class = if observation {
                 SourceOperationClass::FingerprintUpdate
             } else {
@@ -304,12 +328,7 @@ impl FaultService {
                 .spill
                 .try_lock()
                 .map_err(|_| "spill ownership unavailable")?;
-            if BORROWED {
-                let hasher = root.as_ref().and_then(|root| root.hasher);
-                spill.read_with_borrowed_hasher(&record, scratch, hasher)?;
-            } else {
-                spill.read(&record, scratch)?;
-            }
+            spill.read(&record, scratch)?;
             drop(spill);
             operation.complete()?;
             count_completed(&self.counters.preserved_reads)?;

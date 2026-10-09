@@ -112,22 +112,17 @@ impl RestorePageSource {
         output: &mut [u8; PAGE_BYTES],
         hasher: Option<&NativePageHasher>,
     ) -> Result<(u32, PageDigest), super::source::SourceFetchError> {
-        let operation = self
-            .operations
-            .begin(SourceOperationClass::FingerprintUpdate)?;
-        self.connection
-            .try_lock()
-            .map_err(|_| {
-                super::source::SourceFetchError::unavailable("restore source ownership uncertain")
-            })?
-            .fetch_with_borrowed_hasher(
-                region_ordinal,
-                page_index,
-                operation.as_ref(),
-                output,
-                hasher,
-            )
-            .map(|(length, digest, _)| (length, digest))
+        super::source::with_observation_operation(self.operations.as_ref(), |operation| {
+            self.connection
+                .try_lock()
+                .map_err(|_| {
+                    super::source::SourceFetchError::unavailable(
+                        "restore source ownership uncertain",
+                    )
+                })?
+                .fetch_with_borrowed_hasher(region_ordinal, page_index, operation, output, hasher)
+                .map(|(length, digest, _)| (length, digest))
+        })
     }
 
     fn fetch_with_class(

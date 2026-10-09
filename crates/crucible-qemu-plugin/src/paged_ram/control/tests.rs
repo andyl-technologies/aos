@@ -13,6 +13,22 @@ struct RecordOperation {
 }
 
 impl SourceOperation for RecordOperation {
+    fn wait_slice_for_observation(
+        &self,
+    ) -> Result<std::time::Duration, super::super::source::ObservationOperationError> {
+        Err(super::super::source::ObservationOperationError::Static {
+            kind: std::io::ErrorKind::Unsupported,
+            message: "fixture has no observation authority",
+        })
+    }
+
+    fn complete_observation(&self) -> Result<(), super::super::source::ObservationOperationError> {
+        Err(super::super::source::ObservationOperationError::Static {
+            kind: std::io::ErrorKind::Unsupported,
+            message: "fixture has no observation authority",
+        })
+    }
+
     // crucible-lint: allow clippy-disallowed-method -- This test-only cleanup record samples a host deadline without publishing guest time or execution state.
     #[allow(
         clippy::disallowed_methods,
@@ -31,6 +47,16 @@ impl SourceOperation for RecordOperation {
 }
 
 impl SourceOperationFactory for Controller {
+    fn with_fingerprint_operation(
+        &self,
+        _: &mut dyn FnMut(&dyn SourceOperation),
+    ) -> Result<(), super::super::source::ObservationOperationError> {
+        Err(super::super::source::ObservationOperationError::Static {
+            kind: io::ErrorKind::Unsupported,
+            message: "fixture has no observation authority",
+        })
+    }
+
     // crucible-lint: allow clippy-disallowed-method -- This test-only controller creates the finite original cleanup deadline used by its record.
     #[allow(
         clippy::disallowed_methods,

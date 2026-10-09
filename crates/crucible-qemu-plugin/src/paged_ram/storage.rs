@@ -16,6 +16,7 @@ use std::sync::{Arc, Weak};
 
 use super::PAGE_BYTES;
 use super::performance::{IoWork, MeasuredIo, PerformanceBank};
+use super::source::SourceFetchError;
 use crucible_protocol::ram_control::{RamControlIoClass, RamControlPerformance};
 
 /// Retains one immutable disk slot until every logical reader releases it.
@@ -243,7 +244,7 @@ impl PreservedPages {
         record: &PageRecord,
         bytes: &mut [u8; PAGE_BYTES],
         hasher: Option<&super::source::NativePageHasher>,
-    ) -> io::Result<()> {
+    ) -> Result<(), SourceFetchError> {
         self.read_with_hasher::<true>(
             record,
             bytes,
@@ -275,6 +276,7 @@ impl PreservedPages {
         class: RamControlIoClass,
     ) -> io::Result<()> {
         self.read_with_hasher::<false>(record, bytes, bank, class, None)
+            .map_err(SourceFetchError::into_io)
     }
 
     fn read_with_hasher<const BORROWED: bool>(
@@ -284,15 +286,30 @@ impl PreservedPages {
         bank: Option<&PerformanceBank>,
         class: RamControlIoClass,
         hasher: Option<&super::source::NativePageHasher>,
-    ) -> io::Result<()> {
-        let valid = checked_valid_length(record.0.valid_length)?;
+    ) -> Result<(), SourceFetchError> {
+        let valid = if BORROWED {
+            if record.0.valid_length == 0 || record.0.valid_length as usize > PAGE_BYTES {
+                return Err(SourceFetchError::storage::<true>(
+                    io::ErrorKind::InvalidInput,
+                    "invalid logical page length",
+                ));
+            }
+            record.0.valid_length as usize
+        } else {
+            checked_valid_length(record.0.valid_length)?
+        };
         let end = record
             .0
             .offset
             .checked_add(PAGE_BYTES as u64)
-            .ok_or_else(|| io::Error::other("spill reference overflow"))?;
+            .ok_or_else(|| {
+                SourceFetchError::storage::<BORROWED>(
+                    io::ErrorKind::Other,
+                    "spill reference overflow",
+                )
+            })?;
         if !record.0.offset.is_multiple_of(PAGE_BYTES as u64) || end > self.quota_bytes {
-            return Err(io::Error::new(
+            return Err(SourceFetchError::storage::<BORROWED>(
                 io::ErrorKind::InvalidData,
                 "spill reference exceeds ownership",
             ));
@@ -304,35 +321,56 @@ impl PreservedPages {
             .and_then(Weak::upgrade)
             .is_some_and(|owner| Arc::ptr_eq(&owner, &record.0))
         {
-            return Err(io::Error::new(
+            return Err(SourceFetchError::storage::<BORROWED>(
                 io::ErrorKind::InvalidData,
                 "spill lease belongs to another store",
             ));
         }
         bytes.fill(0);
-        let file = self.file()?;
+        let file = self.file_for_read::<BORROWED>()?;
         if bank.is_some() {
-            let measurement = MeasuredIo::begin(bank, class);
-            let (work, result) = super::performance::read_exact_at(
-                &mut bytes[..valid],
-                record.0.offset,
-                |bytes, offset| file.read_at(bytes, offset),
-            );
-            measurement.finish(work, &result);
-            result?;
+            if BORROWED {
+                let measurement = MeasuredIo::begin_observation(bank, class);
+                let (work, result) = super::performance::read_exact_at_observation(
+                    &mut bytes[..valid],
+                    record.0.offset,
+                    |bytes, offset| file.read_at(bytes, offset),
+                );
+                measurement.finish_observation(work, result.is_ok());
+                result.map_err(SourceFetchError::from_storage)?;
+            } else {
+                let measurement = MeasuredIo::begin(bank, class);
+                let (work, result) = super::performance::read_exact_at(
+                    &mut bytes[..valid],
+                    record.0.offset,
+                    |bytes, offset| file.read_at(bytes, offset),
+                );
+                measurement.finish(work, &result);
+                result?;
+            }
         } else {
             file.read_exact_at(&mut bytes[..valid], record.0.offset)?;
         }
-        self.release_cache(record.0.offset)?;
+        if BORROWED {
+            self.release_cache_for_read::<true>(record.0.offset)?;
+        } else {
+            self.release_cache(record.0.offset)?;
+        }
         let digest = if BORROWED && let Some(hasher) = hasher {
             *hasher.hash(&bytes[..valid])?.as_bytes()
         } else {
             *PageDigest::hash(&bytes[..valid])
-                .map_err(io::Error::other)?
+                .map_err(|error| {
+                    if BORROWED {
+                        SourceFetchError::Core(error)
+                    } else {
+                        SourceFetchError::Io(io::Error::other(error))
+                    }
+                })?
                 .as_bytes()
         };
         if digest != record.0.digest {
-            return Err(io::Error::new(
+            return Err(SourceFetchError::storage::<BORROWED>(
                 io::ErrorKind::InvalidData,
                 "preserved RAM digest mismatch",
             ));
@@ -439,6 +477,12 @@ impl PreservedPages {
             .ok_or_else(|| io::Error::other("spill descriptor already disarmed"))
     }
 
+    fn file_for_read<const BORROWED: bool>(&self) -> Result<&File, SourceFetchError> {
+        self.file.as_ref().ok_or_else(|| {
+            SourceFetchError::storage::<BORROWED>(io::ErrorKind::Other, "spill authority disarmed")
+        })
+    }
+
     fn file(&self) -> io::Result<&File> {
         self.file
             .as_ref()
@@ -446,6 +490,14 @@ impl PreservedPages {
     }
 
     fn release_cache(&self, offset: u64) -> io::Result<()> {
+        self.release_cache_for_read::<false>(offset)
+            .map_err(SourceFetchError::into_io)
+    }
+
+    fn release_cache_for_read<const BORROWED: bool>(
+        &self,
+        offset: u64,
+    ) -> Result<(), SourceFetchError> {
         // DONTNEED requests reduced retention; success does not prove eviction.
         // Spill page cache remains resident memory charged to the node's hard
         // cgroup memory limit, alongside guest pages and admitted host buffers.
@@ -454,14 +506,14 @@ impl PreservedPages {
         // SAFETY: the fd is owned, and offsets are admitted aligned extents.
         let status = unsafe {
             libc::posix_fadvise(
-                self.file()?.as_raw_fd(),
+                self.file_for_read::<BORROWED>()?.as_raw_fd(),
                 offset as i64,
                 PAGE_BYTES as i64,
                 libc::POSIX_FADV_DONTNEED,
             )
         };
         if status != 0 {
-            return Err(io::Error::from_raw_os_error(status));
+            return Err(io::Error::from_raw_os_error(status).into());
         }
         Ok(())
     }
@@ -712,5 +764,61 @@ mod tests {
         assert!(observed.complete);
         assert_eq!(observed.pending_operations, 0);
         assert!(child.performance(false).unwrap().is_none());
+    }
+
+    #[test]
+    fn borrowed_spill_preserves_static_digest_and_raw_io_without_custom_errors() {
+        let file = temporary_file();
+        let witness = file.try_clone().unwrap();
+        let mut storage = unreserved_record_store(file, 2 * PAGE_BYTES as u64);
+        storage
+            .admit_metadata(&MetadataBudget::new(128 * 1024))
+            .unwrap();
+        let record = storage
+            .preserve(&[3; PAGE_BYTES], PAGE_BYTES as u32, 1)
+            .unwrap();
+        let mut output = [0; PAGE_BYTES];
+        assert!(
+            storage
+                .read_with_borrowed_hasher(&record, &mut output, None)
+                .is_ok()
+        );
+        assert_eq!(output, [3; PAGE_BYTES]);
+
+        witness.write_all_at(&[4], record.0.offset).unwrap();
+        let borrowed = storage.read_with_borrowed_hasher(&record, &mut output, None);
+        assert!(matches!(
+            borrowed,
+            Err(SourceFetchError::Diagnostic(
+                super::super::source::SourceDiagnostic::Storage {
+                    kind: io::ErrorKind::InvalidData,
+                    message: "preserved RAM digest mismatch",
+                }
+            ))
+        ));
+        let ordinary = storage.read(&record, &mut output).unwrap_err();
+        assert_eq!(ordinary.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(ordinary.to_string(), "preserved RAM digest mismatch");
+
+        witness.set_len(0).unwrap();
+        assert!(
+            matches!(storage.read_with_borrowed_hasher(&record, &mut output, None),
+            Err(SourceFetchError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof && error.get_ref().is_none())
+        );
+        assert_eq!(
+            storage.read(&record, &mut output).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+
+        let _held_file = storage.file.take();
+        assert!(matches!(
+            storage.read_with_borrowed_hasher(&record, &mut output, None),
+            Err(SourceFetchError::Diagnostic(
+                super::super::source::SourceDiagnostic::Storage {
+                    message: "spill authority disarmed",
+                    ..
+                }
+            ))
+        ));
     }
 }

@@ -637,6 +637,13 @@ impl PausedPagingOwner {
 }
 
 impl SourceOperationFactory for PausedPagingOwner {
+    fn with_fingerprint_operation(
+        &self,
+        exchange: &mut dyn FnMut(&dyn SourceOperation),
+    ) -> Result<(), super::source::ObservationOperationError> {
+        self.operations.with_fingerprint_operation(exchange)
+    }
+
     fn begin(&self, class: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>> {
         self.operations.begin(class)
     }
