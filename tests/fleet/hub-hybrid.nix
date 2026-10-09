@@ -718,7 +718,7 @@
   });
   toolClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
     pname = "hub-hybrid-fleet-tool-closure-info";
-    rootPaths =
+    rootPaths = lib.uniqueBy builtins.toString (
       [
         pkgs.aos.apr
         workerDist
@@ -804,7 +804,8 @@
         sqlObserver
       ]
       ++ lib.optional (nativeBodyObservationTools != null) nativeBodyObservationTools
-      ++ lib.optionals packMemoryEnabled [packMemoryModules packMemoryExporter packMemorySourceDescriptor];
+      ++ lib.optionals packMemoryEnabled [packMemoryModules packMemoryExporter packMemorySourceDescriptor]
+    );
   };
 in {
   name =
