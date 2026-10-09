@@ -30,7 +30,7 @@ impl Serialize for Phase {
 
 impl<'de> Deserialize<'de> for Phase {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match u16::deserialize(deserializer)? {
+        match crate::deserialize_version(deserializer)? {
             0 => Ok(Self::BoundaryControl),
             1 => Ok(Self::Publication),
             2 => Ok(Self::Delivery),

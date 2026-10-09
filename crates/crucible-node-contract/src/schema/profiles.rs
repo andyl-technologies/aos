@@ -77,6 +77,7 @@ pub struct FacetSelection {
     /// Names the selected operation facet.
     pub id: Id,
     /// Selects its positive interface edition.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub version: Version,
     /// Binds the selected operation configuration and schemas.
     pub configuration_ref: ContentRef,
@@ -91,6 +92,7 @@ pub struct FacetSelection {
 #[serde(deny_unknown_fields)]
 pub struct OperatingContract {
     /// Selects the baseline operating schema, version 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Selects exact or quantized timing.
     pub mode: OperatingMode,
@@ -117,6 +119,7 @@ pub struct OperatingContract {
 #[serde(deny_unknown_fields)]
 pub struct GuaranteeProfile {
     /// Selects the baseline guarantee schema, version 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// States qualification or admitted nondeterminism.
     pub repeatability: Repeatability,
@@ -141,6 +144,7 @@ pub struct GuaranteeProfile {
 #[serde(deny_unknown_fields)]
 pub struct CapabilityProfile {
     /// Selects the baseline capability schema, version 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Lists realized operation facets by ID and version.
     pub facets: Vec<FacetSelection>,

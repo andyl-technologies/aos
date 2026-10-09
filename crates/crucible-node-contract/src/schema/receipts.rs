@@ -56,6 +56,7 @@ pub enum ReceiptIssuer {
 #[serde(deny_unknown_fields)]
 pub struct StopReceipt {
     /// Selects baseline stop-receipt schema 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the admitted session.
     pub session_id: Id,
@@ -128,6 +129,7 @@ pub struct PortBound {
 #[serde(deny_unknown_fields)]
 pub struct ActivationManifest {
     /// Selects baseline activation-manifest schema 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the host transaction.
     pub transaction_id: Id,
@@ -172,6 +174,7 @@ pub struct PreparedOwner {
 #[serde(deny_unknown_fields)]
 pub struct ControlReceipt {
     /// Selects baseline control-receipt schema 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Selects the complete record schema.
     pub kind: ControlReceiptKind,

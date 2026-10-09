@@ -73,6 +73,7 @@ pub enum PendingKind {
 #[serde(deny_unknown_fields)]
 pub struct Event {
     /// Selects baseline event schema 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the event within its logical producer.
     pub id: Id,
@@ -106,6 +107,7 @@ pub struct Event {
 #[serde(deny_unknown_fields)]
 pub struct InputBatch {
     /// Selects baseline input-batch schema 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the receiving execution owner.
     pub execution_owner_id: Id,
@@ -126,6 +128,7 @@ pub struct InputBatch {
 #[serde(deny_unknown_fields)]
 pub struct InputAuthorization {
     /// Selects baseline input-authorization schema 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the execution owner.
     pub execution_owner_id: Id,
@@ -152,6 +155,7 @@ pub struct InputAuthorization {
 #[serde(deny_unknown_fields)]
 pub struct ObservationBatch {
     /// Selects baseline observation-batch schema 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the producing execution owner.
     pub execution_owner_id: Id,
@@ -189,6 +193,7 @@ pub struct ObservationBatch {
 #[serde(deny_unknown_fields)]
 pub struct PendingInventory {
     /// Selects baseline pending-inventory schema 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the execution owner.
     pub execution_owner_id: Id,

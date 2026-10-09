@@ -9,6 +9,7 @@ pub struct SchemaRef {
     /// Names the schema.
     pub id: Id,
     /// Selects the positive schema edition.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub version: Version,
     /// Contains the complete verified schema and semantic specification.
     pub definition: ContentRef,
@@ -69,6 +70,7 @@ pub struct PortDescriptor {
 #[serde(deny_unknown_fields)]
 pub struct NodeDescriptor {
     /// Selects the baseline descriptor schema, version 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the semantic node.
     pub id: Id,
@@ -91,6 +93,7 @@ pub struct NodeDescriptor {
 #[serde(deny_unknown_fields)]
 pub struct ConnectionDescriptor {
     /// Selects the baseline connection schema, version 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the connection.
     pub id: Id,

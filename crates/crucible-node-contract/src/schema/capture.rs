@@ -24,6 +24,7 @@ pub enum CaptureRepresentation {
 #[serde(deny_unknown_fields)]
 pub struct CaptureManifest {
     /// Selects baseline capture-manifest schema 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies this complete capture.
     pub capture_id: Id,

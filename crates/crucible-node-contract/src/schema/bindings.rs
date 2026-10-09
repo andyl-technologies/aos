@@ -21,6 +21,7 @@ pub struct ArtifactIdentity {
 #[serde(deny_unknown_fields)]
 pub struct ImplementationIdentity {
     /// Selects the baseline implementation schema, version 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the selected implementation family.
     pub implementation_id: Id,
@@ -39,6 +40,7 @@ pub struct ImplementationIdentity {
 #[serde(deny_unknown_fields)]
 pub struct BindingCompatibility {
     /// Selects the baseline binding schema, version 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the descriptor node.
     pub node_id: Id,
@@ -71,6 +73,7 @@ pub struct BindingCompatibility {
 #[serde(deny_unknown_fields)]
 pub struct LiveAuthority {
     /// Selects the baseline authority schema, version 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the admitted session.
     pub session_id: Id,
@@ -122,6 +125,7 @@ pub struct NodeBindingRef {
 #[serde(deny_unknown_fields)]
 pub struct OwnerBinding {
     /// Selects the baseline owner schema, version 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Declares participants and authoritative state domains.
     pub owner: OwnerRef,
@@ -140,6 +144,7 @@ pub struct OwnerBinding {
 #[serde(deny_unknown_fields)]
 pub struct WorldBinding {
     /// Selects the baseline world schema, version 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Binds the complete scenario identity.
     pub scenario_ref: ContentRef,

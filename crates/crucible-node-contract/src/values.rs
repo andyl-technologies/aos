@@ -91,6 +91,40 @@ pub type OperationId = Id;
 pub type IdSet = Vec<Id>;
 /// Represents a bounded numeric protocol or schema version.
 pub type Version = u16;
+
+/// Deserializes a bounded JSON integer regardless of its numeric token notation.
+///
+/// Portable version fields use this function through `serde(deserialize_with)`.
+/// Integral JSON forms such as `1`, `1.0`, and `1e0` all denote version one.
+/// The selected schema separately determines whether zero is permitted.
+///
+/// # Errors
+/// Rejects nonnumeric values, fractions, nonfinite numbers, negative integers,
+/// and integers exceeding `u16::MAX`. Floating-point conversion uses the same
+/// IEEE-754 and ECMAScript number semantics as CNP/1 canonicalization.
+pub fn deserialize_version<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Version, D::Error> {
+    let number = serde_json::Number::deserialize(deserializer)?;
+    let invalid = || serde::de::Error::custom("expected a JSON integer from 0 through 65535");
+    if let Some(value) = number.as_u64() {
+        return Version::try_from(value).map_err(|_| invalid());
+    }
+
+    // JCS normalizes integral floating-point tokens to their decimal integer
+    // representation. Parsing that representation checks both integrality and
+    // range without truncating, saturating, or casting floating-point values.
+    let value = number
+        .as_f64()
+        .filter(|value| value.is_finite())
+        .ok_or_else(invalid)?;
+    let mut buffer = ryu_js::Buffer::new();
+    buffer
+        .format(value)
+        .parse::<Version>()
+        .map_err(|_| invalid())
+}
+
 /// Carries identity-bearing or negotiated extension values.
 pub type Extensions = std::collections::BTreeMap<String, serde_json::Value>;
 

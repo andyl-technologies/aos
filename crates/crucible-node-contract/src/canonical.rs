@@ -253,6 +253,19 @@ impl Parser<'_> {
         let float = token
             .parse::<f64>()
             .map_err(|_| self.error("invalid finite number"))?;
+        // JSON Schema integer fields accept integral decimal/exponent tokens.
+        // Normalize their correctly rounded value locally; enabling a global
+        // serde feature would change legacy formats outside the CNP boundary.
+        if float.is_finite() {
+            let mut buffer = ryu_js::Buffer::new();
+            let integral = buffer.format(float);
+            if let Ok(value) = integral.parse::<u64>() {
+                return Ok(Value::Number(value.into()));
+            }
+            if let Ok(value) = integral.parse::<i64>() {
+                return Ok(Value::Number(value.into()));
+            }
+        }
         Number::from_f64(float)
             .map(Value::Number)
             .ok_or_else(|| self.error("nonfinite number"))

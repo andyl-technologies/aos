@@ -7,6 +7,7 @@ use super::*;
 #[serde(deny_unknown_fields)]
 pub struct NodeManifest {
     /// Selects the baseline node-manifest schema, version 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the advertised profile.
     pub profile_id: Id,
@@ -31,6 +32,7 @@ pub struct NodeManifest {
 #[serde(deny_unknown_fields)]
 pub struct ProviderManifest {
     /// Selects the baseline provider-manifest schema, version 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the provider.
     pub provider_id: Id,
@@ -53,6 +55,7 @@ pub struct ProviderManifest {
 #[serde(deny_unknown_fields)]
 pub struct RealizationManifest {
     /// Selects the baseline realization schema, version 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the proposed realization.
     pub realization_id: Id,

@@ -19,6 +19,7 @@ pub enum CleanupDisposition {
 #[serde(deny_unknown_fields)]
 pub struct InputCustodyRecord {
     /// Selects baseline control-record schema 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the receiving execution owner.
     pub execution_owner_id: Id,
@@ -76,6 +77,7 @@ impl Validate for InputCustodyRecord {
 #[serde(deny_unknown_fields)]
 pub struct ClosedGateRecord {
     /// Selects baseline control-record schema 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the physically closed gate.
     pub gate_id: Id,
@@ -120,6 +122,7 @@ impl Validate for ClosedGateRecord {
 #[serde(deny_unknown_fields)]
 pub struct ActivationReadyRecord {
     /// Selects baseline control-record schema 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the proposed activation.
     pub activation_id: Id,
@@ -171,6 +174,7 @@ impl Validate for ActivationReadyRecord {
 #[serde(deny_unknown_fields)]
 pub struct UnchangedCutRecord {
     /// Selects baseline control-record schema 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Locates the unchanged modeled boundary.
     pub cut: Position,
@@ -223,6 +227,7 @@ impl Validate for UnchangedCutRecord {
 #[serde(deny_unknown_fields)]
 pub struct CleanupRecord {
     /// Selects baseline control-record schema 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Lists every owner covered by cleanup.
     pub owner_ids: IdSet,
@@ -273,6 +278,7 @@ impl Validate for CleanupRecord {
 #[serde(deny_unknown_fields)]
 pub struct AdmissionRecord {
     /// Selects baseline control-record schema 1.
+    #[serde(deserialize_with = "crate::deserialize_version")]
     pub schema_version: Version,
     /// Identifies the admitted realization.
     pub realization_id: Id,
