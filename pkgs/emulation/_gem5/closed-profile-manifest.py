@@ -56,6 +56,7 @@ def witness(directory, isa, native, installed):
             "mechanism evidence must not promote typed diagnostic coverage")
     require(result["source_dead_before_restore"] is True
             and result.get("source_image_namespace_removed_before_restore") is True
+            and result.get("private_launch_artifact_modes_preserved") is True
             and not (root / "source").exists(),
             "original image or resource namespace survived reconstruction")
     require(result["actual_checksum_matches_native"] is True,
@@ -74,6 +75,7 @@ def witness(directory, isa, native, installed):
                 and branch.get("group_reclaimed") is True
                 and branch.get("fresh_capture_closure") is True
                 and branch.get("restored_with_original_image_namespace_absent") is True
+                and branch.get("private_launch_artifact_modes_preserved") is True
                 and branch["image_sha256"] == closure["image_sha256"]
                 and branch["native_identity"]["original_code_sha256"] == native["sha256"],
                 "fresh reconstruction did not preserve authentic original cut")
@@ -106,6 +108,7 @@ def witness(directory, isa, native, installed):
         "fresh_reconstruction_capture_closure": True,
         "original_image_namespace_absent": True,
         "authenticated_saved_copy_relocation": True,
+        "private_launch_artifact_modes_preserved": True,
         "full_position_single_callback_at_budget_ceiling": True,
         "output_matches_native_checksum": True,
         "image_sha256": closure["image_sha256"], "image_length": closure["image_bytes"],

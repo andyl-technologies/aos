@@ -66,6 +66,7 @@ in
           patch --fuzz=0 -p1 < ${./_dmtcp/capture-mapping-ledger.patch}
           patch --fuzz=0 -p1 < ${./_dmtcp/capture-file-mapping-ledger.patch}
           patch --fuzz=0 -p1 < ${./_dmtcp/restore-saved-file-relocation.patch}
+          patch --fuzz=0 -p1 < ${./_dmtcp/restore-file-mode-preservation.patch}
           ${findutils}/bin/find . -type f -name '*.py' \
             -exec ${sed}/bin/sed -i "1s|^#!.*python.*$|#!${python3}/bin/python3|" {} +
           ${findutils}/bin/find . -type f -name '*.sh' \

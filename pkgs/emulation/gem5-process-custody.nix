@@ -65,6 +65,8 @@ mkDerivation {
         # These are fresh private destinations, never aliases of the original.
         : > child-a/state
         : > child-b/state
+        : > child-a/readonly-map
+        : > child-b/readonly-map
         CRUCIBLE_RESTORE_RESOURCE_ROOT="$PWD/child-a" CRUCIBLE_TEST_COMMAND=2 \
           CRUCIBLE_TEST_COMMAND_SUFFIX=95 CRUCIBLE_TEST_LINE='first
         second' \
@@ -127,10 +129,11 @@ mkDerivation {
 
         # The saved-file artifact remains sufficient after every original
         # owned file and its directory have disappeared.
-        rm origin/state origin/result
+        rm origin/state origin/result origin/readonly-map
         rmdir origin
         mkdir -p child-c tmp-c
         : > child-c/state
+        : > child-c/readonly-map
         CRUCIBLE_RESTORE_RESOURCE_ROOT="$PWD/child-c" CRUCIBLE_TEST_COMMAND=2 \
           CRUCIBLE_TEST_COMMAND_SUFFIX=95 CRUCIBLE_TEST_LINE='first
         second' \

@@ -34,6 +34,8 @@ shutil.copy2(guest, guest_copy)
 installed_owner = resource / "native-owner.py"
 shutil.copy2(owner_script, installed_owner)
 shutil.copy2(Path(owner_script).with_name("native-owner-model.py"), resource / "native-owner-model.py")
+for artifact in (guest_copy, installed_owner, resource / "native-owner-model.py"):
+    artifact.chmod(0o600)
 socket_path = root / "control.sock"
 listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 listener.bind(str(socket_path))
@@ -456,6 +458,8 @@ try:
                 assert rebound["continuation"] == "restored"
                 assert rebound["incarnation"] == f"native/{name}" and rebound["generation"] == "2"
                 assert rebound["boundary"] == cut["after"]
+                assert all((branch / name).stat().st_mode & 0o7777 == 0o600
+                           for name in ("guest.elf", "native-owner.py", "native-owner-model.py"))
                 assert request(fresh, {"kind": "observe"})["boundary"] == cut["after"]
                 fresh_closure = False
                 if os.environ.get("CRUCIBLE_GEM5_REQUIRE_FRESH_CLOSURE"):
@@ -490,6 +494,7 @@ try:
                         "native_identity": fresh_identity, "image_sha256": image_digest,
                         "group_reclaimed": group_reclaimed,
                         "restored_with_original_image_namespace_absent": not source_namespace.exists(),
+                        "private_launch_artifact_modes_preserved": True,
                         "fresh_capture_closure": fresh_closure}
             finally:
                 fresh_listener.close()
@@ -505,6 +510,7 @@ try:
         "actual_checksum_matches_native": True, "exact_profile_qualified": False,
         "source_dead_before_restore": bool(process_tools),
         "source_image_namespace_removed_before_restore": bool(process_tools),
+        "private_launch_artifact_modes_preserved": bool(process_tools),
         "private_concurrent_reconstructions": restored_results if process_tools else [],
         "original_native_identity": original_identity,
         "group_reclaimed": source_group_reclaimed,

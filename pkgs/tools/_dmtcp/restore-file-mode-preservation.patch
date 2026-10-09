@@ -1,0 +1,35 @@
+--- a/src/plugin/ipc/file/fileconnection.cpp
++++ b/src/plugin/ipc/file/fileconnection.cpp
+@@ -275,10 +275,14 @@
+    * file. We need to open it in WRONLY mode here because the file
+    * might have been opened originally in read-only mode.
+    */
+-  int destFileFd = _real_open(_path.c_str(), O_CREAT | O_WRONLY, 0640);
++  int destFileFd = _real_open(_path.c_str(), O_CREAT | O_WRONLY,
++                              _mode & 07777);
+   JASSERT(destFileFd > 0)(JASSERT_ERRNO)(_path)
+   .Text("Error opening file for overwriting");
+   writeFileFromFd(savedFd, destFileFd);
++  // The mode was captured from fstat at the original cut. Copying bytes must
++  // not widen private custody, and the current umask must not narrow it.
++  JASSERT(fchmod(destFileFd, _mode & 07777) == 0) (JASSERT_ERRNO) (_path);
+   _real_close(destFileFd);
+ 
+   // Re-open the (closed) file with the original flags
+@@ -496,7 +500,7 @@
+      *   contents differ from our checkpointed copy.
+      */
+     int fd = _real_open(_path.c_str(), O_CREAT | O_EXCL | O_RDWR,
+-                        S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
++                        _mode & 07777);
+     JASSERT(fd != -1 || errno == EEXIST) (_path) (JASSERT_ERRNO);
+ 
+     if (fd == -1) {
+@@ -508,6 +512,7 @@
+       JTRACE("Copying saved checkpointed file to original location")
+         (_savedFilePath) (_path);
+       writeFileFromFd(srcFd, fd);
++      JASSERT(fchmod(fd, _mode & 07777) == 0) (JASSERT_ERRNO) (_path);
+       _real_close(srcFd);
+       _real_close(fd);
+     }

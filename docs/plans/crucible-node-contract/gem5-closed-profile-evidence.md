@@ -118,6 +118,43 @@ The manifest requires `original_image_namespace_absent` and
 `authenticated_saved_copy_relocation` in each architecture's witness; missing
 historical evidence cannot acquire these facts from artifact remeasurement.
 
+The subsequent mixed-world private-route gate found another independent
+resource defect. The provider's artifact installer relied on the process
+umask, and DMTCP's overwrite path recreated every saved file with hardcoded
+`0640`. Fixing installation to atomic `0600` alone cannot preserve private
+custody across that native overwrite. A focused actual source-exit test with
+both an open `0600` state descriptor and a closed-descriptor read-only shared
+mapping reproduces `0600` to `0640` under the earlier toolkit and refuses.
+
+The additive `restore-file-mode-preservation.patch` uses the native file mode
+captured by `fstat` at the original cut. Both recreation paths create with
+those permission bits and apply the exact saved mode after copying, so the
+current umask cannot widen or narrow it. The focused source-built test verifies
+actual `0600` permissions and mapped bytes after two concurrent reconstructions
+and a third restoration after removing the original owned files. No host
+private-route check is relaxed and no post-readiness chmod is used.
+
+The `dq9b95ikih24j6k24l6sdv8ljdvc2viw-gem5-closed-profile-1` successor package
+requires `0600` guest/controller/model copies before launch and checks their
+actual permissions in both restored branches. Both architecture builder gates
+pass, including complete original namespace deletion and fresh native closure
+audits. Its manifest is 13,074 bytes with SHA-256
+`94311b81cccbc926c674ac4d73011be50ab8fb5bde4cb2121ff03aacaf5aa248`;
+all 27 installed artifact SHA-256/length bindings were independently remeasured.
+Its toolkit is `371xhdd7wgdpak50qlhw1mgg3i83xxbc-dmtcp-4.2.0`, co-retaining
+`5q0gvrmc9xpv7rz7fbvcklq9ic3w481n-dmtcp-4.2.0-source`, with custody helper
+`6p5ybzpqk0035pq4h3sy2vjd79yv4qv1-gem5-process-custody-1` and auditor
+`wiw9c7hl9l2w0vlk4lfg0xax3kb1bw87-gem5-process-image-inventory-1`.
+Its required witness fact is `private_launch_artifact_modes_preserved`.
+Independent installed host witnesses for both architectures also pass the
+complete namespace removal, two simultaneous private `0600` reconstructions,
+each fresh native capture audit, unchanged continuation and process-group
+reaping. The actual copied guest/controller/model modes were read back after
+both restorations.
+The earlier namespace-deletion results do not establish this additional
+production private-route policy, and mixed-world admission still requires its
+own actual passing lifecycle gate.
+
 Command, executed on this machine with remote builders disabled:
 
 ```text
