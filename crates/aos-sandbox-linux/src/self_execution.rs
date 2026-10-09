@@ -210,8 +210,7 @@ fn capture_with<Source: ExecutionObservationSource>(
     source: &mut Source,
 ) -> Result<(Source::Process, ExecutionBaseline), SelfExecutionObservationError> {
     let before = source.scalars()?;
-    let process_id =
-        NonZeroU32::new(before.process_id).ok_or(SelfExecutionObservationError)?;
+    let process_id = NonZeroU32::new(before.process_id).ok_or(SelfExecutionObservationError)?;
     let process = source.open_self(process_id)?;
     let baseline = observe_after_scalars(source, &process, before)?;
     Ok((process, baseline))
