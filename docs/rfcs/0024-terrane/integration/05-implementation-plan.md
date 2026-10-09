@@ -2439,8 +2439,19 @@ Existing malformed-size tests exercise encoder refusal without actual reader
 GET counters. Two additional receiving witnesses are registered in
 `derived-attr-record`: independently encoded invalid manifests must be refused
 after exactly the manifest GET, with a valid control proving chunk reads occur.
-Their isolated test-only implementation and current-source qualification remain
-pending; whole-file plaintext checksum comparison belongs after chunk reads.
+Their current-source qualification remains pending; whole-file plaintext
+checksum comparison belongs after chunk reads.
+Private `53b4f41b78` now implements both witnesses with independently encoded
+wire input, correct identities for those actual bytes and available chunk
+bodies. Each requires the typed manifest refusal after one GET and a valid
+control that reads every referenced chunk through the same reader. The full
+120-line test-only diff is reviewed; stripping it restores the existing tests
+exactly. Its 869-line module remains cohesive. Compilation and runtime are
+queued behind the combined native qualification. On frozen `0c771dc7f9`, all
+three strict Clippy profiles and default/std-send private documentation pass;
+native documentation remains live while waiting for the shared Cargo build
+directory lock. Original handles and source proofs are retained; no invocation
+is restarted and no runtime result follows from these compile checks.
 No task checkbox or milestone status advances.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
