@@ -3,6 +3,7 @@
 //! The actor never enters QEMU replay, BQL, RCU, device, or root observer locks.
 //! Its registered native lifetime remains visible through failed certificates.
 
+use super::super::source::{RootSourceFailure, SourceFetchError};
 use super::*;
 
 mod actor_lifetime;
@@ -14,21 +15,25 @@ pub(super) use actor_lifetime::ActorLifetime;
 /// failure after the source operation and mutex have closed.
 struct BorrowedRootRead<'a> {
     hasher: Option<&'a NativePageHasher>,
-    io_failure: &'a mut Option<io::Error>,
+    failure: &'a mut Option<RootSourceFailure>,
 }
 
-/// Leaves root I/O owned until the callback records its original failure cut.
+/// Leaves root source failures owned until their original failure cut is recorded.
 ///
 /// Ordinary callers retain their original conversion point. This private relay
 /// has no persistent storage; the borrowed slot closes in the same callback.
 pub(super) fn source_read_failure(
-    error: super::super::source::SourceFetchError,
-    root_io: Option<&mut Option<io::Error>>,
+    error: SourceFetchError,
+    root_failure: Option<&mut Option<RootSourceFailure>>,
 ) -> RamError {
-    match (error, root_io) {
-        (super::super::source::SourceFetchError::Io(error), Some(slot)) => {
-            *slot = Some(error);
+    match (error, root_failure) {
+        (SourceFetchError::Io(error), Some(slot)) => {
+            *slot = Some(RootSourceFailure::Io(error));
             RamError::Invariant("root source I/O awaits failure custody")
+        }
+        (SourceFetchError::Diagnostic(error), Some(slot)) => {
+            *slot = Some(RootSourceFailure::Diagnostic(error));
+            RamError::Invariant("root source diagnostic awaits failure custody")
         }
         (error, _) => error.into_ram(),
     }
@@ -315,16 +320,16 @@ impl FaultService {
             .as_ref()
             .ok_or("cold page has no authenticated preservation")?;
         let (valid, _) = if BORROWED {
-            let (hasher, root_io) = match root {
-                Some(root) => (root.hasher, Some(root.io_failure)),
+            let (hasher, root_failure) = match root {
+                Some(root) => (root.hasher, Some(root.failure)),
                 None => (None, None),
             };
             source
                 .fetch_with_borrowed_hasher(arena.native.region_index, page_index, scratch, hasher)
                 // The source mutex and operation close at the historical
-                // conversion boundary. Root I/O stays owned until its caller
+                // conversion boundary. Root causes stay owned until their caller
                 // records the same first-failure cut.
-                .map_err(|error| source_read_failure(error, root_io))?
+                .map_err(|error| source_read_failure(error, root_failure))?
         } else if observation {
             source.fetch_for_observation(arena.native.region_index, page_index, scratch)?
         } else {
@@ -659,7 +664,7 @@ fn read_operational_page<const ROOT_SCRATCH: bool>(
                     .resident;
                 if !resident {
                     let length = if ROOT_SCRATCH {
-                        let mut source_io = None;
+                        let mut source_failure = None;
                         match service.read_cold_with_hasher::<true>(
                             arena,
                             page_index,
@@ -668,13 +673,13 @@ fn read_operational_page<const ROOT_SCRATCH: bool>(
                             bytes,
                             Some(BorrowedRootRead {
                                 hasher,
-                                io_failure: &mut source_io,
+                                failure: &mut source_failure,
                             }),
                         ) {
                             Ok(length) => length,
                             Err(error) => {
-                                if let Some(original) = source_io {
-                                    owner.retain_operational_io_failure(
+                                if let Some(original) = source_failure {
+                                    owner.retain_operational_source_failure(
                                         SourceOperationClass::FingerprintUpdate,
                                         original,
                                     );

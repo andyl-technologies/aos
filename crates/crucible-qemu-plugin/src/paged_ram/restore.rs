@@ -117,7 +117,9 @@ impl RestorePageSource {
             .begin(SourceOperationClass::FingerprintUpdate)?;
         self.connection
             .try_lock()
-            .map_err(|_| io::Error::other("restore source ownership uncertain"))?
+            .map_err(|_| {
+                super::source::SourceFetchError::unavailable("restore source ownership uncertain")
+            })?
             .fetch_with_borrowed_hasher(
                 region_ordinal,
                 page_index,

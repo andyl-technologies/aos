@@ -130,9 +130,84 @@ pub(crate) trait SourceOperationFactory: Send + Sync {
 pub(super) enum SourceFetchError {
     Core(crucible_ram::RamError),
     Io(io::Error),
+    Diagnostic(SourceDiagnostic),
+}
+
+/// Retains source diagnostics without formatting during a borrowed root read.
+#[derive(Debug)]
+pub(super) enum SourceDiagnostic {
+    Invalid(&'static str),
+    Unavailable(&'static str),
+    Protocol(crucible_protocol::ram_page::RamPageProtocolError),
+    Transport {
+        kind: io::ErrorKind,
+        message: &'static str,
+    },
+}
+
+impl std::fmt::Display for SourceDiagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid(message) | Self::Unavailable(message) => formatter.write_str(message),
+            Self::Protocol(error) => std::fmt::Display::fmt(error, formatter),
+            Self::Transport { message, .. } => formatter.write_str(message),
+        }
+    }
+}
+
+impl SourceDiagnostic {
+    fn into_io(self) -> io::Error {
+        match self {
+            Self::Invalid(message) => invalid(message),
+            Self::Unavailable(message) => io::Error::other(message),
+            Self::Protocol(error) => invalid(error),
+            Self::Transport { kind, message } => io::Error::new(kind, message),
+        }
+    }
+}
+
+/// Moves a source cause through the callback-local slot after operation close.
+pub(super) enum RootSourceFailure {
+    Io(io::Error),
+    Diagnostic(SourceDiagnostic),
 }
 
 impl SourceFetchError {
+    fn invalid<const BORROWED: bool>(message: &'static str) -> Self {
+        if BORROWED {
+            Self::Diagnostic(SourceDiagnostic::Invalid(message))
+        } else {
+            Self::Io(invalid(message))
+        }
+    }
+
+    pub(super) fn unavailable(message: &'static str) -> Self {
+        Self::Diagnostic(SourceDiagnostic::Unavailable(message))
+    }
+
+    fn from_protocol<const BORROWED: bool>(
+        error: crucible_protocol::ram_page::RamPageProtocolError,
+    ) -> Self {
+        if BORROWED {
+            Self::Diagnostic(SourceDiagnostic::Protocol(error))
+        } else {
+            Self::Io(invalid(error))
+        }
+    }
+
+    fn from_transport<const BORROWED: bool>(
+        error: crucible_protocol::ram_page::RamPageProtocolError,
+    ) -> Self {
+        if BORROWED {
+            match error {
+                crucible_protocol::ram_page::RamPageProtocolError::Io(error) => Self::Io(error),
+                error => Self::Diagnostic(SourceDiagnostic::Protocol(error)),
+            }
+        } else {
+            Self::Io(transport_error(error))
+        }
+    }
+
     fn from_core<const BORROWED: bool>(error: crucible_ram::RamError) -> Self {
         if BORROWED {
             Self::Core(error)
@@ -147,6 +222,7 @@ impl SourceFetchError {
         match self {
             Self::Core(error) => invalid(error),
             Self::Io(error) => error,
+            Self::Diagnostic(error) => error.into_io(),
         }
     }
 
@@ -154,6 +230,7 @@ impl SourceFetchError {
         match self {
             Self::Core(error) => crate::ram_error::RamError::Core(error),
             Self::Io(error) => error.into(),
+            Self::Diagnostic(error) => error.into_io().into(),
         }
     }
 }
@@ -365,7 +442,9 @@ impl LazyPageSource {
         hasher: Option<&NativePageHasher>,
     ) -> Result<(u32, PageDigest, PageProof), SourceFetchError> {
         if self.poisoned {
-            return Err(invalid("source authority is unavailable").into());
+            return Err(SourceFetchError::invalid::<BORROWED>(
+                "source authority is unavailable",
+            ));
         }
         operation.wait_slice()?;
         let region = self
@@ -373,7 +452,9 @@ impl LazyPageSource {
             .topology()
             .regions()
             .get(region_ordinal as usize)
-            .ok_or_else(|| invalid("source region ordinal is absent"))?;
+            .ok_or_else(|| {
+                SourceFetchError::invalid::<BORROWED>("source region ordinal is absent")
+            })?;
         let valid_length = region
             .geometry()
             .valid_length(page_index)
@@ -381,7 +462,7 @@ impl LazyPageSource {
         let sequence = self
             .sequence
             .checked_add(1)
-            .ok_or_else(|| invalid("source sequence exhausted"))?;
+            .ok_or_else(|| SourceFetchError::invalid::<BORROWED>("source sequence exhausted"))?;
         let request = RamPageRequest {
             binding: self.binding,
             sequence,
@@ -389,37 +470,46 @@ impl LazyPageSource {
             page_index,
         }
         .encode()
-        .map_err(invalid)?;
+        .map_err(SourceFetchError::from_protocol::<BORROWED>)?;
 
         // After admission any error consumes the namespace. This includes
         // partially written requests and replies whose content cannot be trusted.
         self.sequence = sequence;
         self.poisoned = true;
-        let mut transport = DeadlineTransport {
-            stream: self
-                .stream
-                .as_mut()
-                .ok_or_else(|| invalid("source close custody transferred"))?,
-            cancellation: self
-                .cancellation
-                .as_ref()
-                .ok_or_else(|| invalid("source cancellation close custody transferred"))?,
+        let mut transport = DeadlineTransport::<BORROWED> {
+            stream: self.stream.as_mut().ok_or_else(|| {
+                SourceFetchError::invalid::<BORROWED>("source close custody transferred")
+            })?,
+            cancellation: self.cancellation.as_ref().ok_or_else(|| {
+                SourceFetchError::invalid::<BORROWED>(
+                    "source cancellation close custody transferred",
+                )
+            })?,
             operation,
+            diagnostic: None,
         };
-        transport.write_all(&request)?;
-        let frame = read_ram_page_response(&mut transport).map_err(transport_error)?;
-        let response = RamPageResponse::decode(&frame).map_err(invalid)?;
+        transport
+            .write_all(&request)
+            .map_err(|error| transport.source_io_error(error))?;
+        let frame = read_ram_page_response(&mut transport)
+            .map_err(|error| transport.source_protocol_error(error))?;
+        let response =
+            RamPageResponse::decode(&frame).map_err(SourceFetchError::from_protocol::<BORROWED>)?;
         if response.binding != self.binding
             || response.sequence != sequence
             || response.status != RamPageStatus::Page
             || response.page.len() != valid_length as usize
         {
-            return Err(invalid("source response namespace, status, or length mismatch").into());
+            return Err(SourceFetchError::invalid::<BORROWED>(
+                "source response namespace, status, or length mismatch",
+            ));
         }
         let proof = PageProof::decode(response.proof, self.limits)
             .map_err(SourceFetchError::from_core::<BORROWED>)?;
         if proof.region_id() != region.id() || proof.page_index() != page_index {
-            return Err(invalid("source proof coordinate differs from request").into());
+            return Err(SourceFetchError::invalid::<BORROWED>(
+                "source proof coordinate differs from request",
+            ));
         }
         let expected = RamRootDigest::from_bytes(self.binding.root_digest);
         let digest = if BORROWED && let Some(hasher) = hasher {
@@ -446,7 +536,9 @@ impl LazyPageSource {
                 .map_err(SourceFetchError::from_core::<BORROWED>)?
         };
 
-        transport.ready(libc::POLLOUT)?;
+        transport
+            .ready(libc::POLLOUT)
+            .map_err(|error| transport.source_io_error(error))?;
         operation.complete()?;
 
         output.fill(0);
@@ -457,21 +549,50 @@ impl LazyPageSource {
 }
 
 /// Uses one absolute deadline for the complete request and response.
-struct DeadlineTransport<'a> {
+struct DeadlineTransport<'a, const BORROWED: bool> {
     stream: &'a mut UnixStream,
     cancellation: &'a OwnedFd,
     operation: &'a dyn SourceOperation,
+    diagnostic: Option<SourceDiagnostic>,
 }
 
-impl DeadlineTransport<'_> {
-    fn ready(&self, events: libc::c_short) -> io::Result<()> {
+impl<const BORROWED: bool> DeadlineTransport<'_, BORROWED> {
+    /// Relays a known static failure through `Read`/`Write` without formatting.
+    fn static_error(&mut self, kind: io::ErrorKind, message: &'static str) -> io::Error {
+        if BORROWED {
+            if self.diagnostic.is_none() {
+                self.diagnostic = Some(SourceDiagnostic::Transport { kind, message });
+            }
+            io::Error::from(kind)
+        } else {
+            io::Error::new(kind, message)
+        }
+    }
+
+    fn source_io_error(&mut self, error: io::Error) -> SourceFetchError {
+        match self.diagnostic.take() {
+            Some(diagnostic) => SourceFetchError::Diagnostic(diagnostic),
+            None => SourceFetchError::Io(error),
+        }
+    }
+
+    fn source_protocol_error(
+        &mut self,
+        error: crucible_protocol::ram_page::RamPageProtocolError,
+    ) -> SourceFetchError {
+        match self.diagnostic.take() {
+            Some(diagnostic) => SourceFetchError::Diagnostic(diagnostic),
+            None => SourceFetchError::from_transport::<BORROWED>(error),
+        }
+    }
+
+    fn ready(&mut self, events: libc::c_short) -> io::Result<()> {
         loop {
             let remaining = self.operation.wait_slice()?;
             if remaining.is_zero() {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "RAM page source deadline expired",
-                ));
+                return Err(
+                    self.static_error(io::ErrorKind::TimedOut, "RAM page source deadline expired")
+                );
             }
             let milliseconds = remaining.as_millis().clamp(1, 10) as libc::c_int;
             let mut descriptors = [
@@ -497,16 +618,12 @@ impl DeadlineTransport<'_> {
                 return Err(error);
             }
             if descriptors[1].revents != 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::ConnectionAborted,
-                    "RAM page source canceled",
-                ));
+                return Err(
+                    self.static_error(io::ErrorKind::ConnectionAborted, "RAM page source canceled")
+                );
             }
             if descriptors[0].revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "RAM page source failed",
-                ));
+                return Err(self.static_error(io::ErrorKind::BrokenPipe, "RAM page source failed"));
             }
             if descriptors[0].revents & (events | libc::POLLHUP) != 0 {
                 self.operation.wait_slice()?;
@@ -532,7 +649,7 @@ impl SourceOperation for FixedDeadline {
     }
 }
 
-impl Read for DeadlineTransport<'_> {
+impl<const BORROWED: bool> Read for DeadlineTransport<'_, BORROWED> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         if output.is_empty() {
             return Ok(0);
@@ -547,7 +664,7 @@ impl Read for DeadlineTransport<'_> {
     }
 }
 
-impl Write for DeadlineTransport<'_> {
+impl<const BORROWED: bool> Write for DeadlineTransport<'_, BORROWED> {
     fn write(&mut self, input: &[u8]) -> io::Result<usize> {
         if input.is_empty() {
             return Ok(0);
@@ -624,6 +741,273 @@ mod tests {
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(error.to_string(), "malformed logical RAM record");
+    }
+
+    #[test]
+    fn borrowed_source_diagnostics_keep_static_and_protocol_causes_unformatted() {
+        const MESSAGE: &str = "source response namespace, status, or length mismatch";
+        let borrowed = SourceFetchError::invalid::<true>(MESSAGE);
+        let SourceFetchError::Diagnostic(SourceDiagnostic::Invalid(message)) = borrowed else {
+            panic!("borrowed validation must retain its static cause before I/O conversion")
+        };
+        assert_eq!(message.as_ptr(), MESSAGE.as_ptr());
+        assert_eq!(message, MESSAGE);
+        let ordinary = SourceFetchError::invalid::<false>(MESSAGE).into_io();
+        assert_eq!(ordinary.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(ordinary.to_string(), MESSAGE);
+
+        for error in [
+            crucible_protocol::ram_page::RamPageProtocolError::Invalid("bad response magic"),
+            crucible_protocol::ram_page::RamPageProtocolError::Allocation,
+        ] {
+            let expected = error.to_string();
+            let borrowed = SourceFetchError::from_transport::<true>(error);
+            let SourceFetchError::Diagnostic(SourceDiagnostic::Protocol(original)) = borrowed
+            else {
+                panic!("borrowed protocol failure must remain typed")
+            };
+            assert_eq!(original.to_string(), expected);
+        }
+        let raw = SourceFetchError::from_transport::<true>(
+            crucible_protocol::ram_page::RamPageProtocolError::Io(io::Error::from_raw_os_error(
+                libc::EPIPE,
+            )),
+        );
+        assert!(
+            matches!(raw, SourceFetchError::Io(error) if error.raw_os_error() == Some(libc::EPIPE))
+        );
+        let ordinary = SourceFetchError::from_protocol::<false>(
+            crucible_protocol::ram_page::RamPageProtocolError::Invalid("bad response magic"),
+        )
+        .into_io();
+        assert_eq!(ordinary.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            ordinary.to_string(),
+            "invalid RAM page protocol: bad response magic"
+        );
+    }
+
+    struct PollAllowance(Duration);
+
+    impl SourceOperation for PollAllowance {
+        fn wait_slice(&self) -> io::Result<Duration> {
+            Ok(self.0)
+        }
+
+        fn complete(&self) -> io::Result<()> {
+            panic!("a refused poll must not complete the exchange")
+        }
+    }
+
+    #[test]
+    fn borrowed_transport_static_failures_keep_the_first_unallocated_cause() {
+        for (kind, message) in [
+            (io::ErrorKind::TimedOut, "RAM page source deadline expired"),
+            (io::ErrorKind::ConnectionAborted, "RAM page source canceled"),
+            (io::ErrorKind::BrokenPipe, "RAM page source failed"),
+        ] {
+            let (mut client, _server) = UnixStream::pair().unwrap();
+            let (cancel_read, _cancel_write) = UnixStream::pair().unwrap();
+            let cancellation = OwnedFd::from(cancel_read);
+            let operation = PollAllowance(Duration::ZERO);
+            let mut borrowed = DeadlineTransport::<true> {
+                stream: &mut client,
+                cancellation: &cancellation,
+                operation: &operation,
+                diagnostic: None,
+            };
+
+            let status = borrowed.static_error(kind, message);
+            assert_eq!(status.kind(), kind);
+            assert!(status.get_ref().is_none());
+            let later = borrowed.static_error(io::ErrorKind::Other, "later poll refusal");
+            assert!(later.get_ref().is_none());
+            let retained = borrowed.source_protocol_error(
+                crucible_protocol::ram_page::RamPageProtocolError::Io(status),
+            );
+
+            let SourceFetchError::Diagnostic(SourceDiagnostic::Transport {
+                kind: original_kind,
+                message: original_message,
+            }) = retained
+            else {
+                panic!("borrowed transport must retain its exact first static cause")
+            };
+            assert_eq!(original_kind, kind);
+            assert_eq!(original_message.as_ptr(), message.as_ptr());
+            assert!(borrowed.diagnostic.is_none());
+            let raw = borrowed.source_io_error(io::Error::from_raw_os_error(libc::EPIPE));
+            assert!(
+                matches!(raw, SourceFetchError::Io(error) if error.raw_os_error() == Some(libc::EPIPE))
+            );
+
+            let mut ordinary = DeadlineTransport::<false> {
+                stream: &mut client,
+                cancellation: &cancellation,
+                operation: &operation,
+                diagnostic: None,
+            };
+            let status = ordinary.static_error(kind, message);
+            let SourceFetchError::Io(error) = ordinary.source_io_error(status) else {
+                panic!("ordinary transport must retain its original I/O conversion")
+            };
+            assert_eq!(error.kind(), kind);
+            assert_eq!(error.to_string(), message);
+            assert!(ordinary.diagnostic.is_none());
+        }
+    }
+
+    fn poll_refusal<const BORROWED: bool>(cancel: bool) -> SourceFetchError {
+        let (mut client, _server) = UnixStream::pair().unwrap();
+        let (cancel_read, mut cancel_write) = UnixStream::pair().unwrap();
+        if cancel {
+            cancel_write.write_all(&[1]).unwrap();
+        }
+        let cancellation = OwnedFd::from(cancel_read);
+        let operation = PollAllowance(if cancel {
+            Duration::from_millis(10)
+        } else {
+            Duration::ZERO
+        });
+        let mut transport = DeadlineTransport::<BORROWED> {
+            stream: &mut client,
+            cancellation: &cancellation,
+            operation: &operation,
+            diagnostic: None,
+        };
+
+        let error = transport.ready(libc::POLLOUT).err().unwrap();
+        transport.source_io_error(error)
+    }
+
+    #[test]
+    fn deadline_and_actual_cancellation_poll_preserve_ordinary_diagnostics() {
+        for cancel in [false, true] {
+            let expected_kind = if cancel {
+                io::ErrorKind::ConnectionAborted
+            } else {
+                io::ErrorKind::TimedOut
+            };
+            let expected_message = if cancel {
+                "RAM page source canceled"
+            } else {
+                "RAM page source deadline expired"
+            };
+            let SourceFetchError::Diagnostic(diagnostic) = poll_refusal::<true>(cancel) else {
+                panic!("borrowed polling must keep the static diagnostic out of custom I/O")
+            };
+            assert!(
+                matches!(&diagnostic, SourceDiagnostic::Transport { kind, message } if *kind == expected_kind && *message == expected_message)
+            );
+            assert_eq!(diagnostic.to_string(), expected_message);
+
+            let SourceFetchError::Io(error) = poll_refusal::<false>(cancel) else {
+                panic!("ordinary polling must preserve its original error representation")
+            };
+            assert_eq!(error.kind(), expected_kind);
+            assert_eq!(error.to_string(), expected_message);
+        }
+    }
+
+    #[test]
+    // crucible-lint: allow clippy-disallowed-method -- This exchange keeps the original finite source deadline while comparing ordinary and borrowed failure custody.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test-only original source deadline"
+    )]
+    fn source_response_failures_preserve_output_poison_and_completion_order() {
+        for borrowed in [false, true] {
+            for malformed_header in [false, true] {
+                let (root, tree, binding) = fixture();
+                let (client, mut server) = UnixStream::pair().unwrap();
+                let (cancel_read, _cancel_write) = UnixStream::pair().unwrap();
+                let mut source = LazyPageSource::bind(
+                    client,
+                    cancel_read.into(),
+                    binding,
+                    &root.encode(),
+                    *root.topology().digest().as_bytes(),
+                    Limits::default(),
+                )
+                .unwrap();
+                let worker = std::thread::spawn(move || {
+                    let request = read_ram_page_request(&mut server).unwrap();
+                    if malformed_header {
+                        server
+                            .write_all(
+                                &[0; crucible_protocol::ram_page::RAM_PAGE_RESPONSE_HEADER_BYTES],
+                            )
+                            .unwrap();
+                    } else {
+                        let proof = tree.proof("machine.main", 0).unwrap().encode();
+                        write_ram_page_response(
+                            &mut server,
+                            RamPageResponse {
+                                binding,
+                                sequence: request.sequence + 1,
+                                status: RamPageStatus::Page,
+                                page: b"content",
+                                proof: &proof,
+                            },
+                        )
+                        .unwrap();
+                    }
+                });
+                let operation = LiveOperation {
+                    started: Instant::now(),
+                    total_ms: std::sync::atomic::AtomicU64::new(1000),
+                    completed: std::sync::atomic::AtomicBool::new(false),
+                };
+                let mut output = [0xa5; PAGE_BYTES];
+
+                let result = if borrowed {
+                    source.fetch_with_page_hasher::<true>(0, 0, &operation, &mut output, None)
+                } else {
+                    source.fetch_with_page_hasher::<false>(0, 0, &operation, &mut output, None)
+                };
+
+                let error = result.err().unwrap();
+                if borrowed {
+                    match (&error, malformed_header) {
+                        (SourceFetchError::Diagnostic(SourceDiagnostic::Protocol(_)), true) => {}
+                        (
+                            SourceFetchError::Diagnostic(SourceDiagnostic::Invalid(message)),
+                            false,
+                        ) => {
+                            assert_eq!(
+                                *message,
+                                "source response namespace, status, or length mismatch"
+                            );
+                        }
+                        _ => {
+                            panic!("borrowed exchange must retain the unformatted initiating cause")
+                        }
+                    }
+                } else {
+                    let SourceFetchError::Io(error) = error else {
+                        panic!("ordinary exchange must preserve its original I/O diagnostic")
+                    };
+                    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                    assert_eq!(
+                        error.to_string(),
+                        if malformed_header {
+                            "invalid RAM page protocol: wire edition or magic"
+                        } else {
+                            "source response namespace, status, or length mismatch"
+                        }
+                    );
+                }
+                assert_eq!(output, [0xa5; PAGE_BYTES]);
+                assert!(source.poisoned);
+                assert_eq!(source.sequence, 1);
+                assert!(
+                    !operation
+                        .completed
+                        .load(std::sync::atomic::Ordering::Acquire)
+                );
+                worker.join().unwrap();
+            }
+        }
     }
 
     struct BorrowedHashState<'a> {

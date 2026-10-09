@@ -3,13 +3,25 @@
 //! The immutable slot owns the original typed error. Later cleanup failures and
 //! generic native dispatch statuses cannot replace a backing errno or its cut.
 
+use super::super::source::{RootSourceFailure, SourceDiagnostic};
 use super::*;
 
 /// A cause retained without adding shared ownership during a root read.
-#[derive(Debug)]
 pub(super) enum RetainedCause {
     Ram(RamError),
     Io(io::Error),
+    Source(SourceDiagnostic),
+}
+
+impl std::fmt::Debug for RetainedCause {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Inspection formats the retained payload; callback retention only moves it.
+        match self {
+            Self::Ram(error) => formatter.debug_tuple("Ram").field(error).finish(),
+            Self::Io(error) => formatter.debug_tuple("Io").field(error).finish(),
+            Self::Source(error) => formatter.debug_tuple("Source").field(error).finish(),
+        }
+    }
 }
 
 /// The original failure of this actual owner, independent of guest fault evidence.
@@ -80,6 +92,31 @@ impl PausedPagingOwner {
         self.failed.store(true, Ordering::Release);
     }
 
+    /// Retains a borrowed source cause after its operation and mutex have closed.
+    ///
+    /// Diagnostics remain typed until the owner is inspected outside native
+    /// hashing. The immutable slot preserves the initiating message and cut.
+    pub(super) fn retain_operational_source_failure(
+        &self,
+        class: SourceOperationClass,
+        error: RootSourceFailure,
+    ) {
+        match error {
+            RootSourceFailure::Io(error) => self.retain_operational_io_failure(class, error),
+            RootSourceFailure::Diagnostic(error) => {
+                let _ = self
+                    .first_operational_failure
+                    .set(RetainedOperationalFailure {
+                        class,
+                        policy_revision: self.requested_policy_revision.load(Ordering::Acquire),
+                        topology_generation: self.topology_generation.load(Ordering::Acquire),
+                        error: RetainedCause::Source(error),
+                    });
+                self.failed.store(true, Ordering::Release);
+            }
+        }
+    }
+
     pub(super) fn writeback_failure(&self, error: RamError) -> RamError {
         self.retain_operational_failure(SourceOperationClass::Writeback, &error);
         error
@@ -106,6 +143,7 @@ impl RetainedOperationalFailure {
             }
         };
         let cause = match &self.error {
+            RetainedCause::Source(_) => RamControlFailureCause::Io { errno: 0 },
             RetainedCause::Io(error) => RamControlFailureCause::Io {
                 errno: error.raw_os_error().filter(|errno| *errno > 0).unwrap_or(0),
             },
@@ -178,7 +216,7 @@ mod tests {
         let original = root_io
             .take()
             .unwrap_or_else(|| panic!("root I/O must stay owned before callback retention"));
-        owner.retain_operational_io_failure(SourceOperationClass::FingerprintUpdate, original);
+        owner.retain_operational_source_failure(SourceOperationClass::FingerprintUpdate, original);
         owner.requested_policy_revision.store(4, Ordering::Release);
         owner.retain_operational_failure_owned(
             SourceOperationClass::Cleanup,
@@ -204,6 +242,64 @@ mod tests {
             report.cause,
             RamControlFailureCause::Io { errno: libc::EPIPE }
         );
+    }
+
+    #[test]
+    fn root_source_diagnostic_relay_keeps_display_projection_and_first_cut() {
+        const MESSAGE: &str = "source response namespace, status, or length mismatch";
+        for diagnostic in [
+            SourceDiagnostic::Invalid(MESSAGE),
+            SourceDiagnostic::Protocol(crucible_protocol::ram_page::RamPageProtocolError::Invalid(
+                "bad response magic",
+            )),
+            SourceDiagnostic::Protocol(
+                crucible_protocol::ram_page::RamPageProtocolError::Allocation,
+            ),
+            SourceDiagnostic::Unavailable("restore source ownership uncertain"),
+            SourceDiagnostic::Transport {
+                kind: io::ErrorKind::ConnectionAborted,
+                message: "RAM page source canceled",
+            },
+        ] {
+            let expected = diagnostic.to_string();
+            let owner = observation_owner();
+            let mut slot = None;
+
+            let dispatch = super::super::service::source_read_failure(
+                super::super::super::source::SourceFetchError::Diagnostic(diagnostic),
+                Some(&mut slot),
+            );
+            assert!(matches!(dispatch, RamError::Invariant(_)));
+            owner.retain_operational_source_failure(
+                SourceOperationClass::FingerprintUpdate,
+                slot.take()
+                    .unwrap_or_else(|| panic!("source diagnostic must stay owned")),
+            );
+            owner.requested_policy_revision.store(4, Ordering::Release);
+            owner.retain_operational_io_failure(
+                SourceOperationClass::Cleanup,
+                io::Error::from_raw_os_error(libc::EPIPE),
+            );
+
+            let retained = owner
+                .operational_failure()
+                .unwrap_or_else(|| panic!("initiating source failure must remain retained"));
+            let RetainedCause::Source(original) = &retained.error else {
+                panic!("root source diagnostic must not become a custom I/O allocation")
+            };
+            assert_eq!(original.to_string(), expected);
+            assert_eq!(retained.policy_revision, 3);
+            assert_eq!(retained.topology_generation, 7);
+            assert_eq!(
+                retained.to_wire().cause,
+                RamControlFailureCause::Io { errno: 0 }
+            );
+            assert_eq!(
+                retained.to_wire().operation,
+                RamControlFailureOperation::FingerprintUpdate
+            );
+            assert!(owner.failed.load(Ordering::Acquire));
+        }
     }
 
     #[test]
