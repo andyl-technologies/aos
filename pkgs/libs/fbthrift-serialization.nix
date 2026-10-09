@@ -24,7 +24,8 @@
 }: let
   version = "2026.10.9";
   revision = "59610f475b20849393834479d9bc3b4a58ff57bc";
-  libraries = [folly fmt boost gflags glog gcc-libs openssl zlib zstd xxhash]
+  libraries =
+    [folly fmt boost gflags glog gcc-libs openssl zlib zstd xxhash]
     ++ (folly.propagatedDeps or []);
   prefixPath = lib.concatStringsSep ";" (map toString ([boost.dev] ++ libraries));
   runtimeLibraryDirectories = map (package: "${package}/lib") libraries;
@@ -32,8 +33,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -57,16 +69,19 @@ in
         expected = "The compiler generates bindings without an error.";
         files."answer.thrift" = "namespace cpp2 qualification\nstruct Answer { 1: i32 value; }\n";
         artifacts = [];
-        steps = [{
-          argv = ["@out@/bin/thrift1" "--gen" "mstch_cpp2" "answer.thrift"];
-          exit_code = 0;
-          stdout.exact = "";
-        } {
-          argv = ["@python@" "-c" "from pathlib import Path; assert Path('gen-cpp2/answer_types.h').is_file()"];
-          exit_code = 0;
-          stdout.exact = "";
-          stderr.exact = "";
-        }];
+        steps = [
+          {
+            argv = ["@out@/bin/thrift1" "--gen" "mstch_cpp2" "answer.thrift"];
+            exit_code = 0;
+            stdout.exact = "";
+          }
+          {
+            argv = ["@python@" "-c" "from pathlib import Path; assert Path('gen-cpp2/answer_types.h').is_file()"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+        ];
       };
       badInput = {
         input = "A structure with an incomplete field declaration.";
@@ -74,12 +89,14 @@ in
         expected = "The compiler rejects the schema.";
         files."invalid.thrift" = "struct Invalid { 1: i32 }\n";
         artifacts = [];
-        steps = [{
-          argv = ["@out@/bin/thrift1" "--gen" "mstch_cpp2" "invalid.thrift"];
-          exit_code = 1;
-          observes_rejection = true;
-          stdout.exact = "";
-        }];
+        steps = [
+          {
+            argv = ["@out@/bin/thrift1" "--gen" "mstch_cpp2" "invalid.thrift"];
+            exit_code = 1;
+            observes_rejection = true;
+            stdout.exact = "";
+          }
+        ];
       };
     };
 
