@@ -30,7 +30,6 @@ use std::fs;
 use std::io::{self, Read as _, Write as _};
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
 use std::time::Duration;
 
 use aos_sandbox::journal::{
