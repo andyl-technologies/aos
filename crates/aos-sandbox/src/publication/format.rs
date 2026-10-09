@@ -1,4 +1,9 @@
-//! Encloses sole lower structural history in private Native identities.
+//! Retains private Native acceptance at the existing publication decode boundaries.
+//!
+//! The sole Protocol parser returns inert complete history and recovered artifacts.
+//! These fixed functions project its errors into the existing flat Native variants
+//! and enclose the result at the original private scope. They do not expose a public
+//! raw-history acceptance factory, authenticate signatures or select Journal state.
 
 use super::*;
 

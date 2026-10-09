@@ -1,4 +1,20 @@
-//! Owns complete non-authorizing immutable dispatch template DATA.
+//! Owns immutable dispatch templates, semantic correlation and deadline framing.
+//!
+//! Templates retain exact signed-plan bytes, a closed broker method, a deadline-free
+//! body and descriptor roles in transport order. Their digests commit to these
+//! values; privileged brokers independently authenticate and derive request semantics.
+//!
+//! Deadline framing preserves the existing protobuf fields and appends field 5 to
+//! the first common header, re-encoding only its length prefix:
+//!
+//! ```text
+//! deadline-free = 0x0a | varint(header-length) | header | remaining-fields
+//! attempt       = 0x0a | varint(new-header-length) | header | 0x28
+//!                 | varint(deadline-boottime-nanoseconds) | remaining-fields
+//! ```
+//!
+//! The framing helpers validate wire structure rather than method-specific semantics.
+//! They do not sample a clock, authenticate a plan or grant permission to dispatch.
 
 use aos_proto::aos::sandbox::local::v1::{BrokerDescriptorRole, BrokerMethod, RuntimeAction};
 use aos_sandbox_core::format::decode_broker_authorization_plan;
@@ -260,6 +276,16 @@ fn validate_descriptor_roles(
     Ok(())
 }
 
+/// Checks whether a plan contains one matching grant within the supplied bounds.
+///
+/// The match compares verb, target and argument commitment, then request-byte and
+/// descriptor ceilings. It does not authenticate the plan, derive body semantics
+/// or establish currentness.
+///
+/// # Errors
+///
+/// Returns [`BrokerDispatchTemplateError::PlanGrantMismatch`] when no single grant
+/// matches all supplied values and bounds.
 pub fn match_plan_grant(
     plan: &BrokerAuthorizationPlan,
     semantics: BrokerDispatchSemanticIdentityV1,
@@ -297,6 +323,11 @@ fn template_digest(
     )
 }
 
+/// Hashes exact template parts under the fixed V1 template domain.
+///
+/// The signature bytes, broker method, semantic identity, body bytes and descriptor
+/// transport order all affect the digest. Hashing performs no validation or
+/// signature authentication; callers establish the parts' structural consistency.
 pub fn template_digest_from_parts(
     plan_digest: ObjectDigest,
     plan_signature: &[u8],
@@ -327,6 +358,10 @@ pub fn template_digest_from_parts(
     ObjectDigest::from_bytes(digest.finalize().into())
 }
 
+/// Hashes a semantic correlation value under its distinct fixed V1 domain.
+///
+/// The digest commits to the verb, encoded grant target and argument commitment.
+/// It does not prove that any request body has those semantics.
 pub fn semantic_identity_digest(
     semantics: BrokerDispatchSemanticIdentityV1,
 ) -> ObjectDigest {
@@ -374,6 +409,11 @@ fn locate_deadline_free_header(body: &[u8]) -> Result<(usize, usize), BrokerDisp
     Ok((start, end))
 }
 
+/// Checks deadline-free protobuf framing and room for the maximum deadline field.
+///
+/// The check requires one first common header without a deadline, valid remaining
+/// wire fields and the fixed request-byte ceiling. It does not derive method
+/// semantics or authenticate the request.
 pub fn validate_durable_deadline_free_body(body: &[u8]) -> bool {
     body.len()
         .checked_add(MAXIMUM_DEADLINE_FIELD_BYTES)
@@ -381,6 +421,10 @@ pub fn validate_durable_deadline_free_body(body: &[u8]) -> bool {
         && locate_deadline_free_header(body).is_ok()
 }
 
+/// Checks exact equality with the supplied deadline's injected attempt bytes.
+///
+/// This is a framing and byte comparison, without clock sampling or a separate
+/// request-size admission check. The caller owns those runtime checks.
 pub fn validate_durable_attempt_body(
     deadline_free_body: &[u8],
     deadline_boottime_nanoseconds: u64,
@@ -451,6 +495,15 @@ fn skip_wire_value(
     }
 }
 
+/// Injects a supplied deadline into a structurally valid deadline-free header.
+///
+/// The original header and remaining fields retain their bytes and order. This
+/// helper neither samples a clock nor enforces the separate request-byte ceiling.
+///
+/// # Errors
+///
+/// Returns [`DeadlineInjectionError`] for invalid deadline-free wire framing or
+/// overflow in the new header length, length conversion or reserved capacity.
 pub fn inject_deadline(body: &[u8], deadline: u64) -> Result<Vec<u8>, DeadlineInjectionError> {
     let (header_start, header_end) =
         locate_deadline_free_header(body).map_err(|_| DeadlineInjectionError)?;
@@ -511,6 +564,7 @@ fn encode_varint(mut value: u64, output: &mut [u8; 10]) -> usize {
     }
 }
 
+/// Reports a closed deadline-injection refusal for malformed framing or length arithmetic.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("attempt body exceeds the fixed V1 bound")]
 pub struct DeadlineInjectionError;

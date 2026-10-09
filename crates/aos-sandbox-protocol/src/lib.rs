@@ -27,6 +27,9 @@
 //! and bounded client-state reducers without adopting requests or authorizing effects.
 //! [`cache_state`] owns pure Cache quota/reservation, catalog, and physical
 //! partition DATA without native custody, protected currentness, or admission.
+//! [`dispatch_template`] owns immutable template DATA, digests and deadline framing.
+//! [`publication`] owns complete canonical history and structural recovery; accepted
+//! Native publication identities, Journal selection and activation remain upper.
 
 pub mod authenticated_session;
 pub mod authorization_artifact;

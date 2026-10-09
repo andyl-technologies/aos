@@ -1,10 +1,22 @@
-//! Canonical lease-independent authority draft validation and encoding.
+//! Owns canonical lease-independent draft validation and template encoding.
 //!
-//! The bounded controller-local format is:
+//! The bounded controller-local format uses big-endian integers and length-prefixed
+//! byte strings. Each template preserves plan/signature bytes and descriptor order:
 //!
 //! ```text
-//! magic | version | manifest | audiences | canonical template sequence
+//! draft = AOSCDRF1 | version:u16 | manifest:bytes | audience-count:u32
+//!         | audience:u8 * count | template-count:u32 | template * count
+//! bytes = length:u32 | raw bytes
+//! template = digest:32 | audience:u8 | plan:bytes | signature:bytes | method:i32
+//!            | deadline-free-body:bytes | role-count:u32 | role:i32 * count
+//!            | verb:u32 | grant-target | argument-commitment:32
+//! grant-target = 1 | 2 + resource:32 | 3 + previous:32 + successor:32
 //! ```
+//!
+//! The fresh-template writer is shared by drafts and proposals; their distinct
+//! outer size checks remain at their respective validation boundaries. Recovered
+//! templates retain their own stored shape. These recipes perform structural DATA
+//! validation, not signature authentication or live publication admission.
 
 use super::*;
 

@@ -12,6 +12,9 @@
 //! this store intentionally owns no trust anchors or public keys. Journal
 //! recovery therefore does not replace cryptographic verification by the
 //! privileged broker before dispatch.
+//! Protocol owns the complete canonical history codec and structural recovery.
+//! This Native owner retains private accepted identities, Journal selection and
+//! atomic activation; raw lower history cannot publicly construct those identities.
 //! Durable publication encoding and its isolated journal namespace use one
 //! exact V1 schema. Unknown keys and non-V1 values fail closed as corruption.
 
@@ -844,16 +847,39 @@ impl From<PublicationHistoryError> for AuthorityPublicationError {
     }
 }
 
+/// Prepares a Native publication identity from one complete typed proposal.
+///
+/// The fixed preparation path validates structural completeness and bounds before
+/// privately enclosing the history. It does not publish a Journal record or replace
+/// the privileged broker's signature verification before dispatch.
+///
+/// # Errors
+///
+/// Returns [`AuthorityPublicationError`] for invalid or incomplete audiences,
+/// unsupported audiences, substituted assignment/ownership context or an oversized
+/// canonical publication.
 pub fn prepare_authority_publication(proposal: AuthorityPublicationProposalV1) -> Result<PreparedAuthorityPublicationV1, AuthorityPublicationError> {
     let history = proposal.prepare().map_err(AuthorityPublicationError::from)?;
     Ok(PreparedAuthorityPublicationV1 { history })
 }
 
+/// Prepares a Native publication identity by binding a draft to typed ownership artifacts.
+///
+/// The fixed path checks claim, lease and receipt context before privately enclosing
+/// the complete structural history. It neither commits the publication nor
+/// establishes present Journal selection.
+///
+/// # Errors
+///
+/// Returns [`AuthorityPublicationError::ContextMismatch`] for substituted context,
+/// [`AuthorityPublicationError::PublicationTooLarge`] for an oversized encoding, or
+/// [`AuthorityPublicationError::InvalidDraft`] for failed complete validation.
 pub fn bind_authority_publication_lease(draft: AuthorityPublicationDraftV1, claim: &OwnershipClaimV1, lease: SignedOwnershipLease) -> Result<PreparedAuthorityPublicationV1, AuthorityPublicationError> {
     let history = draft.bind_lease(claim, lease).map_err(AuthorityPublicationError::from)?;
     Ok(PreparedAuthorityPublicationV1 { history })
 }
 
+/// Binds an effect to one exact template selected from a checked publication draft.
 ///
 /// The audience, broker method, deadline-free body, and semantic identity
 /// are derived from the selected template and cannot be substituted by the

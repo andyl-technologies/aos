@@ -1,14 +1,26 @@
-//! Durable V1 prepared/current codecs and structural recovery validation.
+//! Owns the sole bounded V1 prepared/current codec and structural recovery engine.
 //!
-//! The isolated journal namespace contains two bounded record shapes:
+//! The Native Journal owner uses these DATA encodings in its isolated namespace:
 //!
 //! ```text
-//! prepared/<digest> = complete publication bytes
-//! current/<sandbox> = metadata header | complete publication bytes
+//! prepared/<digest> = complete AOSCPUB1 publication bytes
+//! current/<sandbox> = AOSCPUB1 | version:u16 | sandbox:16 | incarnation:16
+//!                    | epoch:u64 | desired-generation:u64 | assignment-digest:32
+//!                    | node:16 | lease-generation:u64 | lease-digest:32
+//!                    | publication-digest:32 | publication-length:u64 | publication
 //! ```
+//!
+//! Fixed integers are big-endian; the current envelope header occupies 186 bytes.
+//! Recovery retains the complete canonical bytes and decoded artifacts, checking
+//! their digests and cross-links without signature verification, Journal selection
+//! or construction of an accepted Native publication identity.
 
 use super::*;
 
+/// Encodes a history as a current-record envelope with its fixed metadata header.
+///
+/// The encoded name does not establish currentness; the Native Journal owner
+/// controls whether this record becomes selected.
 pub fn encode_current(prepared: &PublicationHistoryV1) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(176 + prepared.bytes.len());
     bytes.extend_from_slice(MAGIC);
@@ -31,6 +43,16 @@ pub fn encode_current(prepared: &PublicationHistoryV1) -> Vec<u8> {
     bytes
 }
 
+/// Decodes a bounded current envelope and its complete structural publication.
+///
+/// The result retains the history, recovered lease and templates from this decode.
+/// No signature or present Journal selection is authenticated.
+///
+/// # Errors
+///
+/// Returns [`PublicationHistoryError`] for invalid framing, length or version,
+/// digest mismatches, unsupported encoded values or inconsistent canonical
+/// publication cross-links.
 pub fn decode_current(
     bytes: &[u8],
 ) -> Result<DecodedPublicationCurrentV1, PublicationHistoryError> {
@@ -98,6 +120,14 @@ pub fn decode_current(
     })
 }
 
+/// Decodes complete prepared bytes with an expected publication digest.
+///
+/// The returned history is structural DATA, without currentness or Native acceptance.
+///
+/// # Errors
+///
+/// Returns [`PublicationHistoryError`] for malformed or oversized encodings,
+/// digest mismatches or inconsistent canonical publication cross-links.
 pub fn decode_prepared(
     bytes: &[u8],
     expected_digest: ObjectDigest,
@@ -105,11 +135,16 @@ pub fn decode_prepared(
     decode_prepared_with_artifacts(bytes, expected_digest).map(|(prepared, _)| prepared)
 }
 
-/// Retains the same prepared decode's already-validated historical artifacts.
+/// Decodes a prepared history and retains the artifacts from that same complete pass.
+///
+/// The returned artifacts own the decoded manifest, lease and templates. Their
+/// borrowed accessors neither clone nor reparse them. Structural validation does
+/// not verify signatures or construct an accepted Native publication identity.
 ///
 /// # Errors
 ///
-/// Preserves prepared decoding's exact structural, digest and cross-link errors.
+/// Returns [`PublicationHistoryError`] for malformed or oversized encodings,
+/// digest mismatches or inconsistent canonical publication cross-links.
 pub fn decode_prepared_with_artifacts(
     bytes: &[u8],
     expected_digest: ObjectDigest,

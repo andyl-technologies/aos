@@ -1,4 +1,26 @@
-//! Owns inert complete controller publication history DATA.
+//! Owns complete canonical publication history and its structural recovery.
+//!
+//! Drafts freeze lease-independent inputs; proposals combine typed signed artifacts;
+//! [`PublicationHistoryV1`] retains the resulting byte-exact historical bundle.
+//! Decoding checks framing, bounds, digests and cross-links. It neither verifies
+//! signature authenticity nor establishes a current owner or permission to dispatch.
+//! Native publication owners retain Journal selection, acceptance and activation.
+//!
+//! The V1 formats use big-endian fixed integers and `u32`-length-prefixed byte strings:
+//!
+//! ```text
+//! draft    = AOSCDRF1 | version:u16 | manifest:bytes | audiences | templates
+//! prepared = AOSCPUB1 | version:u16 | manifest:bytes | lease:bytes | signature:bytes
+//!            | receipt:bytes | receipt-signature:bytes | audiences | templates
+//! current  = AOSCPUB1 | version:u16 | fixed assignment/lease/digest header
+//!            | publication-length:u64 | prepared
+//! audiences = count:u32 | audience:u8 * count
+//! templates = count:u32 | canonical template records * count
+//! ```
+//!
+//! The draft and complete-publication digests have distinct domain prefixes.
+//! Current and prepared key helpers describe storage DATA; they do not access a
+//! Journal or authenticate the bytes stored under those keys.
 
 use std::collections::BTreeMap;
 
@@ -31,7 +53,9 @@ const MAXIMUM_TEMPLATES: usize = 256;
 const JOURNAL_RECORD_BYTES: usize = 16 * 1024 * 1024;
 const JOURNAL_RECORD_HEADER_BYTES: usize = 7;
 const CURRENT_HEADER_BYTES: usize = 186;
+/// Prefixes a current-record key followed by the 16 raw sandbox-ID bytes.
 pub const CURRENT_KEY_PREFIX: &[u8] = b"aos.sandbox.publication.current.v1/";
+/// Prefixes a prepared-record key followed by the 32 raw publication-digest bytes.
 pub const PREPARED_KEY_PREFIX: &[u8] = b"aos.sandbox.publication.prepared.v1/";
 const DRAFT_MAGIC: &[u8; 8] = b"AOSCDRF1";
 const DRAFT_VERSION: u16 = 1;
@@ -44,7 +68,7 @@ pub const MAXIMUM_PUBLICATION_BYTES: usize = JOURNAL_RECORD_BYTES
     - 16
     - CURRENT_HEADER_BYTES;
 
-/// Freezes lease-independent controller authority inputs for one assignment.
+/// Freezes structurally checked, lease-independent publication inputs for one assignment.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorityPublicationDraftV1 {
     manifest: CanonicalAssignmentManifestV1,
@@ -133,12 +157,18 @@ impl AuthorityPublicationDraftV1 {
     }
 
 
-    /// Binds checked ownership artifacts and prepares the current V1 publication.
+    /// Binds typed ownership artifacts into a complete publication history.
+    ///
+    /// The claim, lease and receipt must match the draft's assignment and ownership
+    /// authority. This structural binding does not select a current publication,
+    /// reverify signatures or grant permission to perform an effect.
     ///
     /// # Errors
     ///
-    /// Returns [`PublicationHistoryError`] if the lease does not match the
-    /// manifest and common authority or complete publication validation fails.
+    /// Returns [`PublicationHistoryError::ContextMismatch`] for substituted lease,
+    /// claim or receipt context, [`PublicationHistoryError::PublicationTooLarge`]
+    /// for an oversized encoding, or [`PublicationHistoryError::InvalidDraft`]
+    /// when complete publication validation fails.
     pub fn bind_lease(
         self,
         claim: &OwnershipClaimV1,
@@ -220,7 +250,10 @@ pub struct AuthorityPublicationProposalV1 {
 }
 
 impl AuthorityPublicationProposalV1 {
-    /// Constructs one non-durable publication proposal.
+    /// Retains typed inputs as a non-durable publication proposal.
+    ///
+    /// This constructor performs no completeness or cross-link checks; [`Self::prepare`]
+    /// performs those checks before producing a complete structural history.
     #[must_use]
     pub fn new(
         manifest: CanonicalAssignmentManifestV1,
@@ -236,7 +269,10 @@ impl AuthorityPublicationProposalV1 {
         }
     }
 
-    /// Validates completeness and freezes exact durable bytes.
+    /// Validates completeness and freezes exact bytes as non-authorizing history.
+    ///
+    /// The result does not establish currentness or replace privileged signature
+    /// verification before dispatch.
     ///
     /// # Errors
     ///
@@ -279,7 +315,11 @@ impl AuthorityPublicationProposalV1 {
     }
 }
 
-/// Carries one complete validated bundle before its atomic journal commit.
+/// Retains one structurally validated, non-authorizing publication history.
+///
+/// Its immutable fields and canonical bytes describe a complete historical bundle.
+/// They do not prove cryptographic authenticity, current Journal selection or a
+/// live dispatch decision. Native accepted publication identities remain separate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicationHistoryV1 {
     manifest: CanonicalAssignmentManifestV1,
@@ -300,7 +340,7 @@ pub struct PublicationHistoryV1 {
     bytes: Vec<u8>,
 }
 
-/// Retains one exact ownership lease recovered from the current publication.
+/// Retains one exact ownership lease structurally recovered from publication bytes.
 ///
 /// This type proves canonical structure and publication cross-links, not
 /// signature authenticity. It therefore cannot authorize a privileged effect.
@@ -352,7 +392,7 @@ impl RecoveredOwnershipLeaseV1 {
     }
 }
 
-/// Retains one exact non-authorizing dispatch template recovered as current.
+/// Retains one exact non-authorizing dispatch template recovered from publication bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveredBrokerDispatchTemplateV1 {
     digest: ObjectDigest,
@@ -422,6 +462,10 @@ impl RecoveredBrokerDispatchTemplateV1 {
     }
 }
 
+/// Owns the manifest, lease and templates retained by one complete prepared decode.
+///
+/// The artifacts have checked canonical structure and publication cross-links.
+/// They carry no proof of signature authenticity or current Native acceptance.
 #[derive(Debug)]
 pub struct RecoveredPublicationArtifactsV1 {
     manifest: CanonicalAssignmentManifestV1,
@@ -435,7 +479,7 @@ pub struct RecoveredPublicationArtifactsV1 {
 /// # Errors
 ///
 /// Rejects a malformed/mismatched historical publication or an optional exact
-/// lease quartet that differs from its canonical retained publication bytes.
+/// lease/signature pair that differs from its canonical retained publication bytes.
 pub fn validate_historical_output_publication_v1(
     bytes: &[u8],
     expected_digest: ObjectDigest,
@@ -450,6 +494,7 @@ pub fn validate_historical_output_publication_v1(
     Ok(())
 }
 
+/// Decodes a complete historical publication and returns its retained lease.
 ///
 /// This structural readback authenticates no signature or current owner. The
 /// complete decode precedes any later supported-carrier classification.
@@ -473,10 +518,12 @@ fn publication_digest(bytes: &[u8]) -> ObjectDigest {
     ObjectDigest::from_bytes(digest.finalize().into())
 }
 
+/// Constructs a current-record key from the fixed prefix and raw sandbox ID.
 pub fn current_key(sandbox: SandboxId) -> Vec<u8> {
     [CURRENT_KEY_PREFIX, sandbox.as_bytes()].concat()
 }
 
+/// Constructs a prepared-record key from the fixed prefix and raw publication digest.
 pub fn prepared_key(digest: ObjectDigest) -> Vec<u8> {
     [PREPARED_KEY_PREFIX, digest.as_bytes()].concat()
 }
@@ -585,70 +632,97 @@ fn take_bytes<'a>(
 
 
 impl PublicationHistoryV1 {
+    /// Returns the canonical assignment manifest retained by this history.
     pub const fn manifest(&self) -> &CanonicalAssignmentManifestV1 {
         &self.manifest
     }
 
+    /// Returns the historical sandbox ID.
     pub const fn sandbox(&self) -> SandboxId {
         self.sandbox
     }
 
+    /// Borrows the exact 16-byte historical incarnation.
     pub const fn incarnation(&self) -> &[u8; 16] {
         &self.incarnation
     }
 
+    /// Returns the historical assignment epoch.
     pub const fn epoch(&self) -> u64 {
         self.epoch
     }
 
+    /// Returns the historical desired generation.
     pub const fn desired_generation(&self) -> u64 {
         self.desired_generation
     }
 
+    /// Returns the canonical assignment-manifest digest.
     pub const fn assignment_digest(&self) -> ObjectDigest {
         self.assignment_digest
     }
 
+    /// Borrows the exact 16-byte historical node ID.
     pub const fn node(&self) -> &[u8; 16] {
         &self.node
     }
 
+    /// Returns the historical ownership-lease generation.
     pub const fn lease_generation(&self) -> u64 {
         self.lease_generation
     }
 
+    /// Returns the retained canonical ownership-lease digest.
     pub const fn lease_digest(&self) -> ObjectDigest {
         self.lease_digest
     }
 
+    /// Borrows the ownership receipt authority key reference.
     pub const fn receipt_authority(&self) -> &KeyReference {
         &self.receipt_authority
     }
 
+    /// Returns the retained ownership receipt action.
     pub const fn receipt_action(&self) -> OwnershipClaimAction {
         self.receipt_action
     }
 
+    /// Borrows the exact 16-byte ownership receipt request ID.
     pub const fn receipt_request_id(&self) -> &[u8; 16] {
         &self.receipt_request_id
     }
 
+    /// Returns the retained ownership receipt claim digest.
     pub const fn receipt_claim_digest(&self) -> ObjectDigest {
         self.receipt_claim_digest
     }
 
+    /// Returns the lease-independent source-draft digest.
     pub const fn source_draft_digest(&self) -> ObjectDigest {
         self.source_draft_digest
     }
 
+    /// Returns the domain-separated digest of the complete publication bytes.
     pub const fn digest(&self) -> ObjectDigest {
         self.digest
     }
 
+    /// Borrows the exact complete canonical publication bytes.
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.bytes
     }
 
+    /// Checks the pure historical context and generation ordering of a successor.
+    ///
+    /// This comparison performs no Journal lookup, currentness check or admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublicationHistoryError::ContextMismatch`] first when the sandbox
+    /// or receipt authority differs, then [`PublicationHistoryError::GenerationRollback`]
+    /// for decreasing assignment or lease generations, then
+    /// [`PublicationHistoryError::GenerationEquivocation`] for conflicting identities
+    /// at equal generations.
     pub fn require_successor(&self, next: &Self) -> Result<(), PublicationHistoryError> {
         if next.sandbox != self.sandbox || next.receipt_authority != self.receipt_authority {
             return Err(PublicationHistoryError::ContextMismatch);
@@ -698,15 +772,21 @@ impl RecoveredOwnershipLeaseV1 {
 }
 
 impl RecoveredPublicationArtifactsV1 {
+    /// Borrows the templates retained by this same complete prepared decode.
     pub fn templates(&self) -> &[RecoveredBrokerDispatchTemplateV1] {
         &self.templates
     }
 
+    /// Borrows the lease retained by this same decode without cloning or reverifying it.
     pub const fn lease(&self) -> &RecoveredOwnershipLeaseV1 {
         &self.lease
     }
 }
 
+/// Owns the structural result of decoding a complete current-record envelope.
+///
+/// The current-record name describes the stored format. Decoding does not prove
+/// that a Journal presently selects these bytes or establish Native acceptance.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecodedPublicationCurrentV1 {
     history: PublicationHistoryV1,
@@ -715,11 +795,17 @@ pub struct DecodedPublicationCurrentV1 {
 }
 
 impl DecodedPublicationCurrentV1 {
+    /// Consumes the decode result into its history, lease and templates in that order.
+    ///
+    /// The owned artifacts come from the same complete decode and move without
+    /// cloning or another parser pass. This decomposition establishes no current
+    /// authority and performs no Native acceptance.
     pub fn into_parts(self) -> (PublicationHistoryV1, RecoveredOwnershipLeaseV1, Vec<RecoveredBrokerDispatchTemplateV1>) {
         (self.history, self.lease, self.templates)
     }
 }
 
+/// Reports structural publication input, historical ordering or bounded-codec failures.
 #[derive(Debug, thiserror::Error)]
 pub enum PublicationHistoryError {
     /// A lease-independent draft is malformed, non-canonical, or substituted.
@@ -728,7 +814,7 @@ pub enum PublicationHistoryError {
     /// Required audiences or templates are empty, unsorted, duplicated, or incomplete.
     #[error("authority publication audience set is invalid or incomplete")]
     IncompleteAudienceSet,
-    /// Guardian authority cannot use the generic broker publication format.
+    /// The selected audience is unsupported by this generic V1 publication format.
     #[error("guardian authority is not supported by generic broker publication")]
     UnsupportedBrokerAudience,
     /// Manifest, lease, plan, node, or ownership signer differs.
