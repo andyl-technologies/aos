@@ -338,6 +338,7 @@ fn prefix_staging_prepays_fixed_capacity_and_returns_original_credit() {
 
     assert_eq!(pending.slots.len(), MARK_SLOTS);
     assert_eq!(pending.slots.capacity(), MARK_SLOTS);
+    assert_eq!(pending.page.capacity(), MARK_GROUP_PAGE);
     assert_eq!(
         available_resident_bytes(resources.as_ref()),
         before - initial - promoted
@@ -546,4 +547,177 @@ fn promotion_refusal_keeps_the_committed_small_root_and_original_page() {
     pending.flush(&mut marks, &operation).unwrap();
     assert_eq!(marks.len(), MARK_PROMOTION as u64 + 1);
     assert!(marks.contains(&next).unwrap());
+}
+
+#[test]
+fn first_nibble_group_matches_point_and_page_roots_and_rejects_invalid_input() {
+    let mut fixture = super::super::tests::operation::ComponentGcOperation::new();
+    let operation = fixture.context();
+    let backend = counted(operation.marks());
+    let marks = Reachability::with_backend(backend.clone(), operation.original()).unwrap();
+    let account = mark_account(operation.original()).unwrap();
+    let _scope = account.enter();
+    let _credit = operation
+        .reserve_array::<MarkEntry>(MARK_GROUP_PAGE + 1)
+        .unwrap();
+    let mut entries = Vec::with_capacity(MARK_GROUP_PAGE + 1);
+    for index in 0..MARK_GROUP_PAGE as u64 {
+        let id = page(index);
+        let mut digest = mark_key(id).as_bytes();
+        digest[0] &= 0x0f;
+        entries.push((CampaignHash::from_bytes(digest), id));
+    }
+    entries.sort_unstable_by_key(|entry| entry.0);
+    assert!(entries.windows(2).all(|pair| pair[0].0 < pair[1].0));
+
+    let mut point = marks.root;
+    for (key, value) in &entries {
+        point = marks.map.insert(point.content_id(), *key, *value).unwrap();
+    }
+    let mut pages = marks.root;
+    for chunk in entries.chunks(MARK_PAGE) {
+        pages = marks
+            .map
+            .insert_batch_with_boundary(pages.content_id(), chunk, &account, &mut || {
+                operation.check()
+            })
+            .unwrap();
+    }
+    backend.publications.store(0, Ordering::Relaxed);
+    backend.objects.store(0, Ordering::Relaxed);
+    let grouped = marks
+        .map
+        .insert_prefix_batch_with_boundary(marks.root.content_id(), &entries, &account, &mut || {
+            operation.check()
+        })
+        .unwrap();
+
+    assert_eq!(grouped, point);
+    assert_eq!(grouped, pages);
+    assert_eq!(grouped.entry_count(), MARK_GROUP_PAGE as u64);
+    let nodes = backend.objects.load(Ordering::Relaxed);
+    assert!(nodes > MARK_PAGE as u64);
+    assert_eq!(
+        backend.publications.load(Ordering::Relaxed),
+        nodes.div_ceil(MARK_PAGE as u64)
+    );
+    // A new reader authenticates nodes in the final partial publication too.
+    assert_eq!(
+        marks
+            .map
+            .get(grouped.content_id(), entries.last().unwrap().0)
+            .unwrap(),
+        Some(entries.last().unwrap().1)
+    );
+
+    let reads = backend.reads.load(Ordering::Relaxed);
+    let publications = backend.publications.load(Ordering::Relaxed);
+    let mut other = entries[1].0.as_bytes();
+    other[0] |= 0x10;
+    for invalid in [
+        [entries[0], entries[0]],
+        [entries[1], entries[0]],
+        [entries[0], (CampaignHash::from_bytes(other), entries[1].1)],
+    ] {
+        assert!(matches!(
+            marks.map.insert_prefix_batch_with_boundary(
+                marks.root.content_id(),
+                &invalid,
+                &account,
+                &mut || operation.check(),
+            ),
+            Err(crucible_campaign::CampaignStoreError::InvalidMerkle { .. })
+        ));
+    }
+    entries.push(*entries.last().unwrap());
+    assert!(matches!(
+        marks.map.insert_prefix_batch_with_boundary(
+            marks.root.content_id(),
+            &entries,
+            &account,
+            &mut || operation.check(),
+        ),
+        Err(crucible_campaign::CampaignStoreError::InvalidMerkle { .. })
+    ));
+    assert_eq!(backend.reads.load(Ordering::Relaxed), reads);
+    assert_eq!(backend.publications.load(Ordering::Relaxed), publications);
+}
+
+#[test]
+fn mixed_prefix_group_keeps_duplicate_positions_until_final_acceptance() {
+    let mut fixture = super::super::tests::operation::ComponentGcOperation::new();
+    let source = fixture.context();
+    let backend = counted(source.marks());
+    let refuse_after_commit = AtomicBool::new(false);
+    let mut boundary = || {
+        source.check()?;
+        if refuse_after_commit.load(Ordering::Relaxed)
+            && backend.publications.load(Ordering::Relaxed) > 0
+        {
+            return Err(StoreError::Unsupported {
+                capability: "original-after-group-publication",
+            });
+        }
+        Ok(())
+    };
+    let operation =
+        CampaignGcOperationContext::new(backend.clone(), source.original(), &mut boundary).unwrap();
+    let mut marks = Reachability::with_backend(backend.clone(), source.original()).unwrap();
+    let prior = marks.root;
+    let mut pending = PendingMarks::new(&operation).unwrap();
+    pending.promote(&operation).unwrap();
+    let first = page(0);
+    let prefix = mark_key(first).as_bytes()[0];
+    let neighbor = (1..65536)
+        .map(page)
+        .find(|id| {
+            let candidate = mark_key(*id).as_bytes()[0];
+            candidate != prefix && candidate / 16 == prefix / 16
+        })
+        .unwrap();
+    let outside = (1..65536)
+        .map(page)
+        .find(|id| mark_key(*id).as_bytes()[0] / 16 != prefix / 16)
+        .unwrap();
+    for id in [first, first, neighbor, outside] {
+        pending.insert(&mut marks, id, &operation).unwrap();
+    }
+    backend.publications.store(0, Ordering::Relaxed);
+    refuse_after_commit.store(true, Ordering::Relaxed);
+
+    let error = pending
+        .publish_group(&mut marks, usize::from(prefix) / 16, &operation)
+        .unwrap_err();
+    assert!(
+        matches!(&error,
+            StoreError::StreamIo { source, .. }
+            if matches!(source.get_ref().and_then(|source| source.downcast_ref::<crucible_campaign::CampaignStoreError>()),
+                Some(crucible_campaign::CampaignStoreError::Store(StoreError::Unsupported {
+                    capability: "original-after-group-publication"
+                })))
+        ),
+        "typed first original post-publication refusal: {error:?}"
+    );
+    assert_eq!(marks.root, prior);
+    assert_eq!(pending.staged, 4);
+    assert_eq!(pending.slots.iter().flatten().count(), 4);
+    assert_eq!(pending.counts[usize::from(prefix)], 2);
+    assert!(backend.objects.load(Ordering::Relaxed) > 0);
+    refuse_after_commit.store(false, Ordering::Relaxed);
+    operation.check().unwrap();
+    pending
+        .publish_group(&mut marks, usize::from(prefix) / 16, &operation)
+        .unwrap();
+
+    assert_eq!(marks.len(), 2);
+    assert_eq!(pending.staged, 1);
+    assert_eq!(pending.slots.iter().flatten().count(), 1);
+    assert_eq!(pending.counts[usize::from(prefix)], 0);
+    assert!(!marks.contains(&outside).unwrap());
+    pending.flush(&mut marks, &operation).unwrap();
+    assert_eq!(pending.staged, 0);
+    assert_eq!(marks.len(), 3);
+    for id in [first, neighbor, outside] {
+        assert!(marks.contains(&id).unwrap());
+    }
 }

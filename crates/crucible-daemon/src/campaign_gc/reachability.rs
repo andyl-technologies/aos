@@ -216,22 +216,23 @@ impl Reachability {
     }
 }
 
-// A fixed first-byte partition makes mature pages share two canonical trie
-// nibbles. Small passes retain the original 64-entry page; promotion begins
-// after observing one page per first-level trie branch. Capacity never follows
-// RAM size. Both vectors close before their original credits, and a failed
+// A fixed first-byte table coalesces sixteen neighboring mature pages under
+// one canonical first-nibble branch. Small passes retain the original 64-entry
+// page; promotion begins after one page per first-level trie branch. Capacity
+// never follows RAM size. Both vectors close before their original credits, and a failed
 // publication leaves every unaccepted entry intact.
 type MarkEntry = (CampaignHash, ContentId);
 
 const MARK_PREFIXES: usize = 1 << u8::BITS;
 const MARK_PAGE: usize = MerkleMap::MAX_CHECKED_BATCH_UPSERTS;
 const MARK_SLOTS: usize = MARK_PREFIXES * MARK_PAGE;
+const MARK_GROUP_PREFIXES: usize = 16;
+const MARK_GROUP_PAGE: usize = MerkleMap::MAX_CHECKED_PREFIX_UPSERTS;
 const MARK_PROMOTION: usize = (1 << 4) * MARK_PAGE;
 
 struct PendingMarks {
     slots: Vec<Option<MarkEntry>>,
     page: Vec<MarkEntry>,
-    positions: [usize; MARK_PAGE],
     counts: [u8; MARK_PREFIXES],
     observed: usize,
     staged: usize,
@@ -251,6 +252,9 @@ impl PendingMarks {
     fn prefix_bytes() -> Result<u64, StoreError> {
         MARK_SLOTS
             .checked_mul(std::mem::size_of::<Option<MarkEntry>>())
+            .and_then(|bytes| {
+                bytes.checked_add(MARK_GROUP_PAGE.checked_mul(std::mem::size_of::<MarkEntry>())?)
+            })
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(StoreError::Quota)
     }
@@ -264,7 +268,6 @@ impl PendingMarks {
         Ok(Self {
             slots: Vec::new(),
             page,
-            positions: [0; MARK_PAGE],
             counts: [0; MARK_PREFIXES],
             observed: 0,
             staged: 0,
@@ -280,7 +283,13 @@ impl PendingMarks {
             .try_reserve_exact(MARK_SLOTS)
             .map_err(allocation_error)?;
         slots.resize(MARK_SLOTS, None);
+        // The old 64-entry allocation remains paid while its replacement is
+        // prepared. Both local allocations close before this new credit on error.
+        let mut page = Vec::new();
+        page.try_reserve_exact(MARK_GROUP_PAGE)
+            .map_err(allocation_error)?;
         operation.check()?;
+        self.page = page;
         self.slots = slots;
         self._prefix_credit = Some(credit);
         Ok(())
@@ -324,14 +333,7 @@ impl PendingMarks {
         self.counts[prefix] += 1;
         self.staged += 1;
         if usize::from(self.counts[prefix]) == MARK_PAGE {
-            self.page.clear();
-            for position in start..start + MARK_PAGE {
-                if let Some(entry) = self.slots[position] {
-                    self.positions[self.page.len()] = position;
-                    self.page.push(entry);
-                }
-            }
-            self.publish_page(marks, operation)?;
+            self.publish_group(marks, prefix / MARK_GROUP_PREFIXES, operation)?;
         }
         Ok(())
     }
@@ -347,26 +349,76 @@ impl PendingMarks {
         if self.slots.is_empty() {
             return self.publish_page(marks, operation);
         }
-        self.page.clear();
-        for prefix in 0..MARK_PREFIXES {
-            if self.counts[prefix] == 0 {
-                continue;
+        for group in 0..MARK_PREFIXES / MARK_GROUP_PREFIXES {
+            let start = group * MARK_GROUP_PREFIXES;
+            if self.counts[start..start + MARK_GROUP_PREFIXES]
+                .iter()
+                .any(|count| *count != 0)
+            {
+                self.publish_group(marks, group, operation)?;
             }
+        }
+        Ok(())
+    }
+
+    fn publish_group(
+        &mut self,
+        marks: &mut Reachability,
+        group: usize,
+        operation: &CampaignGcOperationContext<'_>,
+    ) -> Result<(), StoreError> {
+        operation.check()?;
+        let first = group * MARK_GROUP_PREFIXES;
+        let end = first + MARK_GROUP_PREFIXES;
+        self.page.clear();
+        for prefix in first..end {
             operation.check()?;
             let start = prefix * MARK_PAGE;
-            for position in start..start + MARK_PAGE {
-                if let Some(entry) = self.slots[position] {
-                    self.positions[self.page.len()] = position;
-                    self.page.push(entry);
-                    if self.page.len() == MARK_PAGE {
-                        self.publish_page(marks, operation)?;
-                    }
-                }
-            }
+            self.page.extend(
+                self.slots[start..start + MARK_PAGE]
+                    .iter()
+                    .flatten()
+                    .copied(),
+            );
         }
-        if !self.page.is_empty() {
-            self.publish_page(marks, operation)?;
+        let positions = self.page.len();
+        self.page.sort_unstable_by_key(|entry| entry.0);
+        if self
+            .page
+            .windows(2)
+            .any(|pair| pair[0].0 == pair[1].0 && pair[0].1 != pair[1].1)
+        {
+            return Err(StoreError::Corrupt {
+                id: marks.root.content_id(),
+            });
         }
+        self.page.dedup_by_key(|entry| entry.0);
+        let account = mark_account(&marks.original)?;
+        let root = marks
+            .map
+            .insert_prefix_batch_with_boundary(
+                marks.root.content_id(),
+                &self.page,
+                &account,
+                &mut || operation.check(),
+            )
+            .map_err(|source| marks.failure("insert GC mark batch", source))?;
+        account
+            .check()
+            .map_err(|error| mark_admission(&account, error))?;
+        operation.check()?;
+        if root.entry_count() > MAX_CAMPAIGN_CLOSURE_OBJECTS as u64 {
+            return Err(StoreError::Quota);
+        }
+
+        marks.root = root;
+        for prefix in first..end {
+            let start = prefix * MARK_PAGE;
+            self.slots[start..start + MARK_PAGE].fill(None);
+            self.counts[prefix] = 0;
+        }
+        self.staged -= positions;
+        self.page.clear();
         Ok(())
     }
 
@@ -376,7 +428,6 @@ impl PendingMarks {
         operation: &CampaignGcOperationContext<'_>,
     ) -> Result<(), StoreError> {
         operation.check()?;
-        let positions = self.page.len();
         self.page.sort_unstable_by_key(|entry| entry.0);
         if self
             .page
@@ -403,17 +454,7 @@ impl PendingMarks {
             return Err(StoreError::Quota);
         }
         marks.root = root;
-        if !self.slots.is_empty() {
-            for position in self.positions[..positions].iter().copied() {
-                self.slots[position] = None;
-                self.counts[position / MARK_PAGE] -= 1;
-            }
-        }
-        if self.slots.is_empty() {
-            self.staged = 0;
-        } else {
-            self.staged -= positions;
-        }
+        self.staged = 0;
         self.page.clear();
         Ok(())
     }

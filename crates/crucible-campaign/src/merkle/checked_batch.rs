@@ -1,8 +1,9 @@
 //! Bounded checked Merkle updates that visit each affected trie node once.
 //!
 //! One sorted page of upserts shares traversal and publishes only final nodes.
-//! The fixed page and publication bounds match existing 64-object store batches;
-//! neither the incoming collection nor historical intermediate roots accumulate.
+//! Ordinary pages retain at most 64 upserts. A prepaid first-nibble partition
+//! may coalesce 1024 upserts while durable publication remains bounded to 64
+//! objects; neither the incoming collection nor intermediate roots accumulate.
 
 use crucible_cas::content_store::StoreError;
 use crucible_cas::owned_decode::{DecodeBudget, DecodeScratch};
@@ -37,6 +38,71 @@ impl MerkleMap {
             || entries.windows(2).any(|pair| pair[0].0 >= pair[1].0)
         {
             return Err(invalid("checked-batch-keys-not-bounded-and-ascending"));
+        }
+        let _scope = original.enter();
+        let credit = original
+            .reserve_scratch_array::<(ContentId, BlobHandle)>(MAX_NODE_PUBLICATION_BATCH)
+            .map_err(CampaignCodecError::from)?;
+        let mut pending = Vec::new();
+        pending
+            .try_reserve_exact(MAX_NODE_PUBLICATION_BATCH)
+            .map_err(|error| {
+                CampaignCodecError::DecodeAdmission(
+                    crucible_cas::owned_decode::DecodeAdmissionError::new(error),
+                )
+            })?;
+        let mut writer = BatchWriter {
+            map: self,
+            original,
+            boundary,
+            pending,
+            pending_bytes: 0,
+            _credit: credit,
+        };
+        let node = writer.read_node(prior, 0)?;
+        let root = writer.update(node, Some(prior), entries)?;
+        writer.publish()?;
+        check(writer.original, writer.boundary)?;
+        Ok(root)
+    }
+
+    /// Maximum sorted upserts coalesced within one first-nibble partition.
+    ///
+    /// Sixteen neighboring 64-entry pages share the same first trie branch.
+    /// Immutable node publication still retains at most 64 objects per batch.
+    pub const MAX_CHECKED_PREFIX_UPSERTS: usize = 16 * MAX_NODE_PUBLICATION_BATCH;
+
+    /// Coalesces one bounded first-nibble partition under the original account.
+    ///
+    /// Final nodes share the existing checked writer and 64-object durable
+    /// publication batches. No replacement root escapes until the final partial
+    /// batch and the original boundary succeed. The borrowed input must remain
+    /// prepaid by its caller; referenced values have the same availability
+    /// requirement as [`Self::insert_batch_with_boundary`].
+    ///
+    /// # Errors
+    /// Refuses oversized, duplicate, unordered or mixed-partition input,
+    /// original admission or boundary failure, corrupt old nodes, and checked
+    /// storage publication failure.
+    pub fn insert_prefix_batch_with_boundary(
+        &self,
+        prior: ContentId,
+        entries: &[(CampaignHash, ContentId)],
+        original: &DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<MerkleMapRoot, CampaignStoreError> {
+        check(original, boundary)?;
+        if entries.len() > Self::MAX_CHECKED_PREFIX_UPSERTS
+            || entries.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+            || entries.first().is_some_and(|(first, _)| {
+                entries
+                    .iter()
+                    .any(|(key, _)| digest_nibble(*key, 0) != digest_nibble(*first, 0))
+            })
+        {
+            return Err(invalid(
+                "checked-prefix-keys-not-bounded-ascending-and-shared",
+            ));
         }
         let _scope = original.enter();
         let credit = original
