@@ -462,10 +462,9 @@ The effect ledger writes V2 records for generic and authority-bound effects.
 Its fourth header byte remains a closed flags field: zero selects the
 byte-exact generic body and `AUTHORITY_BOUND=1` selects the authority body. V2
 adds the exact closed broker-method tag after the fixed length fields, and the
-tag must belong to the record's fixed domain. The decoder retains V1 records
-for recovery compatibility. An authority-bound V1 record recovers its method
-from its authenticated binding; an opaque generic V1 record has no such method
-and is permanently blocked before executor I/O rather than reinterpreted.
+tag must belong to the record's fixed domain. The obsolete outer V1 format is
+rejected before semantic recovery or executor I/O. Retained V1 rows are neither
+reinterpreted nor rewritten.
 Unknown versions, methods, flags, cross-domain methods, and a record variant
 that does not match its operation provenance are corrupt state.
 
@@ -507,8 +506,8 @@ dispatch slot. A `Planned` record has no dispatch and requires every byte of
 that slot to be zero. `Applying`, `Applied`, and `PermanentlyBlocked` records
 require a dispatch with a nonzero preparation Host boot ID in addition to the
 selected publication, lease, attenuation scalars, body, and packet. Completed
-V1 history remains valid across a reboot because it is receipt history, while
-an ambiguous `Applying` V1 attempt must still name the current boot. Generic V1
+V2 history remains valid across a reboot because it is receipt history, while
+an ambiguous `Applying` attempt must still name the current boot. Generic V2
 bytes remain golden-stable in all four states. The authority body and binding
 digests use their sole V1 domains.
 

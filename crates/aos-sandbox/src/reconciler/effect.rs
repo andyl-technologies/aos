@@ -1,9 +1,9 @@
 //! Durable generic and authority-bound effect records.
 //!
 //! V2 records bind every dispatchable effect to one exact closed broker method.
-//! The decoder retains V1 compatibility, but an opaque V1 generic effect has no
-//! dispatch identity and therefore cannot be sent to a broker. Authority-bound
-//! dispatches retain the Host boot identity paired with their BOOTTIME value.
+//! Outer V1 records are rejected before semantic recovery or executor I/O.
+//! Authority-bound dispatches retain the Host boot identity paired with their
+//! BOOTTIME value.
 //! V4 is the private, planned-only Controller Observe child; it has no dispatch
 //! method and must match the retained AOSCOB01 reservation exactly.
 //! V5 retains nonauthorizing project-admission history in the existing Create
@@ -601,7 +601,7 @@ impl EffectPlan {
         self.domain
     }
 
-    /// Returns the exact broker method, or `None` for an opaque legacy V1 effect.
+    /// Returns the exact broker method, or `None` for Controller-owned effects.
     #[must_use]
     pub const fn method(&self) -> Option<BrokerMethod> {
         self.method
