@@ -69,7 +69,7 @@ in
     testScript = ''
       set -eu
 
-      hub_root=/tmp/aos-hub
+      hub_root=/var/lib/aos-hub
       hub_url=http://127.0.0.1:18420
       credential_dir=/run/aos-hub-credentials
       jwt_secret=$credential_dir/jwt-secret
@@ -227,6 +227,7 @@ in
       ${pkgs.jq}/bin/jq -e 'type == "array" and length > 0' /tmp/schema.json >/dev/null
 
       echo '==> Initialize a fresh native instance without seed data'
+      ${pkgs.coreutils}/bin/install -d -m 0700 -o 65534 -g 65534 "$hub_root"
       test ! -e "$hub_root/hub.db"
       printf '%s\n' 'initial-password' | \
         $hub_exec --root "$hub_root" init \
@@ -467,7 +468,10 @@ in
         /tmp/org-list-empty.json >/dev/null
       reviewed org-create org create --slug operations --display-name 'Operations qualification' \
         > /tmp/org-create.json
-      producer_home=/tmp/producer-home
+      # Real publication retains build recipes and their source closures.
+      # Keep those multi-GiB files on disk rather than the guest's small tmpfs.
+      producer_root=/var/lib/producer
+      producer_home=$producer_root/home
       mkdir -p "$producer_home"
       producer_path=${pkgs.git}/bin:${pkgs.openssh}/bin:${pkgs.coreutils}/bin:${pkgs.nix}/bin
       HOME="$producer_home" ${pkgs.git}/bin/git config --global \
@@ -566,6 +570,7 @@ in
         exit 1
       fi
       ${pkgs.coreutils}/bin/cat /tmp/apr-publish-package.json
+      echo '==> Create the initial signed release'
       # The public catalog projects the default channel's released tree, so
       # the published package becomes visible only through a signed release.
       if ! HOME="$producer_home" PATH="$producer_path" \
@@ -575,12 +580,14 @@ in
         ${pkgs.coreutils}/bin/cat /tmp/apr-release-initial.json >&2
         exit 1
       fi
+      echo '==> Generate the registry website'
       HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json web generate --registry maintenance \
-        --output /tmp/producer-web >/tmp/apr-web-generate.json
-      test -s /tmp/producer-web/index.html
-      test -s /tmp/producer-web/web/config.json
-      producer_cache=/tmp/producer-cache
+        --output "$producer_root/web" >/tmp/apr-web-generate.json
+      test -s "$producer_root/web"/index.html
+      test -s "$producer_root/web"/web/config.json
+      producer_cache=$producer_root/cache
+      echo '==> Generate the registry cache'
       if ! HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json cache generate \
           --registry maintenance --output "$producer_cache" --no-commit \
@@ -588,7 +595,8 @@ in
         ${pkgs.coreutils}/bin/cat /tmp/apr-cache-generate.json >&2
         exit 1
       fi
-      producer_surface=/tmp/producer-surface
+      producer_surface=$producer_root/surface
+      echo '==> Upload the registry surface to a local file origin'
       HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json origin upload \
         --registry maintenance --cache-dir "$producer_cache" \
@@ -786,9 +794,13 @@ in
         /tmp/config-diff.json >/dev/null
 
       echo '==> Publish a producer-signed cache stack and draft structural edits'
+      # Both cache endpoints publish the same closure. Reuse its verified NARs
+      # while each command creates and signs its own registry cache pointer.
+      ${pkgs.coreutils}/bin/cp -al "$producer_cache" "$producer_root/cache-a"
+      ${pkgs.coreutils}/bin/cp -al "$producer_cache" "$producer_root/cache-b"
       if ! HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json cache generate --registry maintenance \
-          --output /tmp/producer-cache-a \
+          --output "$producer_root/cache-a" \
           --cache-url https://cache-a.example.test --priority 100 \
           >/tmp/apr-cache-a.json 2>&1; then
         ${pkgs.coreutils}/bin/cat /tmp/apr-cache-a.json >&2
@@ -796,7 +808,7 @@ in
       fi
       if ! HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json cache generate --registry maintenance \
-          --output /tmp/producer-cache-b \
+          --output "$producer_root/cache-b" \
           --cache-url https://cache-b.example.test --priority 90 \
           >/tmp/apr-cache-b.json 2>&1; then
         ${pkgs.coreutils}/bin/cat /tmp/apr-cache-b.json >&2
