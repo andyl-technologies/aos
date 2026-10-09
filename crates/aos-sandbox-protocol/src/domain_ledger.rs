@@ -17,6 +17,8 @@
 //! [`root_project_history`] owns Root's cancellation, outcome and terminal-floor
 //! rows. [`project_source`] separately owns immutable accepted-Create source hash
 //! inputs and their commitment, independently of Source's admission history.
+//! [`project_admission_metadata`] owns the complete Controller historical row,
+//! while native admission and full projection grammar stay with Domain's owners.
 
 pub mod capacity;
 pub mod operation;

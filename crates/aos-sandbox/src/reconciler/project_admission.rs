@@ -5,8 +5,8 @@
 //! authenticate a Root reply, or complete Create. Owner transitions separately
 //! validate the protected Operation/Effect join and the opaque Root transport.
 //!
-//! The private `metadata` module owns the canonical retained row. This owner
-//! module owns its protected original-admission and terminal transition graph.
+//! Protocol owns the complete canonical historical metadata DATA. This native
+//! owner retains its protected original-admission and terminal transition graph.
 
 mod metadata;
 

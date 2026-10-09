@@ -1,7 +1,10 @@
-//! Canonical nonauthorizing metadata retained in the original Controller Effect.
+//! Owns complete canonical Controller project-admission metadata DATA.
 //!
-//! Decoding preserves historical bytes only. The parent module owns protected
-//! admission joins, capacity transfers, authenticated Root proofs, and Source ACK.
+//! Decoding preserves historical claims and an opaque original projection
+//! payload. Domain's native Controller and projection owners retain protected
+//! original-admission joins, capacity transfers, authenticated Root proofs,
+//! full resource validation and Source ACK. Unchecked historical construction
+//! and mutation do not grant those authorities.
 //!
 //! ```text
 //! AOSCPT01 | version:u16 | phase:u8 | terminal-kind:u8 | projection-length:u32 |
@@ -9,7 +12,7 @@
 //! sandbox:16 | project:16 | capacity-id:32 | Source-reservation[136] |
 //! Source-challenge[232] or zero | Root-terminal[312] or zero |
 //! historical-source-heads[160] | retired-floor-digest:32 or zero |
-//! immutable-original-AOSPRJ01[projection-length] | domain-separated-checksum:32
+//! opaque-original-projection[projection-length] | domain-separated-checksum:32
 //! ```
 
 use aos_sandbox_core::{ObjectDigest, ProjectId, SandboxId};
@@ -25,8 +28,10 @@ use super::source_project_history::{
     SourceProjectAdmissionReservationV1,
 };
 
+/// Reports malformed historical metadata without retaining native authority causes.
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectAdmissionMetadataDataErrorV1 {
+    /// Framing, historical field joins, phase claims or canonical bytes are invalid.
     #[error("invalid Controller project-admission metadata")]
     InvalidMetadata,
 }
@@ -37,27 +42,36 @@ const MAXIMUM_RETAINED_PUBLIC_PROJECTION_BYTES: usize =
 const MAGIC: &[u8; 8] = b"AOSCPT01";
 const DOMAIN: &[u8] = b"aos.sandbox.controller-project-terminal-metadata.v1\0";
 const FIXED_BODY_BYTES: usize = 1024;
+/// Bounds the complete historical row, opaque projection payload and checksum.
 pub const MAXIMUM_RECORD_BYTES: usize =
     FIXED_BODY_BYTES + MAXIMUM_RETAINED_PUBLIC_PROJECTION_BYTES + 32;
 
 
+/// Distinguishes historical Controller phase claims without authorizing transitions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum ProjectAdmissionPhaseV1 {
+    /// Retains the pre-dispatch phase claim.
     Prepared = 1,
+    /// Retains a dispatch phase claim, without current dispatch authority.
     DispatchAuthorized = 2,
+    /// Retains an accepted historical terminal claim.
     AcceptedRootTerminal = 3,
+    /// Retains the terminal floor's historical retirement claim.
     RootRetired = 4,
 }
 
 /// Stores historical bytes, never a transport-authenticated terminal proof.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RetainedRootProjectTerminalV1 {
+    /// Stores a decoded historical commit or abort row.
     Outcome(RootProjectAdmissionOutcomeV1),
+    /// Stores a decoded historical no-stage cancellation row.
     Cancellation(RootProjectReservationCancellationV1),
 }
 
 impl RetainedRootProjectTerminalV1 {
+    /// Returns the historical terminal class used by the floor comparison.
     pub fn kind(self) -> RootProjectHistoryTerminalKindV1 {
         match self {
             Self::Outcome(row) if row.kind() == RootProjectAdmissionOutcomeKindV1::Committed => {
@@ -68,6 +82,7 @@ impl RetainedRootProjectTerminalV1 {
         }
     }
 
+    /// Returns the commitment to the original canonical terminal row.
     pub fn record_digest(self) -> ObjectDigest {
         match self {
             Self::Outcome(row) => row.record_digest(),
@@ -76,6 +91,10 @@ impl RetainedRootProjectTerminalV1 {
     }
 }
 
+/// Retains historical original-Effect claims and opaque projection bytes.
+///
+/// The native Controller validates these claims against its protected graph.
+/// This value neither authenticates a Root terminal nor retains a writer loan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectAdmissionMetadataV1 {
     admission_revision: ObjectDigest,
@@ -94,6 +113,11 @@ pub struct ProjectAdmissionMetadataV1 {
 }
 
 impl ProjectAdmissionMetadataV1 {
+    /// Assembles unchecked historical claims and retains the original projection bytes.
+    ///
+    /// Construction preserves supplied values without validation, cloning,
+    /// normalization or projection parsing. The native owner validates custody
+    /// and transitions separately; [`Self::validate`] checks only historical DATA.
     #[allow(clippy::too_many_arguments)]
     pub fn from_historical_fields(
         admission_revision: ObjectDigest,
@@ -127,79 +151,105 @@ impl ProjectAdmissionMetadataV1 {
         }
     }
 
+    /// Returns the retained original admission revision.
     pub const fn admission_revision(&self) -> ObjectDigest {
         self.admission_revision
     }
 
+    /// Returns the retained original admission generation.
     pub const fn admission_generation(&self) -> u64 {
         self.admission_generation
     }
 
+    /// Returns the retained accepted-Create source commitment.
     pub const fn source_commitment(&self) -> ObjectDigest {
         self.source_commitment
     }
 
+    /// Returns the historical child sandbox identity.
     pub const fn sandbox(&self) -> SandboxId {
         self.sandbox
     }
 
+    /// Returns the historical project partition.
     pub const fn project(&self) -> ProjectId {
         self.project
     }
 
+    /// Returns the historical Source reservation row.
     pub const fn reservation(&self) -> SourceProjectAdmissionReservationV1 {
         self.reservation
     }
 
+    /// Returns the historical suffix capacity identity.
     pub const fn capacity_id(&self) -> [u8; 32] {
         self.capacity_id
     }
 
+    /// Returns the retained phase claim without granting transition authority.
     pub const fn phase(&self) -> ProjectAdmissionPhaseV1 {
         self.phase
     }
 
+    /// Returns the historical Source challenge, when retained.
     pub const fn challenge(&self) -> Option<SourceProjectAdmissionChallengeV1> {
         self.challenge
     }
 
+    /// Returns historical terminal DATA without authenticating Root transport.
     pub const fn terminal(&self) -> Option<RetainedRootProjectTerminalV1> {
         self.terminal
     }
 
+    /// Returns the historical accepted Root floor commitment, when retained.
     pub const fn retired_floor(&self) -> Option<ObjectDigest> {
         self.retired_floor
     }
 
+    /// Returns immutable historical accepted-Create source hash inputs.
     pub const fn source_heads(&self) -> HistoricalCreateProjectSourceHeadsV1 {
         self.source_heads
     }
 
+    /// Borrows the opaque original projection payload without parsing its resource grammar.
     pub fn original_projection(&self) -> &[u8] {
         &self.original_projection
     }
 
+    /// Replaces the unchecked historical capacity identity.
     pub fn set_historical_capacity_id(&mut self, capacity_id: [u8; 32]) {
         self.capacity_id = capacity_id;
     }
 
+    /// Replaces the unchecked historical phase claim.
     pub fn set_historical_phase(&mut self, phase: ProjectAdmissionPhaseV1) {
         self.phase = phase;
     }
 
+    /// Replaces the unchecked historical Source challenge.
     pub fn set_historical_challenge(&mut self, challenge: Option<SourceProjectAdmissionChallengeV1>) {
         self.challenge = challenge;
     }
 
+    /// Replaces the unchecked historical Root terminal claim.
     pub fn set_historical_terminal(&mut self, terminal: Option<RetainedRootProjectTerminalV1>) {
         self.terminal = terminal;
     }
 
+    /// Replaces the unchecked historical retired-floor commitment.
     pub fn set_historical_retired_floor(&mut self, retired_floor: Option<ObjectDigest>) {
         self.retired_floor = retired_floor;
     }
 
 
+    /// Hashes the complete row normalized to its historical accepted phase.
+    ///
+    /// A retired row clears only its floor claim in the cloned normalized row;
+    /// the original opaque projection bytes remain part of the commitment.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a nonterminal phase or any original canonical metadata failure.
     pub fn acceptance_digest(&self) -> Result<ObjectDigest, ProjectAdmissionMetadataDataErrorV1> {
         if !matches!(
             self.phase,
@@ -217,6 +267,10 @@ impl ProjectAdmissionMetadataV1 {
         ))
     }
 
+    /// Compares the complete supplied historical floor and terminal claims.
+    ///
+    /// A match establishes DATA equality only, without currentness, protected
+    /// custody, authenticated transport or retirement authority.
     pub fn matches_floor(
         &self,
         operation: aos_sandbox_core::OperationId,
@@ -245,6 +299,11 @@ impl ProjectAdmissionMetadataV1 {
                 .is_ok_and(|digest| digest == floor.controller_acceptance_digest())
     }
 
+    /// Encodes the complete canonical historical row and opaque projection payload.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid historical fields, phase joins or projection byte bounds.
     pub fn encode(&self) -> Result<Vec<u8>, ProjectAdmissionMetadataDataErrorV1> {
         self.validate()?;
         let body_end = FIXED_BODY_BYTES + self.original_projection.len();
@@ -291,6 +350,12 @@ impl ProjectAdmissionMetadataV1 {
         Ok(bytes)
     }
 
+    /// Decodes the complete canonical historical row without validating projection grammar.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed framing, phase claims, padding, embedded historical rows,
+    /// opaque projection byte bounds or the original canonical reencoding check.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProjectAdmissionMetadataDataErrorV1> {
         if bytes.len() < FIXED_BODY_BYTES + 32
             || bytes.len() > MAXIMUM_RECORD_BYTES
@@ -361,6 +426,15 @@ impl ProjectAdmissionMetadataV1 {
         Ok(row)
     }
 
+    /// Checks the original bounded historical field and terminal joins.
+    ///
+    /// The projection remains opaque; the native owner separately validates
+    /// its full resource grammar and original protected admission graph.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing identities, changed generations, bounds, contradictory
+    /// phase claims or incompatible Source and Root historical rows.
     pub fn validate(&self) -> Result<(), ProjectAdmissionMetadataDataErrorV1> {
         if self.admission_revision.as_bytes() == &[0; 32]
             || self.admission_generation != 1
