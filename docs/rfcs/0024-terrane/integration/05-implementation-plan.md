@@ -437,6 +437,33 @@ property catalog from 58 to 59. Structured JSON/catalog consistency and scoped
 formatting checks pass; actual format execution remains pending. Heavy builds
 and deadline tests are serialized while source work proceeds in parallel.
 These source changes and partial results do not advance any T1 checkbox.
+The corrected format candidate `7724cb4ded` now passes strict all-target Core
+Clippy and all 59 public property groups with zero skips. Its first execution
+found one fixture incorrectly expecting generic encoding to accept an empty
+Index target set. The correction pins the actual generic `Entry` refusal and
+retains the independently encoded contextual refusal; no property is removed.
+The actual `core-fuzz` gate passes all 59 public groups and five required
+private encoder cases. `canonical-cbor` also passes. Their original logs are
+`/tmp/terrane-format-7724-core-fuzz.log` and
+`/tmp/terrane-format-7724-canonical-cbor.log`. The twenty-consumer
+`golden-vectors` build is still running; these results do not qualify T-TEST-1.
+Shared source `51d39c7771` batches payload namespace ancestor metadata while
+retaining the separate root check, ordered first refusal, exact batch length
+and final leaf observation. The bucket-file-layout gate now requires three
+additional actual-filesystem witnesses, expanding its exact inventory from
+nineteen to twenty-two. Private `338b4476a2` implements those cases against
+an independent scalar recipe, with real unsafe nodes, absent paths and named
+I/O errors. Shared `cb537248e8` and its private composition add test-only
+phase observations around ancestor batches, leaf dispatch and ordinary content
+reads. Source formatting and diff checks pass; changed-source build, runtime,
+owning gates and the unchanged 1,024-entry population remain unqualified.
+A separate current-T1 SDK audit identifies the named attribute `get` interface
+in CRATE-25 as missing, although public SideTable lookup and put already work.
+An additional isolated worker owns only the existing table implementation and
+a public integration consumer; shared gate prerequisite `5162673a56` retains
+all existing attribute tests and requires that consumer. This is source
+registration, not API or runtime qualification. Remote verbs and tree jobs
+remain in their later milestones and branch worklines.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
