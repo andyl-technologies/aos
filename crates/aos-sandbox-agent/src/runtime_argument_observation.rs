@@ -181,9 +181,8 @@ impl GuestRuntimeArgumentObserveRequestV1 {
             cursor.array()?,
         )
         .map_err(|_| GuestRuntimeArgumentObservationErrorV1::InvalidPacket)?;
-        let session =
-            AgentSessionBindingV1::from_digest(ObjectDigest::from_bytes(cursor.array()?))
-                .map_err(|_| GuestRuntimeArgumentObservationErrorV1::InvalidPacket)?;
+        let session = AgentSessionBindingV1::from_digest(ObjectDigest::from_bytes(cursor.array()?))
+            .map_err(|_| GuestRuntimeArgumentObservationErrorV1::InvalidPacket)?;
         let channel = ObjectDigest::from_bytes(cursor.array()?);
         let challenge = cursor.array()?;
         let name_length = usize::from(cursor.array::<1>()?[0]);
@@ -257,8 +256,8 @@ pub fn verify_guest_runtime_argument_readback_v1(
         return Err(GuestRuntimeArgumentObservationErrorV1::InvalidPacket);
     }
     let mut cursor = BoundedReader::new(packet, |_| {
-            GuestRuntimeArgumentObservationErrorV1::InvalidPacket
-        });
+        GuestRuntimeArgumentObservationErrorV1::InvalidPacket
+    });
     if cursor.array::<8>()? != *READBACK_MAGIC {
         return Err(GuestRuntimeArgumentObservationErrorV1::InvalidPacket);
     }

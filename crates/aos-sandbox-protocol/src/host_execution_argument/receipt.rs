@@ -20,8 +20,8 @@
 //! ```
 
 use aos_sandbox_agent::{GuestRuntimeArgumentObserveRequestV1, GuestRuntimeArgumentReadbackV1};
-use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use sha2::{Digest as _, Sha256};
 
 use crate::semantics::host_execution_argument::canonical_attempt_request_id_v1;
