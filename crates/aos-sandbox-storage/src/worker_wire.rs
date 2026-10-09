@@ -3,6 +3,8 @@
 //! Each caller retains its own record-length policy and wire diagnostics. The
 //! cursor only owns bounded slicing, fixed-width integers, and exact ending.
 
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
+
 use crate::ZfsWorkerError;
 
 /// Preserves each repair protocol's existing malformed-field diagnostics.
@@ -15,8 +17,7 @@ pub(crate) struct DecodeErrors {
 
 /// Reads exact fields without advancing after a failed bound check.
 pub(crate) struct Decoder<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+    reader: BoundedReader<'a, ReadError>,
     errors: &'static DecodeErrors,
 }
 
@@ -24,8 +25,7 @@ impl<'a> Decoder<'a> {
     /// Starts at the first byte of one complete worker record.
     pub(crate) const fn new(bytes: &'a [u8], errors: &'static DecodeErrors) -> Self {
         Self {
-            bytes,
-            offset: 0,
+            reader: BoundedReader::new(bytes, core::convert::identity),
             errors,
         }
     }
@@ -36,16 +36,12 @@ impl<'a> Decoder<'a> {
     ///
     /// Returns the caller's overflow or truncation diagnostic.
     pub(crate) fn take(&mut self, length: usize) -> Result<&'a [u8], ZfsWorkerError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(ZfsWorkerError::Protocol(self.errors.overflow))?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(ZfsWorkerError::Protocol(self.errors.truncated))?;
-        self.offset = end;
-        Ok(value)
+        self.reader.bytes(length).map_err(|error| {
+            ZfsWorkerError::Protocol(match error {
+                ReadError::LengthOverflow => self.errors.overflow,
+                _ => self.errors.truncated,
+            })
+        })
     }
 
     /// Reads a fixed-width byte array.
@@ -101,10 +97,8 @@ impl<'a> Decoder<'a> {
     ///
     /// Returns the caller's trailing-byte diagnostic.
     pub(crate) fn finish(self) -> Result<(), ZfsWorkerError> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(ZfsWorkerError::Protocol(self.errors.trailing))
-        }
+        self.reader
+            .finish()
+            .map_err(|_| ZfsWorkerError::Protocol(self.errors.trailing))
     }
 }
