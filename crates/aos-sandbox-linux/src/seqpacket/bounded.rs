@@ -405,10 +405,9 @@ fn exchange_record<Socket, Record, Profile: RecordProfile<Socket, Record>>(
 
 fn worker_boottime() -> Result<u64, WorkerRecordError> {
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-    let seconds = u64::try_from(now.tv_sec)
-        .map_err(|_| WorkerRecordClockError::InvalidSeconds)?;
-    let nanoseconds = u64::try_from(now.tv_nsec)
-        .map_err(|_| WorkerRecordClockError::InvalidNanoseconds)?;
+    let seconds = u64::try_from(now.tv_sec).map_err(|_| WorkerRecordClockError::InvalidSeconds)?;
+    let nanoseconds =
+        u64::try_from(now.tv_nsec).map_err(|_| WorkerRecordClockError::InvalidNanoseconds)?;
     seconds
         .checked_mul(1_000_000_000)
         .and_then(|value| value.checked_add(nanoseconds))
@@ -565,7 +564,10 @@ mod worker_tests {
     }
 
     impl ScriptedWait {
-        fn new(clocks: impl IntoIterator<Item = u64>, polls: Vec<Result<usize, rustix::io::Errno>>) -> Self {
+        fn new(
+            clocks: impl IntoIterator<Item = u64>,
+            polls: Vec<Result<usize, rustix::io::Errno>>,
+        ) -> Self {
             Self {
                 clocks: RefCell::new(clocks.into_iter().map(Ok).collect()),
                 polls: RefCell::new(polls.into()),
@@ -642,21 +644,32 @@ mod worker_tests {
         for interrupted in [false, true] {
             let (mut socket, _peer) = pair();
             let profile = ScriptedWorkerProfile {
-                wait: ScriptedWait::new([10, 20, 30, 40, 50, 60], vec![Err(rustix::io::Errno::INTR), Ok(1)]),
+                wait: ScriptedWait::new(
+                    [10, 20, 30, 40, 50, 60],
+                    vec![Err(rustix::io::Errno::INTR), Ok(1)],
+                ),
                 reject: false,
             };
-            let first = if interrupted { SeqpacketError::Interrupted } else { SeqpacketError::WouldBlock };
+            let first = if interrupted {
+                SeqpacketError::Interrupted
+            } else {
+                SeqpacketError::WouldBlock
+            };
             let mut outcomes = VecDeque::from([Err(first), Ok(())]);
 
             exchange_record(&profile, &mut socket, PollFlags::OUT, 100, |_| {
                 profile.wait.trace.borrow_mut().push("attempt");
                 outcomes.pop_front().unwrap()
-            }).unwrap();
+            })
+            .unwrap();
 
-            assert_eq!(*profile.wait.trace.borrow(), [
-                "clock", "attempt", "borrow", "clock", "poll", "clock", "poll",
-                "clock", "clock", "attempt", "inspect", "clock",
-            ]);
+            assert_eq!(
+                *profile.wait.trace.borrow(),
+                [
+                    "clock", "attempt", "borrow", "clock", "poll", "clock", "poll", "clock",
+                    "clock", "attempt", "inspect", "clock",
+                ]
+            );
             let timeouts = profile.wait.timeouts.borrow();
             assert_eq!((timeouts[0].tv_sec, timeouts[0].tv_nsec), (0, 80));
             assert_eq!((timeouts[1].tv_sec, timeouts[1].tv_nsec), (0, 70));
@@ -681,7 +694,10 @@ mod worker_tests {
                 Err::<(), _>(SeqpacketError::WouldBlock)
             });
 
-            assert!(matches!(result, Err(WorkerRecordError::Clock(WorkerRecordClockError::Expired))));
+            assert!(matches!(
+                result,
+                Err(WorkerRecordError::Clock(WorkerRecordClockError::Expired))
+            ));
             assert_eq!(attempts.get(), 1);
             assert_eq!(profile.wait.timeouts.borrow().len(), 1);
             assert!(profile.wait.clocks.borrow().is_empty());
@@ -704,12 +720,20 @@ mod worker_tests {
             });
 
             match outcome {
-                Err(expected) => assert!(matches!(result, Err(WorkerRecordError::Poll(actual)) if actual == expected)),
-                Ok(_) => assert!(matches!(result, Err(WorkerRecordError::Clock(WorkerRecordClockError::Expired)))),
+                Err(expected) => assert!(
+                    matches!(result, Err(WorkerRecordError::Poll(actual)) if actual == expected)
+                ),
+                Ok(_) => assert!(matches!(
+                    result,
+                    Err(WorkerRecordError::Clock(WorkerRecordClockError::Expired))
+                )),
             }
             assert_eq!(attempts.get(), 1);
             assert_eq!(profile.wait.clocks.borrow().len(), 1);
-            assert_eq!(*profile.wait.trace.borrow(), ["clock", "borrow", "clock", "poll"]);
+            assert_eq!(
+                *profile.wait.trace.borrow(),
+                ["clock", "borrow", "clock", "poll"]
+            );
         }
     }
 
@@ -726,7 +750,10 @@ mod worker_tests {
             Err::<(), _>(SeqpacketError::WouldBlock)
         });
 
-        assert!(matches!(result, Err(WorkerRecordError::Transport(SeqpacketError::Closed))));
+        assert!(matches!(
+            result,
+            Err(WorkerRecordError::Transport(SeqpacketError::Closed))
+        ));
         assert_eq!(*profile.wait.trace.borrow(), ["clock", "borrow"]);
         assert_eq!(profile.wait.clocks.borrow().len(), 1);
     }
@@ -743,7 +770,10 @@ mod worker_tests {
             Err::<(), _>(SeqpacketError::InvalidMaximum)
         });
 
-        assert!(matches!(result, Err(WorkerRecordError::Transport(SeqpacketError::InvalidMaximum))));
+        assert!(matches!(
+            result,
+            Err(WorkerRecordError::Transport(SeqpacketError::InvalidMaximum))
+        ));
         assert_eq!(*profile.wait.trace.borrow(), ["clock"]);
         assert_eq!(profile.wait.clocks.borrow().len(), 1);
     }
@@ -761,13 +791,25 @@ mod worker_tests {
                 wait: ScriptedWait::new([], vec![]),
                 reject: false,
             };
-            profile.wait.clocks.borrow_mut().push_back(Err(reason.into()));
+            profile
+                .wait
+                .clocks
+                .borrow_mut()
+                .push_back(Err(reason.into()));
 
-            let result = exchange_record(&profile, &mut socket, PollFlags::IN, 100, |_| -> Result<(), SeqpacketError> {
-                panic!("invalid clock must precede the attempt")
-            });
+            let result = exchange_record(
+                &profile,
+                &mut socket,
+                PollFlags::IN,
+                100,
+                |_| -> Result<(), SeqpacketError> {
+                    panic!("invalid clock must precede the attempt")
+                },
+            );
 
-            assert!(matches!(result, Err(WorkerRecordError::Clock(actual)) if std::mem::discriminant(&actual) == expected));
+            assert!(
+                matches!(result, Err(WorkerRecordError::Clock(actual)) if std::mem::discriminant(&actual) == expected)
+            );
             assert_eq!(*profile.wait.trace.borrow(), ["clock"]);
         }
     }
@@ -776,27 +818,44 @@ mod worker_tests {
     fn inspection_refusal_precedes_late_clock_and_both_drop_the_complete_record() {
         for reject in [false, true] {
             let (mut sender, mut receiver) = pair();
-            let (reader, writer) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::NONBLOCK | rustix::pipe::PipeFlags::CLOEXEC).unwrap();
-            send_provisioned_worker_record(&mut sender, b"consumed", &[writer.as_fd(), writer.as_fd()], u64::MAX).unwrap();
+            let (reader, writer) = rustix::pipe::pipe_with(
+                rustix::pipe::PipeFlags::NONBLOCK | rustix::pipe::PipeFlags::CLOEXEC,
+            )
+            .unwrap();
+            send_provisioned_worker_record(
+                &mut sender,
+                b"consumed",
+                &[writer.as_fd(), writer.as_fd()],
+                u64::MAX,
+            )
+            .unwrap();
             drop(writer);
             let profile = ScriptedWorkerProfile {
                 wait: ScriptedWait::new([10, 100], vec![]),
                 reject,
             };
 
-            let result = exchange_record(&profile, &mut receiver, PollFlags::IN, 100, |socket| socket.receive(64, 2));
+            let result = exchange_record(&profile, &mut receiver, PollFlags::IN, 100, |socket| {
+                socket.receive(64, 2)
+            });
 
             if reject {
                 assert!(matches!(result, Err(WorkerRecordError::Linux(_))));
                 assert_eq!(profile.wait.clocks.borrow().len(), 1);
                 assert_eq!(*profile.wait.trace.borrow(), ["clock", "inspect"]);
             } else {
-                assert!(matches!(result, Err(WorkerRecordError::Clock(WorkerRecordClockError::Expired))));
+                assert!(matches!(
+                    result,
+                    Err(WorkerRecordError::Clock(WorkerRecordClockError::Expired))
+                ));
                 assert!(profile.wait.clocks.borrow().is_empty());
                 assert_eq!(*profile.wait.trace.borrow(), ["clock", "inspect", "clock"]);
             }
             assert_eq!(rustix::io::read(&reader, &mut [0_u8; 1]).unwrap(), 0);
-            assert!(matches!(receiver.receive(64, 0), Err(SeqpacketError::WouldBlock)));
+            assert!(matches!(
+                receiver.receive(64, 0),
+                Err(SeqpacketError::WouldBlock)
+            ));
         }
     }
 
@@ -809,7 +868,8 @@ mod worker_tests {
                 let second = tempfile::tempfile().unwrap();
                 let rights = [first.as_fd(), second.as_fd()];
 
-                send_provisioned_worker_record(&mut sender, b"worker", &rights[..count], u64::MAX).unwrap();
+                send_provisioned_worker_record(&mut sender, b"worker", &rights[..count], u64::MAX)
+                    .unwrap();
                 let receive = if inspected {
                     receive_provisioned_worker_record_without_io_uring
                 } else {
@@ -819,9 +879,15 @@ mod worker_tests {
 
                 assert_eq!(record.payload(), b"worker");
                 assert_eq!(record.descriptors().len(), count);
-                assert_eq!(record.subject().credentials().pid().get(), std::process::id());
+                assert_eq!(
+                    record.subject().credentials().pid().get(),
+                    std::process::id()
+                );
                 for (received, sent) in record.descriptors().iter().zip(rights) {
-                    assert_eq!(rustix::fs::fstat(received).unwrap().st_ino, rustix::fs::fstat(sent).unwrap().st_ino);
+                    assert_eq!(
+                        rustix::fs::fstat(received).unwrap().st_ino,
+                        rustix::fs::fstat(sent).unwrap().st_ino
+                    );
                     assert!(crate::uapi::is_cloexec(received.as_fd()).unwrap());
                 }
             }
@@ -831,11 +897,26 @@ mod worker_tests {
     #[test]
     fn provisioned_worker_capacity_and_native_count_validation_keep_their_frontiers() {
         let (mut socket, _peer) = pair();
-        assert!(matches!(send_provisioned_worker_record(&mut socket, b"", &[], 0), Err(WorkerRecordError::Transport(SeqpacketError::InvalidMaximum))));
-        for receive in [receive_provisioned_worker_record, receive_provisioned_worker_record_without_io_uring] {
-            assert!(matches!(receive(&mut socket, 0, 0, 0), Err(WorkerRecordError::Transport(SeqpacketError::InvalidMaximum))));
-            assert!(matches!(receive(&mut socket, 64, 3, 0), Err(WorkerRecordError::Clock(WorkerRecordClockError::Expired))));
-            assert!(matches!(receive(&mut socket, 64, 3, u64::MAX), Err(WorkerRecordError::Transport(SeqpacketError::InvalidMaximum))));
+        assert!(matches!(
+            send_provisioned_worker_record(&mut socket, b"", &[], 0),
+            Err(WorkerRecordError::Transport(SeqpacketError::InvalidMaximum))
+        ));
+        for receive in [
+            receive_provisioned_worker_record,
+            receive_provisioned_worker_record_without_io_uring,
+        ] {
+            assert!(matches!(
+                receive(&mut socket, 0, 0, 0),
+                Err(WorkerRecordError::Transport(SeqpacketError::InvalidMaximum))
+            ));
+            assert!(matches!(
+                receive(&mut socket, 64, 3, 0),
+                Err(WorkerRecordError::Clock(WorkerRecordClockError::Expired))
+            ));
+            assert!(matches!(
+                receive(&mut socket, 64, 3, u64::MAX),
+                Err(WorkerRecordError::Transport(SeqpacketError::InvalidMaximum))
+            ));
         }
     }
 
@@ -844,7 +925,10 @@ mod worker_tests {
         for inspected in [false, true] {
             for count in 1..=2 {
                 let (mut sender, mut receiver) = pair();
-                let (reader, writer) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::NONBLOCK | rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+                let (reader, writer) = rustix::pipe::pipe_with(
+                    rustix::pipe::PipeFlags::NONBLOCK | rustix::pipe::PipeFlags::CLOEXEC,
+                )
+                .unwrap();
                 let rights = vec![writer.as_fd(); count];
                 send_provisioned_worker_record(&mut sender, b"wrong", &rights, u64::MAX).unwrap();
                 drop(rights);
@@ -855,14 +939,16 @@ mod worker_tests {
                     receive_provisioned_worker_record
                 };
 
-                assert!(matches!(receive(&mut receiver, 64, 0, u64::MAX), Err(WorkerRecordError::Transport(_))));
+                assert!(matches!(
+                    receive(&mut receiver, 64, 0, u64::MAX),
+                    Err(WorkerRecordError::Transport(_))
+                ));
                 assert!(matches!(receiver.as_fd(), Err(SeqpacketError::Closed)));
                 assert_eq!(rustix::io::read(&reader, &mut [0_u8; 1]).unwrap(), 0);
             }
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

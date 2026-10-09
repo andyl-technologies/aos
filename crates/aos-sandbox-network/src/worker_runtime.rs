@@ -752,7 +752,10 @@ pub(crate) fn send_record_before(
     deadline: u64,
 ) -> Result<(), NetworkWorkerRuntimeError> {
     aos_sandbox_linux::seqpacket::bounded::send_provisioned_worker_record(
-        socket, payload, &[], deadline,
+        socket,
+        payload,
+        &[],
+        deadline,
     )
     .map_err(map_worker_record_error)
 }
@@ -764,7 +767,10 @@ pub(crate) fn send_record_with_descriptors_before(
     deadline: u64,
 ) -> Result<(), NetworkWorkerRuntimeError> {
     aos_sandbox_linux::seqpacket::bounded::send_provisioned_worker_record(
-        socket, payload, descriptors, deadline,
+        socket,
+        payload,
+        descriptors,
+        deadline,
     )
     .map_err(map_worker_record_error)
 }
@@ -776,7 +782,10 @@ pub(crate) fn receive_record_before(
     deadline: u64,
 ) -> Result<ReceivedDescriptorRecord, NetworkWorkerRuntimeError> {
     aos_sandbox_linux::seqpacket::bounded::receive_provisioned_worker_record_without_io_uring(
-        socket, maximum, descriptors, deadline,
+        socket,
+        maximum,
+        descriptors,
+        deadline,
     )
     .map_err(map_worker_record_error)
 }

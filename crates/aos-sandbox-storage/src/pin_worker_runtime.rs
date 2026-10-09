@@ -2527,7 +2527,10 @@ pub(crate) fn send_packet_before(
     deadline: u64,
 ) -> Result<(), ZfsWorkerError> {
     aos_sandbox_linux::seqpacket::bounded::send_provisioned_worker_record(
-        socket, payload, &[], deadline,
+        socket,
+        payload,
+        &[],
+        deadline,
     )
     .map_err(map_worker_record_error)
 }
@@ -2539,7 +2542,10 @@ pub(crate) fn send_packet_with_descriptor_before(
     deadline: u64,
 ) -> Result<(), ZfsWorkerError> {
     aos_sandbox_linux::seqpacket::bounded::send_provisioned_worker_record(
-        socket, payload, &[descriptor], deadline,
+        socket,
+        payload,
+        &[descriptor],
+        deadline,
     )
     .map_err(map_worker_record_error)
 }
