@@ -1366,6 +1366,113 @@ fn decode_blob<'a>(
 mod tests {
     use super::*;
 
+    // Serialized DATA only; this fixture establishes no catalog currentness.
+    fn codec_record(phase: DurableNetworkLifecyclePhase) -> DurableNetworkLifecycleRecord {
+        let request_id = [1; 16];
+        let transport_digest = ObjectDigest::from_bytes([2; 32]);
+        let semantic_digest = ObjectDigest::from_bytes([3; 32]);
+        let action = NetworkNamespaceLifecycleActionV1::Arm;
+        let authority = NetworkNamespaceLifecycleAuthorityV1 {
+            identity: NetworkNamespaceIdentityV1::new([4; 32], [5; 16], 6, 7).unwrap(),
+            observed_state: NetworkNamespaceObservedStateV1::default_drop(),
+            resource_digest: ObjectDigest::from_bytes([8; 32]),
+            kernel_plan_digest: ObjectDigest::from_bytes([9; 32]),
+            highest_lease_generation: 0,
+            highest_lease_digest: ObjectDigest::from_bytes([0; 32]),
+        };
+        let desired_state =
+            NetworkNamespaceObservedStateV1::armed(ObjectDigest::from_bytes([10; 32]), 2, 3)
+                .unwrap();
+        let effect_digest = lifecycle_effect_digest(
+            request_id,
+            transport_digest,
+            semantic_digest,
+            action,
+            authority,
+            desired_state,
+        );
+        let result = (phase == DurableNetworkLifecyclePhase::Committed).then_some(
+            CommittedNetworkLifecycleResultV1 {
+                request_id,
+                network_handle: authority.identity.network_handle(),
+                action,
+                transition_digest: ObjectDigest::from_bytes([11; 32]),
+                observation_digest: ObjectDigest::from_bytes([12; 32]),
+            },
+        );
+
+        DurableNetworkLifecycleRecord {
+            phase,
+            request_id,
+            sandbox_id: [13; 16],
+            transport_digest,
+            semantic_digest,
+            verb: BrokerVerb::NetworkArmLease,
+            action,
+            preparation_generation: 1,
+            preparation_digest: ObjectDigest::from_bytes([14; 32]),
+            authority,
+            desired_state,
+            effect_digest,
+            current_fence: vec![15],
+            operation_fence: vec![16],
+            effect: vec![17],
+            result,
+        }
+    }
+
+    #[test]
+    fn record_prefixes_trailing_bytes_and_blob_overruns_are_corrupt() {
+        for phase in [
+            DurableNetworkLifecyclePhase::Prepared,
+            DurableNetworkLifecyclePhase::Committed,
+        ] {
+            let record = codec_record(phase);
+            let encoded = encode_record(&record).unwrap();
+
+            assert_eq!(decode_record(&encoded).unwrap(), record);
+            for length in 0..encoded.len() {
+                assert!(matches!(
+                    decode_record(&encoded[..length]),
+                    Err(NetworkLifecycleStateError::CorruptRecord)
+                ));
+            }
+
+            let mut trailing = encoded.clone();
+            trailing.push(0);
+            assert!(matches!(
+                decode_record(&trailing),
+                Err(NetworkLifecycleStateError::CorruptRecord)
+            ));
+
+            let blobs = [
+                record.current_fence.as_slice(),
+                record.operation_fence.as_slice(),
+                record.effect.as_slice(),
+            ];
+            let mut tail = Vec::new();
+            for blob in blobs {
+                push_blob(&mut tail, blob).unwrap();
+            }
+            if let Some(result) = record.result {
+                tail.extend_from_slice(result.transition_digest.as_bytes());
+                tail.extend_from_slice(result.observation_digest.as_bytes());
+            }
+            assert!(encoded.ends_with(&tail));
+
+            let mut offset = encoded.len() - tail.len();
+            for blob in blobs {
+                let mut overrun = encoded.clone();
+                overrun[offset..offset + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+                assert!(matches!(
+                    decode_record(&overrun),
+                    Err(NetworkLifecycleStateError::CorruptRecord)
+                ));
+                offset += 4 + blob.len();
+            }
+        }
+    }
+
     #[test]
     fn decoder_rejects_every_non_v1_record_version() {
         for version in [0_u16, 2] {

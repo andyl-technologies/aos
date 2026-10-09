@@ -595,6 +595,90 @@ mod tests {
     }
 
     #[test]
+    fn every_short_or_trailing_worker_record_preserves_its_length_diagnostic() {
+        let encoded_ready = ready().encode().unwrap();
+        for length in 0..encoded_ready.len() {
+            let expected = if length < READY_FIXED_BYTES {
+                "ready record has an invalid length"
+            } else {
+                "ready reserved or length field is invalid"
+            };
+            assert!(matches!(
+                NetworkWorkerReadyV1::decode(&encoded_ready[..length]),
+                Err(NetworkWorkerProcessError::Protocol(message)) if message == expected
+            ));
+        }
+        let mut trailing_ready = encoded_ready;
+        trailing_ready.push(0);
+        assert!(matches!(
+            NetworkWorkerReadyV1::decode(&trailing_ready),
+            Err(NetworkWorkerProcessError::Protocol(
+                "ready reserved or length field is invalid"
+            ))
+        ));
+
+        let encoded_result = result().encode();
+        for length in 0..encoded_result.len() {
+            assert!(matches!(
+                NetworkWorkerResultV1::decode(&encoded_result[..length]),
+                Err(NetworkWorkerProcessError::Protocol(
+                    "result length is invalid"
+                ))
+            ));
+        }
+        let mut trailing_result = encoded_result.to_vec();
+        trailing_result.push(0);
+        assert!(matches!(
+            NetworkWorkerResultV1::decode(&trailing_result),
+            Err(NetworkWorkerProcessError::Protocol(
+                "result length is invalid"
+            ))
+        ));
+    }
+
+    #[test]
+    fn ready_rejects_malformed_fields_before_namespace_validation() {
+        let valid = ready().encode().unwrap();
+        let cases = [
+            (0..1, &[0][..], "ready header is invalid"),
+            (
+                12..14,
+                &[0, 0][..],
+                "ready reserved or length field is invalid",
+            ),
+            (
+                14..16,
+                &[1, 0][..],
+                "ready reserved or length field is invalid",
+            ),
+            (
+                valid.len() - 1..valid.len(),
+                &[0xff][..],
+                "ready cgroup is not UTF-8",
+            ),
+        ];
+
+        for (range, replacement, expected) in cases {
+            let mut malformed = valid.clone();
+            malformed[16..24].fill(0);
+            malformed[range].copy_from_slice(replacement);
+            assert!(matches!(
+                NetworkWorkerReadyV1::decode(&malformed),
+                Err(NetworkWorkerProcessError::Protocol(message)) if message == expected
+            ));
+        }
+
+        let mut zero_namespace = valid;
+        zero_namespace[16..24].fill(0);
+        assert!(matches!(
+            NetworkWorkerReadyV1::decode(&zero_namespace),
+            Err(NetworkWorkerProcessError::Protocol(
+                "ready namespace identity is zero"
+            ))
+        ));
+    }
+
+    #[test]
     fn only_the_exact_reserved_worker_cgroup_language_is_accepted() {
         assert!(validate_worker_cgroup(ready().cgroup()).is_ok());
         for path in [

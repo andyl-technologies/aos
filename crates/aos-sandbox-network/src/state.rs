@@ -2063,6 +2063,50 @@ mod tests {
     }
 
     #[test]
+    fn record_prefixes_trailing_bytes_and_blob_overruns_are_corrupt() {
+        let record = aborted_record();
+        let encoded = encode_record(&record).unwrap();
+
+        assert_eq!(decode_record(&encoded).unwrap(), record);
+        for length in 0..encoded.len() {
+            assert!(matches!(
+                decode_record(&encoded[..length]),
+                Err(NetworkStateError::CorruptRecord)
+            ));
+        }
+
+        let mut trailing = encoded.clone();
+        trailing.push(0);
+        assert!(matches!(
+            decode_record(&trailing),
+            Err(NetworkStateError::CorruptRecord)
+        ));
+
+        let blobs = [
+            record.current_fence.as_slice(),
+            record.operation_fence.as_deref().unwrap(),
+            record.effect.as_slice(),
+        ];
+        let mut tail = Vec::new();
+        for blob in blobs {
+            push_blob(&mut tail, blob).unwrap();
+        }
+        encode_custody(&mut tail, record.custody).unwrap();
+        assert!(encoded.ends_with(&tail));
+
+        let mut offset = encoded.len() - tail.len();
+        for blob in blobs {
+            let mut overrun = encoded.clone();
+            overrun[offset..offset + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+            assert!(matches!(
+                decode_record(&overrun),
+                Err(NetworkStateError::CorruptRecord)
+            ));
+            offset += 4 + blob.len();
+        }
+    }
+
+    #[test]
     fn decoder_rejects_every_non_v1_record_version() {
         for version in [0_u16, 2] {
             let mut bytes = Vec::from(MAGIC.as_slice());
