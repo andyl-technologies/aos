@@ -4,6 +4,8 @@
 //! decoder cannot authorize its append. The Root writer must separately join
 //! the Controller's protected original-Effect acceptance with the Source-only
 //! terminal readback before deleting the exact covered terminal artifacts.
+//! Protocol owns the canonical passive row codec; this module owns native
+//! retirement, protected readback joins, capacity, append, and verification.
 //!
 //! ```text
 //! AOSQPF01 | version:u16=1 | terminal-kind:u8 | reserved[5]=0 | issue:u64 |

@@ -14,6 +14,9 @@
 //! [`protected_names`] owns historical physical-name pairs; [`source_project_history`]
 //! owns all five canonical Source rows, their terminal tag and complete historical
 //! join. Native currentness, signing, protected proofs and writer loans stay upper.
+//! [`root_project_history`] owns Root's cancellation, outcome and terminal-floor
+//! rows. [`project_source`] separately owns immutable accepted-Create source hash
+//! inputs and their commitment, independently of Source's admission history.
 
 pub mod capacity;
 pub mod operation;

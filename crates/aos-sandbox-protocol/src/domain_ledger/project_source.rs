@@ -1,4 +1,18 @@
 //! Owns immutable accepted-Create source hash inputs and commitment DATA.
+//!
+//! These fields describe the accepted Create input independently of Source's
+//! five-row admission history. They do not establish current publisher, cache,
+//! or revocation heads. Native validation and held writer loans stay upper.
+//!
+//! The fixed 160-byte layout contains no framing or checksum. Generations are
+//! big-endian; the commitment hashes the complete layout after the operation,
+//! admission revision/generation, sandbox, and project in their original order.
+//!
+//! ```text
+//! projection-revision:32 | publisher-generation:u64 | publisher-digest:32 |
+//! cache-domain-head:32 | revocation-scope:16 | revocation-generation:u64 |
+//! revocation-head:32
+//! ```
 
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, RevocationScopeId, SandboxId};
 use sha2::{Digest as _, Sha256};
@@ -17,6 +31,7 @@ pub struct HistoricalCreateProjectSourceHeadsV1 {
 }
 
 impl HistoricalCreateProjectSourceHeadsV1 {
+    /// Assembles unchecked historical fields without asserting current heads.
     pub const fn from_historical_fields(
         projection_revision: ObjectDigest,
         publisher_generation: u64,
@@ -37,14 +52,17 @@ impl HistoricalCreateProjectSourceHeadsV1 {
         }
     }
 
+    /// Returns the accepted projection revision used by historical reconciliation.
     pub const fn projection_revision(self) -> ObjectDigest {
         self.projection_revision
     }
 
+    /// Returns the accepted publisher digest used by historical reconciliation.
     pub const fn publisher_digest(self) -> ObjectDigest {
         self.publisher_digest
     }
 
+    /// Returns the complete fixed-width historical commitment input.
     pub fn record_bytes(self) -> [u8; 160] {
         let mut bytes = [0; 160];
         bytes[..32].copy_from_slice(self.projection_revision.as_bytes());
@@ -57,6 +75,7 @@ impl HistoricalCreateProjectSourceHeadsV1 {
         bytes
     }
 
+    /// Decodes exactly 160 bytes, rejecting every zero identity or generation.
     pub fn from_record_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() != 160 {
             return None;
@@ -73,6 +92,7 @@ impl HistoricalCreateProjectSourceHeadsV1 {
         row.is_valid().then_some(row)
     }
 
+    /// Checks nonzero historical fields without authenticating their currentness.
     pub fn is_valid(self) -> bool {
         self.projection_revision.as_bytes() != &[0; 32]
             && self.publisher_generation != 0
@@ -84,6 +104,7 @@ impl HistoricalCreateProjectSourceHeadsV1 {
     }
 }
 
+/// Hashes the exact accepted Create identities and complete historical source input.
 pub fn create_project_source_commitment_v1(
     operation: OperationId,
     admission_revision: ObjectDigest,

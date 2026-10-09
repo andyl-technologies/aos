@@ -1,14 +1,42 @@
 //! Owns passive Root cancellation, outcome and terminal-floor DATA.
+//!
+//! Historical constructors assemble unchecked scalar fields. Parsers validate
+//! canonical rows but do not authenticate a Root peer, retain a writer, or
+//! authorize admission, cancellation, append, or retirement. Native joins and
+//! committed/aborted decision factories remain with the Root owner.
+//!
+//! All integers use big-endian encoding. Each row ends with its original
+//! domain-separated SHA-256 checksum over the preceding bytes:
+//!
+//! ```text
+//! cancellation[112]: AOSQPX01 | version:u16=1 | reserved[6]=0 |
+//!   reservation:32 | client-nonce:16 | project:16 | checksum:32
+//! outcome[312]: AOSQPO01 | version:u16=1 | kind:u8 | reserved[5]=0 |
+//!   stage:32 | Source-row:32 | Controller-packet:32 | operation:16 |
+//!   sandbox:16 | source-commitment:32 | project:16 | project-packet:32 |
+//!   project-input:32 | client-nonce:16 | checksum:32
+//! floor[392]: AOSQPF01 | version:u16=1 | kind:u8 | reserved[5]=0 | issue:u64 |
+//!   reservation:32 | challenge:32 | Source-terminal:32 | Root-terminal:32 |
+//!   Controller-acceptance:32 | Source-pin:32 | operation:16 | sandbox:16 |
+//!   project:16 | source-commitment:32 | client-nonce:16 | fixed-names:48 |
+//!   checksum:32
+//! ```
+//!
+//! Floor names are decoded before sentinel and checksum checks. This preserves
+//! the distinct names failure even when another row claim is also invalid.
 
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use sha2::{Digest as _, Sha256};
 
 use super::protected_names::ProtectedJournalNamesV1;
 
+/// Reports the original Root row or physical-name failure without native custody.
 #[derive(Debug, thiserror::Error)]
 pub enum RootProjectHistoryDataErrorV1 {
+    /// Framing, scalar claims, terminal class, or canonical checksum is invalid.
     #[error("invalid Root project history DATA")]
     InvalidHead,
+    /// A historical physical-name pair is malformed.
     #[error(transparent)]
     Names(#[from] super::ProtectedHistoryDataErrorV1),
 }
@@ -18,12 +46,14 @@ const OUTCOME_CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.policy-project-admission-ou
 const OUTCOME_BYTES: usize = 312;
 const CLIENT_NONCE_DOMAIN: &[u8] = b"aos.sandbox.policy-project-admission-client.v1\0";
 const RESERVATION_CANCELLATION_MAGIC: &[u8; 8] = b"AOSQPX01";
+/// Supplies the canonical cancellation domain also used by Root's transaction hash.
 pub const RESERVATION_CANCELLATION_DOMAIN: &[u8] =
     b"aos.sandbox.policy-project-reservation-cancellation.v1\0";
 const RESERVATION_CANCELLATION_BYTES: usize = 112;
 
 const MAGIC: &[u8; 8] = b"AOSQPF01";
 const DOMAIN: &[u8] = b"aos.sandbox.policy-project-history-floor.v1\0";
+/// Gives the fixed historical floor width used by the Root socket contract.
 pub const ROOT_PROJECT_HISTORY_FLOOR_BYTES_V1: usize = 392;
 
 /// Retains Root's irreversible refusal to stage one Source reservation.
@@ -35,6 +65,7 @@ pub struct RootProjectReservationCancellationV1 {
 }
 
 impl RootProjectReservationCancellationV1 {
+    /// Assembles unchecked historical fields without granting cancellation authority.
     pub const fn from_historical_fields(
         reservation: ObjectDigest,
         client_nonce: [u8; 16],
@@ -148,6 +179,7 @@ pub struct RootProjectAdmissionOutcomeV1 {
 }
 
 impl RootProjectAdmissionOutcomeV1 {
+    /// Assembles unchecked historical fields without deciding a native Root outcome.
     pub const fn from_historical_fields(
         stage: ObjectDigest,
         kind: RootProjectAdmissionOutcomeKindV1,
@@ -176,14 +208,17 @@ impl RootProjectAdmissionOutcomeV1 {
         }
     }
 
+    /// Returns the retained Controller packet digest, or zero for an abort.
     pub const fn controller_packet(self) -> ObjectDigest {
         self.controller_packet
     }
 
+    /// Returns the signed project packet digest retained by the original stage.
     pub const fn project_packet(self) -> ObjectDigest {
         self.project_packet
     }
 
+    /// Returns the immutable project input digest retained by the original stage.
     pub const fn project_input(self) -> ObjectDigest {
         self.project_input
     }
@@ -350,6 +385,7 @@ pub enum RootProjectHistoryTerminalKindV1 {
 }
 
 impl RootProjectHistoryTerminalKindV1 {
+    /// Returns the established terminal tag used by floor and Controller formats.
     pub const fn byte(self) -> u8 {
         match self {
             Self::Committed => 1,
@@ -358,6 +394,7 @@ impl RootProjectHistoryTerminalKindV1 {
         }
     }
 
+    /// Decodes an established terminal tag, rejecting every unassigned byte.
     pub const fn from_byte(byte: u8) -> Option<Self> {
         match byte {
             1 => Some(Self::Committed),
@@ -388,6 +425,7 @@ pub struct RootProjectHistoryFloorV1 {
 }
 
 impl RootProjectHistoryFloorV1 {
+    /// Assembles unchecked historical fields without validating joins or custody.
     pub const fn from_historical_fields(
         kind: RootProjectHistoryTerminalKindV1,
         issue: u64,
