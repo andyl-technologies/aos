@@ -488,8 +488,14 @@ Clippy process first waited for the shared Cargo build-directory lock, then
 terminated with exit 101 on three production references to a test-only tracer
 (`/tmp/terrane-permanent-lookup-clippy-c15.log`). Private `42161fb184` guards
 every added diagnostic call with `cfg(test)` and leaves all physical checks,
-lookup and ACK boundaries unchanged. Scoped source formatting passes; changed
-source compilation and recovery runtime remain unqualified.
+lookup and ACK boundaries unchanged. Its strict native all-target Clippy and
+fresh 924-test inventory pass. The single unchanged AddedCycle witness fails
+with TIMEOUT at 120.016 seconds, before proposal handoff or fault injection.
+Its own-fixture interval is 85.500310393 seconds; the actual initial observation
+returns successfully after 19.862431354 seconds from current/history qualification.
+No late-residue recovery, takeover or final ACK is inferred from this run.
+The earlier late-reclaim timeout remains separate evidence. Full recovery and
+milestone gates remain unqualified.
 Three additional workers now implement disjoint parts of the ordinary-read
 closure: one request-local selected observation, bounded pack framing/member
 reads, and genuine descriptor-bound original range receipts. Independent
@@ -513,6 +519,19 @@ artifact and selected snapshot/log receipts still need an ordinary read policy;
 existing strict publication recipes cannot impose new owner or hardlink rules
 on copied ordinary payloads. The selected-get candidate remains unqualified
 until that compatibility bridge and complete closing witnesses are implemented.
+Implementation now proceeds in disjoint worklines for the ordinary receipt
+bridge, read-only retained selection, and bounded legacy/read-only/unsupported
+fallbacks. A separate full source review checks the bounded reader. Reviewed
+bridge `e5715a24bd` retains real whole-artifact descriptors, bytes and metadata,
+preserves initial public modes and hardlinks, and marks ordinary receipts so
+protected Frame inputs refuse them. Shared contextual capture and strict recipe
+attachment also reject these ordinary receipts before importing observations.
+Four exact ordinary-receipt witnesses join runtime-agnostic. Source composition
+preserves current trunk functions and excludes unrelated private GC changes;
+compilation, witness execution and task acceptance remain pending.
+Corrected ordinary-read candidate `3ff271f871` passes strict native all-target
+Clippy. Its fresh inventory and exact runtime witness set remain in progress;
+the original native missing-method failure is retained as failure evidence.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;

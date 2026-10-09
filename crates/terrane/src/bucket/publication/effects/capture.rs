@@ -455,7 +455,6 @@ impl Frame {
             names,
             preimages,
             final_check: self.final_check.clone(),
-            pairs: self.pairs.iter().map(Arc::clone).collect(),
             plan,
             #[cfg(test)]
             faults: Vec::new(),
@@ -472,11 +471,6 @@ impl Frame {
     pub(super) fn read_projection(
         &self,
     ) -> Result<crate::store::native_effect::NativeReadProjection, StoreFailure> {
-        // This fixed read recipe owns named and whole-value inputs only.
-        // Collector pair observations keep their separate genuine worker lane.
-        if !self.pairs.is_empty() {
-            return Err(unsupported());
-        }
         let (names, preimages) = self.physical_inputs()?;
         Ok(crate::store::native_effect::NativeReadProjection::new(
             Arc::clone(&self.exclusions),

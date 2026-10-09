@@ -71,6 +71,7 @@ impl PayloadReadCapture {
     /// # Errors
     /// Refuses another path, incomplete presence data or unsafe payload policy.
     pub(crate) fn finish(self, observed: &RecordRead) -> Result<RetainedPayloadRead, StoreFailure> {
+        observed.require_effect_compatible()?;
         if self.path != observed.path() {
             return Err(corrupt());
         }

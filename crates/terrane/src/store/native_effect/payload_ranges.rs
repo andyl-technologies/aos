@@ -288,6 +288,22 @@ impl NativePayloadRangeRead {
         matches!(&self.recipe, Recipe::Check(_))
     }
 
+    /// Borrows the exact replay ranges retained by a real closing request.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(crate) fn closing_data_ranges_for_test(
+        &self,
+    ) -> Option<impl Iterator<Item = (&Path, ByteRange)> + '_> {
+        match &self.recipe {
+            Recipe::Check(retained) => Some(
+                retained
+                    .ranges
+                    .iter()
+                    .map(move |expected| (retained.original.path.as_path(), expected.range)),
+            ),
+            _ => None,
+        }
+    }
+
     /// Executes only privately captured physical recipes on the actual worker.
     ///
     /// # Errors

@@ -157,7 +157,6 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// # Errors
     /// Rejects unsafe coordination paths and propagates unavailable lock or
     /// synchronization primitives. The inode is never unlinked or replaced.
-    #[cfg(all(test, feature = "tokio"))]
     pub(super) async fn exclusive(&self) -> Result<F::Lock, StoreFailure> {
         if self.inner.access.read_only() {
             return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
@@ -548,10 +547,31 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             Err(error) => Err(io_failure(error)),
         }
     }
-}
 
-#[cfg(all(test, feature = "tokio", unix))]
-mod ordinary_read_tests;
+    // The caller owns the exclusion guard across this comparison and the
+    // installation's directory sync. Conditions compare bytes, never hashes
+    // or interpretations of provider version tokens.
+    /// Compares complete opaque bytes and installs a conditional replacement.
+    ///
+    /// # Errors
+    /// Propagates invalid layout and filesystem failures. Callers hold stable
+    /// exclusion across this method and its final directory synchronization.
+    pub(super) async fn replace_conditionally(
+        &self,
+        key: &BucketKey,
+        expected: Option<&[u8]>,
+        new: &[u8],
+    ) -> Result<bool, StoreFailure> {
+        if key.mutability() != Mutability::CompareAndSwap {
+            return Err(malformed());
+        }
+        let current = self.read_optional(key).await?;
+        if current.as_deref() != expected {
+            return Ok(false);
+        }
+        self.install(key, new, current.is_some()).await
+    }
+}
 
 #[cfg(all(test, feature = "tokio", unix))]
 mod payload_namespace_tests;

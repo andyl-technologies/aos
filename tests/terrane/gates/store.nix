@@ -59,6 +59,10 @@ in {
     run_store_test store::native_effect::payload_ranges::tests::in_place_changes_refuse_original_range_and_final_closure --features tokio
     run_store_test store::native_effect::payload_ranges::tests::cancelled_waiter_retains_descriptor_until_actual_worker_finishes --features tokio
     run_store_test store::native_effect::payload_ranges::tests::ordinary_ranges_preserve_public_hardlinks_without_protected_authority --features tokio
+    run_store_test bucket::files::ordinary_receipt_tests::ordinary_receipt_keeps_public_hardlinks_and_actual_full_metadata --features tokio
+    run_store_test bucket::files::ordinary_receipt_tests::ordinary_receipt_preserves_missing_and_incompatible_layout_outcomes --features tokio
+    run_store_test bucket::files::ordinary_receipt_tests::ordinary_receipt_refuses_equal_bytes_replaced_leaf_and_ancestor --features tokio
+    run_store_test bucket::files::ordinary_receipt_tests::ordinary_receipt_cannot_supply_protected_effect_inputs --features tokio
     run_store_test store::tests::native_clock_ticks_do_not_move_backward --features tokio
     run_store_test store::bindings::tests::native_timer_waits_and_rejects_duration_overflow --features tokio
     run_store_test store::bindings::tests::native_metadata_preserves_links_permissions_and_nofollow_attributes --features tokio

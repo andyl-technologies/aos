@@ -269,6 +269,7 @@ async fn contextual_frame<F: LocalFs + BucketBinding>(
     }
     for retained in context.selected_reads() {
         let read = retained.record();
+        read.require_effect_compatible()?;
         frame
             .observed_read(
                 fs,
@@ -282,6 +283,7 @@ async fn contextual_frame<F: LocalFs + BucketBinding>(
             .await?;
     }
     for read in context.existing_reads() {
+        read.require_effect_compatible()?;
         if let Some(retained) = read.retained_payload() {
             frame.retained_payload_read(retained)?;
         } else {

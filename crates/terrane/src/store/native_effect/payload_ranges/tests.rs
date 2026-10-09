@@ -57,6 +57,14 @@ async fn original_ranges_read_exact_bytes_and_revalidate_without_whole_body() {
     assert_eq!(retained.ranges[0].range, range);
     assert_eq!(retained.ranges[0].bytes, b"requested-body");
     assert!(retained.length > range.length);
+    let closing = NativePayloadRangeRead::new(Recipe::Check(retained.clone()));
+    assert_eq!(
+        closing
+            .closing_data_ranges_for_test()
+            .unwrap()
+            .collect::<Vec<_>>(),
+        vec![(fixture.path.as_path(), range)]
+    );
     retained.revalidate(&TokioLocalFs).await.unwrap();
 }
 

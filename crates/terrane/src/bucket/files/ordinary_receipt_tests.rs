@@ -138,4 +138,16 @@ async fn ordinary_receipt_cannot_supply_protected_effect_inputs() {
             .kind(),
         &StoreErrorKind::Unsupported
     );
+
+    let protected = crate::store::native_publication_effects::PayloadReadCapture::capture(
+        &bucket.inner.fs,
+        &path,
+        bucket.publication_operator_uid().unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        protected.finish(&read).err().unwrap().kind(),
+        &StoreErrorKind::Unsupported
+    );
 }
