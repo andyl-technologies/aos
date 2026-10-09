@@ -1360,5 +1360,7 @@ pub(super) fn take<const N: usize>(
 ) -> Result<[u8; N], CurrentNixPreflightDataErrorV1> {
     let (value, _) = checked_byte_region(bytes, offset, N)
         .map_err(|_| CurrentNixPreflightDataErrorV1::Changed)?;
-    value.try_into().map_err(|_| CurrentNixPreflightDataErrorV1::Changed)
+    value
+        .try_into()
+        .map_err(|_| CurrentNixPreflightDataErrorV1::Changed)
 }

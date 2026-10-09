@@ -22,8 +22,8 @@ use std::fmt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
-use aos_sandbox_core::bounded_codec::checked_byte_region;
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_core::bounded_codec::checked_byte_region;
 use aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1;
 use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamSubjectChunk};
 

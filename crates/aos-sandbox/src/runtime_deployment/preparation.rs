@@ -739,7 +739,8 @@ pub(super) fn compared_prospective_deployment_head_v1<'data>(
 }
 
 fn array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], NvCustodyErrorV1> {
-    let (value, _) = checked_byte_region(bytes, offset, N).map_err(|_| NvCustodyErrorV1::Encoding)?;
+    let (value, _) =
+        checked_byte_region(bytes, offset, N).map_err(|_| NvCustodyErrorV1::Encoding)?;
     value.try_into().map_err(|_| NvCustodyErrorV1::Encoding)
 }
 

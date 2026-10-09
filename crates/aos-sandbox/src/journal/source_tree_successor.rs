@@ -1311,9 +1311,11 @@ pub(crate) fn require_exact_capacity_family(
 }
 
 pub(crate) fn array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], JournalError> {
-    let (value, _) = checked_byte_region(bytes, offset, N)
-        .map_err(|_| JournalError::ProtectedBoundary)?;
-    value.try_into().map_err(|_| JournalError::ProtectedBoundary)
+    let (value, _) =
+        checked_byte_region(bytes, offset, N).map_err(|_| JournalError::ProtectedBoundary)?;
+    value
+        .try_into()
+        .map_err(|_| JournalError::ProtectedBoundary)
 }
 
 pub(crate) fn digest_at(bytes: &[u8], offset: usize) -> Result<ObjectDigest, JournalError> {
