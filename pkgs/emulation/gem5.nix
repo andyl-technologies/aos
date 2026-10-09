@@ -26,6 +26,7 @@
   version = "25.1.0.1";
   compilerTargetPatch = ./gem5-patches/compiler-target-query.patch;
   reproducibleBuildPatch = ./gem5-patches/reproducible-build-environment.patch;
+  addrRangePredicatePatch = ./gem5-patches/addr-range-predicate-borrow.patch;
   eventBoundaryPatch = ./gem5-patches/nondraining-event-boundary.patch;
   timeBufferPatch = ./gem5-patches/time-buffer-value-initialization.patch;
   stateInventoryPatch = ./gem5-patches/modeled-state-inventory.patch;
@@ -64,6 +65,10 @@
       {
         file = "reproducible-build-environment.patch";
         sha256 = builtins.hashFile "sha256" reproducibleBuildPatch;
+      }
+      {
+        file = "addr-range-predicate-borrow.patch";
+        sha256 = builtins.hashFile "sha256" addrRangePredicatePatch;
       }
       {
         file = "nondraining-event-boundary.patch";
@@ -212,6 +217,7 @@ in
           cd gem5-${revision}
           patch --fuzz=0 -p1 < ${compilerTargetPatch}
           patch --fuzz=0 -p1 < ${reproducibleBuildPatch}
+          patch --fuzz=0 -p1 < ${addrRangePredicatePatch}
           patch --fuzz=0 -p1 < ${eventBoundaryPatch}
           patch --fuzz=0 -p1 < ${timeBufferPatch}
           patch --fuzz=0 -p1 < ${stateInventoryPatch}
