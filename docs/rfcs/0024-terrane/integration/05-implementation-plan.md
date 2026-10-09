@@ -5129,6 +5129,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   matches the shared Pending unit variant without a struct pattern. Native
   all-target Clippy, collector runtime and index population deadlines remain
   unqualified.
+  The shared test binding retains its previously composed native forwarding
+  prerequisites and adds typed permanent request gates/faults with separate
+  submission and terminal observations. Its retained test task records actual
+  worker return even after waiter cancellation; no hook creates a receipt or
+  substitutes for a current permission check. Source review and scoped
+  formatting pass. Compilation and the five genuine permanent fault witnesses
+  remain pending; missing terminal observations cannot prove completion.
   Actual remote provider qualification belongs to T3. No remote conformance
   or full `gc-two-phase-delete` pass is claimed. D-78
   registers physical creation journals and recoverable deletion intent.
