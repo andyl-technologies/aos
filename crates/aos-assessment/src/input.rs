@@ -109,6 +109,9 @@ pub struct UpstreamBinding {
     pub observation: UpstreamObservationV1,
     /// Exact retained response length, including legacy bounded page framing.
     pub response_byte_length: u64,
+    /// Exact original page custody and any retained source-chain manifest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_refs: Vec<crate::observation::SourceEvidenceRef>,
 }
 
 /// Retains a source-native first-observation identity independent of HTTP caches.
@@ -320,6 +323,32 @@ impl EvaluationData {
             }
         }
         for binding in &self.upstream {
+            if binding.source_refs.len() > 128 {
+                bail!("upstream source chain exceeds its custody reference ceiling");
+            }
+            sorted(&binding.source_refs, "upstream source custody references")?;
+            if binding
+                .source_refs
+                .windows(2)
+                .any(|pair| pair[0].digest == pair[1].digest)
+            {
+                bail!("upstream chain repeats a source custody identity");
+            }
+            for source in &binding.source_refs {
+                if source.byte_length > 8 * 1024 * 1024
+                    || source.origin != binding.observation.provider
+                {
+                    bail!("upstream source custody exceeds its exact provider/byte scope");
+                }
+            }
+            if !binding.source_refs.is_empty()
+                && !binding.source_refs.iter().any(|source| {
+                    source.digest == binding.observation.response_digest
+                        && source.byte_length == binding.response_byte_length
+                })
+            {
+                bail!("upstream chain lacks its exact response custody");
+            }
             if !bound_components.insert(&binding.component_ref) {
                 bail!("duplicate upstream component binding");
             }

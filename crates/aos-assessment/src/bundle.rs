@@ -369,6 +369,13 @@ fn manifest(
         }
     }
     for binding in &data.upstream {
+        for source in &binding.source_refs {
+            if source_refs.insert(source.digest, source.clone())
+                .is_some_and(|previous| previous.byte_length != source.byte_length)
+            {
+                bail!("upstream chain source custody references disagree about exact byte length");
+            }
+        }
         source_refs
             .entry(binding.observation.response_digest)
             .or_insert(SourceEvidenceRef {

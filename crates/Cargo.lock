@@ -158,7 +158,10 @@ dependencies = [
  "aos-ability-model",
  "aos-ability-plan",
  "aos-ability-runtime",
+ "aos-assessment",
+ "aos-assessment-http",
  "aos-assessment-providers",
+ "aos-assessment-runtime",
  "aos-cache",
  "aos-contract",
  "aos-core",
@@ -290,6 +293,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-assessment-http"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-assessment",
+ "aos-assessment-providers",
+ "aos-assessment-runtime",
+ "aos-contract",
+ "async-trait",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "tokio",
+ "tokio-rustls",
+ "zeroize",
+]
+
+[[package]]
 name = "aos-assessment-providers"
 version = "0.1.0"
 dependencies = [
@@ -316,6 +337,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tokio",
  "url",
  "zeroize",
 ]
@@ -578,6 +600,8 @@ dependencies = [
 name = "aos-hub-console"
 version = "0.1.0"
 dependencies = [
+ "aos-assessment",
+ "aos-assessment-runtime",
  "aos-doc-model",
  "aos-hub-console-contract",
  "aos-proto-types",

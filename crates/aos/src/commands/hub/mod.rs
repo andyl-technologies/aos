@@ -43,6 +43,7 @@ pub(crate) use publication::{prepare_registry_publication, upload_registry_publi
 
 mod access_policy;
 mod access_token;
+mod assessment;
 mod audit;
 mod auth;
 mod binding;
@@ -80,6 +81,7 @@ mod webhook;
 /// RPC call fails.
 pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
     match command {
+        HubCmd::Assessment { command } => assessment::run(printer, command).await,
         HubCmd::Login {
             hub,
             provisioning_token,

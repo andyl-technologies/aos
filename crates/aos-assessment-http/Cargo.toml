@@ -1,26 +1,25 @@
 [package]
-name = "aos-assessment-runtime"
+name = "aos-assessment-http"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
-description = "Shared durable assessment orchestration and scoped provider work contracts"
+description = "Bounded native HTTP effects for the shared AOS package assessment executor"
 
 [dependencies]
 anyhow = { workspace = true }
 aos-assessment = { workspace = true }
+aos-assessment-runtime = { workspace = true }
 aos-assessment-providers = { workspace = true }
-aos-contract = { workspace = true }
 async-trait = { workspace = true }
-hex = { workspace = true }
-hmac = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-sha2 = { workspace = true }
-url = { workspace = true }
+reqwest = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+aos-contract = { workspace = true }
+rcgen = { workspace = true }
+rustls = { workspace = true }
 tokio = { workspace = true }
+tokio-rustls = { workspace = true }
 
 [lints]
 workspace = true

@@ -2943,6 +2943,17 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         "/aos.hub.v1.TopologyService/DeletePlacementEquivalence",
         delete_placement_equivalence
     );
+    // AssessmentService
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.AssessmentService/GetStatus",
+        get_assessment_status
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.AssessmentService/GetAssessment",
+        get_package_assessment
+    );
     // PackageService
     r = rpc_route!(r, "/aos.hub.v1.PackageService/ListPackages", list_packages);
     r = rpc_route!(r, "/aos.hub.v1.PackageService/GetPackage", get_package);

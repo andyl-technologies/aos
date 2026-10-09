@@ -28,6 +28,8 @@ use super::inventory::RepositoryCoordinates;
 
 const MAX_STATE_DOCUMENT_BYTES: u64 = 32 * 1024 * 1024;
 
+mod assessment;
+
 /// Resolves and owns one local repository's protected maintenance paths.
 pub(super) struct StateStore {
     root: PathBuf,

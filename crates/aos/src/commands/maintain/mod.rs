@@ -1,6 +1,7 @@
 //! Local foreground package-maintenance controller and process-boundary renderer.
 
 mod confinement;
+mod assessment;
 mod discovery;
 mod evidence;
 mod git;
@@ -36,6 +37,8 @@ use serde::Serialize;
 use crate::cli::{Cli, ColorChoice, MaintainArgs, MaintainCommand, ProgressChoice};
 
 const MAX_SCAN_DIAGNOSTICS: usize = 128;
+
+pub use assessment::run_assessment;
 
 /// Dispatches one recognized maintenance command to a typed completion.
 ///

@@ -79,6 +79,10 @@ pub struct HubClient {
 /// CLI to exchange the generated request and response messages directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HubTopologyMethod {
+    /// Reads current inventory-bound package assessment status.
+    GetAssessmentStatus,
+    /// Reads one canonical successfully admitted package assessment.
+    GetPackageAssessment,
     /// Selects authenticated direct-upload capability discovery.
     DirectUploadGetCapabilities,
     /// Selects bounded immutable direct-session admission.
@@ -1203,6 +1207,8 @@ impl HubTopologyMethod {
             PlanCreateRegistry => "aos.hub.v1.RegistryService/PlanCreateRegistry",
             CreateRegistry => "aos.hub.v1.RegistryService/CreateRegistry",
             GetRegistryMetadata => "aos.hub.v1.RegistryService/GetRegistryMetadata",
+            GetAssessmentStatus => "aos.hub.v1.AssessmentService/GetStatus",
+            GetPackageAssessment => "aos.hub.v1.AssessmentService/GetAssessment",
             PlanUpdateRegistryMetadata => "aos.hub.v1.RegistryService/PlanUpdateRegistryMetadata",
             UpdateRegistryMetadata => "aos.hub.v1.RegistryService/UpdateRegistryMetadata",
             PlanUpdateRegistry => "aos.hub.v1.RegistryService/PlanUpdateRegistry",
@@ -1759,6 +1765,8 @@ pub mod hub_rpc {
         PlanCreateRegistry: PlanCreateRegistryRequest => TopologyPlanResponse;
         CreateRegistry: ApplyRegistryMutationRequest => RegistryResponse;
         GetRegistryMetadata: GetRegistryRequest => RegistryMetadataResponse;
+        GetAssessmentStatus: AssessmentStatusRequest => AssessmentDocumentResponse;
+        GetPackageAssessment: AssessmentObjectRequest => AssessmentDocumentResponse;
         PlanUpdateRegistryMetadata: PlanUpdateRegistryMetadataRequest => TopologyPlanResponse;
         UpdateRegistryMetadata: ApplyRegistryMutationRequest => RegistryMetadataChangeResponse;
         PlanUpdateRegistry: PlanUpdateRegistryRequest => TopologyPlanResponse;

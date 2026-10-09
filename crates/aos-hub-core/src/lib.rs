@@ -133,6 +133,7 @@ pub mod robots;
 pub mod s3surface;
 pub mod secret_version;
 pub mod service;
+pub mod assessment_execution;
 pub mod signing;
 pub mod sigv4;
 pub mod snapshot;

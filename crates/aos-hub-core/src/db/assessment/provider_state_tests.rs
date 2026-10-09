@@ -21,6 +21,49 @@ async fn planned() -> Result<(Database, i64, ProviderWorkPlanV1)> {
     .await
 }
 
+#[tokio::test]
+async fn failed_physical_attempt_settles_without_refunding_and_allows_incomplete_evaluation(
+) -> Result<()> {
+    let (db, registry_id, plan) = planned().await?;
+    db.admit_assessment_provider_plan(registry_id, &plan)
+        .await?;
+    db.fail_assessment_provider_work(registry_id, &plan.claim, "source-transport-failed")
+        .await?;
+
+    assert!(db
+        .check_assessment_provider_claim(registry_id, &plan.claim)
+        .await
+        .is_err());
+    assert!(db
+        .fail_assessment_provider_work(registry_id, &plan.claim, "source-transport-failed")
+        .await
+        .is_err());
+    let scan = db
+        .assessment_scan(registry_id, &plan.claim.scan_id)
+        .await?
+        .context("scan")?;
+    assert_eq!(scan.usage.provider_requests, 1);
+    assert_eq!(scan.usage.tasks, 1);
+
+    let mut coordinator = plan.claim.clone();
+    coordinator.task_id = "coordinator".into();
+    let data = db
+        .assessment_evaluation_base(registry_id, &coordinator)
+        .await?;
+    let input = db
+        .freeze_assessment_evaluation(registry_id, &coordinator, &data)
+        .await?;
+    let result = aos_assessment::evaluator::evaluate(&input, &data)?;
+    assert!(result
+        .subject_results
+        .iter()
+        .flat_map(|subject| &subject.coverage)
+        .any(|coverage| coverage.state != aos_assessment::security::CoverageState::Complete));
+    db.commit_assessment_evaluation(registry_id, &coordinator, &result)
+        .await?;
+    Ok(())
+}
+
 async fn planned_operation(
     operation: ProviderOperation,
 ) -> Result<(Database, i64, ProviderWorkPlanV1)> {
@@ -67,6 +110,7 @@ async fn planned_operation(
         budget_reservation: reservation.budget,
         cache_ref: None,
         continuation: None,
+        continuation_ref: None,
         adapter_version: operation.adapter_version().into(),
         operation,
         limits: ProviderLimits {

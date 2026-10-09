@@ -31,6 +31,21 @@ pub struct RepologyCandidate {
     pub licenses: Vec<String>,
 }
 
+/// Counts unfiltered GitHub page entries for conservative pagination proofs.
+///
+/// Prefix filtering cannot establish exhaustion: a page containing twenty
+/// unrelated tags still requires querying its next bounded source position.
+///
+/// # Errors
+/// Returns an error for malformed, duplicate-bearing, oversized or non-array JSON.
+pub fn github_page_length(bytes: &[u8]) -> Result<usize> {
+    let value = parse_response(bytes, "GitHub page")?;
+    Ok(value
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("GitHub page is not an array"))?
+        .len())
+}
+
 /// Parses one GitHub releases page into bounded provider-native candidates.
 ///
 /// # Errors

@@ -85,10 +85,91 @@ fn alias_projection_binds_exact_owner_definition_and_declared_member() -> Result
         .context("alias owner binding")?;
     assert_eq!(owner.definition_digest, definitions[0].digest()?);
     assert_eq!(owner.member_id.as_str(), "example");
+    let bindings: Vec<aos_assessment::metadata::SourcePackageBindingV1> =
+        serde_json::from_value(json!([
+            {"member":"example", "version":"1.2.0", "platform":"x86_64-linux"},
+            {"member":"example-alias", "version":"9.4.0", "platform":"x86_64-linux"}
+        ]))?;
+    let source = aos_contract::Sha256Digest::of_bytes("exact source content");
+    let scan = inventory.source_inventory(&bindings, "publisher/fixtures", source)?;
+    let alias = scan
+        .subjects
+        .iter()
+        .find(|subject| subject.package_coordinate.ends_with("/example-alias"))
+        .context("source alias")?;
+    let owner_subject = scan
+        .subjects
+        .iter()
+        .find(|subject| subject.package_coordinate.ends_with("/example"))
+        .context("source owner")?;
+    assert_eq!(alias.version, "9.4.0");
+    assert_eq!(owner_subject.version, "1.2.0");
+    assert_eq!(
+        alias.member_refs,
+        std::slice::from_ref(&owner_subject.subject_ref)
+    );
+    assert_eq!(scan.components.len(), 1);
+    assert_eq!(scan.components[0].subject_ref, owner_subject.subject_ref);
+    let data = aos_assessment::input::EvaluationData {
+        inventory: scan.clone(),
+        definitions,
+        upstream: vec![],
+        advisory_snapshot: None,
+        advisories: vec![],
+        dispositions: vec![],
+        history: vec![],
+        policy: serde_json::from_value(
+            json!({"schema":aos_assessment::input::ASSESSMENT_POLICY_V1,
+            "upstreamMaxAgeSeconds":86400,"advisoryMaxAgeSeconds":86400,"requiredAdvisorySources":[],"requireDependencyCoverage":true}),
+        )?,
+    };
+    let graph = aos_assessment::evaluator::ScopeGraph::new(&data)?;
+    assert_eq!(
+        graph.components(&alias.subject_ref)?,
+        graph.components(&owner_subject.subject_ref)?
+    );
+    assert_eq!(
+        scan.coverage.state,
+        aos_assessment::security::CoverageState::Unknown
+    );
+    assert!(
+        scan.subjects
+            .iter()
+            .all(|subject| subject.artifact_digest.is_none()
+                && subject.source_content_digest == Some(source))
+    );
     value["maintenanceInventory"]["units"][1]["ownerMember"] = json!("unowned-member");
     assert!(
         PackageAssessmentInventoryV1::from_slice(&serde_json::to_vec(&value)?)
             .and_then(|inventory| inventory.definitions())
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn source_inventory_requires_exact_evaluated_versions_and_all_declared_members() -> Result<()> {
+    let inventory = PackageAssessmentInventoryV1::from_slice(&serde_json::to_vec(&metadata())?)?;
+    let source = aos_contract::Sha256Digest::of_bytes("exact source content");
+    let binding: aos_assessment::metadata::SourcePackageBindingV1 = serde_json::from_value(
+        json!({"member":"example", "version":"7.8.9", "platform":"x86_64-linux"}),
+    )?;
+    let scan =
+        inventory.source_inventory(std::slice::from_ref(&binding), "publisher/fixtures", source)?;
+    assert_eq!(scan.subjects[0].version, "7.8.9");
+    assert!(
+        inventory
+            .source_inventory(&[], "publisher/fixtures", source)
+            .is_err()
+    );
+    assert!(
+        inventory
+            .source_inventory(&[binding.clone(), binding], "publisher/fixtures", source)
+            .is_err()
+    );
+    assert!(
+        inventory
+            .source_inventory(&[], "publisher/fixtures/", source)
             .is_err()
     );
     Ok(())
@@ -107,8 +188,46 @@ fn actual_package_set_export_projects_every_declared_unit() -> Result<()> {
         inventory.maintenance_inventory.units.len()
     );
     assert!(definitions.len() > 100);
-    for definition in definitions {
+    for definition in &definitions {
         definition.digest()?;
+    }
+    if let Ok(path) = std::env::var("AOS_ASSESSMENT_SOURCE_BINDINGS_FIXTURE") {
+        let bindings: Vec<aos_assessment::metadata::SourcePackageBindingV1> =
+            serde_json::from_slice(&std::fs::read(path)?)?;
+        let scan = inventory.source_inventory(
+            &bindings,
+            "publisher/actual-package-set",
+            aos_contract::Sha256Digest::of_bytes("fixture-admitted-source-tree"),
+        )?;
+        assert_eq!(scan.subjects.len(), bindings.len());
+        assert!(scan.subjects.len() > 100);
+        let data = aos_assessment::input::EvaluationData {
+            inventory: scan,
+            definitions,
+            upstream: vec![],
+            advisories: vec![],
+            dispositions: vec![],
+            history: vec![],
+            advisory_snapshot: Some(aos_assessment::advisory::AdvisorySnapshotV1 {
+                schema: aos_assessment::advisory::ADVISORY_SNAPSHOT_V1.into(),
+                sources: vec![],
+                exploit_catalog: None,
+            }),
+            policy: serde_json::from_value(
+                json!({"schema":aos_assessment::input::ASSESSMENT_POLICY_V1,
+                "upstreamMaxAgeSeconds":86400, "advisoryMaxAgeSeconds":86400, "requiredAdvisorySources":[], "requireDependencyCoverage":true}),
+            )?,
+        };
+        let input = data.freeze(
+            vec![
+                aos_assessment::input::Profile::Updates,
+                aos_assessment::input::Profile::Vulnerabilities,
+            ],
+            aos_assessment::time::Timestamp::parse("2026-10-09T12:00:00Z")?,
+        )?;
+        let result = aos_assessment::evaluator::evaluate(&input, &data)?;
+        assert_eq!(result.subject_results.len(), bindings.len());
+        result.digest()?;
     }
     Ok(())
 }

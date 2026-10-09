@@ -15,12 +15,14 @@ use serde::{Deserialize, Serialize};
 
 mod auth;
 mod capabilities;
+mod executor;
 mod page;
 mod projection;
 mod requests;
 
 pub use auth::ProviderWorkAuth;
 pub use capabilities::{CapabilityChallenge, ProviderCapabilitiesV1};
+pub use executor::{SourceResponse, SourceTransport, execute_source};
 pub use page::{AdvisoryRevisionReference, ProviderPageV1};
 pub use projection::{
     NormalizedObject, ObjectProjection, ProviderUsage, ProviderWorkResultV1, WorkOutcome,
@@ -277,7 +279,9 @@ impl ProviderOperation {
         Sha256Digest::of_canonical("aos.provider-operation/v1", self)
     }
 
-    fn provider(&self) -> &'static str {
+    /// Returns the installed provider profile used for quota and custody scope.
+    #[must_use]
+    pub fn provider(&self) -> &'static str {
         match self {
             Self::ObserveReleases { .. } => "github-releases",
             Self::ObserveTags { .. } => "github-tags",
@@ -480,6 +484,9 @@ pub struct ProviderWorkPlanV1 {
     /// Optional digest of the admitted previous source-bound continuation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation: Option<Sha256Digest>,
+    /// Exact admitted prior page whose successor authorizes this source position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_ref: Option<ProviderPageV1>,
     /// Closed operation whose endpoint belongs to an installed source profile.
     pub operation: ProviderOperation,
     /// Exact required adapter version checked before any effect.
@@ -509,6 +516,27 @@ impl ProviderWorkPlanV1 {
         self.claim.validate_at(now)?;
         self.operation.validate()?;
         self.limits.validate()?;
+        let follows_page = match &self.operation {
+            ProviderOperation::ObserveReleases { page, .. }
+            | ProviderOperation::ObserveTags { page, .. } => *page > 1,
+            ProviderOperation::QueryOsv { continuations, .. } => !continuations.is_empty(),
+            ProviderOperation::QueryNvd { start_index, .. }
+            | ProviderOperation::RefreshNvd { start_index, .. } => *start_index > 0,
+            ProviderOperation::RefreshKev { offset } => *offset > 0,
+            _ => false,
+        };
+        if follows_page && self.continuation.is_none() {
+            bail!("noninitial provider work lacks an admitted source page");
+        }
+        match (&self.continuation, &self.continuation_ref) {
+            (None, None) => {}
+            (Some(digest), Some(page)) if page.digest()? == *digest => {
+                if page.next.as_ref() != Some(&self.operation) {
+                    bail!("provider plan differs from its exact admitted source successor");
+                }
+            }
+            _ => bail!("provider continuation lacks its exact admitted prior page"),
+        }
         for value in [
             &self.deployment_id,
             &self.issuer,

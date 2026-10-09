@@ -35,6 +35,18 @@ pub async fn aos_main() {
         color,
     );
     if let Commands::Maintain(args) = &cli.command {
+        if let Some(MaintainCommand::Scan(command)) = &args.command {
+            if !command.profiles.is_empty() {
+                let result = tokio::select! {
+                    result = commands::maintain::run_assessment(&cli, args, command, &printer) => result,
+                    signal = tokio::signal::ctrl_c() => match signal {
+                        Ok(()) => Err(anyhow::anyhow!("assessment interrupted; admitted evidence remains available")),
+                        Err(error) => Err(error.into()),
+                    },
+                };
+                exit_with_result(result, &printer);
+            }
+        }
         if let Some(MaintainCommand::Release { command }) = &args.command {
             let result = tokio::select! {
                 result = run_release(&cli, command, &printer) => result,

@@ -1849,6 +1849,13 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       })
       maintenanceInventory.units;
   };
+  assessmentSourceBindings =
+    builtins.map (member: {
+      inherit member;
+      version = self.${member}.version;
+      platform = stdenv.hostPlatform.system;
+    })
+    packageNames;
 
   # All Linux QEMU variants enable compressed disk-image support when bzip2
   # is found. Retain that target library through runtime-reference scrubbing.
@@ -1863,7 +1870,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     {
       # --- Plumbing ---
       inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream lib packageNames allPackageNames;
-      inherit maintenanceInventory assessmentInventory;
+      inherit maintenanceInventory assessmentInventory assessmentSourceBindings;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkAccacheEnvironment;
       inherit mkCargoPackage mkAosCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;

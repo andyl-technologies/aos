@@ -88,6 +88,31 @@ pub struct MaintainInventoryArgs {
 
 #[derive(Args)]
 pub struct MaintainScanArgs {
+    /// Run the shared package assessment profiles
+    #[arg(long = "profile", value_delimiter = ',', conflicts_with_all = ["repology_fallback", "repology_limit"])]
+    pub profiles: Vec<super::AssessmentProfileArg>,
+
+    /// Read a portable assessment closure instead of evaluating this checkout
+    #[arg(
+        long,
+        value_name = "PATH",
+        requires = "profiles",
+        conflicts_with = "target"
+    )]
+    pub assessment_input: Option<PathBuf>,
+
+    /// Assess only these exact package coordinates
+    #[arg(long = "package", value_name = "COORDINATE", requires = "profiles")]
+    pub packages: Vec<String>,
+
+    /// Write a portable reference evidence bundle
+    #[arg(long, value_name = "PATH", requires = "profiles")]
+    pub evidence_output: Option<PathBuf>,
+
+    /// Environment variable holding an optional NVD read key
+    #[arg(long, default_value = "AOS_NVD_READ_KEY", value_name = "NAME")]
+    pub nvd_key_env: String,
+
     /// Use only sufficiently fresh cached observations
     #[arg(long)]
     pub offline: bool,

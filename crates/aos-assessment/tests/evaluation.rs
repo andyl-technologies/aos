@@ -308,6 +308,7 @@ fn version_selection_preserves_history_age_stream_and_frozen_authority() -> Resu
         first_observed_at: Timestamp::from_unix_seconds(published)?,
     });
     data.upstream.push(UpstreamBinding {
+        source_refs: vec![],
         component_ref: "component".into(),
         response_byte_length: 3,
         observation: UpstreamObservationV1 {

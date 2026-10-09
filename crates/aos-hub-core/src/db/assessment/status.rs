@@ -35,6 +35,14 @@ pub struct AssessmentProfileStatus {
 pub struct AssessmentSubjectStatus {
     /// Portable subject identity within the active immutable inventory.
     pub subject_ref: String,
+    /// Exact publisher-scoped package coordinate from the admitted inventory.
+    pub package_coordinate: String,
+    /// Exact AOS version admitted for this subject.
+    pub version: String,
+    /// Exact target platform of this subject.
+    pub platform: String,
+    /// Exact package output or aggregate name.
+    pub output: String,
     /// Selected independently evaluated profiles in canonical order.
     pub profiles: Vec<AssessmentProfileStatus>,
 }
@@ -72,6 +80,24 @@ pub struct AssessmentScanSummary {
 }
 
 impl Database {
+    /// Checks whether an exact assessment has a successful scoped admission.
+    ///
+    /// A retained or imported object alone never establishes Hub authority.
+    /// The service separately checks current read access to this registry.
+    ///
+    /// # Errors
+    /// Returns an error for unavailable or malformed persistence.
+    pub async fn has_admitted_assessment(
+        &self,
+        registry_id: i64,
+        digest: Sha256Digest,
+    ) -> Result<bool> {
+        Ok(self.backend.query_opt(
+            "SELECT 1 FROM assessment_scans WHERE registry_id = ?1 AND state = 'succeeded' AND assessment_digest = ?2 LIMIT 1",
+            &vals![@slice registry_id, digest.to_string()],
+        ).await?.is_some())
+    }
+
     /// Reads a bounded inventory-complete status page for selected profiles.
     ///
     /// The caller independently authorizes the registry. A missing head is an
@@ -100,7 +126,7 @@ impl Database {
             .await?
             .context("assessment inventory is absent")?;
         let rows = self.backend.query(
-            "SELECT subject_ref FROM assessment_subjects WHERE registry_id = ?1 AND inventory_digest = ?2
+            "SELECT subject_ref, package_coordinate, package_version, platform, output_name FROM assessment_subjects WHERE registry_id = ?1 AND inventory_digest = ?2
              AND subject_ref > ?3 ORDER BY subject_ref LIMIT ?4",
             &vals![@slice registry_id, resource.inventory_digest.to_string(), after_subject, u64::from(limit) + 1],
         ).await?;
@@ -176,6 +202,10 @@ impl Database {
             }
             subjects.push(AssessmentSubjectStatus {
                 subject_ref,
+                package_coordinate: row.get(1)?,
+                version: row.get(2)?,
+                platform: row.get(3)?,
+                output: row.get(4)?,
                 profiles: states,
             });
         }

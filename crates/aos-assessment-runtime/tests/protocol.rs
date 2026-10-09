@@ -11,6 +11,9 @@ use aos_assessment_runtime::provider::*;
 use aos_assessment_runtime::scan::*;
 use aos_contract::Sha256Digest;
 
+#[path = "support/executor.rs"]
+mod executor;
+
 fn now() -> Result<Timestamp> {
     Timestamp::parse("2026-10-09T12:00:00Z")
 }
@@ -298,6 +301,7 @@ fn plan() -> Result<ProviderWorkPlanV1> {
         },
         cache_ref: None,
         continuation: None,
+        continuation_ref: None,
         adapter_version: operation.adapter_version().into(),
         operation,
         limits: ProviderLimits::default(),

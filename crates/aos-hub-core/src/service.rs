@@ -29,6 +29,7 @@
 //! ```
 
 mod authentication;
+mod assessment;
 mod container;
 mod container_admin;
 mod delivery_workflow;

@@ -14,6 +14,8 @@ path = "src/main.rs"
 
 [dependencies]
 async-lock = "3.4.2"
+aos-assessment = { workspace = true }
+aos-assessment-runtime = { workspace = true }
 aos-doc-model = { workspace = true }
 aos-hub-console-contract = { workspace = true }
 aos-proto-types = { workspace = true }

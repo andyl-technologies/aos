@@ -26,6 +26,7 @@
 mod artifact_consumption_fixture;
 mod initrd_contract_fixture;
 mod native_deployment_fixture;
+mod package_assessment_fixture;
 
 use std::env;
 use std::fs::{self, File};
@@ -131,6 +132,8 @@ async fn main() -> Result<()> {
         Some("review") => review(&arguments[1..]),
         Some("fitness") => fitness(&arguments[1..]),
         Some("maintainer-upstream-proxy") => maintainer_upstream_proxy(&arguments[1..]).await,
+        Some("assessment-input") => package_assessment_fixture::input(&arguments[1..]),
+        Some("assessment-verify") => package_assessment_fixture::verify(&arguments[1..]),
         None => qualification_executor().await,
         Some(command) => bail!("unknown release fleet fixture command: {command}"),
     }

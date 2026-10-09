@@ -18,7 +18,8 @@
       "route",
       "operation",
       "image",
-      "container"
+      "container",
+      "assessment"
    ],
    "cli_nested_families" : {
       "org" : [ "audit", "domain", "identity", "identity-provider", "invitation", "member", "project", "service-account", "webhook" ],
@@ -3207,6 +3208,20 @@
          "request" : "DirectAbortBatch",
          "response" : "DirectUploadResponse",
          "service" : "DirectUploadService"
+      },
+      {
+         "method" : "GetStatus",
+         "path" : "aos.hub.v1.AssessmentService/GetStatus",
+         "request" : "AssessmentStatusRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "GetAssessment",
+         "path" : "aos.hub.v1.AssessmentService/GetAssessment",
+         "request" : "AssessmentObjectRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
       }
    ],
    "mutation_protocol" : {
@@ -3265,6 +3280,7 @@
       "RouteControllerService",
       "TopologyControllerService",
       "BinaryCacheUploadControllerService",
-      "DirectUploadService"
+      "DirectUploadService",
+      "AssessmentService"
    ]
 }

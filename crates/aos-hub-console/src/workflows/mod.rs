@@ -2,6 +2,7 @@
 
 mod access_policy;
 mod access_tokens;
+mod assessments;
 mod cache_gc;
 mod cache_gc_jobs;
 mod cache_gc_safety;

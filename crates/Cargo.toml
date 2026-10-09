@@ -13,6 +13,7 @@ members = [
     "aos-assessment",
     "aos-assessment-providers",
     "aos-assessment-runtime",
+    "aos-assessment-http",
     "aos-core",
     "aos-boot-identity",
     "aos-recovery",
@@ -245,6 +246,7 @@ aos-maintain = { path = "aos-maintain" }
 aos-assessment = { path = "aos-assessment" }
 aos-assessment-providers = { path = "aos-assessment-providers" }
 aos-assessment-runtime = { path = "aos-assessment-runtime" }
+aos-assessment-http = { path = "aos-assessment-http" }
 crucible-cas = { path = "crucible-cas" }
 crucible-linux-resource = { path = "crucible-linux-resource" }
 crucible-s3-store = { path = "crucible-s3-store" }

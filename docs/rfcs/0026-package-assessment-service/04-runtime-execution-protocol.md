@@ -77,6 +77,7 @@ remains blocked until its required scanning capability is restored.
 | `budgetReservation` | Source budget identity, reservation ID, request allowance and deadline |
 | `cacheRef` | Optional exact prior response/validator reference and bounded admitted observation |
 | `continuation` | Optional source-bound continuation from an earlier result |
+| `continuationRef` | Exact admitted prior page; its digest and typed successor MUST match `continuation` and this operation |
 | `limits` | Effective source, result, item, request, duration and concurrency limits |
 
 Operation variants initially are `observe-releases`, `observe-tags`,

@@ -256,7 +256,8 @@ impl ProviderWorkResultV1 {
                     if observation.provider != plan.operation.provider()
                         || observation.project != project
                         || observation.adapter_version != plan.adapter_version
-                        || observation.retrieved_at_unix < plan.issued_at.unix_seconds()
+                        || (self.outcome != WorkOutcome::NotModified
+                            && observation.retrieved_at_unix < plan.issued_at.unix_seconds())
                         || observation.retrieved_at_unix > self.completed_at.unix_seconds()
                     {
                         bail!("upstream observation differs from its exact admitted source");
@@ -264,6 +265,8 @@ impl ProviderWorkResultV1 {
                     if self.outcome == WorkOutcome::NotModified
                         && plan.cache_ref.as_ref().is_none_or(|cache| {
                             observation.response_digest != cache.evidence.digest
+                                || observation.retrieved_at_unix
+                                    != cache.observation.retrieved_at.unix_seconds()
                         })
                     {
                         bail!("304 upstream projection changed its retained response identity");

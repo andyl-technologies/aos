@@ -1645,6 +1645,7 @@ in rec {
   # only by the local controller after strict canonical evaluation.
   maintenanceInventory = pkgs.maintenanceInventory;
   assessmentInventory = pkgs.assessmentInventory;
+  assessmentSourceBindings = pkgs.assessmentSourceBindings;
 
   # Auto-discovered golden image systems.
   # Each system has .config, .options, .build, and .checks.

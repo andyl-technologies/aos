@@ -22,6 +22,10 @@ use crate::security::SecurityDeclaration;
 use crate::time::Timestamp;
 use crate::validation::{DOCUMENT_LIMITS, decode};
 
+mod source;
+
+pub use source::SourcePackageBindingV1;
+
 /// Identifies a package's security sidecar without changing maintenance v1.
 pub const PACKAGE_ASSESSMENT_METADATA_V1: &str = "aos.package-assessment-metadata/v1";
 

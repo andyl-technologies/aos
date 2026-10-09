@@ -137,6 +137,11 @@ pub struct HubAccessPolicyArgs {
 
 #[derive(Subcommand)]
 pub enum HubCmd {
+    /// Inspect package update and vulnerability assessments
+    Assessment {
+        #[command(subcommand)]
+        command: HubAssessmentCmd,
+    },
     /// Set up, verify, and activate a delivery destination.
     Delivery {
         #[command(subcommand)]
@@ -259,6 +264,68 @@ pub enum HubCmd {
     Operation {
         #[command(subcommand)]
         command: HubOperationCmd,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum AssessmentProfileArg {
+    /// Check eligible upstream package updates
+    Updates,
+    /// Check supported advisory sources and CVE mappings
+    Vulnerabilities,
+    /// Check non-authoritative license signals
+    LicenseSignals,
+}
+
+impl From<AssessmentProfileArg> for aos_assessment::input::Profile {
+    fn from(profile: AssessmentProfileArg) -> Self {
+        match profile {
+            AssessmentProfileArg::Updates => Self::Updates,
+            AssessmentProfileArg::Vulnerabilities => Self::Vulnerabilities,
+            AssessmentProfileArg::LicenseSignals => Self::LicenseSignals,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+pub enum HubAssessmentCmd {
+    /// Read current assessment freshness and pending generations
+    Status {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry whose admitted package inventory is selected
+        #[arg(long)]
+        registry: String,
+        /// Select independent assessment profiles
+        #[arg(
+            long = "profile",
+            value_enum,
+            value_delimiter = ',',
+            default_value = "updates,vulnerabilities"
+        )]
+        profiles: Vec<AssessmentProfileArg>,
+        /// Bound the number of packages in this page
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+        /// Continue after this exact subject in a pinned inventory and policy
+        #[arg(long, requires_all = ["inventory_digest", "policy_digest"])]
+        after_subject: Option<String>,
+        /// Pin the inventory returned by the preceding page
+        #[arg(long)]
+        inventory_digest: Option<String>,
+        /// Pin the decision policy returned by the preceding page
+        #[arg(long)]
+        policy_digest: Option<String>,
+    },
+    /// Read one canonical result admitted by a successful Hub scan
+    Get {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry containing the admitted result
+        #[arg(long)]
+        registry: String,
+        /// Exact immutable assessment digest
+        digest: String,
     },
 }
 

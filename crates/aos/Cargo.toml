@@ -68,6 +68,9 @@ aos-package = { workspace = true }
 aos-registry-surface = { workspace = true }
 aos-maintain = { workspace = true }
 aos-assessment-providers = { workspace = true }
+aos-assessment = { workspace = true }
+aos-assessment-runtime = { workspace = true }
+aos-assessment-http = { workspace = true }
 aos-release = { workspace = true }
 aos-image-finalizer = { workspace = true }
 aos-profile = { workspace = true }
@@ -104,6 +107,7 @@ libc = { workspace = true }
 ed25519-dalek = { workspace = true }
 url = { workspace = true }
 zeroize = { workspace = true }
+uuid = { workspace = true }
 tempfile = { workspace = true }
 toml = { workspace = true }
 ratatui = { workspace = true }
@@ -116,5 +120,4 @@ aos-hub = { workspace = true }
 aos-hub-core = { workspace = true, features = ["test-fixtures"] }
 flate2 = { workspace = true }
 tar = { workspace = true }
-uuid = { workspace = true }
 zstd = { workspace = true }

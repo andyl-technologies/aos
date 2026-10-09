@@ -19,6 +19,52 @@ use super::objects::encode;
 use super::scans::claim_values;
 
 impl Database {
+    /// Settles a failed physical attempt without refunding its reserved allowance.
+    ///
+    /// A response deadline may already have elapsed. Settlement still requires
+    /// the current parent lease and exact child attempt; it grants no result or
+    /// observation admission authority and cannot revive cancelled work.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid diagnostic, stale parent/child authority
+    /// or unavailable persistence.
+    pub async fn fail_assessment_provider_work(
+        &self,
+        registry_id: i64,
+        claim: &aos_assessment_runtime::scan::TaskClaim,
+        code: &str,
+    ) -> Result<()> {
+        if code.is_empty()
+            || code.len() > 128
+            || !code
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            || claim.task_id == "coordinator"
+        {
+            bail!("provider failure settlement has an invalid bounded diagnostic or task");
+        }
+        let mut parent = claim.clone();
+        parent.task_id = "coordinator".into();
+        self.check_assessment_scan_claim(registry_id, &parent)
+            .await?;
+        let mut values = claim_values(registry_id, &parent);
+        values.extend(vals![claim.task_id, code]);
+        self.backend
+            .checked_batch(&[Statement::new(
+                format!(
+                    "UPDATE assessment_tasks SET state = 'failed', last_error_code = ?10,
+                 lease_expires_at = NULL, resource_version = resource_version + 1
+             WHERE scan_id = ?2 AND task_id = ?9 AND claim_token = ?3 AND attempt = ?7
+               AND generation = ?4 AND state = 'leased'
+               AND EXISTS(SELECT 1 FROM assessment_scans WHERE {})",
+                    self.assessment_claim_guard()
+                ),
+                values,
+            )
+            .expecting(1)])
+            .await
+    }
+
     /// Binds an installed typed plan to its already consumed exact reservation.
     ///
     /// The planner independently authorizes source, credential and evidence
