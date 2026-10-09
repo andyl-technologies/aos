@@ -3908,7 +3908,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   On frozen `058f383e7b`, the first ordinary 1,024-entry workload fails during
   baseline publication with `Advance(Expired)` after 59.04 seconds, before
   maintenance begins. Source and executable remain unchanged. The five later
-  workloads and memo check remain unrun; actual baseline-path diagnosis follows.
+  workloads and memo check remain unrun. One separate instrumented diagnostic
+  on that unchanged source also fails: its native deadline sample is
+  30.007576264 seconds against the unchanged 30-second maximum, at
+  `outputs-file-after-refresh` during final output synchronization. The 233
+  outputs are the required 232 generation shards and MANIFEST, not separate
+  metadata packs. Private parent-owned change `331b2fd87d` preserves physical
+  checks and native acknowledgment while incrementally reclassifying only
+  successfully rebound or consumed paths. Independent source parity review and
+  scoped formatting pass; regression coverage, compilation and timed workload
+  qualification remain pending. No deadline or output layout changes.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
