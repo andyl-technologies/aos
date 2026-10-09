@@ -167,6 +167,43 @@ class CompletedWorkAdmission(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "profile label"):
                 comparison.compare(forged, copy.deepcopy(forged))
 
+    def test_complete_capture_pairs_are_actually_read_for_every_seed(self):
+        capture_spec = importlib.util.spec_from_file_location(
+            "capture_controls", Path(__file__).with_name("ram-comparison-state-witness-test.py"))
+        controls = importlib.util.module_from_spec(capture_spec)
+        capture_spec.loader.exec_module(controls)
+        fixture_owner = controls.CompleteStateWitnessTests()
+        fixture_owner.setUp()
+        try:
+            pairs = []
+            for seed in range(1000, 1063):
+                left = fixture_owner.capture()
+                right = fixture_owner.capture(generation=23, root_byte=99, versions=17)
+                left["boundary"]["seed"] = right["boundary"]["seed"] = seed
+                pairs.append({"seed": seed, "baseline": left, "candidate": right})
+            manifest = {"schema": "crucible.complete-capture-comparison-input.v1", "pairs": pairs}
+            candidate = fixture()
+            candidate["rows"][0]["samples"][0]["fingerprint"] = [99] * 32
+            result = comparison.compare(fixture(), candidate, manifest)
+            self.assertTrue(result["common_capture_bytes_ready"])
+            self.assertEqual(len(result["capture_witnesses"]), 63)
+            self.assertFalse(result["capture_physical_origin_verified"])
+            self.assertFalse(result["performance_qualified"])
+            self.assertFalse(result["fingerprint_edition_verified"])
+            with self.assertRaisesRegex(ValueError, "incomplete fixed capture"):
+                comparison.compare(fixture(), candidate, {**manifest, "pairs": pairs[:-1]})
+            changed = copy.deepcopy(manifest)
+            changed["pairs"][-1]["candidate"]["boundary"]["seed"] = 1000
+            with self.assertRaisesRegex(ValueError, "actual work seed"):
+                comparison.compare(fixture(), candidate, changed)
+            changed = copy.deepcopy(manifest)
+            body = Path(changed["pairs"][-1]["candidate"]["node"]["path"]).read_bytes() + b"different"
+            changed["pairs"][-1]["candidate"]["node"] = fixture_owner.artifact(body)
+            with self.assertRaisesRegex(ValueError, "state bytes"):
+                comparison.compare(fixture(), candidate, changed)
+        finally:
+            fixture_owner.tearDown()
+
     def test_pinned_bytes_and_duplicate_json_fields_are_checked(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "receipt.json"

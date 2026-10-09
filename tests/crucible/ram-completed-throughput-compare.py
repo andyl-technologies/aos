@@ -14,6 +14,7 @@ not establish a zero-regression confidence gate; this checker never issues one.
 import argparse
 from fractions import Fraction
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -117,7 +118,24 @@ def ratio(candidate, baseline):
     return {"numerator": value.numerator, "denominator": value.denominator}
 
 
-def compare(baseline, candidate):
+def compare(baseline, candidate, capture_pairs=None):
+    state_consumer = None
+    pairs = {}
+    if capture_pairs is not None:
+        require(set(capture_pairs) == {"schema", "pairs"}
+                and capture_pairs["schema"] == "crucible.complete-capture-comparison-input.v1",
+                "complete capture pair schema")
+        for pair in capture_pairs["pairs"]:
+            require(set(pair) == {"seed", "baseline", "candidate"}, "capture pair fields")
+            seed = integer(pair["seed"], "capture pair seed")
+            require(seed not in pairs, "duplicate capture pair seed")
+            pairs[seed] = pair
+        require(set(pairs) == set(range(1000, 1063)), "incomplete fixed capture pair corpus")
+        spec = importlib.util.spec_from_file_location(
+            "complete_state_witness", Path(__file__).with_name("ram-comparison-state-witness.py"))
+        state_consumer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(state_consumer)
+    state_witnesses = []
     require(digest(baseline["scenario_corpus"]) == digest(candidate["scenario_corpus"]), "authored scenario corpus changed")
     for field in ("host", "storage", "cpu_affinity"):
         for receipt in (baseline, candidate):
@@ -139,8 +157,19 @@ def compare(baseline, candidate):
         require(reference_samples.keys() == observed_samples.keys(), "seed moved between families")
         for seed, sample in reference_samples.items():
             peer = observed_samples[seed]
-            for field in ("scenario", "fingerprint", "charged_physical_quanta", "emitted_signal_events", "fault_work_items", "resources", "requested_target_bytes"):
+            fields = ("scenario", "charged_physical_quanta", "emitted_signal_events",
+                      "fault_work_items", "resources", "requested_target_bytes")
+            for field in fields:
                 require(sample[field] == peer[field], f"same-seed actual work/state differs: {field}")
+            if state_consumer is None:
+                require(sample["fingerprint"] == peer["fingerprint"],
+                        "same-seed actual work/state differs: fingerprint")
+            else:
+                pair = pairs[seed]
+                require(pair["baseline"]["boundary"]["seed"] == seed
+                        and pair["candidate"]["boundary"]["seed"] == seed,
+                        "capture moved from its actual work seed")
+                state_witnesses.append(state_consumer.compare_pair(pair["baseline"], pair["candidate"]))
         cpu = None
         reference_cpu = reference.get("completed_work_cpu_ns")
         observed_cpu = observed.get("completed_work_cpu_ns")
@@ -156,9 +185,14 @@ def compare(baseline, candidate):
     return {"schema": "crucible.completed-work-comparison.v1", "rows": rows,
             "cpu_comparison_ready": all(row["cpu_ratio"] is not None for row in rows),
             "performance_qualified": False,
-            "comparison_scope": "same fingerprint edition, descriptive equal-work comparison only",
+            "comparison_scope": ("independent complete captured bytes, descriptive equal-work comparison only"
+                                 if state_consumer else "same fingerprint edition, descriptive equal-work comparison only"),
+            "common_capture_bytes_ready": state_consumer is not None,
+            "capture_witnesses": state_witnesses,
+            "capture_physical_origin_verified": False,
             "fingerprint_edition_verified": False,
             "holds": ["fingerprint edition is not independently certified; cross-edition baseline requires an independent common complete-state/RAM witness",
+                      "retained capture bytes do not certify physical inventory/stopped origin or model-complete producer compatibility",
                       "implicit firmware identity requires a separate actual input binding",
                       "actual host observation/clock/CPU source evidence is not certified by labels",
                       "fixed paired uncertainty and separate zero-margin family gates are not implemented by this descriptive checker",
@@ -185,14 +219,21 @@ def main():
     for side in ("baseline", "candidate"):
         parser.add_argument(f"--{side}", type=Path, required=True)
         parser.add_argument(f"--{side}-sha256", required=True)
+    parser.add_argument("--capture-pairs", type=Path)
+    parser.add_argument("--capture-pairs-sha256")
     arguments = parser.parse_args()
     try:
+        require((arguments.capture_pairs is None) == (arguments.capture_pairs_sha256 is None),
+                "capture pair path and immutable pin must be supplied together")
+        capture_pairs = (read_pinned(arguments.capture_pairs, arguments.capture_pairs_sha256)
+                         if arguments.capture_pairs else None)
         result = compare(read_pinned(arguments.baseline, arguments.baseline_sha256),
-                         read_pinned(arguments.candidate, arguments.candidate_sha256))
+                         read_pinned(arguments.candidate, arguments.candidate_sha256), capture_pairs)
     except (ValueError, KeyError, TypeError, OSError) as error:
         parser.exit(1, f"completed-work comparison: {error}\n")
     result["baseline_sha256"] = arguments.baseline_sha256
     result["candidate_sha256"] = arguments.candidate_sha256
+    result["capture_pairs_sha256"] = arguments.capture_pairs_sha256
     print(json.dumps(result, sort_keys=True))
 
 
