@@ -5474,7 +5474,8 @@ mod tests {
             ("authority-bound", gated_operation()),
         ] {
             let directory = TestDirectory::new();
-            let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+            let (journal, _) =
+                Journal::open(directory.journal(), JournalLimits::default()).unwrap();
             let mut reconciler = Reconciler::new(journal, Executor::default());
             reconciler.accept(&operation).unwrap();
             let operation_id = operation.operation_id();
