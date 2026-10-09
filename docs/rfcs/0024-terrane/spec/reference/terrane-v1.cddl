@@ -979,6 +979,7 @@ PermanentDeletePass = {
   11 => [permanent-pass-coverage, permanent-pass-coverage, permanent-pass-coverage],
   12 => bstr .size 32,                  ; fresh event proposal nonce matches key
   ? 13 => [tstr, digest32],             ; current CopiedPlacementFence, local REQUIRED
+                                       ; checkpoint cycle may differ from original owner
 }
 ; Coverage kinds exactly 0/1/2 in order. First pass/event 0/0; its operation
 ; revision is checked selected owner revision + 1 (sweep 1, copy ordinarily 2).

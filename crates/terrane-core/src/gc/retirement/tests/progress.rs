@@ -112,6 +112,22 @@ fn permanent_pass_matches_independent_bytes_and_requires_whole_owner_state() {
         wrong.state.revision += 1;
         assert!(wrong.encode().is_err());
         if local {
+            let mut fresh = value.clone();
+            fresh.placement_fence.as_mut().unwrap().key =
+                format!("gc/9/fence/{}", fresh.predecessor.revision);
+            // Current collection checkpoints can advance independently of the
+            // permanent owner. These data checks do not qualify a native fence.
+            fresh.check_owner(&auth, &key(), &owner).unwrap();
+            fresh
+                .check_key(
+                    &format!("gc/3/reconcile/{}/{}", "0e".repeat(32), fresh.revision),
+                    3,
+                )
+                .unwrap();
+            fresh.placement_fence.as_mut().unwrap().key =
+                format!("gc/9/fence/{}", fresh.predecessor.revision + 1);
+            assert!(fresh.check_owner(&auth, &key(), &owner).is_err());
+
             wrong = value;
             wrong.placement_fence = None;
             assert!(wrong.encode().is_err());

@@ -359,7 +359,7 @@ impl PermanentDeletePass {
     ///
     /// # Errors
     /// Rejects malformed records, authorization/key/slot/backend disagreement,
-    /// missing permanent selector or incorrect placement-fence cycle/revision.
+    /// missing permanent selector, malformed placement fence or wrong revision.
     pub fn check_owner(
         &self,
         authorization: &PermanentDeleteAuthorization,
@@ -390,8 +390,10 @@ impl PermanentDeletePass {
             return Err(RetirementError::Contradiction);
         }
         if let Some(pointer) = &self.placement_fence {
-            let (cycle, revision) = fence::fence_pointer(pointer)?;
-            if cycle != authorization.exclusion().cycle || revision != self.predecessor.revision {
+            let (_, revision) = fence::fence_pointer(pointer)?;
+            // A recurring pass may use a later current collection cycle while
+            // its immutable owner and reconciliation key retain the old cycle.
+            if revision != self.predecessor.revision {
                 return Err(RetirementError::Contradiction);
             }
         }

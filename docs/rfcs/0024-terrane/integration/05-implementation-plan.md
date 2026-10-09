@@ -5033,6 +5033,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   local reconciliation from the same package source. Lazy evaluation succeeds;
   the new runtime paths remain unqualified and this task stays open. T3 must
   extend this local T1 aggregate with actual provider conformance.
+  D-114 separates a recurring pass's genuinely current collection fence cycle
+  from its immutable original owner/event-key cycle. CreateOnce roots and all
+  actual current qualification remain mandatory; changed roots use a genuine
+  fresh collection cycle. The pure owner association fix has a later-cycle
+  regression, while native composition and runtime qualification remain pending.
   Actual remote provider qualification belongs to T3. No remote conformance
   or full `gc-two-phase-delete` pass is claimed. D-78
   registers physical creation journals and recoverable deletion intent.

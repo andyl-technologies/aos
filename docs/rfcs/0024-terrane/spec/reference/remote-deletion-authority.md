@@ -330,9 +330,26 @@ owner epoch. Local copied-burn EVERY effect/restart additionally checks a genuin
 CURRENT CopiedPlacementFence for roots/history/policy/serving under the same
 held stable namespace exclusion. Progress key 13 binds that exact predecessor
 fence; a later effect requalifies its current fence without inventing old
-marks or source authority. Local effects hold exclusion through final
-comparison/effect, verify exact registered
-path with normal nofollow/regular-file/owner rules, and synchronize affected
+marks or source authority. The current fence's checkpoint cycle belongs to the
+actual independently qualified destination collection under the live session;
+it MAY differ from the immutable owner's original cycle. Its fence, roots and traversal
+pointers MUST agree on that current checkpoint cycle and the fence revision
+MUST equal the current predecessor revision. The original owner and
+reconciliation event-key cycle remain unchanged. These associations MUST be
+checked alongside the actual whole live lease, current complete DATA closure,
+backend, selected predecessor and all consumed Original pins; a decoded later
+cycle is not current permission.
+
+Existing CreateOnce roots MUST NOT be overwritten or relabeled. Their exact
+bytes MAY be reused only after independent current qualification verifies the
+same complete physical closure and recorded inputs. Changed roots require a
+genuine fresh destination collection cycle with its own actual roots and
+traversal checkpoints, rather than a fabricated suffix or reuse of stale marks.
+This distinction changes neither permanent ownership nor the mandatory current
+qualification at every new request, retry and progress selection.
+
+Local effects hold exclusion through final comparison/effect, verify exact
+registered paths with normal nofollow/regular-file/owner rules, and synchronize affected
 directories. Permanent key scope cannot follow a symlink or delete another
 placement. Ordinary local-v1 replacement/journal semantics are untouched.
 

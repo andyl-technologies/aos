@@ -2370,6 +2370,36 @@ is added rather than editing history.
     This clarification precedes T1's freeze and completes no task or gate.
   - **Affects:** GC-4/7/15/16/29, D-82 and copied-placement fence interpretation.
 
+- **[D-114] Separate permanent ownership from current checkpoint cycles.**
+  - **Status:** Decided (2026-10-09)
+  - **Decision:** A permanent reconciliation event keeps its original owner
+    and original-cycle event key, while its genuinely current copied-placement
+    fence uses the actual independently qualified destination collection's
+    checkpoint cycle under the live session. That cycle may differ from the
+    owner cycle. Fence/roots/traversal pointers agree on their checkpoint cycle; the fence
+    revision still equals the exact current predecessor revision. Every native
+    request retains whole live lease, current DATA, backend, selected owner and
+    consumed Original predicates. Decoded pointers grant no permission.
+  - **Rationale:** D-82 requires fresh current closure throughout permanent
+    recovery, while roots are CreateOnce at `gc/<cycle>/roots`. Equating the
+    current fence cycle to immutable ownership would prevent recovery after
+    current roots change, or encourage overwriting immutable roots. Owner and
+    event keys describe permanent identity; checkpoint keys describe the
+    independently qualified current collection. The implementation conflated
+    these associations despite the distinct current-fence requirement.
+  - **Alternatives considered:** Overwrite original roots or accept stale
+    closure (rejected: violates immutable records and current DATA checks);
+    add checkpoint suffixes or new schemas (rejected: existing fresh collection
+    cycles represent the required current evidence); replace the owner on each
+    pass (rejected: violates permanent ownership and takeover semantics).
+  - **Compatibility:** No identity, encoding, key grammar, requirement ID,
+    gate name or existing golden byte changes. Original authorization, event
+    key, fence digest/revision and own checkpoint-cycle checks remain required.
+    Unchanged roots require exact independent current revalidation; changed
+    roots require a genuine fresh collection cycle. This fix precedes T1's
+    freeze and completes no task or gate.
+  - **Affects:** GC-7/15/23/29, D-82 and copied-placement reconciliation.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
