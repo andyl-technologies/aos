@@ -1,0 +1,22 @@
+[package]
+name = "aos-assessment-runtime"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Shared durable assessment orchestration and scoped provider work contracts"
+
+[dependencies]
+anyhow = { workspace = true }
+aos-assessment = { workspace = true }
+aos-assessment-providers = { workspace = true }
+aos-contract = { workspace = true }
+async-trait = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }
+
+[lints]
+workspace = true

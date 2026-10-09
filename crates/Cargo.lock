@@ -303,6 +303,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-assessment-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-assessment",
+ "aos-assessment-providers",
+ "aos-contract",
+ "async-trait",
+ "hex",
+ "hmac 0.12.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "zeroize",
+]
+
+[[package]]
 name = "aos-block-storage-provider"
 version = "0.1.0"
 dependencies = [
