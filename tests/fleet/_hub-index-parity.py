@@ -167,11 +167,9 @@ def registry_index_observations(query, slug):
     observe(
         "release_documentation",
         "release.semver, document.package_name, document.package_version, document.platform, "
-        "document.artifact_kind, document.store_path, document.store_hash, document.format, "
-        "document.nar_hash, document.nar_size, document.document_sha256, document.document_size, "
-        "document.semantic_schema_sha256, document.system_module_nar_hash, document.metadata_digest",
-        published_snapshots + " JOIN release_package_documentation document "
-        "ON document.snapshot_id = snapshot.snapshot_id",
+        "document.store_path, document.document_sha256, document.search_json, document.content_digest",
+        published_snapshots + " JOIN release_native_documentation document "
+        "ON document.registry_id = head.registry_id AND document.source_commit = snapshot.source_commit",
         snapshot_predicate,
     )
 

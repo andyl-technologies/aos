@@ -27,6 +27,7 @@ TOOLS = {"aos": "/nix/store/fixture-aos/bin/aos",
     "opensshBin": "/nix/store/fixture-openssh/bin", "nixBin": "/nix/store/fixture-nix/bin",
     "helperStorePath": "/nix/store/fixture-helper", "aosStorePath": "/nix/store/fixture-aos",
     "containerPublicationInputs": "/nix/store/fixture-publication-inputs",
+    "publicationProject": "/nix/store/fixture-publication-project",
     "python": "/nix/store/fixture-python/bin/python3"}
 
 
@@ -141,7 +142,8 @@ class ProducerTests(unittest.TestCase):
         with patch.object(producer, "_run", side_effect=execute):
             result = producer._publish_action(self.root, selected, {})
         self.assertEqual(commands[0][2], TOOLS["aosStorePath"])
-        release = commands[1]
+        self.assertEqual(commands[1][2], TOOLS["helperStorePath"])
+        release = commands[2]
         self.assertIn("--container-release", release)
         self.assertEqual(release[release.index("--channel") + 1], "stable")
         self.assertIn("--init-channel", release)

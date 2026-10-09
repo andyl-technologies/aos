@@ -527,7 +527,7 @@ def prepare_direct_documented_surface(client, tools):
     # objects and 12,535 pointers keep their existing publisher and counters.
     signed = prepare_direct_signed_surface(client, tools["python"], tools["apr"], tools["git"],
         tools["openssh"], tools["nix"], tools["helperStorePath"], tools["cacheUrl"],
-        authoring_name="external-direct-docs")
+        publication_project=tools["publicationProject"], authoring_name="external-direct-docs")
     result = json.loads(direct_guest_python(client, tools["python"], r"""
         import hashlib, json, os, re, stat, subprocess, tomllib
         from pathlib import Path
@@ -544,9 +544,6 @@ def prepare_direct_documented_surface(client, tools):
         environment['PATH'] = ':'.join(selected['toolDirectories'] + [environment.get('PATH', '')])
         commands = [
             [selected['apr'], 'publish', selected['hubPackage'], '--registry', 'external-direct-docs',
-                '--name', 'aos-hub', '--version', selected['hubVersion'],
-                '--description', 'Native and Worker registry Hub service.', '--license', 'Apache-2.0',
-                '--maintainer', 'fleet-publisher@example.test',
                 '--key-id', 'initial'],
             [selected['apr'], 'release', '1.0.1', '--registry', 'external-direct-docs', '--key-id', 'initial',
                 '--channel', 'stable', '--cache-url', selected['cacheUrl'],
@@ -573,7 +570,7 @@ def prepare_direct_documented_surface(client, tools):
             descriptors = [os.open(root / (str(number) + '.' + suffix),
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600) for suffix in ('stdout', 'stderr')]
             with os.fdopen(descriptors[0], 'wb') as stdout, os.fdopen(descriptors[1], 'wb') as stderr:
-                completed = subprocess.run(arguments, env=environment, stdin=subprocess.DEVNULL,
+                completed = subprocess.run(arguments, cwd=selected['publicationProject'], env=environment, stdin=subprocess.DEVNULL,
                     stdout=stdout, stderr=stderr, check=False, timeout=300)
                 for output in (stdout, stderr):
                     output.flush(); os.fsync(output.fileno())
@@ -615,6 +612,7 @@ def prepare_direct_documented_surface(client, tools):
     """, {"publisherRoot": signed["publisherHome"], "surface": signed["surfaceRoot"],
         "apr": tools["apr"], "hubPackage": tools["hubPackage"], "hubVersion": tools["hubVersion"],
         "cacheUrl": tools["cacheUrl"], "git": tools["git"],
+        "publicationProject": tools["publicationProject"],
         "platform": "x86_64-linux", "toolDirectories": [tools["git"].rsplit("/", 1)[0],
             tools["openssh"], tools["nix"]]}, timeout=1000))
     return {**signed, **result}

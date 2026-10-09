@@ -30,7 +30,7 @@ class SourceTests(unittest.TestCase):
         return {"issuerCertificate": store + "-certificate/value", "issuerPrivateKey": store + "-key/value",
             "nginx": store + "-nginx/bin/nginx", "python": "controlled-python", "apr": "controlled-apr",
             "git": "controlled-git", "opensshBin": "controlled-ssh", "nixBin": "controlled-nix",
-            "helperStorePath": store + "-hub-helper"}
+            "helperStorePath": store + "-hub-helper", "publicationProject": store + "-publication-project"}
 
     def test_upstream_is_selected_tls_run_surface_with_no_auth_header_log(self):
         run = "b" * 32

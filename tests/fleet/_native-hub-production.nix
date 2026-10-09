@@ -18,6 +18,17 @@
     pkgs.mkDerivation {
       inherit pname version;
       src = null;
+      platformSupport = {
+        build = [{os = ["linux"];}];
+        host = [{os = ["linux"];}];
+        target = [];
+        role = "public-package";
+      };
+      meta = {
+        description = message;
+        license = "MIT";
+        maintainers = ["fleet-publisher@example.test"];
+      };
       runtimeDeps = lib.optional (dependency != null) dependency;
       phases = [
         {

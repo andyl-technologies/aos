@@ -144,13 +144,13 @@ def _digest(value):
     return value
 
 
-def _run(root, environment, label, argv, *, json_output=False):
+def _run(root, environment, label, argv, *, json_output=False, cwd=None):
     command_root = root / label
     command_root.mkdir(mode=0o700)
     _write_private(command_root / "arguments.private.json", argv)
     with (command_root / "stdout.private").open("xb") as stdout:
         with (command_root / "stderr.private").open("xb") as stderr:
-            result = subprocess.run(argv, env=environment, stdout=stdout, stderr=stderr,
+            result = subprocess.run(argv, cwd=cwd, env=environment, stdout=stdout, stderr=stderr,
                 timeout=1100, check=False)
     _write_private(command_root / "terminal.json", {"exitCode": result.returncode})
     if result.returncode:
@@ -210,10 +210,7 @@ def _prepare_documentation(root, environment, tools, registry_root):
             or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", selected["version"])):
         raise ValueError("Documented package must use the selected source-built package")
     _run(root, environment, "apr-publish-documentation", [tools["apr"], "publish", selected["storePath"],
-        "--registry", "containers", "--name", "aos-hub", "--version", selected["version"],
-        "--description", "Native and Worker registry Hub service.", "--license", "Apache-2.0",
-        "--maintainer", "fleet-publisher@example.test",
-        "--key-id", "initial"])
+        "--registry", "containers", "--key-id", "initial"], cwd=tools["publicationProject"])
     catalog = tomllib.loads((registry_root / "packages/a/aos-hub.toml").read_text())
     matches = [entry["platforms"]["x86_64-linux"]["module_documentation"]
         for entry in catalog["versions"] if entry["version"] == selected["version"]]
@@ -351,16 +348,14 @@ def _publish_action(root, selected, environment):
 
     if action == "release":
         _run(root, environment, "apr-publish", [tools["apr"], "publish", tools["aosStorePath"],
-            "--registry", "containers", "--name", "aos", "--version", "0.1.0",
-            "--description", "AOS container release package", "--license", "Apache-2.0",
-            "--maintainer", "fleet-publisher@example.test", "--key-id", "initial"])
+            "--registry", "containers", "--key-id", "initial"], cwd=tools["publicationProject"])
+        _run(root, environment, "apr-publish-helper", [tools["apr"], "publish", tools["helperStorePath"],
+            "--registry", "containers", "--key-id", "initial"], cwd=tools["publicationProject"])
         finalized = source["finalized"]
         _run(root, environment, "apr-release", [tools["apr"], "release", finalized["release_identity"],
             "--registry", "containers", "--container-release", finalized["release"],
             "--container-signature-input", finalized["signature_input"],
-            "--store-path", tools["helperStorePath"], "--name", "hub-helper",
-            "--description", "Managed release indexing fixture", "--license", "MIT",
-            "--maintainer", "fleet-publisher@example.test", "--key-id", "initial",
+            "--key-id", "initial",
             "--channel", "stable", "--init-channel",
             "--cache-url", coordinates["workerOrigin"] + "/" + slug,
             "--upload-url", "file://" + source["surfaceRoot"]])

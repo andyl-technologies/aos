@@ -56,7 +56,7 @@ def prepare_external_mirror_signed_source(client, tools, run_id):
     upstream = "https://aos.andyl.org:4778/fleet-mirror/" + run_id
     signed = prepare_direct_signed_surface(client, tools["python"], tools["apr"], tools["git"],
         tools["opensshBin"], tools["nixBin"], tools["helperStorePath"], upstream,
-        authoring_name="mirror-" + run_id[:16])
+        publication_project=tools["publicationProject"], authoring_name="mirror-" + run_id[:16])
     captured = json.loads(direct_guest_python(client, tools["python"], """
         import hashlib, os, re, stat
         from pathlib import Path

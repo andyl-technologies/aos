@@ -721,7 +721,8 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
     for label, name in (("a", "external-direct"), ("b", "external-overlap")):
         sources[label] = prepare_direct_signed_surface(client, tools["python"], tools["apr"], tools["git"],
             tools["opensshBin"], tools["nixBin"], tools["helperStorePath"],
-            tools["workerUrl"] + "/fleet-direct/objects", authoring_name=name)
+            tools["workerUrl"] + "/fleet-direct/objects",
+            publication_project=tools["publicationProject"], authoring_name=name)
     corpus = prepare_direct_publication_corpus(client, tools["python"], sources["a"]["surfaceRoot"])
     retain_direct_flow("actual-publication-source-corpus.json", corpus)
     corpus_a, corpus_b = split_direct_publication_sources(client, tools, sources["a"], sources["b"], corpus)

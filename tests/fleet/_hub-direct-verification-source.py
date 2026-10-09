@@ -32,7 +32,8 @@ def prepare_direct_verification_source(client, tools, organization_slug):
         raise ValueError("Verification source organization identity differs")
     source = prepare_direct_signed_surface(client, tools["python"], tools["apr"], tools["git"],
         tools["opensshBin"], tools["nixBin"], tools["helperStorePath"],
-        tools["workerUrl"] + "/" + organization_slug + "/read-timeout", authoring_name="external-timeout")
+        tools["workerUrl"] + "/" + organization_slug + "/read-timeout",
+        publication_project=tools["publicationProject"], authoring_name="external-timeout")
     selected = json.loads(direct_guest_python(client, tools["python"], """
         import hashlib, os, re, stat
         from pathlib import Path

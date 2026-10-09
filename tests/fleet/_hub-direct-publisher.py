@@ -117,7 +117,8 @@ def observe_direct_absolute_checkpoints(client, tools, sources):
 
 
 def prepare_direct_signed_surface(client, python, apr, git, openssh, nix,
-                                  helper_store_path, cache_url, authoring_name="external-direct"):
+                                  helper_store_path, cache_url, *, publication_project,
+                                  authoring_name="external-direct"):
     """Author an actual APR release before extending its signed publication surface."""
     result = json.loads(private_guest_command(client, textwrap.dedent(f"""
         {shlex.quote(python)} - <<'DIRECT_SIGNED_SURFACE'
@@ -145,7 +146,7 @@ def prepare_direct_signed_surface(client, python, apr, git, openssh, nix,
         os.umask(0o077)
 
         def run(arguments):
-            result = subprocess.run(arguments, env=environment, capture_output=True,
+            result = subprocess.run(arguments, cwd={publication_project!r}, env=environment, capture_output=True,
                 timeout=180, check=False)
             if result.returncode:
                 raise ValueError('actual signed publisher preparation refused')
@@ -171,10 +172,8 @@ def prepare_direct_signed_surface(client, python, apr, git, openssh, nix,
         (configuration / (name + '.toml')).write_text(
             '[registry]\\nname = "' + name + '"\\nurl = "file://' + str(registry)
             + '"\\n\\n[registry.signing_keys]\\ninitial = "' + str(key) + '"\\n')
+        run([{apr!r}, 'publish', {helper_store_path!r}, '--registry', name, '--key-id', 'initial'])
         run([{apr!r}, 'release', '1.0.0', '--registry', name,
-            '--store-path', {helper_store_path!r}, '--name', 'hub-helper',
-            '--description', 'External direct signed publication qualification',
-            '--license', 'MIT', '--maintainer', 'fleet-publisher@example.test',
             '--key-id', 'initial', '--channel', 'stable', '--init-channel',
             '--cache-url', {cache_url!r},
             '--upload-url', 'file://' + surface])

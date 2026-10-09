@@ -36,6 +36,12 @@
   publication = import ./_container-publication-project.nix {
     inherit lib pkgs;
     packages.aos = pkgs.aos;
+    packages.aos-hub = pkgs.aos-hub;
+    packages.hub-helper = fixture.helperV1;
+  };
+  nextPublication = import ./_container-publication-project.nix {
+    inherit lib pkgs;
+    packages.hub-helper = fixture.helperV2;
   };
   garage =
     if externalDirect
@@ -696,6 +702,7 @@
         fixture.helperV1
         fixture.helperV2
         publication.project
+        nextPublication.project
         containerPublicationInputs
         pkgs.aos-hub-console-dist
         databaseUrl
@@ -718,6 +725,7 @@
         parityRouteKeys
       ]
       ++ publication.nativeRoots
+      ++ nextPublication.nativeRoots
       ++ lib.optionals externalDirect [
         pkgs.openssl
         pkgs.aos-hub-worker-dist
@@ -1216,6 +1224,7 @@ in {
               "externalWorkflowAccounting": "${managedFixtureModules}/_hub-external-workflow-accounting.py",
               "managedContainerProducer": "${managedFixtureModules}/_hub-managed-container.py",
               "documentedPackage": {"storePath": "${pkgs.aos-hub}", "version": "${pkgs.aos-hub.version}"},
+              "publicationProject": "${publication.project}",
               "publicDocumentCacheObserver": "${managedFixtureModules}/_hub-worker-cache-observer.cjs",
               "readParityModule": "${managedFixtureModules}/_hub-direct-read-parity.py",
               "readIndexModule": "${managedFixtureModules}/_hub-index-parity.py",
@@ -1369,7 +1378,7 @@ in {
         ''
       else
         import ./_hub-hybrid-legacy.nix {
-          inherit channelReceiptKey containerPublicationInputs databaseUrl fixture parityRouteKeys pkgs processSampler publication qualificationKeys releasePublicationKeys releaseReceiptKey secretVersionManifest serverCertificate serverPrivateKey storageKey workerOptions workerRunner;
+          inherit channelReceiptKey containerPublicationInputs databaseUrl fixture nextPublication parityRouteKeys pkgs processSampler publication qualificationKeys releasePublicationKeys releaseReceiptKey secretVersionManifest serverCertificate serverPrivateKey storageKey workerOptions workerRunner;
         }
     );
 }

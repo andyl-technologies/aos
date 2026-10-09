@@ -5,6 +5,7 @@
   containerPublicationInputs,
   databaseUrl,
   fixture,
+  nextPublication,
   parityRouteKeys,
   pkgs,
   processSampler,
@@ -1373,13 +1374,13 @@
       export NIX_REMOTE="" NIX_CONF_DIR="$HOME/.config/nix"
       registry="$HOME/.local/share/apm/registries/containers"
       git -C "$registry" switch -c qualification/hybrid-container
+      (cd ${publication.project}
+        {APR} publish ${fixture.helperV1} --registry containers --key-id initial)
       {APR} release 1.0.0 --registry containers --stage hybrid-container \\
         --container-release /var/lib/hybrid-container-final/container-release.json \\
         --container-signature-input /var/lib/hybrid-container-final/signature-input.json \\
         --container-layout /var/lib/hybrid-container-final/layout \\
-        --store-path ${fixture.helperV1} --name hub-helper \\
-        --description 'Hybrid release indexing fixture' --license MIT \\
-        --maintainer fleet-publisher@example.test --key-id initial \\
+        --key-id initial \\
         --cache-url https://aos.andyl.org/fleet/containers/ \\
         --upload-url https://aos.andyl.org/fleet/containers \\
         --token {shlex.quote(publisher_token)}
@@ -1427,10 +1428,10 @@
       # through a real commit rather than carrying a mismatched identity.
       git -C "$registry" rm containers/v1/index.json
       git -C "$registry" commit -m 'Remove the previous release container sidecar'
+      (cd ${nextPublication.project}
+        {APR} publish ${fixture.helperV2} --registry containers --previous 1.0.0 --key-id initial)
       {APR} release 2.0.0 --registry containers \\
-        --store-path ${fixture.helperV2} --name hub-helper --previous 1.0.0 \\
-        --description 'Hybrid release indexing fixture' --license MIT \\
-        --maintainer fleet-publisher@example.test --key-id initial \\
+        --key-id initial \\
         --channel stable --init-channel \\
         --cache-url https://aos.andyl.org/fleet/containers \\
         --upload-url file:///tmp/hybrid-publication-surface
@@ -1627,10 +1628,10 @@
       registry="$HOME/.local/share/apm/registries/metadata"
       printf '[registry]\\nname = "metadata"\\nurl = "file://%s"\\n\\n[registry.signing_keys]\\ninitial = "%s"\\n' \\
         "$registry" "$key" > "$HOME/.config/apm/registries.d/metadata.toml"
+      (cd ${publication.project}
+        {APR} publish ${fixture.helperV1} --registry metadata --key-id initial)
       {APR} release 1.0.0 --registry metadata \\
-        --store-path ${fixture.helperV1} --name hub-helper \\
-        --description 'Hybrid metadata-only indexing fixture' --license MIT \\
-        --maintainer fleet-publisher@example.test --key-id initial \\
+        --key-id initial \\
         --channel stable --init-channel \\
         --cache-url https://aos.andyl.org/fleet/objects \\
         --upload-url file:///tmp/hybrid-metadata-surface
