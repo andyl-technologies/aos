@@ -1,15 +1,19 @@
-//! Closed generation-one Create policy-admission continuation.
+//! Owns complete generation-one Q04 historical comparison DATA.
 //!
-//! The records below are historical comparison DATA. Only the same original
-//! Controller, Source, Cache and Root owners can drive a live continuation;
-//! decoding a record cannot supply that custody. The policy subgate never
-//! makes the public Create or its generic Effect complete.
+//! The original cut, Root decision, Controller/Root phases, Source/Cache
+//! pending records, complete Effect subgate and publication response share
+//! one private fixed-header/checksum codec. The two count functions preserve
+//! the established transfer arithmetic used by the original packet owners.
+//! Decoded records and derived transaction identities do not establish a live
+//! continuation, current cut, hold, consumed gate or commit authority.
 //!
 //! ```text
 //! AOSQ4I01 | version=1 | original cut and fixed identities | checksum
+//! AOSQ4D01 | version=1 | historical Root decision | checksum
 //! AOSQ4C01/AOSQ4R01 | version=1 | purpose phase | observed predecessor | checksum
 //! AOSQ4S01/AOSQ4K01 | version=1 | held/released-pending | original cut | checksum
-//! AOSQ4G01 | version=1 | Applying-only policy subgate | checksum
+//! AOSQ4G01 | version=1 | complete Applying-only Effect subgate | checksum
+//! AOSQ4J01 | version=1 | historical publication response | checksum
 //! ```
 
 use aos_sandbox_core::bounded_codec::BoundedReader;
@@ -40,13 +44,21 @@ impl From<ProtectedHistoryDataErrorV1> for Q04HistoryDataErrorV1 {
     }
 }
 
+/// The canonical original-cut record width, including its checksum.
 pub const IDENTITY_BYTES: usize = 680;
+/// The canonical Controller or Root phase record width.
 pub const PHASE_BYTES: usize = 592;
+/// The canonical Source or Cache pending record width.
 pub const PENDING_BYTES: usize = 264;
+/// The canonical complete Effect subgate record width.
 pub const GATE_BYTES: usize = 288;
+/// The canonical historical Root decision record width.
 pub const DECISION_BYTES: usize = 384;
+/// The established maximum encoded claim-transfer size.
 pub const MAXIMUM_CLAIM_BYTES: usize = 1024 * 1024;
+/// The established maximum payload size of one transfer chunk.
 pub const CLAIM_CHUNK_BYTES: usize = 3072;
+/// The canonical historical prehold-publication response width.
 pub const PREHOLD_RESPONSE_BYTES: usize = 504;
 const IDENTITY_DOMAIN: &[u8] = b"aos.sandbox.create-q04.cut-identity.v1\0";
 const CONTROLLER_PHASE_DOMAIN: &[u8] = b"aos.sandbox.create-q04.controller-phase.v1\0";
@@ -59,16 +71,25 @@ const DECISION_DOMAIN: &[u8] = b"aos.sandbox.create-q04.root-decision.v1\0";
 const PREHOLD_RESPONSE_DOMAIN: &[u8] = b"aos.sandbox.create-q04.prefund-response.v1\0";
 
 
+/// Selects the historical transaction-identity domain and phase bound.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Q04TransactionOwnerV1 {
+    /// The Controller historical comparison domain.
     Controller,
+    /// The Source historical comparison domain.
     Source,
+    /// The Cache historical comparison domain.
     Cache,
+    /// The Root historical comparison domain.
     Root,
 }
 
 impl Q04TransactionOwnerV1 {
     /// Derives comparison DATA without predicting an observed commit or head.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unsupported phase, a zero predecessor or a zero derived identity.
     pub fn transaction_id(
         self,
         identity: &Q04CutIdentityV1,
@@ -103,15 +124,26 @@ impl Q04TransactionOwnerV1 {
 
 // Every offset below is fixed by the versioned contract. Accessors read only
 // a fully length/checksum/shape-checked array, never a caller's unchecked slice.
+/// Retains the canonical original cut and its fixed comparison identities.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Q04CutIdentityV1([u8; IDENTITY_BYTES]);
 
 impl Q04CutIdentityV1 {
+    /// Finishes and validates a canonical historical record from fixed body DATA.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed fixed framing or invalid historical comparison fields.
     pub fn from_body(mut body: [u8; IDENTITY_BYTES]) -> Result<Self, ProtectedHistoryDataErrorV1> {
         finish_record(&mut body, b"AOSQ4I01", None, IDENTITY_DOMAIN)?;
         Self::decode(&body)
     }
 
+    /// Decodes the complete canonical historical record and validates its bindings.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed framing, checksum, padding, phase or historical bindings.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProtectedHistoryDataErrorV1> {
         let bytes = checked_record::<IDENTITY_BYTES>(bytes, b"AOSQ4I01", None, IDENTITY_DOMAIN)?;
         if bytes[108..112] != [0; 4]
@@ -137,66 +169,82 @@ impl Q04CutIdentityV1 {
         Ok(Self(bytes))
     }
 
+    /// Returns the complete canonical record, including its checksum.
     pub fn bytes(&self) -> &[u8; IDENTITY_BYTES] {
         &self.0
     }
 
+    /// Hashes the complete canonical record, including its checksum.
     pub fn digest(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(Sha256::digest(self.0).into())
     }
 
+    /// Returns the original cut nonce.
     pub fn nonce(&self) -> [u8; 16] {
         fixed(&self.0, 16)
     }
 
+    /// Returns the historical Project identity.
     pub fn project(&self) -> ProjectId {
         ProjectId::from_bytes(fixed(&self.0, 32))
     }
 
+    /// Returns the original Create operation identity.
     pub fn operation(&self) -> OperationId {
         OperationId::from_bytes(fixed(&self.0, 48))
     }
 
+    /// Returns the retained Controller UID comparison field.
     pub fn controller_uid(&self) -> u32 {
         u32::from_be_bytes(fixed(&self.0, 80))
     }
 
+    /// Returns the retained Source UID comparison field.
     pub fn source_uid(&self) -> u32 {
         u32::from_be_bytes(fixed(&self.0, 84))
     }
 
+    /// Returns the original operation-revision digest.
     pub fn operation_revision(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(fixed(&self.0, 200))
     }
 
+    /// Returns the original desired-state precondition.
     pub fn desired_precondition(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(fixed(&self.0, 232))
     }
 
+    /// Returns the original complete Effect-plan digest.
     pub fn effect_plan_digest(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(fixed(&self.0, 264))
     }
 
+    /// Returns the historical Sandbox identity.
     pub fn sandbox(&self) -> SandboxId {
         SandboxId::from_bytes(fixed(&self.0, 64))
     }
 
+    /// Returns the retained Source stage identity.
     pub fn stage_id(&self) -> [u8; 16] {
         fixed(&self.0, 168)
     }
 
+    /// Returns the retained publication identity.
     pub fn publication_id(&self) -> [u8; 16] {
         fixed(&self.0, 184)
     }
 
+    /// Returns the original Source binding digest.
     pub fn binding(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(fixed(&self.0, 424))
     }
 
+    /// Returns the retained generation-one floor digest.
     pub fn gen1_floor(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(fixed(&self.0, 328))
     }
 
+    /// Returns the retained Source ancestry digest.
     pub fn ancestry(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(fixed(&self.0, 360))
     }
@@ -212,26 +260,32 @@ impl Q04CutIdentityV1 {
         )
     }
 
+    /// Returns the retained accepted generation.
     pub fn accepted_generation(&self) -> u64 {
         u64::from_be_bytes(fixed(&self.0, 96))
     }
 
+    /// Returns the retained Source epoch comparison field.
     pub fn epoch(&self) -> u64 {
         u64::from_be_bytes(fixed(&self.0, 160))
     }
 
+    /// Returns the original pre-decision Controller row digest.
     pub fn before_controller_rows(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(fixed(&self.0, 296))
     }
 
+    /// Returns the retained Policy transaction digest.
     pub fn policy_transaction(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(fixed(&self.0, 520))
     }
 
+    /// Returns the retained Policy current-row digest.
     pub fn policy_current(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(fixed(&self.0, 552))
     }
 
+    /// Returns the retained Cache quota digest.
     pub fn cache_quota(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(fixed(&self.0, 584))
     }
@@ -242,6 +296,11 @@ impl Q04CutIdentityV1 {
 pub struct Q04RootDecisionV1([u8; DECISION_BYTES]);
 
 impl Q04RootDecisionV1 {
+    /// Finishes and validates a canonical historical record from fixed body DATA.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed fixed framing or invalid historical comparison fields.
     pub fn from_body(
         mut body: [u8; DECISION_BYTES],
         identity: &Q04CutIdentityV1,
@@ -250,6 +309,11 @@ impl Q04RootDecisionV1 {
         Self::decode(&body, identity)
     }
 
+    /// Decodes the complete canonical historical record and validates its bindings.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed framing, checksum, padding, phase or historical bindings.
     pub fn decode(
         bytes: &[u8],
         identity: &Q04CutIdentityV1,
@@ -279,33 +343,42 @@ impl Q04RootDecisionV1 {
         Ok(Self(bytes))
     }
 
+    /// Returns the complete canonical record, including its checksum.
     pub fn bytes(&self) -> &[u8; DECISION_BYTES] {
         &self.0
     }
 
+    /// Hashes the complete canonical record, including its checksum.
     pub fn digest(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(Sha256::digest(self.bytes()).into())
     }
 
+    /// Returns the historical authority-transaction identity.
     pub fn authority_transaction_id(&self) -> [u8; 16] {
         fixed(&self.0, 48)
     }
 
+    /// Returns the historical state-transaction identity.
     pub fn state_transaction_id(&self) -> [u8; 16] {
         fixed(&self.0, 64)
     }
 
+    /// Returns the historical state sequence.
     pub fn state_sequence(&self) -> u64 {
         u64::from_be_bytes(fixed(&self.0, 112))
     }
 }
 
+/// Selects the Controller or Root historical phase grammar.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Q04PhaseOwnerV1 {
+    /// The Controller historical comparison domain.
     Controller,
+    /// The Root historical comparison domain.
     Root,
 }
 
+/// Retains one checksummed phase and its complete closed event shape.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Q04PhaseRecordV1 {
     owner: Q04PhaseOwnerV1,
@@ -314,6 +387,11 @@ pub struct Q04PhaseRecordV1 {
 
 
 impl Q04PhaseRecordV1 {
+    /// Finishes and validates a canonical historical record from fixed body DATA.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed fixed framing or invalid historical comparison fields.
     pub fn from_body(
         owner: Q04PhaseOwnerV1,
         phase: u8,
@@ -328,6 +406,11 @@ impl Q04PhaseRecordV1 {
         Self::decode(owner, &body, identity)
     }
 
+    /// Decodes the complete canonical historical record and validates its bindings.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed framing, checksum, padding, phase or historical bindings.
     pub fn decode(
         owner: Q04PhaseOwnerV1,
         bytes: &[u8],
@@ -353,30 +436,41 @@ impl Q04PhaseRecordV1 {
         Ok(Self { owner, bytes })
     }
 
+    /// Returns the complete canonical record, including its checksum.
     pub fn bytes(&self) -> &[u8; PHASE_BYTES] {
         &self.bytes
     }
 
+    /// Returns the phase grammar owner.
     pub fn owner(&self) -> Q04PhaseOwnerV1 {
         self.owner
     }
 
+    /// Returns the validated purpose phase.
     pub fn phase(&self) -> u8 {
         self.bytes[10]
     }
 
+    /// Hashes the complete canonical record, including its checksum.
     pub fn digest(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(Sha256::digest(self.bytes).into())
     }
 
+    /// Returns the historical native-transaction identity.
     pub fn native_transaction_id(&self) -> [u8; 16] {
         fixed(&self.bytes, 544)
     }
 
+    /// Returns the retained acknowledgement digest.
     pub fn acknowledgement(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(fixed(&self.bytes, 480))
     }
 
+    /// Checks the historical predecessor and immutable event relation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a noncontiguous status or phase, changed bindings or modified prior events.
     pub fn require_successor(&self, prior: &Self) -> Result<(), ProtectedHistoryDataErrorV1> {
         if self.owner != prior.owner
             || self.phase() != prior.phase() + 1
@@ -443,12 +537,16 @@ fn require_phase_shape(
 }
 
 
+/// Selects the Source or Cache historical pending grammar.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Q04PendingOwnerV1 {
+    /// The Source historical comparison domain.
     Source,
+    /// The Cache historical comparison domain.
     Cache,
 }
 
+/// Retains one canonical held or released pending record.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Q04PendingRecordV1 {
     owner: Q04PendingOwnerV1,
@@ -456,6 +554,11 @@ pub struct Q04PendingRecordV1 {
 }
 
 impl Q04PendingRecordV1 {
+    /// Finishes and validates a canonical historical record from fixed body DATA.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed fixed framing or invalid historical comparison fields.
     pub fn from_body(
         owner: Q04PendingOwnerV1,
         phase: u8,
@@ -469,6 +572,11 @@ impl Q04PendingRecordV1 {
         Self::decode(owner, &body)
     }
 
+    /// Decodes the complete canonical historical record and validates its bindings.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed framing, checksum, padding, phase or historical bindings.
     pub fn decode(
         owner: Q04PendingOwnerV1,
         bytes: &[u8],
@@ -493,15 +601,21 @@ impl Q04PendingRecordV1 {
         Ok(Self { owner, bytes })
     }
 
+    /// Returns the complete canonical record, including its checksum.
     pub fn bytes(&self) -> &[u8; PENDING_BYTES] {
         &self.bytes
     }
 
+    /// Reports whether this historical pending record has the held phase.
     pub fn is_held(&self) -> bool {
         self.bytes[10] == 1
     }
 
     /// Joins comparison bytes to the same finalized original cut.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed original-cut or historical decision comparison fields.
     pub fn require_identity(&self, identity: &Q04CutIdentityV1) -> Result<(), ProtectedHistoryDataErrorV1> {
         if self.bytes[16..48] != *identity.digest().as_bytes()
             || self.bytes[48..64] != identity.nonce()
@@ -513,10 +627,16 @@ impl Q04PendingRecordV1 {
         Ok(())
     }
 
+    /// Hashes the complete canonical record, including its checksum.
     pub fn digest(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(Sha256::digest(self.bytes()).into())
     }
 
+    /// Checks that this release preserves the exact original held fields.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a different owner, invalid held/release phases or changed held fields.
     pub fn require_release_of(&self, held: &Self) -> Result<(), ProtectedHistoryDataErrorV1> {
         if self.owner != held.owner
             || self.is_held()
@@ -530,15 +650,26 @@ impl Q04PendingRecordV1 {
     }
 }
 
+/// Retains the complete canonical Applying-only Effect subgate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Q04EffectSubgateV1([u8; GATE_BYTES]);
 
 impl Q04EffectSubgateV1 {
+    /// Finishes and validates a canonical historical record from fixed body DATA.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed fixed framing or invalid historical comparison fields.
     pub fn from_body(mut body: [u8; GATE_BYTES]) -> Result<Self, ProtectedHistoryDataErrorV1> {
         finish_record(&mut body, b"AOSQ4G01", None, GATE_DOMAIN)?;
         Self::decode(&body)
     }
 
+    /// Decodes the complete canonical historical record and validates its bindings.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed framing, checksum, padding, phase or historical bindings.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProtectedHistoryDataErrorV1> {
         let bytes = checked_record::<GATE_BYTES>(bytes, b"AOSQ4G01", None, GATE_DOMAIN)?;
         if !matches!(bytes[184], 1..=4)
@@ -558,16 +689,22 @@ impl Q04EffectSubgateV1 {
         Ok(Self(bytes))
     }
 
+    /// Returns the complete canonical record, including its checksum.
     pub fn bytes(&self) -> &[u8; GATE_BYTES] {
         &self.0
     }
 
+    /// Returns the validated historical subgate status.
     pub fn status(&self) -> u8 {
         self.0[184]
     }
 
-    // A nonauthorizing next-record recipe. The actual Controller transition
-    // separately joins the named signed ACK and complete prior native/CAS cut.
+    /// A nonauthorizing next-record recipe. The actual Controller transition
+    /// separately joins the named signed ACK and complete prior native/CAS cut.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a terminal status, a zero acknowledgement or an invalid successor.
     pub fn next_status_recipe(
         &self,
         acknowledgement: ObjectDigest,
@@ -588,10 +725,16 @@ impl Q04EffectSubgateV1 {
         ObjectDigest::from_bytes(Sha256::digest(self.bytes()).into())
     }
 
+    /// Returns the retained acknowledgement digest.
     pub fn acknowledgement(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(fixed(&self.0, 192))
     }
 
+    /// Checks the record against its exact historical comparison identity.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed original-cut or historical decision comparison fields.
     pub fn require_identity(
         &self,
         identity: &Q04CutIdentityV1,
@@ -604,6 +747,11 @@ impl Q04EffectSubgateV1 {
         Ok(())
     }
 
+    /// Checks the historical subgate against the complete original cut.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed original-cut comparison fields.
     pub fn require_cut_identity(
         &self,
         identity: &Q04CutIdentityV1,
@@ -621,8 +769,12 @@ impl Q04EffectSubgateV1 {
         Ok(())
     }
 
-    // Reconstructs only the canonical historical C2 comparison bytes. This
-    // does not assert those bytes were committed or return a current gate.
+    /// Reconstructs only the canonical historical C2 comparison bytes. This
+    /// does not assert those bytes were committed or return a current gate.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a malformed reconstructed historical consumed record.
     pub fn historical_consumed_record(&self) -> Result<Self, ProtectedHistoryDataErrorV1> {
         let mut body = self.0;
         body[184] = 1;
@@ -630,6 +782,11 @@ impl Q04EffectSubgateV1 {
         Self::from_body(body)
     }
 
+    /// Checks the historical predecessor and immutable event relation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a noncontiguous status or phase, changed bindings or modified prior events.
     pub fn require_successor(&self, prior: &Self) -> Result<(), ProtectedHistoryDataErrorV1> {
         if self.status() != prior.status() + 1
             || self.0[..184] != prior.0[..184]
@@ -643,9 +800,16 @@ impl Q04EffectSubgateV1 {
 
 // This fixed response is comparison DATA on the authenticated original
 // stream. Its decoder never asserts a reservation or grants a hold/commit.
+/// Retains a historical prehold-publication response without granting a hold.
 pub struct Q04PreholdPublicationDataV1([u8; PREHOLD_RESPONSE_BYTES]);
 
 impl Q04PreholdPublicationDataV1 {
+    /// Finishes and validates a canonical historical record from fixed body DATA.
+    ///
+    /// # Errors
+    ///
+    /// Reports malformed framing or names, changed comparison fields, or invalid
+    /// transfer bounds. Framing precedes comparisons; names precede counts.
     pub fn from_body(
         mut body: [u8; PREHOLD_RESPONSE_BYTES],
         nonce: [u8; 16],
@@ -654,6 +818,12 @@ impl Q04PreholdPublicationDataV1 {
         Self::decode(&body, nonce)
     }
 
+    /// Decodes the complete canonical historical record and validates its bindings.
+    ///
+    /// # Errors
+    ///
+    /// Reports malformed framing or names, changed comparison fields, or invalid
+    /// transfer bounds. Framing precedes comparisons; names precede counts.
     pub fn decode(bytes: &[u8], nonce: [u8; 16]) -> Result<Self, Q04HistoryDataErrorV1> {
         let body = checked_record::<PREHOLD_RESPONSE_BYTES>(
             bytes, b"AOSQ4J01", None, PREHOLD_RESPONSE_DOMAIN,
@@ -682,14 +852,17 @@ impl Q04PreholdPublicationDataV1 {
         Ok(Self(body))
     }
 
+    /// Returns the complete canonical record, including its checksum.
     pub fn bytes(&self) -> &[u8; PREHOLD_RESPONSE_BYTES] {
         &self.0
     }
 
+    /// Returns the retained original request digest.
     pub fn request_digest(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(fixed(&self.0, 32))
     }
 
+    /// Returns the retained original prehold cut digest.
     pub fn original_precut(&self) -> ObjectDigest {
         ObjectDigest::from_bytes(fixed(&self.0, 64))
     }
@@ -793,10 +966,20 @@ fn read_integer_bytes<const SIZE: usize>(
 
 
 
+/// Computes the canonical number of chunks for a bounded claim transfer.
+///
+/// # Errors
+///
+/// Rejects zero or excessive size, rounding overflow or an unrepresentable count.
 pub fn claim_chunk_count(total: usize) -> Result<u16, Q04HistoryDataErrorV1> {
     chunk_count(total, MAXIMUM_CLAIM_BYTES)
 }
 
+/// Computes the canonical number of chunks within the supplied DATA bound.
+///
+/// # Errors
+///
+/// Rejects zero or excessive size, rounding overflow or an unrepresentable count.
 pub fn chunk_count(total: usize, maximum: usize) -> Result<u16, Q04HistoryDataErrorV1> {
     if total == 0 || total > maximum {
         return Err(Q04HistoryDataErrorV1::Bounds);

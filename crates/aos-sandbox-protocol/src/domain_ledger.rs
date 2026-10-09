@@ -19,6 +19,9 @@
 //! inputs and their commitment, independently of Source's admission history.
 //! [`project_admission_metadata`] owns the complete Controller historical row,
 //! while native admission and full projection grammar stay with Domain's owners.
+//! [`execution_observe_reservation`] owns the complete canonical Observe binding;
+//! [`create_q04_history`] owns the closed Q04 historical record family and its
+//! shared private codec. Native signing, custody and continuation stay upper.
 
 pub mod capacity;
 pub mod create_q04_history;
@@ -39,7 +42,7 @@ use aos_sandbox_journal::record::RecordError;
 /// Reports malformed canonical protected-history DATA without native causes.
 #[derive(Debug, thiserror::Error)]
 pub enum ProtectedHistoryDataErrorV1 {
-    /// A physical-name or Source row claim is malformed or conflicts with its join.
+    /// A historical fixed record, physical-name claim or row join is malformed.
     #[error("protected history DATA is malformed")]
     Malformed,
 }
