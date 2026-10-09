@@ -208,14 +208,22 @@ The unset baseline's internal encoding is incorrectly validated as an explicit
 property binding, and a virtual range starting after a punctuation sibling
 omits crossing graft children. Both corrections remain in the isolated
 materializer workline; no negative refusal or earlier source review qualifies
-these failures. The backfill, full read selection and SDK qualification remain
-required. Parallel review also corrects a nested-overlay fixture's expected
+these failures. The same frozen candidate passes all twenty-nine mandatory
+native read cases in 46.960 seconds and the public SDK case in 0.009 seconds,
+with source and executable seals unchanged. Its unchanged backfill witness
+fails after 82.167 seconds with a read authorization denial, rather than timing
+out; no measured cause is established. The full ninety-three-case read run
+therefore remains unrun. A separate existing phase diagnostic is queued to
+identify the failing publication step without weakening current checks.
+Parallel review also corrects a nested-overlay fixture's expected
 projected property order without changing independent output identities or
 weakening callback assertions. A complete decoder-call audit also identifies
 the derived-object plaintext reader as an additional CDC-19 consumer; its
 shared wiring now uses the object-context decoder, and the boundary gate
-requires a dedicated exact reader witness. That witness's implementation and
-assembled runtime qualification remain pending. Parallel review also identifies
+requires a dedicated exact reader witness. The reviewed fixture is composed
+with honest content identities, canonical controls and refusal before returning
+even a prefix before the cut; assembled runtime qualification remains pending.
+Parallel review also identifies
 CDC-19's
 final manifest chunk boundary gap in admission, restoration and guarded reads.
 An isolated codec/manifest witness workline owns the correction; the exact native
