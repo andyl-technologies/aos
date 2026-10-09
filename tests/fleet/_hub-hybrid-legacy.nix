@@ -1089,6 +1089,20 @@
       ${pkgs.coreutils}/bin/install -m 0600 -o 802 -g 802 \\
         ${secretVersionManifest}/value /var/lib/aos-hub/fleet-credentials/secret-version-manifest
   """))
+  def observe_credential_clocks(purpose, phase):
+      samples = []
+      for role, machine in (("native", native), ("worker", worker)):
+          before = time.time_ns()
+          guest = int(machine.succeed(
+              "${pkgs.python3}/bin/python3 -c 'import time; print(time.time_ns())'"
+          ).strip())
+          after = time.time_ns()
+          samples.append({"role": role, "hostBeforeUnixNs": before,
+              "guestUnixNs": guest, "hostAfterUnixNs": after})
+      print("hybrid credential staging clock brackets:", json.dumps({
+          "purpose": purpose, "phase": phase, "samples": samples,
+      }, sort_keys=True))
+
   for purpose in ("delete", "list", "read", "write"):
       validated = reviewed(
           f"hybrid-external-{purpose}-credential-validate",
@@ -1105,16 +1119,21 @@
       assert unstaged["operation"]["state"] == "failed", unstaged
       assert "custody challenge with HTTP 409" in unstaged["error"], unstaged
 
-      native.succeed(
-          f"{CHROOT} ${pkgs.aos-hub}/bin/aos-hub-authority-bootstrap "
-          "--database-url-file /var/lib/aos-hub/fleet-credentials/database-url "
-          f"stage-credential --operation-id {shlex.quote(validation_operation_id)} "
-          "--deployment-id fleet-hybrid-v1 --worker-url https://aos.andyl.org "
-          "--storage-work-key-file /var/lib/aos-hub/fleet-credentials/storage-key "
-          "--secret-version-manifest /var/lib/aos-hub/fleet-credentials/secret-version-manifest "
-          f"--output /var/lib/aos-hub/fleet-credentials/{purpose}-stage",
-          timeout=60,
-      )
+      observe_credential_clocks(purpose, "before-stage")
+      try:
+          native.succeed(
+              f"{CHROOT} ${pkgs.aos-hub}/bin/aos-hub-authority-bootstrap "
+              "--database-url-file /var/lib/aos-hub/fleet-credentials/database-url "
+              f"stage-credential --operation-id {shlex.quote(validation_operation_id)} "
+              "--deployment-id fleet-hybrid-v1 --worker-url https://aos.andyl.org "
+              "--storage-work-key-file /var/lib/aos-hub/fleet-credentials/storage-key "
+              "--secret-version-manifest /var/lib/aos-hub/fleet-credentials/secret-version-manifest "
+              f"--output /var/lib/aos-hub/fleet-credentials/{purpose}-stage",
+              timeout=60,
+          )
+      except Exception:
+          observe_credential_clocks(purpose, "stage-failure")
+          raise
       client.succeed(hub_command(
           f"operation retry {shlex.quote(validation_operation_id)} "
           f"--if-version {shlex.quote(unstaged['resource_version'])}"
