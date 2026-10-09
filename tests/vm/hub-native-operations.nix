@@ -290,14 +290,21 @@ in
       ${pkgs.curl}/bin/curl -fsS -H "Cookie: $cookie" "$hub_url/-/instance" > /tmp/instance.html
       csrf=$(${pkgs.sed}/bin/sed -n 's/.*name="aos-session-csrf" content="\([^"]*\)".*/\1/p' /tmp/instance.html | ${pkgs.coreutils}/bin/head -n1)
       test -n "$csrf"
-      token=$(${pkgs.curl}/bin/curl -fsS -X POST \
-        -H "Cookie: $cookie" \
-        -H "Origin: $hub_url" \
-        -H "x-aos-csrf: $csrf" \
-        -H 'x-aos-console-route: /-/instance' \
-        "$hub_url/-/auth/session-token" | ${pkgs.jq}/bin/jq -er .accessToken)
+      # Browser access tokens expire in five minutes. The operator workflow
+      # includes large cache publications, so exchange the existing session
+      # again before each command rather than retaining one expired token.
+      refresh_token() {
+        token=$(${pkgs.curl}/bin/curl -fsS -X POST \
+          -H "Cookie: $cookie" \
+          -H "Origin: $hub_url" \
+          -H "x-aos-csrf: $csrf" \
+          -H 'x-aos-console-route: /-/instance' \
+          "$hub_url/-/auth/session-token" | ${pkgs.jq}/bin/jq -er .accessToken)
+      }
+      refresh_token
 
       reviewed() {
+        refresh_token
         label=$1
         shift
         plan_file="/tmp/$label-plan.json"
@@ -312,6 +319,7 @@ in
         ${pkgs.coreutils}/bin/cat "$plan_file" >&2
         plan_id=$(${pkgs.jq}/bin/jq -er .data.plan.plan_id "$plan_file")
         confirm_hash=$(${pkgs.jq}/bin/jq -er .data.plan.confirmation_hash "$plan_file")
+        refresh_token
         if ! ${pkgs.aos}/bin/aos --json hub "$@" \
           --hub "$hub_url" --token "$token" \
           --plan-id "$plan_id" --confirm-hash "$confirm_hash" --yes \
@@ -324,6 +332,7 @@ in
       }
 
       hub_cli() {
+        refresh_token
         ${pkgs.aos}/bin/aos --json hub "$@" \
           --hub "$hub_url" --token "$token"
       }
