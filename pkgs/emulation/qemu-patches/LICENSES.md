@@ -97,6 +97,8 @@ The atomic integration patch creates these QEMU source files:
 | `include/system/crucible-hot-fork-coordinator.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `system/crucible-hot-fork-coordinator.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-hot-fork-coordinator.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-hot-fork-operation-storage.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/extract-crucible-hot-fork-operation-storage.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/hw/virtio/virtio-crucible-accelerator.h` | GPL-2.0-or-later | Explicit file notice |
 | `hw/virtio/virtio-crucible-accelerator.c` | GPL-2.0-or-later | Explicit file notice |
 | `hw/virtio/virtio-crucible-accelerator-pci.c` | GPL-2.0-or-later | Explicit file notice |

@@ -1,154 +1,29 @@
-From 2f36775df0c558569af3e54645b7bb319eebbd51 Mon Sep 17 00:00:00 2001
+From 6349c51b5a57babce7a58340eda74f85fedff4ac Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Fri, 9 Oct 2026 05:10:34 +0000
-Subject: [PATCH] Own deterministic execution, native console custody and TCG
- fast paths
+Date: Fri, 9 Oct 2026 11:52:46 +0000
+Subject: [PATCH] Keep hot-fork operation state outside reclaimed monitor
+ stacks
 
-Bound deterministic TCG execution with versioned control requests, exact
-picosecond deadlines and coherent raw/logical coordinates. Preserve original
-fault, device-I/O, stop and preemption ordering, stopped control transfer,
-ordinary RR fixed points and absent-profile fast paths.
+The OOB monitor command submits a pointer to its local operation while the
+main loop forks. In the child, libc makes vanished pthread stacks reusable.
+Starting the replacement monitor can therefore reuse the operation's storage
+while reconstruction still holds its pointer.
 
-Reconstruct each child's private mappings, callbacks and Linux epoll state
-under the authenticated fork barrier before releasing workers. Make the
-native plugin the sole console reconstruction owner and retire the old
-console socket stage. Bind READY, full issued authorization, UART admission
-and output stop to the actual process/resource incarnation and accepted
-dense prefix.
+Allocate the complete operation before submission. The parent frees its copy
+on command return; the child frees its independent copy only after publishing
+retained state, rebinding the monitor basis and releasing private input. Keep
+all reconstruction guards, resource ownership and callback ordering intact.
 
-Authenticate forward idle clock accounting with the original dispatch
-receipt, including sub-instruction advances. Its private lease grants no
-TCG/UART execution or refill and clears before synchronous timers.
-Distinguish NCCP v2 Acceptance from settled Observation; retain committed
-occurrences privately by value without changing authorization, accepted
-tokens, frontiers or floors. Keep pending fingerprint projection read-only
-and join post-ACK capture to the complete current pair and original native
-occurrence.
+Add a source-derived lifetime regression using real fork and pthread stack
+reuse. The original declaration overlaps the replacement stack and refuses;
+the heap declaration stays outside thread stacks and preserves its immutable
+witness and interior pointer. The test never dereferences inherited stack
+storage or writes into another thread's stack. Its reduced payload does not
+establish native callback behavior or attribute a physical crash.
 
-Keep small invalidation page-lock sets in four caller-owned sorted entries;
-spill only for a fifth distinct page without releasing held or busy state.
-Preserve acquisition/retry order and precise-SMC cleanup. Track distinct-
-page TB memberships under the page lock, skip discovery only at an exact
-zero, and retain sticky saturation until empty/full flush recovery.
-
-Cache only a thread-local TSC search position, validating current array
-length, source kind and instance before each hit. Preserve activation/value
-reads and fallback searches. Update mutex waiter counts under the existing
-registry guard with unchanged unsigned wrap, underflow and condition-owner
-semantics.
-
-Select owned serial operations through the current backend's inherited class
-capability and pair begin/end once per operation. Ordinary backends avoid
-negative QOM type lookups without caching backend identity or changing
-native authorization, FIFO, loopback, retry or output-stop semantics.
-
-Provide compile-time opt-in, exact-value runtime diagnostics for existing
-cold barrier refusals. Ordinary builds omit this instrumentation; diagnostic
-snapshots are read-only reports and never establish authority or acceptance.
-
-Extend the existing opt-in diagnostic path to console pre-save refusals.
-Report stopped snapshot custody, control framing, retained Acceptance and
-Observation pair/prefix checks, and raw/logical origin equality as
-independent read-only samples. Preserve validation order, return values,
-canonical state and errno; ordinary builds omit the instrumentation. These
-bounded controls use original native predicates and ABI31 mappings with
-modeled CPU, inventory, clock and I/O providers. Actual loaded device
-capture and guest continuation remain qualification requirements.
-
-Acquire BQL for out-of-band template and plugin-barrier QUERY before taking
-template and resource locks. Keep stopped-console custody checks, barrier
-callbacks and refusal propagation unchanged while observing the original
-lock order.
-
-Retain the atomic outstanding observer without a BQL dependency. Exercise
-the actual template and plugin-barrier handlers with acquired and already-
-owned BQL, original provider-error unwind, and template-before-BQL release
-checks.
-
-Exercise paused control delivery in a physically forked unit dispatcher with
-settled inherited RR generations, a fresh child wake eventfd and unchanged
-icount. Retain independent parent state and a stopped-transfer cancellation
-negative. These bounded controls cover extracted native handlers and modeled
-CPU/event providers; full hot-fork reconstruction and fingerprint
-publication remain qualification requirements.
-
-Bracket device-only VMState loads with the same stopped console transaction
-as the full-VM loader. Preserve the original pre-load ownership predicates,
-finish every entered transaction after CPU synchronization or failure, and
-leave failed or partial loads fenced. Keep uninstalled and plugin-disabled
-loader behavior unchanged. Dedicated controls extract the original loader,
-console hooks and stopped predicates with bounded CPU, identity and stream
-providers; they cover refusal, nested ownership, error cleanup and
-completion. They do not establish stream compatibility or physical restore
-ownership.
-
-A retained output-stop receipt survives acceptance and drain until the next
-UART operation. At its next seal, the installed owner checks that prior
-receipt. Keeping the completed operation marked active makes the original
-accepted-and-drained predicate reject an already accepted preceding output.
-
-Publish the ring and finish immutable seal metadata before marking the
-operation complete and calling the original owner. Retain BQL and producer
-admission until the owner returns. On refusal, restore the active-operation
-fence without releasing admission or changing acceptance or authorization.
-
-Add eight isolated GPL component controls using the configured compiler,
-current protocol headers and extracted original native ownership bodies.
-Cover consecutive accepted/drained operations, unaccepted or undrained
-output, wrong grants, foreign admission, owner refusal, changed
-authorization and an incomplete operation. Refused state is never reset or
-reused. Assertions must remain enabled. CPU, clock, inventory, READY, QOM
-and VM-stop services are modeled; linked UART, physical continuation,
-ABI/license and strict equal-work performance qualification remain separate
-requirements.
-
-Keep shared memory a versioned public process protocol with checked geometry
-and no native pointers. Retain ABI31/generated protocol headers, per-file
-licenses and GPL-side QEMU/plugin implementation with complete matching
-source.
-
-Validate the extracted handler and original atomic observer with the AOS
-configured compiler and explicitly retained historical headers and modeled
-inventory, CPU and event providers. Preserve direct unlocked-observer and
-cold-mutation assertion negatives. These controls do not establish actual
-native console capture or fork custody.
-
-Loaded OOB capture, replay and cleanup, canonical native package checks,
-bound guest continuation, boundary gates and strict equal-work performance
-qualification against current master remain required.
-
-The exact-to-ordinary timer fixture forked a process after test setup had
-started another thread. That child could inherit the QEMU thread-registry
-mutex while its owner vanished, then wait indefinitely during clock setup.
-
-Produce each exact stream with POSIX spawn of the same configured unit
-binary in a private producer mode. The AOS glibc Linux spawn backend avoids
-the fork child handler recreating an RCU thread through the inherited mutex.
-Keep the original clock and VMState serialization, all cross-mode
-assertions, and explicit child exit and reap checks. Bound both pipe capture
-and process completion, retaining failed child cleanup.
-
-A test-only linker wrapper holds the actual registry mutex on a separate
-inventory thread while the producer completes. Release and join that thread
-before ordinary consumer clock initialization. Other mutex unlocks delegate
-unchanged; production registry and hot-fork permission checks are untouched.
-
-The generic ADMITTED-to-STOPPED callback can revisit a retained UART
-occurrence after its exact prefix was accepted. A later non-console stop
-then compares its new generation with the original emission generation
-and refuses.
-
-Use the same private exact-prefix predicate as output retry before
-validating outstanding output. Keep the accepted request and body custody,
-the next UART's acceptance-and-drain requirement, and every unaccepted
-output flush, CPU, generation and quiescence fence.
-
-Source-extracted controls create genuine writer acceptance. Substituting
-only the baseline callback reproduces the original refusal for accepted
-drained and undrained prefixes; the current callback passes all 18 controls.
-The None-only compatibility fixture also passes. CPU, clock, VM-stop,
-frontend, resource and scheduling providers remain explicit component
-models; this does not qualify a linked UART, running guest or physical cause.
+Validation: AOS compiler and the actual linked libc/GLib, warnings denied;
+original ownership refusal and heap success both observed. Full canonical
+native/package and physical guest qualification remain separate requirements.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -76246,10 +76121,10 @@ index 8fe0876a3dab43aa3dc7376ada20b149b7c9d032..5434d4501636c9aad39475c8f6920e48
      if (mon->commands == &qmp_commands) {
          error_set(errp, ERROR_CLASS_COMMAND_NOT_FOUND,
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..64d9dcceb8a4f0bc2b52d8154c7c03df7e1330ff 100644
+index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..728b61021170bba1a80cdc9bc4ba23a04c8dc47d 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
-@@ -14,53 +14,6098 @@
+@@ -14,53 +14,6110 @@
   */
  
  #include "qemu/osdep.h"
@@ -81584,6 +81459,8 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..64d9dcceb8a4f0bc2b52d8154c7c03df
 +    if (result != 0) {
 +        crucible_hot_fork_child_exit_at(15, result);
 +    }
++    /* The vanished QMP caller cannot release this child's heap copy. */
++    g_free(operation);
 +    return 0;
 +}
 +
@@ -81599,7 +81476,17 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..64d9dcceb8a4f0bc2b52d8154c7c03df
 +    uint64_t child_files_generation,
 +    Error **errp)
 +{
-+    CrucibleHotForkOperation operation = {
++    /*
++     * The child restarts the vanished monitor thread. Its inherited stack can
++     * be reused before reconstruction finishes, so callbacks must retain a
++     * heap owner rather than a value on this command's monitor-thread stack.
++     * The parent frees its copy on return; the child frees its separate copy
++     * only after publishing the retained global state and releasing input.
++     */
++    g_autofree CrucibleHotForkOperation *operation =
++        g_new0(CrucibleHotForkOperation, 1);
++
++    *operation = (CrucibleHotForkOperation) {
 +        .template_generation = template_generation,
 +        .private_ring_generation = private_ring_generation,
 +        .diagnostic_generation = diagnostic_generation,
@@ -81624,7 +81511,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..64d9dcceb8a4f0bc2b52d8154c7c03df
 +        .prepare = crucible_hot_fork_prepare_operation,
 +        .parent = crucible_hot_fork_finish_parent_operation,
 +        .child = crucible_hot_fork_finish_child_operation,
-+        .opaque = &operation,
++        .opaque = operation,
 +        .child_cgroup_fd = -1,
 +        .child_cgroup_procs_fd = -1,
 +    };
@@ -81662,7 +81549,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..64d9dcceb8a4f0bc2b52d8154c7c03df
 +                   "monitor basis");
 +        return NULL;
 +    }
-+    operation.monitor_basis_verified = true;
++    operation->monitor_basis_verified = true;
 +    request.child_cgroup_fd =
 +        crucible_hot_fork_child_process_contract_stage.cgroup_fd;
 +    request.child_cgroup_procs_fd =
@@ -81672,7 +81559,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..64d9dcceb8a4f0bc2b52d8154c7c03df
 +
 +    result = qemu_crucible_hot_fork_main_loop_fork(
 +        &request, child_process_contract_generation, &child_pid);
-+    child_files_error = g_steal_pointer(&operation.child_files_error);
++    child_files_error = g_steal_pointer(&operation->child_files_error);
 +
 +    g_mutex_lock(&crucible_hot_fork_template_lock);
 +    if (child_pid > 0) {
@@ -81687,7 +81574,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..64d9dcceb8a4f0bc2b52d8154c7c03df
 +        error_setg_errno(errp, result < 0 ? -result : EPROTO,
 +                         "Could not complete Crucible hot-fork preparation: "
 +                         "%s%s%s",
-+                         operation.blocker ? operation.blocker :
++                         operation->blocker ? operation->blocker :
 +                             "runtime transaction or process creation failed",
 +                         child_files_error ? ": " : "",
 +                         child_files_error ?
@@ -82364,7 +82251,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..64d9dcceb8a4f0bc2b52d8154c7c03df
  }
  
  void qmp_cont(Error **errp)
-@@ -68,7 +6113,23 @@ void qmp_cont(Error **errp)
+@@ -68,7 +6125,23 @@ void qmp_cont(Error **errp)
      BlockBackend *blk;
      BlockJob *job;
      Error *local_err = NULL;
@@ -82388,7 +82275,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..64d9dcceb8a4f0bc2b52d8154c7c03df
      /* if there is a dump in background, we should wait until the dump
       * finished */
      if (qemu_system_dump_in_progress()) {
-@@ -116,6 +6177,155 @@ void qmp_cont(Error **errp)
+@@ -116,6 +6189,155 @@ void qmp_cont(Error **errp)
      }
  }
  
@@ -156071,6 +155958,69 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
  
      return g_test_run();
  }
+diff --git a/tests/unit/extract-crucible-hot-fork-operation-storage.py b/tests/unit/extract-crucible-hot-fork-operation-storage.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..cbf86d4d7ce1383ac02eac652f0c36c88e77d3f8
+--- /dev/null
++++ b/tests/unit/extract-crucible-hot-fork-operation-storage.py
+@@ -0,0 +1,57 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Extract the command's actual storage/opaque statements for a lifetime test.
++
++The test payload is deliberately reduced; this does not recreate native
++resource authority or certify the complete operation layout.
++"""
++
++import pathlib
++import re
++import sys
++
++
++def main():
++    if len(sys.argv) != 3:
++        raise SystemExit("usage: extractor QMP_SOURCE OUTPUT_HEADER")
++
++    text = pathlib.Path(sys.argv[1]).read_text()
++    command = text.split("CrucibleHotForkState *qmp_crucible_hot_fork(")
++    if len(command) != 2:
++        raise SystemExit("expected exactly one hot-fork command")
++
++    body = command[1].split("QemuCrucibleHotForkMainLoopOperation request =", 1)
++    if len(body) != 2:
++        raise SystemExit("missing original coordinator request")
++
++    prefix = body[0].split("Error **errp)\n{", 1)
++    if len(prefix) != 2:
++        raise SystemExit("unexpected command signature")
++
++    declaration = prefix[1].strip()
++    stack = declaration.startswith("CrucibleHotForkOperation operation = {")
++    heap = "g_autofree CrucibleHotForkOperation *operation =" in declaration
++    if stack == heap:
++        raise SystemExit("expected one supported storage declaration")
++
++    if heap and declaration.count("g_new0(CrucibleHotForkOperation, 1)") != 1:
++        raise SystemExit("heap operation must have one exact zeroed allocation")
++
++    request = body[1].split("};", 1)[0]
++    match = re.findall(r"\.opaque = (operation|&operation),", request)
++    expected = "&operation" if stack else "operation"
++    if match != [expected]:
++        raise SystemExit("opaque must refer to the complete declared owner")
++
++    pathlib.Path(sys.argv[2]).write_text(
++        "/* Exact source-derived command declaration; reduced test type. */\n"
++        + "#define STORAGE_IS_HEAP " + str(int(heap)) + "\n"
++        + "static void *issuer(void *unused)\n{\n    (void)unused;\n"
++        + declaration + "\n"
++        + "    publish_operation(" + expected + ");\n"
++        + "    await_source_release();\n"
++        + "    return NULL;\n}\n"
++    )
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
 index dc3fb954c03a02a82f09b38521e2d85ede2549f5..2cdeb8548031f810d9a015c89efdc836b55676e4 100644
 --- a/tests/unit/meson.build
@@ -173571,6 +173521,230 @@ index 0000000000000000000000000000000000000000..4e96634a4ba9fd5cc7e825d1ba9c0aed
 +    g_test_add_func("/crucible/hot-fork/coordinator/status-schema-boundary",
 +                    test_status_schema_rejects_before_record_access);
 +    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-hot-fork-operation-storage.c b/tests/unit/test-crucible-hot-fork-operation-storage.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..0de1a2201523bf1a592d00e8f281e9341d97a6be
+--- /dev/null
++++ b/tests/unit/test-crucible-hot-fork-operation-storage.c
+@@ -0,0 +1,218 @@
++/*
++ * Crucible fork-operation storage lifetime regression.
++ *
++ * Copyright (c) Andyl, Inc.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ *
++ * The generated declaration and opaque binding come from qmp-cmds.c. The
++ * payload below is intentionally reduced: no native layout or resource
++ * authority is modeled. A real fork lets libc reclaim the vanished issuer's
++ * pthread stack. The replacement thread reports its actual stack range.
++ * Only integer addresses are compared for inherited stack storage; the test
++ * never dereferences it or writes into another thread's stack.
++ */
++#define _GNU_SOURCE
++#include <glib.h>
++#include <pthread.h>
++#include <stdint.h>
++#include <stdatomic.h>
++#include <stdbool.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++/* The initializer's scalar fields are retained without native resource types. */
++typedef struct CrucibleHotForkOperation {
++    uint64_t template_generation;
++    uint64_t private_ring_generation;
++    uint64_t diagnostic_generation;
++    uint64_t qmp_generation;
++    uint64_t monitor_generation;
++    uint64_t plugin_endpoint_generation;
++    uint64_t plugin_barrier_generation;
++    uint64_t rcu_barrier_generation;
++    uint64_t async_worker_barrier_generation;
++    uint64_t block_barrier_generation;
++    uint64_t parent_process_generation;
++    uint64_t child_process_generation;
++    uint64_t child_process_contract_generation;
++    uint64_t child_files_generation;
++    int child_process_cgroup_fd;
++    int child_process_cgroup_procs_fd;
++    int child_process_cancellation_fd;
++    struct {
++        pid_t parent_pid;
++        int parent_pidfd;
++    } parent_identity;
++    struct {
++        uint64_t marker;
++    } monitor_basis;
++    struct {
++        void *runtime_opaque;
++    } qmp_reinitializer;
++} CrucibleHotForkOperation;
++
++static const uint64_t template_generation = 11;
++static const uint64_t private_ring_generation = 12;
++static const uint64_t diagnostic_generation = 13;
++static const uint64_t qmp_generation = 14;
++static const uint64_t monitor_generation = 15;
++static const uint64_t plugin_endpoint_generation = 16;
++static const uint64_t plugin_barrier_generation = 17;
++static const uint64_t rcu_barrier_generation = 18;
++static const uint64_t async_worker_barrier_generation = 19;
++static const uint64_t block_barrier_generation = 20;
++static const uint64_t parent_process_generation = 21;
++static const uint64_t child_process_generation = 22;
++static const uint64_t child_process_contract_generation = 23;
++static const uint64_t child_files_generation = 24;
++
++static uintptr_t issuer_base;
++static size_t issuer_size;
++static uintptr_t replacement_base;
++static size_t replacement_size;
++static CrucibleHotForkOperation *retained;
++static atomic_bool issuer_published;
++static atomic_bool replacement_published;
++
++static int issuer_ready[2];
++static int issuer_release[2];
++static int replacement_ready[2];
++static int replacement_release[2];
++
++static void require(int valid, const char *description)
++{
++    if (!valid) {
++        fprintf(stderr, "%s\n", description);
++        exit(2);
++    }
++}
++
++static void write_token(int fd)
++{
++    char token = 'x';
++    require(write(fd, &token, 1) == 1, "owned pipe write failed");
++}
++
++static void read_token(int fd)
++{
++    char token;
++    require(read(fd, &token, 1) == 1, "owned pipe read failed");
++}
++
++static void own_stack(uintptr_t *base, size_t *size)
++{
++    pthread_attr_t attributes;
++    void *address;
++
++    require(pthread_getattr_np(pthread_self(), &attributes) == 0,
++            "pthread stack attributes unavailable");
++    require(pthread_attr_getstack(&attributes, &address, size) == 0,
++            "pthread stack range unavailable");
++    *base = (uintptr_t)address;
++    require(pthread_attr_destroy(&attributes) == 0,
++            "pthread attribute cleanup failed");
++}
++
++static int contains(uintptr_t base, size_t size, uintptr_t address)
++{
++    return address >= base && address - base < size;
++}
++
++static void publish_operation(CrucibleHotForkOperation *operation)
++{
++    operation->monitor_basis.marker = 101;
++    operation->qmp_reinitializer.runtime_opaque = &operation->monitor_basis;
++    retained = operation;
++    own_stack(&issuer_base, &issuer_size);
++    atomic_store_explicit(&issuer_published, true, memory_order_release);
++    write_token(issuer_ready[1]);
++}
++
++static void await_source_release(void)
++{
++    read_token(issuer_release[0]);
++}
++
++#include "operation-storage-generated.h"
++
++static void *replacement(void *unused)
++{
++    (void)unused;
++
++    own_stack(&replacement_base, &replacement_size);
++    atomic_store_explicit(&replacement_published, true, memory_order_release);
++    write_token(replacement_ready[1]);
++    read_token(replacement_release[0]);
++    return NULL;
++}
++
++int main(void)
++{
++    pthread_t issuing_thread;
++    pid_t child;
++    int status;
++    uintptr_t main_base;
++    size_t main_size;
++
++    require(pipe(issuer_ready) == 0 && pipe(issuer_release) == 0 &&
++            pipe(replacement_ready) == 0 && pipe(replacement_release) == 0,
++            "owned pipes unavailable");
++    own_stack(&main_base, &main_size);
++    require(pthread_create(&issuing_thread, NULL, issuer, NULL) == 0,
++            "issuer creation failed");
++    read_token(issuer_ready[0]);
++    require(atomic_load_explicit(&issuer_published, memory_order_acquire),
++            "issuer metadata was not published");
++
++    child = fork();
++    require(child >= 0, "fork failed");
++    if (child == 0) {
++        pthread_t replacement_thread;
++        uintptr_t address = (uintptr_t)retained;
++        int overlap;
++
++        require(pthread_create(&replacement_thread, NULL, replacement, NULL)
++                == 0, "replacement creation failed");
++        read_token(replacement_ready[0]);
++        require(atomic_load_explicit(&replacement_published, memory_order_acquire),
++                "replacement metadata was not published");
++        require(issuer_base == replacement_base &&
++                issuer_size == replacement_size,
++                "libc did not reuse the actual vanished issuer stack");
++        overlap = contains(replacement_base, replacement_size, address);
++        printf("heap=%d actual_stack_reused=1 owner_overlaps_replacement=%d\n",
++               STORAGE_IS_HEAP, overlap);
++        fflush(stdout);
++
++        if (STORAGE_IS_HEAP) {
++            require(!overlap && !contains(issuer_base, issuer_size, address)
++                    && !contains(main_base, main_size, address),
++                    "heap owner overlaps a live or vanished thread stack");
++            require(retained->template_generation == 11 &&
++                    retained->child_files_generation == 24 &&
++                    retained->child_process_cgroup_fd == -1 &&
++                    retained->monitor_basis.marker == 101 &&
++                    retained->qmp_reinitializer.runtime_opaque ==
++                        &retained->monitor_basis,
++                    "immutable heap witness or interior pointer changed");
++        } else {
++            require(overlap, "original stack owner did not overlap reuse");
++        }
++
++        write_token(replacement_release[1]);
++        require(pthread_join(replacement_thread, NULL) == 0,
++                "replacement join failed");
++        if (STORAGE_IS_HEAP) {
++            g_free(retained);
++        }
++        _exit(overlap ? 1 : 0);
++    }
++
++    require(waitpid(child, &status, 0) == child, "owned child wait failed");
++    write_token(issuer_release[1]);
++    require(pthread_join(issuing_thread, NULL) == 0, "issuer join failed");
++    require(WIFEXITED(status), "owned child did not exit normally");
++    return WEXITSTATUS(status);
 +}
 diff --git a/tests/unit/test-crucible-hpet-phase.c b/tests/unit/test-crucible-hpet-phase.c
 new file mode 100644

@@ -1718,6 +1718,57 @@ in
                 block-backend-tests.raw.tap > block-backend-tests.tap
               build/tests/unit/test-crucible-hot-fork-child --tap
               build/tests/unit/test-crucible-hot-fork-coordinator --tap
+              ${lib.optionalString stdenv.hostPlatform.isLinux ''
+                # Exercise the command's actual storage declaration across libc
+                # fork/stack reuse, without dereferencing inherited stack storage.
+                mkdir -p hot-fork-operation-storage-proof
+                ${python3}/bin/python3 \
+                  tests/unit/extract-crucible-hot-fork-operation-storage.py \
+                  monitor/qmp-cmds.c \
+                  hot-fork-operation-storage-proof/operation-storage-generated.h
+                ${python3}/bin/python3 - <<'PYTHON'
+                import hashlib
+                import json
+                import os
+                from pathlib import Path
+                import shlex
+                import subprocess
+
+                proof = Path("hot-fork-operation-storage-proof")
+                flags = shlex.split(subprocess.check_output(
+                    ["pkg-config", "--cflags", "--libs", "glib-2.0"],
+                    text=True))
+                command = shlex.split(os.environ["CC"]) + [
+                    "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pthread",
+                    "-I" + str(proof),
+                    "tests/unit/test-crucible-hot-fork-operation-storage.c",
+                    "-o", str(proof / "control"),
+                    "-Wl,-rpath,${glib}/lib",
+                ] + flags
+                (proof / "compile-command.json").write_text(
+                    json.dumps(command, indent=2) + "\n")
+                sources = [
+                    "monitor/qmp-cmds.c",
+                    "tests/unit/test-crucible-hot-fork-operation-storage.c",
+                    "tests/unit/extract-crucible-hot-fork-operation-storage.py",
+                    str(proof / "operation-storage-generated.h"),
+                ]
+                (proof / "source-bindings.json").write_text(json.dumps({
+                    source: hashlib.sha256(Path(source).read_bytes()).hexdigest()
+                    for source in sources
+                }, indent=2) + "\n")
+                subprocess.run(command, check=True)
+                with open("hot-fork-operation-storage.result", "w") as output:
+                    subprocess.run([
+                        "${coreutils}/bin/timeout", "--kill-after=2", "10",
+                        str(proof / "control"),
+                    ], stdout=output, check=True)
+                expected = "heap=1 actual_stack_reused=1 owner_overlaps_replacement=0\n"
+                if Path("hot-fork-operation-storage.result").read_text() != expected:
+                    raise SystemExit("operation storage lifetime witness differs")
+                PYTHON
+                cat hot-fork-operation-storage.result
+              ''}
               # Compile the actual monitor refusal bodies with their configured
               # headers and real Error implementation; lower-layer plans are modeled.
               ${python3}/bin/python3 - <<'PYTHON' > child-file-refusal.result
@@ -4590,6 +4641,12 @@ in
                 "$out/share/aos/crucible/block-backend-tests.tap"
               install -m 644 aio-hot-fork-tests.tap \
                 "$out/share/aos/crucible/aio-hot-fork-tests.tap"
+              ${lib.optionalString stdenv.hostPlatform.isLinux ''
+                install -m 644 hot-fork-operation-storage.result \
+                  "$out/share/aos/crucible/hot-fork-operation-storage.result"
+                cp -R hot-fork-operation-storage-proof \
+                  "$out/share/aos/crucible/"
+              ''}
               install -m 644 child-file-refusal.result \
                 "$out/share/aos/crucible/child-file-refusal.result"
               install -m 644 child-file-refusal-proof/compile-command.json \
