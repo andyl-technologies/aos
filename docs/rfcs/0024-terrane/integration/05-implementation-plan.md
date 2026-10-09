@@ -191,6 +191,11 @@ authority before every actual effect. Three parent-registered skipped-renewal
 refusal witnesses extend the copied-first-ownership auxiliary from twenty to
 twenty-three cases; their implementation and qualification remain pending.
 No collector task or T1 exit is accepted by these results.
+The existing 1,024-occurrence ordinary native index witness also fails on
+`1d4405cf78` with `Advance(Expired)` during baseline publication (57.71 seconds;
+`/tmp/terrane-current-raw-routing-1024-index-nextest.log`). Its writer budget
+remains thirty seconds. The other five growing populations are unqualified;
+Raw routing's passing small regressions do not establish DRV-29 performance.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
