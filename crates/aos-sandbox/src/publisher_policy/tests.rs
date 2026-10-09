@@ -10,7 +10,7 @@ use aos_sandbox_core::format::encode_policy;
 use aos_sandbox_core::model::{
     CacheDomain, CacheDomainKind, Policy, ResourceProfile, RevocationMode, RevocationPolicy,
 };
-use aos_sandbox_core::{CacheDomainId, CanonicalCborError, Grant, GrantId, OperationSet, Selector};
+use aos_sandbox_core::{CacheDomainId, Grant, GrantId, OperationSet, Selector};
 
 use super::*;
 use crate::JournalLimits;
@@ -852,19 +852,7 @@ fn policy_decoder_and_store_limits_are_hard_clamped() {
             &fixture.policy_bytes,
             tiny,
         ),
-        Err(PublisherPolicyError::InvalidPolicyRevision)
-    ));
-    assert_eq!(
-        bounded_decode_limits(DecodeLimits::default()).maximum_collection_items,
-        MAXIMUM_COLLECTION_ITEMS
-    );
-    let oversized_required_features = [0x8b, 0x01, 0x99, 0x04, 0x01];
-    assert!(matches!(
-        aos_sandbox_core::format::decode_policy(
-            &oversized_required_features,
-            bounded_decode_limits(DecodeLimits::default()),
-        ),
-        Err(CanonicalCborError::CollectionTooLarge { .. })
+        Err(aos_sandbox_policy::PublisherPolicyDataError::InvalidPolicyRevision)
     ));
     assert!(matches!(
         PreparedPublisherPolicyRevisionV1::from_canonical_bytes(
@@ -875,7 +863,7 @@ fn policy_decoder_and_store_limits_are_hard_clamped() {
             &vec![0; MAXIMUM_POLICY_BYTES + 1],
             DecodeLimits::default(),
         ),
-        Err(PublisherPolicyError::LimitExceeded("policy bytes"))
+        Err(aos_sandbox_policy::PublisherPolicyDataError::LimitExceeded("policy bytes"))
     ));
 
     let directory = TestDirectory::new("limits");

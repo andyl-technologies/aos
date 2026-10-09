@@ -633,3 +633,25 @@ fn update_descriptor(
     hasher.update(descriptor.encoded_size().to_be_bytes());
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aos_sandbox_core::CanonicalCborError;
+
+    #[test]
+    fn canonical_policy_decode_limits_are_hard_clamped() {
+    assert_eq!(
+        bounded_decode_limits(DecodeLimits::default()).maximum_collection_items,
+        MAXIMUM_COLLECTION_ITEMS
+    );
+    let oversized_required_features = [0x8b, 0x01, 0x99, 0x04, 0x01];
+    assert!(matches!(
+        aos_sandbox_core::format::decode_policy(
+            &oversized_required_features,
+            bounded_decode_limits(DecodeLimits::default()),
+        ),
+        Err(CanonicalCborError::CollectionTooLarge { .. })
+    ));
+    }
+}
