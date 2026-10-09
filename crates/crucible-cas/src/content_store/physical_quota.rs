@@ -7,8 +7,8 @@
 //! facade, rejects physical allocation beyond the admitted byte or inode
 //! ceiling, including staging, compression, encryption, and pack slack.
 
-use super::CheckedPublicationMetadata;
 use super::batch::{admission_under, allocation_under};
+use super::{CheckedInventoryFence, CheckedPublicationMetadata};
 
 use super::ObjectKind;
 
@@ -19,7 +19,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::admin::{PhysicalRepairAuthority, PreparedResources};
-use crate::owned_decode::DecodeScratch;
 
 use super::{
     BackendCapabilities, BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary,
@@ -661,7 +660,7 @@ impl BlobStoreAdmin for PhysicalQuotaStore {
     fn acquire_inventory_fence_with_boundary(
         &self,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
-    ) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
+    ) -> Result<CheckedInventoryFence<'_>, StoreError> {
         let account = super::batch::account()?;
         boundary()?;
         account
@@ -702,13 +701,17 @@ impl BlobStoreAdmin for PhysicalQuotaStore {
         if let Err(error) = original() {
             return Err(child.retain_checked_failure(error));
         }
-        Ok(Box::new(PhysicalQuotaInventoryFence {
-            store: self,
-            child,
-            checked_account: account.into(),
-            _resources: resources,
-            _checked_credit: Some(credit),
-        }))
+        let external_resources = resources.clone();
+        Ok(CheckedInventoryFence::new_with_resources(
+            Box::new(PhysicalQuotaInventoryFence {
+                store: self,
+                child,
+                checked_account: account.into(),
+                _resources: resources,
+            }),
+            credit,
+            external_resources,
+        ))
     }
 
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
@@ -716,20 +719,18 @@ impl BlobStoreAdmin for PhysicalQuotaStore {
         let resources = self.operation_resources()?;
         Ok(Box::new(PhysicalQuotaInventoryFence {
             store: self,
-            child: self.child_admin.acquire_inventory_fence()?,
+            child: CheckedInventoryFence::ordinary(self.child_admin.acquire_inventory_fence()?),
             checked_account: crate::owned_decode::DecodeBudgetSlot::default(),
             _resources: resources,
-            _checked_credit: None,
         }))
     }
 }
 
 struct PhysicalQuotaInventoryFence<'a> {
     store: &'a PhysicalQuotaStore,
-    child: Box<dyn BlobInventoryFence + 'a>,
+    child: CheckedInventoryFence<'a>,
     checked_account: crate::owned_decode::DecodeBudgetSlot,
     _resources: crate::owned_decode::ResourceLoan,
-    _checked_credit: Option<DecodeScratch>,
 }
 
 impl BlobInventoryFence for PhysicalQuotaInventoryFence<'_> {

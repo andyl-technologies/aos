@@ -84,6 +84,7 @@ pub(super) fn canonical_graph_configuration(
                 target_pack_bytes,
             } => {
                 bytes.push(3);
+                bytes.extend_from_slice(super::super::packed::INDEX_VERSION_MARKER);
                 encode_path(&mut bytes, root)?;
                 bytes.extend_from_slice(&target_pack_bytes.to_be_bytes());
             }
@@ -286,6 +287,29 @@ mod tests {
             StoreGraphConfigurationId::for_config(&configuration)?,
             StoreGraphConfigurationId::for_config(&memory_configuration(8)?)?,
         );
+        Ok(())
+    }
+
+    #[test]
+    fn packed_identity_explicitly_selects_the_bounded_index_version() -> Result<(), StoreError> {
+        let root = StoreNodeId::new("r")?;
+        let configuration = StoreGraphConfig {
+            root: root.clone(),
+            gc_mark_root: None,
+            admitted_kinds: BTreeSet::new(),
+            nodes: BTreeMap::from([(
+                root,
+                StoreNodeSpec::Packed {
+                    root: "/packed".into(),
+                    target_pack_bytes: 65_536,
+                },
+            )]),
+        };
+        const EXPECTED: &[u8] = b"crucible.content-store.graph-configuration.v13\0\
+            \x00\x01r\x00\x00\x00\x00\x01\x00\x01r\x03packed-index-v2\0\
+            \x00\x00\x00\x07/packed\x00\x00\x00\x00\x00\x01\x00\x00";
+
+        assert_eq!(canonical_graph_configuration(&configuration)?, EXPECTED);
         Ok(())
     }
 }

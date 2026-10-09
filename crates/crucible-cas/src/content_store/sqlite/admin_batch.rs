@@ -17,20 +17,20 @@ struct CheckedFence<'a> {
     inner: SqliteInventoryFence<'a>,
     account: DecodeBudget,
     diagnostic: Option<DecodeScratch>,
-    _credit: DecodeScratch,
 }
 
 pub(super) fn acquire<'a>(
     backend: &'a SqliteBlobBackend,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
-) -> Result<Box<dyn BlobInventoryFence + 'a>, StoreError> {
-    Ok(Box::new(acquire_owned(backend, boundary)?))
+) -> Result<CheckedInventoryFence<'a>, StoreError> {
+    let (fence, credit) = acquire_owned(backend, boundary)?;
+    Ok(CheckedInventoryFence::new(Box::new(fence), credit))
 }
 
 fn acquire_owned<'a>(
     backend: &'a SqliteBlobBackend,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
-) -> Result<CheckedFence<'a>, StoreError> {
+) -> Result<(CheckedFence<'a>, DecodeScratch), StoreError> {
     let account = account()?;
     catalog::write_available()?;
     check(backend, &account, boundary)?;
@@ -71,12 +71,14 @@ fn acquire_owned<'a>(
         })
     })();
     match result {
-        Ok(inner) => Ok(CheckedFence {
-            inner,
-            account,
-            diagnostic: Some(diagnostic),
-            _credit: credit,
-        }),
+        Ok(inner) => Ok((
+            CheckedFence {
+                inner,
+                account,
+                diagnostic: Some(diagnostic),
+            },
+            credit,
+        )),
         Err(error) => diagnostic::retain_failure(diagnostic, || Err(error)),
     }
 }

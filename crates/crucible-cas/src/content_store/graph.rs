@@ -43,6 +43,7 @@ use super::write_back::{
 };
 use super::*;
 
+mod checked_packed_admin;
 mod format;
 mod gc_marks;
 mod verification;

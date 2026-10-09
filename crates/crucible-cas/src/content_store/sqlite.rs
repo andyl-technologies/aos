@@ -821,7 +821,7 @@ impl BlobStoreAdmin for SqliteBlobBackend {
     fn acquire_inventory_fence_with_boundary(
         &self,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
-    ) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
+    ) -> Result<CheckedInventoryFence<'_>, StoreError> {
         admin_batch::acquire(self, boundary)
     }
 

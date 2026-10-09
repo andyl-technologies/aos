@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::content_store::{StorePhysicalQuotaGuard, batch, checked_reader};
-use crate::owned_decode::{DecodeBudget, DecodeScratch, ResourceLoan};
+use crate::owned_decode::{DecodeBudget, ResourceLoan};
 
 pub(in crate::content_store) struct Admitted {
     pub(in crate::content_store) backend: PackedBlobBackend,
@@ -268,180 +268,20 @@ fn new_instance(
     Ok(*hasher.finalize().as_bytes())
 }
 
-struct Manifest {
-    pack: PackId,
-    entries: Vec<PackManifestEntry>,
-    _credit: DecodeScratch,
-}
-
 fn validate_packs(
     backend: &PackedBlobBackend,
     index: &index_snapshot::IndexSnapshot,
     original: &DecodeBudget,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
-    let count = index.header.count;
-    let _row_credit = original
-        .reserve_scratch_array::<(ContentId, IndexEntry)>(count)
-        .map_err(|error| batch::admission_under(original, error))?;
-    let mut rows = Vec::new();
-    rows.try_reserve_exact(count)
-        .map_err(|error| batch::allocation_under(original, error))?;
-    index.visit(backend, original, boundary, &mut |id, entry| {
-        rows.push((id, entry));
-        Ok(())
-    })?;
-    let _pack_credit = original
-        .reserve_scratch_array::<PackId>(count)
-        .map_err(|error| batch::admission_under(original, error))?;
-    let mut packs = Vec::new();
-    packs
-        .try_reserve_exact(count)
-        .map_err(|error| batch::allocation_under(original, error))?;
-    packs.extend(rows.iter().map(|(_, entry)| entry.pack));
-    checked_reader::check(original, boundary)?;
-    // At most the existing 65,536 canonical rows participate. Sorting allocates
-    // no scratch; IO and retained manifest creation resume only after recheck.
-    packs.sort_unstable();
-    packs.dedup();
-    checked_reader::check(original, boundary)?;
-    let _manifest_credit = original
-        .reserve_scratch_array::<Manifest>(packs.len())
-        .map_err(|error| batch::admission_under(original, error))?;
-    let mut manifests = Vec::new();
-    manifests
-        .try_reserve_exact(packs.len())
-        .map_err(|error| batch::allocation_under(original, error))?;
-    // Authenticate every distinct pack once in the old BTreeSet order BEFORE
-    // considering any index-reference mismatch. Retain canonical lookup rows
-    // rather than reparsing/hashing the same pack for each logical object.
-    for pack in packs {
-        manifests.push(load_manifest(backend, pack, original, boundary)?);
-    }
-    for (id, entry) in rows {
-        checked_reader::check(original, boundary)?;
-        let position = manifests
-            .binary_search_by_key(&entry.pack, |manifest| manifest.pack)
-            .map_err(|_| StoreError::Incompatible)?;
-        let entries = &manifests[position].entries;
-        let position = entries
-            .binary_search_by_key(&id, |manifest| manifest.id)
-            .map_err(|_| StoreError::Incompatible)?;
-        let manifest = &entries[position];
-        if manifest.offset != entry.offset || manifest.length != entry.length {
-            return Err(StoreError::Incompatible);
-        }
-    }
-    checked_reader::check(original, boundary)
-}
-
-fn load_manifest(
-    backend: &PackedBlobBackend,
-    pack: PackId,
-    original: &DecodeBudget,
-    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
-) -> Result<Manifest, StoreError> {
-    let path = checked_publication::io::pack_path(backend, pack, original)?;
-    let file = checked_io::open_file(path.as_path(), OFlags::RDONLY,
-        "open-immutable-pack", original, boundary).map_err(|error| {
-            if matches!(&error, StoreError::StreamIo { source, .. } if source.kind() == io::ErrorKind::NotFound) {
-                StoreError::Incompatible
-            } else { error }
-        })?;
-    // Ordinary open_regular_file validates type before reading the header.
-    checked_io::length(&file, original, boundary)?;
-    let mut fixed = [0_u8; PACK_MAGIC.len() + 32 + 4 + 4];
-    checked_io::read_header_exact_at(file.file(), &mut fixed, 0, original, boundary)?;
-    let mut cursor = format::PackedCursor::new(&fixed);
-    if cursor.fixed(PACK_MAGIC.len())? != PACK_MAGIC || cursor.array_32()? != backend.configuration
-    {
-        return Err(StoreError::Incompatible);
-    }
-    let count = usize::try_from(cursor.u32()?).map_err(|_| StoreError::Quota)?;
-    let length = usize::try_from(cursor.u32()?).map_err(|_| StoreError::Quota)?;
-    if count == 0 || count > MAX_PACK_ENTRIES || length as u64 > MAX_INDEX_BYTES {
-        return Err(StoreError::Incompatible);
-    }
-    let _bytes_credit = original
-        .reserve_scratch_bytes(length as u64)
-        .map_err(|error| batch::admission_under(original, error))?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(length)
-        .map_err(|error| batch::allocation_under(original, error))?;
-    bytes.resize(length, 0);
-    checked_io::read_header_exact_at(
-        file.file(),
-        &mut bytes,
-        fixed.len() as u64,
-        original,
-        boundary,
-    )?;
-    let mut checksum = [0_u8; 32];
-    checked_io::read_header_exact_at(
-        file.file(),
-        &mut checksum,
-        (fixed.len() + length) as u64,
-        original,
-        boundary,
-    )?;
-    let mut digest = blake3::Hasher::new();
-    digest.update(PACK_MANIFEST_DOMAIN);
-    digest.update(&fixed);
-    for chunk in bytes.chunks(checked_io::READ_BYTES) {
-        checked_reader::check(original, boundary)?;
-        digest.update(chunk);
-    }
-    checked_reader::check(original, boundary)?;
-    if digest.finalize().as_bytes() != &checksum {
-        return Err(StoreError::Incompatible);
-    }
-    let credit = original
-        .reserve_scratch_array::<PackManifestEntry>(count)
-        .map_err(|error| batch::admission_under(original, error))?;
-    let mut entries = Vec::new();
-    entries
-        .try_reserve_exact(count)
-        .map_err(|error| batch::allocation_under(original, error))?;
-    format::scan_pack_manifest(
-        &bytes,
-        count,
-        &mut || checked_reader::check(original, boundary),
-        &mut |entry| {
-            entries.push(entry);
-            Ok(())
+    maintenance::validate(
+        backend,
+        index,
+        &mut index_io::Operation {
+            original: Some(original),
+            boundary,
         },
-    )?;
-    let header_end = (fixed.len() + length + 32) as u64;
-    if entries
-        .first()
-        .is_none_or(|entry| entry.offset != header_end)
-    {
-        return Err(StoreError::Incompatible);
-    }
-    let mut identity = blake3::Hasher::new();
-    identity.update(PACK_ID_DOMAIN);
-    identity.update(&backend.configuration);
-    for chunk in bytes.chunks(checked_io::READ_BYTES) {
-        checked_reader::check(original, boundary)?;
-        identity.update(chunk);
-    }
-    checked_reader::check(original, boundary)?;
-    if identity.finalize().as_bytes() != &pack.0 {
-        return Err(StoreError::Incompatible);
-    }
-    let length = checked_io::length(&file, original, boundary)?;
-    let expected = entries
-        .last()
-        .map_or(header_end, |entry| entry.offset + entry.length);
-    if length != expected || length > MAX_PACK_BYTES {
-        return Err(StoreError::Incompatible);
-    }
-    Ok(Manifest {
-        pack,
-        entries,
-        _credit: credit,
-    })
+    )
 }
 
 #[cfg(test)]

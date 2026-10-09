@@ -524,7 +524,7 @@ fn late_actual_commit_failure_preserves_cached_generation_and_last_error_credit(
     let account = DecodeBudget::for_store(guard.clone()).expect("original account");
     let _scope = account.enter();
     let baseline = guard.resources.usage().expect("baseline");
-    let mut fence =
+    let (mut fence, _fence_credit) =
         acquire_owned(&backend, &mut || guard.verify()).expect("actual production fence body");
     let before = fence.inner.generation;
     let error = fence
@@ -558,6 +558,7 @@ fn late_actual_commit_failure_preserves_cached_generation_and_last_error_credit(
         guard.resources.usage().expect("last error owns bank").1 >= baseline.1 + 48 * 1024 * 1024
     );
     drop(fence);
+    drop(_fence_credit);
     assert!(
         guard.resources.usage().expect("error outlives fence").1 >= baseline.1 + 48 * 1024 * 1024
     );
@@ -644,7 +645,8 @@ fn unwind_after_actual_delete_quarantines_every_alias_without_hidden_cleanup() {
     let ids = seeded(&backend, 1);
     let account = DecodeBudget::for_store(guard.clone()).expect("original account");
     let _scope = account.enter();
-    let mut fence = acquire_owned(&backend, &mut || guard.verify()).expect("actual fence body");
+    let (mut fence, _fence_credit) =
+        acquire_owned(&backend, &mut || guard.verify()).expect("actual fence body");
     let journal = root.path().join(format!("{DATABASE_FILE}-journal"));
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = fence.delete_candidates_with_boundary(&ids, &mut || {
@@ -919,7 +921,8 @@ fn cancellation_after_actual_delete_rolls_back_before_exact_timeout_restoration(
     let ids = seeded(&backend, 2);
     let account = DecodeBudget::for_store(guard.clone()).expect("original account");
     let _scope = account.enter();
-    let mut fence = acquire_owned(&backend, &mut || guard.verify()).expect("actual fence body");
+    let (mut fence, _fence_credit) =
+        acquire_owned(&backend, &mut || guard.verify()).expect("actual fence body");
     let timeout: i64 = fence
         .inner
         .connection

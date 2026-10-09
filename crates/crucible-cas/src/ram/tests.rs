@@ -22,6 +22,7 @@ mod catalog_progress;
 mod checked_graph_adapters;
 mod comparison_identity;
 mod metadata_lifecycle;
+mod packed_volume;
 mod transfer_object;
 mod wire_state;
 
@@ -1339,46 +1340,8 @@ fn equal_subtrees_prune_root_difference_traversal() {
 }
 
 #[test]
-fn dense_ram_capture_rejects_insufficient_packed_index_before_reading_pages() {
-    let directory = tempfile::tempdir().unwrap();
-    let packed = Arc::new(
-        crate::content_store::PackedBlobBackend::open("ram-capacity", directory.path(), 64 * 1024)
-            .unwrap(),
-    );
-    let ram = RamStore::new(
-        packed.clone(),
-        DurabilityRequirement::new(1, false).unwrap(),
-        RamStoreLimits::default(),
-    )
-    .unwrap();
-    let retention = Retention::default();
-    let mut reads = 0;
-    // Packed capacity is tested independently of its absent metadata facade.
-    // The caller supplies the same finite model authority as RAM operations.
-    let quota = Arc::new(FixtureRamQuota(
-        crate::content_store::test_resources::FixtureResourceBudget::new(128, 256 << 20),
-    ));
-    let original = crate::owned_decode::DecodeBudget::for_store(quota).unwrap();
-    let result = ram.capture(
-        topology(4096 * 32_768),
-        Scope::Exact,
-        &mut |_, _, _| {
-            reads += 1;
-            Ok(())
-        },
-        &retention,
-        &original,
-        &mut || Ok(()),
-    );
-
-    assert!(matches!(
-        result,
-        Err(RamStoreError::Store(StoreError::Quota))
-    ));
-    assert_eq!(reads, 0);
-    assert!(retention.objects.lock().unwrap().is_empty());
-    ram.admit_ram_publication(&topology(4096 * 8 + 17), Scope::Exact)
-        .unwrap();
+fn dense_ram_capture_declines_exhausted_original_before_reading_pages() {
+    packed_volume::assert_exhausted_original_precedes_pages();
 }
 
 /// Declares an oversized object without permitting any stream allocation/read.

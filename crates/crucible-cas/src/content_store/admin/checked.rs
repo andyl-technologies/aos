@@ -191,6 +191,13 @@ impl<T> CheckedReceipt<T> {
 pub struct DeleteBatchReceipt(CheckedReceipt<Vec<PlannedDeleteDisposition>>);
 
 impl DeleteBatchReceipt {
+    pub(in crate::content_store) fn new_packed(
+        accepted: crate::content_store::packed::Accepted<Vec<PlannedDeleteDisposition>>,
+        credit: DecodeScratch,
+    ) -> Self {
+        Self(CheckedReceipt::new_packed(accepted, credit))
+    }
+
     pub(in crate::content_store) fn new(
         accepted: Accepted<Vec<PlannedDeleteDisposition>>,
         credit: DecodeScratch,
@@ -231,6 +238,13 @@ impl std::fmt::Debug for DeleteBatchReceipt {
 pub struct InventorySummaryReceipt(CheckedReceipt<BlobInventorySummary>);
 
 impl InventorySummaryReceipt {
+    pub(in crate::content_store) fn new_packed(
+        accepted: crate::content_store::packed::Accepted<BlobInventorySummary>,
+        credit: DecodeScratch,
+    ) -> Self {
+        Self(CheckedReceipt::new_packed(accepted, credit))
+    }
+
     pub(in crate::content_store) fn new(
         accepted: Accepted<BlobInventorySummary>,
         credit: DecodeScratch,

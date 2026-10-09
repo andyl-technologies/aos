@@ -92,14 +92,14 @@ impl std::fmt::Write for StackName {
     }
 }
 
-pub(super) struct Staging {
+pub(in crate::content_store::packed) struct Staging {
     file: Option<checked_io::OwnedFile>,
     path: checked_io::OwnedPath,
     removed: bool,
 }
 
 impl Staging {
-    pub(super) fn new(
+    pub(in crate::content_store::packed) fn new(
         parent: &Path,
         label: &str,
         original: &DecodeBudget,
@@ -137,18 +137,18 @@ impl Staging {
         Err(StoreError::Quota)
     }
 
-    pub(super) fn file(&self) -> Result<&File, StoreError> {
+    pub(in crate::content_store::packed) fn file(&self) -> Result<&File, StoreError> {
         self.file
             .as_ref()
             .map(checked_io::OwnedFile::file)
             .ok_or(StoreError::Unavailable)
     }
 
-    pub(super) fn path(&self) -> &Path {
+    pub(in crate::content_store::packed) fn path(&self) -> &Path {
         self.path.as_path()
     }
 
-    pub(super) fn with_native<T>(
+    pub(in crate::content_store::packed) fn with_native<T>(
         &self,
         operation: &'static str,
         action: impl FnOnce(&std::ffi::CStr) -> Result<T, StoreError>,
@@ -167,7 +167,7 @@ impl Staging {
         })
     }
 
-    pub(super) fn cleanup(&mut self) -> Result<(), StoreError> {
+    pub(in crate::content_store::packed) fn cleanup(&mut self) -> Result<(), StoreError> {
         drop(self.file.take());
         match self.remove() {
             Ok(()) => {
@@ -246,7 +246,7 @@ pub(super) fn sync(
     checked_reader::check(original, boundary)
 }
 
-pub(super) fn copy(
+pub(in crate::content_store::packed) fn copy(
     original: &DecodeBudget,
     id: ContentId,
     source: &BlobHandle,
@@ -323,7 +323,7 @@ pub(in crate::content_store::packed) fn pack_path(
     )
 }
 
-pub(super) fn compare(
+pub(in crate::content_store::packed) fn compare(
     staged: Result<&File, StoreError>,
     target: &Path,
     original: &DecodeBudget,

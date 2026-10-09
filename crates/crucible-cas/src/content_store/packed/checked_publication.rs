@@ -1,8 +1,9 @@
-//! Checked one-object packs, durable index transitions, and retained outcomes.
+//! Checked pack groups, durable index transitions, and retained outcomes.
 
 use super::*;
 use crate::content_store::{PutBatchReceipt, batch, checked_reader};
 use crate::owned_decode::{DecodeBudget, DecodeScratch};
+mod group;
 
 pub(super) mod io;
 
@@ -10,28 +11,30 @@ pub(super) mod io;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PackedPublicationOutcome {
     /// Number of newly linked complete physical packs in this batch.
-    pub published_packs: u8,
+    pub published_packs: u64,
     /// Number of ordered inputs covered by a successful durable index result.
-    pub durable_objects: u8,
+    pub durable_objects: u64,
     /// Indicates an unconfirmed conditional pack link or packs-directory sync.
     pub pack_visibility_uncertain: bool,
     /// Indicates an unconfirmed index rename or admin-directory sync.
     pub index_visibility_uncertain: bool,
     /// Indicates that a temporary name could not be synchronously removed.
     pub staging_cleanup_pending: bool,
+    /// Indicates candidate index backing whose cleanup has not been confirmed.
+    pub index_reclamation_pending: bool,
 }
 
 /// Retains checked Packed work, cleanup, and actual publication evidence.
 pub struct PackedScopeError {
     body: Option<Box<Failure>>,
-    _credit: DecodeScratch,
 }
 
-struct Failure {
+pub(super) struct Failure {
     first_boundary: Option<StoreError>,
     work: Option<StoreError>,
     cleanup: [Option<StoreError>; 2],
     outcome: PackedPublicationOutcome,
+    _credit: Option<DecodeScratch>,
 }
 
 impl PackedScopeError {
@@ -107,8 +110,9 @@ impl std::error::Error for PackedScopeError {
 impl Drop for PackedScopeError {
     fn drop(&mut self) {
         if let Some(boxed) = self.body.take() {
-            // Move the payload out and free this prepaid Box before releasing
-            // any nested cause's credits or the enclosing original credit.
+            // Move both causes and the same original credit to the stack.
+            // The Box control closes before any member of that moved payload,
+            // including its final credit. No raw alias or second control exists.
             let body = *boxed;
             drop(body);
         }
@@ -116,9 +120,9 @@ impl Drop for PackedScopeError {
 }
 
 pub(in crate::content_store) struct Accepted<T> {
-    value: T,
-    outcome: PackedPublicationOutcome,
-    credit: DecodeScratch,
+    pub(super) value: T,
+    pub(super) outcome: PackedPublicationOutcome,
+    pub(super) credit: DecodeScratch,
 }
 
 impl<T> Accepted<T> {
@@ -150,7 +154,7 @@ impl<T> Accepted<T> {
     }
 }
 
-fn scope_error(
+pub(super) fn scope_error(
     first_boundary: Option<StoreError>,
     work: Option<StoreError>,
     cleanup: [Option<StoreError>; 2],
@@ -164,17 +168,36 @@ fn scope_error(
                 work,
                 cleanup,
                 outcome,
+                _credit: Some(credit),
             })),
-            _credit: credit,
+        },
+    }
+}
+
+pub(super) fn ordinary_scope_error(
+    work: Option<StoreError>,
+    cleanup: [Option<StoreError>; 2],
+    outcome: PackedPublicationOutcome,
+) -> StoreError {
+    StoreError::PackedScope {
+        source: PackedScopeError {
+            body: Some(Box::new(Failure {
+                first_boundary: None,
+                work,
+                cleanup,
+                outcome,
+                _credit: None,
+            })),
         },
     }
 }
 
 #[derive(Default)]
-struct Progress {
-    cleanup_only: bool,
-    outcome: PackedPublicationOutcome,
-    cleanup: [Option<StoreError>; 2],
+pub(super) struct Progress {
+    pub(super) cleanup_only: bool,
+    pub(super) obsolete_arenas: [Option<[u8; 32]>; 2],
+    pub(super) outcome: PackedPublicationOutcome,
+    pub(super) cleanup: [Option<StoreError>; 2],
 }
 
 pub(super) fn publish(
@@ -212,26 +235,36 @@ pub(super) fn publish(
         receipts
             .try_reserve_exact(objects.len())
             .map_err(|error| batch::allocation_under(original, error))?;
-        for (id, source) in objects {
-            publish_one(backend, original, *id, source, &mut progress, boundary)?;
-            let mut name = String::new();
-            name.try_reserve_exact(backend.name.len())
-                .map_err(|error| batch::allocation_under(original, error))?;
-            name.push_str(&backend.name);
-            let mut placements = Vec::new();
-            placements
-                .try_reserve_exact(1)
-                .map_err(|error| batch::allocation_under(original, error))?;
-            placements.push(PlacementReceipt {
-                backend: name,
-                durable: true,
-                logical_length: source.logical_length(),
-            });
-            receipts.push(PutReceipt {
-                id: *id,
-                placements,
-            });
-            checked_reader::check(original, boundary)?;
+        let mut offset = 0;
+        while offset < objects.len() {
+            let consumed = group::publish_prefix(
+                backend,
+                original,
+                &objects[offset..],
+                &mut progress,
+                boundary,
+            )?;
+            for (id, source) in &objects[offset..offset + consumed] {
+                let mut name = String::new();
+                name.try_reserve_exact(backend.name.len())
+                    .map_err(|error| batch::allocation_under(original, error))?;
+                name.push_str(&backend.name);
+                let mut placements = Vec::new();
+                placements
+                    .try_reserve_exact(1)
+                    .map_err(|error| batch::allocation_under(original, error))?;
+                placements.push(PlacementReceipt {
+                    backend: name,
+                    durable: true,
+                    logical_length: source.logical_length(),
+                });
+                receipts.push(PutReceipt {
+                    id: *id,
+                    placements,
+                });
+                checked_reader::check(original, boundary)?;
+            }
+            offset += consumed;
         }
         Ok(receipts)
     })();
@@ -277,7 +310,27 @@ fn publish_one(
     checked_reader::check(original, boundary)?;
     let _state = checked_io::lock(backend, STATE_LOCK_FILE, false, original, boundary)?;
     let index = index_snapshot::IndexSnapshot::load(backend, original, boundary)?;
-    if let Some(entry) = index.find(backend, id, original, boundary)? {
+    let entry = index.find(backend, id, original, boundary)?;
+    publish_one_locked(
+        backend, original, id, source, &index, entry, progress, boundary,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The existing state lock and authenticated placement are borrowed without repeating lookup effects."
+)]
+fn publish_one_locked(
+    backend: &PackedBlobBackend,
+    original: &DecodeBudget,
+    id: ContentId,
+    source: &BlobHandle,
+    index: &index_snapshot::IndexSnapshot,
+    entry: Option<IndexEntry>,
+    progress: &mut Progress,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    if let Some(entry) = entry {
         let existing = checked::open_entry(backend, original, id, entry, None, boundary)?;
         io::copy(original, id, &existing, None, boundary)?;
         io::copy(original, id, source, None, boundary)?;
@@ -285,11 +338,22 @@ fn publish_one(
         progress.outcome.durable_objects += 1;
         return checked_reader::check(original, boundary);
     }
-    if index.header.count >= MAX_LOGICAL_OBJECTS {
-        return Err(StoreError::Quota);
-    }
 
     let manifest = io::Manifest::one(backend.configuration, id, source.logical_length(), original)?;
+    maintenance::publication_headroom(
+        backend,
+        index,
+        1,
+        manifest
+            .entry
+            .offset
+            .checked_add(manifest.entry.length)
+            .ok_or(StoreError::Quota)?,
+        &mut index_io::Operation {
+            original: Some(original),
+            boundary,
+        },
+    )?;
     let mut staging = io::Staging::new(&backend.packs, "pack", original, boundary)?;
     let work = (|| {
         io::write_all(staging.file(), manifest.bytes(), 0, original, boundary)?;
@@ -303,12 +367,20 @@ fn publish_one(
         io::sync(staging.file(), original, boundary)?;
         // Admit the complete replacement buffer while the authenticated old
         // snapshot remains owned, before any irreversible physical link.
-        let replacement = index.inserted(
+        let replacement = maintenance::replacement(
             backend,
-            id,
-            manifest.entry.to_index_entry(manifest.pack),
-            original,
-            boundary,
+            index,
+            &[(id, manifest.entry.to_index_entry(manifest.pack))],
+            manifest
+                .entry
+                .offset
+                .checked_add(manifest.entry.length)
+                .ok_or(StoreError::Quota)?,
+            &mut index_io::Operation {
+                original: Some(original),
+                boundary,
+            },
+            progress,
         )?;
         let target = io::pack_path(backend, manifest.pack, original)?;
         checked_reader::check(original, boundary)?;
@@ -331,8 +403,7 @@ fn publish_one(
         checked_reader::check(original, boundary)?;
         checked_io::sync_directory(&backend.packs, original, boundary)?;
         progress.outcome.pack_visibility_uncertain = false;
-        publish_index(backend, original, &replacement, progress, boundary)?;
-        progress.outcome.durable_objects += 1;
+        publish_index(backend, original, &replacement, progress, boundary, 1)?;
         checked_reader::check(original, boundary)
     })();
     let cleanup = staging.cleanup();
@@ -350,7 +421,7 @@ pub(super) fn initialize_index(
         .reserve_scratch_array::<Failure>(1)
         .map_err(|error| batch::admission_under(original, error))?;
     let mut progress = Progress::default();
-    match publish_index(backend, original, replacement, &mut progress, boundary) {
+    match publish_index(backend, original, replacement, &mut progress, boundary, 0) {
         Ok(()) => Ok(()),
         Err(work) => Err(scope_error(
             None,
@@ -362,13 +433,19 @@ pub(super) fn initialize_index(
     }
 }
 
-fn publish_index(
+pub(super) fn publish_index(
     backend: &PackedBlobBackend,
     original: &DecodeBudget,
     replacement: &index_snapshot::EncodedIndex,
     progress: &mut Progress,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    newly_durable: u64,
 ) -> Result<(), StoreError> {
+    let durable_objects = progress
+        .outcome
+        .durable_objects
+        .checked_add(newly_durable)
+        .ok_or(StoreError::Quota)?;
     let mut staging = io::Staging::new(&backend.admin, "index", original, boundary)?;
     let work = (|| {
         io::write_all(staging.file(), replacement.bytes(), 0, original, boundary)?;
@@ -389,6 +466,21 @@ fn publish_index(
         checked_reader::check(original, boundary)?;
         checked_io::sync_directory(&backend.admin, original, boundary)?;
         progress.outcome.index_visibility_uncertain = false;
+        progress.outcome.durable_objects = durable_objects;
+        for identity in std::mem::take(&mut progress.obsolete_arenas)
+            .into_iter()
+            .flatten()
+        {
+            let name = index_io::arena_name(identity);
+            let name = std::str::from_utf8(&name).map_err(|_| StoreError::Incompatible)?;
+            let mut operation = index_io::Operation {
+                original: Some(original),
+                boundary,
+            };
+            operation.remove_name(&backend.admin, name)?;
+            operation.sync_directory(&backend.admin)?;
+        }
+        progress.outcome.index_reclamation_pending = false;
         Ok(())
     })();
     // This checked entry returns the complete uncertain result immediately.
@@ -398,7 +490,7 @@ fn publish_index(
     record_cleanup(work, cleanup, progress)
 }
 
-fn record_cleanup(
+pub(super) fn record_cleanup(
     work: Result<(), StoreError>,
     cleanup: Result<(), StoreError>,
     progress: &mut Progress,

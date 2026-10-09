@@ -55,7 +55,7 @@ pub mod conformance;
 
 pub use admin::{
     BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
-    DeleteBatchReceipt, InventoryGeneration, InventorySummaryReceipt, PhysicalStorageIdentity,
+    CheckedInventoryFence, DeleteBatchReceipt, InventoryGeneration, InventorySummaryReceipt, PhysicalStorageIdentity,
     PlannedDeleteDisposition, RefInventoryFence, RefInventoryGeneration, RefInventoryRecord,
     RefInventorySummary, RefPublicationGuard, RefStoreAdmin,
 };

@@ -134,7 +134,7 @@ fn authenticate_manifest(
     }
     let count = usize::try_from(cursor.u32()?).map_err(|_| StoreError::Quota)?;
     let length = usize::try_from(cursor.u32()?).map_err(|_| StoreError::Quota)?;
-    if count == 0 || count > MAX_PACK_ENTRIES || length as u64 > MAX_INDEX_BYTES {
+    if count == 0 || count > MAX_PACK_ENTRIES || length as u64 > MAX_PACK_MANIFEST_BYTES {
         return Err(StoreError::Incompatible);
     }
     let _credit = original

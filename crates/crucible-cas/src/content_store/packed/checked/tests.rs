@@ -230,7 +230,12 @@ fn distinct_caller_cannot_hide_source_poison_before_actual_read() {
 fn checksum_failure_keeps_existing_manifest_error_order() {
     let fixture = Fixture::new(b"manifest failure before logical byte authentication").unwrap();
     let index = fixture.backend.load_index().unwrap();
-    let entry = index.entries.get(&fixture.id).unwrap();
+    let entry = index
+        .find(&fixture.backend, fixture.id, &fixture.original, &mut || {
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
     let path = fixture.backend.pack_path(entry.pack);
     let file = OpenOptions::new().write(true).open(path).unwrap();
     file.write_at(&[0xff], (PACK_MAGIC.len() + 32 + 4 + 4) as u64)
@@ -252,7 +257,7 @@ fn checksum_failure_keeps_existing_manifest_error_order() {
 }
 
 #[test]
-fn checked_publication_restarts_retries_and_keeps_exact_v1_index_bytes() {
+fn checked_publication_restarts_retries_and_keeps_exact_bounded_root_bytes() {
     let fixture = Fixture::new(b"prior durable object").unwrap();
     let baseline = fixture.quota.resources.usage().unwrap();
     let bytes = vec![0x63; 192 * 1024];
@@ -271,14 +276,23 @@ fn checked_publication_restarts_retries_and_keeps_exact_v1_index_bytes() {
             Ok(())
         })
         .unwrap();
-    let mut expected = old;
-    expected.entries.insert(id, entry);
-    expected.generation += 1;
-    expected.last_repack_plan = None;
-    assert_eq!(
-        encoded.bytes(),
-        encode_index(&expected, fixture.backend.configuration).unwrap()
-    );
+    let mut operation = index_io::Operation {
+        original: Some(&fixture.original),
+        boundary: &mut || Ok(()),
+    };
+    let expected = maintenance::replacement(
+        &fixture.backend,
+        &old,
+        &[(id, entry)],
+        entry.offset + entry.length,
+        &mut operation,
+        &mut checked_publication::Progress::default(),
+    )
+    .unwrap();
+    assert_eq!(encoded.bytes(), expected.bytes());
+    assert_eq!(encoded.header.count, old.header.count + 1);
+    assert_eq!(encoded.header.generation, old.header.generation + 1);
+    drop(expected);
     drop(encoded);
     drop(snapshot);
 
@@ -315,12 +329,15 @@ fn checked_publication_restarts_retries_and_keeps_exact_v1_index_bytes() {
         &bytes
     );
     drop(handle);
-    let generation = restarted.load_index().unwrap().generation;
+    let generation = restarted.load_index().unwrap().header.generation;
     let retry = restarted
         .put_many_if_absent_with_boundary(&fixture.original, &[(id, source)], &mut || Ok(()))
         .unwrap();
     assert_eq!(retry.len(), 1);
-    assert_eq!(restarted.load_index().unwrap().generation, generation);
+    assert_eq!(
+        restarted.load_index().unwrap().header.generation,
+        generation
+    );
 }
 
 #[test]
@@ -401,7 +418,7 @@ fn checked_publication_retains_pack_visibility_and_exact_callback_refusal_before
         .put_many_if_absent_with_boundary(&fixture.original, &[(id, input)], &mut || Ok(()))
         .unwrap();
     assert_eq!(retry.len(), 1);
-    assert_eq!(fixture.backend.load_index().unwrap().entries.len(), 2);
+    assert_eq!(fixture.backend.load_index().unwrap().header.count, 2);
 }
 
 #[test]
@@ -416,10 +433,10 @@ fn checked_publication_keeps_original_poison_and_index_uncertainty_after_rename(
             &[(id, BlobHandle::from_bytes(bytes.to_vec()))],
             &mut || {
                 let bytes = fs::read(fixture.backend.index_path()).unwrap();
-                if decode_index(&bytes, fixture.backend.configuration)
+                if index_format::Header::decode(&bytes, fixture.backend.configuration)
                     .unwrap()
-                    .entries
-                    .contains_key(&id)
+                    .count
+                    == 2
                 {
                     fixture.quota.closed.store(true, Ordering::SeqCst);
                     // Preserve the actual same-guard refusal as the original's
@@ -489,7 +506,7 @@ fn checked_publication_does_not_open_an_opaque_raw_source() {
         StoreError::Unsupported { .. }
     ));
     assert_eq!(opens.load(Ordering::SeqCst), 0);
-    assert_eq!(fixture.backend.load_index().unwrap().entries.len(), 1);
+    assert_eq!(fixture.backend.load_index().unwrap().header.count, 1);
     assert_eq!(fs::read_dir(&fixture.backend.packs).unwrap().count(), 1);
     assert_eq!(fixture.quota.resources.usage().unwrap().0, 0);
 }
@@ -692,8 +709,9 @@ fn checked_publication_projects_actual_cleanup_when_completed_work_has_no_failur
             .backend
             .load_index()
             .unwrap()
-            .entries
-            .contains_key(&id)
+            .find(&fixture.backend, id, &fixture.original, &mut || Ok(()))
+            .unwrap()
+            .is_some()
     );
     assert_eq!(fixture.quota.resources.usage().unwrap().0, 0);
     drop(error);
@@ -770,7 +788,12 @@ fn final_pin_boundary_refusal_closes_real_file_before_same_original_descriptor_r
     // charged loan; it does not establish native project quota or System-free.
     let fixture = Fixture::new(b"physical pin close witness").unwrap();
     let index = fixture.backend.load_index().unwrap();
-    let entry = *index.entries.get(&fixture.id).unwrap();
+    let entry = index
+        .find(&fixture.backend, fixture.id, &fixture.original, &mut || {
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
     let target = fixture.backend.pack_path(entry.pack);
     let resources = Arc::new(FixtureResourceBudget::new(DESCRIPTORS, RESIDENT_BYTES));
     let probe = Arc::new(DescriptorCloseProbe::default());
@@ -844,4 +867,369 @@ fn final_pin_boundary_refusal_closes_real_file_before_same_original_descriptor_r
         assert_eq!(resources.usage().unwrap(), baseline);
         original.verify_live().unwrap();
     }
+}
+
+struct CountedCheckedSource {
+    inner: BlobHandle,
+    opens: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl BlobSource for CountedCheckedSource {
+    fn logical_length(&self) -> u64 {
+        self.inner.logical_length()
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "counted-source-requires-original",
+        })
+    }
+
+    fn open_with_boundary(
+        &self,
+        original: &DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<crate::content_store::CheckedReader, StoreError> {
+        self.opens.fetch_add(1, Ordering::SeqCst);
+        BlobSource::open_with_boundary(&self.inner, original, boundary)
+    }
+}
+
+fn counted_input(bytes: &[u8]) -> (ContentId, BlobHandle, Arc<std::sync::atomic::AtomicUsize>) {
+    let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, bytes);
+    let opens = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let source = BlobHandle::new(CountedCheckedSource {
+        inner: BlobHandle::from_bytes(bytes.to_vec()),
+        opens: opens.clone(),
+    });
+    (id, source, opens)
+}
+
+#[test]
+fn grouped_publication_authenticates_each_input_once_and_restarts_one_pack() {
+    let fixture = Fixture::new(b"prior object").unwrap();
+    let baseline = fixture.quota.resources.usage().unwrap();
+    let mut objects = Vec::new();
+    let mut opens = Vec::new();
+    for ordinal in 0..64_u64 {
+        let mut bytes = [0x37; 512];
+        bytes[..8].copy_from_slice(&ordinal.to_be_bytes());
+        let (id, source, count) = counted_input(&bytes);
+        objects.push((id, source));
+        opens.push(count);
+    }
+    let receipts = fixture
+        .backend
+        .put_many_if_absent_with_boundary(&fixture.original, &objects, &mut || Ok(()))
+        .unwrap();
+    assert_eq!(receipts.len(), 64);
+    assert!(opens.iter().all(|count| count.load(Ordering::SeqCst) == 1));
+    assert_eq!(fixture.backend.accounting().unwrap().logical_objects(), 65);
+    assert_eq!(fixture.backend.accounting().unwrap().packs(), 2);
+    drop(receipts);
+    assert_eq!(fixture.quota.resources.usage().unwrap(), baseline);
+    let restarted = PackedBlobBackend::open(
+        "checked-packed",
+        fixture._root.path(),
+        MIN_TARGET_PACK_BYTES,
+    )
+    .unwrap();
+    for (id, _) in &objects {
+        let handle = restarted.read(*id, None).unwrap();
+        assert_eq!(handle.read_all(512).unwrap().len(), 512);
+    }
+}
+
+#[test]
+fn grouped_publication_compacts_only_authenticated_prefix_before_existing_input() {
+    let fixture = Fixture::new(b"prior object").unwrap();
+    let baseline = fixture.quota.resources.usage().unwrap();
+    let first = counted_input(&[0x64; 512]);
+    let existing = counted_input(b"prior object");
+    let last = counted_input(&[0x19; 512]);
+    let objects = [
+        (first.0, first.1),
+        (existing.0, existing.1),
+        (last.0, last.1),
+    ];
+    let receipts = fixture
+        .backend
+        .put_many_if_absent_with_boundary(&fixture.original, &objects, &mut || Ok(()))
+        .unwrap();
+    assert_eq!(receipts.len(), 3);
+    for count in [&first.2, &existing.2, &last.2] {
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+    assert_eq!(fixture.backend.accounting().unwrap().logical_objects(), 3);
+    assert_eq!(fixture.backend.accounting().unwrap().packs(), 3);
+    drop(receipts);
+    assert_eq!(fixture.quota.resources.usage().unwrap(), baseline);
+    PackedBlobBackend::open(
+        "checked-packed",
+        fixture._root.path(),
+        MIN_TARGET_PACK_BYTES,
+    )
+    .unwrap();
+}
+
+#[test]
+fn grouped_publication_first_source_error_precedes_later_declared_length_overflow() {
+    struct Oversized;
+
+    impl BlobSource for Oversized {
+        fn logical_length(&self) -> u64 {
+            u64::MAX
+        }
+
+        fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+            panic!("later input must not be opened after first source corruption")
+        }
+    }
+
+    let fixture = Fixture::new(b"prior object").unwrap();
+    let baseline = fixture.quota.resources.usage().unwrap();
+    let expected = ContentId::for_bytes(ObjectKind::RamExtent, 1, b"first expected content");
+    let (_, corrupt, opens) = counted_input(b"first wrong content");
+    let later = ContentId::for_bytes(ObjectKind::RamExtent, 1, b"later input");
+    let old_root = fs::read(fixture.backend.index_path()).unwrap();
+
+    let error = fixture
+        .backend
+        .put_many_if_absent_with_boundary(
+            &fixture.original,
+            &[(expected, corrupt), (later, BlobHandle::new(Oversized))],
+            &mut || Ok(()),
+        )
+        .err()
+        .unwrap();
+
+    assert!(matches!(error.original_failure(), StoreError::Corrupt { id } if *id == expected));
+    assert_eq!(opens.load(Ordering::SeqCst), 1);
+    assert_eq!(fs::read(fixture.backend.index_path()).unwrap(), old_root);
+    let StoreError::PackedScope { source } = &error else {
+        panic!("own scope")
+    };
+    assert_eq!(source.outcome().durable_objects, 0);
+    assert_eq!(source.cleanup_failures().count(), 0);
+    drop(error);
+    assert_eq!(fixture.quota.resources.usage().unwrap(), baseline);
+}
+
+#[test]
+fn grouped_publication_corrupt_existing_first_precedes_incoming_length_overflow() {
+    struct Oversized;
+
+    impl BlobSource for Oversized {
+        fn logical_length(&self) -> u64 {
+            u64::MAX
+        }
+
+        fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+            panic!("existing first object must authenticate before incoming source open")
+        }
+    }
+
+    let fixture = Fixture::new(b"existing first object").unwrap();
+    let entry = fixture
+        .backend
+        .load_index()
+        .unwrap()
+        .find(&fixture.backend, fixture.id, &fixture.original, &mut || {
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    let file = OpenOptions::new()
+        .write(true)
+        .open(fixture.backend.pack_path(entry.pack))
+        .unwrap();
+    file.write_all_at(&[0xff], entry.offset).unwrap();
+    drop(file);
+    let later = counted_input(b"later distinct input");
+    let baseline = fixture.quota.resources.usage().unwrap();
+    let old_root = fs::read(fixture.backend.index_path()).unwrap();
+
+    let error = fixture
+        .backend
+        .put_many_if_absent_with_boundary(
+            &fixture.original,
+            &[(fixture.id, BlobHandle::new(Oversized)), (later.0, later.1)],
+            &mut || Ok(()),
+        )
+        .err()
+        .unwrap();
+
+    assert!(matches!(error.original_failure(), StoreError::Corrupt { id } if *id == fixture.id));
+    assert_eq!(later.2.load(Ordering::SeqCst), 0);
+    assert_eq!(fs::read(fixture.backend.index_path()).unwrap(), old_root);
+    let StoreError::PackedScope { source } = &error else {
+        panic!("own scope")
+    };
+    assert_eq!(source.outcome().durable_objects, 0);
+    assert_eq!(source.cleanup_failures().count(), 0);
+    drop(error);
+    assert_eq!(fixture.quota.resources.usage().unwrap(), baseline);
+}
+
+#[test]
+fn grouped_publication_first_corrupt_source_precedes_later_damaged_placement() {
+    use super::super::index_format::{self as wire, Key, Node, PageReference, Value};
+    use super::super::index_io::Operation;
+    let fixture = Fixture::new(b"prior object").unwrap();
+    let object = |ordinal: u64| {
+        let mut digest = [0; 32];
+        digest[24..].copy_from_slice(&ordinal.to_be_bytes());
+        ContentId {
+            kind: ObjectKind::RamExtent,
+            schema_version: 1,
+            digest,
+        }
+    };
+    {
+        let mut operation = Operation {
+            original: Some(&fixture.original),
+            boundary: &mut || Ok(()),
+        };
+        let mut builder =
+            super::super::index_build::Builder::new(wire::Header::empty([19; 32]), &operation)
+                .unwrap();
+        for ordinal in 0..200 {
+            builder
+                .push(
+                    &fixture.backend,
+                    Key::object(object(ordinal)),
+                    Value::object(IndexEntry {
+                        pack: PackId([7; 32]),
+                        offset: ordinal,
+                        length: 1,
+                    }),
+                    &mut operation,
+                )
+                .unwrap();
+        }
+        builder
+            .push(
+                &fixture.backend,
+                Key::pack(PackId([7; 32])),
+                Value::pack(wire::PackRecord {
+                    physical_bytes: 256,
+                    objects: 200,
+                    logical_bytes: 200,
+                }),
+                &mut operation,
+            )
+            .unwrap();
+        let terminal = builder.terminate(&fixture.backend, &mut operation, Ok(()));
+        terminal.cleanup.unwrap();
+        let root = terminal.result.unwrap();
+        fixture.backend.publish_index(&root).unwrap();
+        let index = root.snapshot();
+        let arena = index.header.arena.unwrap();
+        let name = super::super::index_io::arena_name(arena);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(
+                fixture
+                    .backend
+                    .admin
+                    .join(std::str::from_utf8(&name).unwrap()),
+            )
+            .unwrap();
+        let mut reference = PageReference::decode(index.body()).unwrap();
+        while reference.height != 0 {
+            let mut bytes = vec![0; reference.length as usize];
+            file.read_exact_at(&mut bytes, reference.offset).unwrap();
+            reference = Node::parse(&bytes, true).unwrap().child(0).unwrap();
+        }
+        file.write_all_at(&[0xff], reference.offset).unwrap();
+        drop(file);
+        drop(index);
+    }
+    let old_root = fs::read(fixture.backend.index_path()).unwrap();
+    let baseline = fixture.quota.resources.usage().unwrap();
+    let expected = ContentId::for_bytes(ObjectKind::RamExtent, 1, b"expected first bytes");
+    let (_, corrupt, first_opens) = counted_input(b"wrong first bytes");
+    let (_, later, later_opens) = counted_input(b"unused later bytes");
+    let error = fixture
+        .backend
+        .put_many_if_absent_with_boundary(
+            &fixture.original,
+            &[(expected, corrupt), (object(0), later)],
+            &mut || Ok(()),
+        )
+        .err()
+        .unwrap();
+    assert!(matches!(error.original_failure(), StoreError::Corrupt { id } if *id == expected));
+    assert_eq!(first_opens.load(Ordering::SeqCst), 1);
+    assert_eq!(later_opens.load(Ordering::SeqCst), 0);
+    assert_eq!(fs::read(fixture.backend.index_path()).unwrap(), old_root);
+    let StoreError::PackedScope { source } = &error else {
+        panic!("own scope")
+    };
+    assert_eq!(source.outcome().durable_objects, 0);
+    assert_eq!(source.cleanup_failures().count(), 0);
+    drop(error);
+    assert_eq!(fixture.quota.resources.usage().unwrap(), baseline);
+}
+
+#[test]
+fn root_staging_cleanup_failure_preserves_confirmed_durable_input_count() {
+    let fixture = Fixture::new(b"prior object").unwrap();
+    let bytes = b"root synced before its old staging-name cleanup";
+    let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, bytes);
+    let old_root = fs::read(fixture.backend.index_path()).unwrap();
+    let mut stage = None;
+    let mut replaced = false;
+    let error = fixture
+        .backend
+        .put_many_if_absent_with_boundary(
+            &fixture.original,
+            &[(id, BlobHandle::from_bytes(bytes.to_vec()))],
+            &mut || {
+                if stage.is_none() {
+                    stage = fs::read_dir(&fixture.backend.admin)
+                        .unwrap()
+                        .filter_map(Result::ok)
+                        .find(|entry| {
+                            entry
+                                .file_name()
+                                .to_string_lossy()
+                                .starts_with(".index.tmp-")
+                        })
+                        .map(|entry| entry.path());
+                }
+                if !replaced && fs::read(fixture.backend.index_path()).unwrap() != old_root {
+                    fs::create_dir(stage.as_ref().unwrap()).unwrap();
+                    replaced = true;
+                }
+                Ok(())
+            },
+        )
+        .err()
+        .unwrap();
+    let StoreError::PackedScope { source } = &error else {
+        panic!("retain cleanup")
+    };
+    assert!(source.first_boundary().is_none());
+    assert!(source.work_failure().is_none());
+    assert_eq!(source.outcome().durable_objects, 1);
+    assert!(!source.outcome().index_visibility_uncertain);
+    assert!(source.outcome().staging_cleanup_pending);
+    assert_eq!(source.cleanup_failures().count(), 1);
+    assert!(
+        matches!(source.cleanup_failure(), Some(StoreError::StreamIo { source, .. })
+        if source.kind() == io::ErrorKind::IsADirectory)
+    );
+    assert!(
+        fixture
+            .backend
+            .load_index()
+            .unwrap()
+            .find(&fixture.backend, id, &fixture.original, &mut || Ok(()))
+            .unwrap()
+            .is_some()
+    );
+    drop(error);
+    fs::remove_dir(stage.unwrap()).unwrap();
 }

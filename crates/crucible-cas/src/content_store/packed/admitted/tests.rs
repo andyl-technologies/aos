@@ -63,12 +63,12 @@ fn fresh_checked_startup_writes_exact_existing_empty_index_and_retains_only_cons
     let quota = Quota::new(8, 4 * 1024 * 1024);
     let admitted = open("managed", &root, MIN_TARGET_PACK_BYTES, quota.clone(), 24).unwrap();
     let index = admitted.backend.load_index().unwrap();
-    assert!(index.entries.is_empty());
-    assert_eq!(index.generation, 0);
-    assert!(index.last_repack_plan.is_none());
+    assert_eq!(index.header.count, 0);
+    assert_eq!(index.header.generation, 0);
+    assert!(index.header.last_repack_plan.is_none());
     assert_eq!(
         fs::read(admitted.backend.index_path()).unwrap(),
-        encode_index(&index, admitted.backend.configuration).unwrap()
+        index.encoded_bytes()
     );
     let (_, bytes) = quota.resources.usage().unwrap();
     let retained = std::mem::size_of::<BackendAllocation>() as u64
@@ -171,7 +171,7 @@ fn restart_authenticates_one_distinct_pack_once_before_all_index_reference_check
     // small sources into the existing target's single deterministic group.
     let plan = backend.plan_repack().unwrap();
     backend.apply_repack(&plan).unwrap();
-    assert_eq!(backend.load_index().unwrap().pack_ids().len(), 1);
+    assert_eq!(backend.load_index().unwrap().header.packs, 1);
     let quota = Quota::new(8, 4 * 1024 * 1024);
     let admitted = open(
         "managed",
@@ -184,7 +184,7 @@ fn restart_authenticates_one_distinct_pack_once_before_all_index_reference_check
     // Two locks, one index and its existing post-authentication admin sync,
     // then exactly one distinct pack are opened during this restart.
     assert_eq!(quota.descriptor_grants.load(Ordering::SeqCst), 5);
-    assert_eq!(admitted.backend.load_index().unwrap().entries.len(), 2);
+    assert_eq!(admitted.backend.load_index().unwrap().header.count, 2);
     drop(admitted);
     assert_eq!(quota.resources.usage().unwrap(), (0, 0));
 }
@@ -199,18 +199,39 @@ fn later_pack_authentication_still_precedes_earlier_index_mismatch() {
             .put_if_absent(id, &BlobHandle::from_bytes(bytes.to_vec()))
             .unwrap();
     }
-    let mut index = backend.load_index().unwrap();
-    let packs = index.pack_ids();
-    assert_eq!(packs.len(), 2);
-    let later_pack = *packs.last().unwrap();
-    for entry in index.entries.values_mut() {
-        entry.offset += 1;
+    let index = backend.load_index().unwrap();
+    let mut operation = index_io::Operation {
+        original: None,
+        boundary: &mut || Ok(()),
+    };
+    let reader = index.reader(&backend, &mut operation).unwrap();
+    let mut cursor = reader.cursor(&mut operation).unwrap();
+    let mut update = index_update::Update::new(&index, &backend, &mut operation).unwrap();
+    let mut later_pack = None;
+    let mut pack_count = 0;
+    while let Some((key, value)) = cursor.next(&mut operation).unwrap() {
+        if key.0[0] == 0 {
+            let mut entry = value.entry().unwrap();
+            entry.offset += 1;
+            update
+                .set(
+                    &backend,
+                    key,
+                    Some(index_format::Value::object(entry)),
+                    &mut operation,
+                )
+                .unwrap();
+        } else {
+            later_pack = Some(key.pack_id().unwrap());
+            pack_count += 1;
+        }
     }
-    fs::write(
-        backend.index_path(),
-        encode_index(&index, backend.configuration).unwrap(),
-    )
-    .unwrap();
+    assert_eq!(pack_count, 2);
+    drop(cursor);
+    drop(reader);
+    let later_pack = later_pack.unwrap();
+    let replacement = update.finish(&backend, &mut operation).unwrap();
+    fs::write(backend.index_path(), replacement.bytes()).unwrap();
     let path = backend.pack_path(later_pack);
     fs::remove_file(&path).unwrap();
     std::os::unix::fs::symlink("/dev/null", path).unwrap();

@@ -10,8 +10,10 @@
 use super::*;
 
 mod checked;
+mod checked_fence;
 pub(super) use checked::{CheckedReceipt, PreparedResources};
 pub use checked::{DeleteBatchReceipt, InventorySummaryReceipt};
+pub use checked_fence::CheckedInventoryFence;
 
 /// Exact digest of one stable physical blob inventory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -297,7 +299,7 @@ pub trait BlobStoreAdmin: Send + Sync {
     fn acquire_inventory_fence_with_boundary(
         &self,
         _boundary: &mut dyn FnMut() -> Result<(), StoreError>,
-    ) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
+    ) -> Result<CheckedInventoryFence<'_>, StoreError> {
         Err(StoreError::Unsupported {
             capability: "supervised-blob-inventory-fence",
         })

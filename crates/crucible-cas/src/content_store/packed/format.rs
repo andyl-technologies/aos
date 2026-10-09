@@ -1,174 +1,17 @@
-//! Canonical physical formats for the packed content-store leaf.
+//! Canonical immutable pack manifests and generation-bound maintenance plans.
 //!
-//! This module owns strict v1 pack manifests, durable index bodies, and
-//! generation-bound repack plans. All decoders reject trailing data and every
-//! checksum is domain-separated from logical [`ContentId`] identity.
+//! Packs retain their logical manifest grammar. Placement roots and pages are
+//! owned by `index_format`; no flat placement-map decoder remains here.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use super::{
-    ContentId, INDEX_CHECKSUM_DOMAIN, INDEX_DIGEST_DOMAIN, INDEX_MAGIC, IndexEntry, IndexState,
-    MAX_INDEX_BYTES, MAX_LOGICAL_OBJECTS, MAX_PACK_BYTES, MAX_PACK_ENTRIES, MAX_PACKS,
-    PACK_ID_DOMAIN, PACK_MAGIC, PACK_MANIFEST_DOMAIN, PackId, PackManifestEntry, PackedRepackPlan,
+    ContentId, MAX_PACK_BYTES, MAX_PACK_ENTRIES, MAX_PACK_MANIFEST_BYTES, PACK_ID_DOMAIN,
+    PACK_MAGIC, PACK_MANIFEST_DOMAIN, PackId, PackManifestEntry, PackedRepackPlan,
     PackedRepackPlanId, PackedStorageAccounting, REPACK_PLAN_CHECKSUM_DOMAIN,
     REPACK_PLAN_ID_DOMAIN, REPACK_PLAN_MAGIC, StoreError,
 };
-
-pub(super) fn encode_index(
-    index: &IndexState,
-    configuration: [u8; 32],
-) -> Result<Vec<u8>, StoreError> {
-    if index.entries.len() > MAX_LOGICAL_OBJECTS || index.pack_ids().len() > MAX_PACKS {
-        return Err(StoreError::Quota);
-    }
-    let entry_count = u32::try_from(index.entries.len()).map_err(|_| StoreError::Quota)?;
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(INDEX_MAGIC);
-    bytes.extend_from_slice(&configuration);
-    bytes.extend_from_slice(&index.instance);
-    bytes.extend_from_slice(&index.generation.to_be_bytes());
-    match index.last_repack_plan {
-        None => bytes.push(0),
-        Some(plan) => {
-            bytes.push(1);
-            bytes.extend_from_slice(&plan.0);
-        }
-    }
-    bytes.extend_from_slice(&entry_count.to_be_bytes());
-    for (id, entry) in &index.entries {
-        let id = id.to_string();
-        let id_length = u16::try_from(id.len()).map_err(|_| StoreError::Quota)?;
-        bytes.extend_from_slice(&id_length.to_be_bytes());
-        bytes.extend_from_slice(id.as_bytes());
-        bytes.extend_from_slice(&entry.pack.0);
-        bytes.extend_from_slice(&entry.offset.to_be_bytes());
-        bytes.extend_from_slice(&entry.length.to_be_bytes());
-    }
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(INDEX_CHECKSUM_DOMAIN);
-    hasher.update(&bytes);
-    bytes.extend_from_slice(hasher.finalize().as_bytes());
-    Ok(bytes)
-}
-
-pub(super) fn decode_index(
-    bytes: &[u8],
-    configuration: [u8; 32],
-) -> Result<IndexState, StoreError> {
-    let fixed = INDEX_MAGIC.len() + 32 + 32 + 8 + 1 + 4 + 32;
-    if bytes.len() < fixed || bytes.len() as u64 > MAX_INDEX_BYTES {
-        return Err(StoreError::Incompatible);
-    }
-    let checksum_offset = bytes.len() - 32;
-    let (payload, checksum) = bytes.split_at(checksum_offset);
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(INDEX_CHECKSUM_DOMAIN);
-    hasher.update(payload);
-    if hasher.finalize().as_bytes() != checksum {
-        return Err(StoreError::Incompatible);
-    }
-    let mut entries = BTreeMap::new();
-    let header = scan_index_payload(payload, configuration, &mut || Ok(()), &mut |id, entry| {
-        entries.insert(id, entry);
-        Ok(())
-    })?;
-    if entries
-        .values()
-        .map(|entry| entry.pack)
-        .collect::<BTreeSet<_>>()
-        .len()
-        > MAX_PACKS
-    {
-        return Err(StoreError::Quota);
-    }
-    Ok(IndexState {
-        instance: header.instance,
-        generation: header.generation,
-        last_repack_plan: header.last_repack_plan,
-        entries,
-    })
-}
-
-/// Borrowed canonical grammar, shared by ordinary decoding and checked snapshots.
-pub(super) struct IndexHeader {
-    pub(super) instance: [u8; 32],
-    pub(super) generation: u64,
-    pub(super) last_repack_plan: Option<PackedRepackPlanId>,
-    pub(super) count: usize,
-}
-
-pub(super) fn scan_index_payload(
-    payload: &[u8],
-    configuration: [u8; 32],
-    check: &mut impl FnMut() -> Result<(), StoreError>,
-    visit: &mut impl FnMut(ContentId, IndexEntry) -> Result<(), StoreError>,
-) -> Result<IndexHeader, StoreError> {
-    let mut cursor = PackedCursor::new(payload);
-    if cursor.fixed(INDEX_MAGIC.len())? != INDEX_MAGIC || cursor.array_32()? != configuration {
-        return Err(StoreError::Incompatible);
-    }
-    let instance = cursor.array_32()?;
-    let generation = cursor.u64()?;
-    let last_repack_plan = match cursor.u8()? {
-        0 => None,
-        1 => Some(PackedRepackPlanId(cursor.array_32()?)),
-        _ => return Err(StoreError::Incompatible),
-    };
-    let count = usize::try_from(cursor.u32()?).map_err(|_| StoreError::Quota)?;
-    if count > MAX_LOGICAL_OBJECTS {
-        return Err(StoreError::Quota);
-    }
-    let mut prior = None;
-    let mut checked_position = cursor.position;
-    for _ in 0..count {
-        if cursor.position - checked_position >= 64 * 1024 {
-            check()?;
-            checked_position = cursor.position;
-        }
-        let id_length = usize::from(cursor.u16()?);
-        let id = std::str::from_utf8(cursor.fixed(id_length)?)
-            .map_err(|_| StoreError::Incompatible)
-            .and_then(|id| ContentId::parse(id).map_err(|_| StoreError::Incompatible))?;
-        let entry = IndexEntry {
-            pack: PackId(cursor.array_32()?),
-            offset: cursor.u64()?,
-            length: cursor.u64()?,
-        };
-        if prior.is_some_and(|prior| id <= prior) {
-            return Err(StoreError::Incompatible);
-        }
-        prior = Some(id);
-        visit(id, entry)?;
-    }
-    if !cursor.is_empty() {
-        return Err(StoreError::Incompatible);
-    }
-    // A unique pack count cannot exceed this admitted logical row count.
-    // Both bounds are currently equal; retain the relation explicitly.
-    if count > MAX_PACKS {
-        return Err(StoreError::Quota);
-    }
-    check()?;
-    Ok(IndexHeader {
-        instance,
-        generation,
-        last_repack_plan,
-        count,
-    })
-}
-
-pub(super) fn packed_index_digest(
-    index: &IndexState,
-    configuration: [u8; 32],
-) -> Result<[u8; 32], StoreError> {
-    let bytes = encode_index(index, configuration)?;
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(INDEX_DIGEST_DOMAIN);
-    hasher.update(&bytes);
-    Ok(*hasher.finalize().as_bytes())
-}
 
 pub(super) fn new_repack_plan(
     configuration: [u8; 32],
@@ -251,12 +94,11 @@ pub(super) fn decode_repack_plan(bytes: &[u8]) -> Result<PackedRepackPlan, Store
 }
 
 fn validate_repack_accounting(accounting: PackedStorageAccounting) -> Result<(), StoreError> {
-    let maximum_physical_bytes = (MAX_PACKS as u64)
+    let maximum_physical_bytes = accounting
+        .packs
         .checked_mul(MAX_PACK_BYTES)
         .ok_or(StoreError::Quota)?;
-    if accounting.logical_objects > MAX_LOGICAL_OBJECTS as u64
-        || accounting.packs > MAX_PACKS as u64
-        || accounting.packs > accounting.logical_objects
+    if accounting.packs > accounting.logical_objects
         || accounting.logical_bytes > accounting.physical_bytes
         || accounting.physical_bytes > maximum_physical_bytes
         || (accounting.logical_objects != 0 && accounting.packs == 0)
@@ -350,7 +192,7 @@ pub(super) fn read_pack_header(
     let manifest_length = usize::try_from(cursor.u32()?).map_err(|_| StoreError::Quota)?;
     if count == 0
         || count > MAX_PACK_ENTRIES
-        || u64::try_from(manifest_length).map_err(|_| StoreError::Quota)? > MAX_INDEX_BYTES
+        || u64::try_from(manifest_length).map_err(|_| StoreError::Quota)? > MAX_PACK_MANIFEST_BYTES
     {
         return Err(StoreError::Incompatible);
     }
@@ -470,13 +312,6 @@ impl<'a> PackedCursor<'a> {
         self.fixed(32)?
             .try_into()
             .map_err(|_| StoreError::Incompatible)
-    }
-
-    pub(super) fn u8(&mut self) -> Result<u8, StoreError> {
-        self.fixed(1)?
-            .first()
-            .copied()
-            .ok_or(StoreError::Incompatible)
     }
 
     pub(super) fn u16(&mut self) -> Result<u16, StoreError> {
