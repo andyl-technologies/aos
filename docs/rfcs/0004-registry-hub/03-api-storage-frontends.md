@@ -86,7 +86,7 @@ upload.
 
 **Shared buckets work cleanly** because everything that matters is
 per-object: `Cache-Control`/`Content-Type` are set per uploaded file
-(`crates/aos/packages/aos-package-manager/src/registry/static_upload.rs`), and consumption
+(`crates/aos/registry/aos-registry-authoring/src/registry/static_upload.rs`), and consumption
 is pure GETs — `apm`, stock git, and Nix never call a listing API.
 Credential scoping per prefix: STS session policies on AWS S3; on R2,
 **permanent API tokens are bucket-scoped only, but the temporary-
@@ -146,7 +146,7 @@ the cache surface**: the committed `registry.toml` already carries
 `[[caches]]` entries with `url` + `priority`, and the client merges
 them with client-side entries and sorts by priority descending
 (`resolve_mirrors_for_registry` in
-`crates/aos/packages/aos-package-manager/src/registry_ops.rs`; `RegistryRootConfig` /
+`crates/aos/registry/aos-registry-client/src/registry/mirrors.rs`; `RegistryRootConfig` /
 `CacheEntry` in `types.rs`). Each frontend with
 `surfaces.cache && advertised.in_caches` becomes one `[[caches]]` row.
 Because `registry.toml` is signed tree content, the hub cannot silently

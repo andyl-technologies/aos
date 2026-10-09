@@ -132,7 +132,7 @@ has been extracted into reusable code:
   `parse` / `format` helpers.
 - `crates/shared/aos-nar/src/cache.rs` defines `render_static_narinfo`,
   `nix_cache_info`, `nar_url`, and `NarInfoSigner`.
-- `crates/aos/packages/aos-package-manager/src/registry/nixcache.rs` implements `apr cache generate`:
+- `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs` implements `apr cache generate`:
   it walks registry store paths, dumps/compresses NARs, computes `FileHash` /
   `FileSize`, writes signed `.narinfo` files and `nix-cache-info`, optionally
   uploads them to one or more repeatable `--upload-url` destinations, and can
@@ -279,7 +279,7 @@ below is reusable as-is.
   (`types.rs:564-570`).
 - `resolve_mirrors` reads the caches and sorts them **descending by priority**
   (higher first), returning `Vec<CacheEntry>`
-  (`crates/aos/packages/aos-package-manager/src/registry_ops.rs:405-414`).
+  (`crates/aos/registry/aos-registry-client/src/registry/mirrors.rs:405-414`).
 - `resolve_mirror` picks the first (highest-priority) cache, else falls back to
   the registry URL itself (`crates/aos/packages/aos-package-manager/src/download.rs:85-97`).
 
@@ -445,7 +445,7 @@ narinfo References:    r4q1m2kp8v3x…-glibc-2.39  xr5is7by89v3q…-zlib-1.3.1
 > **Note for the git-metadata layer:** the *git registry* stores
 > dependency edges as **bare store-path hashes** in the `store/` realisation
 > graph (`ia:sha256:<store-hash>` lines, RFC-0005;
-> `crates/aos/packages/aos-package-manager/src/registry/store.rs`). That bare-hash form lives in the
+> `crates/aos/registry/aos-registry-client/src/registry/store.rs`). That bare-hash form lives in the
 > git tree and is consumed by `apm`'s closure walk; it is **independent** of the
 > narinfo-layer `References`, which the producer writes as basenames from the
 > store DB into the static narinfo. The two layers are decoupled (§1) — no

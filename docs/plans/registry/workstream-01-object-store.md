@@ -246,7 +246,7 @@ content.
 ## 4. Implementation steps
 
 The work decomposes into a small set of object-store primitives, packaged as a
-new module `crates/aos/packages/aos-package-manager/src/registry/objectstore.rs` plus targeted edits
+new module `crates/aos/registry/aos-registry-client/src/registry/objectstore.rs` plus targeted edits
 to existing init/commit paths.
 
 ### Step 1 — sha256 bare-repo init
@@ -477,8 +477,8 @@ A scripted test (CI check, analogous to `nix-build -A checks.eval`):
 
 ### 7.1 New module
 
-**New module** `crates/aos/packages/aos-package-manager/src/registry/objectstore.rs` (registered in
-`crates/aos/packages/aos-package-manager/src/registry/mod.rs` alongside the existing `bundle`,
+**New module** `crates/aos/registry/aos-registry-client/src/registry/objectstore.rs` (registered in
+`crates/aos/registry/aos-registry-client/src/registry/mod.rs` alongside the existing `bundle`,
 `git`, `state`, `closures`, `parse` submodules). It owns the following functions
 (real types — `&Path`, `semver::Version`, `anyhow::Result`):
 

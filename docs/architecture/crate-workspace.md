@@ -5,6 +5,10 @@ projects such as Hub and Crucible. A package's full name identifies its ownershi
 and purpose without requiring its filesystem path. Directories group packages for
 readers; they do not introduce Cargo namespaces.
 
+The [active inventory](crate-inventory.md) records implemented ownership;
+the [validation record](crate-migration-validation.md) distinguishes completed
+local checks, baseline failures, and unresolved qualification.
+
 ## Naming and ownership
 
 - `aos-<capability>` names a reusable ecosystem library, such as `aos-nar`,

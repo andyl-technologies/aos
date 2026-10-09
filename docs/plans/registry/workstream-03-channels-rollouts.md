@@ -495,7 +495,7 @@ to `1.2.0`.
 ### Phase B — consumer bucket + resolution
 
 All consumer-side code lands in a new module
-`crates/aos/packages/aos-package-manager/src/registry/channel.rs` (sibling to `state.rs`/`bundle.rs`,
+`crates/aos/registry/aos-registry-client/src/registry/channel.rs` (sibling to `state.rs`/`bundle.rs`,
 registered in `registry/mod.rs` alongside the existing `pub mod state;`).
 
 - [ ] **B1.** Implement bucket selection from the low byte of `sha256(machine_id)`
@@ -549,7 +549,7 @@ registered in `registry/mod.rs` alongside the existing `pub mod state;`).
 
 ### Phase C — producer rollout control
 
-Producer-side code lands in `crates/aos/packages/aos-package-manager/src/registry_ops.rs` (where the
+Producer-side code lands in `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs` (where the
 existing `apr tag`/`apr bundle`/`apr sign` live at `registry_ops.rs:1684`/`:1706`/`:1747`)
 plus a frontier helper. The shared git wrappers `git` (`registry_ops.rs:79`) and
 the allow-fail `git_try` (`registry_ops.rs:96`, returns `(bool, String, String)`)

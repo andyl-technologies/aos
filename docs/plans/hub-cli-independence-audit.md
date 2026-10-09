@@ -41,9 +41,9 @@ The following tests exercise the no-Hub data path:
 
 - `fixture_syncs_git_native_registry_over_static_http` synchronizes and reads a
   package from a static HTTP Git origin
-  (`crates/aos/packages/aos-package-manager/tests/registry_e2e.rs:469`).
+  (`crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs:469`).
 - `signed_channel_http_e2e_advances_persisted_bucket` follows a signed channel
-  over static HTTP (`crates/aos/packages/aos-package-manager/tests/registry_e2e.rs:960`).
+  over static HTTP (`crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs:960`).
 - `apr_cache_generate_cli_supports_apm_install_upgrade_and_execution` runs an
   author-to-consumer CLI flow through a static HTTP origin and cache
   (`crates/aos/cli/aos-cli/tests/apr_cache_cli.rs:194`).
@@ -55,7 +55,7 @@ The following tests exercise the no-Hub data path:
 
 `apr` owns a local registry workspace and signed Git state. In particular,
 `apr channel init`, `advance`, and `status` operate on the selected registry
-checkout (`crates/aos/packages/aos-package-manager/src/registry_ops/channels.rs`). These commands do not
+checkout (`crates/aos/registry/aos-registry-authoring/src/registry_ops/channels.rs`). These commands do not
 need Hub control-plane state.
 
 Hub-authored change requests also cross a Git ref namespace. Reading and

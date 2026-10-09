@@ -6,7 +6,7 @@ installed operator commands.
 
 ## Scenario authoring
 
-[`crucible-e2e-determinism-scenario.rs`](../../../crates/crucible/control/crucible-control-api/examples/crucible-e2e-determinism-scenario.rs)
+[`crucible-e2e-determinism-scenario.rs`](../../../crates/crucible/control/crucible-daemon/examples/crucible-e2e-determinism-scenario.rs)
 builds the representative three-VM scenario used by the end-to-end determinism
 checks. It demonstrates canonical scenario construction, block and 9p objects,
 signal bindings, node restart policy, and quantified properties. The

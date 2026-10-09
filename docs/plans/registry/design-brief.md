@@ -75,7 +75,7 @@ as-built status, use
 [`TODO.md`](./TODO.md). At the time this brief was written:
 
 - A registry is a git repo of **nested** package TOMLs (`PackageToml` in
-  `crates/aos/packages/aos-package-manager/src/registry/parse.rs:14-70`, written by `build_package_toml`
+  `crates/aos/registry/aos-registry-client/src/registry/parse.rs:14-70`, written by `build_package_toml`
   `registry_ops.rs:595-781`) plus `closures/<hash>` adjacency files;
   `PackageMeta` (`types.rs:43-77`) is the flattened in-memory projection.
 - Distribution is via **git bundles** + a `bundle-list.toml` manifest the *consumer*

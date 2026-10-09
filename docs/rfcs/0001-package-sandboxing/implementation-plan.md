@@ -118,7 +118,7 @@ invent a field.
 
 - [x] **Capability gate (D19) — first.** Add a `min-format` / `requires-features`
       field to `PackageMeta` (`crates/aos/packages/aos-package-manager/src/types.rs`) and the registry
-      parser (`crates/aos/packages/aos-package-manager/src/registry/parse.rs`); permission-bearing
+      parser (`crates/aos/registry/aos-registry-client/src/registry/parse.rs`); permission-bearing
       entries carry the gate inside a structured `references` table so an apm
       predating the schema **fails closed** instead of silently dropping the
       privilege metadata. Land this *before* any `[permissions]`/`expose` package

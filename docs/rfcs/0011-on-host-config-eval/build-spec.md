@@ -1481,8 +1481,8 @@ at implementation depth. Each clause names the code it lands in.
 
 Grounding files:
 `modules/base/secure-boot.nix`, `modules/security/verity.nix`,
-`crates/aos/packages/aos-package-manager/src/security.rs`, `crates/aos/packages/aos-package-manager/src/verify.rs`,
-`crates/aos/packages/aos-package-manager/src/registry/verify.rs`,
+`crates/aos/registry/aos-registry-client/src/security.rs`, `crates/aos/packages/aos-package-manager/src/verify.rs`,
+`crates/aos/registry/aos-registry-client/src/registry/verify.rs`,
 `crates/aos/packages/aos-package-manager/src/credential_artifact.rs`,
 `crates/aos/packages/aos-package-manager/src/types.rs`,
 `lib/build/{rootfs.nix,package-root-image.nix}`,

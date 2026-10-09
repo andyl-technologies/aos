@@ -111,7 +111,7 @@ members = [
 
 A dedicated committed file holding the **active signing key(s)** and a **revoked
 list**, authenticated via the signed tag like everything else. Clients **consume
-it during sync** (`pin_rotated_keys`, `crates/aos/packages/aos-package-manager/src/registry/keys.rs`):
+it during sync** (`pin_rotated_keys`, `crates/aos/registry/aos-registry-client/src/registry/keys.rs`):
 it is the **authoritative trusted-key set** once the consumer is anchored. It does
 **not** bootstrap trust — initial trust is delivered **out-of-band**, either
 baked into the image (`aos.apm.registries` → `trusted-keys.d/<registry>.pub`) or
@@ -243,7 +243,7 @@ dependencies. The node is a Nix-style realisation, so the realisation graph
 *is* the closure graph - content addresses on the nodes, dependency CA pins
 on the edges - and consumers validate exact bytes against the signed tree
 instead of trusting cache-served narinfos
-(`crates/aos/packages/aos-package-manager/src/registry/store.rs`; design record:
+(`crates/aos/registry/aos-registry-client/src/registry/store.rs`; design record:
 [RFC-0005](../rfcs/0005-ca-trust-map.md)).
 
 One file per IA store path, named by the IA hash, sharded git-style

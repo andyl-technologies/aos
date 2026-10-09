@@ -561,7 +561,7 @@ permissions/config surface.
 
 **Current implementation.** Phase 0 extends `PackageMeta`
 (`crates/aos/packages/aos-package-manager/src/types.rs`) and the per-platform registry TOML parser
-(`crates/aos/packages/aos-package-manager/src/registry/parse.rs`) with `expose`, the signed
+(`crates/aos/registry/aos-registry-client/src/registry/parse.rs`) with `expose`, the signed
 `permissions` manifest, `expose_artifact`, `min-format`, and
 `requires-features`. Phase 1 renders the package-owned `pkg.expose` artifact
 and copies the manifest into that eval-free output.

@@ -229,7 +229,7 @@ break and are replaced by `#[test] fn resolve_partition_tag_probes_forward` /
   (`registry_ops.rs:1758`).
 - **Trust roster.** **Drop** `RegistrySigningConfig` and the `signing` field from
   `RegistryRootConfig` (`types.rs:564-570`, struct `types.rs:594-596`); add a new
-  `crates/aos/packages/aos-package-manager/src/registry/keys.rs` with
+  `crates/aos/registry/aos-registry-client/src/registry/keys.rs` with
   `#[derive(Deserialize)] pub struct TrustRoster { pub active: Vec<String>, #[serde(default)] pub revoked: Vec<String> }`
   (each entry the `name:Ed25519:<base64>` form parsed by `parse_signing_key`) and
   `pub fn load_keys_toml(repo: &Path) -> anyhow::Result<TrustRoster>` reading the

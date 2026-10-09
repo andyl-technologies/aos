@@ -393,7 +393,7 @@ uploaded (brief §4 TTL policy; workstream-01 for the index writes).
 ## 11. Implementation tasks
 
 New module replacing `bundle.rs`'s producer/transport role (suggested
-`crates/aos/packages/aos-package-manager/src/registry/pack.rs`):
+`crates/aos/registry/aos-registry-authoring/src/registry/pack.rs`):
 
 1. **Delete the bundle transport path.** Remove `BundleType` (`bundle.rs:22-31`),
    `BundleEntry` (`bundle.rs:33-45`), `BundleManifest` (`bundle.rs:47-53`),
@@ -453,7 +453,7 @@ New module replacing `bundle.rs`'s producer/transport role (suggested
      (`state.rs:276-443`) stay — they exercise `[registry.state]` round-tripping
      and the `[registry.signing] public_key` preservation, which both survive.
 2. **`full_pack` — the §6 `pack-objects --revs` wrapper.** New
-   `crates/aos/packages/aos-package-manager/src/registry/pack.rs`:
+   `crates/aos/registry/aos-registry-authoring/src/registry/pack.rs`:
 
    ```rust
    /// Generate a self-contained full pack over `release_commit` (§6).
@@ -634,7 +634,7 @@ New module replacing `bundle.rs`'s producer/transport role (suggested
   (the entire bundle surface),
   [`crates/aos/packages/aos-package-manager/src/update.rs`](../../../crates/aos/packages/aos-package-manager/src/update.rs)
   (`sync_bundle`/`pick_bundles`/`find_best_version_tag_in_manifest` consumers),
-  [`crates/aos/packages/aos-package-manager/src/registry/state.rs`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs)
+  [`crates/aos/registry/aos-registry-client/src/registry/state.rs`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs)
   (`check_monotonic`/`token_to_version` calendar-token logic),
-  [`crates/aos/packages/aos-package-manager/src/registry_ops.rs`](../../../crates/aos/packages/aos-package-manager/src/registry_ops.rs)
+  [`crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`](../../../crates/aos/registry/aos-registry-authoring/src/registry_ops.rs)
   (the `apr bundle` producer stub at `registry_ops.rs:1706-1744`).

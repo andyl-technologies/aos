@@ -1,7 +1,7 @@
 # Deploy the AOS Hub Worker
 
 Use the [AOS Hub Cloudflare deployment
-guide](../../../docs/users/aos-hub/cloudflare.md).
+guide](../../../../docs/users/aos-hub/cloudflare.md).
 
 The supported path is the `pkg-aos-hub-cloudflare` package and `aos-hub worker`
 installer. It deploys the bundled Worker artifact, creates the current R2, KV,

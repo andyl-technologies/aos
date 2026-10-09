@@ -541,7 +541,7 @@ to the `Release`/`CacheCommand` enums.
   bail (`nixcache.rs:119`) is retained for the standalone command but the
   release path checks `has_store_paths` first (§5.2) so it never reaches it.
 - New `CacheMembership` trait + `HeadMembership` impl (§7.3), in a new
-  `crates/aos/packages/aos-package-manager/src/registry/membership.rs`.
+  `crates/aos/registry/aos-registry-authoring/src/registry/membership.rs`.
 
 ### 11.3 `crates/aos/packages/aos-package-manager` — upload
 

@@ -59,7 +59,7 @@ On `PackageMeta` / registry root: a reference to the **active db cert set**
 and the **SBAT revocation floor** (minimum acceptable generation per
 component), modeled like the existing signing-key roster — `KeysToml` with
 `active: Vec<RosterKey>` / `revoked: Vec<RevokedKey>`
-(`crates/aos/packages/aos-package-manager/src/registry/keys.rs:58-67`, the `[[keys]]` / `[[revoked]]`
+(`crates/aos/registry/aos-registry-client/src/registry/keys.rs:58-67`, the `[[keys]]` / `[[revoked]]`
 file format) — so db-cert rotation reuses roster machinery that already
 exists. (Not to be confused with `SigningConfig` at `types.rs:765`, which is
 only the bootstrap anchor — `required` + `public_key` — or `signing_keys` at
@@ -67,7 +67,7 @@ only the bootstrap anchor — `required` + `public_key` — or `signing_keys` at
 
 ## `apr publish` — derive facts from the artifact
 
-`crates/aos/packages/aos-package-manager/src/registry_ops.rs` (the `--sysroot` path that already
+`crates/aos/registry/aos-registry-authoring/src/registry_ops.rs` (the `--sysroot` path that already
 records `[[images]]`). For each signed image, **extract the facts from the
 real binary** rather than trusting hand-entry:
 

@@ -156,7 +156,7 @@ rather than re-deriving it.
   verify narinfo `signatures:` — provenance comes from the signed tag, not
   per-NAR sigs.
 - `apr publish --sysroot` records `sysroot = true` + `[[images]]` entries
-  (`crates/aos/packages/aos-package-manager/src/registry_ops.rs`).
+  (`crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`).
 
 ## Existing docs to align with (not duplicate)
 

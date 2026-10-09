@@ -613,7 +613,7 @@ not only the primary protobuf and router:
 
 - `api/proto/aos/hub/v1/hub.proto`;
 - `crates/aos/packages/aos-build-api/build.rs` and `crates/hub/aos-hub-api/build.rs`;
-- the manual remote method/path map in `crates/aos/packages/aos-build-client/src/hub.rs`;
+- the manual remote method/path map in `crates/hub/aos-hub-client/src/hub.rs`;
 - native Connect route registration and its proto-coverage test;
 - RFC-0012 API and route-capability manifests;
 - the retained-control classification fixture and coverage test;

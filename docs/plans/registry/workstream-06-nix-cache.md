@@ -215,7 +215,7 @@ consumes a **dumb static** narinfo cache as-is:
   ([`download.rs:187`](../../../crates/aos/packages/aos-package-manager/src/download.rs)).
 - `resolve_mirror` ([`download.rs:85-97`](../../../crates/aos/packages/aos-package-manager/src/download.rs))
   picks the highest-priority `[[caches]]` entry via `resolve_mirrors`
-  ([`registry_ops.rs:404-410`](../../../crates/aos/packages/aos-package-manager/src/registry_ops.rs)),
+  ([`registry_ops.rs:404-410`](../../../crates/aos/registry/aos-registry-client/src/registry/mirrors.rs)),
   falling back to `{registry.url}`.
 
 This is a **static-cache consumer** — it issues plain GETs and needs **no running
@@ -345,7 +345,7 @@ narinfo/`nar` are immutable per store hash and **MAY** have very high TTL
 `apm`'s `resolve_mirror` reads `registry.toml` `[[caches]]` (sorted by
 `CacheEntry.priority`) and falls back to `{registry.url}` when the list is empty
 ([`download.rs:85-97`](../../../crates/aos/packages/aos-package-manager/src/download.rs),
-[`registry_ops.rs:404-410`](../../../crates/aos/packages/aos-package-manager/src/registry_ops.rs)). Commit
+[`registry_ops.rs:404-410`](../../../crates/aos/registry/aos-registry-authoring/src/registry_ops.rs)). Commit
 a `[[caches]]` entry pointing at `{cache-base}` (the static CDN prefix the generator
 uploaded to), so the consumer selects the AOS cache instead of falling back:
 
@@ -489,7 +489,7 @@ table marks each as **CURRENT(reusable)** (logic exists, reuse it), **TARGET(bui
 | Ed25519 fingerprint + `Sig:` ([`sign.rs:14-60`](../../../crates/aos/packages/aos-build-server/src/sign.rs), [`narinfo.rs:87-93`](../../../crates/aos/packages/aos-build-server/src/narinfo.rs)) | sign each static narinfo at publish with the one key; publish the nix-form pubkey (§3.2, §6.1) | sign logic reused; signing moves to generation time |
 | References basename-expansion ([`narinfo.rs:71-74`](../../../crates/aos/packages/aos-build-server/src/narinfo.rs)) | reused via `format_narinfo` so the signed fingerprint matches stock `nix` (§2.4) | producer must expand refs identically |
 | NAR URL scheme ([`narinfo.rs:37`](../../../crates/aos/packages/aos-build-server/src/narinfo.rs)); consumer follows it ([`download.rs:184`](../../../crates/aos/packages/aos-package-manager/src/download.rs)) | write `nar/<storehash>-<filehash>.nar.zst` under that exact name (§3.2) | narinfo `URL:` and the static file name must agree; the transferred bytes determine the immutable URL |
-| `resolve_mirror` / `resolve_mirrors` over `[[caches]]` ([`download.rs:85-97`](../../../crates/aos/packages/aos-package-manager/src/download.rs), [`registry_ops.rs:404-410`](../../../crates/aos/packages/aos-package-manager/src/registry_ops.rs)) | **commit a `[[caches]]`** entry pointing at `{cache-base}` (§4) | resolution exists (DONE); the registry needs the committed entry |
+| `resolve_mirror` / `resolve_mirrors` over `[[caches]]` ([`download.rs:85-97`](../../../crates/aos/packages/aos-package-manager/src/download.rs), [`registry_ops.rs:404-410`](../../../crates/aos/registry/aos-registry-client/src/registry/mirrors.rs)) | **commit a `[[caches]]`** entry pointing at `{cache-base}` (§4) | resolution exists (DONE); the registry needs the committed entry |
 | narinfo-driven consumer ([`download.rs`](../../../crates/aos/packages/aos-package-manager/src/download.rs), `7149acf6`) | — (DONE) | consumes the static cache as-is; no WS-06 work |
 
 ---

@@ -290,14 +290,14 @@ See [`signing-and-trust.md`](./signing-and-trust.md) and
 
 Both pin a per-source key. AOS pins a registry's Ed25519 public key in
 `name:Ed25519:<base64>` format (parsed by `parse_signing_key`,
-`crates/aos/packages/aos-package-manager/src/security.rs:575`) into `trusted-keys.d/<registry>.pub`.
+`crates/aos/registry/aos-registry-client/src/security.rs:575`) into `trusted-keys.d/<registry>.pub`.
 Where APT's `signed-by=` names a static keyring file, AOS goes further: the
 anchor is delivered **out-of-band** (baked into the image by `aos.apm.registries`,
 or `apr trust pin` — no silent trust-on-first-use), and from it the committed
 `keys.toml` roster lets the trusted set rotate **in-band** across multiple
 maintainer keys. Verification runs `git verify-tag` / `git verify-commit` against
 a temporary `allowed_signers` built from the whole trusted set
-(`crates/aos/packages/aos-package-manager/src/security.rs:455`,`:490`).
+(`crates/aos/registry/aos-registry-client/src/security.rs:455`,`:490`).
 
 ---
 
@@ -399,8 +399,8 @@ The **TARGET** is everything above. Today's **CURRENT** code has moved onto the
 git-native registry path:
 
 - A registry is a git repo of nested package TOMLs (`PackageToml`,
-  `crates/aos/packages/aos-package-manager/src/registry/parse.rs:15`; written by `build_package_toml`,
-  `crates/aos/packages/aos-package-manager/src/registry_ops.rs:595`) plus the `store/` realisation graph
+  `crates/aos/registry/aos-registry-client/src/registry/parse.rs:15`; written by `build_package_toml`,
+  `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs:595`) plus the `store/` realisation graph
   files; `PackageMeta` (`crates/aos/packages/aos-package-manager/src/types.rs:44`) is the flattened
   in-memory projection.
 - HTTP and native git origins are synchronized by `registry::git::sync_git`;

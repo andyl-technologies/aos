@@ -28,7 +28,7 @@ registry" a first-class operation rather than a migration.
 Corollary: the hub displays *verified* state, never trusted state. The
 indexer performs the same checks an `apm` client performs — tag
 signature verification, name-binding, roster walks, anti-rollback
-floors (`crates/aos/packages/aos-package-manager/src/registry/verify.rs`,
+floors (`crates/aos/registry/aos-registry-client/src/registry/verify.rs`,
 `channel.rs`) — and surfaces verification failures as first-class
 health states rather than hiding them.
 

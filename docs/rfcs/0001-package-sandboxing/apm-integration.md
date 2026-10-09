@@ -157,7 +157,7 @@ separate store path.
 ### 2.2 `PackageMeta` additions
 
 These fields are implemented in `crates/aos/packages/aos-package-manager/src/types.rs` and
-`crates/aos/packages/aos-package-manager/src/registry/parse.rs`. All are `#[serde(default)]` so
+`crates/aos/registry/aos-registry-client/src/registry/parse.rs`. All are `#[serde(default)]` so
 existing registries parse unchanged.
 
 > **Fail-closed capability gate.**

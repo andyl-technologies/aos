@@ -78,7 +78,7 @@ already signs releases. **No** — that collapses SB's threat model:
 
 - The registry key is online-ish: it signs on every `apr publish`, lives near
   network-facing infrastructure, and rotates in-band via the signed roster
-  (`KeysToml` active/revoked, `crates/aos/packages/aos-package-manager/src/registry/keys.rs`).
+  (`KeysToml` active/revoked, `crates/aos/registry/aos-registry-client/src/registry/keys.rs`).
 - The db key's entire value is that compromising the network does **not**
   compromise boot — it's offline and the firmware roots trust in hardware.
 

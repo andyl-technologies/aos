@@ -617,7 +617,7 @@ rollout*").
 
 | Layer | Retired bundle model | Git-native model | Survives? |
 |---|---|---|---|
-| Package metadata | nested package TOMLs (`PackageToml`, `crates/aos/packages/aos-package-manager/src/registry/parse.rs:14`) + `closures/<hash>` adjacency | **same TOML tree content**, now living as git tree objects in a sha256 bare repo (brief §3, §8) | **Yes** (content), repackaged as git objects |
+| Package metadata | nested package TOMLs (`PackageToml`, `crates/aos/registry/aos-registry-client/src/registry/parse.rs:14`) + `closures/<hash>` adjacency | **same TOML tree content**, now living as git tree objects in a sha256 bare repo (brief §3, §8) | **Yes** (content), repackaged as git objects |
 | Root / manifest | `bundle-list.toml` manifest | **removed** — replaced by git refs + signed tag objects + relative `objects/info/alternates` (brief §15) | **No** |
 | Distribution unit | **git bundles** + `bundle-list.toml` | **removed** — full packs `pack-<sha256>.pack(.idx)` + thin `delta-<from>.pack.zst` over dumb HTTP (brief §9, §10, §15) | **No** |
 | Versioning / ordering | **calendar tags** `vYYYY.MM[.P]` ordered by `creation_token` | **standard semver, no `v`**; ordering by semver + git ancestry (brief §7, §15) | **No** |

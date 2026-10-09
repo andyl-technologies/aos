@@ -98,7 +98,7 @@ The previous `aos release` command is removed without an alias.
 **CURRENT.** `apr` is an independent registry-authoring executable with its own
 parser. It shares producer libraries with `apm` and `aos`, but neither expands
 nor dispatches through another command surface. All producer logic lives in
-[`crates/aos/packages/aos-package-manager/src/registry_ops.rs`](../../crates/aos/packages/aos-package-manager/src/registry_ops.rs).
+[`crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`](../../crates/aos/registry/aos-registry-authoring/src/registry_ops.rs).
 Today's tool operates on a *nested-TOML* registry (`packages/<x>/<name>.toml`)
 plus the `store/` realisation graph (RFC-0005). The sha256 object-store scaffolding, signed release tags,
 channel partition commands, `update-server-info`, root `objects/info/alternates`
@@ -113,7 +113,7 @@ invocation does and stops immediately before the first change, so it fails on
 the same preconditions rather than reporting a plan that could not be applied.
 
 The promise is enforced beneath the handlers, not merely honored by them:
-`crates/aos/packages/aos-package-manager/src/dry_run.rs` arms a process-wide barrier that classifies
+`crates/aos/registry/aos-registry-client/src/dry_run.rs` arms a process-wide barrier that classifies
 every Git invocation and refuses the mutating ones, so a handler that failed to
 stop reports a bug instead of writing. `git fetch` is allowed through — it only
 adds objects and moves remote-tracking refs, and previewing a change request

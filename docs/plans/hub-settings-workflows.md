@@ -96,7 +96,7 @@ foundation (21), console contracts (27), native console HTTP integration
 (6), and shared-infrastructure HTTP authorization (1): 71 tests in total.
 
 Changed code passes formatting checks. A workspace-wide format check also
-reports existing differences in `crates/hub/aos-hub-service/src/db/oci_gc/plan.rs` and
+reports existing differences in `crates/hub/aos-hub-db/src/db/oci_gc/plan.rs` and
 `crates/aos/cli/aos-cli/src/commands/build.rs`; those unrelated files were left unchanged.
 
 Follow-up local verification uses `tests/native/hub-settings.py` to launch a

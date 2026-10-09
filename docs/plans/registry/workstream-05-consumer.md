@@ -82,7 +82,7 @@ enabled registries and dispatches on `reg_config.transport()`
 ([`update.rs:116`](../../../crates/aos/packages/aos-package-manager/src/update.rs)):
 `Transport::HttpBundle` → `sync_bundle`
 ([`update.rs:209`](../../../crates/aos/packages/aos-package-manager/src/update.rs)), `Transport::Git`
-→ `git::sync_git` ([`git.rs:45`](../../../crates/aos/packages/aos-package-manager/src/registry/git.rs)).
+→ `git::sync_git` ([`git.rs:45`](../../../crates/aos/registry/aos-registry-client/src/registry/git.rs)).
 The bundle path is what the git-native model replaces.
 
 ### 2.2 Bundle selection — `pick_bundles`
@@ -121,12 +121,12 @@ concrete semver tag.
 ### 2.4 Anti-rollback — `check_monotonic`
 
 `check_monotonic`
-([`state.rs:104`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs)) rejects
+([`state.rs:104`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs)) rejects
 `new_token <= old_token`. It is the right *idea* (a monotonic floor) on the wrong
 *key*: it compares calendar `creation_token`s via
 `version_to_token`/`token_to_version`
-([`state.rs:131`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs),
-[`state.rs:173`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs)), which the
+([`state.rs:131`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs),
+[`state.rs:173`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs)), which the
 TARGET deletes (§15). Worse, the CURRENT call site is gated behind
 `if latest_token > old_token`
 ([`update.rs:290-291`](../../../crates/aos/packages/aos-package-manager/src/update.rs)) — so the check
@@ -144,7 +144,7 @@ under `[registry.state]`. Its fields are reassigned in `sync_bundle`
 ([`update.rs:297-299`](../../../crates/aos/packages/aos-package-manager/src/update.rs)) and the block is
 rewritten by the caller `update::run`
 ([`update.rs:153`](../../../crates/aos/packages/aos-package-manager/src/update.rs)) via
-`state::save_state` ([`state.rs:37`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs)).
+`state::save_state` ([`state.rs:37`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs)).
 WS-05 **retires `last_creation_token`** and adds a semver floor, a persisted
 bucket, and a retained-release set (§3.5, §7) — i.e. the struct becomes
 `RegistryState { last_commit: Option<String>, floor: Option<String>, bucket:
@@ -156,7 +156,7 @@ breaks every existing literal that names `last_creation_token` — the
 `state.rs` round-trip tests (`load_state_from_registry_file`,
 `save_state_appends_to_file_without_state`,
 `save_state_replaces_existing_state_section` at
-[`state.rs:277-407`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs)) — all of
+[`state.rs:277-407`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs)) — all of
 which must be ported to the new fields.
 
 ---
@@ -271,17 +271,17 @@ last_update  = "2026-06-04T00:00:00Z"   # KEEP
 ```
 
 `state::save_state(path: &Path, state: &RegistryState) -> Result<()>`
-([`state.rs:37`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs)) already
+([`state.rs:37`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs)) already
 preserves user-edited fields and rewrites only the `[registry.state]` block via
-`find_state_section` ([`state.rs:80`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs)).
+`find_state_section` ([`state.rs:80`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs)).
 WS-05 extends its serializer (it currently emits `last_commit`,
 `last_creation_token`, `last_update` at
-[`state.rs:43-51`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs)) to drop the
+[`state.rs:43-51`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs)) to drop the
 `if let Some(token) = state.last_creation_token` branch
-([`state.rs:46-48`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs)) and emit
+([`state.rs:46-48`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs)) and emit
 instead `floor = "<semver>"`, `bucket = <u8>`, and `retained = ["…", …]` (a TOML
 array). Loading is automatic once `RegistryState` gains the new `#[serde(default)]`
-fields, since `load_state` ([`state.rs:21`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs))
+fields, since `load_state` ([`state.rs:21`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs))
 deserialises the whole struct from `RegistryFile`.
 
 ---
@@ -299,7 +299,7 @@ deserialises the whole struct from `RegistryFile`.
 bucket = the low byte of sha256(machine_id) (i.e. mod 256)            # 0..=255, rendered as one byte (two hex digits, 00–ff)
 ```
 
-This lands in a **new** module `crates/aos/packages/aos-package-manager/src/registry/channel.rs`
+This lands in a **new** module `crates/aos/registry/aos-registry-client/src/registry/channel.rs`
 (consumer-side channel resolution; sibling to `state.rs` and `git.rs`), with:
 
 ```rust
@@ -388,7 +388,7 @@ minor base, which the retention rule guarantees the client holds.
 
 ### 5.2 Client resolution algorithm (current C → target T)
 
-This is a **new** function in `crates/aos/packages/aos-package-manager/src/registry/fetch.rs` (a new
+This is a **new** function in `crates/aos/registry/aos-registry-client/src/registry/fetch.rs` (a new
 module replacing the bundle-walk in `pick_bundles`), with the signature:
 
 ```rust
@@ -559,14 +559,14 @@ consumer rejects the mismatch.
 
 WS-05 reuses the WS-04 / `security.rs` Ed25519 verification primitives:
 `parse_signing_key` (`name:Ed25519:<base64>`,
-[`security.rs:306`](../../../crates/aos/packages/aos-package-manager/src/security.rs)), the `KeyStore`
+[`security.rs:306`](../../../crates/aos/registry/aos-registry-client/src/security.rs)), the `KeyStore`
 TOFU machinery (`KeyStore::lookup` / `tofu_check`,
-[`security.rs:52`,`:159`](../../../crates/aos/packages/aos-package-manager/src/security.rs)) reading
+[`security.rs:52`,`:159`](../../../crates/aos/registry/aos-registry-client/src/security.rs)) reading
 `trusted-keys.d/<registry>.pub` (via `ProfileScope::trusted_keys_dirs`,
 [`types.rs:499`](../../../crates/aos/packages/aos-package-manager/src/types.rs)), and the
 `allowed_signers`-file pattern from `verify_commit_signature`
-([`security.rs:199`](../../../crates/aos/packages/aos-package-manager/src/security.rs); a second copy
-exists at [`git.rs:391`](../../../crates/aos/packages/aos-package-manager/src/registry/git.rs) using
+([`security.rs:199`](../../../crates/aos/registry/aos-registry-client/src/security.rs); a second copy
+exists at [`git.rs:391`](../../../crates/aos/registry/aos-registry-client/src/registry/git.rs) using
 bare `git verify-commit`).
 
 The CURRENT code verifies SSH-format Ed25519 git signatures only for **commits**
@@ -587,7 +587,7 @@ pub async fn verify_tag(
 ```
 
 It shells out via the allow-fail helper `git_try`
-([`registry_ops.rs:96`](../../../crates/aos/packages/aos-package-manager/src/registry_ops.rs)) running
+([`registry_ops.rs:96`](../../../crates/aos/registry/aos-registry-authoring/src/registry_ops/git.rs)) running
 `git verify-tag <tag_ref>`, then reads the tag-name header from `git cat-file -p
 <tag_ref>` (the `tag <name>` line) and string-compares it to `expected_name`. A
 signed tag is a **pure signed pointer** — standard git tag fields (object, type,
@@ -637,10 +637,10 @@ The consumer therefore follows `keys.toml` for active-key/retirement state on
 **Concretely.** `keys.toml` parses into the **WS-04-owned** roster types — the
 consumer **does not redeclare them**. The canonical definitions live in
 [workstream-04-signing-trust.md §7.5](./workstream-04-signing-trust.md#75-trust-roster-lives-in-keystoml-not-in-registrytoml-g9)
-(`crates/aos/packages/aos-package-manager/src/registry/keys.rs`, a **new** module):
+(`crates/aos/registry/aos-registry-client/src/registry/keys.rs`, a **new** module):
 
 ```rust
-// crates/aos/packages/aos-package-manager/src/registry/keys.rs  (defined in WS-04 §7.5 — IMPORTED here)
+// crates/aos/registry/aos-registry-client/src/registry/keys.rs  (defined in WS-04 §7.5 — IMPORTED here)
 pub struct KeysToml {
     pub schema: u32,                       // = 1
     pub keys: Vec<RosterKey>,              // active signing key(s)
@@ -658,12 +658,12 @@ second `Vec<RosterKey>`). The roster is read from the resolved tree by WS-04's
 reader `keys::read_keys_toml(dir: &Path) -> Result<Option<KeysToml>>`
 (WS-04 §7.5 / §8.1, sourcing the bytes with `git -C <repo> show <commit>:keys.toml`
 into the reconstructed tree, then validating each `RosterKey.key` through
-`parse_signing_key`, [`security.rs:306`](../../../crates/aos/packages/aos-package-manager/src/security.rs)).
+`parse_signing_key`, [`security.rs:306`](../../../crates/aos/registry/aos-registry-client/src/security.rs)).
 The parsed active keys feed the `KeyStore` used by `verify_tag` (§6.2).
 Out-of-band re-pin (`apr trust`) is a
 **new** producer/operator subcommand that writes
 `trusted-keys.d/<registry>.pub` via `KeyStore::store`
-([`security.rs:97`](../../../crates/aos/packages/aos-package-manager/src/security.rs)); no `apr trust`
+([`security.rs:97`](../../../crates/aos/registry/aos-registry-client/src/security.rs)); no `apr trust`
 exists today. The roster parse/roundtrip tests are owned by WS-04 alongside the
 type definitions (`keys_toml_roundtrip`, `keys_toml_rejects_bad_key_format`,
 `keys_toml_absent_returns_none` in `registry/keys.rs`,
@@ -722,7 +722,7 @@ Option<&semver::Version>) -> Result<()>` in `state.rs`, replacing
 ### 7.2 Replacing `check_monotonic` and fixing the gating bug
 
 The CURRENT `check_monotonic`
-([`state.rs:104`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs)) is reframed
+([`state.rs:104`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs)) is reframed
 onto semver (becoming `check_floor`, §7.1), and the **gating bug** at
 [`update.rs:290-291`](../../../crates/aos/packages/aos-package-manager/src/update.rs) is fixed:
 
@@ -749,13 +749,13 @@ downloads. This reconciles the discrepancy flagged in
 The existing `check_monotonic` tests in `state.rs`
 (`check_monotonic_succeeds_when_newer`, `check_monotonic_fails_when_equal`,
 `check_monotonic_fails_when_older`,
-[`state.rs:255-274`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs)) are
+[`state.rs:255-274`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs)) are
 replaced by semver equivalents on `check_floor`: `#[test] fn
 test_check_floor_allows_equal_or_newer` (`1.4.2 >= 1.4.2`, `1.4.3 >= 1.4.2`),
 `#[test] fn test_check_floor_rejects_older` (`1.4.1 < 1.4.2` → `Err`), and
 `#[test] fn test_check_floor_allows_when_no_floor` (`None` floor → first sync
 proceeds). The `token_*` round-trip tests
-([`state.rs:196-252`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs)) are
+([`state.rs:196-252`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs)) are
 deleted with `version_to_token`/`token_to_version`.
 
 ### 7.3 Interaction with rollout & fix-forward
@@ -838,9 +838,9 @@ cache_url  = "./nar"        # relative to origin, OR absolute
   it is signed-by-extension without anything being placed in the tag. The
   `[[caches]]` entries are `CacheEntry { url: String, priority: u32 }`
   ([`types.rs:581-590`](../../../crates/aos/packages/aos-package-manager/src/types.rs)); `resolve_mirrors`
-  ([`registry_ops.rs:405`](../../../crates/aos/packages/aos-package-manager/src/registry_ops.rs)) sorts
+  ([`registry_ops.rs:405`](../../../crates/aos/registry/aos-registry-client/src/registry/mirrors.rs)) sorts
   **descending** (higher `priority` preferred,
-  [`registry_ops.rs:409`](../../../crates/aos/packages/aos-package-manager/src/registry_ops.rs)) and is
+  [`registry_ops.rs:409`](../../../crates/aos/registry/aos-registry-authoring/src/registry_ops.rs)) and is
   reused unchanged. See [`repo-layout.md`](../../registry/repo-layout.md) §2 for
   the committed-tree shape.
 - **Client-side `registries.d/<name>.toml`** is an **optional override/
@@ -912,7 +912,7 @@ content-addressed and SHA-256-verified (§8 NAR-safety note).
 The existing `resolve_mirror(registry: &RegistryConfig) -> String`
 ([`download.rs:85`](../../../crates/aos/packages/aos-package-manager/src/download.rs)) already reads the
 locally-cloned `registry.toml` `[[caches]]` via `resolve_mirrors`
-([`registry_ops.rs:405`](../../../crates/aos/packages/aos-package-manager/src/registry_ops.rs)) and
+([`registry_ops.rs:405`](../../../crates/aos/registry/aos-registry-client/src/registry/mirrors.rs)) and
 falls back to `registry.url`; WS-05 extends it to (a) source the committed
 `registry.toml` from the **resolved tree** rather than only the on-disk clone,
 (b) merge a client-side `registries.d/<name>.toml` `cache_url` override at higher
@@ -933,8 +933,8 @@ test_resolve_mirror_relative_url_against_origin`.
 | `pick_bundles` ([`update.rs:319`](../../../crates/aos/packages/aos-package-manager/src/update.rs)) | `resolve_objects` delta-walk (§5.2) | bundle → thin `delta-*.pack`; token → semver+ancestry |
 | `BundleManifest::fetch` ([`update.rs:220-221`](../../../crates/aos/packages/aos-package-manager/src/update.rs)) | `info/refs` + `info/alternates` reads (§3.2) | manifest → git object store |
 | `bundle::unbundle` / `bundle::resolve_tag` ([`update.rs:257`,`:266`](../../../crates/aos/packages/aos-package-manager/src/update.rs)) | `index-pack --fix-thin` + tag-chain resolve (§5.3, §6) | bundles → thin packs + signed tags |
-| `check_monotonic` + gating ([`state.rs:104`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs), [`update.rs:290-291`](../../../crates/aos/packages/aos-package-manager/src/update.rs)) | unconditional semver `check_floor` (§7.2) | fixes gating bug; deletes token math |
-| `version_to_token`/`token_to_version` ([`state.rs:131`,`:173`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs)) | **deleted** (§15) | calendar scheme removed |
+| `check_monotonic` + gating ([`state.rs:104`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs), [`update.rs:290-291`](../../../crates/aos/packages/aos-package-manager/src/update.rs)) | unconditional semver `check_floor` (§7.2) | fixes gating bug; deletes token math |
+| `version_to_token`/`token_to_version` ([`state.rs:131`,`:173`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs)) | **deleted** (§15) | calendar scheme removed |
 | `RegistryState.last_creation_token` ([`types.rs:256`](../../../crates/aos/packages/aos-package-manager/src/types.rs)) | `floor` (semver) + `bucket` + `retained` (§3.5) | state schema change |
 | `TrackingMode` (no `Channel`) ([`types.rs:279`](../../../crates/aos/packages/aos-package-manager/src/types.rs)) | add `Channel(String)` → bucket → partition tag (§4, §3.3) | new resolution arm |
 | `extract_packages_from_git` ([`update.rs:496`](../../../crates/aos/packages/aos-package-manager/src/update.rs)) | **reused** | `git archive <commit> packages/` is unchanged |
@@ -950,10 +950,10 @@ test_resolve_mirror_relative_url_against_origin`.
       Option<String>` (semver); add `bucket: Option<u8>` and `retained:
       Vec<String>`.
 - [ ] Extend `state::save_state`
-      ([`state.rs:43-51`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs)) to
+      ([`state.rs:43-51`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs)) to
       serialize the new fields; drop `last_creation_token`.
 - [ ] Delete `version_to_token`/`token_to_version`/`check_monotonic`
-      ([`state.rs:104`,`:131`,`:173`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs)),
+      ([`state.rs:104`,`:131`,`:173`](../../../crates/aos/registry/aos-registry-client/src/registry/state.rs)),
       replace with `check_floor` (semver `Version` comparator, §7.1).
 
 **Resolution:**

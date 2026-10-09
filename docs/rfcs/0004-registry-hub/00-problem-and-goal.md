@@ -11,7 +11,7 @@ standard Nix binary cache (`nix-cache-info`, `*.narinfo`,
 `nar/*.nar.zst`). Trust is entirely client-side: SSH-format Ed25519
 signatures on tags and commits, in-band roster rotation, anti-rollback
 floors, and staleness windows
-(`crates/aos/packages/aos-package-manager/src/registry/verify.rs`,
+(`crates/aos/registry/aos-registry-client/src/registry/verify.rs`,
 `docs/registry/signing-and-trust.md`).
 
 This design deliberately requires no server to consume — and today it
@@ -21,7 +21,7 @@ goes through the CLIs:
 - **Producers** (registry maintainers) drive the whole publish pipeline
   with `apr`: `publish`, `tag`, `channel advance`, `keys
   add`/`retire`, `cache generate`, `origin upload`, or the `apr
-  release` orchestrator (`crates/aos/packages/aos-package-manager/src/registry_ops.rs`).
+  release` orchestrator (`crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`).
 - **Consumers** (AOS host operators) configure and sync with `apm`:
   `registries.d/<name>.toml`, `apm update`, `apm install`/`upgrade`
   (`crates/aos/packages/aos-package-manager/src/types.rs`).

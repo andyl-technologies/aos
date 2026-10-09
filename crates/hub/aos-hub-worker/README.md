@@ -70,7 +70,7 @@ Cloudflare account; database and shared-domain behavior is exercised through
 the runtime-neutral core tests.
 
 The canonical user guide is [Deploy AOS Hub to
-Cloudflare](../../docs/users/aos-hub/cloudflare.md). It covers the supported
+Cloudflare](../../../docs/users/aos-hub/cloudflare.md). It covers the supported
 installer, provider resources, secrets, domains, updates, email, and
 observability.
 
