@@ -1,16 +1,17 @@
-From 312db98148ea267d6c89bdc7fb7e31bb67f267e4 Mon Sep 17 00:00:00 2001
+From 0e5751df73fdbf48b1d7f37b4a8c6eed6748a6c5 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Fri, 9 Oct 2026 01:38:47 +0000
-Subject: [PATCH] Retain guarded RAM observations and bounded residency queries
+Date: Fri, 9 Oct 2026 03:15:26 +0000
+Subject: [PATCH] Preserve RAM admission refusals and root workspace lifetime
 
-Preserve sealed native RAM authority and matching plugin readers.
-Compose independent root observation, admission-gated public roots,
-live admitted-inventory validation and range-local discard refusal.
+Retain the complete guarded RAM observation, discard and bounded
+paused query integration with its existing process protocols.
 
-Add versioned paused admission and residency queries with bounded
-interval observations and accepted-handler descriptor consumption.
-Keep original capture, replay, writer and process-protocol semantics,
-all file licenses and source-level experimental readiness holds.
+Separate inventory preparation and finalization from the root hash
+workspace. Preserve collection refusals before metadata queries or
+observer publication and close the same partial inventory once.
+
+Keep capture, restore and writer behavior, per-file licenses and
+unqualified experimental resource and performance boundaries.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -121131,10 +121132,10 @@ index 0000000000000000000000000000000000000000..e8d98a0beb68a58aed72e673fb28070c
 +}
 diff --git a/plugins/crucible-paged-ram.c b/plugins/crucible-paged-ram.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..4ceda3dd1b50078b87cfb6664616d84b268728cf
+index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316f163003c
 --- /dev/null
 +++ b/plugins/crucible-paged-ram.c
-@@ -0,0 +1,2499 @@
+@@ -0,0 +1,2535 @@
 +/*
 + * Logical RAM observation and host paging ownership.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -122240,6 +122241,11 @@ index 0000000000000000000000000000000000000000..4ceda3dd1b50078b87cfb6664616d84b
 +        }
 +        logical_bytes += region->descriptor.logical_length;
 +    }
++    /* Collection refusal is primary. Do not query later metadata or publish
++     * the observer's admission window for an incomplete inventory. */
++    if (status) {
++        goto inventory_failed;
++    }
 +    /* One sealed inventory and one temporary observation inventory coexist.
 +     * The allowance covers conservative allocator/container overhead. Dirty
 +     * bitmap accounting includes headers still awaiting RCU reclamation.
@@ -122272,9 +122278,7 @@ index 0000000000000000000000000000000000000000..4ceda3dd1b50078b87cfb6664616d84b
 +            sizeof(owner_diagnostic_stops) + sizeof(capture_owner_token);
 +    }
 +    if (status) {
-+        g_ptr_array_unref(regions);
-+        error_setg(errp, "logical RAM native inventory admission failed (%d)", status);
-+        return status;
++        goto inventory_failed;
 +    }
 +    admission = (struct qemu_plugin_crucible_ram_admission_v1) {
 +        .schema = 1,
@@ -122306,6 +122310,11 @@ index 0000000000000000000000000000000000000000..4ceda3dd1b50078b87cfb6664616d84b
 +        return status ? status : -ESTALE;
 +    }
 +    return 0;
++
++inventory_failed:
++    g_ptr_array_unref(regions);
++    error_setg(errp, "logical RAM native inventory admission failed (%d)", status);
++    return status;
 +}
 +
 +static void capture_clear_dirty(RAMBlock *block)
@@ -123543,25 +123552,33 @@ index 0000000000000000000000000000000000000000..4ceda3dd1b50078b87cfb6664616d84b
 +    return -ESTALE;
 +}
 +
-+static int full_observe_root(
-+    uint32_t scope, uint64_t owner_token, uint8_t root[32],
-+    uint64_t *logical_bytes,
-+    qemu_plugin_crucible_ram_root_scratch_read_v3 reader)
++/* Preparation closes its private physical scratch before the hash workspace
++ * starts. Only the existing array reference crosses this synchronous boundary. */
++static int full_prepare_diagnostic_regions(uint64_t owner_token,
++                                           GPtrArray **regions)
 +{
-+    GPtrArray *regions;
 +    struct qemu_plugin_crucible_ram_root_scratch_v2 scratch = { 0 };
 +    int proc_close_status = 0;
 +    int status;
 +
-+    if (owner_token) {
-+        status = physical_validate_with_scratch(
-+            owner_token, physical_topology, &scratch, &proc_close_status);
-+        diagnostic_proc_close_result(owner_token, proc_close_status);
-+        if (status) {
-+            return status;
-+        }
-+        regions = g_ptr_array_ref(admission_regions);
-+    } else if (admitted_public_root_inventory_current()) {
++    status = physical_validate_with_scratch(
++        owner_token, physical_topology, &scratch, &proc_close_status);
++    diagnostic_proc_close_result(owner_token, proc_close_status);
++    if (status) {
++        return status;
++    }
++    *regions = g_ptr_array_ref(admission_regions);
++    return 0;
++}
++
++/* Keep allocation, sorting and their refusal paths outside the hash workspace.
++ * Eligible public observations retain the same validated admission array. */
++static int full_prepare_public_regions(GPtrArray **result)
++{
++    GPtrArray *regions;
++    int status;
++
++    if (admitted_public_root_inventory_current()) {
 +        uint32_t accepted = 0;
 +
 +        status = qemu_ram_foreach_block(validate_admitted_public_root_region,
@@ -123584,28 +123601,41 @@ index 0000000000000000000000000000000000000000..4ceda3dd1b50078b87cfb6664616d84b
 +        }
 +        g_ptr_array_sort(regions, region_compare);
 +    }
++    *result = regions;
++    return 0;
++}
++
++/* Array custody belongs to the wrapper. Finalizers run only after this
++ * independent hash workspace and its synchronous reader loans have closed. */
++static int full_hash_prepared_regions(
++    GPtrArray *regions, uint32_t scope, uint64_t owner_token,
++    uint8_t root[32], uint64_t *logical_bytes,
++    qemu_plugin_crucible_ram_root_scratch_read_v3 reader)
++{
++    struct qemu_plugin_crucible_ram_root_scratch_v2 scratch = { 0 };
++    int proc_close_status = 0;
++    int status;
++
 +    status = full_observe_regions(regions, scope, reader, &scratch, logical_bytes);
 +    if (status) {
-+        g_ptr_array_unref(regions);
-+        return diagnostic_root_result(status, root, logical_bytes);
++        return status;
 +    }
 +    if (owner_token) {
 +        status = physical_validate_with_scratch(
 +            owner_token, physical_topology, &scratch, &proc_close_status);
 +        diagnostic_proc_close_result(owner_token, proc_close_status);
 +        if (status) {
-+            g_ptr_array_unref(regions);
-+            return diagnostic_root_result(status, root, logical_bytes);
++            return status;
 +        }
 +    }
 +    full_aggregate_root(regions, scope, root);
-+    g_ptr_array_unref(regions);
-+    return diagnostic_root_result(0, root, logical_bytes);
++    return 0;
 +}
 +
 +int qemu_plugin_crucible_ram_full_root_v2(
 +    uint32_t scope, uint64_t owner_token, uint8_t root[32], uint64_t *logical_bytes)
 +{
++    GPtrArray *regions = NULL;
 +    int status;
 +
 +    if (!root || !logical_bytes || scope > 2 || capture_active ||
@@ -123628,8 +123658,15 @@ index 0000000000000000000000000000000000000000..4ceda3dd1b50078b87cfb6664616d84b
 +        return -ENOSYS;
 +    }
 +    root_reader_registration.observation_active = true;
-+    status = full_observe_root(scope, owner_token, root, logical_bytes,
-+                               root_reader_registration.reader);
++    status = owner_token ? full_prepare_diagnostic_regions(owner_token, &regions) :
++                           full_prepare_public_regions(&regions);
++    if (!status) {
++        status = full_hash_prepared_regions(
++            regions, scope, owner_token, root, logical_bytes,
++            root_reader_registration.reader);
++        g_ptr_array_unref(regions);
++        status = diagnostic_root_result(status, root, logical_bytes);
++    }
 +    /* All array references and synchronous callback loans have closed. */
 +    root_reader_registration.observation_active = false;
 +    return status;
