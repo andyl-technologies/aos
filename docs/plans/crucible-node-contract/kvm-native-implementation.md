@@ -52,8 +52,12 @@ extension needs an authenticated measured implementation and capability query;
 the out-of-tree `KVM_CAP_CRUCIBLE_CLOCK_V1` capability uses implementation-keyed
 value `0xa025`. This is not an upstream Linux allocation. Its fixed 96-byte
 request structure is measured together with the kernel and emulator artifacts.
-The extension reports only bitmap `7`: TSC reads, TSC writes and native RUN
-owners. No other component coverage is inferred.
+Version 1 reports bitmap `7`: TSC reads, TSC writes and native RUN owners.
+The additive x86 version 2 capability uses implementation-keyed value `0xa026`
+and reports bitmap `31`, additionally covering the KVM pvclock projection and
+software LAPIC timer component. Version 1 remains compatible and reports `7`.
+These bitmaps attest implemented component source paths, not a qualified complete
+node or immutable stop/publication receipt.
 
 The VM-owned domain contains the admitted pacing ratio, frozen logical origin,
 active-window generation and ceiling, kernel monotonic operational origin, and
@@ -108,14 +112,41 @@ frozen waits, bounded native RUN-owner draining and explicit frozen steps.
 RDTSC/RDTSCP preserve privilege faults and RDTSCP auxiliary state. Architectural
 TSC writes adjust the per-vCPU projection without changing the controller ceiling.
 
-Coverage remains partial. Two x86 architectural counter instructions and their
-TSC/adjust register paths have source implementation; zero ARM counter/timer paths
-have implementation. Neither architecture has qualified kernel timer/IRQ closure,
-paravirtual clock closure or device/output custody. Native RUN-owner accounting
-includes immediate-exit reentry used to disposition an old exit; such reentry
-invalidates the previous component acknowledgment. It does not attest complete
-pending-exit, interrupt or device closure. No live native guest test has run on
-this machine because `/dev/kvm` is absent.
+The additive `crucible-controller-clock-stage2-7.2.3.patch` implements KVM
+pvclock, GET_CLOCK, clock pairing and a fixed zero wall-clock epoch from the
+controller domain. Per-vCPU TSC writes remain architectural offsets; pvclock
+therefore omits the stable cross-vCPU flag. Hyper-V activation, Xen setup,
+VMware backdoor, native PMU, native PIT and pre-existing independent kernel
+writers are refused or disabled. Creating irqfd, ioeventfd or coalesced MMIO
+writers after configuration fails. Direct IRQ/MSI/NMI/SMI operations retain
+native effect ownership and refuse admission while frozen.
+
+LAPIC one-shot, periodic and TSC-deadline timers retain logical deadlines.
+Native expiry uses checked ceiling conversion through the admitted pacing ratio
+and never arms beyond the grant ceiling. Signed logical deadline addition
+saturates rather than wrapping. APICv and hardware timer acceleration are disabled
+for controller VMs. Freeze seals effect and callback admission, requests exits,
+drains native owners using a high-resolution bounded wait, then synchronously
+joins every LAPIC hrtimer callback. Begin reprojects retained deadlines without
+changing pending interrupt state. The acknowledgment remains dynamic component
+evidence: frozen immediate-exit reentry invalidates it, and complete pending-exit
+and device disposition are not attested.
+
+The stage-two check compiles the common KVM, controller, x86, VMX, SVM and LAPIC
+objects from the patched source. It verifies the unchanged 96-byte UAPI and
+executes 400,000 independent wide-integer cases for projection, inverse timer
+conversion, TSC conversion and signed deadline saturation. An independent
+admission-state truth table executes the same native Begin policy, including
+owner retention, lost acknowledgment, stale generations, changed coordinates
+and overflow. This proves source compatibility and these arithmetic/policy
+properties; it does not prove native concurrency, stop latency or guest behavior.
+
+Coverage remains partial. Zero ARM counter/timer paths currently have source
+implementation. Neither architecture has qualified kernel timer/IRQ closure,
+paravirtual clock closure or device/output custody. No live native guest test has
+run on this machine because `/dev/kvm` is absent. The next work includes ARM EL2
+counter/timer traps, automatic execution-ceiling stopping, QEMU device and worker
+closure, retained output receipts and architectural capture/restoration.
 
 Native counter trapping can reduce KVM speed substantially for polling-heavy
 guests. Measure that cost once the implementation runs; ordinary direct-counter
@@ -159,8 +190,9 @@ closed partial-coverage response. It never converts component state into a
 complete node stop/publication receipt.
 
 This virtual-clock integration does not intercept every timer or architectural
-clock. In particular native pvclock, kernel LAPIC timers, wall-clock device
-views and independent device workers still need mediation. The existing SIM
+clock. The additive kernel stage implements pvclock and software LAPIC source
+mediation, while wall-clock device views and independent QEMU device workers
+still need mediation and composed native qualification. The existing SIM
 native-control protocol rejects KVM and is not reused for these operations.
 
 Extend native closure beyond `pause_all_vcpus()`:
