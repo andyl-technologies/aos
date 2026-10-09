@@ -202,6 +202,29 @@
     builtins.readFile ../fixtures/hub-hybrid-fleet-s3.key
   );
   s3PublicTrust = writeFixture "hub-hybrid-fleet-s3-public-trust" s3CaCertificate;
+  nativeTCPPorts =
+    [443]
+    ++ lib.optionals externalDirect [8443 8453 4644 4673 4674 4677]
+    ++ lib.optional (externalDirect && !separateDatabase) 5432;
+  edgeTCPPorts = [443] ++ lib.optionals externalDirect [8453 4643 4644 4673 4674];
+  fleetHostModule = allowedTCP:
+    pkgs.writeTextFile {
+      name = "hub-hybrid-fleet-runtime-policy";
+      destination = "/module.nix";
+      text = ''
+        {...}: {
+          aos.security.pki.certificates = [
+            ${builtins.toJSON caCertificate}
+            ${builtins.toJSON s3CaCertificate}
+          ];
+          aos.networkPolicy.allowedTCP = [${lib.concatMapStringsSep " " toString allowedTCP}];
+        }
+      '';
+    };
+  nativeHostModule = fleetHostModule nativeTCPPorts;
+  edgeHostModule = fleetHostModule edgeTCPPorts;
+  clientHostModule = fleetHostModule [];
+  databaseHostModule = fleetHostModule [5432];
   garageConfig = writeFixture "hub-hybrid-fleet-garage.toml" ''
     metadata_dir = "/var/lib/hybrid-s3/meta"
     data_dir = "/var/lib/hybrid-s3/data"
@@ -409,10 +432,10 @@
           };
         };
         aos.security.pki.certificates = [caCertificate s3CaCertificate];
-        aos.firewall.allowedTCP =
-          [443]
-          ++ lib.optionals externalDirect [8443 8453 4644 4673 4674 4677]
-          ++ lib.optional (externalDirect && !separateDatabase) 5432;
+        # Host activation evaluates retained configuration sources. An image
+        # overlay alone does not preserve fixture roots or inbound allowances.
+        aos.activation.stages.host.configuration = ["${nativeHostModule}/module.nix"];
+        aos.networkPolicy.allowedTCP = nativeTCPPorts;
         aos.kernel.modules = ["9pnet_virtio" "9p"];
         environment.systemPackages = [pkgs.util-linux];
         aos.services.hub.environment.variables = {
@@ -446,7 +469,8 @@
     })
     {
       aos.security.pki.certificates = [caCertificate s3CaCertificate];
-      aos.firewall.allowedTCP = [443] ++ lib.optionals externalDirect [8453 4643 4644 4673 4674];
+      aos.activation.stages.host.configuration = ["${edgeHostModule}/module.nix"];
+      aos.networkPolicy.allowedTCP = edgeTCPPorts;
       aos.kernel.modules = ["9pnet_virtio" "9p"];
       environment.systemPackages = [pkgs.util-linux];
     }
@@ -459,6 +483,7 @@
     })
     {
       aos.security.pki.certificates = [caCertificate s3CaCertificate];
+      aos.activation.stages.host.configuration = ["${clientHostModule}/module.nix"];
       aos.kernel.modules = ["9pnet_virtio" "9p"];
       environment.systemPackages = [pkgs.util-linux];
     }
@@ -467,7 +492,8 @@
   databaseSystem = edgeSystem.extendModules {
     modules = [
       {
-        aos.firewall.allowedTCP = [5432];
+        aos.activation.stages.host.configuration = ["${databaseHostModule}/module.nix"];
+        aos.networkPolicy.allowedTCP = [5432];
         aos.users.users.aos-hub = {
           uid = 802;
           group = "aos-hub";
