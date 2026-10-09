@@ -105,7 +105,8 @@ impl DirectRuntimeQualification {
 
     /// Checks verification and settlement within a queue consumer's remaining window.
     ///
-    /// Queue consumers have a separate 900-second wall time ceiling. Accepting
+    /// [Queue consumers](https://developers.cloudflare.com/queues/platform/limits/)
+    /// have a separate 900-second wall time ceiling. Accepting
     /// this window never extends an HTTP invocation's foreground deadline.
     ///
     /// # Errors
