@@ -1052,6 +1052,18 @@
   external_binding = json.loads(client.succeed(hub_command(
       "binding show fleet:external-s3"
   )))["data"]["binding"]
+  # Supply provider credentials through the operator workflow. Native's
+  # controller challenges Worker custody rather than resolving these secrets.
+  native.succeed(textwrap.dedent("""
+      set -eu
+      ${pkgs.coreutils}/bin/install -d -m 0700 -o 802 -g 802 /var/lib/aos-hub/fleet-credentials
+      ${pkgs.coreutils}/bin/install -m 0600 -o 802 -g 802 \\
+        ${databaseUrl}/value /var/lib/aos-hub/fleet-credentials/database-url
+      ${pkgs.coreutils}/bin/install -m 0600 -o 802 -g 802 \\
+        ${storageKey}/value /var/lib/aos-hub/fleet-credentials/storage-key
+      ${pkgs.coreutils}/bin/install -m 0600 -o 802 -g 802 \\
+        ${secretVersionManifest}/value /var/lib/aos-hub/fleet-credentials/secret-version-manifest
+  """))
   for purpose in ("delete", "list", "read", "write"):
       validated = reviewed(
           f"hybrid-external-{purpose}-credential-validate",
@@ -1060,6 +1072,28 @@
           f"--if-version {shlex.quote(external_binding['resource_version'])}",
       )
       validation_operation_id = validated["data"]["operation"]["operation_id"]
+      # Failed JSON commands emit the operation result and an error record.
+      unstaged_output = client.fail(hub_command(
+          f"operation watch {shlex.quote(validation_operation_id)} --timeout 2m"
+      ), timeout=180)
+      unstaged = json.loads(unstaged_output.splitlines()[0])["data"]["operation"]
+      assert unstaged["operation"]["state"] == "failed", unstaged
+      assert "custody challenge with HTTP 409" in unstaged["error"], unstaged
+
+      native.succeed(
+          f"{CHROOT} ${pkgs.aos-hub}/bin/aos-hub-authority-bootstrap "
+          "--database-url-file /var/lib/aos-hub/fleet-credentials/database-url "
+          f"stage-credential --operation-id {shlex.quote(validation_operation_id)} "
+          "--deployment-id fleet-hybrid-v1 --worker-url https://aos.andyl.org "
+          "--storage-work-key-file /var/lib/aos-hub/fleet-credentials/storage-key "
+          "--secret-version-manifest /var/lib/aos-hub/fleet-credentials/secret-version-manifest "
+          f"--output /var/lib/aos-hub/fleet-credentials/{purpose}-stage",
+          timeout=60,
+      )
+      client.succeed(hub_command(
+          f"operation retry {shlex.quote(validation_operation_id)} "
+          f"--if-version {shlex.quote(unstaged['resource_version'])}"
+      ), timeout=60)
       client.succeed(hub_command(
           f"operation watch {shlex.quote(validation_operation_id)} --timeout 2m"
       ), timeout=180)
