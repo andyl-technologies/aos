@@ -139,32 +139,58 @@
     ];
   };
 
-  consumerBaseline = {
-    systemd.services.aos-upgrade-removed = {
-      description = "Upgrade qualification service removed by generation two";
-      wantedBy = ["multi-user.target"];
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = "${pkgs.coreutils}/bin/true";
-        ExecStop = "${pkgs.coreutils}/bin/touch /run/removed-stop-ran";
-        RemainAfterExit = true;
-      };
+  upgradeMarkerService = description: stop: {
+    enable = true;
+    lifecycle = {
+      inherit description;
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
+        {
+          executable = {
+            path = "${pkgs.coreutils}/bin/true";
+            arguments = [];
+          };
+          ignore_failure = false;
+        }
+      ];
+      post_start = [];
+      inherit stop;
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 30000;
+      stop_timeout_millis = 30000;
     };
   };
+  consumerBaseline.aos.services.aos-upgrade-removed =
+    upgradeMarkerService
+    "Upgrade qualification service removed by generation two"
+    [
+      {
+        executable = {
+          path = "${pkgs.coreutils}/bin/touch";
+          arguments = ["/run/removed-stop-ran"];
+        };
+        ignore_failure = false;
+      }
+    ];
 
   consumerUpgrade = {
     aos.system.version = "test-2";
-    environment.etc."aos/upgrade-test/marker.conf".text = "marker = 1\n";
-    systemd.services.dbus.serviceConfig.LimitNOFILE = "16384";
-    systemd.services.aos-upgrade-test-marker = {
-      description = "Upgrade qualification generation-two marker";
-      wantedBy = ["multi-user.target"];
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = "${pkgs.coreutils}/bin/true";
-        RemainAfterExit = true;
-      };
+    aos.abilities.configuration.operations.file.effects.upgrade-marker.input = {
+      path = "/etc/aos/upgrade-test/marker.conf";
+      content = "marker = 1\n";
+      mode = "0644";
     };
+    aos.dbus.openFileLimit = 16384;
+    aos.services.aos-upgrade-test-marker =
+      upgradeMarkerService
+      "Upgrade qualification generation-two marker" [];
   };
 
   # Inline image overrides are ephemeral. Retain actual service and upgrade
@@ -202,9 +228,13 @@
       C /run/credentials/@system/native-hub-probe-signers 0600 root root - ${probeSigners}/value
     '';
   };
-  hubRuntimeModule = retainedModule "native-hub-runtime-configuration" hubConfiguration;
+  hubRuntimeModule =
+    retainedModule "native-hub-runtime-configuration"
+    (builtins.removeAttrs hubConfiguration ["environment"]);
   consumerBaselineModule = retainedModule "native-hub-consumer-baseline" consumerBaseline;
-  consumerUpgradeModule = retainedModule "native-hub-consumer-upgrade" consumerUpgrade;
+  consumerUpgradeModule =
+    retainedModule "native-hub-consumer-upgrade"
+    (consumerUpgrade // {aos = builtins.removeAttrs consumerUpgrade.aos ["system"];});
 
   hubSystem = mkSystem [
     ../../systems/server-test.nix

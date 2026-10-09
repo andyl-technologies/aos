@@ -830,10 +830,9 @@ in {
         system = clientSystem;
         bootMode = "image";
         hostStoreMount = true;
-        imageDiskMiB =
-          if externalDirect
-          then 32768
-          else 16384;
+        # Signed container preparation retains both its full source cache and
+        # staged publication. The proxy workload also needs this headroom.
+        imageDiskMiB = 32768;
         # Preparing signed source closures is separate from Hub throughput.
         # Give APR enough parallel compression capacity for the real corpus.
         memoryMiB = 8192;
