@@ -21,19 +21,17 @@
   fixtureNative = pkgs.writeShellScriptBin "dispatch-systemd-fixture-native" ''
     exec ${pkgs.python3}/bin/python3 ${fixtureSource}/worker.py --native
   '';
+  tcgBootPolicy = builtins.path {
+    path = ./tcg-boot-policy.nix;
+    name = "dispatch-tcg-boot-policy.nix";
+  };
   fixture = system.extendModules {
     modules = [
       {
         # Software emulation needs additional time to execute the sealed boot
         # transaction. Keep its production path and KVM startup policy intact.
-        aos.services = lib.mkIf allowTcg (lib.genAttrs [
-            "boot-preparations.aos-ability-initrd-controller"
-            "boot-preparations.aos-ability-initrd-handoff-barrier"
-            "boot-preparations.aos-ability-host-receiver"
-          ] (_: {
-            lifecycle.start_timeout_millis = lib.mkForce 300000;
-            readiness.timeout_millis = lib.mkForce 300000;
-          }));
+        aos.activation.stages.initrd.configuration = lib.optional allowTcg tcgBootPolicy;
+        aos.activation.stages.host.configuration = lib.optional allowTcg tcgBootPolicy;
 
         aos.dispatch = {
           enable = true;
