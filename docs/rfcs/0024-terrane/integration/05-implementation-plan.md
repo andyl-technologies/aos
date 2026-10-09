@@ -2376,7 +2376,23 @@ gate and creates an isolated corrective worktree. Its test-only destination
 fault must execute at the existing pre-syscall boundary, preserve earlier cohort
 installs and refuse native acknowledgment; a nonmatching destination must still
 complete. Existing generation visibility, independent reopen and fresh-retry
-assertions remain required. The correction has no runtime result yet.
+assertions remain required. The frozen correction passes the SDK build,
+strict native all-target Clippy, native test compilation and fresh discovery;
+Tokio-only all-target Clippy exits zero with its retained baseline warnings.
+The actual non-fresh compiler artifact and 834-case inventory bind the current
+source, and all eleven requested cases are exact nonignored matches. The five
+focused cases pass once, including both destination-specific witnesses and
+the existing partial-generation visibility, reopen and fresh-retry case.
+The first ordinary 1024-record population then fails in baseline publication
+with a denied commit after 65.627 seconds. Diagnostics are unset, so this
+execution does not establish an explicit expiry or a cause for that denial.
+Tracked source bytes and modes and the native executable remain unchanged
+through the original executions. The first-failure sequence leaves the five
+larger or adversarial populations and its remaining qualification stages
+unrun. Independent bucket qualification starts in a separate finite sequence
+with the atomic-write and generation-manifest gates, application compile-only
+check and required formatting pair; it does not retry the failed population.
+No task checkbox or milestone status advances.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
 the shared executable as fresh while it still contains the class candidate's
