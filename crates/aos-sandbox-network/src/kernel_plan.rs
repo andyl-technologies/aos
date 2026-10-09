@@ -744,4 +744,80 @@ mod tests {
             ))
         );
     }
+
+    #[test]
+    fn reserved_reads_preserve_consumed_prefix_on_every_failure() {
+        let bytes = [0xaa, 0, 1, 0xbb];
+        for (length, error) in [
+            (2, NetworkKernelPlanError::Invalid("reserved bytes are nonzero")),
+            (4, NetworkKernelPlanError::Truncated),
+            (usize::MAX, NetworkKernelPlanError::TooLarge),
+        ] {
+            let mut decoder = super::wire::Decoder::new(&bytes, super::wire::read_error);
+            assert_eq!(decoder.u8().unwrap(), 0xaa);
+
+            assert_eq!(super::wire::zeroes(&mut decoder, length), Err(error));
+
+            assert_eq!(decoder.remaining(), 3);
+            assert_eq!(decoder.remaining_bytes(), &bytes[1..]);
+            assert_eq!(decoder.u8().unwrap(), 0);
+            assert_eq!(decoder.remaining(), 2);
+            assert_eq!(decoder.remaining_bytes(), &bytes[2..]);
+        }
+
+        let mut initial = super::wire::Decoder::new(&bytes, super::wire::read_error);
+        assert_eq!(
+            super::wire::zeroes(&mut initial, usize::MAX),
+            Err(NetworkKernelPlanError::Truncated)
+        );
+        assert_eq!(initial.remaining_bytes(), &bytes);
+        assert_eq!(initial.u8().unwrap(), 0xaa);
+
+        let valid = [0xaa, 0, 0, 0xbb];
+        let mut decoder = super::wire::Decoder::new(&valid, super::wire::read_error);
+        assert_eq!(decoder.u8().unwrap(), 0xaa);
+
+        assert_eq!(super::wire::zeroes(&mut decoder, 0), Ok(()));
+        assert_eq!(decoder.remaining_bytes(), &valid[1..]);
+        assert_eq!(super::wire::zeroes(&mut decoder, 2), Ok(()));
+
+        assert_eq!(decoder.remaining(), 1);
+        assert_eq!(decoder.remaining_bytes(), &valid[3..]);
+        assert_eq!(decoder.u8().unwrap(), 0xbb);
+        assert_eq!(super::wire::zeroes(&mut decoder, 0), Ok(()));
+        assert!(decoder.is_empty());
+    }
+
+    #[test]
+    fn reserved_error_precedes_later_digest_and_tail_failures() {
+        let (assignment, namespace, policy) = fixture();
+        let plan = NetworkKernelPlanV1::compile(assignment, &namespace, &policy).unwrap();
+        let golden = decode_hex(include_str!(
+            "../../../tests/sandbox/network-kernel-plan-v1.hex"
+        ));
+        assert_eq!(plan.as_bytes(), golden);
+        assert_eq!(NetworkKernelPlanV1::decode(&golden).unwrap(), plan);
+
+        let mut missing_profile = golden.clone();
+        missing_profile[192..224].fill(0);
+        let mut trailing = golden.clone();
+        trailing.push(0);
+        let declared_length = u32::try_from(trailing.len()).unwrap();
+        trailing[12..16].copy_from_slice(&declared_length.to_be_bytes());
+
+        for (mut bytes, later_error) in [
+            (missing_profile, NetworkKernelPlanError::Invalid("missing profile digest")),
+            (trailing, NetworkKernelPlanError::LengthMismatch),
+        ] {
+            bytes[139] = 1;
+
+            assert_eq!(
+                NetworkKernelPlanV1::decode(&bytes),
+                Err(NetworkKernelPlanError::Invalid("reserved bytes are nonzero"))
+            );
+
+            bytes[139] = 0;
+            assert_eq!(NetworkKernelPlanV1::decode(&bytes), Err(later_error));
+        }
+    }
 }
