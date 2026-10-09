@@ -1730,6 +1730,44 @@
       "shared_evidence": "cbor"
     },
     {
+      "codec": "Contextual Index carrier Entry and Node",
+      "public_api": [
+        "indexing::carrier::{classify_entry,validate_row,validate_node,validate_namespace_attributes,SemanticContext::new}"
+      ],
+      "tests": [
+        "index_carriers::contextual_carrier_models_preserve_roles_shapes_and_property_placement"
+      ],
+      "requirements": [
+        "TEST-3",
+        "CRATE-4",
+        "OBJ-4",
+        "OBJ-19",
+        "TREE-25",
+        "TREE-26",
+        "TREE-27",
+        "TREE-28",
+        "TREE-35",
+        "DRV-30",
+        "PROP-31"
+      ],
+      "models": [
+        "24 seeded object, route and gap field models; six integer-width boundaries crossed with four samples; 192 independently framed terminal/forward Entry and leaf combinations under four explicit roles",
+        "96 independent internal separators with count/weight u64::MAX; 24 exact index-gaps root property wrappers; independent Node-domain digest equality"
+      ],
+      "closed_alternatives": [
+        "Primary, Gap, PresentRoute and MissingRoute roles; terminal and forward carrier shapes"
+      ],
+      "optional_fields": [
+        "Occurrence pointer absent/present; root property binding absent/present"
+      ],
+      "limits_and_malformed_cases": [
+        "Generic-valid contextual refusals: wrong object suffix, primary/gap terminal, missing/extra targets, empty attrs/xattrs, provenance, unrelated attribute, pointer widths0/1/31/33/64 and scalar/container types",
+        "Path grammar, component256 and path4097; forbidden role/nonroot/empty properties; historical revision1 preserves structural pointer as inert data while revision2 rejects it in namespace attributes; unsupported semantic tuples"
+      ],
+      "shared_evidence": "cbor",
+      "scope_limit": "Local format and role syntax only. Nonempty child/source graph, occurrence relationships, coverage and current authority require their separate owning witnesses."
+    },
+    {
       "codec": "ConsumedViewInterpretation",
       "public_api": [
         "gc::publication::evidence::ConsumedViewInterpretation::{encode,decode}"
@@ -2060,6 +2098,11 @@
       "id": "records::embedded_provenance_tokens_reject_block_and_grant_limits",
       "source": "crates/terrane-core/tests/format_properties/records.rs",
       "seed": "0x6492_d180_eb7c_a921"
+    },
+    {
+      "id": "index_carriers::contextual_carrier_models_preserve_roles_shapes_and_property_placement",
+      "source": "crates/terrane-core/tests/format_properties/index_carriers.rs",
+      "seed": "0x4f31_73a2_50bc_869d"
     }
   ],
   "private_unit_evidence": [
@@ -2117,7 +2160,7 @@
       "seed": "0x13d7_a956_b287_f641",
       "models": "144 ordinary unverified models: 12 integer boundaries crossed with all three principal kinds and all four optional-field patterns; text byte lengths 0/1/23/24/255/256; groups 0/1/23/24/256; grants 1/23/24/256 and all 31 nonzero verb masks; token identifiers, next-keys and signatures all zero/all ff/seeded bytes",
       "projection_evidence": "Independent numeric field projection; exact key12 omission; whole canonical map parsing; every body field and next-key sensitivity; signature-only changes preserve bytes; actual stored Token field-codec roundtrip without issuance or verification",
-      "scope_limit": "Private encoder evidence is separate from the 58 public integration cases. Preimages have no standalone decoder by design; this does not instrument allocation or test authenticated authority."
+      "scope_limit": "Private encoder evidence is separate from the public integration corpus. Preimages have no standalone decoder by design; this does not instrument allocation or test authenticated authority."
     },
     {
       "codec": "Attenuation signature-preimage projection",
@@ -2131,7 +2174,7 @@
       "seed": "0x57a3_c896_21ef_04bd",
       "models": "192 ordinary unverified models: 12 integer boundaries crossed with all 16 field-presence patterns; all nine caveats in rotated/repeated ordered collections; all eight locality presences and empty/present text; grants 1/23/24/256 and all 31 nonzero verb masks; next-keys/signatures all zero/all ff/seeded bytes",
       "projection_evidence": "Independent numeric field projection; exact key6 omission; whole canonical map parsing; every body field and next-key sensitivity; signature-only changes preserve bytes; actual stored Token field-codec roundtrip without issuance or verification",
-      "scope_limit": "Tests the private block projection, not the previous-signature concatenation or signing/verification workflow. Separate from the 58 public integration cases; no standalone preimage decoder is invented."
+      "scope_limit": "Tests the private block projection, not the previous-signature concatenation or signing/verification workflow. Separate from the public integration corpus; no standalone preimage decoder is invented."
     }
   ],
   "gaps_and_deferred_formats": [
