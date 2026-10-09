@@ -18,6 +18,7 @@ identifiers refer to RFC-0025; the RFC controls if these plans disagree with it.
 | [Refactoring plan](refactoring-plan.md) | Extraction and renaming boundaries, compatibility classifications, and implementation constraints |
 | [Phased implementation](phased-implementation.md) | Dependency-ordered tasks, deliverables, exit criteria, risks, and rollback points |
 | [Qualification plan](qualification-plan.md) | Existing regression coverage, new behavioral qualification, performance methodology, and requirement traceability |
+| [Implementation status](implementation-status.md) | Tested implementation stages, active integration work, and native qualification gaps |
 
 ## Scope and engineering posture
 
@@ -43,8 +44,10 @@ does not authorize a backend to substitute a weaker operating mode after launch.
 Documentation review can verify source references, local links, requirement
 coverage, and internal consistency. It cannot establish runtime correctness,
 timing accuracy, device parity, complete state preservation, or performance.
-All test programs described here are future implementation work unless explicitly
-identified as existing source. There are no new benchmark results in this plan.
+The original audit and phased plan describe intended work. The separate
+[implementation status](implementation-status.md) records implemented stages;
+[reference baseline](reference-baseline.md) records measured reference runs and
+their exact artifact identities. Neither changes a profile's qualification.
 
 Large traces, profiles, raw timing logs, and native state dumps remain local
 qualification artifacts. Future change descriptions should include concise

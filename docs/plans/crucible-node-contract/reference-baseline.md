@@ -77,16 +77,16 @@ parent only by that literal hash substitution.
 
 ## Compatibility and dependency inventory
 
-[reference-compatibility.tsv](reference-compatibility.tsv) records version,
-schema, magic, and domain constant declarations from the parent revision,
-including private constants. It excludes test/golden-vector files, long compound
-expressions, and dynamically constructed domains. It is a source inventory,
-not a proof that every mutable field has a serialization witness.
+The local compatibility audit records 541 version, schema, magic, and domain
+constant declarations from the parent revision, including private constants.
+It excludes test/golden-vector files, long compound expressions, and dynamically
+constructed domains. This source inventory does not prove that every mutable
+field has a serialization witness. Generated audit tables remain local.
 
-[reference-dependencies.tsv](reference-dependencies.tsv) records all dependency
-declarations in the 19 existing Crucible manifests, including development,
-build, optional, feature, and target-conditioned declarations. This is the
-declared package graph, not Cargo's resolved feature graph. In particular:
+The local dependency audit records 195 declarations in the 19 existing Crucible
+manifests, including development, build, optional, feature, and target-conditioned
+declarations. This is the declared package graph, not Cargo's resolved feature
+graph. In particular:
 
 - `crucible-sim` owns the pure lower-layer vocabulary and codecs.
 - `crucible-device` depends on sim and shmem rather than the engine.
