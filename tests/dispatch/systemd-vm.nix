@@ -45,7 +45,7 @@
             };
             solvers = {
               cpuWeight = 100;
-              memoryHighBytes = 268435456;
+              memoryHighBytes = 402653184;
               memoryMaxBytes = 402653184;
               tasksMax = 64;
             };

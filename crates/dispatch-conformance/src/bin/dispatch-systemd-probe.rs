@@ -48,6 +48,19 @@ fn profile() -> ProbeResult<SystemdProfile> {
     )?)
 }
 
+fn oom_profile() -> ProbeResult<SystemdProfile> {
+    let normal = profile()?;
+    let mut limits = normal.limits().clone();
+    limits.memory_high_bytes = limits.memory_max_bytes;
+
+    Ok(SystemdProfile::new(
+        normal.application(),
+        normal.owner_unit(),
+        normal.manager(),
+        limits,
+    )?)
+}
+
 fn launch(runner: &Path, native: &Path, generation: u64) -> WorkerLaunch {
     WorkerLaunch {
         runner: runner.to_owned(),
@@ -215,9 +228,13 @@ async fn run(runner: PathBuf, native: PathBuf) -> ProbeResult<()> {
     command(&mut second, "hello").await?;
     required_line(&mut second).await?;
 
-    let mut memory = first_provider.launch(launch(&runner, &native, 3)).await?;
+    // Ordinary workers retain the reclaim threshold checked above. Exercise
+    // hard OOM with an explicit profile whose high threshold equals its max.
+    let oom_provider = SystemdProvider::connect(oom_profile()?).await?;
+    let mut memory = oom_provider.launch(launch(&runner, &native, 3)).await?;
     let memory_info = required_line(&mut memory).await?;
-    group(&memory_info)?;
+    let memory_group = group(&memory_info)?;
+    assert_file(memory_group.join("memory.high"), "100663296").await?;
     command(&mut memory, "memory").await?;
     if let Some(result) = line(&mut memory).await?
         && result["native_exit"].as_i64() != Some(-9)
@@ -243,7 +260,7 @@ async fn run(runner: PathBuf, native: PathBuf) -> ProbeResult<()> {
     let ancestor_oom_before = local_oom_events(solver_parent).await?;
     let mut held_workers = Vec::new();
     for generation in 4..10 {
-        let mut worker = first_provider
+        let mut worker = oom_provider
             .launch(launch(&runner, &native, generation))
             .await?;
         let info = required_line(&mut worker).await?;
