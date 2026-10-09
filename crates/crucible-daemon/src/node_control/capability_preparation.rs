@@ -20,6 +20,7 @@ impl NodeControlRequest {
                 request: Box::new(request),
             },
         };
+
         request.validate()?;
         Ok(request)
     }
@@ -38,6 +39,7 @@ impl NodeControlRequest {
             request_id: Id::new(request_id)?,
             command: NodeControlCommand::CapabilityPreparationStatus { execution },
         };
+
         request.validate()?;
         Ok(request)
     }

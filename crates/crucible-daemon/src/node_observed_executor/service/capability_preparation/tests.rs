@@ -54,8 +54,30 @@ fn request() -> CapabilityPreparationRequest {
             extensions: vec![],
         }],
     };
-    CapabilityPreparationRequest {format:"crucible.capability-preparation-request".into(),version:1,ledger:"model-original".into(),execution:"81818181818181818181818181818181".into(),requirements:Bytes::new([b" \n".as_slice(),encode(&demands).unwrap().as_slice()].concat()),candidates:vec![CapabilityCandidateRecipe{id:Id::new("model-clock").unwrap(),selections:vec![InstalledNodeSelection{node:Id::new("clock").unwrap(),owner:Id::new("owner").unwrap(),kind:crate::node_observed_executor::InstalledNodeKind::HostClock}]}],configuration:Bytes::new(br#"{"format":"crucible.node-run-configuration","version":1,"horizon_ps":"10","maximum_rounds":"8"}"#.to_vec()),action:CapabilityPreparationAction::Observe{}}
+    CapabilityPreparationRequest {
+        format: "crucible.capability-preparation-request".into(),
+        version: 1,
+        ledger: "model-original".into(),
+        execution: "81818181818181818181818181818181".into(),
+        requirements: Bytes::new([
+            b" \n".as_slice(),
+            encode(&demands).unwrap().as_slice()
+        ].concat()),
+        candidates: vec![CapabilityCandidateRecipe {
+            id: Id::new("model-clock").unwrap(),
+            selections: vec![InstalledNodeSelection {
+                node: Id::new("clock").unwrap(),
+                owner: Id::new("owner").unwrap(),
+                kind: crate::node_observed_executor::InstalledNodeKind::HostClock
+            }]
+        }],
+        configuration: Bytes::new(
+            br#"{"format":"crucible.node-run-configuration","version":1,"horizon_ps":"10","maximum_rounds":"8"}"#.to_vec()
+        ),
+        action: CapabilityPreparationAction::Observe {}
+    }
 }
+
 fn storage(
     directory: &std::path::Path,
 ) -> (Arc<dyn ImmutableBlobBackend>, Arc<dyn MutableRefBackend>) {
@@ -67,6 +89,7 @@ fn storage(
         Arc::new(DirectoryRefBackend::new(directory.join("refs"))),
     )
 }
+
 #[test]
 fn original_raw_custody_survives_restart_and_changed_context_never_dispatches() {
     let directory = tempfile::tempdir().unwrap();
@@ -84,6 +107,7 @@ fn original_raw_custody_survives_restart_and_changed_context_never_dispatches() 
         .unwrap();
     let raw: CapabilityPreparationRequest = serde_json::from_slice(&body).unwrap();
     assert_eq!(raw.requirements, original.requirements);
+
     let restarted = ledger::CapabilityPreparationLedger::new(blobs, refs).unwrap();
     let same = restarted.reserve(&original).unwrap();
     assert!(!same.original_dispatch);
@@ -102,6 +126,7 @@ fn original_raw_custody_survives_restart_and_changed_context_never_dispatches() 
             )
             .is_err()
     );
+
     let mut changed = original.clone();
     changed.requirements = Bytes::new([original.requirements.as_slice(), b" "].concat());
     assert!(restarted.reserve(&changed).is_err());
@@ -110,6 +135,7 @@ fn original_raw_custody_survives_restart_and_changed_context_never_dispatches() 
         encode(&first.record).unwrap()
     );
 }
+
 #[test]
 fn pending_status_and_exact_retry_do_not_wait_for_actor_and_full_queue_keeps_original() {
     let directory = tempfile::tempdir().unwrap();
@@ -150,6 +176,7 @@ fn pending_status_and_exact_retry_do_not_wait_for_actor_and_full_queue_keeps_ori
         )
         .unwrap()
     );
+
     let mut excess = original;
     excess.execution = "82828282828282828282828282828282".into();
     let unavailable = service
@@ -163,6 +190,7 @@ fn pending_status_and_exact_retry_do_not_wait_for_actor_and_full_queue_keeps_ori
         encode(&unavailable).unwrap(),
         encode(&service.submit_capability_preparation(excess).unwrap()).unwrap()
     );
+
     let command = receiver.try_recv().unwrap();
     assert!(matches!(
         receiver.try_recv(),
@@ -174,11 +202,17 @@ fn pending_status_and_exact_retry_do_not_wait_for_actor_and_full_queue_keeps_ori
         CapabilityPreparationState::Unavailable { .. }
     ));
 }
+
 #[test]
 fn exhausted_persistent_credit_refuses_before_request_placement() {
     let directory = tempfile::tempdir().unwrap();
     let (blobs, refs) = storage(directory.path());
-    let bytes=encode(&serde_json::json!({"format":"crucible.capability-preparation-quota","version":1,"consumed":4096})).unwrap();
+    let bytes = encode(&serde_json::json!({
+        "format": "crucible.capability-preparation-quota",
+        "version": 1,
+        "consumed": 4096
+    }))
+    .unwrap();
     let quota = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
     assert!(
         blobs
@@ -192,6 +226,7 @@ fn exhausted_persistent_credit_refuses_before_request_placement() {
         quota,
     )
     .unwrap();
+
     let ledger = ledger::CapabilityPreparationLedger::new(blobs.clone(), refs).unwrap();
     let request = request();
     let body = ContentId::for_bytes(ObjectKind::Trace, 1, &encode(&request).unwrap());
@@ -199,6 +234,7 @@ fn exhausted_persistent_credit_refuses_before_request_placement() {
     assert!(!blobs.contains(body).unwrap());
     assert!(!ledger.owns(&request.execution).unwrap());
 }
+
 #[test]
 fn wrong_edition_unknown_fields_and_mandatory_nullable_context_fail_closed() {
     let original_request = request();

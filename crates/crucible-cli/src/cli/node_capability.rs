@@ -51,6 +51,7 @@ pub(super) fn run(command: &NodeCapabilityCommand) -> Result<(), CliError> {
             .map_err(node_error)?,
         ),
     };
+
     let reply = request_node_control(socket, &request).map_err(node_error)?;
     let record = decode_capability_preparation(&reply).map_err(node_error)?;
     println!("{}", serde_json::to_string(&record).map_err(node_error)?);

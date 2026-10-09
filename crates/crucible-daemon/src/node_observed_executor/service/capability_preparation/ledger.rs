@@ -49,6 +49,7 @@ impl CapabilityPreparationLedger {
                 "capability preparation requires durable original refs",
             ));
         }
+
         Ok(Self { blobs, refs })
     }
 
@@ -79,6 +80,7 @@ impl CapabilityPreparationLedger {
                 original_dispatch: false,
             });
         }
+
         self.reserve_credit()?;
         self.put(request_id, bytes)?;
         let record = CapabilityPreparationRecord {
@@ -161,6 +163,7 @@ impl CapabilityPreparationLedger {
                 "capability completion differs from original pending custody",
             ));
         }
+
         let record = CapabilityPreparationRecord {
             outcome,
             ..reservation.record.clone()

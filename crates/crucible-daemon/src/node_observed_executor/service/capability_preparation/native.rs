@@ -75,6 +75,7 @@ fn advance(
         .map_err(refused)?
         .accept_boundary_observation(observed)
         .map_err(refused)?;
+
     let operation = Id::new(format!("capability/{execution}/advance")).map_err(refused)?;
     let grant = plan_exact_operation::<crate::node_observed_executor::NodeObservedError, _>(
         runtime,
@@ -93,6 +94,7 @@ fn advance(
     )
     .map_err(refused)?
     .ok_or_else(|| refused("actual Clock planner has no safe grant"))?;
+
     let BeginResult::Accepted(token) = runtime.begin_admitted(grant).map_err(refused)? else {
         return Err(refused(
             "actual native Clock refused original planner grant",
@@ -105,6 +107,7 @@ fn advance(
         return Err(refused("installed synchronous Clock did not complete"));
     };
     let outcome = result.map_err(refused)?;
+
     let receipt = runtime.scheduling_receipt(&token).map_err(refused)?;
     let commit = runtime
         .commit_scheduling_receipt(receipt)
@@ -112,6 +115,7 @@ fn advance(
     runtime
         .acknowledge_scheduled(&token, &commit)
         .map_err(refused)?;
+
     if outcome.scheduling.as_ref().is_none_or(|value| {
         value.reached != Position::new(horizon, 0.into(), Phase::BoundaryControl)
     }) {

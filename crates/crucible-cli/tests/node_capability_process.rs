@@ -33,6 +33,7 @@ fn cli(args: &[&str]) -> Output {
         .output()
         .unwrap()
 }
+
 fn success(args: &[&str]) -> Value {
     let result = cli(args);
     assert!(
@@ -42,7 +43,9 @@ fn success(args: &[&str]) -> Value {
     );
     serde_json::from_slice(&result.stdout).unwrap()
 }
+
 struct Daemon(Child);
+
 impl Daemon {
     fn start(policy: &Path, socket: &Path) -> Self {
         let child = Command::new(env!("CARGO_BIN_EXE_crucible"))
@@ -52,6 +55,7 @@ impl Daemon {
             .spawn()
             .unwrap();
         let mut daemon = Self(child);
+
         let deadline = Instant::now() + Duration::from_secs(20);
         while !socket.exists() {
             assert!(
@@ -61,14 +65,17 @@ impl Daemon {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(10));
         }
+
         daemon
     }
 }
+
 impl Drop for Daemon {
     fn drop(&mut self) {
         if let Some(pid) = rustix::process::Pid::from_raw(self.0.id() as i32) {
             let _ = rustix::process::kill_process(pid, rustix::process::Signal::INT);
         }
+
         let deadline = Instant::now() + Duration::from_secs(30);
         while self.0.try_wait().unwrap().is_none() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
@@ -79,16 +86,35 @@ impl Drop for Daemon {
         self.0.wait().unwrap();
     }
 }
+
 fn policy(directory: &Path, device: &Path) -> (PathBuf, PathBuf) {
     fs::create_dir_all(directory).unwrap();
     fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+
     let socket = directory.join("control.sock");
     let path = directory.join("policy.json");
     let expected =
         canonical::content_ref(&fs::read(device).unwrap(), "application/octet-stream").unwrap();
-    fs::write(&path, serde_json::to_vec(&json!({"format":"crucible.node-daemon-policy","version":1,"state_directory":directory,"socket":socket,"device_executable":device,"expected_device":expected,"control_timeout_ms":3000,"maximum_worlds":4,"maximum_pending_requests":4})).unwrap()).unwrap();
+    fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "format": "crucible.node-daemon-policy",
+            "version": 1,
+            "state_directory": directory,
+            "socket": socket,
+            "device_executable": device,
+            "expected_device": expected,
+            "control_timeout_ms": 3000,
+            "maximum_worlds": 4,
+            "maximum_pending_requests": 4
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
     (path, socket)
 }
+
 fn demands(scenario: &NodeScenario) -> CapabilityRequirements {
     let binding = &scenario.compatibility[0];
     let object = |reference| {
@@ -103,6 +129,7 @@ fn demands(scenario: &NodeScenario) -> CapabilityRequirements {
         serde_json::from_slice(object(&binding.capabilities_ref)).unwrap();
     let guarantee: GuaranteeProfile =
         serde_json::from_slice(object(&binding.guarantees_ref)).unwrap();
+
     CapabilityRequirements {
         format: CAPABILITY_REQUIREMENTS_FORMAT.into(),
         schema_version: 1,
@@ -137,6 +164,7 @@ fn demands(scenario: &NodeScenario) -> CapabilityRequirements {
         }],
     }
 }
+
 fn request(
     execution: &str,
     demand: &CapabilityRequirements,
@@ -150,8 +178,25 @@ fn request(
         serde_json::to_vec(demand).unwrap().as_slice(),
     ]
     .concat();
-    json!({"format":"crucible.capability-preparation-request","version":1,"ledger":"operator-capabilities","execution":execution,"requirements":Bytes::new(raw),"candidates":candidates,"configuration":Bytes::new(serde_json::to_vec(&json!({"format":"crucible.node-run-configuration","version":1,"horizon_ps":horizon.to_string(),"maximum_rounds":"8"})).unwrap()),"action":action})
+
+    json!({
+        "format": "crucible.capability-preparation-request",
+        "version": 1,
+        "ledger": "operator-capabilities",
+        "execution": execution,
+        "requirements": Bytes::new(raw),
+        "candidates": candidates,
+        "configuration": Bytes::new(serde_json::to_vec(&json!({
+            "format": "crucible.node-run-configuration",
+            "version": 1,
+            "horizon_ps": horizon.to_string(),
+            "maximum_rounds": "8"
+        }))
+        .unwrap()),
+        "action": action
+    })
 }
+
 fn submit(socket: &Path, path: &Path, request: &Value) -> CapabilityPreparationRecord {
     fs::write(path, serde_json::to_vec(request).unwrap()).unwrap();
     serde_json::from_value(success(&[
@@ -164,6 +209,7 @@ fn submit(socket: &Path, path: &Path, request: &Value) -> CapabilityPreparationR
     ]))
     .unwrap()
 }
+
 fn finished(socket: &Path, execution: &str) -> CapabilityPreparationRecord {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -189,6 +235,7 @@ fn finished(socket: &Path, execution: &str) -> CapabilityPreparationRecord {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+
 fn copy_files(source: &Path, target: &Path) {
     fs::create_dir_all(target).unwrap();
     fs::set_permissions(target, fs::Permissions::from_mode(0o700)).unwrap();
@@ -207,6 +254,7 @@ fn copy_files(source: &Path, target: &Path) {
         }
     }
 }
+
 fn native_state(
     directory: &Path,
     record: &CapabilityPreparationRecord,
@@ -280,6 +328,7 @@ fn actual_cli_capabilities_queue_clock_worker_and_preserve_two_source_gone_branc
         crucible_core::node_admission::CAPABILITY_SELECTION_MEDIA_TYPE
     );
     assert!(!observed_request.as_slice().is_empty());
+
     let selection: crucible_core::node_admission::CapabilitySelection = serde_json::from_slice(
         &selected_scenario
             .content
@@ -299,6 +348,7 @@ fn actual_cli_capabilities_queue_clock_worker_and_preserve_two_source_gone_branc
             .bytes,
         original_raw.as_slice()
     );
+
     let deadline = Instant::now() + Duration::from_secs(30);
     let outcome = loop {
         let status = success(&[
@@ -360,10 +410,20 @@ fn actual_cli_capabilities_queue_clock_worker_and_preserve_two_source_gone_branc
         panic!("{captured:?}");
     };
     let artifact = artifact.clone();
+
     // Context and ambiguity negatives cannot allocate a world or change the
     // successful original receipt. Changed original request bytes never retry.
     let mut changed = capture.clone();
-    changed["configuration"] = serde_json::to_value(Bytes::new(serde_json::to_vec(&json!({"format":"crucible.node-run-configuration","version":1,"horizon_ps":"11","maximum_rounds":"8"})).unwrap())).unwrap();
+    changed["configuration"] = serde_json::to_value(Bytes::new(
+        serde_json::to_vec(&json!({
+            "format": "crucible.node-run-configuration",
+            "version": 1,
+            "horizon_ps": "11",
+            "maximum_rounds": "8"
+        }))
+        .unwrap(),
+    ))
+    .unwrap();
     fs::write(&path, serde_json::to_vec(&changed).unwrap()).unwrap();
     assert!(
         !cli(&[
@@ -377,6 +437,7 @@ fn actual_cli_capabilities_queue_clock_worker_and_preserve_two_source_gone_branc
         .status
         .success()
     );
+
     let mut ambiguous = candidates.clone();
     ambiguous
         .as_array_mut()
@@ -394,6 +455,7 @@ fn actual_cli_capabilities_queue_clock_worker_and_preserve_two_source_gone_branc
         finished(&socket, &original.execution).outcome,
         CapabilityPreparationState::Unavailable { .. }
     ));
+
     let mut unsupported = demand.clone();
     unsupported.nodes[0].guarantees.conditional_replay = true;
     let refusal = request(
@@ -408,6 +470,7 @@ fn actual_cli_capabilities_queue_clock_worker_and_preserve_two_source_gone_branc
         finished(&socket, &original.execution).outcome,
         CapabilityPreparationState::Unavailable { .. }
     ));
+
     drop(daemon);
     let left = directory.path().join("left");
     let right = directory.path().join("right");
@@ -415,6 +478,7 @@ fn actual_cli_capabilities_queue_clock_worker_and_preserve_two_source_gone_branc
     copy_files(&directory.path().join("original"), &right);
     fs::remove_dir_all(directory.path().join("original")).unwrap();
     assert!(!directory.path().join("original").exists());
+
     let mut branches = Vec::new();
     for (namespace, nonce) in [
         (&left, "75757575757575757575757575757575"),
@@ -468,6 +532,7 @@ fn actual_cli_capabilities_queue_clock_worker_and_preserve_two_source_gone_branc
         );
         drop(daemon);
     }
+
     assert_ne!(branches[0].0, branches[1].0);
     assert_eq!(branches[0].1, branches[1].1);
     assert_eq!(branches[0].2["reached"], branches[1].2["reached"]);

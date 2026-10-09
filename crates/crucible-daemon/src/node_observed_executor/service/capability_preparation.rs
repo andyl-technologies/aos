@@ -111,12 +111,14 @@ impl CapabilityPreparationRequest {
                 "capability request edition or finite geometry differs",
             ));
         }
+
         let demands: crucible::node_admission::CapabilityRequirements = serde_json::from_value(
             canonical::parse_json(self.requirements.as_slice(), 1024 * 1024).map_err(refused)?,
         )
         .map_err(refused)?;
         demands.validate().map_err(refused)?;
         NodeRunConfiguration::from_json(self.configuration.as_slice()).map_err(refused)?;
+
         for candidate in &self.candidates {
             candidate.id.validate().map_err(refused)?;
             if candidate.selections.is_empty()
@@ -129,9 +131,11 @@ impl CapabilityPreparationRequest {
                 return Err(refused("capability complete candidate geometry differs"));
             }
         }
+
         if let CapabilityPreparationAction::Continue { source } = &self.action {
             source.validate().map_err(refused)?;
         }
+
         if encode(self)?.len() > 4 * 1024 * 1024 {
             return Err(refused("capability original request exceeds byte credit"));
         }
@@ -391,6 +395,7 @@ pub(super) fn execute(
     if workers.len() >= maximum_worlds {
         return Err(NodeObservationServiceError::Capacity);
     }
+
     let candidates = request
         .candidates
         .iter()
@@ -409,6 +414,7 @@ pub(super) fn execute(
     if !matches!(request.action, CapabilityPreparationAction::Observe {}) {
         return native::execute(request, catalog, resolved, configuration, storage);
     }
+
     let backend = catalog
         .prepare_capability(
             &resolved,
@@ -438,6 +444,7 @@ pub(super) fn execute(
             config.payload().to_vec(),
         )
         .map_err(refused)?;
+
     let original = backend.request(execution).map_err(refused)?;
     let admission = backend.admission().clone();
     let worker =
@@ -451,6 +458,7 @@ pub(super) fn execute(
             replay: None,
         },
     );
+
     let owned = workers
         .get_mut(&execution)
         .ok_or_else(|| refused("original capability worker custody absent"))?;
