@@ -1136,12 +1136,14 @@ impl BoundedWriter {
 
 impl io::Write for BoundedWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        append_with_capped_doubling(&mut self.bytes, bytes, self.maximum_bytes).map_err(|error| match error {
-            BoundedAppendError::LimitExceeded => {
-                self.exceeded = true;
-                io::Error::other("publisher authority record is too large")
+        append_with_capped_doubling(&mut self.bytes, bytes, self.maximum_bytes).map_err(|error| {
+            match error {
+                BoundedAppendError::LimitExceeded => {
+                    self.exceeded = true;
+                    io::Error::other("publisher authority record is too large")
+                }
+                BoundedAppendError::Allocation(error) => io::Error::other(error),
             }
-            BoundedAppendError::Allocation(error) => io::Error::other(error),
         })
     }
 

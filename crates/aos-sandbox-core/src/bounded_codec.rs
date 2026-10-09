@@ -70,16 +70,14 @@ pub fn append_with_capped_doubling(
     if next > maximum {
         return Err(BoundedAppendError::LimitExceeded);
     }
+
     if next > output.capacity() {
-        let capacity = output
-            .capacity()
-            .saturating_mul(2)
-            .max(next)
-            .min(maximum);
+        let capacity = output.capacity().saturating_mul(2).max(next).min(maximum);
         output
             .try_reserve_exact(capacity - output.len())
             .map_err(BoundedAppendError::Allocation)?;
     }
+
     output.extend_from_slice(input);
     Ok(input.len())
 }
@@ -212,7 +210,10 @@ mod tests {
         let pointer = bytes.as_ptr();
 
         assert_eq!(append_with_capped_doubling(&mut bytes, &[], 2).unwrap(), 0);
-        assert_eq!(append_with_capped_doubling(&mut bytes, b"cd", 4).unwrap(), 2);
+        assert_eq!(
+            append_with_capped_doubling(&mut bytes, b"cd", 4).unwrap(),
+            2
+        );
 
         assert_eq!(bytes, b"abcd");
         assert_eq!(bytes.capacity(), capacity);
@@ -226,11 +227,17 @@ mod tests {
         let maximum = bytes.len() + 3;
         let original_length = bytes.len();
 
-        assert_eq!(append_with_capped_doubling(&mut bytes, b"bc", maximum).unwrap(), 2);
+        assert_eq!(
+            append_with_capped_doubling(&mut bytes, b"bc", maximum).unwrap(),
+            2
+        );
         assert!(bytes.capacity() >= maximum);
         assert_eq!(&bytes[..original_length], vec![b'a'; original_length]);
         assert_eq!(&bytes[original_length..], b"bc");
-        assert_eq!(append_with_capped_doubling(&mut bytes, b"d", maximum).unwrap(), 1);
+        assert_eq!(
+            append_with_capped_doubling(&mut bytes, b"d", maximum).unwrap(),
+            1
+        );
 
         let original = bytes.clone();
         let capacity = bytes.capacity();
