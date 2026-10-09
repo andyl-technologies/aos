@@ -128,11 +128,13 @@ empty `terrane` binary.
 The combined read candidate `be832963c4` failed strict native all-target
 Clippy on two large enum variants. The reviewed enum, PACK-16 attribution,
 native fixture, producer-history and GC handoff corrections are composed on
-`f0d494fb01`. Its strict all-target check now fails on the public SDK fixture's
-disallowed randomized `HashMap`; no compiled inventory or runtime tests ran.
-An isolated fixture correction preserves full identity equality with ordered
-storage. Unchanged-budget runtime tests and the complete current trunk floor
-remain required before task acceptance, merge or push.
+`f0d494fb01`. Its public SDK fixture's disallowed randomized `HashMap` is
+corrected with full-identity ordered storage. The generic closing-pause fixture
+now uses its actual content observer. Strict native Clippy on `8b2ca826a8`
+then identifies an unused test accessor; its removal awaits fresh qualification.
+The registry Nix gate passes all 292 mappings and 69 current plan citations.
+No compiled inventory or runtime tests ran. Unchanged-budget runtime tests
+and the complete current trunk floor remain required before task acceptance.
 The frozen `9d122397a6` native recovery run is terminal: all thirty-one
 registered cases ran, with fourteen passes, eight failures and nine timeouts
 (2,770.386 seconds; run `cf52bbd2-6224-4a3c-bf53-54dba13b7583`, raw log

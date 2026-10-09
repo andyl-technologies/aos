@@ -286,12 +286,6 @@ impl NativePayloadRangeRead {
         }
     }
 
-    /// Identifies closing requests for forwarding test bindings.
-    #[cfg(all(test, feature = "tokio", unix))]
-    pub(crate) fn closing_for_test(&self) -> bool {
-        matches!(&self.recipe, Recipe::Check(_))
-    }
-
     /// Borrows the exact replay ranges retained by a real closing request.
     #[cfg(all(test, feature = "tokio", unix))]
     pub(crate) fn closing_data_ranges_for_test(
