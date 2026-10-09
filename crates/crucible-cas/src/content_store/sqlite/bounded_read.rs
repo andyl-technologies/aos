@@ -7,6 +7,7 @@ use super::*;
 use crate::owned_decode::DecodeBudget;
 use batch::{busy, diagnostic};
 
+mod merkle;
 mod session;
 pub(crate) use session::SqliteRamReadSession;
 

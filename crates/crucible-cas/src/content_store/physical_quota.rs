@@ -339,6 +339,39 @@ impl PhysicalQuotaStore {
 }
 
 impl ImmutableBlobBackend for PhysicalQuotaStore {
+    fn read_merkle_node_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<super::OwnedBlobBytes, StoreError> {
+        if id.kind() != ObjectKind::MerkleNode {
+            return Err(StoreError::Corrupt { id });
+        }
+        let mut check = || {
+            super::checked_reader::check(original, boundary)?;
+            self.guard.verify()
+        };
+        check()?;
+        let costs = self.directory_costs;
+        // Retain the same source/reader physical envelope through the child's
+        // native closure and final check, without allocating deferred owners.
+        let bytes = (deferred_source_metadata_bytes() as u64)
+            .checked_add(std::mem::size_of::<PhysicalCheckedReader>() as u64)
+            .and_then(|bytes| bytes.checked_add(costs.map_or(0, |costs| costs.source_bytes)))
+            .and_then(|bytes| bytes.checked_add(costs.map_or(0, |costs| costs.reader_bytes)))
+            .ok_or(StoreError::Quota)?;
+        let resources = self
+            .guard
+            .reserve_resources(u64::from(costs.is_some()), bytes)?;
+        let output = self
+            .child
+            .read_merkle_node_with_boundary(original, id, &mut check)?;
+        drop(resources);
+        check()?;
+        Ok(output)
+    }
+
     fn read_bounded_with_boundary(
         &self,
         request: &mut crate::ram::BoundedReadRequest<'_, '_>,

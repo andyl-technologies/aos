@@ -226,6 +226,11 @@ const INPUTS: &[Input] = &[
     Input {
         path: "crates/crucible-cas/src/content_store/sqlite/batch/busy/single_record.rs",
         required: &[
+            "consume_inner::<true>(original, connection, quarantined, boundary, record, admit, validate,)",
+            "if id.kind() != crate::content_store::ObjectKind::MerkleNode { return Err(StoreError::Corrupt { id }); } consume_inner::<false>(original, connection, quarantined, boundary, Record { id, maximum: crate::content_store::MAX_MERKLE_NODE_ENVELOPE_BYTES as u64, }, admit, |_| Ok(true),)",
+            "fn consume_inner<const AUTHENTICATE: bool>(",
+            "let attempt = read_attempt::<AUTHENTICATE>(",
+            "fn read_attempt<const AUTHENTICATE: bool>(",
             "let credit = snapshot::SnapshotScope::prepare(original)?;",
             "let mut statement = match check().and_then(|()| { connection.prepare(METADATA)",
             "let mut rows = statement.query([encoded])",
@@ -235,7 +240,7 @@ const INPUTS: &[Input] = &[
             "if blob.len() as u64 != length",
             "if bytes.capacity() < length || !bytes.is_empty()",
             "bytes.resize(length, 0); for chunk in bytes.chunks_mut(64 * 1024) { check()?; blob.read_exact(chunk)",
-            "if !id.authenticates(&bytes) { return Err(StoreError::Corrupt { id }); }",
+            "if AUTHENTICATE && !id.authenticates(&bytes) { return Err(StoreError::Corrupt { id }); }",
             "let valid = validate.take().ok_or(StoreError::Unsupported",
             "check()?; if !valid { return Err(StoreError::Unsupported",
             "cleanup[0] = blob.close().err();",
@@ -247,6 +252,9 @@ const INPUTS: &[Input] = &[
             "read_scope_error(result.err(), None, restoration, cleanup, SqliteCommitOutcome::NotCommitted, credit, None,)",
         ],
         counts: &[
+            ("consume_inner::<true>(", 1),
+            ("consume_inner::<false>(", 1),
+            ("read_attempt::<AUTHENTICATE>(", 1),
             ("snapshot::SnapshotScope::prepare(original)?", 1),
             ("connection.prepare(METADATA)", 1),
             ("admit.take()", 1),
@@ -254,10 +262,34 @@ const INPUTS: &[Input] = &[
             ("connection.blob_open(", 1),
             ("blob.read_exact(chunk)", 1),
             ("validate.take()", 1),
-            ("if !id.authenticates(&bytes)", 1),
+            ("if AUTHENTICATE && !id.authenticates(&bytes)", 1),
             ("blob.close().err()", 1),
             ("cleanup[1] = match rows.next()", 1),
             ("statement.finalize().err()", 1),
+        ],
+    },
+    // Ordinary RAM reads authenticate inside the native scope. Only the closed
+    // Merkle specialization moves that decision after fresh current-row EOF.
+    Input {
+        path: "crates/crucible-cas/src/content_store/sqlite/bounded_read/merkle.rs",
+        required: &[
+            "if id.kind() != ObjectKind::MerkleNode { return Err(StoreError::Corrupt { id }); }",
+            "checked_reader::check(original, boundary)?; let diagnostic = diagnostic::admit_for_merkle_record(original, &self.connection)?;",
+            "busy::single_record::consume_merkle(original, &connection, &self.quarantined, &mut check, id,",
+            "if length > MAX_MERKLE_NODE_ENVELOPE_BYTES as u64 { return Err(StoreError::Quota); }",
+            "checked_add(std::mem::size_of::<OwnedBlobBytes>() as u64)",
+            "let credit = original.reserve_scratch_bytes(extent).map_err(|error| { crate::content_store::batch::admission_under(original, error) })?; let mut bytes = Vec::new(); bytes.try_reserve_exact(capacity)",
+            ")?.finish(|bytes| bytes.ok_or(StoreError::NotFound { id }))?; let length = bytes.len() as u64; let accepted = busy::with_zero(",
+            "batch::reader::current_chunk(connection, &self.quarantined, check, id, 1, 0, length,)",
+            "accepted.finish(|eof| { check()?; if eof.as_ref().is_none_or(|bytes| !bytes.is_empty()) { return Err(StoreError::Corrupt { id }); } Ok(()) })?; if !id.authenticates(&bytes) { return Err(StoreError::Corrupt { id }); } drop(connection); drop(staging); check()?;",
+            "Ok(OwnedBlobBytes::prepared(bytes, credit))",
+        ],
+        counts: &[
+            ("busy::single_record::consume_merkle(", 1),
+            ("busy::with_zero(", 1),
+            ("batch::reader::current_chunk(", 1),
+            ("if !id.authenticates(&bytes)", 1),
+            ("original.reserve_scratch_bytes(extent)", 1),
         ],
     },
     Input {
@@ -357,6 +389,51 @@ mod tests {
         fs::create_dir_all(retired.parent().expect("retired source parent"))?;
         fs::write(&retired, "//! Retired implementation.\n")?;
         assert_eq!(retired_source_failures(root.path()).len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn fixed_merkle_specialization_cannot_replace_ram_authentication_or_fresh_eof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = super::super::super::workspace_root();
+        let native = INPUTS
+            .iter()
+            .find(|input| input.path.ends_with("busy/single_record.rs"))
+            .expect("native record contract");
+        let source = fs::read_to_string(root.join(native.path))?;
+        assert!(input_failures(native, &source).is_empty());
+
+        for (before, after) in [
+            ("consume_inner::<true>(", "consume_inner::<false>("),
+            ("consume_inner::<false>(", "consume_inner::<true>("),
+            (
+                "AUTHENTICATE && !id.authenticates(&bytes)",
+                "!id.authenticates(&bytes)",
+            ),
+        ] {
+            let changed = source.replacen(before, after, 1);
+            assert_ne!(changed, source);
+            assert!(!input_failures(native, &changed).is_empty());
+        }
+
+        let merkle = INPUTS
+            .iter()
+            .find(|input| input.path.ends_with("bounded_read/merkle.rs"))
+            .expect("fresh Merkle EOF contract");
+        let source = fs::read_to_string(root.join(merkle.path))?;
+        assert!(input_failures(merkle, &source).is_empty());
+        for (before, after) in [
+            ("batch::reader::current_chunk(", "snapshot_only_eof("),
+            (
+                "1,\n                        0,\n                        length,",
+                "1,\n                        0,\n                        0,",
+            ),
+            ("drop(staging);\n            check()?;", "drop(staging);"),
+        ] {
+            let changed = source.replacen(before, after, 1);
+            assert_ne!(changed, source);
+            assert!(!input_failures(merkle, &changed).is_empty());
+        }
         Ok(())
     }
 

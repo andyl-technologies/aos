@@ -439,3 +439,61 @@ fn physical_whole_retains_saved_guard_and_refuses_before_child_effects() {
         assert_eq!(guard.resources.usage().unwrap(), (0, 0));
     }
 }
+
+#[test]
+fn merkle_native_route_keeps_nested_physical_and_original_checks_before_child_io() {
+    let directory = tempfile::tempdir().unwrap();
+    let deepest = OrderedQuota::new();
+    let authorities = crate::content_store::SqliteBlobBackend::open_with_physical_quota_and_admin(
+        "merkle-physical-order",
+        directory.path(),
+        deepest.clone(),
+        8 << 20,
+        Arc::new(OrderedSupervisor(deepest)),
+        &crate::content_store::fixture_sqlite_heap().unwrap(),
+    )
+    .unwrap();
+    let inner_guard = OrderedQuota::new();
+    let inner: Arc<dyn ImmutableBlobBackend> = Arc::new(
+        PhysicalQuotaStore::new(
+            "inner",
+            authorities.0,
+            authorities.1.clone(),
+            inner_guard.clone(),
+        )
+        .unwrap(),
+    );
+    let outer_guard = OrderedQuota::new();
+    let outer =
+        PhysicalQuotaStore::new("outer", inner, authorities.1, outer_guard.clone()).unwrap();
+    let namespace = DecodeBudget::for_store(OrderedQuota::new()).unwrap();
+    let id = ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"no query may run");
+    inner_guard.refusal.store(2, Ordering::SeqCst);
+
+    for poison_original in [false, true] {
+        let operation = namespace.child().unwrap();
+        outer_guard
+            .refusal
+            .store(if poison_original { 3 } else { 1 }, Ordering::SeqCst);
+        *outer_guard.poison.lock().unwrap() = Some(operation.clone());
+        outer_guard.calls.store(0, Ordering::SeqCst);
+        inner_guard.calls.store(0, Ordering::SeqCst);
+        let error = outer
+            .read_merkle_node_with_boundary(&operation, id, &mut || Ok(()))
+            .unwrap_err();
+        if poison_original {
+            assert!(matches!(
+                error.original_failure(),
+                StoreError::DecodeAdmission { .. }
+            ));
+        } else {
+            assert!(matches!(error.original_failure(), StoreError::Unauthorized));
+        }
+        assert_eq!(outer_guard.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(inner_guard.calls.load(Ordering::SeqCst), 0);
+        outer_guard.poison.lock().unwrap().take();
+        drop(error);
+        drop(operation);
+        namespace.verify_live().unwrap();
+    }
+}

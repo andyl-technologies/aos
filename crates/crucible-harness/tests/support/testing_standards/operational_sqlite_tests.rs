@@ -371,7 +371,7 @@ fn checked_row_eof_contract_rejects_stale_lengths_and_missing_current_row_reads(
 
     for (before, after) in [
         (
-            "params![encoded,sqlite_offset,lengthasi64,self.logical_length]",
+            "params![encoded,sqlite_offset,lengthasi64,logical_length]",
             "params![encoded, sqlite_offset, length as i64, 0_u64]",
         ),
         (

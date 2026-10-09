@@ -43,6 +43,53 @@ pub(in crate::content_store::sqlite) fn consume(
     admit: impl FnOnce(u64) -> Result<Vec<u8>, StoreError>,
     validate: impl FnOnce(&[u8]) -> Result<bool, StoreError>,
 ) -> Result<Accepted<Option<Vec<u8>>>, StoreError> {
+    consume_inner::<true>(
+        original,
+        connection,
+        quarantined,
+        boundary,
+        record,
+        admit,
+        validate,
+    )
+}
+
+// Only the fixed Merkle entry may defer digest authentication until a fresh
+// post-native-close row query. The intermediate bytes remain crate-private.
+pub(in crate::content_store::sqlite) fn consume_merkle(
+    original: &crate::owned_decode::DecodeBudget,
+    connection: &Connection,
+    quarantined: &AtomicBool,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    id: ContentId,
+    admit: impl FnOnce(u64) -> Result<Vec<u8>, StoreError>,
+) -> Result<Accepted<Option<Vec<u8>>>, StoreError> {
+    if id.kind() != crate::content_store::ObjectKind::MerkleNode {
+        return Err(StoreError::Corrupt { id });
+    }
+    consume_inner::<false>(
+        original,
+        connection,
+        quarantined,
+        boundary,
+        Record {
+            id,
+            maximum: crate::content_store::MAX_MERKLE_NODE_ENVELOPE_BYTES as u64,
+        },
+        admit,
+        |_| Ok(true),
+    )
+}
+
+fn consume_inner<const AUTHENTICATE: bool>(
+    original: &crate::owned_decode::DecodeBudget,
+    connection: &Connection,
+    quarantined: &AtomicBool,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    record: Record,
+    admit: impl FnOnce(u64) -> Result<Vec<u8>, StoreError>,
+    validate: impl FnOnce(&[u8]) -> Result<bool, StoreError>,
+) -> Result<Accepted<Option<Vec<u8>>>, StoreError> {
     let mut check = || {
         crate::content_store::checked_reader::check(original, boundary)?;
         healthy(quarantined)
@@ -73,7 +120,7 @@ pub(in crate::content_store::sqlite) fn consume(
     let attempt = match connection.busy_timeout(Duration::ZERO) {
         Ok(()) => crate::content_store::batch::with_id_text(record.id, |encoded| {
             loop {
-                let attempt = read_attempt(
+                let attempt = read_attempt::<AUTHENTICATE>(
                     original,
                     connection,
                     record,
@@ -154,7 +201,7 @@ pub(in crate::content_store::sqlite) fn consume(
     }
 }
 
-fn read_attempt(
+fn read_attempt<const AUTHENTICATE: bool>(
     original: &crate::owned_decode::DecodeBudget,
     connection: &Connection,
     record: Record,
@@ -255,7 +302,7 @@ fn read_attempt(
                 }
                 // Known digest corruption precedes a later EOF poll. Pure
                 // framing/role errors remain private until that real poll.
-                if !id.authenticates(&bytes) {
+                if AUTHENTICATE && !id.authenticates(&bytes) {
                     return Err(StoreError::Corrupt { id });
                 }
                 let valid = validate.take().ok_or(StoreError::Unsupported {

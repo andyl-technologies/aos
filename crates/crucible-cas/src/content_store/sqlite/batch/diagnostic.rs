@@ -104,6 +104,21 @@ pub(in crate::content_store::sqlite) fn admit_for_single_record_query(
         .map_err(|error| admission_under(original, error))
 }
 
+pub(in crate::content_store::sqlite) fn admit_for_merkle_record(
+    original: &crate::owned_decode::DecodeBudget,
+    native_heap: &SqliteConnection,
+) -> Result<DecodeScratch, StoreError> {
+    let heap = reviewed_heap(native_heap.maximum_heap_bytes(), rusqlite::version_number())?;
+    // The native reader closes its blob, cursor, statement and timeout before
+    // the fresh EOF query starts. A native failure returns immediately, so its
+    // retained diagnostics never coexist with a fresh-query diagnostic.
+    let bytes = single_record_peak_bytes(heap, super::busy::single_record::METADATA.len())?
+        .max(peak_bytes_for_query(heap, None, SOURCE_SQL.len())?);
+    original
+        .reserve_scratch_bytes(bytes)
+        .map_err(|error| admission_under(original, error))
+}
+
 fn reviewed_heap(heap: u64, version: i32) -> Result<u64, StoreError> {
     if version != AUDITED_SQLITE_VERSION {
         return Err(StoreError::Unsupported {

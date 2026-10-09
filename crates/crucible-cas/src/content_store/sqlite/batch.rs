@@ -8,7 +8,7 @@ use crate::content_store::batch::{admit_receipts, read_source, with_id_text};
 pub(super) mod busy;
 pub(super) mod diagnostic;
 pub(super) mod metadata;
-mod reader;
+pub(super) mod reader;
 
 impl SqliteBlobBackend {
     pub(super) fn put_batch_with_boundary(

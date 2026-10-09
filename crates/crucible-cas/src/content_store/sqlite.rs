@@ -651,6 +651,15 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
         checked_reader::lookup(self, account, id, range, boundary)
     }
 
+    fn read_merkle_node_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<super::OwnedBlobBytes, StoreError> {
+        self.consume_merkle_record(original, id, boundary)
+    }
+
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
         self.read_handle(id, range)
     }

@@ -62,14 +62,9 @@ impl MerkleMap {
             return Err(invalid("root-or-child-kind"));
         }
         let node = {
-            let source = self
+            let bytes = self
                 .backend
-                .read_with_boundary(original, id, None, boundary)?;
-            let bytes = source.read_all_with_boundary(
-                original,
-                MAX_MERKLE_NODE_ENVELOPE_BYTES as u64,
-                boundary,
-            )?;
+                .read_merkle_node_with_boundary(original, id, boundary)?;
             decode_node_bytes(id, depth, &bytes)?
         };
         // Reader, source and full encoded body have closed; decoded entries

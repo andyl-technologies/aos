@@ -600,27 +600,15 @@ pub(super) const CONTRACTS: &[Contract] = &[
             &self.quarantined,
             boundary,
             |connection, _, boundary| {
-                busy::retry(connection, false, &self.quarantined, boundary, |_| {
-                    let mut statement = connection
-                        .prepare_cached(diagnostic::SOURCE_SQL)
-                        .map_err(|source| database_error("prepare-sqlite-batch-source", source))?;
-                    with_id_text(self.id, |encoded| {
-                        statement
-                            .query_row(
-                                params![encoded, sqlite_offset, length as i64, self.logical_length],
-                                |row| {
-                                    if length == 0 {
-                                        row.get::<_, Option<Vec<u8>>>(0)
-                                            .map(Option::unwrap_or_default)
-                                    } else {
-                                        row.get::<_, Vec<u8>>(0)
-                                    }
-                                },
-                            )
-                            .optional()
-                            .map_err(|source| database_error("read-sqlite-batch-source", source))
-                    })
-                })
+                current_chunk(
+                    connection,
+                    &self.quarantined,
+                    boundary,
+                    self.id,
+                    sqlite_offset,
+                    length,
+                    self.logical_length,
+                )
             },
         )?;
         accepted.finish(|bytes| {
@@ -635,6 +623,40 @@ pub(super) const CONTRACTS: &[Contract] = &[
             })
         })
     }"#,
+            r#"fn current_chunk(
+    connection: &Connection,
+    quarantined: &AtomicBool,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    id: ContentId,
+    sqlite_offset: i64,
+    length: usize,
+    logical_length: u64,
+) -> Result<Option<Vec<u8>>, StoreError> {
+    busy::retry(connection, false, quarantined, boundary, |_| {
+        let mut statement = connection
+            .prepare_cached(diagnostic::SOURCE_SQL)
+            .map_err(|source| database_error("prepare-sqlite-batch-source", source))?;
+        with_id_text(id, |encoded| {
+            statement
+                .query_row(
+                    params![encoded, sqlite_offset, length as i64, logical_length],
+                    |row| {
+                        if length == 0 {
+                            // SQLite projects an empty BLOB's zero-byte substring as
+                            // NULL. The predicate already proves a present row with
+                            // its saved length; a NULL body cannot match it.
+                            row.get::<_, Option<Vec<u8>>>(0)
+                                .map(Option::unwrap_or_default)
+                        } else {
+                            row.get::<_, Vec<u8>>(0)
+                        }
+                    },
+                )
+                .optional()
+                .map_err(|source| database_error("read-sqlite-batch-source", source))
+        })
+    })
+}"#,
             r#"self.scan_with_boundary(original, self.logical_length, boundary)?;
         drop(self.chunk_with_boundary(original, 0, 0, boundary)?);
         if *self.hasher.finalize().as_bytes() != self.id.digest() {
@@ -645,14 +667,14 @@ pub(super) const CONTRACTS: &[Contract] = &[
         Ok(0)"#,
         ],
         expressions: &[(
-            r#"busy::retry(connection, false, &self.quarantined, boundary, |_| {
+            r#"busy::retry(connection, false, quarantined, boundary, |_| {
                     let mut statement = connection
                         .prepare_cached(diagnostic::SOURCE_SQL)
                         .map_err(|source| database_error("prepare-sqlite-batch-source", source))?;
-                    with_id_text(self.id, |encoded| {
+                    with_id_text(id, |encoded| {
                         statement
                             .query_row(
-                                params![encoded, sqlite_offset, length as i64, self.logical_length],
+                                params![encoded, sqlite_offset, length as i64, logical_length],
                                 |row| {
                                     if length == 0 {
                                         row.get::<_, Option<Vec<u8>>>(0)

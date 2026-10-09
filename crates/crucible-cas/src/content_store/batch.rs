@@ -31,6 +31,13 @@ impl Deref for OwnedBlobBytes {
 }
 
 impl OwnedBlobBytes {
+    pub(crate) fn prepared(bytes: Vec<u8>, credit: DecodeScratch) -> Self {
+        Self {
+            bytes,
+            _credit: credit,
+        }
+    }
+
     /// Borrows the original account that funds this owned output.
     ///
     /// Deferred sources may fund output from their retained account instead of

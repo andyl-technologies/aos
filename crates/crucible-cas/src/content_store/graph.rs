@@ -1744,6 +1744,28 @@ impl WriteBackRetentionAdmin for StoreGraph {
 }
 
 impl ImmutableBlobBackend for StoreGraph {
+    fn read_merkle_node_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<super::OwnedBlobBytes, StoreError> {
+        if id.kind() != ObjectKind::MerkleNode {
+            return Err(StoreError::Corrupt { id });
+        }
+        self.require_admitted(id)?;
+        let mut check = || {
+            super::checked_reader::check(original, boundary)?;
+            self.require_admitted(id)
+        };
+        check()?;
+        let bytes = self
+            .root
+            .read_merkle_node_with_boundary(original, id, &mut check)?;
+        check()?;
+        Ok(bytes)
+    }
+
     fn read_bounded_with_boundary(
         &self,
         request: &mut crate::ram::BoundedReadRequest<'_, '_>,

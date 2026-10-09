@@ -9,6 +9,7 @@ use crate::owned_decode::DecodeBudget;
 
 mod checked_readers;
 mod composition;
+mod merkle_reads;
 mod publication_acceptance;
 mod whole_reads;
 

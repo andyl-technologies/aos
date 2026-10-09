@@ -407,6 +407,9 @@ impl ByteRange {
     }
 }
 
+/// Bounds one complete canonical campaign Merkle-node envelope.
+pub const MAX_MERKLE_NODE_ENVELOPE_BYTES: usize = 64 * 1024;
+
 /// Selects a source's checked complete-read route without running it.
 ///
 /// This operational selector grants no content identity or EOF authentication
@@ -1707,6 +1710,36 @@ pub trait ImmutableBlobBackend: Send + Sync {
         Err(StoreError::Unsupported {
             capability: "checked-blob-metadata",
         })
+    }
+
+    /// Reads one complete Merkle node under the caller's existing boundary.
+    ///
+    /// The fixed kind and shared 64 KiB envelope limit precede body I/O. Every
+    /// successful read authenticates current complete bytes and retains their
+    /// original allocation credit; unsupported checked backends refuse.
+    ///
+    /// # Errors
+    /// Returns wrong-kind, original admission, boundary, absence, corruption,
+    /// checked I/O or native cleanup errors. No ordinary read is substituted.
+    fn read_merkle_node_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<OwnedBlobBytes, StoreError> {
+        if id.kind() != ObjectKind::MerkleNode {
+            return Err(StoreError::Corrupt { id });
+        }
+        checked_reader::check(original, boundary)?;
+        let source = self.read_with_boundary(original, id, None, boundary)?;
+        let bytes = source.read_all_with_boundary(
+            original,
+            MAX_MERKLE_NODE_ENVELOPE_BYTES as u64,
+            boundary,
+        )?;
+        drop(source);
+        checked_reader::check(original, boundary)?;
+        Ok(bytes)
     }
 
     /// Executes one opaque bounded read under its existing RAM operation.

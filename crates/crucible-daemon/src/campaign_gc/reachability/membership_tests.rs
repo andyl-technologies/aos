@@ -122,6 +122,32 @@ impl ImmutableBlobBackend for CheckedOnly {
         Ok(source)
     }
 
+    fn read_merkle_node_with_boundary(
+        &self,
+        original: &DecodeBudget,
+        id: ContentId,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<crucible_cas::content_store::OwnedBlobBytes, StoreError> {
+        if self.truncate_after_metadata.is_some() {
+            // Keep the existing held-source mutation control on its original
+            // deferred route. Native-close mutations have separate SQL tests.
+            let source = self.read_with_boundary(original, id, None, boundary)?;
+            return source.read_all_with_boundary(
+                original,
+                crucible_cas::content_store::MAX_MERKLE_NODE_ENVELOPE_BYTES as u64,
+                boundary,
+            );
+        }
+        let ordinal = self.reads.fetch_add(1, Ordering::Relaxed) + 1;
+        if ordinal == 2
+            && let Some(supervisor) = &self.cancel_child
+        {
+            supervisor.cancel().unwrap();
+        }
+        self.inner
+            .read_merkle_node_with_boundary(original, id, boundary)
+    }
+
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
         self.inner.put_if_absent(id, source)
     }
@@ -331,16 +357,18 @@ fn checked_membership_corrupt_body_precedes_a_later_original_refusal() {
     let operation = fixture.context();
     let root = marks.root;
     let mut observed = 0;
-    let error = marks
-        .contains_with_boundary(&page(0), &mut || {
-            observed += 1;
-            operation.check()
-        })
-        .unwrap_err();
-    assert!(has_cause(
-        &error,
-        |error| matches!(error, StoreError::Corrupt { id } if *id == root.content_id())
-    ));
+    {
+        let error = marks
+            .contains_with_boundary(&page(0), &mut || {
+                observed += 1;
+                operation.check()
+            })
+            .unwrap_err();
+        assert!(has_cause(
+            &error,
+            |error| matches!(error, StoreError::Corrupt { id } if *id == root.content_id())
+        ));
+    }
 
     let mut seen = 0;
     let error = marks
