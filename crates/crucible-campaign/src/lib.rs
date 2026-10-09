@@ -26,6 +26,7 @@ mod choice;
 mod codec;
 mod execution;
 mod executor_capability;
+pub mod executor_node_capabilities;
 mod exploration;
 mod finding;
 mod finding_candidate;
