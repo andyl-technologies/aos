@@ -2448,10 +2448,14 @@ control that reads every referenced chunk through the same reader. The full
 120-line test-only diff is reviewed; stripping it restores the existing tests
 exactly. Its 869-line module remains cohesive. Compilation and runtime are
 queued behind the combined native qualification. On frozen `0c771dc7f9`, all
-three strict Clippy profiles and default/std-send private documentation pass;
-native documentation remains live while waiting for the shared Cargo build
-directory lock. Original handles and source proofs are retained; no invocation
-is restarted and no runtime result follows from these compile checks.
+three strict Clippy profiles and all three strict private documentation
+profiles pass. The original native documentation process clears the shared
+Cargo build-directory lock and exits zero without a restart. The native SDK
+build also passes; independent review verifies both original exits, exact
+commands, log hashes and unchanged 6,105-file source. Native test compilation
+is now live; its actual compiler artifact, discovery and runtime remain
+unqualified. Original handles and source proofs are retained; no runtime
+result follows from these compile checks.
 No task checkbox or milestone status advances.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
