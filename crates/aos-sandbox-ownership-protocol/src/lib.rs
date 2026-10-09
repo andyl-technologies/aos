@@ -261,8 +261,7 @@ impl OwnershipClaimV1 {
         )
         .map_err(|_| OwnershipClaimError::InvalidEncoding)?;
         let node = NodeId::from_bytes(reader.array::<16>()?);
-        let desired_generation =
-            DesiredGeneration::new(u64::from_be_bytes(reader.array::<8>()?));
+        let desired_generation = DesiredGeneration::new(u64::from_be_bytes(reader.array::<8>()?));
         let expected_generation = u64::from_be_bytes(reader.array::<8>()?);
         let expected_digest = ObjectDigest::from_bytes(reader.array::<32>()?);
         let requested_maximum_seconds = u64::from_be_bytes(reader.array::<8>()?);

@@ -226,6 +226,7 @@ fn handshake_reader<'a>(
     if record.get(..8) != Some(magic.as_slice()) {
         return Err(OwnershipCarrierErrorV1::Malformed);
     }
+
     let mut reader = BoundedReader::new(record, malformed_read_error);
     reader.bytes(8)?;
     Ok(reader)
@@ -246,6 +247,7 @@ fn read_key_reference(
     if length == 0 {
         return Err(OwnershipCarrierErrorV1::Malformed);
     }
+
     let key_id = reader.bytes(length)?;
     let key_id = std::str::from_utf8(key_id).map_err(|_| OwnershipCarrierErrorV1::Malformed)?;
     let key_id =
@@ -270,10 +272,12 @@ fn read_methods(
     if count == 0 || count > 3 {
         return Err(OwnershipCarrierErrorV1::Malformed);
     }
+
     let mut methods = Vec::with_capacity(count);
     for _ in 0..count {
         methods.push(method_from_code(reader.array::<1>()?[0])?);
     }
+
     Ok(methods)
 }
 
@@ -831,8 +835,7 @@ mod tests {
         // Exercise artifact bounds and EOF with valid outer framing.
         for length in [0, MAXIMUM_LEASE_BYTES as u32 + 1] {
             let mut invalid_length = encoded.clone();
-            invalid_length[HEADER_BYTES..HEADER_BYTES + 4]
-                .copy_from_slice(&length.to_be_bytes());
+            invalid_length[HEADER_BYTES..HEADER_BYTES + 4].copy_from_slice(&length.to_be_bytes());
             assert_eq!(
                 decode_response_v1(&session, &request, &invalid_length),
                 Err(OwnershipCarrierErrorV1::Malformed)
@@ -840,8 +843,7 @@ mod tests {
         }
         for mut malformed in [truncated, [encoded.as_slice(), &[0]].concat()] {
             let body_length = (malformed.len() - HEADER_BYTES) as u32;
-            malformed[HEADER_BYTES - 4..HEADER_BYTES]
-                .copy_from_slice(&body_length.to_be_bytes());
+            malformed[HEADER_BYTES - 4..HEADER_BYTES].copy_from_slice(&body_length.to_be_bytes());
             assert_eq!(
                 decode_response_v1(&session, &request, &malformed),
                 Err(OwnershipCarrierErrorV1::Malformed)
