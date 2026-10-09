@@ -218,9 +218,27 @@ test correction independently resolves that immutable commit and transaction
 and requires the exact original slot, preserving all other owner and state
 assertions. Private composition `daf84d1cf0` passes strict native all-target
 Clippy (10.27 seconds; `/tmp/terrane-original-owner-slot-oracle-clippy.log`);
-its changed recurring runtime remains pending. Restore-preservation still
-times out before its copied-barrier request returns. Owning checks and the
-complete T1 floor remain unqualified; these results accept no task or exit.
+its changed recurring run is terminal with one timeout at the unchanged
+120-second bound (120.011 seconds; run
+`a8c2857b-772b-4612-a7d7-47131347b8f6`,
+`/tmp/terrane-original-owner-slot-recurring-nextest.log`). Its trace reaches
+selected progress and actual reclaim, but does not complete the late-residue
+and reopen assertions. Restore-preservation still times out before its
+copied-barrier request returns. Source review identifies recursive retained
+pair wrappers: each additional pair doubles the earlier checks on every Frame
+refresh. The reviewed private helper and both collector consumers now retain
+the complete genuinely acknowledged prefix and observe it forward and backward
+from one original current check, including the copied barrier where required.
+For a nonempty prefix of k pairs, each refresh makes 2k-1 pair observations;
+current authority is checked before the first and after every observation.
+Physical effect and acknowledgment boundaries remain unchanged. Static first
+observations preserve inventory order; transient first-error order can differ.
+No measured timeout cause is inferred from the source cost correction.
+Private composition `0e09995dca` passes strict native all-target Clippy with
+warnings denied (28.82 seconds;
+`/tmp/terrane-linear-pair-recovery-clippy.log`). The three-case recurring and
+restore qualification is running from that frozen source. Owning checks and
+the complete T1 floor remain unqualified; these results accept no task or exit.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
