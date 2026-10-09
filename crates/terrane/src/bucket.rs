@@ -20,6 +20,10 @@ mod held_tests;
 #[cfg(all(test, feature = "tokio", unix))]
 mod metadata_test_support;
 mod missing_placement;
+
+/// Stages verified recovered data through fresh native placement recipes.
+pub(crate) mod permanent_restore;
+
 pub(crate) mod publication;
 mod quarantine;
 mod retirement;

@@ -5007,6 +5007,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   isolated implementation of genuine local copied-destination first ownership.
   D-113 clarifies truthful conservative DATA roots/state at the existing
   pointers without encoding changes or foreign retention/lineage certification.
+  Separate parent-owned registrations and an eleven-case auxiliary check prepare
+  permanent local residue recovery and restoration through fresh secure IDs.
+  Its checked owner and current copied-placement fence must bind the same actual
+  held selection and lease; neither carrier alone permits native reclamation.
   Its production modules and runtime qualification remain pending; recurring
   permanent recovery and restoration remain additional T1 local obligations.
   Actual remote provider qualification belongs to T3. No remote conformance

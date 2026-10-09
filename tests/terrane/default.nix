@@ -282,6 +282,8 @@ in {
   integration.native-retained-request-checks = import ./native-retained-request-checks.nix {inherit sourceGate;};
   integration.native-local-first-ownership = import ./native-local-first-ownership.nix {inherit sourceGate;};
   integration.native-copied-retirement-first-ownership = import ./native-copied-retirement-first-ownership.nix {inherit sourceGate;};
+
+  integration.local-permanent-reconciliation = import ./local-permanent-reconciliation.nix {inherit sourceGate;};
   integration.native-local-deletion = import ./native-local-deletion.nix {inherit sourceGate;};
   integration.native-local-gc-conformance = let
     prerequisites = [

@@ -395,6 +395,9 @@ enum Plan {
     SealCopiedPreparation(Box<artifact_seal::copied_retirement::PreparationRequest>),
     ObserveCopiedBarrier(Box<artifact_seal::copied_retirement::BarrierRequest>),
     SealCopiedOwnership(Box<artifact_seal::copied_retirement::OwnershipRequest>),
+    ObservePermanentLocal(Box<artifact_seal::permanent_local::observation::ObservationRequest>),
+    ReclaimPermanentLocal(Box<artifact_seal::permanent_local::effects::ReclaimRequest>),
+    SealPermanentLocalProgress(Box<artifact_seal::permanent_local::publication::ProgressRequest>),
     SealPendingCreation(Box<artifact_seal::PendingRequest>),
     SealArtifact(Box<artifact_seal::SealRequest>),
     CommitCreation(Box<artifact_seal::CommitRequest>),
@@ -611,6 +614,12 @@ pub(crate) enum EffectFaultProbe<'a> {
     CopiedBarrier(&'a std::path::Path),
     /// Identifies durability of checked first copied destination ownership.
     CopiedOwnership(&'a std::path::Path),
+    /// Identifies an actual permanent-family observation or qualified extraction.
+    PermanentLocalObservation(&'a std::path::Path),
+    /// Identifies one exact permanently owned local residue request.
+    PermanentLocalReclaim(&'a std::path::Path),
+    /// Identifies durability of selected permanent recovery progress.
+    PermanentLocalProgress(&'a std::path::Path),
     /// Identifies durability of Pending before the first artifact mutation.
     SealPendingCreation(&'a std::path::Path),
     /// Identifies same-descriptor verification and durability of one artifact.
@@ -731,6 +740,15 @@ impl NativeFsEffect {
             }
             Plan::ObserveCopiedBarrier(request) => EffectFaultProbe::CopiedBarrier(request.path()),
             Plan::SealCopiedOwnership(request) => EffectFaultProbe::CopiedOwnership(request.path()),
+            Plan::ObservePermanentLocal(request) => {
+                EffectFaultProbe::PermanentLocalObservation(request.path())
+            }
+            Plan::ReclaimPermanentLocal(request) => {
+                EffectFaultProbe::PermanentLocalReclaim(request.path())
+            }
+            Plan::SealPermanentLocalProgress(request) => {
+                EffectFaultProbe::PermanentLocalProgress(request.path())
+            }
             Plan::SealPendingCreation(request) => {
                 EffectFaultProbe::SealPendingCreation(request.journal_path())
             }
@@ -960,6 +978,9 @@ impl NativeFsEffect {
                 | Plan::SealCopiedPreparation(_)
                 | Plan::ObserveCopiedBarrier(_)
                 | Plan::SealCopiedOwnership(_)
+                | Plan::ObservePermanentLocal(_)
+                | Plan::ReclaimPermanentLocal(_)
+                | Plan::SealPermanentLocalProgress(_)
                 | Plan::SealPendingCreation(_)
                 | Plan::SealArtifact(_)
                 | Plan::CommitCreation(_) => {

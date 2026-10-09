@@ -22,6 +22,10 @@ pub(crate) mod walk;
 #[path = "copied_retirement.rs"]
 pub mod copied_retirement;
 
+/// Coordinates permanent local recovery and restoration through fresh placements.
+#[path = "permanent_local.rs"]
+pub mod permanent_local;
+
 #[cfg(all(test, feature = "tokio", unix))]
 pub(crate) mod fixture;
 #[cfg(all(test, feature = "tokio", unix))]
@@ -30,6 +34,10 @@ mod tests;
 #[cfg(all(test, feature = "tokio", unix))]
 #[path = "runner/tests/copied_retirement.rs"]
 mod copied_retirement_tests;
+
+#[cfg(all(test, feature = "tokio", unix))]
+#[path = "runner/tests/permanent_local.rs"]
+mod permanent_local_tests;
 
 /// Reports refused traversal, fenced ownership or failed native checkpoint effects.
 #[derive(Debug)]

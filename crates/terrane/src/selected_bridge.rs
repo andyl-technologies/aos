@@ -29,6 +29,10 @@ pub(crate) mod native_copied_placement;
 #[path = "gc/selected_copied_retirement.rs"]
 pub(crate) mod native_copied_retirement;
 
+/// Checks selected permanent owners and current local recovery inputs.
+#[path = "gc/selected_permanent_local.rs"]
+pub(crate) mod native_permanent_local;
+
 // This test-only descendant constructs typed deadline checks for effect mechanics
 // without exposing a production callback or authority factory.
 #[cfg(all(feature = "std", test))]

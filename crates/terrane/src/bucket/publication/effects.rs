@@ -25,6 +25,10 @@ pub(crate) mod collection_checkpoints;
 #[path = "../../gc/copied_retirement_effects.rs"]
 pub(crate) mod collection_copied_retirement;
 
+/// Executes fixed permanent recovery under checked ownership and current placement.
+#[path = "../../gc/permanent_local_effects.rs"]
+pub(crate) mod collection_permanent_local;
+
 #[path = "effects/capture.rs"]
 mod capture;
 #[path = "effects/commands.rs"]

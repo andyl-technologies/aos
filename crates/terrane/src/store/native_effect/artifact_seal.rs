@@ -37,6 +37,10 @@ pub(super) mod lease_publication;
 #[path = "artifact_seal/copied_retirement.rs"]
 pub(super) mod copied_retirement;
 
+/// Closes actual permanent-family observations, requests and selected progress.
+#[path = "artifact_seal/permanent_local.rs"]
+pub(super) mod permanent_local;
+
 #[path = "artifact_seal/pending.rs"]
 pub(super) mod pending;
 
@@ -453,6 +457,9 @@ pub(super) fn owns(plan: &Plan) -> bool {
         | Plan::SealCopiedPreparation(_)
         | Plan::ObserveCopiedBarrier(_)
         | Plan::SealCopiedOwnership(_)
+        | Plan::ObservePermanentLocal(_)
+        | Plan::ReclaimPermanentLocal(_)
+        | Plan::SealPermanentLocalProgress(_)
         | Plan::SealPendingCreation(_)
         | Plan::SealArtifact(_)
         | Plan::CommitCreation(_) => true,
@@ -465,6 +472,9 @@ pub(super) fn owns(plan: &Plan) -> bool {
                     | Plan::SealCopiedPreparation(_)
                     | Plan::ObserveCopiedBarrier(_)
                     | Plan::SealCopiedOwnership(_)
+                    | Plan::ObservePermanentLocal(_)
+                    | Plan::ReclaimPermanentLocal(_)
+                    | Plan::SealPermanentLocalProgress(_)
                     | Plan::SealPendingCreation(_)
                     | Plan::SealArtifact(_)
                     | Plan::CommitCreation(_)
@@ -526,6 +536,13 @@ pub(super) fn execute(effect: NativeFsEffect) -> Result<(), NativeEffectFailure>
         Plan::ObserveCopiedBarrier(request) => copied_retirement::execute_barrier(*request, worker),
         Plan::SealCopiedOwnership(request) => {
             copied_retirement::execute_ownership(*request, worker)
+        }
+        Plan::ObservePermanentLocal(request) => {
+            permanent_local::observation::execute(*request, worker)
+        }
+        Plan::ReclaimPermanentLocal(request) => permanent_local::effects::execute(*request, worker),
+        Plan::SealPermanentLocalProgress(request) => {
+            permanent_local::publication::execute(*request, worker)
         }
         Plan::SealPendingCreation(request) => pending::execute(*request, worker),
         Plan::SealArtifact(request) => seal(*request, worker),
