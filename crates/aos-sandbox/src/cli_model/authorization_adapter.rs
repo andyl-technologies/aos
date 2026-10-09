@@ -650,22 +650,22 @@ impl CurrentCapabilityDecisionV1 {
         historical_session: [u8; 32],
     ) -> super::provenance::OriginalPublicMutationCoordinatesV2 {
         let claims = self.capability.claims();
-        super::provenance::OriginalPublicMutationCoordinatesV2 {
-            capability: *claims.id.as_bytes(),
-            revocation_scope: *claims.revocation_scope.as_bytes(),
-            revocation_generation: claims.revocation_generation.get(),
-            policy_digest: *claims.policy_digest.as_bytes(),
-            policy_generation: self.policy.generation(),
-            controller: *self.controller.principal.as_bytes(),
-            controller_generation: self.controller.generation,
-            capability_not_before: claims.not_before,
-            capability_expires_at: claims.expires_at,
-            policy_not_before: self.policy.not_before(),
-            policy_expires_at: self.policy.expires_at(),
-            channel_binding: *claims.channel_binding.as_bytes(),
-            session_commitment: historical_session,
-            authorization_revision: *self.revision().digest().as_bytes(),
-        }
+        super::provenance::OriginalPublicMutationCoordinatesV2::from_historical_parts((
+            *claims.id.as_bytes(),
+            *claims.revocation_scope.as_bytes(),
+            claims.revocation_generation.get(),
+            *claims.policy_digest.as_bytes(),
+            self.policy.generation(),
+            *self.controller.principal.as_bytes(),
+            self.controller.generation,
+            claims.not_before,
+            claims.expires_at,
+            self.policy.not_before(),
+            self.policy.expires_at(),
+            *claims.channel_binding.as_bytes(),
+            historical_session,
+            *self.revision().digest().as_bytes(),
+        ))
     }
 }
 

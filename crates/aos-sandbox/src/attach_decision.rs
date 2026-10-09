@@ -263,16 +263,16 @@ pub(crate) fn retained_decision_record(
     // The current request must independently authorize the same original cut.
     // Rotation/revocation/policy changes do not silently replace its coordinates.
     if retained.request != checked.request
-        || !same_original_scope(&retained.coordinates, &checked.coordinates)
+        || !retained.coordinates.same_original_scope(&checked.coordinates)
         || retained.public_tls_trust != checked.public_tls_trust
         || retained.caller != checked.caller
         || retained.project != checked.project
         || now < ticket.valid_after
         || now >= ticket.expires_at
-        || checked.accepted_wall_seconds < retained.coordinates.capability_not_before
-        || checked.accepted_wall_seconds >= retained.coordinates.capability_expires_at
-        || checked.accepted_wall_seconds < retained.coordinates.policy_not_before
-        || checked.accepted_wall_seconds >= retained.coordinates.policy_expires_at
+        || checked.accepted_wall_seconds < retained.coordinates.capability_not_before()
+        || checked.accepted_wall_seconds >= retained.coordinates.capability_expires_at()
+        || checked.accepted_wall_seconds < retained.coordinates.policy_not_before()
+        || checked.accepted_wall_seconds >= retained.coordinates.policy_expires_at()
     {
         return Err(Error::DurableRecord);
     }
@@ -434,27 +434,6 @@ pub(crate) fn decision_key(operation: OperationId) -> Vec<u8> {
     key
 }
 
-pub(crate) fn same_original_scope(
-    original: &OriginalPublicMutationCoordinatesV2,
-    checked: &OriginalPublicMutationCoordinatesV2,
-) -> bool {
-    // Current authorize() has independently checked the authenticated channel.
-    // Historical session/clock coordinates are retained, not compared as if a
-    // reconnect had to revive the original session or reconstruct its proof.
-    original.capability == checked.capability
-        && original.revocation_scope == checked.revocation_scope
-        && original.revocation_generation == checked.revocation_generation
-        && original.policy_digest == checked.policy_digest
-        && original.policy_generation == checked.policy_generation
-        && original.controller == checked.controller
-        && original.controller_generation == checked.controller_generation
-        && original.capability_not_before == checked.capability_not_before
-        && original.capability_expires_at == checked.capability_expires_at
-        && original.policy_not_before == checked.policy_not_before
-        && original.policy_expires_at == checked.policy_expires_at
-        && original.channel_binding == checked.channel_binding
-}
-
 fn grant_key(pending_digest: [u8; 32]) -> Vec<u8> {
     let mut key = GRANT_PREFIX.to_vec();
     key.extend_from_slice(&pending_digest);
@@ -473,22 +452,22 @@ mod tests {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     fn coordinates() -> OriginalPublicMutationCoordinatesV2 {
-        OriginalPublicMutationCoordinatesV2 {
-            capability: [1; 16],
-            revocation_scope: [2; 16],
-            revocation_generation: 1,
-            policy_digest: [3; 32],
-            policy_generation: 1,
-            controller: [4; 16],
-            controller_generation: 1,
-            capability_not_before: 90,
-            capability_expires_at: 300,
-            policy_not_before: 80,
-            policy_expires_at: 400,
-            channel_binding: [5; 32],
-            session_commitment: [6; 32],
-            authorization_revision: [21; 32],
-        }
+        OriginalPublicMutationCoordinatesV2::from_historical_parts((
+            [1; 16],
+            [2; 16],
+            1,
+            [3; 32],
+            1,
+            [4; 16],
+            1,
+            90,
+            300,
+            80,
+            400,
+            [5; 32],
+            [6; 32],
+            [21; 32],
+        ))
     }
 
     fn current(coordinates: OriginalPublicMutationCoordinatesV2, now: i64) -> Vec<u8> {
@@ -501,6 +480,16 @@ mod tests {
             now,
         )
         .unwrap()
+    }
+
+    fn substitute_coordinate(
+        original: OriginalPublicMutationCoordinatesV2,
+        field: &str,
+        value: serde_json::Value,
+    ) -> OriginalPublicMutationCoordinatesV2 {
+        let mut historical = serde_json::to_value(original).unwrap();
+        historical[field] = value;
+        serde_json::from_value(historical).unwrap()
     }
 
     fn retained() -> Vec<u8> {
@@ -551,8 +540,8 @@ mod tests {
         )
         .unwrap();
         let mut reconnected = coordinates();
-        reconnected.session_commitment = [17; 32];
-        reconnected.authorization_revision = [22; 32];
+        reconnected = substitute_coordinate(reconnected, "session_commitment", serde_json::to_value([17; 32]).unwrap());
+        reconnected = substitute_coordinate(reconnected, "authorization_revision", serde_json::to_value([22; 32]).unwrap());
         let replay =
             retained_decision_record(&reopened, operation, &current(reconnected, 150)).unwrap();
         assert_eq!(replay.value(), Some(original.as_slice()));
@@ -566,12 +555,12 @@ mod tests {
                 retained_decision_record(&reopened, operation, &current(reconnected, now)).is_err()
             );
         }
-        reconnected.channel_binding = [18; 32];
+        reconnected = substitute_coordinate(reconnected, "channel_binding", serde_json::to_value([18; 32]).unwrap());
         assert!(
             retained_decision_record(&reopened, operation, &current(reconnected, 150)).is_err()
         );
         reconnected = coordinates();
-        reconnected.revocation_generation += 1;
+        reconnected = substitute_coordinate(reconnected, "revocation_generation", serde_json::json!(2));
         assert!(
             retained_decision_record(&reopened, operation, &current(reconnected, 150)).is_err()
         );

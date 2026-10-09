@@ -25,7 +25,6 @@ use crate::cli_model::authorization_adapter::{
     evaluate_current_protected_capability,
     evaluate_current_protected_capability_retained, RetainedAuthorizationTimeFloorV1,
 };
-use crate::cli_model::provenance::OriginalPublicMutationCoordinatesV2;
 use crate::controller::ControllerProtectedClockV1;
 use crate::controller_service::journal::{ControllerJournalError, validate_controller_journal};
 use crate::publisher_authority::PublisherAuthorityLimits;
@@ -423,7 +422,7 @@ impl ControllerNixStartRecipeSelectorV2 {
                     .and_then(|carrier| carrier.ok_or(NixStartAdmissionErrorV2::Invalid)
                         .map_err(ContinuationFailureV2::from)).map_err(Into::into));
             park!(current_effect, CurrentEffect,
-                carrier.require_current_effect_v2(journal, operation, step, expected_plan)
+                crate::reconciler::require_current_effect_v2(carrier, journal, operation, step, expected_plan)
                     .map_err(ContinuationFailureV2::from).map_err(Into::into));
             park!(bound_writer, BoundWriter, self.require_bound_writer(journal));
             originals.recipe = Some(self.original_recipe(carrier)
@@ -451,7 +450,7 @@ impl ControllerNixStartRecipeSelectorV2 {
                 let policy = self.assignment_policy().map_err(ContinuationFailureV2::from)?;
                 crate::runtime_scope::acquire_current_assignment(
                     journal,
-                    RuntimeScopeHolder { sandbox: recipe.recipe().sandbox, holder: carrier.authority.holder },
+                    RuntimeScopeHolder { sandbox: recipe.recipe().sandbox, holder: carrier.authority().holder() },
                     policy, &mut || {
                         let result = clock.sample();
                         if let Ok(sample) = &result { originals.acquisition_clock.get_or_insert(*sample); }
@@ -565,11 +564,11 @@ impl ControllerNixStartRecipeSelectorV2 {
             .and_then(|bytes| bytes.checked_add(usize::try_from(append).ok()?.checked_mul(4)?))
             // Canonical carrier decoding and its roundtrip coexist. Charge
             // element/container overhead, not only the maximum encoded bytes.
-            .and_then(|bytes| bytes.checked_add(super::carrier::MAXIMUM_BYTES.checked_mul(
+            .and_then(|bytes| bytes.checked_add(aos_sandbox_protocol::public_api::mutation_history::NIX_START_ADMISSION_MAXIMUM_BYTES_V2.checked_mul(
                 4 + 2 * std::mem::size_of::<(Vec<u8>, Vec<u8>, usize)>(),
             )?))
             .ok_or_else(refused)?;
-        let cells = map_cells.checked_add(super::carrier::MAXIMUM_BYTES)
+        let cells = map_cells.checked_add(aos_sandbox_protocol::public_api::mutation_history::NIX_START_ADMISSION_MAXIMUM_BYTES_V2)
             .ok_or_else(refused)?;
         let native = controller.native_bytes.checked_add(source.native_bytes)
             .and_then(|bytes| bytes.checked_add(append)).ok_or_else(refused)?;
@@ -609,11 +608,11 @@ impl ControllerNixStartRecipeSelectorV2 {
         carrier: &NixStartAdmissionCarrierV2,
     ) -> Result<&'selector VerifiedNixRecipeArtifactV2, NixStartAdmissionErrorV2> {
         carrier.validate()?;
-        if carrier.credential_commitments != self.commitments()? {
+        if carrier.credential_commitments() != &self.commitments()? {
             return Err(NixStartAdmissionErrorV2::Invalid);
         }
         let artifact = self.recipes.iter().find(|artifact| {
-            artifact.digest() == carrier.recipe_digest && artifact.canonical_bytes() == carrier.recipe
+            carrier.matches_recipe(artifact)
         }).ok_or(NixStartAdmissionErrorV2::Invalid)?;
         self.require_recipe_pins(artifact)?;
         Ok(artifact)
@@ -626,18 +625,18 @@ impl ControllerNixStartRecipeSelectorV2 {
         recipe: &VerifiedNixRecipeArtifactV2,
         binding: &RuntimeAuthorityBindingV1,
     ) -> Result<(), NixStartAdmissionErrorV2> {
-        require_recipe_assignment(recipe, binding, &carrier.authority)?;
+        require_recipe_assignment(recipe, binding, carrier.authority())?;
         let manifest = binding.manifest().manifest();
-        let claims = carrier.authority.capability.claims();
-        if binding.holder() != Some(carrier.authority.holder)
+        let claims = carrier.authority().capability().claims();
+        if binding.holder() != Some(carrier.authority().holder())
             || manifest.node() != self.pins.node
-            || manifest.desired_generation().get() != carrier.original_generation.checked_add(1)
+            || manifest.desired_generation().get() != carrier.original_generation().checked_add(1)
                 .ok_or(NixStartAdmissionErrorV2::Invalid)?
-            || manifest.incarnation().as_bytes() != carrier.original_incarnation.as_slice()
+            || manifest.incarnation().as_bytes() != carrier.original_incarnation()
             || claims.sandbox.is_some_and(|sandbox| sandbox != manifest.sandbox())
             || claims.incarnation.is_some_and(|incarnation| incarnation != manifest.incarnation())
             || claims.assignment_epoch.is_some_and(|epoch| epoch != manifest.epoch())
-            || !checked_assignment_readback(journal, binding)?.matches_original(&carrier.assignment)
+            || !checked_assignment_readback(journal, binding)?.matches_original(carrier.assignment())
         {
             return Err(NixStartAdmissionErrorV2::Invalid);
         }
@@ -931,7 +930,7 @@ impl CurrentRetainedNixStartV2<'_> {
     ) -> Result<NixBuildRequestV2, NixStartContinuationErrorV2> {
         let (inputs, outputs) = Self::recipe_coordinate_digests_v2(self.recipe.recipe())
             .map_err(ContinuationFailureV2::from)?;
-        let parent = self.carrier.encode().map_err(ContinuationFailureV2::from)?;
+        let parent = self.carrier.encode().map_err(NixStartAdmissionErrorV2::from).map_err(ContinuationFailureV2::from)?;
         let parent_digest: [u8; 32] = parent.get(parent.len().saturating_sub(32)..)
             .ok_or(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid))?
             .try_into()
@@ -1053,7 +1052,7 @@ impl CurrentRetainedNixStartV2<'_> {
             self.journal,
             &mut || self.clock.sample(),
         ).map_err(ContinuationFailureV2::from)?;
-        require_original_lease(&self.carrier.assignment, &lease)
+        self.carrier.assignment().require_original_lease(&lease).map_err(NixStartAdmissionErrorV2::from)
             .map_err(ContinuationFailureV2::from)?;
 
         let identities = self.selector.pins.identities;
@@ -1197,19 +1196,13 @@ impl CurrentRetainedNixStartV2<'_> {
             manifest.desired_generation(), binding.assignment_digest(),
         ).map_err(ContinuationFailureV2::from)?;
 
-        let presentation = Sha256::new()
-            .chain_update(b"aos.sandbox.nix.original-start-presentation.v1\0")
-            .chain_update((self.carrier.original_resource_version.len() as u64).to_be_bytes())
-            .chain_update(&self.carrier.original_resource_version)
-            .chain_update(&self.carrier.original_incarnation)
-            .chain_update(self.carrier.original_generation.to_be_bytes())
-            .finalize().into();
+        let presentation = self.carrier.original_presentation_commitment();
         let prefix = NixGenerationStartPrefixV1 {
             operation: *self.carrier.operation().as_bytes(),
             step: 0,
             assignment: *binding.assignment_digest().as_bytes(),
-            desired: Sha256::digest(&self.carrier.desired_value).into(),
-            effect: Sha256::digest(&self.carrier.ordinary_effect).into(),
+            desired: Sha256::digest(&self.carrier.desired().1).into(),
+            effect: Sha256::digest(&self.carrier.ordinary_effect()).into(),
             recipe: *self.recipe.digest().as_bytes(),
             input_set: family.artifact_digest(),
             presentation,
@@ -1268,7 +1261,7 @@ impl CurrentRetainedNixStartV2<'_> {
         let (lease, observed) = self.target.verified_plan_lease(
             self.journal, &mut || self.clock.sample(),
         ).map_err(ContinuationFailureV2::from)?;
-        require_original_lease(&self.carrier.assignment, &lease)
+        self.carrier.assignment().require_original_lease(&lease).map_err(NixStartAdmissionErrorV2::from)
             .map_err(ContinuationFailureV2::from)?;
         first.validate_later_sample(observed).map_err(ContinuationFailureV2::from)?;
         let identities = self.selector.pins.identities;
@@ -1335,7 +1328,7 @@ impl CurrentRetainedNixStartV2<'_> {
     /// Returns the original accepted time, never the latest observation time.
     #[must_use]
     pub fn accepted_wall_seconds(&self) -> i64 {
-        self.carrier.authority.accepted_wall_seconds
+        self.carrier.authority().accepted_wall_seconds()
     }
 
     /// Returns the assignment owner's exclusive, non-renewable BOOTTIME bound.
@@ -1378,8 +1371,8 @@ impl CurrentRetainedNixStartV2<'_> {
 
     fn require_original_ledger(&mut self) -> Result<(), NixStartContinuationErrorV2> {
         self.selector.require_fixed_writer(self.journal).map_err(ContinuationFailureV2::from)?;
-        self.carrier.require_current_effect_v2(
-            self.journal, self.carrier.operation(), 0, self.expected_plan,
+        crate::reconciler::require_current_effect_v2(
+            &self.carrier, self.journal, self.carrier.operation(), 0, self.expected_plan,
         ).map_err(ContinuationFailureV2::from)?;
         self.selector.require_bound_writer(self.journal)?;
         self.selector.original_recipe(&self.carrier).map_err(ContinuationFailureV2::from)?;
@@ -1404,13 +1397,13 @@ impl CurrentRetainedNixStartV2<'_> {
             .map_err(ContinuationFailureV2::from)?;
         let (lease, observed) = self.target.verified_plan_lease(self.journal, &mut || self.clock.sample())
             .map_err(ContinuationFailureV2::from)?;
-        require_original_lease(&self.carrier.assignment, &lease)
+        self.carrier.assignment().require_original_lease(&lease).map_err(NixStartAdmissionErrorV2::from)
             .map_err(ContinuationFailureV2::from)?;
-        require_observation(&self.carrier.authority, decision.clock(), observed)
+        require_observation(&self.carrier.authority(), decision.clock(), observed)
             .map_err(ContinuationFailureV2::from)?;
 
         let after = self.clock.sample().map_err(ContinuationFailureV2::from)?;
-        require_observation(&self.carrier.authority, observed, after)
+        require_observation(&self.carrier.authority(), observed, after)
             .map_err(ContinuationFailureV2::from)?;
         if after.wall_seconds() >= self.target.expires_wall_seconds()
             || after.wall_seconds() >= lease.authority_expires_seconds()
@@ -1425,7 +1418,7 @@ impl CurrentRetainedNixStartV2<'_> {
             .map_err(ContinuationFailureV2::from)?;
         self.require_original_ledger()?;
         let final_sample = self.clock.sample().map_err(ContinuationFailureV2::from)?;
-        require_observation(&self.carrier.authority, after, final_sample)
+        require_observation(&self.carrier.authority(), after, final_sample)
             .map_err(ContinuationFailureV2::from)?;
         if final_sample.wall_seconds() >= self.target.expires_wall_seconds()
             || final_sample.wall_seconds() >= lease.authority_expires_seconds()
@@ -1470,49 +1463,36 @@ fn evaluate_original_grant_inner(
     clock: &mut ControllerProtectedClockV1,
     crossing: Option<&mut RetainedAuthorizationTimeFloorV1>,
 ) -> Result<CurrentCapabilityDecisionV1, NixStartContinuationErrorV2> {
-    let original = &carrier.authority;
+    let original = carrier.authority();
     let request = crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(
         original.original_request(),
     ).map_err(ContinuationFailureV2::from)?;
     let selector = request.selector()
         .ok_or(NixStartAdmissionErrorV2::Invalid).map_err(ContinuationFailureV2::from)?;
-    let claims = original.capability.claims();
+    let claims = original.capability().claims();
     let decision = match crossing {
         Some(crossing) => evaluate_current_protected_capability_retained(
             journal, PublisherAuthorityLimits::default(), PublisherPolicyLimits::default(),
-            claims.id, original.project, original.holder, claims.channel_binding, clock,
+            claims.id, original.project(), original.holder(), claims.channel_binding, clock,
             request.resource_kind(), request.operation(), selector, crossing,
         ),
         None => evaluate_current_protected_capability(
             journal, PublisherAuthorityLimits::default(), PublisherPolicyLimits::default(),
-            claims.id, original.project, original.holder, claims.channel_binding, clock,
+            claims.id, original.project(), original.holder(), claims.channel_binding, clock,
             request.resource_kind(), request.operation(), selector,
         ),
     }.map_err(ContinuationFailureV2::from)?;
-    let current = decision.original_coordinates(original.coordinates.session_commitment);
-    require_coordinate_identity(original.coordinates, current)
+    let current = decision.original_coordinates(original.coordinates().session_commitment());
+    original.coordinates().require_coordinate_identity(current).map_err(NixStartAdmissionErrorV2::from)
         .map_err(ContinuationFailureV2::from)?;
-    if decision.capability() != &original.capability
-        || decision.policy().descriptor() != &original.policy
-        || decision.policy().canonical_policy() != original.canonical_policy
-        || decision.authorized_wall_seconds() < original.accepted_wall_seconds
+    if decision.capability() != original.capability()
+        || decision.policy().descriptor() != original.policy()
+        || decision.policy().canonical_policy() != original.canonical_policy()
+        || decision.authorized_wall_seconds() < original.accepted_wall_seconds()
     {
         return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
     }
     Ok(decision)
-}
-
-fn require_coordinate_identity(
-    original: OriginalPublicMutationCoordinatesV2,
-    mut observed: OriginalPublicMutationCoordinatesV2,
-) -> Result<(), NixStartAdmissionErrorV2> {
-    // The common evaluator advances the observation's protected time floor.
-    // Every signed authority coordinate and historical session remains exact.
-    observed.authorization_revision = original.authorization_revision;
-    if observed != original {
-        return Err(NixStartAdmissionErrorV2::Invalid);
-    }
-    Ok(())
 }
 
 fn current_binding(
@@ -1525,84 +1505,17 @@ fn current_binding(
         .ok_or_else(|| ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid))
 }
 
-fn require_original_lease(
-    original: &OriginalAssignmentV2,
-    lease: &SignedOwnershipLease,
-) -> Result<(), NixStartAdmissionErrorV2> {
-    if lease.canonical_lease() != original.lease
-        || lease.canonical_signature() != original.signature
-        || lease.canonical_receipt() != original.receipt
-        || lease.canonical_receipt_signature() != original.receipt_signature
-    {
-        return Err(NixStartAdmissionErrorV2::Invalid);
-    }
-    Ok(())
-}
-
 fn require_observation(
     original: &CheckedStartAuthorityV2,
     before: RawPairedClockSample,
     after: RawPairedClockSample,
 ) -> Result<(), ContinuationFailureV2> {
     before.validate_later_sample(after).map_err(ContinuationFailureV2::from)?;
-    if after.wall_seconds() < original.accepted_wall_seconds
-        || after.wall_seconds() >= original.coordinates.capability_expires_at
-        || after.wall_seconds() >= original.coordinates.policy_expires_at
+    if after.wall_seconds() < original.accepted_wall_seconds()
+        || after.wall_seconds() >= original.coordinates().capability_expires_at()
+        || after.wall_seconds() >= original.coordinates().policy_expires_at()
     {
         return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid));
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // These coordinates are historical DATA used only to exercise equality.
-    // They construct neither a decision, a selector nor a continuation owner.
-    fn original_coordinates() -> OriginalPublicMutationCoordinatesV2 {
-        OriginalPublicMutationCoordinatesV2 {
-            capability: [1; 16], revocation_scope: [2; 16], revocation_generation: 3,
-            policy_digest: [4; 32], policy_generation: 5, controller: [6; 16],
-            controller_generation: 7, capability_not_before: 8, capability_expires_at: 9,
-            policy_not_before: 10, policy_expires_at: 11, channel_binding: [12; 32],
-            session_commitment: [13; 32], authorization_revision: [14; 32],
-        }
-    }
-
-    #[test]
-    fn only_the_observation_revision_may_change() {
-        let original = original_coordinates();
-        let observed = OriginalPublicMutationCoordinatesV2 {
-            authorization_revision: [15; 32], ..original
-        };
-
-        assert!(require_coordinate_identity(original, original).is_ok());
-        assert!(require_coordinate_identity(original, observed).is_ok());
-        assert_eq!(original.authorization_revision, [14; 32]);
-    }
-
-    #[test]
-    fn every_other_original_authority_coordinate_stays_exact() {
-        let original = original_coordinates();
-        let substitutions = [
-            OriginalPublicMutationCoordinatesV2 { capability: [15; 16], ..original },
-            OriginalPublicMutationCoordinatesV2 { revocation_scope: [15; 16], ..original },
-            OriginalPublicMutationCoordinatesV2 { revocation_generation: 15, ..original },
-            OriginalPublicMutationCoordinatesV2 { policy_digest: [15; 32], ..original },
-            OriginalPublicMutationCoordinatesV2 { policy_generation: 15, ..original },
-            OriginalPublicMutationCoordinatesV2 { controller: [15; 16], ..original },
-            OriginalPublicMutationCoordinatesV2 { controller_generation: 15, ..original },
-            OriginalPublicMutationCoordinatesV2 { capability_not_before: 15, ..original },
-            OriginalPublicMutationCoordinatesV2 { capability_expires_at: 15, ..original },
-            OriginalPublicMutationCoordinatesV2 { policy_not_before: 15, ..original },
-            OriginalPublicMutationCoordinatesV2 { policy_expires_at: 15, ..original },
-            OriginalPublicMutationCoordinatesV2 { channel_binding: [15; 32], ..original },
-            OriginalPublicMutationCoordinatesV2 { session_commitment: [15; 32], ..original },
-        ];
-
-        for substitution in substitutions {
-            assert!(require_coordinate_identity(original, substitution).is_err());
-        }
-    }
 }

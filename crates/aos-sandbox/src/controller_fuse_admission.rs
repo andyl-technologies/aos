@@ -27,7 +27,7 @@ use crate::controller_service::public_projection::{
 mod authority;
 mod carrier;
 
-pub(crate) use authority::AdmissionAuthorityV1;
+pub(crate) use authority::{AdmissionAuthorityV1, capture_admission_authority};
 pub use carrier::ControllerFuseAdmissionCarrierV1;
 
 const CONTROLLER_STATE_DIRECTORY: &str = "/var/lib/aos/sandboxd";
@@ -238,4 +238,11 @@ fn exact_id(bytes: &[u8]) -> Result<[u8; 16], ControllerFuseAdmissionErrorV1> {
     bytes
         .try_into()
         .map_err(|_| ControllerFuseAdmissionErrorV1::Rejected)
+}
+
+fn history_error(error: aos_sandbox_protocol::public_api::mutation_history::FuseHistoryDataError) -> ControllerFuseAdmissionErrorV1 {
+    match error {
+        aos_sandbox_protocol::public_api::mutation_history::FuseHistoryDataError::Rejected => ControllerFuseAdmissionErrorV1::Rejected,
+        aos_sandbox_protocol::public_api::mutation_history::FuseHistoryDataError::Context(error) => ControllerFuseAdmissionErrorV1::Ledger(crate::ReconcilerError::InvalidPlan(error.reason())),
+    }
 }

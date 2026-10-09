@@ -81,7 +81,7 @@ fn next_repaired_sandbox(
         .checked_add(1)
         .ok_or(OperationCompilationError::Rejected)?;
     desired.generation = generation;
-    sandbox.resource_version = super::super::public_mutation::resource_version(
+    sandbox.resource_version = aos_sandbox_protocol::public_api::mutation_history::compiler_resource_version(
         operation,
         PublicOperationMethodV1::OperatorRecover,
         generation,
@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(successor.updated_at, before.updated_at);
         assert_eq!(
             successor.resource_version,
-            super::super::super::public_mutation::resource_version(
+            aos_sandbox_protocol::public_api::mutation_history::compiler_resource_version(
                 OperationId::from_bytes([6; 16]),
                 PublicOperationMethodV1::OperatorRecover,
                 8,

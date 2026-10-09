@@ -421,7 +421,6 @@ pub(super) fn compile_authorized_attach_route(
 
 const PUBLIC_MUTATION_INTENT_KEY: &[u8] = b"aos.public.mutation-intent.v1\0";
 const PUBLIC_MUTATION_INTENT_MAGIC: &[u8; 8] = b"AOSPMI01";
-const PUBLIC_RESOURCE_VERSION_DOMAIN: &[u8] = b"aos.sandbox.public-resource-version.v1\0";
 
 pub(super) fn compile_public_mutation(
     journal: &mut Journal,
@@ -2260,21 +2259,7 @@ pub(super) fn mutation_intent(
     (key, value)
 }
 
-pub(crate) fn resource_version(
-    operation: OperationId,
-    method: PublicOperationMethodV1,
-    generation: u64,
-    request_digest: [u8; 32],
-) -> Vec<u8> {
-    Sha256::new()
-        .chain_update(PUBLIC_RESOURCE_VERSION_DOMAIN)
-        .chain_update(operation.as_bytes())
-        .chain_update([crate::reconciler::public_operation_method_record_code_v1(method)])
-        .chain_update(generation.to_be_bytes())
-        .chain_update(request_digest)
-        .finalize()
-        .to_vec()
-}
+pub(crate) use aos_sandbox_protocol::public_api::mutation_history::compiler_resource_version as resource_version;
 
 fn exact_id(bytes: &[u8]) -> Result<[u8; 16], OperationCompilationError> {
     let id = bytes

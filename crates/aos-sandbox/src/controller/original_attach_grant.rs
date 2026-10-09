@@ -349,14 +349,14 @@ where
             decision.public_tls_trust,
             decision.caller,
             decision.project,
-            ChannelBinding::new(decision.coordinates.channel_binding),
+            ChannelBinding::new(decision.coordinates.channel_binding()),
         )
         .map_err(rejected)?;
         let current = evaluate_current_protected_capability(
             journal,
             crate::publisher_authority::PublisherAuthorityLimits::default(),
             crate::publisher_policy::PublisherPolicyLimits::default(),
-            CapabilityId::from_bytes(decision.coordinates.capability),
+            CapabilityId::from_bytes(decision.coordinates.capability()),
             decision.project,
             decision.caller,
             registration.key_binding(),
@@ -450,8 +450,8 @@ where
         let expires_at = parent
             .expires_seconds()
             .min(i64::try_from(ticket.expires_at).map_err(rejected)?)
-            .min(decision.coordinates.capability_expires_at)
-            .min(decision.coordinates.policy_expires_at);
+            .min(decision.coordinates.capability_expires_at())
+            .min(decision.coordinates.policy_expires_at());
         if expires_at <= now {
             return Err(rejected(()));
         }
@@ -481,9 +481,8 @@ fn require_original_authority(
     original: &crate::attach_decision::OriginalDecisionV2,
     current: &CurrentCapabilityDecisionV1,
 ) -> Result<(), ControllerServiceError> {
-    if !crate::attach_decision::same_original_scope(
-        &original.coordinates,
-        &current.original_coordinates(original.coordinates.session_commitment),
+    if !original.coordinates.same_original_scope(
+        &current.original_coordinates(original.coordinates.session_commitment()),
     ) || current.authorized_wall_seconds() < original.accepted_wall_seconds
     {
         return Err(rejected(()));

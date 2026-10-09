@@ -266,39 +266,7 @@ pub struct PublicMutationAuthorizationV1 {
     original_coordinates: Option<OriginalPublicMutationCoordinatesV2>,
 }
 
-/// Historical checked coordinates, never a capability or resumed authorization.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct OriginalPublicMutationCoordinatesV2 {
-    /// Immutable capability resolved by the original protected authorization.
-    pub(crate) capability: [u8; 16],
-    /// Revocation scope actually checked for that capability.
-    pub(crate) revocation_scope: [u8; 16],
-    /// Accepted revocation head generation.
-    pub(crate) revocation_generation: u64,
-    /// Original effective project policy commitment.
-    pub(crate) policy_digest: [u8; 32],
-    /// Original protected policy head generation.
-    pub(crate) policy_generation: u64,
-    /// Original checked controller audience.
-    pub(crate) controller: [u8; 16],
-    /// Original controller audience head generation.
-    pub(crate) controller_generation: u64,
-    /// Inclusive original capability validity start.
-    pub(crate) capability_not_before: i64,
-    /// Exclusive original capability validity end.
-    pub(crate) capability_expires_at: i64,
-    /// Inclusive original policy validity start.
-    pub(crate) policy_not_before: i64,
-    /// Exclusive original policy validity end.
-    pub(crate) policy_expires_at: i64,
-    /// Stable registered certificate-derived holder binding, not the exporter.
-    pub(crate) channel_binding: [u8; 32],
-    /// Historical TLS exporter commitment; reconnect does not reuse its proof.
-    pub(crate) session_commitment: [u8; 32],
-    /// Original authorization revision, including its protected clock floor.
-    pub(crate) authorization_revision: [u8; 32],
-}
+pub(crate) use aos_sandbox_protocol::public_api::mutation_history::OriginalPublicMutationCoordinatesV2;
 
 impl PublicMutationAuthorizationV1 {
     pub(crate) const fn from_authorized(

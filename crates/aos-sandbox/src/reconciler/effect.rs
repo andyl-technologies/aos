@@ -160,16 +160,12 @@ impl PublicMutationEffectV1 {
 
     fn encode(&self) -> Result<Vec<u8>, ReconcilerError> {
         #[cfg(target_os = "linux")]
-        if let Some(carrier) = &self.nix_start {
-            if self.fuse_admission.is_some() {
-                return Err(ReconcilerError::InvalidPlan("mixed public admission carriers"));
-            }
-            return carrier.encode().map_err(|_| ReconcilerError::InvalidPlan("invalid Nix Start carrier"));
-        }
-        #[cfg(target_os = "linux")]
-        if let Some(carrier) = &self.fuse_admission {
-            return Ok(carrier.canonical_bytes().to_vec());
-        }
+        return aos_sandbox_protocol::public_api::mutation_history::encode_history(
+            &self.plain,
+            self.fuse_admission.as_ref().map(|carrier| carrier.history()),
+            self.nix_start.as_ref(),
+        ).map_err(|error| ReconcilerError::InvalidPlan(error.reason()));
+        #[cfg(not(target_os = "linux"))]
         self.encode_plain()
     }
 
@@ -179,24 +175,14 @@ impl PublicMutationEffectV1 {
 
     fn decode(bytes: &[u8]) -> Result<Option<Self>, ReconcilerError> {
         #[cfg(target_os = "linux")]
-        if let Some(carrier) = crate::production_operation_compiler::NixStartAdmissionCarrierV2::decode(bytes)
-            .map_err(|_| ReconcilerError::InvalidPlan("invalid Nix Start carrier"))?
-        {
-            let context = Self::decode_plain(carrier.ordinary_effect())?
-                .ok_or(ReconcilerError::InvalidPlan("missing Nix Start context"))?;
-            return context.with_nix_start(carrier).map(Some);
-        }
-        #[cfg(target_os = "linux")]
-        if let Some(carrier) =
-            crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1::decode(bytes)
-                .map_err(|_| ReconcilerError::InvalidPlan("invalid FUSE admission carrier"))?
-        {
-            let mut context = Self::decode_plain(carrier.ordinary_effect())?.ok_or(
-                ReconcilerError::InvalidPlan("missing FUSE admission context"),
-            )?;
-            context.fuse_admission = Some(carrier);
-            return Ok(Some(context));
-        }
+        return aos_sandbox_protocol::public_api::mutation_history::decode_history(bytes)
+            .map(|parts| parts.map(|(plain, fuse_admission, nix_start)| Self {
+                plain,
+                fuse_admission: fuse_admission.map(crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1::from_history),
+                nix_start,
+            }))
+            .map_err(|error| ReconcilerError::InvalidPlan(error.reason()));
+        #[cfg(not(target_os = "linux"))]
         Self::decode_plain(bytes)
     }
 
@@ -205,11 +191,9 @@ impl PublicMutationEffectV1 {
         mut self,
         carrier: crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1,
     ) -> Result<Self, ReconcilerError> {
-        if self.nix_start.is_some() || self.encode_plain()? != carrier.ordinary_effect() {
-            return Err(ReconcilerError::InvalidPlan(
-                "FUSE admission context mismatch",
-            ));
-        }
+        aos_sandbox_protocol::public_api::mutation_history::require_fuse_context(
+            &self.plain, self.nix_start.as_ref(), carrier.history(),
+        ).map_err(|error| ReconcilerError::InvalidPlan(error.reason()))?;
         self.fuse_admission = Some(carrier);
         Ok(self)
     }
@@ -226,15 +210,9 @@ impl PublicMutationEffectV1 {
         mut self,
         carrier: crate::production_operation_compiler::NixStartAdmissionCarrierV2,
     ) -> Result<Self, ReconcilerError> {
-        if self.fuse_admission.is_some()
-            || self.encode_plain()? != carrier.ordinary_effect()
-            || !matches!(self.validated_request()?, aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Start(_))
-        {
-            return Err(ReconcilerError::InvalidPlan("Nix Start context mismatch"));
-        }
-        // Preflight the complete wrapper before admission, not only its nested
-        // request, recipe or lease. No partial desired-state write follows.
-        carrier.encode().map_err(|_| ReconcilerError::InvalidPlan("Nix Start carrier exceeds bound"))?;
+        aos_sandbox_protocol::public_api::mutation_history::require_nix_context(
+            &self.plain, self.fuse_admission.as_ref().map(|carrier| carrier.history()), &carrier,
+        ).map_err(|error| ReconcilerError::InvalidPlan(error.reason()))?;
         self.nix_start = Some(carrier);
         Ok(self)
     }

@@ -8,6 +8,7 @@ license.workspace = true
 aos-sandbox-ownership-protocol = { path = "../aos-sandbox-ownership-protocol" }
 aos-proto = { path = "../aos-proto" }
 aos-sandbox-core = { path = "../aos-sandbox-core" }
+aos-sandbox-policy = { path = "../aos-sandbox-policy" }
 aos-sandbox-journal = { path = "../aos-sandbox-journal" }
 aos-sandbox-agent = { path = "../aos-sandbox-agent" }
 aos-sandbox-broker-session-protocol = { path = "../aos-sandbox-broker-session-protocol" }

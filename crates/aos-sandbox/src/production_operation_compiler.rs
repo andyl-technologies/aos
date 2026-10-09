@@ -57,7 +57,7 @@ pub use nix_environment::{
     NixStartContinuationErrorV2, NixFixedDomainPinsDataV2, NixFixedDomainPinsDecodeErrorV2,
 };
 #[cfg(target_os = "linux")]
-pub(crate) use nix_environment::{CheckedStartAuthorityV2, NixStartAdmissionCarrierV2};
+pub(crate) use nix_environment::{CheckedStartAuthorityV2, capture_checked_start_authority, NixStartAdmissionCarrierV2};
 
 pub(crate) use public_mutation::resource_version as admitted_public_resource_version_v1;
 

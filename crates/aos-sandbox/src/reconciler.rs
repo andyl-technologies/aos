@@ -99,7 +99,7 @@ pub(crate) use fuse_admission::accepted_fuse_admission_v1;
 #[cfg(target_os = "linux")]
 mod nix_admission;
 #[cfg(target_os = "linux")]
-pub(crate) use nix_admission::accepted_nix_start_admission_v2;
+pub(crate) use nix_admission::{accepted_nix_start_admission_v2, require_current_effect_v2};
 pub use observe_reservation::{
     adopt_execution_observe_child_v1, observe_child_adoption_state_v1, observe_child_identity_v1,
 };

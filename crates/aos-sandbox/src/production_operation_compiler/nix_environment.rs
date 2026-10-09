@@ -36,7 +36,7 @@ use aos_sandbox_core::{
     ObjectDigest, OperationId, OwnershipLeaseTrustAnchor, PortableMediaType,
     RevocationScopeId, SandboxId, SignaturePurpose, descriptor_for_bytes,
 };
-use aos_sandbox_ownership_protocol::{OwnershipAuthorityVerifier, UnverifiedOwnershipLeaseResponse};
+use aos_sandbox_ownership_protocol::OwnershipAuthorityVerifier;
 use aos_sandbox_protocol::nix_build::{
     NIX_REQUEST_MAXIMUM_BYTES_V2, NixBuildSchemaErrorV2, VerifiedNixRecipeArtifactV2,
     verify_nix_recipe_artifact_v2,
@@ -56,14 +56,14 @@ use crate::runtime_authority::{RuntimeAuthorityBindingV1, RuntimeAuthorityLimits
 use crate::runtime_scope::{CurrentRuntimeScopePolicy, RuntimeScopeHolder};
 
 mod authority;
-mod carrier;
 mod continuation;
 mod fixed_domain;
 mod generation;
 
-pub(crate) use authority::CheckedStartAuthorityV2;
-pub(crate) use carrier::NixStartAdmissionCarrierV2;
-use carrier::OriginalAssignmentV2;
+pub(crate) use authority::{CheckedStartAuthorityV2, capture_checked_start_authority};
+pub(crate) use aos_sandbox_protocol::public_api::mutation_history::NixStartAdmissionCarrierV2;
+use aos_sandbox_protocol::public_api::mutation_history::OriginalAssignmentV2;
+use aos_sandbox_protocol::public_api::mutation_history::AssignmentPreimagesV2;
 pub use continuation::{
     CurrentRetainedNixStartV2, NixResolveAuthorizationDraftV2, NixStartContinuationErrorV2,
 };
@@ -120,6 +120,15 @@ pub enum NixStartAdmissionErrorV2 {
     /// The terminal owner cannot lend its original recorded cause.
     #[error("Controller Nix original credential cause is unavailable")]
     CredentialCauseUnavailable,
+}
+
+impl From<aos_sandbox_protocol::public_api::mutation_history::NixHistoryDataError> for NixStartAdmissionErrorV2 {
+    fn from(error: aos_sandbox_protocol::public_api::mutation_history::NixHistoryDataError) -> Self {
+        match error {
+            aos_sandbox_protocol::public_api::mutation_history::NixHistoryDataError::Invalid => Self::Invalid,
+            aos_sandbox_protocol::public_api::mutation_history::NixHistoryDataError::Encoding(source) => Self::Encoding(source),
+        }
+    }
 }
 
 /// Owns original installed startup and twelve exact fixed PUBLIC credentials.
@@ -911,7 +920,7 @@ impl ControllerNixStartRecipeSelectorV2 {
         let mut clock = crate::controller::ControllerProtectedClockV1::open_fixed()
             .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
         let target = crate::runtime_scope::acquire_current_assignment(
-            journal, RuntimeScopeHolder { sandbox, holder: authority.holder },
+            journal, RuntimeScopeHolder { sandbox, holder: authority.holder() },
             self.assignment_policy()?, &mut || clock.sample(),
         )?;
         let original_binding = target.binding().clone();
@@ -924,24 +933,24 @@ impl ControllerNixStartRecipeSelectorV2 {
             return Err(NixStartAdmissionErrorV2::Invalid);
         }
         let manifest = binding.manifest().manifest();
-        if manifest.project() != authority.project
+        if manifest.project() != authority.project()
             || manifest.desired_generation().get() != next_generation
-            || manifest.policy() != &authority.policy
-            || resource.project_id != authority.project.as_bytes()
+            || manifest.policy() != authority.policy()
+            || resource.project_id != authority.project().as_bytes()
             || mutation.expected_resource_version != resource.resource_version
             || (!mutation.expected_incarnation_id.is_empty()
                 && mutation.expected_incarnation_id != manifest.incarnation().as_bytes())
             || previous.specification.as_option().is_none_or(|specification| !same_descriptor(specification, manifest.sandbox_spec()))
-            || resource.effective_policy.as_option().is_none_or(|policy| !same_descriptor(policy, &authority.policy))
+            || resource.effective_policy.as_option().is_none_or(|policy| !same_descriptor(policy, authority.policy()))
         {
             return Err(NixStartAdmissionErrorV2::Invalid);
         }
         let mut recipes = self.recipes.iter().filter(|recipe| {
             let recipe = recipe.recipe();
-            recipe.project == authority.project && recipe.sandbox == sandbox
+            recipe.project == authority.project() && recipe.sandbox == sandbox
                 && recipe.specification == *manifest.sandbox_spec()
                 && recipe.environment == *manifest.environment()
-                && recipe.policy == authority.policy
+                && recipe.policy == *authority.policy()
         });
         let recipe = recipes.next().ok_or(NixStartAdmissionErrorV2::Invalid)?;
         if recipes.next().is_some() {
@@ -949,17 +958,17 @@ impl ControllerNixStartRecipeSelectorV2 {
         }
         self.require_recipe_pins(recipe)?;
         require_recipe_assignment(recipe, &binding, authority)?;
-        let carrier = NixStartAdmissionCarrierV2 {
-            operation, request_digest, authority: authority.clone(),
-            assignment: capture_assignment(journal, &binding)?,
-            recipe: recipe.canonical_bytes().to_vec(), recipe_digest: recipe.digest(),
-            credential_commitments: self.commitments()?,
-            ordinary_effect: context.encode_plain().map_err(|_| NixStartAdmissionErrorV2::Invalid)?,
-            desired_key: desired.0.clone(), desired_value: desired.1.clone(),
-            original_resource_version: resource.resource_version.clone(),
-            original_incarnation: manifest.incarnation().as_bytes().to_vec(),
-            original_generation: previous.generation,
-        };
+        let carrier = NixStartAdmissionCarrierV2::from_historical_parts((
+            operation, request_digest, authority.clone(),
+            capture_assignment(journal, &binding)?,
+            recipe.canonical_bytes().to_vec(), recipe.digest(),
+            self.commitments()?,
+            context.encode_plain().map_err(|_| NixStartAdmissionErrorV2::Invalid)?,
+            desired.0.clone(), desired.1.clone(),
+            resource.resource_version.clone(),
+            manifest.incarnation().as_bytes().to_vec(),
+            previous.generation,
+        ));
         self.recheck_retained(journal, &carrier, authority)?;
         carrier.encode()?;
         Ok(carrier)
@@ -971,16 +980,16 @@ impl ControllerNixStartRecipeSelectorV2 {
         carrier: &NixStartAdmissionCarrierV2,
         current: &CheckedStartAuthorityV2,
     ) -> Result<(), NixStartAdmissionErrorV2> {
-        carrier.authority.require_current_decision(current)?;
+        carrier.authority().require_current_decision(current)?;
         self.recheck()?;
         journal.validate_held_protected_names()?;
-        if carrier.credential_commitments != self.commitments()? {
+        if carrier.credential_commitments() != &self.commitments()? {
             return Err(NixStartAdmissionErrorV2::Invalid);
         }
         // Membership verifies the ORIGINAL artifact. It does not select a new
         // recipe on replay, even when another catalog entry would now match.
         let recipe = self.recipes.iter().find(|recipe| {
-            recipe.digest() == carrier.recipe_digest && recipe.canonical_bytes() == carrier.recipe
+            carrier.matches_recipe(recipe)
         }).ok_or(NixStartAdmissionErrorV2::Invalid)?;
         self.require_recipe_pins(recipe)?;
         let sandbox = recipe.recipe().sandbox;
@@ -988,14 +997,14 @@ impl ControllerNixStartRecipeSelectorV2 {
             .map_err(|_| NixStartAdmissionErrorV2::Invalid)?.current(sandbox)
             .map_err(|_| NixStartAdmissionErrorV2::Invalid)?
             .ok_or(NixStartAdmissionErrorV2::Invalid)?;
-        require_recipe_assignment(recipe, &binding, &carrier.authority)?;
+        require_recipe_assignment(recipe, &binding, carrier.authority())?;
         let original_manifest = binding.manifest().manifest();
-        if binding.holder() != Some(carrier.authority.holder)
+        if binding.holder() != Some(carrier.authority().holder())
             || original_manifest.node() != self.pins.node
-            || original_manifest.desired_generation().get() != carrier.original_generation.checked_add(1)
+            || original_manifest.desired_generation().get() != carrier.original_generation().checked_add(1)
                 .ok_or(NixStartAdmissionErrorV2::Invalid)?
-            || original_manifest.incarnation().as_bytes() != carrier.original_incarnation.as_slice()
-            || capture_assignment(journal, &binding)? != carrier.assignment
+            || original_manifest.incarnation().as_bytes() != carrier.original_incarnation()
+            || capture_assignment(journal, &binding)? != *carrier.assignment()
         {
             return Err(NixStartAdmissionErrorV2::Invalid);
         }
@@ -1004,13 +1013,10 @@ impl ControllerNixStartRecipeSelectorV2 {
         let mut clock = crate::controller::ControllerProtectedClockV1::open_fixed()
             .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
         let before = clock.sample().map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
-        let assignment = &carrier.assignment;
+        let assignment = carrier.assignment();
         let verified = self.assignment_policy()?.ownership_verifier.verify_response(
             &claim,
-            UnverifiedOwnershipLeaseResponse::from_transport(
-                assignment.lease.clone(), assignment.signature.clone(),
-                assignment.receipt.clone(), assignment.receipt_signature.clone(),
-            ).map_err(|_| NixStartAdmissionErrorV2::Invalid)?, &before,
+            assignment.clone_unverified_response().map_err(|_| NixStartAdmissionErrorV2::Invalid)?, &before,
         ).map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
         let after = clock.sample().map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
         before.validate_later_sample(after).map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
@@ -1021,14 +1027,14 @@ impl ControllerNixStartRecipeSelectorV2 {
         if after.host_boot_id() != before.host_boot_id()
             || after.boottime_nanoseconds() < before.boottime_nanoseconds()
             || after.wall_seconds() < before.wall_seconds()
-            || after.wall_seconds() < current.accepted_wall_seconds
-            || after.wall_seconds() >= carrier.authority.coordinates.capability_expires_at
-            || after.wall_seconds() >= carrier.authority.coordinates.policy_expires_at
+            || after.wall_seconds() < current.accepted_wall_seconds()
+            || after.wall_seconds() >= carrier.authority().coordinates().capability_expires_at()
+            || after.wall_seconds() >= carrier.authority().coordinates().policy_expires_at()
             || after.wall_seconds() >= verified.authority_expires_seconds()
             || after.boottime_nanoseconds().checked_sub(before.boottime_nanoseconds())
                 .is_none_or(|elapsed| elapsed > 10_000_000_000)
             || current_binding != binding
-            || capture_assignment(journal, &binding)? != carrier.assignment
+            || capture_assignment(journal, &binding)? != *carrier.assignment()
         {
             return Err(NixStartAdmissionErrorV2::Invalid);
         }
@@ -1237,8 +1243,8 @@ struct CheckedAssignmentReadbackV2<'readback> {
 impl CheckedAssignmentReadbackV2<'_> {
     fn preimages(&self) -> AssignmentPreimagesV2<'_> {
         let lease = self.publication.lease();
-        AssignmentPreimagesV2 {
-            bytes: [
+        AssignmentPreimagesV2::from_historical_parts(
+            [
                 self.binding_bytes,
                 self.binding.manifest().canonical_bytes(),
                 self.publication.canonical_bytes(),
@@ -1247,52 +1253,13 @@ impl CheckedAssignmentReadbackV2<'_> {
                 lease.canonical_receipt(),
                 lease.canonical_receipt_signature(),
             ],
-            binding_digest: self.binding.digest(),
-            publication_digest: self.publication.digest(),
-        }
+            self.binding.digest(),
+            self.publication.digest(),
+        )
     }
 
     fn matches_original(&self, original: &OriginalAssignmentV2) -> bool {
         self.preimages().matches_original(original)
-    }
-}
-
-/// Projects every original preimage and both digests without copying its bytes.
-struct AssignmentPreimagesV2<'original> {
-    bytes: [&'original [u8]; 7],
-    binding_digest: ObjectDigest,
-    publication_digest: ObjectDigest,
-}
-
-impl AssignmentPreimagesV2<'_> {
-    fn into_owned(self) -> OriginalAssignmentV2 {
-        let [binding, assignment, publication, lease, signature, receipt, receipt_signature] =
-            self.bytes;
-
-        OriginalAssignmentV2 {
-            binding: binding.to_vec(),
-            binding_digest: self.binding_digest,
-            assignment: assignment.to_vec(),
-            publication: publication.to_vec(),
-            publication_digest: self.publication_digest,
-            lease: lease.to_vec(),
-            signature: signature.to_vec(),
-            receipt: receipt.to_vec(),
-            receipt_signature: receipt_signature.to_vec(),
-        }
-    }
-
-    fn matches_original(&self, original: &OriginalAssignmentV2) -> bool {
-        self.bytes == [
-            original.binding.as_slice(),
-            original.assignment.as_slice(),
-            original.publication.as_slice(),
-            original.lease.as_slice(),
-            original.signature.as_slice(),
-            original.receipt.as_slice(),
-            original.receipt_signature.as_slice(),
-        ] && self.binding_digest == original.binding_digest
-            && self.publication_digest == original.publication_digest
     }
 }
 
@@ -1322,16 +1289,8 @@ fn checked_assignment_readback<'readback>(
     };
     // The complete cap precedes either owned retention or borrowed equality.
     // No readback is retained across later clock, target or journal effects.
-    require_assignment_preimage_lengths(readback.preimages().bytes.map(|original| original.len()))?;
+    readback.preimages().require_lengths().map_err(NixStartAdmissionErrorV2::from)?;
     Ok(readback)
-}
-
-fn require_assignment_preimage_lengths(lengths: [usize; 7]) -> Result<(), NixStartAdmissionErrorV2> {
-    lengths.into_iter().try_fold(0_usize, |total, length| {
-        total.checked_add(length).filter(|length| *length <= carrier::MAXIMUM_BYTES)
-            .ok_or(NixStartAdmissionErrorV2::Invalid)
-    })?;
-    Ok(())
 }
 
 fn require_recipe_assignment(
@@ -1349,15 +1308,15 @@ fn require_recipe_assignment(
     let generation = crate::environment::decode_environment_generation_v1(&recipe.generation_manifest)
         .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
     let policy = crate::publisher_policy::PreparedPublisherPolicyRevisionV1::from_canonical_bytes(
-        authority.project, authority.coordinates.policy_generation,
-        authority.coordinates.policy_not_before, authority.coordinates.policy_expires_at,
-        &authority.canonical_policy, DecodeLimits::default(),
+        authority.project(), authority.coordinates().policy_generation(),
+        authority.coordinates().policy_not_before(), authority.coordinates().policy_expires_at(),
+        authority.canonical_policy(), DecodeLimits::default(),
     ).map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
     if recipe.sandbox.as_bytes() != request.sandbox_id.as_slice()
-        || recipe.project != authority.project || manifest.project() != authority.project
+        || recipe.project != authority.project() || manifest.project() != authority.project()
         || manifest.sandbox() != recipe.sandbox || manifest.sandbox_spec() != &recipe.specification
         || manifest.environment() != &recipe.environment || manifest.policy() != &recipe.policy
-        || recipe.policy != authority.policy
+        || recipe.policy != *authority.policy()
         || generation.disclosure() != policy.policy().cache_domain()
         || !generation.inputs().iter().all(|input| manifest.source_commitments().contains(input.descriptor()))
     {
@@ -1550,116 +1509,6 @@ mod retained_failure_view_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // These buffers are historical DATA, not a publication, journal or owner.
-    fn assignment_buffers() -> [Vec<u8>; 7] {
-        std::array::from_fn(|index| vec![u8::try_from(index + 1).unwrap(); index + 2])
-    }
-
-    fn assignment_preimages(buffers: &[Vec<u8>; 7]) -> AssignmentPreimagesV2<'_> {
-        AssignmentPreimagesV2 {
-            bytes: buffers.each_ref().map(Vec::as_slice),
-            binding_digest: ObjectDigest::from_bytes([8; 32]),
-            publication_digest: ObjectDigest::from_bytes([9; 32]),
-        }
-    }
-
-    #[test]
-    fn borrowed_assignment_matches_the_complete_old_owned_layout() {
-        let buffers = assignment_buffers();
-        let original = OriginalAssignmentV2 {
-            binding: buffers[0].clone(),
-            binding_digest: ObjectDigest::from_bytes([8; 32]),
-            assignment: buffers[1].clone(),
-            publication: buffers[2].clone(),
-            publication_digest: ObjectDigest::from_bytes([9; 32]),
-            lease: buffers[3].clone(),
-            signature: buffers[4].clone(),
-            receipt: buffers[5].clone(),
-            receipt_signature: buffers[6].clone(),
-        };
-
-        let owned = assignment_preimages(&buffers).into_owned();
-
-        assert_eq!(owned, original);
-        assert!(assignment_preimages(&buffers).matches_original(&original));
-        assert_eq!(
-            serde_json::to_vec(&owned).unwrap(),
-            serde_json::to_vec(&original).unwrap(),
-        );
-    }
-
-    #[test]
-    fn borrowed_assignment_rejects_every_preimage_and_both_digest_substitutions() {
-        let buffers = assignment_buffers();
-        let original = assignment_preimages(&buffers).into_owned();
-
-        for index in 0..buffers.len() {
-            let mut substituted = buffers.clone();
-            substituted[index][0] ^= 1;
-            let view = assignment_preimages(&substituted);
-
-            assert!(!view.matches_original(&original), "preimage {index}");
-            assert_ne!(view.into_owned(), original, "preimage {index}");
-        }
-
-        let mut substituted = assignment_preimages(&buffers);
-        substituted.binding_digest = ObjectDigest::from_bytes([10; 32]);
-        assert!(!substituted.matches_original(&original));
-        assert_ne!(substituted.into_owned(), original);
-
-        let mut substituted = assignment_preimages(&buffers);
-        substituted.publication_digest = ObjectDigest::from_bytes([10; 32]);
-        assert!(!substituted.matches_original(&original));
-        assert_ne!(substituted.into_owned(), original);
-    }
-
-    #[test]
-    fn borrowed_assignment_compares_contents_not_buffer_identity() {
-        let buffers = assignment_buffers();
-        let original = assignment_preimages(&buffers).into_owned();
-        let separate = buffers.clone();
-
-        assert!(assignment_preimages(&separate).matches_original(&original));
-        for (left, right) in buffers.iter().zip(&separate) {
-            assert_ne!(left.as_ptr(), right.as_ptr());
-        }
-    }
-
-    #[test]
-    fn borrowed_assignment_rejects_trailing_bytes_and_reordered_families() {
-        let buffers = assignment_buffers();
-        let original = assignment_preimages(&buffers).into_owned();
-
-        for index in 0..buffers.len() {
-            let mut extended = buffers.clone();
-            extended[index].push(0);
-
-            assert!(
-                !assignment_preimages(&extended).matches_original(&original),
-                "preimage {index}",
-            );
-        }
-
-        let mut reordered = buffers;
-        reordered.swap(3, 4);
-        assert!(!assignment_preimages(&reordered).matches_original(&original));
-    }
-
-    #[test]
-    fn assignment_bound_counts_all_seven_preimages_and_checked_overflow() {
-        let exact = [carrier::MAXIMUM_BYTES - 6, 1, 1, 1, 1, 1, 1];
-
-        assert!(require_assignment_preimage_lengths(exact).is_ok());
-        for index in 0..exact.len() {
-            let mut oversized = exact;
-            oversized[index] += 1;
-
-            assert!(require_assignment_preimage_lengths(oversized).is_err(), "preimage {index}");
-        }
-        assert!(require_assignment_preimage_lengths([1, usize::MAX, 0, 0, 0, 0, 0]).is_err());
-        assert!(require_assignment_preimage_lengths([usize::MAX, 0, 0, 0, 0, 0, 0]).is_err());
-    }
 
     fn catalog_prefix(count: u32) -> Vec<u8> {
         let mut bytes = CATALOG_MAGIC.to_vec();

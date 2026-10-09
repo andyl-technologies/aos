@@ -137,7 +137,7 @@ impl AuthorizedPublicMutationRequestV1 {
                 | DormantSandboxRequestKindV1::ViewReplace(_)
         ) {
             Some(
-                crate::controller_fuse_admission::AdmissionAuthorityV1::capture(
+                crate::controller_fuse_admission::capture_admission_authority(
                     journal,
                     peer,
                     &checked_admission,
@@ -164,7 +164,7 @@ impl AuthorizedPublicMutationRequestV1 {
         let start_authority = if nix_start.is_some()
             && matches!(request.request(), DormantSandboxRequestKindV1::Start(_))
         {
-            Some(crate::production_operation_compiler::CheckedStartAuthorityV2::capture(
+            Some(crate::production_operation_compiler::capture_checked_start_authority(
                 journal, peer, &checked_admission, authorization, encoded,
             )?)
         } else {
@@ -257,8 +257,8 @@ impl AuthorizedPublicMutationRequestV1 {
             .original_coordinates()
             .map(|coordinates| {
                 coordinates
-                    .capability_expires_at
-                    .min(coordinates.policy_expires_at)
+                    .capability_expires_at()
+                    .min(coordinates.policy_expires_at())
             })
     }
 
@@ -367,22 +367,22 @@ mod handle_decode_tests {
         for (capability_expires_at, policy_expires_at, expected) in
             [(40, 70, 40), (70, 40, 40), (40, 40, 40)]
         {
-            let coordinates = OriginalPublicMutationCoordinatesV2 {
-                capability: [4; 16],
-                revocation_scope: [5; 16],
-                revocation_generation: 1,
-                policy_digest: [6; 32],
-                policy_generation: 1,
-                controller: [7; 16],
-                controller_generation: 1,
-                capability_not_before: 1,
+            let coordinates = OriginalPublicMutationCoordinatesV2::from_historical_parts((
+                [4; 16],
+                [5; 16],
+                1,
+                [6; 32],
+                1,
+                [7; 16],
+                1,
+                1,
                 capability_expires_at,
-                policy_not_before: 1,
+                1,
                 policy_expires_at,
-                channel_binding: [8; 32],
-                session_commitment: [9; 32],
-                authorization_revision: [10; 32],
-            };
+                [8; 32],
+                [9; 32],
+                [10; 32],
+            ));
             accepted.authorization = accepted
                 .authorization
                 .with_original_coordinates(coordinates);

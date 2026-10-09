@@ -170,7 +170,7 @@ fn checked_admission_projection_keeps_actual_inputs_and_advances_floor_once() {
     assert_eq!(decision.policy(), &policy);
     assert_eq!(
         checked.original_coordinates,
-        decision.original_coordinates(checked.original_coordinates.session_commitment)
+        decision.original_coordinates(checked.original_coordinates.session_commitment())
     );
     assert_eq!(
         checked.authorized_wall_seconds,
@@ -226,7 +226,7 @@ fn checked_admission_projection_keeps_actual_inputs_and_advances_floor_once() {
     let coordinates = authorization.original_coordinates().unwrap();
     assert_eq!(
         coordinates,
-        decision.original_coordinates(coordinates.session_commitment)
+        decision.original_coordinates(coordinates.session_commitment())
     );
     assert_eq!(
         authorization.accepted_wall_seconds(),

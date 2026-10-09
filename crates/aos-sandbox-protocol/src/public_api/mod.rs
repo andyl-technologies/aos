@@ -33,6 +33,7 @@ pub mod projection;
 pub mod proto_json;
 mod proto_observation;
 pub mod public_mutation_context;
+pub mod mutation_history;
 pub mod registry;
 pub mod resource;
 pub mod watch;

@@ -192,11 +192,10 @@ fn original_attach_grant_current_policy_holder_scope_and_revocation_survive_reop
         selector,
     )
     .unwrap();
-    assert!(crate::attach_decision::same_original_scope(
-        &original,
+    assert!(original.same_original_scope(
         &retry.original_coordinates([38; 32])
     ));
-    assert_eq!(original.session_commitment, [37; 32]);
+    assert_eq!(original.session_commitment(), [37; 32]);
     assert!(
         evaluate(
             &mut reopened,
@@ -276,8 +275,7 @@ fn original_attach_grant_current_policy_holder_scope_and_revocation_survive_reop
         selector,
     )
     .unwrap();
-    assert!(!crate::attach_decision::same_original_scope(
-        &original,
+    assert!(!original.same_original_scope(
         &changed_policy.original_coordinates([37; 32])
     ));
     {
@@ -303,8 +301,7 @@ fn original_attach_grant_current_policy_holder_scope_and_revocation_survive_reop
         selector,
     )
     .unwrap();
-    assert!(!crate::attach_decision::same_original_scope(
-        &original,
+    assert!(!original.same_original_scope(
         &changed.original_coordinates([37; 32])
     ));
     PublisherPolicyStore::load(&mut reopened, PublisherPolicyLimits::default())
@@ -498,22 +495,22 @@ fn original_attach_grant_protected_artifacts_reopen_without_substitution_or_rene
         .to_openssh()
         .unwrap()
         .into_bytes();
-    let coordinates = crate::cli_model::provenance::OriginalPublicMutationCoordinatesV2 {
-        capability: [63; 16],
-        revocation_scope: [64; 16],
-        revocation_generation: 1,
-        policy_digest: [65; 32],
-        policy_generation: 1,
-        controller: [66; 16],
-        controller_generation: 1,
-        capability_not_before: 90,
-        capability_expires_at: 200,
-        policy_not_before: 80,
-        policy_expires_at: 210,
-        channel_binding: [67; 32],
-        session_commitment: [68; 32],
-        authorization_revision: [69; 32],
-    };
+    let coordinates = crate::cli_model::provenance::OriginalPublicMutationCoordinatesV2::from_historical_parts((
+        [63; 16],
+        [64; 16],
+        1,
+        [65; 32],
+        1,
+        [66; 16],
+        1,
+        90,
+        200,
+        80,
+        210,
+        [67; 32],
+        [68; 32],
+        [69; 32],
+    ));
     // Artifact tests do not construct a current cut. The production entry must
     // independently decode and authorize the original accepted request.
     let checked = crate::attach_decision::encode_original_decision(

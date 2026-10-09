@@ -9,6 +9,8 @@ use crate::production_operation_compiler::NixStartAdmissionCarrierV2;
 
 mod continuation;
 
+pub(crate) use continuation::require_current_effect_v2;
+
 /// Keeps decoded ledger data within one immutable readback, not a custody permit.
 struct DecodedNixStartLedgerV2 {
     operation: OperationRecord,
