@@ -218,14 +218,14 @@ pub use source_domain_policy_hold::{
     SourceDomainPolicyHoldV1, SourceDomainPolicyV8PendingSettlementV1,
 };
 use source_project_admission_challenge::SourceProjectAdmissionTransition;
-pub(crate) use source_project_admission_challenge::{
-    replay_source_project_admission_challenge_v1, source_project_challenge_matches_current,
-};
 pub use source_project_admission_challenge::{
     SOURCE_PROJECT_ADMISSION_CHALLENGE_BYTES_V1, SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1,
     SOURCE_PROJECT_ADMISSION_TERMINAL_BYTES_V1, SourceProjectAdmissionChallengeKindV1,
     SourceProjectAdmissionChallengeV1, SourceProjectAdmissionReservationV1,
     SourceProjectAdmissionTerminalV1,
+};
+pub(crate) use source_project_admission_challenge::{
+    replay_source_project_admission_challenge_v1, source_project_challenge_matches_current,
 };
 mod mount_source_consumption;
 pub use mount_source_consumption::{

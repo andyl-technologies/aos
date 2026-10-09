@@ -142,7 +142,8 @@ fn stage_pending(mut owners: Owners) -> Result<(), Box<dyn Error>> {
 
 fn query_historical_rows(mut owners: Owners) -> Result<(), Box<dyn Error>> {
     let reservation =
-        SourceProjectAdmissionReservationV1::from_record_bytes(&fs::read(CANCELED_RESERVATION)?).map_err(aos_sandbox::journal::JournalError::from)?;
+        SourceProjectAdmissionReservationV1::from_record_bytes(&fs::read(CANCELED_RESERVATION)?)
+            .map_err(aos_sandbox::journal::JournalError::from)?;
     if query_fixed_root_project_reservation_cancellation_v1(reservation)
         .is_ok_and(|proof| proof.is_some())
     {

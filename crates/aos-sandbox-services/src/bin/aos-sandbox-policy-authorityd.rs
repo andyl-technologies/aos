@@ -1852,7 +1852,8 @@ fn serve_current_head(
         stream.read_exact(&mut reservation_bytes)?;
         require_stream_eof(stream)?;
         let reservation =
-            SourceProjectAdmissionReservationV1::from_record_bytes(&reservation_bytes).map_err(aos_sandbox::journal::JournalError::from)?;
+            SourceProjectAdmissionReservationV1::from_record_bytes(&reservation_bytes)
+                .map_err(aos_sandbox::journal::JournalError::from)?;
         let nonce: [u8; 16] = request[8..24].try_into()?;
         if reservation.client_nonce() != nonce {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "changed intent nonce").into());
@@ -1888,7 +1889,8 @@ fn serve_current_head(
         stream.read_exact(&mut reservation_bytes)?;
         require_stream_eof(stream)?;
         let reservation =
-            SourceProjectAdmissionReservationV1::from_record_bytes(&reservation_bytes).map_err(aos_sandbox::journal::JournalError::from)?;
+            SourceProjectAdmissionReservationV1::from_record_bytes(&reservation_bytes)
+                .map_err(aos_sandbox::journal::JournalError::from)?;
         let (project_packet, project_input) = explicit_project.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -1976,7 +1978,8 @@ fn serve_current_head(
         let mut source_bytes = [0; SOURCE_PROJECT_ADMISSION_CHALLENGE_BYTES_V1];
         stream.read_exact(&mut source_bytes)?;
         require_stream_eof(stream)?;
-        let source_row = SourceProjectAdmissionChallengeV1::from_record_bytes(&source_bytes).map_err(aos_sandbox::journal::JournalError::from)?;
+        let source_row = SourceProjectAdmissionChallengeV1::from_record_bytes(&source_bytes)
+            .map_err(aos_sandbox::journal::JournalError::from)?;
         let stage = recover_fixed_root_project_admission_stage_v1(stage_digest)?;
         if source_row.project() != stage.project()
             || source_row.nonce() != stage.root_nonce()
@@ -2871,7 +2874,8 @@ fn serve_project_history_retirement(
 ) -> Result<(), Box<dyn Error>> {
     let mut bytes = [0; SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1];
     stream.read_exact(&mut bytes)?;
-    let reservation = SourceProjectAdmissionReservationV1::from_record_bytes(&bytes).map_err(aos_sandbox::journal::JournalError::from)?;
+    let reservation = SourceProjectAdmissionReservationV1::from_record_bytes(&bytes)
+        .map_err(aos_sandbox::journal::JournalError::from)?;
     if reservation.client_nonce().as_slice() != client_nonce {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "changed history nonce").into());
     }
@@ -2920,7 +2924,8 @@ fn read_project_reservation_request(
     let mut bytes = [0; SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1];
     stream.read_exact(&mut bytes)?;
     require_stream_eof(stream)?;
-    let reservation = SourceProjectAdmissionReservationV1::from_record_bytes(&bytes).map_err(aos_sandbox::journal::JournalError::from)?;
+    let reservation = SourceProjectAdmissionReservationV1::from_record_bytes(&bytes)
+        .map_err(aos_sandbox::journal::JournalError::from)?;
     if reservation.client_nonce().as_slice() != client_nonce {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -2939,7 +2944,8 @@ fn serve_project_negative_intent(
     let mut packet = [0; CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1];
     stream.read_exact(&mut packet)?;
     require_stream_eof(stream)?;
-    let reservation = SourceProjectAdmissionReservationV1::from_record_bytes(&packet[188..324]).map_err(aos_sandbox::journal::JournalError::from)?;
+    let reservation = SourceProjectAdmissionReservationV1::from_record_bytes(&packet[188..324])
+        .map_err(aos_sandbox::journal::JournalError::from)?;
     let nonce: [u8; 16] = nonce.try_into()?;
     if reservation.client_nonce() != nonce {
         return Err(
@@ -2995,7 +3001,8 @@ fn serve_project_admission_abort(
     let mut source_bytes = [0; SOURCE_PROJECT_ADMISSION_CHALLENGE_BYTES_V1];
     stream.read_exact(&mut source_bytes)?;
     require_stream_eof(stream)?;
-    let source_row = SourceProjectAdmissionChallengeV1::from_record_bytes(&source_bytes).map_err(aos_sandbox::journal::JournalError::from)?;
+    let source_row = SourceProjectAdmissionChallengeV1::from_record_bytes(&source_bytes)
+        .map_err(aos_sandbox::journal::JournalError::from)?;
     let stage = recover_fixed_root_project_admission_stage_v1(stage_digest)?;
     if source_row.project() != stage.project()
         || source_row.nonce() != stage.root_nonce()

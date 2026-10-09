@@ -1230,7 +1230,8 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         )?;
         let precut = super::q04_original_precut_digest_v1(
             &request, &preview, complete.as_ref(), source,
-            crate::journal::ProtectedJournalNamesV1::from_bytes(&reply[400..448]).map_err(crate::journal::JournalError::from)?,
+            crate::journal::ProtectedJournalNamesV1::from_bytes(&reply[400..448])
+                .map_err(crate::journal::JournalError::from)?,
             u64::from_be_bytes(super::fixed(reply, 392)),
         )?;
         let policy_before = prepared.publication_recipe.before_digest();
@@ -1594,8 +1595,12 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let controller_before = journal.q04_controller_refresh_bookend_v1(ledger, transitions)?;
         let request = Q04PreholdInputDataV1::decode(&self.prehold)?;
         let metadata = request.fields()[0];
-        let original_controller = crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[176..224]).map_err(crate::journal::JournalError::from)?;
-        let original_source = crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[224..272]).map_err(crate::journal::JournalError::from)?;
+        let original_controller =
+            crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[176..224])
+                .map_err(crate::journal::JournalError::from)?;
+        let original_source =
+            crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[224..272])
+                .map_err(crate::journal::JournalError::from)?;
         let root_final = self.root_phase(identity, 3)?;
         // Count the same eight native recipes, including each original
         // begin/commit pair. The compound resource hold has six extra members;

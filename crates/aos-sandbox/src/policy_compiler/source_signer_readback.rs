@@ -938,7 +938,8 @@ pub fn sign_fixed_source_project_admission_readback_v1(
             .ok_or(SourceSignerReadbackErrorV1::Stale)?
             .head();
         let names = readback.physical_names_v1();
-        if !crate::journal::source_project_challenge_matches_current(row,
+        if !crate::journal::source_project_challenge_matches_current(
+            row,
             challenge.nonce(),
             challenge.cut(),
             project,

@@ -1758,7 +1758,8 @@ fn require_preview_fields(
     {
         return Err(CreateQ04ErrorV1::ChangedCut);
     }
-    crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[40..88]).map_err(crate::journal::JournalError::from)?;
+    crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[40..88])
+        .map_err(crate::journal::JournalError::from)?;
     let staged = preview_stage(fields[1])?;
     if staged.challenge() != original_nonce || nonzero::<32>(fields[1], 96).is_err() {
         return Err(CreateQ04ErrorV1::ChangedCut);
@@ -2012,7 +2013,8 @@ fn require_prehold_fields(fields: &[&[u8]; PREHOLD_FIELDS]) -> Result<(), Create
         return Err(CreateQ04ErrorV1::ChangedCut);
     }
     for offset in (176..464).step_by(48) {
-        crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[offset..offset + 48]).map_err(crate::journal::JournalError::from)?;
+        crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[offset..offset + 48])
+            .map_err(crate::journal::JournalError::from)?;
     }
     Ok(())
 }
@@ -2176,7 +2178,8 @@ impl Q04PreholdPublicationDataV1 {
         {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
-        crate::journal::ProtectedJournalNamesV1::from_bytes(&body[400..448]).map_err(crate::journal::JournalError::from)?;
+        crate::journal::ProtectedJournalNamesV1::from_bytes(&body[400..448])
+            .map_err(crate::journal::JournalError::from)?;
         let total = usize::try_from(read_u32(&body, 448)?).map_err(|_| CreateQ04ErrorV1::Bounds)?;
         let chunks = u16::from_be_bytes(fixed(&body, 452));
         let groups = u16::from_be_bytes(fixed(&body, 454));

@@ -42,6 +42,7 @@ const CANCELLATION_BYTES: usize = 120;
 const RETIREMENT_ACK_MAGIC: &[u8; 8] = b"AOSQPT01";
 const RETIREMENT_ACK_DOMAIN: &[u8] = b"aos.sandbox.source-project-terminal-retirement-ack.v1\0";
 const RETIREMENT_ACK_BYTES: usize = 152;
+
 /// Distinguishes ancestry-bearing admission from a nonauthorizing abort row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SourceProjectAdmissionChallengeKindV1 {
@@ -50,9 +51,11 @@ pub enum SourceProjectAdmissionChallengeKindV1 {
     /// Only the durable Source challenge and physical names can be retired.
     AbortOnly,
 }
+
 const SETTLEMENT_MAGIC: &[u8; 8] = b"AOSQPC01";
 const SETTLEMENT_DOMAIN: &[u8] = b"aos.sandbox.source-project-admission-settlement.v1\0";
 const SETTLEMENT_BYTES: usize = 152;
+
 /// Bounds a canonical Source settlement, or a zero-padded cancellation.
 pub const SOURCE_PROJECT_ADMISSION_TERMINAL_BYTES_V1: usize = SETTLEMENT_BYTES;
 
@@ -260,7 +263,8 @@ impl SourceProjectAdmissionTerminalV1 {
             retirement_ack: None,
         };
         rows.require_joined()?;
-        rows.terminal().ok_or(ProtectedHistoryDataErrorV1::Malformed)
+        rows.terminal()
+            .ok_or(ProtectedHistoryDataErrorV1::Malformed)
     }
 }
 
@@ -603,6 +607,7 @@ impl SourceProjectAdmissionChallengeV1 {
     pub const fn kind(self) -> SourceProjectAdmissionChallengeKindV1 {
         self.kind
     }
+
     /// Returns the monotone Source-journal challenge issue.
     pub const fn issue(self) -> u64 {
         self.issue
@@ -658,6 +663,7 @@ impl SourceProjectAdmissionChallengeV1 {
     pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, ProtectedHistoryDataErrorV1> {
         Self::decode(bytes)
     }
+
     /// Encodes the fixed historical fields without validating their claims.
     pub fn encode(self) -> [u8; RECORD_BYTES] {
         let mut bytes = [0; RECORD_BYTES];
@@ -731,12 +737,16 @@ impl SourceProjectAdmissionChallengeV1 {
     }
 }
 
-fn take<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], ProtectedHistoryDataErrorV1> {
+fn take<const N: usize>(
+    bytes: &[u8],
+    offset: usize,
+) -> Result<[u8; N], ProtectedHistoryDataErrorV1> {
     bytes
         .get(offset..offset + N)
         .and_then(|field| field.try_into().ok())
         .ok_or(ProtectedHistoryDataErrorV1::Malformed)
 }
+
 /// Carries the five historical Source row claims without currentness custody.
 #[derive(Clone, Copy)]
 pub struct SourceProjectAdmissionHistoryV1 {

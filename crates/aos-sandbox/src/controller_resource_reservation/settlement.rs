@@ -267,7 +267,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Binding, ResourceReservationErrorV1
         input_origin: bytes[..8] == *b"AOSRST02",
         original: fixed(&bytes[8..24])?, coissuance: fixed(&bytes[24..56])?,
         transaction: fixed(&bytes[56..72])?,
-        names: ProtectedJournalNamesV1::from_bytes(&bytes[72..120]).map_err(crate::journal::JournalError::from)?,
+        names: ProtectedJournalNamesV1::from_bytes(&bytes[72..120])
+            .map_err(crate::journal::JournalError::from)?,
         next: u64::from_be_bytes(fixed(&bytes[120..128])?),
         prior_end: u64::from_be_bytes(fixed(&bytes[128..136])?),
         root_final: fixed(&bytes[136..168])?, origins,

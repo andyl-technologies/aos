@@ -230,8 +230,10 @@ impl Journal {
         let main_names = self.protected_writer_physical_names_v1()?;
         let sidecar_names = sidecar.protected_writer_physical_names_v1()?;
         let names = [
-            main_names.journal(), main_names.lock(),
-            sidecar_names.journal(), sidecar_names.lock(),
+            main_names.journal(),
+            main_names.lock(),
+            sidecar_names.journal(),
+            sidecar_names.lock(),
         ];
         if main_names.directory() != sidecar_names.directory()
             || names.iter().enumerate().any(|(index, name)| {

@@ -80,7 +80,8 @@ impl SourceGenesisPendingV1 {
             intent: ObjectDigest::from_bytes(array(bytes, 64)?),
             receipt: ObjectDigest::from_bytes(array(bytes, 96)?),
             nonce: array(bytes, 128)?,
-            names: ProtectedJournalNamesV1::from_bytes(&bytes[144..192]).map_err(crate::journal::JournalError::from)?,
+            names: ProtectedJournalNamesV1::from_bytes(&bytes[144..192])
+                .map_err(crate::journal::JournalError::from)?,
         };
         if value.nonce == [0; 16]
             || value.intent.as_bytes() == &[0; 32]

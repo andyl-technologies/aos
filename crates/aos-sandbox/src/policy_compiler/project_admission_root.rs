@@ -606,7 +606,8 @@ fn admit_root_project_source_from_owner_proofs_with_journal(
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
 
-    let source_row = SourceProjectAdmissionChallengeV1::from_record_bytes(source_row_bytes).map_err(crate::journal::JournalError::from)?;
+    let source_row = SourceProjectAdmissionChallengeV1::from_record_bytes(source_row_bytes)
+        .map_err(crate::journal::JournalError::from)?;
     let mut fixed_journal = if journal_source.held.is_some() {
         None
     } else {
@@ -640,7 +641,8 @@ fn admit_root_project_source_from_owner_proofs_with_journal(
         || stage.packet_digest != project.head().packet_digest()
         || stage.input_digest != project.head().input_digest()
         || stage.deployment_digest != deployment.packet_digest()
-        || !crate::journal::source_project_challenge_matches_current(source_row,
+        || !crate::journal::source_project_challenge_matches_current(
+            source_row,
             stage.root_nonce,
             stage.cut,
             stage.project,
@@ -820,7 +822,8 @@ pub fn abort_fixed_root_project_admission_v1(
     if stage.record_digest() != stage_digest {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
-    let source_row = SourceProjectAdmissionChallengeV1::from_record_bytes(source_row_bytes).map_err(crate::journal::JournalError::from)?;
+    let source_row = SourceProjectAdmissionChallengeV1::from_record_bytes(source_row_bytes)
+        .map_err(crate::journal::JournalError::from)?;
     if source_row.project() != stage.project
         || source_row.nonce() != stage.root_nonce
         || source_row.cut() != stage.cut

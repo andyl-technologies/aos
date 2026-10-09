@@ -30,16 +30,16 @@ use aos_sandbox_protocol::domain_ledger::source_project_history::RESERVATION_DOM
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use sha2::{Digest as _, Sha256};
 
-use aos_sandbox_protocol::domain_ledger::source_project_history::{
-    SourceProjectAdmissionHistoryV1 as CurrentProjectAdmissionRows,
-    SourceProjectAdmissionSettlementV1, SourceProjectReservationCancellationV1,
-    SourceProjectTerminalRecordV1, SourceProjectTerminalRetirementAckV1,
-};
 pub use aos_sandbox_protocol::domain_ledger::source_project_history::{
     SOURCE_PROJECT_ADMISSION_CHALLENGE_BYTES_V1, SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1,
     SOURCE_PROJECT_ADMISSION_TERMINAL_BYTES_V1, SourceProjectAdmissionChallengeKindV1,
     SourceProjectAdmissionChallengeV1, SourceProjectAdmissionReservationV1,
     SourceProjectAdmissionTerminalV1,
+};
+use aos_sandbox_protocol::domain_ledger::source_project_history::{
+    SourceProjectAdmissionHistoryV1 as CurrentProjectAdmissionRows,
+    SourceProjectAdmissionSettlementV1, SourceProjectReservationCancellationV1,
+    SourceProjectTerminalRecordV1, SourceProjectTerminalRetirementAckV1,
 };
 
 use super::{
@@ -69,8 +69,6 @@ pub(super) enum SourceProjectAdmissionTransition {
     CancelReservation,
     AcknowledgeRetirement,
 }
-
-
 
 /// Checks this row against a retained writer or independent signer view.
 pub(crate) fn source_project_challenge_matches_current(
@@ -115,10 +113,11 @@ fn current_cancellation(
 ) -> Result<Option<SourceProjectReservationCancellationV1>, JournalError> {
     state
         .get(&(RecordNamespace::DesiredState, CANCELLATION_KEY.to_vec()))
-        .map(|bytes| SourceProjectReservationCancellationV1::decode(bytes).map_err(JournalError::from))
+        .map(|bytes| {
+            SourceProjectReservationCancellationV1::decode(bytes).map_err(JournalError::from)
+        })
         .transpose()
 }
-
 
 fn current_rows(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
@@ -135,7 +134,9 @@ fn current_rows(
     let cancellation = current_cancellation(state)?;
     let retirement_ack = state
         .get(&(RecordNamespace::DesiredState, RETIREMENT_ACK_KEY.to_vec()))
-        .map(|bytes| SourceProjectTerminalRetirementAckV1::decode(bytes).map_err(JournalError::from))
+        .map(|bytes| {
+            SourceProjectTerminalRetirementAckV1::decode(bytes).map_err(JournalError::from)
+        })
         .transpose()?;
     let rows = CurrentProjectAdmissionRows::from_historical_fields(
         reservation,
@@ -188,7 +189,9 @@ pub(super) fn require_no_mutation(
             let next = record
                 .value()
                 .ok_or(JournalError::ProtectedBoundary)
-                .and_then(|bytes| SourceProjectAdmissionReservationV1::decode(bytes).map_err(JournalError::from))?;
+                .and_then(|bytes| {
+                    SourceProjectAdmissionReservationV1::decode(bytes).map_err(JournalError::from)
+                })?;
             match (reservation, challenge, settlement, rest) {
                 (None, None, None, []) if next.issue() == 1 && retirement_ack.is_none() => {}
                 (
@@ -234,7 +237,9 @@ pub(super) fn require_no_mutation(
             let next = record
                 .value()
                 .ok_or(JournalError::ProtectedBoundary)
-                .and_then(|bytes| SourceProjectAdmissionChallengeV1::decode(bytes).map_err(JournalError::from))?;
+                .and_then(|bytes| {
+                    SourceProjectAdmissionChallengeV1::decode(bytes).map_err(JournalError::from)
+                })?;
             if !rest.is_empty()
                 || challenge.is_some()
                 || settlement.is_some()
@@ -256,7 +261,9 @@ pub(super) fn require_no_mutation(
             let row = record
                 .value()
                 .ok_or(JournalError::ProtectedBoundary)
-                .and_then(|bytes| SourceProjectAdmissionSettlementV1::decode(bytes).map_err(JournalError::from))?;
+                .and_then(|bytes| {
+                    SourceProjectAdmissionSettlementV1::decode(bytes).map_err(JournalError::from)
+                })?;
             if record.namespace() != RecordNamespace::DesiredState
                 || record.key() != SETTLEMENT_KEY
                 || settlement.is_some()
@@ -274,7 +281,10 @@ pub(super) fn require_no_mutation(
             let row = record
                 .value()
                 .ok_or(JournalError::ProtectedBoundary)
-                .and_then(|bytes| SourceProjectReservationCancellationV1::decode(bytes).map_err(JournalError::from))?;
+                .and_then(|bytes| {
+                    SourceProjectReservationCancellationV1::decode(bytes)
+                        .map_err(JournalError::from)
+                })?;
             if record.namespace() != RecordNamespace::DesiredState
                 || record.key() != CANCELLATION_KEY
                 || challenge.is_some()
@@ -282,7 +292,8 @@ pub(super) fn require_no_mutation(
                 || cancellation.is_some()
                 || retirement_ack.is_some()
                 || !reservation.is_some_and(|reservation| {
-                    row.issue() == reservation.issue() && row.reservation() == reservation.record_digest()
+                    row.issue() == reservation.issue()
+                        && row.reservation() == reservation.record_digest()
                 })
             {
                 return Err(JournalError::ProtectedBoundary);
@@ -295,7 +306,9 @@ pub(super) fn require_no_mutation(
             let row = record
                 .value()
                 .ok_or(JournalError::ProtectedBoundary)
-                .and_then(|bytes| SourceProjectTerminalRetirementAckV1::decode(bytes).map_err(JournalError::from))?;
+                .and_then(|bytes| {
+                    SourceProjectTerminalRetirementAckV1::decode(bytes).map_err(JournalError::from)
+                })?;
             let rows = current_rows(state)?;
             let terminal = rows.terminal().ok_or(JournalError::ProtectedBoundary)?;
             if record.namespace() != RecordNamespace::DesiredState
@@ -508,8 +521,7 @@ impl Journal {
             }
         }
         Ok(SourceProjectAdmissionReservationV1::from_historical_fields(
-            rows
-                .reservation()
+            rows.reservation()
                 .map(|row| {
                     row.issue()
                         .checked_add(1)
@@ -540,8 +552,11 @@ impl Journal {
         if rows.reservation() == Some(row) {
             return Ok(row);
         }
-        let transaction =
-            reservation_transaction(row, rows.settlement().is_some(), rows.cancellation().is_some())?;
+        let transaction = reservation_transaction(
+            row,
+            rows.settlement().is_some(),
+            rows.cancellation().is_some(),
+        )?;
         self.commit_source_project_admission_transition(
             &transaction,
             SourceProjectAdmissionTransition::Reserve,
@@ -559,7 +574,9 @@ impl Journal {
         &self,
     ) -> Result<Option<(SourceProjectAdmissionChallengeV1, bool)>, JournalError> {
         let rows = current_rows(self.native.state())?;
-        Ok(rows.challenge().map(|row| (row, rows.settlement().is_some())))
+        Ok(rows
+            .challenge()
+            .map(|row| (row, rows.settlement().is_some())))
     }
 
     /// Preflights reservation, challenge, terminal, and ACK writes before Root stages.
@@ -813,7 +830,8 @@ impl Journal {
             }
             return Err(JournalError::ProtectedBoundary);
         }
-        if rows.settlement().is_some() || reserved.project() != project || reserved.names() != names {
+        if rows.settlement().is_some() || reserved.project() != project || reserved.names() != names
+        {
             return Err(JournalError::ProtectedBoundary);
         }
         let row = SourceProjectAdmissionChallengeV1::from_historical_fields(
@@ -1294,7 +1312,12 @@ mod tests {
             .expect("ordinary mutation after Root retirement ACK");
         cold.record_source_project_admission_reservation_v1([8; 16], project, names)
             .expect("successor reservation");
-        assert!(current_rows(cold.native.state()).unwrap().retirement_ack().is_none());
+        assert!(
+            current_rows(cold.native.state())
+                .unwrap()
+                .retirement_ack()
+                .is_none()
+        );
         assert!(
             cold.source_project_admission_terminal_v1()
                 .unwrap()
@@ -1368,7 +1391,8 @@ mod tests {
             .expect("durable abort-only row");
         assert_eq!(row.kind(), SourceProjectAdmissionChallengeKindV1::AbortOnly);
         assert_eq!(row.ancestry().as_bytes(), &[0; 32]);
-        assert!(!source_project_challenge_matches_current(row,
+        assert!(!source_project_challenge_matches_current(
+            row,
             row.nonce(),
             row.cut(),
             project,

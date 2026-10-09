@@ -1190,8 +1190,10 @@ impl RootSourceGenesisAuthorityV1 {
             self.controller_uid,
         )?;
         let accepted = self.accepted.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        let names = ProtectedJournalNamesV1::from_bytes(&metadata[176..224]).map_err(crate::journal::JournalError::from)?;
-        let source_names = ProtectedJournalNamesV1::from_bytes(&metadata[224..272]).map_err(crate::journal::JournalError::from)?;
+        let names = ProtectedJournalNamesV1::from_bytes(&metadata[176..224])
+            .map_err(crate::journal::JournalError::from)?;
+        let source_names = ProtectedJournalNamesV1::from_bytes(&metadata[224..272])
+            .map_err(crate::journal::JournalError::from)?;
         let sequence = u64::from_be_bytes(crate::hierarchy::genesis_profile::take(metadata, 464)?);
         let source_sequence = u64::from_be_bytes(crate::hierarchy::genesis_profile::take(metadata, 472)?);
         if !accepted.completed
@@ -1285,7 +1287,8 @@ impl RootSourceGenesisAuthorityV1 {
         let names_offset = controller_packet.len() - 192;
         let controller_names = ProtectedJournalNamesV1::from_bytes(
             &controller_packet[names_offset..names_offset + 48],
-        ).map_err(crate::journal::JournalError::from)?;
+        )
+        .map_err(crate::journal::JournalError::from)?;
         Ok(Q04RootGen1CutLoanV1 {
             owner: self,
             current,

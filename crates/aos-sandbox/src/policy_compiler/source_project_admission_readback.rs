@@ -602,7 +602,8 @@ pub fn require_current_source_project_admission_challenge_v1(
 ) -> Result<(), SourceProjectAdmissionChallengeErrorV1> {
     let names = owner.fixed_physical_names_v1()?;
     let ancestry = current_project_ancestry(owner, expected.project())?;
-    if !crate::journal::source_project_challenge_matches_current(expected,
+    if !crate::journal::source_project_challenge_matches_current(
+        expected,
         expected.nonce(),
         expected.cut(),
         expected.project(),

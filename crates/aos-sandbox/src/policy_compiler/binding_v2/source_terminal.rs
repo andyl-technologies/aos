@@ -200,7 +200,8 @@ impl ClosedSourceTerminalClaimV1 {
         )?;
         let nonce = take_claim::<16>(bytes, &mut offset)?;
         let source_issue = u64::from_be_bytes(take_claim::<8>(bytes, &mut offset)?);
-        let names = ProtectedJournalNamesV1::from_bytes(&take_claim::<48>(bytes, &mut offset)?).map_err(crate::journal::JournalError::from)?;
+        let names = ProtectedJournalNamesV1::from_bytes(&take_claim::<48>(bytes, &mut offset)?)
+            .map_err(crate::journal::JournalError::from)?;
         let source_packet = ObjectDigest::from_bytes(take_claim::<32>(bytes, &mut offset)?);
         let cache_packet = ObjectDigest::from_bytes(take_claim::<32>(bytes, &mut offset)?);
         let preview_digest = ObjectDigest::from_bytes(take_claim::<32>(bytes, &mut offset)?);

@@ -495,7 +495,8 @@ impl RootProjectHistoryFloorV1 {
             project: ProjectId::from_bytes(take::<16>(bytes, 248)?),
             source_commitment: field(264)?,
             client_nonce: take::<16>(bytes, 296)?,
-            names: ProtectedJournalNamesV1::from_bytes(&bytes[312..360]).map_err(crate::journal::JournalError::from)?,
+            names: ProtectedJournalNamesV1::from_bytes(&bytes[312..360])
+                .map_err(crate::journal::JournalError::from)?,
         };
         if row.issue == 0
             || row.reservation == zero_digest()

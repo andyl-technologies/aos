@@ -155,7 +155,8 @@ impl SourceDomainChallengeV1 {
                     .try_into()
                     .map_err(|_| JournalError::ProtectedBoundary)?,
             ),
-            names: ProtectedJournalNamesV1::from_bytes(&bytes[120..168]).map_err(crate::journal::JournalError::from)?,
+            names: ProtectedJournalNamesV1::from_bytes(&bytes[120..168])
+                .map_err(crate::journal::JournalError::from)?,
         };
         if row.issue == 0
             || row.nonce == [0; 16]
