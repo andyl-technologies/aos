@@ -11,6 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use terrane_core::bucket::BucketKey;
 
+mod empty_roots;
+
 #[tokio::test]
 async fn native_gc_independent_collectors_have_one_selected_winner() {
     let fixture = Fixture::new().await;

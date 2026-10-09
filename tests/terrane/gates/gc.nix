@@ -29,6 +29,7 @@
   ];
 
   rootTests = [
+    "gc::lease::tests::empty_roots::native_gc_known_empty_inventory_completes_empty_root_collection"
     "gc::runner::walk::tests::native::gc_roots_native_current_inventory_keeps_all_commit_classes_and_live_jobs"
     "gc::runner::walk::tests::native::gc_roots_native_incomplete_inventory_cannot_replace_selected_authority"
     "gc::runner::walk::tests::native::gc_roots_native_retained_selection_keeps_absent_history_and_excludes_proposals"
@@ -92,7 +93,7 @@ in {
   gc-roots-complete = sourceGate "gc-roots-complete" ''
     cd crates
     ${focusedTests "tokio,surface-sdk" rootTests}
-    printf 'PASS: native selected root inventory, retention, opaque Notes and snapshot continuity (5 exact cases)\n' \
+    printf 'PASS: native selected root inventory, known empty roots, retention, opaque Notes and snapshot continuity (6 exact cases)\n' \
       > "$out/result"
   '';
 

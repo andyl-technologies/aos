@@ -214,6 +214,12 @@ them before effects. Existing `gc-roots-complete` and `bucket-cap-probe` cases
 cover rejected incomplete successors and that legacy boundary. Their actual
 owning-gate qualification is still required; a fabricated unknown writable
 selection would not be valid collector evidence (GC-2, GC-29).
+The parent registers a sixth `gc-roots-complete` case for genuine collection on
+the freshly admitted known-empty ref inventory. It will reuse the real native
+lease fixture's Guard and Original, independently observe the explicit empty
+selected inventories, and publish/finish the actual empty-root snapshot. This
+positive is distinct from read-only unknown-inventory refusal. Its isolated
+implementation and qualification remain pending; registration accepts no task.
 
 All ten
 exact native Active completion cases pass on `4e6c14a7f3`. The eight-case native
