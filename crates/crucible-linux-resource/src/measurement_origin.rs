@@ -26,7 +26,9 @@ use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, fcntl_get_seals, memfd_
 use serde::Deserialize;
 
 mod actor_partition;
+mod issuer_birth;
 mod issuer_custody;
+mod issuer_parent;
 mod parent_evidence;
 
 pub use actor_partition::{CertifiedActorPartition, CertifiedNativeStage};
@@ -521,7 +523,14 @@ pub fn run_original_pid1() -> Result<(), MeasurementOriginError> {
     let end_ns = start_ns
         .checked_add(RUNTIME_NS)
         .ok_or(MeasurementOriginError::Clock)?;
-    issuer_custody::run_original(OriginalInterval { start_ns, end_ns })
+    issuer_custody::run_original(OriginalInterval { start_ns, end_ns })?;
+    // Successful actor completion is already sent through the retained parent
+    // port. Poweroff terminates this disposable domain; the parent still must
+    // wait its actual QEMU Child and retire the physical ownership.
+    rustix::system::reboot(rustix::system::RebootCommand::PowerOff)?;
+    Err(MeasurementOriginError::Authentication(
+        "owned kernel poweroff returned",
+    ))
 }
 
 fn provisional_interval() -> Result<OriginalInterval, MeasurementOriginError> {

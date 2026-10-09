@@ -328,6 +328,7 @@ impl<'operation> MeasurementCgroupOwner<'operation> {
             parent_directory,
             name: name.to_owned(),
             directory: None,
+            original_removed: false,
         });
         let child = self.child.as_mut().ok_or(MeasurementCgroupError::State)?;
         boundary(operation)?;

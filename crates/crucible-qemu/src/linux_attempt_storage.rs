@@ -918,6 +918,8 @@ impl Drop for ProjectIdLease {
 }
 
 mod filesystem;
+#[cfg(feature = "private-measurement-domain")]
+mod original_cleanup;
 use filesystem::*;
 
 #[cfg(test)]

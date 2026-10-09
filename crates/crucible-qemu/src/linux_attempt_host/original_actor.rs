@@ -7,6 +7,8 @@
 
 use std::sync::Arc;
 
+use super::original_roster::{OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster};
+
 use crucible_linux_resource::host_services::{
     HostServiceAllocator, HostServiceBootstrap, HostServiceError, HostServiceLeasePair,
 };
@@ -38,6 +40,15 @@ pub enum OriginalActorAccountError {
     /// The same original supervisor or returned preparation refused.
     #[error("original actor supervision refused: {0}")]
     Supervision(#[from] HostSupervisionError),
+    /// The same actual native state refused control closure.
+    #[error("original native control refused: {source}; original: {original:?}")]
+    NativeControlBoundary {
+        /// The actual native control refusal precedes this postcheck.
+        #[source]
+        source: super::native_resources::LinuxQemuNativeResourceError,
+        /// The same retained Cleanup's independent boundary refusal.
+        original: Option<HostSupervisionError>,
+    },
     /// Required retained custody has already been consumed.
     #[error("original actor custody is unavailable")]
     Unavailable,
@@ -60,6 +71,7 @@ struct PublishedAccounts {
     resident: HostServiceAllocator,
     metadata: HostServiceAllocator,
     evidence: CertifiedNativeRoleEvidence,
+    native_roster_published: bool,
 }
 
 impl OriginalActorAccountCustody {
@@ -103,6 +115,7 @@ impl OriginalActorAccountCustody {
                 resident,
                 metadata,
                 evidence,
+                native_roster_published: false,
             }),
         };
 
@@ -128,9 +141,11 @@ impl OriginalActorAccountCustody {
         .map_err(|_| HostServiceError::CapacityExhausted)?;
         let guard = u64::try_from(guard.pad_to_align().size())
             .map_err(|_| HostServiceError::CapacityExhausted)?;
+        let roster = OriginalNativeAccountRoster::allocation_extent()?;
         HostSupervisionBootstrap::structure_bytes()?
             .checked_add(HostServiceBootstrap::control_bytes()?)
             .and_then(|bytes| bytes.checked_add(guard))
+            .and_then(|bytes| bytes.checked_add(roster))
             .ok_or_else(|| HostServiceError::CapacityExhausted.into())
     }
 
@@ -158,7 +173,7 @@ impl OriginalActorAccountCustody {
     /// # Errors
     /// Refuses either original counter or the same original before and after
     /// reservation. A post-refusal retains the newly admitted pair.
-    pub fn reserve_native_account_credit(
+    fn reserve_native_account_credit(
         &self,
     ) -> Result<OriginalNativeAccountCredit, OriginalActorAccountError> {
         self.require_original()?;
@@ -196,6 +211,49 @@ impl OriginalActorAccountCustody {
         self.require_original()?;
         Ok(credit)
     }
+
+    /// Retains the fixed native pairs outside the genuine factory allocation.
+    ///
+    /// The authenticated invocation selects one, two or four slots. The roster
+    /// allocation was charged before actor publication, and every pair is
+    /// admitted before that allocation is constructed. A partial refusal keeps
+    /// admitted pairs and permanently consumes this once-only publication.
+    /// This account binding supplies no backing, Source or birth permission.
+    ///
+    /// # Errors
+    /// Refuses repeated publication, missing custody, any original pair, target
+    /// geometry, or the same preparation before and after publication.
+    pub fn prepare_native_account_roster(
+        &mut self,
+    ) -> Result<
+        (
+            OriginalNativeAccountRoster,
+            OriginalNativeAccountFactoryBinding,
+        ),
+        OriginalActorAccountError,
+    > {
+        self.require_original()?;
+        let held = self
+            .held
+            .as_mut()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        if held.native_roster_published {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        let width = usize::from(held.evidence.actor_partition().worker_stage().width());
+        if !matches!(width, 1 | 2 | 4) {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        held.native_roster_published = true;
+
+        let mut credits = std::array::from_fn(|_| None);
+        for slot in credits.iter_mut().take(width) {
+            *slot = Some(self.reserve_native_account_credit()?);
+        }
+        let published = OriginalNativeAccountRoster::publish(credits, width)?;
+        self.require_original()?;
+        Ok(published)
+    }
 }
 
 impl Drop for OriginalActorAccountCustody {
@@ -212,7 +270,7 @@ impl Drop for OriginalActorAccountCustody {
 /// domain installation, process birth, or a ResearchResident launch permission.
 /// No numeric constructor or caller-supplied cleanup flag can release it.
 #[must_use = "retain external paired native credit through actual control free"]
-pub struct OriginalNativeAccountCredit {
+pub(super) struct OriginalNativeAccountCredit {
     original: Option<RetainedNativeCredit>,
     full_resident_bytes: u64,
     full_backing_bytes: u64,
@@ -225,6 +283,52 @@ struct RetainedNativeCredit {
 }
 
 impl OriginalNativeAccountCredit {
+    pub(super) fn verify_preparation(
+        &self,
+        preparation: &Arc<HostOperationGuard>,
+    ) -> Result<(), OriginalActorAccountError> {
+        let retained = self
+            .original
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        if !Arc::ptr_eq(&retained.preparation, preparation) {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        self.require_original()
+    }
+
+    #[cfg(test)]
+    pub(super) fn mechanism_credit(
+        preparation: Arc<HostOperationGuard>,
+    ) -> Result<(Self, HostServiceAllocator, HostServiceAllocator), HostServiceError> {
+        let resident = HostServiceAllocator::new(69, 1056, 1536 << 20)?;
+        let metadata = HostServiceAllocator::new(1, 1, 512 << 20)?;
+        let (first, second) =
+            resident.reserve_native_pair(&metadata, 69, 1056, 1536 << 20, 512 << 20)?;
+        Ok((
+            Self {
+                original: Some(RetainedNativeCredit {
+                    _pair: HostServiceLeasePair::new(first, second),
+                    preparation,
+                }),
+                full_resident_bytes: 1536 << 20,
+                full_backing_bytes: 4 << 30,
+                total_metadata_bytes: 512 << 20,
+            },
+            resident,
+            metadata,
+        ))
+    }
+
+    pub(super) fn begin_cleanup(&self) -> Result<HostOperationGuard, OriginalActorAccountError> {
+        Ok(self
+            .original
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?
+            .preparation
+            .begin_original_cleanup_control()?)
+    }
+
     /// Checks the same preparation retained with this external credit.
     ///
     /// # Errors
@@ -267,7 +371,7 @@ impl Drop for OriginalNativeAccountCredit {
 }
 
 #[cfg(test)]
-// crucible-lint: allow rust-allow -- this real loan/drop mechanism control panics when unsettled external paired credit or its same guard is prematurely released; it creates no parent certificate or launch permission.
+// crucible-lint: allow panic-shortcut -- this real loan/drop mechanism control panics when unsettled external paired credit or its same guard is prematurely released; it creates no parent certificate or launch permission.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;

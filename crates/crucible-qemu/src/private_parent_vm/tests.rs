@@ -153,3 +153,63 @@ fn installed_floor_refuses_without_retiring_or_replacing_original_payment() {
     assert!(record.owner.is_none());
     assert!(record.child.is_none());
 }
+
+#[test]
+fn unrelated_actual_peer_cannot_receive_parent_evidence() {
+    use std::io::Read;
+    use std::os::unix::net::UnixStream;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("original.sock");
+    let pins = tempfile::tempfile().unwrap();
+    let mut record = admitted();
+    record.bridge = Some(bridge::Bridge::untrusted_test_endpoint(path.clone(), pins));
+    let born = child();
+    let actual_pid = born.id();
+    record.publish_child(born).unwrap();
+    let mut unrelated = UnixStream::connect(&path).unwrap();
+    unrelated.set_nonblocking(true).unwrap();
+
+    let result = record.exchange_parent_evidence();
+    let mut byte = [0];
+    let unread = unrelated.read(&mut byte);
+    record.exit = Some(record.child.as_mut().unwrap().wait().unwrap());
+
+    assert!(matches!(
+        result,
+        Err(ParentFailure::CompiledInput(
+            "actual owned QEMU bridge peer"
+        ))
+    ));
+    assert!(matches!(unread, Err(error) if error.kind() == std::io::ErrorKind::WouldBlock));
+    assert_eq!(record.child.as_ref().unwrap().id(), actual_pid);
+    assert!(record.bridge.as_ref().unwrap().has_retained_test_peer());
+    assert!(record.account.is_some());
+}
+
+#[test]
+fn poll_slice_borrows_original_remaining_and_expired_end_refuses() {
+    let mut record = admitted();
+    assert_eq!(record.poll_timeout().unwrap().tv_nsec, 10_000_000);
+
+    record.deadline = Some(crate::supervision::HostSupervisionDeadline::start(
+        Duration::from_millis(5),
+    ));
+    match record.poll_timeout() {
+        Ok(timeout) => {
+            assert_eq!(timeout.tv_sec, 0);
+            assert!(timeout.tv_nsec > 0 && timeout.tv_nsec <= 5_000_000);
+        }
+        Err(ParentFailure::Deadline) => {}
+        Err(other) => panic!("unexpected original deadline refusal: {other:?}"),
+    }
+
+    record.deadline = Some(crate::supervision::HostSupervisionDeadline::start(
+        Duration::ZERO,
+    ));
+    assert!(matches!(
+        record.poll_timeout(),
+        Err(ParentFailure::Deadline)
+    ));
+    assert!(record.account.is_some());
+}

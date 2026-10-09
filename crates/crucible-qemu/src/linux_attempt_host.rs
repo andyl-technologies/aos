@@ -4,25 +4,34 @@
 //! attempt host-resource boundary. It pairs one sealed cgroup process owner
 //! with one pinned ext4 project-quota/run-directory owner, exposes only the
 //! child launch and cancellation capabilities, and orders storage cleanup
-//! strictly after process reap. Failed cleanup transfers both authorities to a
-//! detached nondroppable worker; dropping its observation handle cannot release
-//! either authority.
+//! strictly after process reap. Ordinary failed cleanup transfers both authorities
+//! to a detached nondroppable worker. The private original-bound route retains
+//! those authorities in its existing paid roster for guarded cleanup retry.
 
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod configuration;
+pub use configuration::LinuxQemuAttemptHostConfig;
+
 mod native_resources;
 #[cfg(feature = "private-measurement-domain")]
 mod original_actor;
+#[cfg(feature = "private-measurement-domain")]
+mod original_host;
+#[cfg(feature = "private-measurement-domain")]
+mod original_roster;
 use native_resources::NativeResourceState;
 #[cfg(feature = "private-measurement-domain")]
 pub use native_resources::OriginalNativeControlRetirement;
 pub use native_resources::{LinuxQemuNativeResourceController, LinuxQemuNativeResourceError};
 #[cfg(feature = "private-measurement-domain")]
-pub use original_actor::{
-    OriginalActorAccountCustody, OriginalActorAccountError, OriginalNativeAccountCredit,
-};
+pub use original_actor::{OriginalActorAccountCustody, OriginalActorAccountError};
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use original_roster::NativeAccountAttempt;
+#[cfg(feature = "private-measurement-domain")]
+pub use original_roster::{OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -48,182 +57,6 @@ const HOST_QUARANTINE_RUNNING: u8 = 0;
 const HOST_QUARANTINE_RELEASED: u8 = 1;
 const HOST_QUARANTINE_PARKED: u8 = 2;
 
-/// Validated configuration for one combined Linux QEMU attempt namespace.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LinuxQemuAttemptHostConfig {
-    process: LinuxQemuAttemptProcessConfig,
-    storage: LinuxQemuAttemptStorageConfig,
-    maximum_node_host_service_tasks: u64,
-    maximum_node_host_service_file_descriptors: u64,
-    maximum_node_host_service_resident_bytes: u64,
-    watcher_service_resident_bytes: u64,
-}
-
-impl LinuxQemuAttemptHostConfig {
-    /// Validates one paired cgroup and project-quota namespace.
-    ///
-    /// The same daemon-incarnation name and distinct non-root child credentials
-    /// are sealed into both allocators. Validation completes before either path
-    /// is accessed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuVmRealizationError::Executor`] when any namespace,
-    /// credential, task, project-ID, timeout, or inode bound is invalid.
-    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        cgroup_root: impl Into<PathBuf>,
-        run_root: impl Into<PathBuf>,
-        attempt_namespace: impl Into<String>,
-        first_project_id: u32,
-        project_id_count: u32,
-        child_user_id: u32,
-        child_group_id: u32,
-        maximum_tasks: u32,
-        maximum_file_descriptors: u64,
-        maximum_node_host_service_tasks: u64,
-        maximum_node_host_service_file_descriptors: u64,
-        maximum_node_host_service_resident_bytes: u64,
-        watcher_service_resident_bytes: u64,
-        maximum_inodes: u64,
-        finish_timeout: Duration,
-    ) -> Result<Self, QemuVmRealizationError> {
-        if maximum_node_host_service_tasks == 0
-            || maximum_node_host_service_file_descriptors == 0
-            || maximum_node_host_service_resident_bytes == 0
-            || watcher_service_resident_bytes == 0
-        {
-            return Err(QemuVmRealizationError::Executor {
-                operation: "configure Linux node host-service resources",
-                message: String::from(
-                    "node host-service task and descriptor ceilings must be nonzero",
-                ),
-            });
-        }
-        let attempt_namespace = attempt_namespace.into();
-        let process = LinuxQemuAttemptProcessConfig::new(
-            cgroup_root,
-            attempt_namespace.clone(),
-            child_user_id,
-            child_group_id,
-            maximum_tasks,
-            maximum_file_descriptors,
-            finish_timeout,
-        )?;
-        let storage = LinuxQemuAttemptStorageConfig::new(
-            run_root,
-            attempt_namespace,
-            first_project_id,
-            project_id_count,
-            child_user_id,
-            child_group_id,
-            maximum_inodes,
-        )
-        .map_err(|error| map_storage_error("configure QEMU attempt storage", &error))?;
-        Ok(Self {
-            process,
-            storage,
-            maximum_node_host_service_tasks,
-            maximum_node_host_service_file_descriptors,
-            maximum_node_host_service_resident_bytes,
-            watcher_service_resident_bytes,
-        })
-    }
-
-    /// Returns the delegated cgroup-v2 root.
-    #[must_use]
-    pub fn cgroup_root(&self) -> &Path {
-        self.process.cgroup_root()
-    }
-
-    /// Returns the private ext4 attempt run root.
-    #[must_use]
-    pub fn run_root(&self) -> &Path {
-        self.storage.run_root()
-    }
-
-    /// Returns the shared daemon-incarnation namespace.
-    #[must_use]
-    pub fn attempt_namespace(&self) -> &str {
-        self.process.attempt_namespace()
-    }
-
-    /// Returns the distinct unprivileged QEMU user identifier.
-    #[must_use]
-    pub const fn child_user_id(&self) -> u32 {
-        self.process.child_user_id()
-    }
-
-    /// Returns the distinct unprivileged QEMU group identifier.
-    #[must_use]
-    pub const fn child_group_id(&self) -> u32 {
-        self.process.child_group_id()
-    }
-
-    /// Returns the hard cgroup task ceiling.
-    #[must_use]
-    pub const fn maximum_tasks(&self) -> u32 {
-        self.process.maximum_tasks()
-    }
-
-    /// Sets the independently authored child memory-lock entitlement.
-    ///
-    /// # Errors
-    /// Refuses the kernel infinity sentinel rather than grant an unbounded lock.
-    pub fn with_maximum_locked_bytes(
-        mut self,
-        maximum_locked_bytes: u64,
-    ) -> Result<Self, QemuVmRealizationError> {
-        self.process = self
-            .process
-            .with_maximum_locked_bytes(maximum_locked_bytes)?;
-        Ok(self)
-    }
-
-    /// Returns the exact hard and soft child memory-lock limit.
-    #[must_use]
-    pub const fn maximum_locked_bytes(&self) -> u64 {
-        self.process.maximum_locked_bytes()
-    }
-
-    /// Returns the hard per-process file-descriptor ceiling.
-    #[must_use]
-    pub const fn maximum_file_descriptors(&self) -> u64 {
-        self.process.maximum_file_descriptors()
-    }
-
-    /// Returns the explicitly retained per-node host-service task entitlement.
-    #[must_use]
-    pub const fn maximum_node_host_service_tasks(&self) -> u64 {
-        self.maximum_node_host_service_tasks
-    }
-
-    /// Returns the explicitly retained per-node host-service descriptor entitlement.
-    #[must_use]
-    pub const fn maximum_node_host_service_file_descriptors(&self) -> u64 {
-        self.maximum_node_host_service_file_descriptors
-    }
-
-    /// Returns the explicitly retained per-node host-service resident allowance.
-    #[must_use]
-    pub const fn maximum_node_host_service_resident_bytes(&self) -> u64 {
-        self.maximum_node_host_service_resident_bytes
-    }
-
-    /// Returns the explicit resident allowance for each operational watcher.
-    #[must_use]
-    pub const fn watcher_service_resident_bytes(&self) -> u64 {
-        self.watcher_service_resident_bytes
-    }
-
-    /// Returns the hard attempt artifact-entry and inode ceiling.
-    #[must_use]
-    pub const fn maximum_inodes(&self) -> u64 {
-        self.storage.maximum_inodes()
-    }
-}
-
 /// Exclusive allocator for paired Linux QEMU process and storage owners.
 #[derive(Debug)]
 #[must_use = "the host allocator locks both namespaces for its lifetime"]
@@ -231,6 +64,8 @@ pub struct LinuxQemuAttemptHostFactory {
     process: LinuxQemuAttemptProcessFactory,
     storage: LinuxQemuAttemptStorageFactory,
     poisoned: bool,
+    #[cfg(feature = "private-measurement-domain")]
+    original_accounts: Option<OriginalNativeAccountFactoryBinding>,
 }
 
 impl LinuxQemuAttemptHostFactory {
@@ -248,6 +83,8 @@ impl LinuxQemuAttemptHostFactory {
             process,
             storage,
             poisoned: false,
+            #[cfg(feature = "private-measurement-domain")]
+            original_accounts: None,
         })
     }
 
@@ -316,6 +153,16 @@ impl LinuxQemuAttemptHostFactory {
             });
         }
 
+        #[cfg(feature = "private-measurement-domain")]
+        if self.original_accounts.is_some() {
+            return self.begin_original_with_checkpoint_root(
+                maximum_vcpus,
+                maximum_resident_bytes,
+                maximum_writable_bytes,
+                exact_checkpoint_root,
+            );
+        }
+
         let storage = match self.storage.begin(maximum_writable_bytes) {
             Ok(storage) => storage,
             Err(error) => {
@@ -351,6 +198,8 @@ impl LinuxQemuAttemptHostFactory {
             native_resources: None,
             #[cfg(feature = "private-measurement-domain")]
             original_retirement_pinned: false,
+            #[cfg(feature = "private-measurement-domain")]
+            original_account: None,
             terminal: false,
         })
     }
@@ -375,6 +224,8 @@ pub struct LinuxQemuAttemptHostOwner {
     native_resources: Option<Arc<NativeResourceState>>,
     #[cfg(feature = "private-measurement-domain")]
     original_retirement_pinned: bool,
+    #[cfg(feature = "private-measurement-domain")]
+    original_account: Option<original_roster::NativeAccountAttempt>,
     terminal: bool,
 }
 
@@ -440,35 +291,6 @@ fn finish_native_owned_resources(
 }
 
 impl LinuxQemuAttemptHostOwner {
-    /// Pins an already-created native control for private original retirement.
-    ///
-    /// This method clones only the same existing allocation. It does not
-    /// initialize a controller, perform I/O, issue a purpose or attest physical
-    /// cleanup. The actor must retain the charged original pair externally
-    /// through the pin's successful close and genuine factory deallocation.
-    ///
-    /// # Errors
-    /// Refuses an owner that has not created its actual native resource state,
-    /// has already transferred or retired that state, or has already issued
-    /// its one nonduplicable terminal pin.
-    #[cfg(feature = "private-measurement-domain")]
-    pub fn retain_original_native_control(
-        &mut self,
-    ) -> Result<OriginalNativeControlRetirement, LinuxQemuNativeResourceError> {
-        let state = self
-            .native_resources
-            .as_ref()
-            .ok_or(LinuxQemuNativeResourceError::Retired)?;
-        if self.terminal
-            || self.original_retirement_pinned
-            || !NativeResourceState::available(state)
-        {
-            return Err(LinuxQemuNativeResourceError::Retired);
-        }
-        self.original_retirement_pinned = true;
-        Ok(OriginalNativeControlRetirement::retain(state))
-    }
-
     /// Lends weak concrete resource control for this exact live attempt.
     ///
     /// # Errors
@@ -483,13 +305,25 @@ impl LinuxQemuAttemptHostOwner {
                 .process
                 .as_ref()
                 .ok_or_else(|| missing_authority("pin native memory controller"))?
-                .memory_control()?;
+                .memory_control();
+            #[cfg(feature = "private-measurement-domain")]
+            let memory = match self.original_account.as_ref() {
+                Some(original) => original.after(memory),
+                None => memory,
+            };
+            let memory = memory?;
             let quota = self
                 .storage
                 .as_mut()
                 .ok_or_else(|| missing_authority("pin native quota controller"))?
                 .quota_controller()
-                .map_err(|error| map_storage_error("pin native quota controller", &error))?;
+                .map_err(|error| map_storage_error("pin native quota controller", &error));
+            #[cfg(feature = "private-measurement-domain")]
+            let quota = match self.original_account.as_ref() {
+                Some(original) => original.after(quota),
+                None => quota,
+            };
+            let quota = quota?;
             self.native_resources = Some(NativeResourceState::new(
                 memory,
                 quota,
@@ -497,10 +331,29 @@ impl LinuxQemuAttemptHostOwner {
                 self.maximum_writable_bytes,
             ));
         }
-        self.native_resources
+        #[cfg(feature = "private-measurement-domain")]
+        if self.original_account.is_some() && !self.original_retirement_pinned {
+            let pin = self.retain_original_native_control().map_err(|source| {
+                QemuVmRealizationError::ModelCopy {
+                    source: Box::new(source),
+                }
+            })?;
+            if let Some(original) = self.original_account.as_ref() {
+                original
+                    .retain_control(pin)
+                    .map_err(original_roster::original_error)?;
+            }
+        }
+        let result = self
+            .native_resources
             .as_ref()
             .map(NativeResourceState::controller)
-            .ok_or_else(|| missing_authority("lend native resource controller"))
+            .ok_or_else(|| missing_authority("lend native resource controller"));
+        #[cfg(feature = "private-measurement-domain")]
+        if let Some(original) = self.original_account.as_ref() {
+            return original.after(result);
+        }
+        result
     }
 
     fn retire_native_resources(&mut self) {
@@ -617,6 +470,12 @@ impl LinuxQemuAttemptHostOwner {
     ///
     /// Returns an executor error after cancellation, cleanup, or quarantine.
     pub fn check_operational_boundary(&self) -> Result<(), QemuVmRealizationError> {
+        #[cfg(feature = "private-measurement-domain")]
+        if let Some(original) = self.original_account.as_ref() {
+            original
+                .require_original()
+                .map_err(original_roster::original_error)?;
+        }
         if self.terminal
             || self.storage.is_none()
             || self
@@ -645,6 +504,18 @@ impl LinuxQemuAttemptHostOwner {
     /// Returns an operational error while retaining both owners for exact
     /// quarantine transfer. Success attests process reap before storage release.
     pub fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+        #[cfg(feature = "private-measurement-domain")]
+        if let Some(original) = self.original_account.as_ref() {
+            if self.terminal {
+                return original.after(Err(QemuVmRealizationError::ReapQuarantined {
+                    operation: "finish original QEMU attempt host resources",
+                    message: String::from(
+                        "the same external roster retains unresolved physical ownership",
+                    ),
+                }));
+            }
+            return self.finish_original_accounts();
+        }
         if self.terminal {
             return match self
                 .quarantine
@@ -677,6 +548,21 @@ impl LinuxQemuAttemptHostOwner {
             return;
         }
         self.retire_native_resources();
+        #[cfg(feature = "private-measurement-domain")]
+        if let Some(original) = self.original_account.as_ref() {
+            let owners = original_roster::RetainedNativeHost {
+                process: self.process.take(),
+                storage: self.storage.take(),
+                native_resources: self.native_resources.take(),
+                unconfigured: None,
+            };
+            // The actual owners move into the same generation slot. A poisoned
+            // slot retains the complete tuple, rather than dropping a process
+            // owner into the ordinary worker. No new task/control is created.
+            let _retained = original.retain_unsettled(owners);
+            self.terminal = true;
+            return;
+        }
         let state = LinuxQemuAttemptHostQuarantineState {
             process: self.process.take(),
             storage: self.storage.take(),

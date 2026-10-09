@@ -7,6 +7,9 @@
   initrd,
   externalSource,
   dependencyRoots,
+  operatorPolicy,
+  actorInventory,
+  sourceManifest,
 }: let
   source = import ./_source.nix {inherit lib;};
   qemu = pkgs.qemu-crucible;
@@ -58,6 +61,9 @@
       CRUCIBLE_PARENT_SOURCE_BACKING = toString externalSource.backingBytes;
       CRUCIBLE_PARENT_SOURCE_TASKS = toString externalSource.tasks;
       CRUCIBLE_PARENT_SOURCE_FDS = toString externalSource.descriptors;
+      CRUCIBLE_PARENT_OPERATOR = "${operatorPolicy}";
+      CRUCIBLE_PARENT_ACTOR_INVENTORY = "${actorInventory}";
+      CRUCIBLE_PARENT_SOURCE_MANIFEST = "${sourceManifest}";
       CRUCIBLE_PARENT_INVENTORY = "${inventory}/share/crucible/parent-images.json";
       CRUCIBLE_PARENT_QEMU = qemuExecutable;
       CRUCIBLE_PARENT_ROOTFS = "${ownedRootfs}";
@@ -69,8 +75,8 @@
     ];
     doCheck = false;
     buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.protobuf];
-    runtimeDeps = [pkgs.openssl pkgs.sqlite pkgs.crucible correspondingSource inventory ownedRootfs kernel initrd];
-    nukeRefsKeep = [qemu correspondingSource inventory ownedRootfs kernel initrd];
+    runtimeDeps = [pkgs.openssl pkgs.sqlite pkgs.crucible correspondingSource inventory ownedRootfs kernel initrd operatorPolicy actorInventory sourceManifest];
+    nukeRefsKeep = [qemu correspondingSource inventory ownedRootfs kernel initrd operatorPolicy actorInventory sourceManifest];
     passthru = {
       privateFixture = true;
       runtimeAdmission = false;
@@ -82,6 +88,10 @@ in
   assert pkgs.stdenv.hostPlatform.system == "x86_64-linux";
   assert qemu.passthru.qemuBuildIdentity == correspondingSource.passthru.qemuBuildIdentity;
   assert dependencyRoots != [];
+  assert ownedRootfs.passthru.installedImages.passthru.sourceCohort == source;
+  assert ownedRootfs.passthru.operatorPolicy == operatorPolicy;
+  assert ownedRootfs.passthru.imageInventory == actorInventory;
+  assert ownedRootfs.passthru.sourceManifest == sourceManifest;
     pkgs.mkDerivation {
       pname = "crucible-private-parent-fixture";
       version = "0";

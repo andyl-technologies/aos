@@ -1243,8 +1243,25 @@ impl PreparedCampaignLocalService {
         &self,
         config: PackagedQemuExecutorConfig,
         original: crate::private_original_capture::OriginalPreparation,
+        binding: crucible_qemu::OriginalNativeAccountFactoryBinding,
     ) -> Result<PackagedQemuExecutor, CampaignLocalServiceError> {
-        self.prepare_packaged_executor(config.with_original_preparation(original))
+        if self.mode == CampaignLocalServiceMode::ReadOnly {
+            return Err(CampaignLocalServiceError::RuntimeReadOnly);
+        }
+        let maintenance = self
+            .maintenance
+            .as_ref()
+            .ok_or(CampaignLocalServiceError::StoreMaintenanceUnavailable)?;
+        let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = maintenance.store.clone();
+        let executor = crate::packaged_qemu_executor::prepare_original_packaged_qemu_executor(
+            Arc::clone(&self.repository),
+            checkpoint_backend,
+            self.hot_fork_retention.as_ref().clone(),
+            config.with_original_preparation(original),
+            binding,
+        )
+        .map_err(Box::new)?;
+        Ok(executor)
     }
 
     /// Discovers the complete bounded set of authenticated campaign heads.

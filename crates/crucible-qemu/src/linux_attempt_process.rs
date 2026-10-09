@@ -315,6 +315,131 @@ impl LinuxQemuAttemptProcessFactory {
             hot_fork_children_retained: 0,
         })
     }
+
+    /// Publishes physical setup remnants before returning their first refusal.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn begin_under_original(
+        &mut self,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
+        exact_checkpoint_root: Option<crucible::ContentHash>,
+        original: &crate::linux_attempt_host::NativeAccountAttempt,
+        retained: &mut OriginalProcessSetupCustody,
+    ) -> Result<LinuxQemuAttemptProcessOwner, QemuVmRealizationError> {
+        original
+            .require_original()
+            .map_err(|source| QemuVmRealizationError::ModelCopy {
+                source: Box::new(source),
+            })?;
+        if self.poisoned || maximum_writable_bytes == 0 {
+            return Err(invalid_config(
+                "original process allocator is poisoned or writable ceiling is zero",
+            ));
+        }
+        let limits = LinuxQemuCgroupLimits::new(
+            maximum_vcpus,
+            maximum_resident_bytes,
+            self.config.maximum_tasks,
+        )
+        .map_err(|source| map_cgroup_error("validate original QEMU cgroup limits", &source))?;
+        let sequence = self.next_attempt;
+        self.next_attempt = sequence
+            .checked_add(1)
+            .ok_or_else(|| invalid_config("attempt process-name sequence is exhausted"))?;
+        let name = attempt_name(&self.config.attempt_namespace, sequence);
+
+        let group = match self.root.create(name, limits) {
+            Ok(group) => group,
+            Err(error) => {
+                self.poisoned = true;
+                let primary =
+                    map_cgroup_error("create original QEMU attempt cgroup", error.source_error());
+                retained.unconfigured = error.into_cleanup_authority();
+                return Err(original.after_refusal(primary));
+            }
+        };
+        if let Err(source) = original.require_original() {
+            self.poisoned = true;
+            retained.owner = Some(self.wrap_original_owner(
+                CgroupAttemptProcessOwner::retain_created(group),
+                maximum_vcpus,
+                maximum_resident_bytes,
+                maximum_writable_bytes,
+            ));
+            return Err(QemuVmRealizationError::ModelCopy {
+                source: Box::new(source),
+            });
+        }
+        let started = CgroupAttemptProcessOwner::start(
+            group,
+            maximum_writable_bytes,
+            self.config.maximum_file_descriptors,
+            self.config.maximum_locked_bytes,
+            self.config.child_user_id,
+            self.config.child_group_id,
+            exact_checkpoint_root,
+        );
+        let owner = match started {
+            Ok(owner) => self.wrap_original_owner(
+                owner,
+                maximum_vcpus,
+                maximum_resident_bytes,
+                maximum_writable_bytes,
+            ),
+            Err(error) => {
+                self.poisoned = true;
+                let primary = map_owner_error(
+                    "start original QEMU attempt process owner",
+                    error.source_error(),
+                );
+                retained.owner = error.into_original_owner().map(|owner| {
+                    self.wrap_original_owner(
+                        owner,
+                        maximum_vcpus,
+                        maximum_resident_bytes,
+                        maximum_writable_bytes,
+                    )
+                });
+                return Err(original.after_refusal(primary));
+            }
+        };
+        if let Err(source) = original.require_original() {
+            self.poisoned = true;
+            retained.owner = Some(owner);
+            return Err(QemuVmRealizationError::ModelCopy {
+                source: Box::new(source),
+            });
+        }
+        Ok(owner)
+    }
+
+    #[cfg(feature = "private-measurement-domain")]
+    fn wrap_original_owner(
+        &self,
+        owner: CgroupAttemptProcessOwner,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
+    ) -> LinuxQemuAttemptProcessOwner {
+        LinuxQemuAttemptProcessOwner {
+            owner,
+            maximum_vcpus,
+            maximum_resident_bytes,
+            maximum_writable_bytes,
+            maximum_tasks: self.config.maximum_tasks,
+            finish_timeout: self.config.finish_timeout,
+            hot_fork_children_retained: 0,
+        }
+    }
+}
+
+/// Inline physical setup custody, independent of the returned first cause.
+#[cfg(feature = "private-measurement-domain")]
+#[derive(Default)]
+pub(crate) struct OriginalProcessSetupCustody {
+    pub(crate) owner: Option<LinuxQemuAttemptProcessOwner>,
+    pub(crate) unconfigured: Option<crate::linux_cgroup::LinuxQemuCgroupCleanupAuthority>,
 }
 
 /// Complete Linux process authority for one QEMU attempt.
@@ -400,6 +525,28 @@ impl LinuxQemuAttemptProcessOwner {
             }),
             Err(error) => Err(map_owner_error("finish QEMU attempt process owner", &error)),
         }
+    }
+
+    /// Joins and removes this same process owner under its original Cleanup.
+    ///
+    /// No local timeout can extend the guard's retained absolute end. Actual
+    /// watcher, kernel and original postcheck refusals remain typed, and the
+    /// owner retains every recoverable physical authority on failure.
+    ///
+    /// # Errors
+    /// Refuses original cancellation or expiry, watcher failure, quarantine,
+    /// or an empty-group removal failure without declaring physical release.
+    #[cfg(feature = "private-measurement-domain")]
+    pub fn finish_under_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.owner
+            .finish_under_original(self.finish_timeout, original)
+            .map(|_| ())
+            .map_err(|source| QemuVmRealizationError::ModelCopy {
+                source: Box::new(source),
+            })
     }
 
     /// Transfers every unfinished process authority to nondroppable quarantine.

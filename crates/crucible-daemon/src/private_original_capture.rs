@@ -132,6 +132,13 @@ pub struct OriginalPreparation {
 }
 
 impl OriginalPreparation {
+    pub(crate) fn verify_factory_binding(
+        &self,
+        binding: &crucible_qemu::OriginalNativeAccountFactoryBinding,
+    ) -> Result<(), crucible_qemu::OriginalActorAccountError> {
+        binding.verify_preparation(&self.original)
+    }
+
     /// Requests a managed reset while borrowing the retained original guard.
     ///
     /// The driver retains the genuine node/factory owner and authenticates its

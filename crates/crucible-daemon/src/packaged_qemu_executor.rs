@@ -1185,6 +1185,52 @@ pub(crate) fn prepare_packaged_qemu_executor(
     hot_fork_retention: DirectoryHotCheckpointFallbackRetentionStore,
     config: PackagedQemuExecutorConfig,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError> {
+    prepare_packaged_qemu_executor_inner(
+        repository,
+        checkpoint_backend,
+        hot_fork_retention,
+        config,
+        #[cfg(feature = "private-measurement-domain")]
+        None,
+    )
+}
+
+/// Binds the one admitted roster before exposing the genuine shared factory.
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) fn prepare_original_packaged_qemu_executor(
+    repository: Arc<CampaignRepository>,
+    checkpoint_backend: Arc<dyn ImmutableBlobBackend>,
+    hot_fork_retention: DirectoryHotCheckpointFallbackRetentionStore,
+    config: PackagedQemuExecutorConfig,
+    binding: crucible_qemu::OriginalNativeAccountFactoryBinding,
+) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError> {
+    prepare_packaged_qemu_executor_inner(
+        repository,
+        checkpoint_backend,
+        hot_fork_retention,
+        config,
+        Some(binding),
+    )
+}
+
+fn prepare_packaged_qemu_executor_inner(
+    repository: Arc<CampaignRepository>,
+    checkpoint_backend: Arc<dyn ImmutableBlobBackend>,
+    hot_fork_retention: DirectoryHotCheckpointFallbackRetentionStore,
+    config: PackagedQemuExecutorConfig,
+    #[cfg(feature = "private-measurement-domain")] binding: Option<
+        crucible_qemu::OriginalNativeAccountFactoryBinding,
+    >,
+) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError> {
+    #[cfg(feature = "private-measurement-domain")]
+    if let Some(binding) = binding.as_ref() {
+        config
+            .original_preparation
+            .as_ref()
+            .ok_or(PackagedQemuExecutorError::MissingOriginalFactoryPreparation)?
+            .verify_factory_binding(binding)
+            .map_err(PackagedQemuExecutorError::OriginalFactoryBinding)?;
+    }
     let basis =
         authenticate_packaged_campaigns(&repository, &config.campaigns, config.hot_fork.is_some())?;
     if let Some(hot_fork) = config.hot_fork() {
@@ -1203,9 +1249,78 @@ pub(crate) fn prepare_packaged_qemu_executor(
         &basis,
         &config,
     )?;
-    let host = SharedQemuAttemptHostResourceFactory::new(
-        LinuxQemuAttemptHostResourceFactory::open(config.host.clone())?,
-    );
+    #[cfg(feature = "private-measurement-domain")]
+    if let Some(binding) = binding.as_ref() {
+        config
+            .original_preparation
+            .as_ref()
+            .ok_or(PackagedQemuExecutorError::MissingOriginalFactoryPreparation)?
+            .verify_factory_binding(binding)
+            .map_err(PackagedQemuExecutorError::OriginalFactoryBinding)?;
+    }
+    let opened = LinuxQemuAttemptHostResourceFactory::open(config.host.clone());
+    #[cfg(feature = "private-measurement-domain")]
+    let opened = if binding.is_some() {
+        let after = config
+            .original_preparation
+            .as_ref()
+            .ok_or(PackagedQemuExecutorError::MissingOriginalFactoryPreparation)?
+            .boundary();
+        match (opened, after) {
+            (Err(source), after) => {
+                return Err(PackagedQemuExecutorError::OriginalFactoryOpen {
+                    source,
+                    original_after: after.err(),
+                });
+            }
+            (Ok(host), Err(source)) => {
+                // No attempt has been exposed. Preserve the concrete namespace
+                // owner on an uncertain original postcut; external actor and
+                // roster custody remain retained by the used caller.
+                std::mem::forget(host);
+                return Err(PackagedQemuExecutorError::OriginalPreparationBoundary(
+                    source,
+                ));
+            }
+            (Ok(host), Ok(())) => Ok(host),
+        }
+    } else {
+        opened
+    };
+    let concrete_host = opened?;
+    #[cfg(feature = "private-measurement-domain")]
+    let concrete_host = {
+        let mut host = concrete_host;
+        if let Some(binding) = binding {
+            let original = config
+                .original_preparation
+                .as_ref()
+                .ok_or(PackagedQemuExecutorError::MissingOriginalFactoryPreparation)?;
+            if let Err(source) = original.verify_factory_binding(&binding) {
+                // Identity includes a live original check. Its refusal after
+                // open cannot turn field Drop into certified retirement.
+                std::mem::forget(host);
+                return Err(PackagedQemuExecutorError::OriginalFactoryBinding(source));
+            }
+            let bound = host.bind_original_accounts(binding);
+            let after = original.boundary();
+            if let Err(source) = bound {
+                std::mem::forget(host);
+                return Err(PackagedQemuExecutorError::OriginalFactoryBind {
+                    source,
+                    original_after: after.err(),
+                });
+            }
+            if let Err(source) = after {
+                std::mem::forget(host);
+                return Err(PackagedQemuExecutorError::OriginalPreparationBoundary(
+                    source,
+                ));
+            }
+        }
+        host
+    };
+    let host = SharedQemuAttemptHostResourceFactory::new(concrete_host);
     let mut baked = BTreeMap::new();
     for (scenario_id, scenario) in scenarios {
         let baked_lifecycle = config.admitted_lifecycle_config()?.with_run_state_root(
@@ -2177,6 +2292,35 @@ fn completion_validation_failure(error: CampaignRepositoryError) -> CompletionVa
 /// Failure to acquire or compose one packaged local QEMU executor.
 #[derive(Debug, thiserror::Error)]
 pub enum PackagedQemuExecutorError {
+    /// A bound original factory cannot be prepared without its same guard.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error("original factory preparation custody is absent")]
+    MissingOriginalFactoryPreparation,
+    /// The factory roster and preparation do not retain the same actual guard.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error("original factory binding refused: {0}")]
+    OriginalFactoryBinding(#[source] crucible_qemu::OriginalActorAccountError),
+    /// Preserves the actual account binding refusal and original postcut.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error("original factory bind failed: {source}; original: {original_after:?}")]
+    OriginalFactoryBind {
+        /// Actual first account binding refusal.
+        #[source]
+        source: crucible_qemu::OriginalActorAccountError,
+        /// Separate same-original refusal after the binding attempt.
+        original_after: Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
+    },
+    /// Preserves the concrete factory refusal and independent original cut.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error("original factory open failed: {source}; original: {original_after:?}")]
+    OriginalFactoryOpen {
+        /// Actual first host namespace refusal.
+        #[source]
+        source: QemuVmRealizationError,
+        /// Same original's separate postcheck.
+        original_after: Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
+    },
+
     /// Original provider-service bootstrap refused before error erasure.
     #[error(transparent)]
     ProviderServiceAdmission(#[from] crate::ProviderServiceAdmissionError),

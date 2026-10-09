@@ -36,6 +36,8 @@ mod attempt_owner;
 #[cfg(feature = "private-measurement-domain")]
 pub(crate) mod measurement_domain;
 mod memory_control;
+#[cfg(feature = "private-measurement-domain")]
+mod original_finish;
 /// Opaque pinned memory authority confined to the physical owner boundary.
 pub(crate) type LinuxQemuCgroupMemoryControl = memory_control::LinuxQemuCgroupMemoryControl;
 mod quarantine;
@@ -242,6 +244,8 @@ pub struct LinuxQemuCgroupCleanupAuthority {
     parent_directory: OwnedFd,
     name: String,
     directory: Option<OwnedFd>,
+    #[cfg(feature = "private-measurement-domain")]
+    original_removed: bool,
 }
 
 impl LinuxQemuCgroupCleanupAuthority {
@@ -792,6 +796,8 @@ impl LinuxQemuCgroupRoot {
             parent_directory,
             name,
             directory: None,
+            #[cfg(feature = "private-measurement-domain")]
+            original_removed: false,
         };
         let directory =
             match open_directory_at(&cleanup.parent_directory, &cleanup.name, &cleanup.path) {

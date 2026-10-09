@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 use crucible_linux_resource::host_supervision::{HostOperationGuard, HostOperationSupervisor};
 use crucible_linux_resource::measurement_origin::AuthenticatedParentInvocation;
-use crucible_qemu::{OriginalActorAccountCustody, OriginalNativeAccountCredit};
+use crucible_qemu::{
+    OriginalActorAccountCustody, OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
+};
 
 use super::MeasurementRuntimeAdmissionError;
 use crate::private_original_capture::OriginalPreparation;
@@ -96,27 +98,66 @@ impl OriginalActorRoleIssuer {
         Ok(())
     }
 
-    /// Retains FULL native residency and TOTAL metadata in external credit.
+    /// Prepares the fixed external account roster for the genuine factory.
     ///
-    /// The pair comes only from the same published original banks. The actual
-    /// used factory must still bind physical backing, Source and domain custody
-    /// before a native role or research launch permission can be constructed.
-    /// This issuer retains the bank owner outside that factory allocation.
+    /// The parent-selected width and same original banks determine every slot.
+    /// The returned external owner must outlive the actual factory and every
+    /// native control alias; its weak binding cannot issue a launch permission.
     ///
     /// # Errors
-    /// Refuses the same original before or after reservation, either original
-    /// counter, or consumed custody. Account and post-original refusals remain
-    /// distinct; an uncertain postcheck retains the actual paired credit.
-    pub fn reserve_native_account_credit(
-        &self,
-    ) -> Result<OriginalNativeAccountCredit, MeasurementRuntimeAdmissionError> {
+    /// Refuses consumed publication, either original account, or the original
+    /// interval before or after admitting the actual native pairs.
+    pub fn prepare_native_account_roster(
+        &mut self,
+    ) -> Result<
+        (
+            OriginalNativeAccountRoster,
+            OriginalNativeAccountFactoryBinding,
+        ),
+        MeasurementRuntimeAdmissionError,
+    > {
         let held = self
             .held
-            .as_ref()
+            .as_mut()
             .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
                 "retained original actor custody",
             ))?;
-        Ok(held.accounts.reserve_native_account_credit()?)
+        Ok(held.accounts.prepare_native_account_roster()?)
+    }
+
+    /// Prepares the genuine service's packaged factory under this same actor.
+    ///
+    /// The returned owner borrows this external issuer and retains the native
+    /// roster outside the factory allocation. Preparation uses the service's
+    /// original repository, checkpoint backend and existing source lifecycle;
+    /// no second Linux factory, service account or capture route is constructed.
+    ///
+    /// # Errors
+    /// Refuses original custody, native pair admission or genuine packaged
+    /// preparation. Failed preparation retains its external roster and banks.
+    /// The supplied service and config still require authenticated physical
+    /// storage, Source and prebirth purposes; account custody is not a grant.
+    pub fn prepare_genuine_packaged_executor<'actor>(
+        &'actor mut self,
+        service: &crate::PreparedCampaignLocalService,
+        config: crate::PackagedQemuExecutorConfig,
+    ) -> Result<OriginalPreparedPackagedExecutor<'actor>, OriginalPackagedPreparationError> {
+        let original = self.retain_preparation()?;
+        let (roster, binding) = self.prepare_native_account_roster()?;
+        let executor = service.prepare_original_packaged_executor(config, original, binding)?;
+        let owner = OriginalPreparedPackagedExecutor {
+            _actor: self,
+            roster: Some(roster),
+            executor: Some(executor),
+        };
+        if let Err(source) = owner._actor.require_original() {
+            // Publish physical and external custody together before the
+            // fallible original postcut, including an already-open factory.
+            std::mem::forget(owner);
+            return Err(source.into());
+        }
+
+        Ok(owner)
     }
 
     /// Retains the same admitted guard for the genuine packaged capture route.
@@ -157,8 +198,43 @@ impl Drop for OriginalActorRoleIssuer {
     }
 }
 
+/// Preserves external account and roster custody around the genuine executor.
+///
+/// This owner provides no extracting getter. Dropping it retains the concrete
+/// executor and roster because facade destruction cannot certify Source,
+/// child, namespace, controller or shared-allocation retirement. The enclosing
+/// original actor remains borrowed throughout this owner's lifetime.
+#[must_use = "retain the real factory and external credits through physical retirement"]
+pub struct OriginalPreparedPackagedExecutor<'actor> {
+    _actor: &'actor mut OriginalActorRoleIssuer,
+    roster: Option<OriginalNativeAccountRoster>,
+    executor: Option<crate::PackagedQemuExecutor>,
+}
+
+/// Preserves original account or genuine service preparation refusal.
+#[derive(Debug, thiserror::Error)]
+pub enum OriginalPackagedPreparationError {
+    /// The same actor's retained original accounts or interval refused.
+    #[error("original packaged account preparation refused: {0}")]
+    Actor(#[from] MeasurementRuntimeAdmissionError),
+    /// The genuine repository, capture or factory preparation refused.
+    #[error("original packaged service preparation refused: {0}")]
+    Service(#[from] crate::CampaignLocalServiceError),
+}
+
+impl Drop for OriginalPreparedPackagedExecutor<'_> {
+    fn drop(&mut self) {
+        if let Some(executor) = self.executor.take() {
+            std::mem::forget(executor);
+        }
+        if let Some(roster) = self.roster.take() {
+            std::mem::forget(roster);
+        }
+    }
+}
+
 #[cfg(test)]
-// crucible-lint: allow rust-allow -- this actual paired first-refusal control panics only when structural admission allocates or accepts an insufficient original account.
+// crucible-lint: allow panic-shortcut -- this actual paired first-refusal control panics only when structural admission allocates or accepts an insufficient original account.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;

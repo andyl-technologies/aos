@@ -5,6 +5,8 @@
 //! are subdivisions of that domain. This evidence transports identity and the
 //! admitted contract, never Rust loans or the parent's clock coordinates.
 
+mod record;
+
 use super::{MeasurementInvocationOrigin, MeasurementOriginError, StaticMode};
 
 /// Consumes one guest origin together with its closed parent admission evidence.
@@ -14,6 +16,15 @@ pub struct AuthenticatedParentInvocation {
 }
 
 impl AuthenticatedParentInvocation {
+    /// Receives the one parent-bound invocation from its actual root PID1 issuer.
+    ///
+    /// # Errors
+    /// Refuses repeated entry, original expiry, wrong issuer, unsealed evidence,
+    /// or an image, policy, incarnation or immutable role mismatch.
+    pub fn receive_original() -> Result<Self, MeasurementOriginError> {
+        record::receive(MeasurementInvocationOrigin::receive_original()?)
+    }
+
     /// Returns the same guest origin and its once-issued actor evidence.
     ///
     /// # Errors
@@ -111,6 +122,8 @@ impl CertifiedNativeRoleEvidence {
 pub struct VerifiedImageInventory {
     digest: [u8; 32],
     source_digest: [u8; 32],
+    // The sealed issuance remains pinned through every actor alias and debit.
+    _record: std::fs::File,
 }
 
 impl VerifiedImageInventory {

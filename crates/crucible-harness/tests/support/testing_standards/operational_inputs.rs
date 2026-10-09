@@ -11,6 +11,9 @@ mod operational_catalog_gc;
 #[path = "operational_gc_marks.rs"]
 mod operational_gc_marks;
 
+#[path = "operational_measurement.rs"]
+mod operational_measurement;
+
 #[path = "operational_packed.rs"]
 mod operational_packed;
 
@@ -139,6 +142,7 @@ pub(super) fn mask(package: &str, target: &str, code: &str) -> String {
         .chain(operational_sqlite::CONTRACTS)
         .chain(operational_ram_read::CONTRACTS)
         .chain(operational_packed::CONTRACTS)
+        .chain(operational_measurement::CONTRACTS)
         .chain(operational_gc_marks::CONTRACTS)
         .find(|contract| contract.package == package && contract.target == target)
     else {

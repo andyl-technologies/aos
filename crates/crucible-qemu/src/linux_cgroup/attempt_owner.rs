@@ -10,6 +10,9 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
+#[cfg(feature = "private-measurement-domain")]
+use crucible_linux_resource::host_supervision::{HostOperationGuard, HostSupervisionError};
+
 use thiserror::Error;
 
 use super::quarantine::{
@@ -58,6 +61,21 @@ pub(crate) enum LinuxQemuAttemptProcessOwnerError {
     },
 }
 
+#[cfg(feature = "private-measurement-domain")]
+#[derive(Debug, Error)]
+pub(crate) enum OriginalProcessFinishError {
+    #[error("original process cleanup refused: {0}")]
+    Original(#[source] HostSupervisionError),
+    #[error("original watcher cleanup failed: {0}")]
+    Watcher(#[source] super::original_finish::OriginalWatcherRefusal),
+    #[error("physical process cleanup failed: {source}; original: {original_after:?}")]
+    Physical {
+        #[source]
+        source: LinuxQemuAttemptProcessOwnerError,
+        original_after: Option<HostSupervisionError>,
+    },
+}
+
 /// Failed owner startup with every created cgroup authority retained.
 #[derive(Debug, Error)]
 #[error("failed to start QEMU attempt process owner: {source}")]
@@ -78,6 +96,21 @@ impl LinuxQemuAttemptProcessOwnerStartError {
     #[must_use]
     pub(crate) const fn source_error(&self) -> &LinuxQemuAttemptProcessOwnerError {
         &self.source
+    }
+
+    /// Recovers the same partial owner for original-aware physical cleanup.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn into_original_owner(mut self) -> Option<LinuxQemuAttemptProcessOwner> {
+        self.authority.take().map(|authority| {
+            let authority = *authority;
+            LinuxQemuAttemptProcessOwner {
+                group: Some(authority._group),
+                watcher: authority._watcher,
+                process_contract: None,
+                failed_children: VecDeque::new(),
+                quarantine: None,
+            }
+        })
     }
 }
 
@@ -104,6 +137,18 @@ pub(crate) struct LinuxQemuAttemptProcessOwner {
 }
 
 impl LinuxQemuAttemptProcessOwner {
+    /// Retains a configured group before watcher or contract publication.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn retain_created(group: LinuxQemuCgroup) -> Self {
+        Self {
+            group: Some(group),
+            watcher: None,
+            process_contract: None,
+            failed_children: VecDeque::new(),
+            quarantine: None,
+        }
+    }
+
     /// Starts the one watcher and seals the exact child launch contract.
     ///
     /// # Errors
@@ -364,6 +409,67 @@ impl LinuxQemuAttemptProcessOwner {
                 Err(LinuxQemuAttemptProcessOwnerError::Quarantine { message })
             }
         }
+    }
+
+    /// Keeps actual watcher and cgroup cleanup within the same original end.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn finish_under_original(
+        &mut self,
+        timeout: Duration,
+        original: &HostOperationGuard,
+    ) -> Result<LinuxQemuAttemptProcessOwnerStatus, OriginalProcessFinishError> {
+        original
+            .wait_slice()
+            .map_err(OriginalProcessFinishError::Original)?;
+        if self.quarantine.is_some() || !self.failed_children.is_empty() {
+            return Err(OriginalProcessFinishError::Physical {
+                source: LinuxQemuAttemptProcessOwnerError::MissingAuthority {
+                    authority: "direct original cleanup instead of quarantine custody",
+                },
+                original_after: original.wait_slice().err(),
+            });
+        }
+        if self.group.is_none() {
+            return Ok(LinuxQemuAttemptProcessOwnerStatus::ReapedAndReleased);
+        }
+        self.process_contract = None;
+        if let Some(watcher) = self.watcher.take()
+            && let Err((watcher, source)) = watcher.finish_under_original(timeout, original)
+        {
+            self.watcher = watcher;
+            return Err(OriginalProcessFinishError::Watcher(source));
+        }
+
+        original
+            .wait_slice()
+            .map_err(OriginalProcessFinishError::Original)?;
+        let Some(group) = self.group.take() else {
+            return Err(OriginalProcessFinishError::Physical {
+                source: LinuxQemuAttemptProcessOwnerError::MissingAuthority {
+                    authority: "configured cgroup",
+                },
+                original_after: original.wait_slice().err(),
+            });
+        };
+        let removed = group.remove_if_empty();
+        // Preserve the physical fact or recover the actual group before the
+        // independent original postcheck can refuse. No path is reacquired.
+        let source = match removed {
+            Ok(()) => None,
+            Err(error) => {
+                self.group = Some(*error.group);
+                Some(LinuxQemuAttemptProcessOwnerError::Cgroup(error.source))
+            }
+        };
+        let after = original.wait_slice();
+        if let Some(source) = source {
+            return Err(OriginalProcessFinishError::Physical {
+                source,
+                original_after: after.err(),
+            });
+        }
+        after.map_err(OriginalProcessFinishError::Original)?;
+        Ok(LinuxQemuAttemptProcessOwnerStatus::ReapedAndReleased)
     }
 }
 

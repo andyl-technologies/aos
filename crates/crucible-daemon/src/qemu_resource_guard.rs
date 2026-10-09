@@ -281,6 +281,22 @@ impl LinuxQemuAttemptHostResourceFactory {
     pub const fn new(host: LinuxQemuAttemptHostFactory) -> Self {
         Self { host }
     }
+
+    /// Binds the same concrete factory to its externally retained native pairs.
+    ///
+    /// The shared facade and actual Linux allocator remain the genuine shipped
+    /// owners. This consumes only a weak account binding; original domain,
+    /// Source and launch eligibility still require their physical owners.
+    ///
+    /// # Errors
+    /// Refuses a poisoned or already bound concrete factory.
+    #[cfg(feature = "private-measurement-domain")]
+    pub fn bind_original_accounts(
+        &mut self,
+        binding: crucible_qemu::OriginalNativeAccountFactoryBinding,
+    ) -> Result<(), crucible_qemu::OriginalActorAccountError> {
+        self.host.bind_original_accounts(binding)
+    }
 }
 
 /// Concrete Linux process/storage owner with its exact campaign resource basis.

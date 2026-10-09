@@ -6,7 +6,7 @@ license.workspace = true
 publish = false
 
 [features]
-private-measurement-domain = ["rustix/net", "rustix/process", "dep:serde", "dep:serde_json", "dep:blake3"]
+private-measurement-domain = ["rustix/net", "rustix/process", "rustix/system", "dep:serde", "dep:serde_json", "dep:blake3"]
 test-support = ["dep:crucible-ram"]
 
 [lints]

@@ -3,7 +3,8 @@
 //! The process-lifetime slot preserves actual non-Clone work and cleanup causes.
 //! Its source backing and every covered effect still require genuine external
 //! Source/preloader/control credit through owned-VM teardown. That issuer is
-//! absent, so the production path refuses before listener, record or child birth.
+//! retained outside this process. The fixed parent channel is verified before
+//! listener, invocation-record or child birth; absent evidence refuses.
 
 use super::*;
 use std::fmt;
@@ -52,6 +53,8 @@ struct IssuerRecord {
     record: Option<File>,
     peer: Option<UnixStream>,
     policy: Option<OperatorPolicy>,
+    parent: Option<issuer_parent::ParentBinding>,
+    birth: Option<issuer_birth::ActorBirth>,
     first_work: Option<MeasurementOriginError>,
     kill_failure: Option<std::io::Error>,
     wait_failure: Option<std::io::Error>,
@@ -77,6 +80,8 @@ impl IssuerRecord {
             record: None,
             peer: None,
             policy: None,
+            parent: None,
+            birth: None,
             first_work: None,
             kill_failure: None,
             wait_failure: None,
@@ -112,11 +117,12 @@ impl IssuerRecord {
         }
     }
 
-    fn require_external_purpose(&self) -> Result<(), MeasurementOriginError> {
-        // Retained policy ceilings and the actor's later accounts cannot pay
-        // this producer's Source, static slot, spawn or initial error custody.
-        // No usable original issuer portion has been supplied at this boundary.
-        Err(MeasurementOriginError::MissingIssuerPurpose)
+    fn receive_external_purpose(&mut self) -> Result<(), MeasurementOriginError> {
+        // Only the trusted real PID1 entry calls this fixed transport. Credits
+        // remain in the external owner through physical VM retirement.
+        let interval = self.original()?;
+        self.parent = Some(issuer_parent::ParentBinding::receive(interval)?);
+        interval.after_io(Ok(()))
     }
 
     fn publish_child(&mut self, child: Child) -> Result<(), MeasurementOriginError> {
@@ -257,13 +263,17 @@ impl IssuerRecord {
     }
 
     fn issue_actor(&mut self) -> Result<(), MeasurementOriginError> {
-        self.require_external_purpose()?;
+        self.receive_external_purpose()?;
         let interval = self.original()?;
         interval.before()?;
         let (policy, policy_file, digest) = match load_policy() {
             Ok(value) => value,
             Err(error) => return interval.after_result(Err(error)),
         };
+        self.parent
+            .as_mut()
+            .ok_or(MeasurementOriginError::MissingIssuerPurpose)?
+            .validate_and_seal(&policy, digest, interval)?;
         self.policy = Some(policy);
         self.policy_file = Some(policy_file);
         interval.after_io(Ok(()))?;
@@ -346,7 +356,14 @@ impl IssuerRecord {
 
         // Prepare every fallible command allocation before child birth. Keep
         // Command alive through publication; no temporary destructor intervenes.
-        let mut command = Command::new(&policy.actor_executable);
+        self.birth = Some(issuer_birth::ActorBirth::verify(&policy.mode, interval)?);
+        interval.after_io(Ok(()))?;
+        let mut command = Command::new(
+            self.birth
+                .as_ref()
+                .ok_or(MeasurementOriginError::Contract)?
+                .program(),
+        );
         command
             .env_clear()
             .env(START_ENV, interval.start_ns.to_string())
@@ -393,6 +410,10 @@ impl IssuerRecord {
                 "actual spawned child",
             ));
         }
+        self.birth
+            .as_ref()
+            .ok_or(MeasurementOriginError::Contract)?
+            .verify_child(child, interval)?;
         let record = self
             .record
             .as_ref()
@@ -412,10 +433,17 @@ impl IssuerRecord {
             ));
         }
         write_issuance(peer, &[1], interval)?;
+        self.parent
+            .as_ref()
+            .ok_or(MeasurementOriginError::MissingIssuerPurpose)?
+            .send(peer, interval)?;
         loop {
             if let Some(status) = self.poll_child()? {
                 return if status.success() {
-                    Ok(())
+                    self.parent
+                        .as_mut()
+                        .ok_or(MeasurementOriginError::MissingIssuerPurpose)?
+                        .complete(interval)
                 } else {
                     Err(MeasurementOriginError::Authentication("actor completion"))
                 };

@@ -7,6 +7,8 @@
 //! This module does not activate host swap or advertise a production capability.
 
 mod account;
+mod bridge;
+mod enclosure;
 mod inventory;
 
 #[cfg(test)]
@@ -88,6 +90,9 @@ struct ParentRecord {
     post_expired: bool,
     rootfs_path: Option<std::path::PathBuf>,
     rootfs_file: Option<fs::File>,
+    bridge: Option<bridge::Bridge>,
+    enclosure: Option<enclosure::Enclosure>,
+    guest_complete: bool,
 }
 
 impl ParentRecord {
@@ -106,6 +111,9 @@ impl ParentRecord {
             post_expired: false,
             rootfs_path: None,
             rootfs_file: None,
+            bridge: None,
+            enclosure: None,
+            guest_complete: false,
         }
     }
 
@@ -128,6 +136,23 @@ impl ParentRecord {
         } else {
             Err(ParentFailure::Deadline)
         }
+    }
+
+    fn poll_timeout(&self) -> Result<rustix::time::Timespec, ParentFailure> {
+        let remaining = self
+            .deadline
+            .as_ref()
+            .and_then(crate::supervision::HostSupervisionDeadline::remaining)
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or(ParentFailure::Deadline)?;
+        let slice = remaining.min(Duration::from_millis(10));
+
+        // This samples the existing absolute end; it never starts another wait
+        // allowance. The actual poll still receives the original postcheck.
+        Ok(rustix::time::Timespec {
+            tv_sec: 0,
+            tv_nsec: i64::from(slice.subsec_nanos()),
+        })
     }
 
     fn after(&mut self, result: Result<(), ParentFailure>) -> Result<(), OriginalParentRefusal> {
@@ -317,6 +342,9 @@ impl ParentRecord {
 struct InstalledParentInputs {
     source: ExternalSourceContract,
     inventory: &'static str,
+    operator: &'static str,
+    actor_inventory: &'static str,
+    source_manifest: &'static str,
     images: InstalledImages,
 }
 
@@ -360,6 +388,15 @@ impl InstalledParentInputs {
                 )?,
             },
             inventory: locator(option_env!("CRUCIBLE_PARENT_INVENTORY"), "image inventory")?,
+            operator: locator(option_env!("CRUCIBLE_PARENT_OPERATOR"), "operator policy")?,
+            actor_inventory: locator(
+                option_env!("CRUCIBLE_PARENT_ACTOR_INVENTORY"),
+                "actor inventory",
+            )?,
+            source_manifest: locator(
+                option_env!("CRUCIBLE_PARENT_SOURCE_MANIFEST"),
+                "source manifest",
+            )?,
             images: InstalledImages {
                 qemu: locator(option_env!("CRUCIBLE_PARENT_QEMU"), "QEMU")?,
                 rootfs: locator(option_env!("CRUCIBLE_PARENT_ROOTFS"), "rootfs")?,
@@ -386,10 +423,7 @@ impl InstalledImages {
             ])
             .args(["-m", "20480", "-smp", "10"])
             .args(["-kernel", self.kernel, "-initrd", self.initrd])
-            .args([
-                "-append",
-                "console=ttyS0 root=/dev/vda rw init=/bin/crucible-measurement-init",
-            ])
+            .args(["-append", "console=ttyS0 root=/dev/vda rw init=/init"])
             .arg("-drive")
             .arg(format!("file={},format=raw,if=virtio", rootfs.display()))
             .stdin(Stdio::null())
@@ -420,36 +454,52 @@ pub fn run_original_parent_operator() -> Result<(), OriginalParentRefusal> {
         record.retain(first);
         return Err(OriginalParentRefusal);
     }
-    while record.exit.is_none() {
+    while record.exit.is_none()
+        || (record.exit.is_some_and(|status| status.success()) && !record.guest_complete)
+    {
         record.boundary().map_err(|first| {
             record.retain(first);
             OriginalParentRefusal
         })?;
-        let result = record.poll().map(|_| ());
+        let result = record
+            .observe_guest_completion()
+            .and_then(|()| record.poll().map(|_| ()));
         record.after(result)?;
         if record.exit.is_none() {
             // A finite kernel poll yields without creating a new watcher,
             // clock or cleanup allowance. Its result gets the same postcheck.
             let mut descriptors = [];
-            let result = rustix::event::poll(
-                &mut descriptors,
-                Some(&rustix::time::Timespec {
-                    tv_sec: 0,
-                    tv_nsec: 10_000_000,
-                }),
-            )
-            .map(|_| ())
-            .map_err(|error| ParentFailure::Io(error.into()));
+            let timeout = record.poll_timeout().map_err(|cause| {
+                record.retain(cause);
+                OriginalParentRefusal
+            })?;
+            let result = rustix::event::poll(&mut descriptors, Some(&timeout))
+                .map(|_| ())
+                .map_err(|error| ParentFailure::Io(error.into()));
             record.after(result)?;
         }
     }
     if let Some(status) = record.exit
-        && !status.success()
+        && (!status.success() || !record.guest_complete)
     {
         record.retain(ParentFailure::VmExit(status));
     }
     // A failed VM outcome still gets independent physical retirement. The
     // actual first outcome remains in the slot while cleanup runs or refuses.
+    record.boundary().map_err(|cause| {
+        record.retain(cause);
+        OriginalParentRefusal
+    })?;
+    if let Some(bridge) = record.bridge.take() {
+        // The actual VM has been reaped. Close its endpoint before namespace
+        // cleanup, with the same static original account still retained.
+        let result = bridge.close_after_vm_wait();
+        record.retain_cleanup(result);
+        if record.boundary().is_err() {
+            record.post_expired = true;
+            record.retain_cleanup(Err(ParentFailure::Deadline));
+        }
+    }
     record.rootfs_file.take();
     record.directory.take();
     let result = record.retire();
@@ -479,11 +529,29 @@ fn prepare(record: &mut ParentRecord) -> Result<(), ParentFailure> {
         source,
         inventory,
         images,
+        operator,
+        actor_inventory,
+        source_manifest,
     } = inputs;
     record.admit(source)?;
     record.deadline = Some(crate::supervision::HostSupervisionDeadline::start(
         Duration::from_secs(3900),
     ));
+    record.boundary()?;
+    let result = enclosure::Enclosure::verify(
+        record
+            .account
+            .as_ref()
+            .ok_or(ParentFailure::Occupied)?
+            .source_contract(),
+    );
+    match result {
+        Ok(enclosure) => {
+            record.enclosure = Some(enclosure);
+            record.postchecked(Ok(()))?;
+        }
+        Err(error) => return record.postchecked(Err(error)),
+    }
     record.boundary()?;
     let result = inventory::installed_floor(Path::new(inventory), images.qemu);
     let (mapped_floor, backing_floor) = match result {
@@ -502,7 +570,7 @@ fn prepare(record: &mut ParentRecord) -> Result<(), ParentFailure> {
         )
         .map_err(ParentFailure::Admission)?;
     let config = LinuxQemuAttemptHostConfig::new(
-        "/sys/fs/cgroup/crucible-measurement-parent",
+        enclosure::ROOT,
         "/run/crucible-measurement-parent",
         "original-parent",
         2_000_000,
@@ -530,7 +598,41 @@ fn prepare(record: &mut ParentRecord) -> Result<(), ParentFailure> {
         .join("parent-rootfs.raw");
     record.copy_rootfs(Path::new(images.rootfs), destination)?;
     record.boundary()?;
+    let endpoint = record
+        .directory
+        .as_ref()
+        .ok_or(ParentFailure::Occupied)?
+        .path()
+        .join("original-parent.sock");
+    let result = bridge::Bridge::prepare(
+        endpoint,
+        Path::new(operator),
+        Path::new(actor_inventory),
+        Path::new(source_manifest),
+    );
+    match result {
+        Ok(bridge) => {
+            record.bridge = Some(bridge);
+            record.postchecked(Ok(()))?;
+        }
+        Err(error) => return record.postchecked(Err(error)),
+    }
+    record.boundary()?;
     let mut command = images.command(record.rootfs_path.as_ref().ok_or(ParentFailure::Occupied)?);
+    command
+        .args(["-device", "virtio-serial-pci", "-chardev"])
+        .arg(
+            record
+                .bridge
+                .as_ref()
+                .ok_or(ParentFailure::Occupied)?
+                .qemu_argument(),
+        )
+        .args([
+            "-device",
+            "virtserialport,chardev=original-parent,name=crucible.original.parent",
+        ]);
     let result = record.spawn(&mut command);
-    record.postchecked(result)
+    record.postchecked(result)?;
+    record.exchange_parent_evidence()
 }
