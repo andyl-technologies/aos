@@ -3905,6 +3905,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   ordinary and adversarial batching/resynchronization witnesses. The explicit
   DRV-29 blocker remains until their execution is reviewed; registration and
   lazy derivation evaluation do not qualify maintenance or complete this task.
+  On frozen `058f383e7b`, the first ordinary 1,024-entry workload fails during
+  baseline publication with `Advance(Expired)` after 59.04 seconds, before
+  maintenance begins. Source and executable remain unchanged. The five later
+  workloads and memo check remain unrun; actual baseline-path diagnosis follows.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
@@ -5024,6 +5028,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   held selection and lease; neither carrier alone permits native reclamation.
   Its production modules and runtime qualification remain pending; recurring
   permanent recovery and restoration remain additional T1 local obligations.
+  The current `gc-two-phase-delete` gate now requires ordinary local conformance
+  with its complete prerequisite closure, copied first ownership, and permanent
+  local reconciliation from the same package source. Lazy evaluation succeeds;
+  the new runtime paths remain unqualified and this task stays open. T3 must
+  extend this local T1 aggregate with actual provider conformance.
   Actual remote provider qualification belongs to T3. No remote conformance
   or full `gc-two-phase-delete` pass is claimed. D-78
   registers physical creation journals and recoverable deletion intent.

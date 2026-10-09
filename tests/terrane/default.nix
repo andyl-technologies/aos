@@ -183,6 +183,34 @@
     };
   };
 
+  localGcPrerequisites = [
+    (import ./native-local-first-ownership.nix {inherit sourceGate;})
+    (import ./native-local-deletion.nix {inherit sourceGate;})
+    (import ./native-preownership-restore.nix {inherit sourceGate;})
+    (import ./native-retirement-faults.nix {inherit sourceGate;})
+    taskGates.gc-roots-complete
+    taskGates.gc-mark-reachability
+    taskGates.gc-grace-window
+    taskGates.gc-singleton-lease
+    nativeForkPrerequisites.sourcePreservation
+    nativeForkPrerequisites.importedPreservation
+  ];
+  localGcConformance = import ./native-local-gc-conformance.nix {
+    prerequisites = localGcPrerequisites;
+    sourceGate = sourceGateWithInputs {extraBuildDeps = localGcPrerequisites;};
+  };
+
+  # Every local retirement alternative belongs in T1's owning gate. All three
+  # checks use this package source; provider qualification extends it at T3.
+  localTwoPhaseGc = import ./local-two-phase-gc.nix {
+    inherit pkgs;
+    prerequisites = [
+      localGcConformance
+      (import ./native-copied-retirement-first-ownership.nix {inherit sourceGate;})
+      (import ./local-permanent-reconciliation.nix {inherit sourceGate;})
+    ];
+  };
+
   gateFiles = builtins.filter (name: lib.hasSuffix ".nix" name) (builtins.attrNames (builtins.readDir ./gates));
   taskGates =
     builtins.foldl' (
@@ -193,6 +221,7 @@
             forkPrerequisites = builtins.attrValues nativeForkPrerequisites;
           }
           // lib.optionalAttrs (file == "algebra.nix") {inherit nativeSdkGate;}
+          // lib.optionalAttrs (file == "gc.nix") {inherit localTwoPhaseGc;}
         );
         duplicates = builtins.filter (name: builtins.hasAttr name accumulated) (builtins.attrNames added);
       in
@@ -285,24 +314,7 @@ in {
 
   integration.local-permanent-reconciliation = import ./local-permanent-reconciliation.nix {inherit sourceGate;};
   integration.native-local-deletion = import ./native-local-deletion.nix {inherit sourceGate;};
-  integration.native-local-gc-conformance = let
-    prerequisites = [
-      (import ./native-local-first-ownership.nix {inherit sourceGate;})
-      (import ./native-local-deletion.nix {inherit sourceGate;})
-      (import ./native-preownership-restore.nix {inherit sourceGate;})
-      (import ./native-retirement-faults.nix {inherit sourceGate;})
-      taskGates.gc-roots-complete
-      taskGates.gc-mark-reachability
-      taskGates.gc-grace-window
-      taskGates.gc-singleton-lease
-      nativeForkPrerequisites.sourcePreservation
-      nativeForkPrerequisites.importedPreservation
-    ];
-  in
-    import ./native-local-gc-conformance.nix {
-      inherit prerequisites;
-      sourceGate = sourceGateWithInputs {extraBuildDeps = prerequisites;};
-    };
+  integration.native-local-gc-conformance = localGcConformance;
   integration.native-collector-clock = import ./native-collector-clock.nix {inherit sourceGate;};
   integration.native-cold-fork-source = nativeForkPrerequisites.coldSource;
   integration.native-cold-fork-legacy = import ./native-cold-fork-legacy.nix {inherit sourceGate;};

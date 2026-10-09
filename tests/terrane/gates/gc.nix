@@ -1,4 +1,8 @@
-{sourceGate, ...}: let
+{
+  sourceGate,
+  localTwoPhaseGc,
+  ...
+}: let
   nativeTests = [
     "gc::lease::tests::native_gc_independent_collectors_have_one_selected_winner"
     "gc::lease::tests::native_gc_renewal_uses_exact_whole_value_and_increases_revision"
@@ -76,6 +80,8 @@
     done
   '';
 in {
+  gc-two-phase-delete = localTwoPhaseGc;
+
   gc-grace-window = sourceGate "gc-grace-window" ''
     cd crates
     ${focusedTests "tokio,surface-sdk" graceTests}
