@@ -23,7 +23,7 @@ mod local;
 #[cfg(all(feature = "std", unix))]
 /// Persists protected local signing and retained original-authority evidence.
 pub(crate) mod local_authority;
-#[cfg(unix)]
+#[cfg(all(feature = "std", unix))]
 mod overlay;
 mod path;
 mod prepared;

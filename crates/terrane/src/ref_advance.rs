@@ -15,7 +15,7 @@ mod disclosure;
 #[cfg(unix)]
 mod disclosure_rotation;
 mod native;
-#[cfg(unix)]
+#[cfg(all(feature = "std", unix))]
 pub(crate) mod overlay;
 mod prepared;
 mod watch;

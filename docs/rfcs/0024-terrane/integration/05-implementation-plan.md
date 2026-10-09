@@ -141,14 +141,22 @@ expose colliding hardlink fixture names and an absent prior-range comparison;
 the dictionary dependency case times out at 120.004 seconds. Public SDK and
 dependent qualification remain unrun. The candidate's registry Nix gate
 passes all 292 mappings and 69 current plan citations.
-Seven isolated implementation worklines cover chunking/codecs, contextual
+Eight isolated implementation worklines cover chunking/codecs, contextual
 algebra, pure properties, native provenance disclosure, domains, native cold
-forks and contextual indexes with disjoint file ownership. The codec correction
+forks, contextual indexes and nested overlay materialization with disjoint file
+ownership. The codec correction
 passes ten focused tests and strict native all-target Clippy; its owning Nix
 gates remain pending. Corrected read candidate `f87a19175a` passes fresh strict
-native all-target Clippy after removing an unused shared registration. Its fresh
-test compilation is running; no changed-source runtime result is inferred.
-The implementation worklines leave this qualification candidate frozen.
+native all-target Clippy, fresh test compilation and executable-bound inventory
+after removing an unused shared registration. Its mandatory twenty-nine-case
+run is terminal with twenty-eight passes and one dictionary-case timeout at
+the unchanged 120-second limit (181.272 seconds;
+run `b1714418-7bf1-4194-a449-cb6f83123793`). Both earlier failures now pass.
+A separate diagnostic identifies a fixture-held duplicate namespace lock
+surviving publication and blocking the reopened public read. Candidate
+`5a284a967c` releases that fixture adapter after the real publication ACK and
+before reopening; its fresh strict Clippy passes, while compilation and runtime
+qualification remain pending. No diagnostic run substitutes for qualification.
 Unchanged-budget runtime tests and the complete current trunk floor remain
 required before task acceptance.
 The frozen `9d122397a6` native recovery run is terminal: all thirty-one
