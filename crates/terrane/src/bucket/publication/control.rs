@@ -42,14 +42,6 @@ impl<F: LocalFs + BucketBinding> HeldReads<'_, F> {
         self
     }
 
-    /// Reads exact protected record bytes while retaining the actual exclusion.
-    ///
-    /// # Errors
-    /// Rejects invalid keys, unsafe record parents, modes, links or inode changes.
-    pub(super) async fn read(&self, key: &str) -> Result<Option<Vec<u8>>, StoreFailure> {
-        self.control.read_record(self.fs, key).await
-    }
-
     /// Retains one exact protected read under the live batch exclusion.
     ///
     /// # Errors
