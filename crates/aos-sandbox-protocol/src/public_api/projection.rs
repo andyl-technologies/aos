@@ -1,3 +1,19 @@
+//! Canonical historical public-resource projection DATA.
+//!
+//! A projection value uses this fixed representation:
+//!
+//! ```text
+//! AOSPRJ01 | version:u16be | kind:u8 | flags:u8 | project:16 |
+//! resource:16 | operation:16 | protobuf-len:u32be | protobuf-sha256:32 |
+//! canonical-protobuf
+//! ```
+//!
+//! Keys use a reserved prefix followed by the kind byte and resource identity.
+//! Decoding checks the original protobuf against its reencoding before typed
+//! resource validation. This preserves the protobuf implementation's existing
+//! unknown-field behavior. These models grant no currentness or effect authority;
+//! native owners retain journal selection and admission.
+
 use aos_proto::aos::sandbox::v1::{
     Attachment, CacheStatus, Capability, Execution, FilesystemView, Sandbox, Snapshot,
 };
@@ -21,6 +37,7 @@ use super::{
 const PROJECTION_MAGIC: &[u8; 8] = b"AOSPRJ01";
 const PROJECTION_VERSION: u16 = 1;
 const PROJECTION_FLAGS: u8 = 0;
+/// Names the reserved canonical public-projection key domain.
 pub const PROJECTION_KEY_PREFIX: &[u8] = b"aos.public.resource.v1\0";
 const PROJECTION_HEADER_BYTES: usize = 8 + 2 + 1 + 1 + 16 + 16 + 16 + 4 + 32;
 
@@ -343,11 +360,16 @@ impl PublicProjectionPlanV1 {
     }
 
     /// Revalidates the complete planned record before an atomic successor commit.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid identities, framing, checksums, protobuf reencoding, or
+    /// typed public-resource semantics under the canonical decoder.
     pub fn checked_record(&self) -> Result<PublicProjectionRecordV1, PublicProjectionError> {
         decode_record(&self.desired_key, &self.desired_value)
     }
 
-    /// Consumes the plan into the key and value accepted by [`crate::OperationPlan`].
+    /// Consumes the plan into the key and value for native atomic admission.
     #[must_use]
     pub fn into_desired_state(self) -> (Vec<u8>, Vec<u8>) {
         (self.desired_key, self.desired_value)
@@ -413,6 +435,11 @@ pub struct PublicProjectionRecordV1 {
 
 impl PublicProjectionRecordV1 {
     /// Reuses the canonical projection codec for a nonauthorizing retained copy.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid resource identities or semantics and any revision mismatch
+    /// after canonical reconstruction.
     pub fn retained_record_bytes(&self) -> Result<Vec<u8>, PublicProjectionError> {
         let plan =
             PublicProjectionPlanV1::new(self.project, self.operation, self.resource.clone())?;
@@ -423,6 +450,11 @@ impl PublicProjectionRecordV1 {
     }
 
     /// Decodes historical bytes without claiming current journal provenance.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed canonical records or a mismatch with the supplied kind
+    /// and resource identity.
     pub fn from_retained_record_bytes(
         kind: PublicProjectionKindV1,
         resource: [u8; 16],
@@ -431,13 +463,13 @@ impl PublicProjectionRecordV1 {
         decode_record(&projection_key(kind, resource), bytes)
     }
 
-    /// Returns the authenticated project partition retained at admission.
+    /// Returns the project identity retained in the canonical record.
     #[must_use]
     pub const fn project(&self) -> ProjectId {
         self.project
     }
 
-    /// Returns the operation that atomically accepted this projection.
+    /// Returns the operation identity retained in the canonical record.
     #[must_use]
     pub const fn operation(&self) -> OperationId {
         self.operation
@@ -461,6 +493,7 @@ impl PublicProjectionRecordV1 {
         self.encoded_bytes
     }
 }
+/// Selects the sole parentless sandbox with the exact historical operation and project.
 pub fn select_parentless_create_sandbox(
     records: &[PublicProjectionRecordV1],
     operation: OperationId,
@@ -504,6 +537,7 @@ pub enum PublicProjectionError {
     CorruptRecord,
 }
 
+/// Returns the reserved key prefix for one closed projection schema.
 pub fn projection_kind_prefix(kind: PublicProjectionKindV1) -> Vec<u8> {
     let mut key = Vec::with_capacity(PROJECTION_KEY_PREFIX.len() + 1);
     key.extend_from_slice(PROJECTION_KEY_PREFIX);
@@ -511,6 +545,7 @@ pub fn projection_kind_prefix(kind: PublicProjectionKindV1) -> Vec<u8> {
     key
 }
 
+/// Returns the canonical key for one projection schema and resource identity.
 pub fn projection_key(kind: PublicProjectionKindV1, resource_id: [u8; 16]) -> Vec<u8> {
     let mut key = projection_kind_prefix(kind);
     key.extend_from_slice(&resource_id);

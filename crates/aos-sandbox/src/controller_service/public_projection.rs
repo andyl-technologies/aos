@@ -1,17 +1,9 @@
-//! Durable public-resource projections retained with accepted desired state.
+//! Authorized native journal queries over canonical public projections.
 //!
-//! A projection value uses this fixed representation:
-//!
-//! ```text
-//! AOSPRJ01 | version:u16be | kind:u8 | flags:u8 | project:16 |
-//! resource:16 | operation:16 | protobuf-len:u32be | protobuf-sha256:32 |
-//! canonical-protobuf
-//! ```
-//!
-//! Keys use a reserved prefix followed by the kind byte and resource identity.
-//! The record is a checked public projection, not observed-success evidence.
-//! Reconcilers must replace requested or pending fields only from authoritative
-//! broker receipts and inventory.
+//! Protocol owns the projection DATA and codec reexported here. This owner keeps
+//! bounded native query selection, project authorization, and borrowed Journal
+//! access. A checked projection does not establish observed-success evidence;
+//! authoritative broker receipts and inventory supply that evidence.
 
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 
@@ -199,4 +191,3 @@ impl<'journal> PublicProjectionStoreV1<'journal> {
         ))
     }
 }
-
