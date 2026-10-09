@@ -488,6 +488,7 @@ impl PublicProjectionRecordV1 {
         self.encoded_bytes
     }
 }
+
 /// Selects the sole parentless sandbox with the exact historical operation and project.
 pub fn select_parentless_create_sandbox(
     records: &[PublicProjectionRecordV1],
