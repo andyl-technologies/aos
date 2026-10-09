@@ -20,8 +20,7 @@ use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::{
-    GlobalCapacityReservationRequestV1, Journal, JournalError, JournalTransaction,
-    RecordNamespace,
+    GlobalCapacityReservationRequestV1, Journal, JournalError, JournalTransaction, RecordNamespace,
 };
 
 use super::super::controller_project_terminal_readback::verify_controller_project_terminal_readback_v1;
@@ -29,10 +28,10 @@ use super::super::{
     PinnedControllerHoldSignerV1, PinnedSourceHoldReadbackSignerV1, SourceHoldReadbackChallengeV1,
     verify_source_project_completed_terminal_readback_v1,
 };
+pub(crate) use aos_sandbox_protocol::domain_ledger::root_project_history::ROOT_PROJECT_HISTORY_FLOOR_BYTES_V1;
 pub use aos_sandbox_protocol::domain_ledger::root_project_history::{
     RootProjectHistoryFloorV1, RootProjectHistoryTerminalKindV1,
 };
-pub(crate) use aos_sandbox_protocol::domain_ledger::root_project_history::ROOT_PROJECT_HISTORY_FLOOR_BYTES_V1;
 
 use super::{
     PolicyDeploymentHeadErrorV1, RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeV1,

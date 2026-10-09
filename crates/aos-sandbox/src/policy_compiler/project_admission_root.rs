@@ -16,11 +16,11 @@
 //! SHA-256(Root-project-stage-domain || preceding 304 bytes):32
 //! ```
 
-pub use aos_sandbox_protocol::domain_ledger::root_project_history::{
-    RootProjectReservationCancellationV1, RootProjectAdmissionOutcomeKindV1,
-    RootProjectAdmissionOutcomeV1, project_admission_client_nonce_v1,
-};
 use aos_sandbox_protocol::domain_ledger::root_project_history::RESERVATION_CANCELLATION_DOMAIN;
+pub use aos_sandbox_protocol::domain_ledger::root_project_history::{
+    RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeV1,
+    RootProjectReservationCancellationV1, project_admission_client_nonce_v1,
+};
 
 mod history;
 mod intent;
@@ -165,7 +165,10 @@ fn committed_outcome(
     )
 }
 
-fn aborted_outcome(stage: RootProjectAdmissionStageV1, source_row: ObjectDigest) -> RootProjectAdmissionOutcomeV1 {
+fn aborted_outcome(
+    stage: RootProjectAdmissionStageV1,
+    source_row: ObjectDigest,
+) -> RootProjectAdmissionOutcomeV1 {
     RootProjectAdmissionOutcomeV1::from_historical_fields(
         stage.record_digest(),
         RootProjectAdmissionOutcomeKindV1::Aborted,
@@ -1667,8 +1670,7 @@ mod tests {
             [12; 16],
             ObjectDigest::from_bytes([13; 32]),
         );
-        let aborted =
-            aborted_outcome(stage, ObjectDigest::from_bytes([14; 32]));
+        let aborted = aborted_outcome(stage, ObjectDigest::from_bytes([14; 32]));
         let marker = RootProjectReservationCancellationV1::from_historical_fields(
             ObjectDigest::from_bytes([15; 32]),
             [16; 16],
@@ -1848,8 +1850,7 @@ mod tests {
             [13; 16],
             ObjectDigest::from_bytes([14; 32]),
         );
-        let aborted =
-            aborted_outcome(stage, ObjectDigest::from_bytes([15; 32]));
+        let aborted = aborted_outcome(stage, ObjectDigest::from_bytes([15; 32]));
         assert_eq!(
             RootProjectAdmissionOutcomeV1::from_record_bytes(&committed.record_bytes()).unwrap(),
             committed

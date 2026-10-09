@@ -1082,7 +1082,12 @@ fn validate_original_projection(
         let current = PublicProjectionStoreV1::new(journal)
             .one_parentless_create_sandbox(operation, metadata.project)
             .map_err(|_| invalid_metadata())?;
-        if current != Some((metadata.sandbox, metadata.source_heads.projection_revision())) {
+        if current
+            != Some((
+                metadata.sandbox,
+                metadata.source_heads.projection_revision(),
+            ))
+        {
             return Err(invalid_metadata());
         }
     }

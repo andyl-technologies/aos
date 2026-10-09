@@ -158,7 +158,9 @@ pub enum PolicyDeploymentHeadErrorV1 {
 impl From<aos_sandbox_protocol::domain_ledger::root_project_history::RootProjectHistoryDataErrorV1>
     for PolicyDeploymentHeadErrorV1
 {
-    fn from(error: aos_sandbox_protocol::domain_ledger::root_project_history::RootProjectHistoryDataErrorV1) -> Self {
+    fn from(
+        error: aos_sandbox_protocol::domain_ledger::root_project_history::RootProjectHistoryDataErrorV1,
+    ) -> Self {
         use aos_sandbox_protocol::domain_ledger::root_project_history::RootProjectHistoryDataErrorV1;
 
         match error {

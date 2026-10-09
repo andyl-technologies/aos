@@ -792,10 +792,9 @@ fn read_terminal_reply_for_stage(
     if reply[..8] != TERMINAL_REPLY_MAGIC[..] || reply[8..24] != nonce {
         return Err(invalid_reply());
     }
-    let outcome =
-        RootProjectAdmissionOutcomeV1::from_record_bytes(&reply[24..])
-                .map_err(super::PolicyDeploymentHeadErrorV1::from)
-                .map_err(io::Error::other)?;
+    let outcome = RootProjectAdmissionOutcomeV1::from_record_bytes(&reply[24..])
+        .map_err(super::PolicyDeploymentHeadErrorV1::from)
+        .map_err(io::Error::other)?;
     if outcome.stage() != stage_digest || outcome.source_row() != source_row.record_digest() {
         return Err(invalid_reply());
     }
@@ -962,19 +961,26 @@ mod tests {
     #[test]
     fn historical_row_failures_retain_domain_errors_inside_io_errors() {
         use aos_sandbox_protocol::domain_ledger::{
-            ProtectedHistoryDataErrorV1,
-            protected_names::ProtectedJournalNamesV1,
+            ProtectedHistoryDataErrorV1, protected_names::ProtectedJournalNamesV1,
             root_project_history::RootProjectHistoryDataErrorV1,
         };
 
         let invalid_head = super::super::PolicyDeploymentHeadErrorV1::from(
             RootProjectHistoryDataErrorV1::InvalidHead,
         );
-        assert!(matches!(invalid_head, super::super::PolicyDeploymentHeadErrorV1::InvalidHead));
+        assert!(matches!(
+            invalid_head,
+            super::super::PolicyDeploymentHeadErrorV1::InvalidHead
+        ));
         let invalid_names = super::super::PolicyDeploymentHeadErrorV1::from(
             RootProjectHistoryDataErrorV1::Names(ProtectedHistoryDataErrorV1::Malformed),
         );
-        assert!(matches!(invalid_names, super::super::PolicyDeploymentHeadErrorV1::Journal(crate::journal::JournalError::ProtectedBoundary)));
+        assert!(matches!(
+            invalid_names,
+            super::super::PolicyDeploymentHeadErrorV1::Journal(
+                crate::journal::JournalError::ProtectedBoundary
+            )
+        ));
 
         let marker = RootProjectReservationCancellationV1::from_historical_fields(
             ObjectDigest::from_bytes([1; 32]),
@@ -982,11 +988,21 @@ mod tests {
             ProjectId::from_bytes([0; 16]),
         );
         let reply = encode_root_project_reservation_cancel_reply_v1(
-            [2; 16], marker.reservation(), Some(marker),
-        ).unwrap();
-        let error = decode_reservation_cancel_reply(&reply, [2; 16], marker.reservation()).unwrap_err();
+            [2; 16],
+            marker.reservation(),
+            Some(marker),
+        )
+        .unwrap();
+        let error =
+            decode_reservation_cancel_reply(&reply, [2; 16], marker.reservation()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Other);
-        assert!(matches!(error.get_ref().unwrap().downcast_ref::<super::super::PolicyDeploymentHeadErrorV1>(), Some(super::super::PolicyDeploymentHeadErrorV1::InvalidHead)));
+        assert!(matches!(
+            error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<super::super::PolicyDeploymentHeadErrorV1>(),
+            Some(super::super::PolicyDeploymentHeadErrorV1::InvalidHead)
+        ));
 
         let reservation = SourceProjectAdmissionReservationV1::from_historical_fields(
             1,
@@ -1004,7 +1020,15 @@ mod tests {
 
         let error = decode_floor_reply(&floor_reply, reservation).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Other);
-        assert!(matches!(error.get_ref().unwrap().downcast_ref::<super::super::PolicyDeploymentHeadErrorV1>(), Some(super::super::PolicyDeploymentHeadErrorV1::Journal(crate::journal::JournalError::ProtectedBoundary))));
+        assert!(matches!(
+            error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<super::super::PolicyDeploymentHeadErrorV1>(),
+            Some(super::super::PolicyDeploymentHeadErrorV1::Journal(
+                crate::journal::JournalError::ProtectedBoundary
+            ))
+        ));
     }
 
     #[test]

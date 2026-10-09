@@ -684,19 +684,33 @@ mod tests {
             ProtectedJournalNamesV1::from_historical_fields((1, 2), (3, 4), (5, 6)),
         );
         let canonical = floor.record_bytes();
-        assert_eq!(RootProjectHistoryFloorV1::from_record_bytes(&canonical).unwrap(), floor);
+        assert_eq!(
+            RootProjectHistoryFloorV1::from_record_bytes(&canonical).unwrap(),
+            floor
+        );
 
         let mut bad_issue = canonical;
         bad_issue[16..24].fill(0);
-        assert!(matches!(RootProjectHistoryFloorV1::from_record_bytes(&bad_issue), Err(RootProjectHistoryDataErrorV1::InvalidHead)));
+        assert!(matches!(
+            RootProjectHistoryFloorV1::from_record_bytes(&bad_issue),
+            Err(RootProjectHistoryDataErrorV1::InvalidHead)
+        ));
 
         let mut bad_checksum = canonical;
         bad_checksum[360] ^= 1;
-        assert!(matches!(RootProjectHistoryFloorV1::from_record_bytes(&bad_checksum), Err(RootProjectHistoryDataErrorV1::InvalidHead)));
+        assert!(matches!(
+            RootProjectHistoryFloorV1::from_record_bytes(&bad_checksum),
+            Err(RootProjectHistoryDataErrorV1::InvalidHead)
+        ));
 
         for mut competing_failure in [bad_issue, bad_checksum] {
             competing_failure[312..320].fill(0);
-            assert!(matches!(RootProjectHistoryFloorV1::from_record_bytes(&competing_failure), Err(RootProjectHistoryDataErrorV1::Names(super::super::ProtectedHistoryDataErrorV1::Malformed))));
+            assert!(matches!(
+                RootProjectHistoryFloorV1::from_record_bytes(&competing_failure),
+                Err(RootProjectHistoryDataErrorV1::Names(
+                    super::super::ProtectedHistoryDataErrorV1::Malformed
+                ))
+            ));
         }
     }
 }
