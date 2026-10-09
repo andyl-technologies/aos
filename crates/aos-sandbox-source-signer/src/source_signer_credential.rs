@@ -5,10 +5,9 @@
 //! source-hold-public-key: AOSSPK01 pin[80]
 //! ```
 
-use std::array::TryFromSliceError;
 use std::path::Path;
 
-use aos_sandbox::policy_compiler::{PinnedSourceHoldReadbackSignerV1, SourceHoldReadbackErrorV1};
+use aos_sandbox::policy_compiler::PinnedSourceHoldReadbackSignerV1;
 use ed25519_dalek::SigningKey;
 use zeroize::Zeroizing;
 
@@ -47,8 +46,24 @@ impl SourceSignerCredentialV1 {
             .map_err(|_| SourceSignerCredentialErrorV1)?
             .ok_or(SourceSignerCredentialErrorV1)?;
 
-        let mut validation = SourceSignerCredentialValidationV1::prearmed();
-        let generation = validate_source_signer_credential_v1(&seed, &pin, &mut validation)?;
+        let seed_bytes: &[u8; 32] = seed
+            .as_slice()
+            .try_into()
+            .map_err(|_| SourceSignerCredentialErrorV1)?;
+        if *seed_bytes == [0; 32] {
+            return Err(SourceSignerCredentialErrorV1);
+        }
+
+        let signing_key = SigningKey::from_bytes(seed_bytes);
+        let decoded_pin = PinnedSourceHoldReadbackSignerV1::decode(&pin);
+        let pinned = match decoded_pin.as_ref() {
+            Ok(pinned) => pinned,
+            Err(_) => return Err(SourceSignerCredentialErrorV1),
+        };
+        if pinned.verifying_key() != &signing_key.verifying_key() {
+            return Err(SourceSignerCredentialErrorV1);
+        }
+        let generation = pinned.generation();
 
         Ok(Self { seed, generation })
     }
@@ -71,67 +86,6 @@ impl SourceSignerCredentialV1 {
             .map_err(|_| SourceSignerCredentialErrorV1)?;
         Ok(SigningKey::from_bytes(seed))
     }
-}
-
-struct SourceSignerCredentialValidationV1 {
-    // Preserve the original pin-before-key drop order on ordinary returns.
-    decoded_pin: Option<Result<PinnedSourceHoldReadbackSignerV1, SourceHoldReadbackErrorV1>>,
-    signing_key: Option<SigningKey>,
-    seed_length: Option<Result<(), TryFromSliceError>>,
-    seed_nonzero: Option<Result<(), SourceSignerCredentialErrorV1>>,
-    correspondence: Option<Result<(), SourceSignerCredentialErrorV1>>,
-}
-
-impl SourceSignerCredentialValidationV1 {
-    fn prearmed() -> Self {
-        Self {
-            decoded_pin: None,
-            signing_key: None,
-            seed_length: None,
-            seed_nonzero: None,
-            correspondence: None,
-        }
-    }
-}
-
-// The loader drops its validation storage on return. It borrows the original
-// seed array and calls the Source-purpose decoder once.
-fn validate_source_signer_credential_v1(
-    seed: &Zeroizing<Vec<u8>>,
-    pin: &Zeroizing<Vec<u8>>,
-    validation: &mut SourceSignerCredentialValidationV1,
-) -> Result<u64, SourceSignerCredentialErrorV1> {
-    let seed_bytes: &[u8; 32] = match seed.as_slice().try_into() {
-        Ok(seed_bytes) => {
-            validation.seed_length = Some(Ok(()));
-            seed_bytes
-        }
-        Err(error) => {
-            validation.seed_length = Some(Err(error));
-            return Err(SourceSignerCredentialErrorV1);
-        }
-    };
-    if *seed_bytes == [0; 32] {
-        validation.seed_nonzero = Some(Err(SourceSignerCredentialErrorV1));
-        return Err(SourceSignerCredentialErrorV1);
-    }
-    validation.seed_nonzero = Some(Ok(()));
-
-    let signing_key = validation
-        .signing_key
-        .insert(SigningKey::from_bytes(seed_bytes));
-    validation.decoded_pin = Some(PinnedSourceHoldReadbackSignerV1::decode(pin));
-    let pinned = match validation.decoded_pin.as_ref() {
-        Some(Ok(pinned)) => pinned,
-        _ => return Err(SourceSignerCredentialErrorV1),
-    };
-    if pinned.verifying_key() != &signing_key.verifying_key() {
-        validation.correspondence = Some(Err(SourceSignerCredentialErrorV1));
-        return Err(SourceSignerCredentialErrorV1);
-    }
-    validation.correspondence = Some(Ok(()));
-
-    Ok(pinned.generation())
 }
 
 /// Reports an unsafe or inconsistent Source signer credential set.
