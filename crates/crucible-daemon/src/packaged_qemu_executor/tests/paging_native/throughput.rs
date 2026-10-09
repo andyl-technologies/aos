@@ -274,6 +274,9 @@ fn run_row(
         parallel,
         repeat,
         elapsed_ns,
+        // A controller clock would omit QEMU descendants. Keep the unavailable
+        // whole-work CPU metric explicit until its actual owner supplies it.
+        completed_work_cpu_ns: None,
         completed,
         completed_attempts_per_host_hour: report::rate(completed, elapsed_ns),
         failures,

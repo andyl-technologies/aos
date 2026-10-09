@@ -23,6 +23,20 @@ struct ArtifactDigest {
     blake3: [u8; 32],
 }
 
+fn corpus_identities(
+    scenarios: &blake3::Hasher,
+    artifacts: &[ArtifactDigest],
+) -> ([u8; 32], [u8; 32]) {
+    let scenario_identity = *scenarios.clone().finalize().as_bytes();
+    let mut deployment = scenarios.clone();
+    for artifact in artifacts {
+        deployment.update(&artifact.blake3);
+        deployment.update(&artifact.bytes.to_le_bytes());
+    }
+
+    (scenario_identity, *deployment.finalize().as_bytes())
+}
+
 impl PinnedInputs {
     pub(super) fn read(
         controller: &workers::WorkerService,
@@ -107,6 +121,7 @@ pub(super) struct Row {
     pub(super) parallel: usize,
     pub(super) repeat: usize,
     pub(super) elapsed_ns: u64,
+    pub(super) completed_work_cpu_ns: Option<u64>,
     pub(super) completed: u64,
     pub(super) completed_attempts_per_host_hour: f64,
     pub(super) failures: Vec<String>,
@@ -181,11 +196,18 @@ fn repeated_rates(rows: &[Row]) -> Vec<RepeatedRates> {
 pub(super) fn now() -> u64 {
     // Host elapsed measurements never enter scheduler decisions or identities.
     let value = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
-    u64::try_from(value.tv_sec)
-        .expect("positive kernel monotonic seconds")
-        .checked_mul(1_000_000_000)
-        .and_then(|seconds| seconds.checked_add(u64::try_from(value.tv_nsec).ok()?))
-        .expect("bounded monotonic host time")
+    clock_ns(value.tv_sec, value.tv_nsec).expect("valid bounded kernel monotonic time")
+}
+
+fn clock_ns(seconds: i64, nanoseconds: i64) -> Option<u64> {
+    if !(0..1_000_000_000).contains(&nanoseconds) {
+        return None;
+    }
+
+    u64::try_from(seconds)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(u64::try_from(nanoseconds).ok()?)
 }
 
 #[expect(
@@ -354,6 +376,9 @@ pub(super) fn publish(
         scope: &'static str,
         pinned: &'a PinnedInputs,
         corpus: [u8; 32],
+        scenario_corpus: [u8; 32],
+        scenario_corpus_scope: &'static str,
+        completed_work_cpu_scope: &'static str,
         scenario_seeds: &'a [u64],
         fingerprint_comparison: &'static str,
         quanta_per_attempt: u64,
@@ -368,7 +393,7 @@ pub(super) fn publish(
         cache_scope: &'static str,
         resource_census_schema: &'static str,
         resource_census_scope: &'static str,
-        unavailable_metrics: [&'static str; 6],
+        unavailable_metrics: [&'static str; 7],
     }
     let mut corpus = blake3::Hasher::new();
     corpus.update(b"crucible.completed-campaign-throughput-corpus.v1\0");
@@ -381,16 +406,17 @@ pub(super) fn publish(
         corpus.update(scenario.payload());
     }
     corpus.update(&QUANTA_PER_ATTEMPT.to_le_bytes());
-    for artifact in &pin.artifact_digests {
-        corpus.update(&artifact.blake3);
-        corpus.update(&artifact.bytes.to_le_bytes());
-    }
-    let corpus = *corpus.finalize().as_bytes();
+    // Separate the authored scenarios from the native build under comparison.
+    // This identifier alone does not bind implicit firmware or host policy.
+    let (scenario_corpus, corpus) = corpus_identities(&corpus, &pin.artifact_digests);
     let receipt = Receipt {
-        schema: "crucible.completed-campaign-throughput.v1",
+        schema: "crucible.completed-campaign-throughput.v2",
         scope: "real accepted campaigns; managed native qualification only; full original peaks",
         pinned: pin,
         corpus,
+        scenario_corpus,
+        scenario_corpus_scope: "canonical seeded scenarios and quanta only; guest artifact, firmware, host/storage and native build identities remain separate comparison obligations",
+        completed_work_cpu_scope: "unavailable; controller process CPU excludes native descendants and cannot substitute for equal completed-work CPU",
         scenario_seeds: &corpus::SEEDS,
         fingerprint_comparison: "raw per-seed boundaries; compare only matching seed/corpus against baseline; no cross-seed equality claim",
         quanta_per_attempt: QUANTA_PER_ATTEMPT,
@@ -427,6 +453,7 @@ pub(super) fn publish(
             "drive/fingerprint intervals; no atomic snapshot, cleanup authority or peak usage claim"
         ),
         unavailable_metrics: [
+            "completed-work CPU including native descendants",
             "cold host-cache throughput",
             "fork duration",
             "capture-restore duration",
@@ -463,6 +490,7 @@ fn repeated_receipt_keeps_failed_rows_in_uncertainty() {
                     parallel,
                     repeat,
                     elapsed_ns: 3_600_000_000_000,
+                    completed_work_cpu_ns: None,
                     completed: u64::from(!failed),
                     completed_attempts_per_host_hour: f64::from(u32::from(!failed)),
                     failures: if failed {
@@ -485,6 +513,34 @@ fn repeated_receipt_keeps_failed_rows_in_uncertainty() {
         && summary.minimum == 0.0
         && summary.median == 1.0
         && summary.maximum == 1.0));
+}
+
+#[test]
+fn clock_conversion_rejects_invalid_fields_and_overflow() {
+    assert_eq!(clock_ns(1, 999_999_999), Some(1_999_999_999));
+    assert_eq!(clock_ns(-1, 0), None);
+    assert_eq!(clock_ns(1, -1), None);
+    assert_eq!(clock_ns(1, 1_000_000_000), None);
+    assert_eq!(clock_ns(i64::MAX, 0), None);
+}
+
+#[test]
+fn scenario_identity_is_retained_before_native_build_binding() {
+    let mut scenarios = blake3::Hasher::new();
+    scenarios.update(b"synthetic canonical scenarios and quanta");
+    let artifact = |byte| ArtifactDigest {
+        role: "CRUCIBLE_PAGING_QEMU",
+        path: "synthetic native artifact".into(),
+        bytes: 1,
+        blake3: [byte; 32],
+    };
+    let reference = corpus_identities(&scenarios, &[artifact(1)]);
+    let candidate = corpus_identities(&scenarios, &[artifact(2)]);
+
+    assert_eq!(reference.0, candidate.0);
+    assert_ne!(reference.1, candidate.1);
+    scenarios.update(b"different synthetic authored work");
+    assert_ne!(reference.0, corpus_identities(&scenarios, &[artifact(1)]).0);
 }
 
 #[test]
