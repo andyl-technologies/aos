@@ -173,11 +173,13 @@ in
       pname = "crucible-phase1-execution-instantiate";
       version = "0";
       src = crucibleSrc;
+      runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
+        pkgs.sqlite
       ];
 
       phases = [

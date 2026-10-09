@@ -655,7 +655,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.glib
         pkgs.glib.dev
         pkgs.pkg-config

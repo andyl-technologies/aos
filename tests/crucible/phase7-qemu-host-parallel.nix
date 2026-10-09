@@ -148,7 +148,9 @@
     pname = "crucible-qemu-host-parallel";
     version = "0";
     src = source;
-    buildDeps = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed productionPluginFlight];
+    runtimeDeps = [pkgs.sqlite];
+
+    buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed productionPluginFlight];
 
     phases = [
       {

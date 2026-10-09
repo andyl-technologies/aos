@@ -67,7 +67,9 @@ in
       pname = "crucible-phase3-signal-resolution-rng";
       version = "0";
       src = crucibleSrc;
-      buildDeps = [pkgs.rust pkgs.sed];
+      runtimeDeps = [pkgs.sqlite];
+
+      buildDeps = [pkgs.sqlite pkgs.rust pkgs.sed];
       phases = [
         {
           name = "unpack";

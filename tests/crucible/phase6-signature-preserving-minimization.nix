@@ -269,7 +269,9 @@ in
       pname = "crucible-phase6-signature-preserving-minimization";
       version = "0";
       src = crucibleSrc;
-      buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+      runtimeDeps = [pkgs.sqlite];
+
+      buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.rust pkgs.sed];
       DEPENDENCIES = builtins.concatStringsSep ":" dependencies;
       phases = [
         {

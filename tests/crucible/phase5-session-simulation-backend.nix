@@ -200,9 +200,9 @@
     ]
     ++ failuresFor "crates/crucible/control/crucible-daemon/Cargo.toml" daemonCargo [
       {
-        label = "daemon tests enable the mock only as a dev dependency";
+        label = "daemon tests enable the mock and checkpoint fixtures only as dev dependencies";
         needle = ''          [dev-dependencies]
-          crucible-engine = { path = "../../engine/crucible-engine", features = ["test-double"] }'';
+          crucible-engine = { path = "../../engine/crucible-engine", features = ["test-double", "test-support"] }'';
       }
     ]
     ++ failuresFor "crates/crucible/engine/crucible-engine/src/sim_backend.rs" simBackendLib [
@@ -308,8 +308,11 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps =
         [
+          pkgs.sqlite
           pkgs.coreutils
           pkgs.grep
           pkgs.rust
