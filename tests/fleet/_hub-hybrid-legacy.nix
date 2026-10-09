@@ -1359,9 +1359,13 @@
       "--data-urlencode 'grant_type=urn:aos:params:oauth:grant-type:provisioning-token' "
       "https://aos.andyl.org/oauth2/token",
   ))["access_token"]
+  # The VM agent has no login HOME. Give each publication an explicit private
+  # retry journal so uploads exercise the same durable custody as real users.
+  client.succeed("${pkgs.coreutils}/bin/install -d -m 0700 /var/lib/hybrid-client/publication-journals")
   bootstrap = json.loads(client.succeed(
       f"{AOS} --json --progress off --color never hub registry publish upload fleet/containers "
       "--root /tmp/hybrid-bootstrap-surface --hub https://aos.andyl.org "
+      "--direct-upload-journal /var/lib/hybrid-client/publication-journals/bootstrap.sqlite "
       f"--token {shlex.quote(publisher_token)}",
       timeout=900,
   ))["data"]
@@ -1450,6 +1454,7 @@
           lambda token: (
               f"{AOS} --json hub registry publish upload fleet/containers "
               "--root /tmp/hybrid-publication-surface --hub https://aos.andyl.org "
+              "--direct-upload-journal /var/lib/hybrid-client/publication-journals/containers.sqlite "
               f"--token {shlex.quote(token)}"
           ),
           session_token,
@@ -1643,6 +1648,7 @@
       lambda token: (
           f"{AOS} --json hub registry publish upload fleet/metadata "
           "--root /tmp/hybrid-metadata-surface --hub https://aos.andyl.org "
+          "--direct-upload-journal /var/lib/hybrid-client/publication-journals/metadata.sqlite "
           f"--token {shlex.quote(token)}"
       ),
       session_token,
