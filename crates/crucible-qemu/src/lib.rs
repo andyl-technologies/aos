@@ -52,6 +52,8 @@ mod fault_implementation;
 mod host_setup;
 mod inertness;
 #[cfg(target_os = "linux")]
+pub mod kvm_profile;
+#[cfg(target_os = "linux")]
 pub mod native_node_control;
 mod launch;
 #[cfg(target_os = "linux")]

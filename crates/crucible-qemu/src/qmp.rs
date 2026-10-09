@@ -33,6 +33,8 @@ mod fingerprint_projection;
 mod hot_fork;
 mod hot_fork_coordinator;
 mod hot_fork_stages;
+#[cfg(target_os = "linux")]
+mod kvm_profile;
 mod ram_delta;
 use command::{
     HotForkAsyncWorkerBarrierAction, HotForkBlockBarrierAction, HotForkChildConsoleAction,
@@ -43,6 +45,8 @@ use command::{
 use fingerprint_projection::{
     QMP_QUERY_FINGERPRINT_PROJECTION_MANIFEST_COMMAND, parse_fingerprint_projection_manifest,
 };
+#[cfg(target_os = "linux")]
+pub use kvm_profile::{QmpKvmAccelerationState, QmpKvmClockComponentState, QmpKvmClockOperation, QmpKvmClockRequest};
 pub(crate) use fingerprint_projection::{
     QmpFingerprintProjectionManifest, QmpFingerprintProjectionManifestRow,
 };
@@ -1327,6 +1331,12 @@ impl QmpRunStateKind {
 /// Supported QMP command kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QmpCommandKind {
+    /// Observes the actual native KVM accelerator without controller qualification.
+    #[cfg(target_os = "linux")]
+    QueryKvm,
+    /// Controls an experimental partial native clock without profile qualification.
+    #[cfg(target_os = "linux")]
+    KvmClockComponent,
     /// QMP capability negotiation.
     Capabilities,
     /// VMState snapshot save.
@@ -1410,6 +1420,10 @@ pub enum QmpCommandKind {
 impl QmpCommandKind {
     const fn wire_name(self) -> &'static str {
         match self {
+            #[cfg(target_os = "linux")]
+            Self::QueryKvm => "query-kvm",
+            #[cfg(target_os = "linux")]
+            Self::KvmClockComponent => "x-crucible-kvm-clock",
             Self::Capabilities => QMP_CAPABILITIES_COMMAND,
             Self::SaveVm => QMP_SNAPSHOT_SAVE_COMMAND,
             Self::DeleteSnapshot => QMP_SNAPSHOT_DELETE_COMMAND,

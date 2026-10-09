@@ -182,6 +182,10 @@ impl HotForkBlockBarrierAction {
 }
 
 pub(super) enum QmpCommand<'a> {
+    #[cfg(target_os = "linux")]
+    QueryKvm,
+    #[cfg(target_os = "linux")]
+    KvmClockComponent { request: &'a QmpKvmClockRequest },
     Capabilities,
     SaveVm {
         tag: &'a QmpSnapshotTag,
@@ -311,6 +315,10 @@ pub(super) enum QmpCommand<'a> {
 impl QmpCommand<'_> {
     pub(super) const fn kind(&self) -> QmpCommandKind {
         match self {
+            #[cfg(target_os = "linux")]
+            Self::QueryKvm => QmpCommandKind::QueryKvm,
+            #[cfg(target_os = "linux")]
+            Self::KvmClockComponent { .. } => QmpCommandKind::KvmClockComponent,
             Self::Capabilities => QmpCommandKind::Capabilities,
             Self::SaveVm { .. } => QmpCommandKind::SaveVm,
             Self::DeleteSnapshot { .. } => QmpCommandKind::DeleteSnapshot,
@@ -397,6 +405,13 @@ impl QmpCommand<'_> {
             }),
             Self::QueryFingerprintProjectionManifest => json!({
                 "execute": QMP_QUERY_FINGERPRINT_PROJECTION_MANIFEST_COMMAND,
+            }),
+            #[cfg(target_os = "linux")]
+            Self::QueryKvm => json!({ "execute": "query-kvm" }),
+            #[cfg(target_os = "linux")]
+            Self::KvmClockComponent { request } => json!({
+                "execute": "x-crucible-kvm-clock",
+                "arguments": request,
             }),
             Self::QueryJobs => json!({
                 "execute": QMP_QUERY_JOBS_COMMAND,
