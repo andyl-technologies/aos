@@ -12,9 +12,10 @@
 pub mod blob;
 pub mod bodies;
 pub mod client;
-pub mod connection;
 pub mod conformance;
+pub mod connection;
 pub mod envelope;
+pub mod gem5;
 pub mod handshake;
 pub mod journal;
 pub mod native_journal;

@@ -21,12 +21,14 @@ use crate::journal::{
 };
 
 mod completion;
+mod continuation;
 mod inputs;
 mod models;
 mod observations;
 mod operations;
 
 pub use completion::NativeRequestOutcomeVerifier;
+pub use continuation::NativeContinuationVerifier;
 pub use inputs::{InputAcceptance, NativeInputReconciler, NativeInputVerifier};
 pub use models::*;
 pub use observations::NativeObservationVerifier;

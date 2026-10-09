@@ -966,3 +966,177 @@ fn lost_input_acknowledgment_reconciles_the_original_batch_without_acceptance() 
         .unwrap();
     assert_eq!(journal.resources().inputs, 2);
 }
+
+impl NativeContinuationVerifier<Resources> for Verifier {
+    fn verify_continuation(
+        &self,
+        _: &Resources,
+        _: &OperationSnapshot,
+        _: &Envelope,
+    ) -> Result<(), ProviderError> {
+        if self.allow {
+            Ok(())
+        } else {
+            Err(ProviderError::Correlation("model continuation refused"))
+        }
+    }
+}
+
+fn reserve_poll(
+    journal: &mut NativeJournal<Resources>,
+    authority: &ConnectionAuthority,
+    request: &str,
+    operation: &str,
+) -> NativeRequestPermit {
+    let poll = envelope(
+        authority,
+        request,
+        Some(operation),
+        Method::Poll,
+        json!({"after_observation_sequence":"0","extensions":{}}),
+    );
+    let NativeRequestRegistration::New(permit) = journal
+        .register_request(authority, &poll, RequestOrigin::Controller)
+        .unwrap()
+    else {
+        panic!("new poll request");
+    };
+    permit
+}
+
+#[test]
+fn original_poll_is_one_shot_and_native_failure_preserves_unknown_custody() {
+    let (_handshake, authority, mut journal, _) = fixture();
+    let original = reserve(&mut journal, &authority, "begin-prefix", "operation-prefix");
+    journal
+        .with_operation_resources(&original, |resources| {
+            resources.effects += 1;
+            Ok(())
+        })
+        .unwrap();
+    let poll = reserve_poll(&mut journal, &authority, "poll-prefix", "operation-prefix");
+    journal
+        .with_running_operation_resources(&authority, &poll, &verifier(), |resources| {
+            resources.effects += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        journal
+            .with_running_operation_resources(&authority, &poll, &verifier(), |_| Ok(()))
+            .is_err()
+    );
+    let next = reserve_poll(&mut journal, &authority, "poll-next", "operation-prefix");
+    assert!(
+        journal
+            .with_running_operation_resources(&authority, &next, &verifier(), |resources| {
+                resources.effects += 1;
+                Err::<(), _>(ProviderError::Correlation("native uncertainty"))
+            })
+            .is_err()
+    );
+    let blocked = reserve_poll(&mut journal, &authority, "poll-blocked", "operation-prefix");
+    assert!(
+        journal
+            .with_running_operation_resources(&authority, &blocked, &verifier(), |_| Ok(()))
+            .is_err()
+    );
+    assert_eq!(journal.resources().effects, 3);
+    let snapshot = journal.snapshot();
+    let operation = &snapshot.operations[&id("operation-prefix")];
+    assert_eq!(operation.state, bodies::OperationState::Unknown);
+    assert!(!operation.domains_released);
+}
+
+#[test]
+fn native_poll_unwinding_preserves_original_operation_custody() {
+    let (_handshake, authority, mut journal, _) = fixture();
+    let original = reserve(&mut journal, &authority, "begin-panic", "operation-panic");
+    journal
+        .with_operation_resources(&original, |_| Ok(()))
+        .unwrap();
+    let poll = reserve_poll(&mut journal, &authority, "poll-panic", "operation-panic");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        journal.with_running_operation_resources(
+            &authority,
+            &poll,
+            &verifier(),
+            |_| -> Result<(), ProviderError> { panic!("native callback unwound") },
+        )
+    }));
+    assert!(result.is_err());
+    let snapshot = journal.snapshot();
+    let operation = &snapshot.operations[&id("operation-panic")];
+    assert_eq!(operation.state, bodies::OperationState::Unknown);
+    assert!(!operation.domains_released);
+    assert!(
+        journal
+            .with_operation_resources(&original, |_| Ok(()))
+            .is_err()
+    );
+}
+
+#[test]
+fn revocation_completes_while_original_native_poll_effect_is_blocked() {
+    let (mut handshake, authority, mut journal, _) = fixture();
+    let (request, begin) = begin(&authority, "begin-concurrent", "operation-concurrent");
+    let BeginRegistration::New(original) = journal
+        .register_begin(&authority, &request, &begin, &verifier())
+        .unwrap()
+    else {
+        panic!("new original operation");
+    };
+    journal
+        .with_operation_resources(&original, |resources| {
+            resources.effects += 1;
+            Ok(())
+        })
+        .unwrap();
+    let poll = reserve_poll(
+        &mut journal,
+        &authority,
+        "poll-concurrent",
+        "operation-concurrent",
+    );
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (fenced_tx, fenced_rx) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+            handshake.contain();
+            fenced_tx.send(()).unwrap();
+        });
+        let result =
+            journal.with_running_operation_resources(&authority, &poll, &verifier(), |resources| {
+                resources.effects += 1;
+                entered_tx.send(()).unwrap();
+                // The native operation remains blocked until the other thread has
+                // actually revoked its registration lease, rather than just trying.
+                fenced_rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .unwrap();
+                Ok(())
+            });
+        assert!(result.is_err());
+    });
+    assert!(authority.ensure_live().is_err());
+    assert_eq!(journal.resources().effects, 2);
+    let snapshot = journal.snapshot();
+    let operation = &snapshot.operations[&id("operation-concurrent")];
+    assert_eq!(operation.state, bodies::OperationState::Unknown);
+    assert!(!operation.domains_released);
+    assert_eq!(operation.original, begin);
+    assert!(
+        journal
+            .with_running_operation_resources(&authority, &poll, &verifier(), |_| Ok(()))
+            .is_err()
+    );
+    assert!(
+        journal
+            .with_operation_resources(&original, |_| Ok(()))
+            .is_err()
+    );
+    assert_eq!(journal.resources().effects, 2);
+}

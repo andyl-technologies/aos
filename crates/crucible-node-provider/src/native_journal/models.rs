@@ -75,6 +75,17 @@ pub struct NativeRequestPermit {
     pub(super) key: RequestKey,
 }
 
+impl NativeRequestPermit {
+    /// Returns the exact original origin-scoped request identity.
+    ///
+    /// This read-only key cannot submit effects, acknowledge outputs, or create
+    /// another permit. Resource callbacks still authenticate the opaque permit
+    /// against its original journal reservation before native access.
+    pub fn request_key(&self) -> &RequestKey {
+        &self.key
+    }
+}
+
 /// Returns either a new resource permit or the original retained request status.
 pub enum NativeRequestRegistration {
     /// Grants a single native effect attempt under the original request.

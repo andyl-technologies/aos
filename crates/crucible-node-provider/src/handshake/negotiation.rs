@@ -169,6 +169,21 @@ pub struct ConnectionAuthority {
 }
 
 impl ConnectionAuthority {
+    /// Compares the original host registration lease without granting authority.
+    ///
+    /// Matching wire IDs and epochs are insufficient: both leases must originate
+    /// from the same native registration gate and revocation counter. Callers
+    /// must separately call [`Self::ensure_live`] immediately before admitting
+    /// effects; equality does not establish liveness or native execution scope.
+    pub fn same_registration(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shared_epoch, &other.shared_epoch)
+            && Arc::ptr_eq(&self.registration_gate, &other.registration_gate)
+            && self.epoch == other.epoch
+            && self.connection == other.connection
+            && self.session == other.session
+            && self.incarnation == other.incarnation
+    }
+
     /// Registers control work atomically with respect to connection fencing.
     ///
     /// The callback must only register bounded work; it must not block on native
@@ -259,7 +274,7 @@ impl Handshake {
     /// # Errors
     /// Rejects non-hello traffic, foreign correlation, noninitial sequences,
     /// owner scope, omitted identities, malformed replies, or any refused
-    /// authentication and negotiation requirement from [`Self::admit_exchange`].
+    /// authentication and negotiation requirement of the underlying exchange.
     pub fn admit_envelopes(
         &mut self,
         request: &crate::envelope::Envelope,
