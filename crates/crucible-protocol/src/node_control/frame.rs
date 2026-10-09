@@ -15,7 +15,9 @@ use super::{
 /// Rejects invalid local records, zero sequences or exhausted byte allowances.
 pub fn encode_frame(frame: &NativeFrame) -> Result<Vec<u8>, NativeCommandError> {
     let (kind, body) = match frame {
-        NativeFrame::QueryWriters(_) | NativeFrame::WriterChunk(_) => {
+        NativeFrame::QueryWriters(_)
+        | NativeFrame::WriterChunk(_)
+        | NativeFrame::SourceFault(_) => {
             return Err(NativeCommandError::UnsupportedVersion(2));
         }
         NativeFrame::QueryTimers(query) => {

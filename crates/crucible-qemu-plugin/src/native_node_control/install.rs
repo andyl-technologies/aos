@@ -25,8 +25,6 @@ pub(crate) enum NativeControlInstallError {
     MissingPreparation,
     #[error("native prepared scope disagrees with the immutable launch commitment")]
     ScopeMismatch,
-    #[error("native protocol worker could not start: {0}")]
-    Worker(#[from] std::io::Error),
     #[error(transparent)]
     Transport(#[from] crucible_protocol::node_control::NativeChannelError),
     #[error(transparent)]
@@ -72,7 +70,17 @@ pub(crate) fn install(
         .with_prepared_channel(channel)
         .with_cpu_park_query(cpu_query)
         .with_timer_query(super::abi::resolve_query_timers());
-    let control = control.with_writer_query(writer_query);
+    let control = control
+        .with_writer_query(writer_query)
+        .with_protocol_notify(notify);
+    let source_fault_query = if config.edition()
+        == crucible_protocol::node_control::NativeControlEdition::OwnedCustody
+    {
+        super::source_fault_abi::resolve_query_source_fault()
+    } else {
+        None
+    };
+    let control = control.with_source_fault_query(source_fault_query);
     // Callback ownership lasts until process termination. A leaked transport
     // token cannot drop this controller or its unresolved native journal.
     // Registration is limited to one controller per process by the native API.
@@ -83,7 +91,6 @@ pub(crate) fn install(
         // ordinary install error could unload their code while QEMU retains it.
         std::process::abort();
     }
-    control.start_protocol_worker(notify)?;
     Ok(control)
 }
 

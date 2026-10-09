@@ -69,6 +69,93 @@ fn channels() -> (NativeQemuControlTransport, NativeChannel) {
     (transport, provider)
 }
 
+#[test]
+fn original_source_fault_freezes_custody_without_replacing_historical_stops() {
+    use crucible_protocol::node_control::SourceFaultFacts;
+    let original = command(1, 0, 110);
+    let (mut transport, endpoint) = NativeQemuControlTransport::prepare_for_edition(
+        NativePreparation {
+            scope: original.scope.clone(),
+            boundary: coordinate(0),
+            maximum_commands: U64::new(4),
+        },
+        NativeControlEdition::OwnedCustody,
+    )
+    .unwrap();
+    let provider = NativeChannel::from_prepared_socket_for_edition(
+        endpoint.into_socket(),
+        NativeControlEdition::OwnedCustody,
+    )
+    .unwrap();
+    assert!(matches!(
+        provider.receive().unwrap(),
+        Some(NativeFrame::Prepare(_))
+    ));
+    // This fixture directly seeds correlation, without native grant authority.
+    transport.journal.retain(original.clone()).unwrap();
+    let historical = facts(&original);
+    provider
+        .send(&NativeFrame::Stopped(historical.clone()))
+        .unwrap();
+    transport.poll_original().unwrap();
+    let before = transport
+        .journal
+        .snapshot()
+        .unwrap()
+        .encode(64 * 1024 * 1024)
+        .unwrap();
+    let diagnostic = SourceFaultFacts {
+        code: 3,
+        flags: 7,
+        fault_id: U64::new(1),
+        command_sequence: original.sequence,
+        ingress_id: U64::new(1),
+        cpu_index: 0,
+        ingress_kind: 2,
+        prepared_scope_hash: transport.prepared_scope_hash,
+        command_digest: original.identity_digest().unwrap(),
+    };
+
+    provider
+        .send(&NativeFrame::SourceFault(Box::new(diagnostic.clone())))
+        .unwrap();
+    assert_eq!(
+        transport.poll_original().unwrap(),
+        Some(NativeFrame::SourceFault(Box::new(diagnostic.clone())))
+    );
+    assert!(
+        transport
+            .transmit_acknowledgement(original.sequence)
+            .is_err()
+    );
+    assert!(transport.transmit_original(command(2, 110, 200)).is_err());
+    assert_eq!(
+        transport.original_facts(original.sequence),
+        Some(&historical)
+    );
+    provider
+        .send(&NativeFrame::SourceFault(Box::new(diagnostic.clone())))
+        .unwrap();
+    transport.poll_original().unwrap();
+    let mut changed = diagnostic.clone();
+    changed.ingress_id = U64::new(2);
+    provider
+        .send(&NativeFrame::SourceFault(Box::new(changed)))
+        .unwrap();
+    assert!(transport.poll_original().is_err());
+
+    assert_eq!(transport.source_fault(), Some(&diagnostic));
+    assert_eq!(
+        transport
+            .journal
+            .snapshot()
+            .unwrap()
+            .encode(64 * 1024 * 1024)
+            .unwrap(),
+        before
+    );
+}
+
 fn facts(original: &ExecutionCommand) -> NativeStopFacts {
     NativeStopFacts {
         sequence: original.sequence,

@@ -1,6 +1,10 @@
 //! Retained native command snapshots and stop facts beneath GPL-side custody.
 
-use std::{collections::BTreeMap, ffi::c_void, sync::Mutex};
+use std::{
+    collections::BTreeMap,
+    ffi::c_void,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use crucible_node_contract::{Id, Phase, Position, U64};
 use crucible_protocol::node_control::{
@@ -23,6 +27,7 @@ struct State {
     writer_objects: BTreeMap<u64, Vec<u8>>,
     writer_object_bytes: usize,
     writer_generation: Option<u64>,
+    source_fault: Option<crucible_protocol::node_control::SourceFaultFacts>,
 }
 
 /// Retains separately admitted native requests for process-lifetime callbacks.
@@ -33,10 +38,13 @@ struct State {
 pub(crate) struct NativeNodeControl {
     state: Mutex<State>,
     protocol_worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    worker_gate: OnceLock<Arc<crate::runtime::worker_quiescence::LiveWorkerQuiescence>>,
+    protocol_notify: Option<super::abi::NotifyNodeControl>,
     prepared_scope_hash: [u8; 32],
     cpu_query: Option<super::abi::QueryCpuPark>,
     timer_query: Option<super::abi::QueryTimers>,
     writer_query: Option<super::writer_abi::QueryWriters>,
+    source_fault_query: Option<super::source_fault_abi::QuerySourceFault>,
     #[cfg(unix)]
     channel: Option<crucible_protocol::node_control::NativeChannel>,
 }
@@ -53,6 +61,7 @@ impl NativeNodeControl {
             cpu_query: None,
             timer_query: None,
             writer_query: None,
+            source_fault_query: None,
             state: Mutex::new(State {
                 journal: CommandJournal::new(scope, boundary, maximum_commands)?,
                 current: None,
@@ -64,8 +73,11 @@ impl NativeNodeControl {
                 writer_objects: BTreeMap::new(),
                 writer_object_bytes: 0,
                 writer_generation: None,
+                source_fault: None,
             }),
             protocol_worker: Mutex::new(None),
+            worker_gate: OnceLock::new(),
+            protocol_notify: None,
             #[cfg(unix)]
             channel: None,
         })
@@ -81,6 +93,12 @@ impl NativeNodeControl {
         channel: crucible_protocol::node_control::NativeChannel,
     ) -> Self {
         self.channel = Some(channel);
+        self
+    }
+
+    /// Retains the native wake function before binding the actual runtime workers.
+    pub(crate) fn with_protocol_notify(mut self, notify: super::abi::NotifyNodeControl) -> Self {
+        self.protocol_notify = Some(notify);
         self
     }
 
@@ -144,7 +162,8 @@ impl NativeNodeControl {
                 | NativeFrame::Acknowledged(_)
                 | NativeFrame::CpuPark(_)
                 | NativeFrame::TimerChunk(_)
-                | NativeFrame::WriterChunk(_),
+                | NativeFrame::WriterChunk(_)
+                | NativeFrame::SourceFault(_),
             ) => Err(NativeCommandError::Conflict),
         }
     }
@@ -168,9 +187,21 @@ impl NativeNodeControl {
 
     /// Starts and retains the sole native protocol-reader worker.
     #[cfg(unix)]
+    pub(crate) fn start_prepared_protocol_worker(
+        &'static self,
+        workers: Arc<crate::runtime::worker_quiescence::LiveWorkerQuiescence>,
+    ) -> Result<(), std::io::Error> {
+        let notify = self
+            .protocol_notify
+            .ok_or_else(|| std::io::Error::other("native protocol wake was not prepared"))?;
+        self.start_protocol_worker(notify, workers)
+    }
+
+    #[cfg(unix)]
     pub(crate) fn start_protocol_worker(
         &'static self,
         notify: super::abi::NotifyNodeControl,
+        workers: Arc<crate::runtime::worker_quiescence::LiveWorkerQuiescence>,
     ) -> Result<(), std::io::Error> {
         let mut worker = self
             .protocol_worker
@@ -181,10 +212,27 @@ impl NativeNodeControl {
                 "native protocol worker already started or has no prepared socket",
             ));
         }
+        if workers.worker_mask() & crate::runtime::worker_quiescence::WORKER_NATIVE_CONTROL == 0 {
+            return Err(std::io::Error::other(
+                "native reader is absent from the actual worker roster",
+            ));
+        }
+        self.worker_gate
+            .set(Arc::clone(&workers))
+            .map_err(|_| std::io::Error::other("native reader worker gate is already bound"))?;
+        let (started, startup) = std::sync::mpsc::sync_channel(1);
         let handle = std::thread::Builder::new()
             .name("crucible-native-node-control".into())
-            .spawn(move || self.run_protocol_worker(notify))?;
+            .spawn(move || self.run_protocol_worker(notify, workers, started))?;
         *worker = Some(handle);
+        drop(worker);
+        // Native registration already owns these callbacks. A startup timeout
+        // retains the handle and original socket for the fatal install policy.
+        startup
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| {
+                std::io::Error::other("native reader did not reach its registered safe point")
+            })?;
         Ok(())
     }
 
@@ -203,6 +251,10 @@ impl NativeNodeControl {
         if !self.has_protocol_worker() {
             return None;
         }
+        let workers = self.worker_gate.get()?;
+        if workers.worker_mask() & crate::runtime::worker_quiescence::WORKER_NATIVE_CONTROL == 0 {
+            return None;
+        }
         let channel = self.channel.as_ref()?;
         Some((
             channel.prepared_descriptor().as_raw_fd(),
@@ -211,20 +263,44 @@ impl NativeNodeControl {
     }
 
     #[cfg(unix)]
-    fn run_protocol_worker(&'static self, notify: super::abi::NotifyNodeControl) {
+    fn run_protocol_worker(
+        &'static self,
+        notify: super::abi::NotifyNodeControl,
+        workers: Arc<crate::runtime::worker_quiescence::LiveWorkerQuiescence>,
+        started: std::sync::mpsc::SyncSender<()>,
+    ) {
         use std::os::fd::AsRawFd;
         let Some(channel) = &self.channel else {
             return;
         };
+        let mut idle = workers.idle(crate::runtime::worker_quiescence::WORKER_NATIVE_CONTROL);
+        if started.send(()).is_err() {
+            return;
+        }
         loop {
             let mut readiness = libc::pollfd {
                 fd: channel.prepared_descriptor().as_raw_fd(),
                 events: libc::POLLIN,
                 revents: 0,
             };
+            let faulted = self
+                .state
+                .lock()
+                .ok()
+                .is_some_and(|state| state.source_fault.is_some());
+            if faulted {
+                // Preserve every unread original frame after proof invalidation.
+                // Polling the socket here would spin on an unconsumed command.
+                readiness.events = 0;
+            }
+            let timeout = if self.source_fault_query.is_some() {
+                25
+            } else {
+                -1
+            };
             // SAFETY: The descriptor and writable pollfd remain live under
             // process-lifetime ownership. Polling changes no modeled clocks.
-            let result = unsafe { libc::poll(&mut readiness, 1, -1) };
+            let result = unsafe { libc::poll(&mut readiness, 1, timeout) };
             if result < 0
                 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
             {
@@ -232,8 +308,43 @@ impl NativeNodeControl {
             }
             if result < 0
                 || readiness.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0
-                || self.poll_channel().is_err()
             {
+                if let Ok(mut state) = self.state.lock() {
+                    state.quarantined = true;
+                    state.current = None;
+                }
+                let _ = notify();
+                return;
+            }
+            // The socket is nonblocking. Acquire admission before receive so
+            // a held cut contains either the untouched socket bytes or the
+            // whole bounded journal operation, never an unaccounted local frame.
+            let operation = idle.enter_before_nonblocking_receive();
+            match self.observe_source_fault() {
+                Ok(true) => {
+                    if self.send_source_fault().is_err() {
+                        return;
+                    }
+                    drop(operation);
+                    idle = workers.idle(crate::runtime::worker_quiescence::WORKER_NATIVE_CONTROL);
+                    continue;
+                }
+                Ok(false) => {}
+                Err(_) => {
+                    if let Ok(mut state) = self.state.lock() {
+                        state.quarantined = true;
+                        state.current = None;
+                    }
+                    let _ = notify();
+                    return;
+                }
+            }
+            if result == 0 {
+                drop(operation);
+                idle = workers.idle(crate::runtime::worker_quiescence::WORKER_NATIVE_CONTROL);
+                continue;
+            }
+            if self.poll_channel().is_err() {
                 if let Ok(mut state) = self.state.lock() {
                     state.quarantined = true;
                     state.current = None;
@@ -250,6 +361,8 @@ impl NativeNodeControl {
                 }
                 return;
             }
+            drop(operation);
+            idle = workers.idle(crate::runtime::worker_quiescence::WORKER_NATIVE_CONTROL);
         }
     }
 
@@ -564,5 +677,7 @@ mod cpu_park;
 #[path = "timers.rs"]
 mod timers;
 
+#[path = "source_fault.rs"]
+mod source_fault;
 #[path = "writers.rs"]
 mod writers;

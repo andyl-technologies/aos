@@ -50,7 +50,8 @@ impl NativeLaunchEndpoint {
 /// Retains original native commands and facts independently of socket retries.
 pub struct NativeQemuControlTransport {
     pub(super) channel: NativeChannel,
-    journal: CommandJournal,
+    pub(super) journal: CommandJournal,
+    pub(super) source_fault: Option<crucible_protocol::node_control::SourceFaultFacts>,
     pub(super) facts: BTreeMap<u64, NativeStopFacts>,
     pub(super) prepared_scope_hash: [u8; 32],
     prepared_boundary: crucible_node_contract::Position,
@@ -102,6 +103,7 @@ impl NativeQemuControlTransport {
             Self {
                 channel,
                 journal,
+                source_fault: None,
                 facts: BTreeMap::new(),
                 prepared_scope_hash: scope_digest,
                 prepared_boundary,
@@ -151,6 +153,9 @@ impl NativeQemuControlTransport {
         &mut self,
         command: ExecutionCommand,
     ) -> Result<(CommandJournalDisposition, bool), NativeQemuControlError> {
+        if self.source_fault.is_some() {
+            return Err(NativeCommandError::Conflict.into());
+        }
         if self.channel.edition() == NativeControlEdition::OwnedCustody
             && self.writer_observation(U64::new(0)).is_none()
         {
@@ -173,6 +178,7 @@ impl NativeQemuControlTransport {
             return Ok(None);
         };
         match &frame {
+            NativeFrame::SourceFault(facts) => self.accept_source_fault(facts)?,
             NativeFrame::TimerChunk(chunk) => self.accept_timer_chunk(chunk)?,
             NativeFrame::WriterChunk(chunk) => self.accept_writer_chunk(chunk)?,
             NativeFrame::CpuPark(facts) => {
@@ -188,6 +194,9 @@ impl NativeQemuControlTransport {
                 self.cpu_park = Some(facts.clone());
             }
             NativeFrame::Stopped(facts) => {
+                if self.source_fault.is_some() {
+                    return Err(NativeCommandError::Conflict.into());
+                }
                 let original = self
                     .journal
                     .original(facts.sequence)
@@ -207,6 +216,9 @@ impl NativeQemuControlTransport {
                 self.facts.insert(facts.sequence.get(), facts.clone());
             }
             NativeFrame::Acknowledged(ack) => {
+                if self.source_fault.is_some() {
+                    return Err(NativeCommandError::Conflict.into());
+                }
                 let original = self
                     .journal
                     .original(ack.sequence)
@@ -231,6 +243,9 @@ impl NativeQemuControlTransport {
     /// # Errors
     /// Rejects unstopped or unknown originals and physical transmission failures.
     pub fn transmit_acknowledgement(&self, sequence: U64) -> Result<bool, NativeQemuControlError> {
+        if self.source_fault.is_some() {
+            return Err(NativeCommandError::Conflict.into());
+        }
         let original = self
             .journal
             .original(sequence)

@@ -43,6 +43,7 @@ pub fn encode_frame_for_edition(
 ) -> Result<Vec<u8>, NativeCommandError> {
     if edition == NativeControlEdition::OwnedCustody {
         let (kind, body) = match frame {
+            NativeFrame::SourceFault(facts) => (13u16, facts.encode()?.to_vec()),
             NativeFrame::QueryWriters(query) => {
                 query.validate()?;
                 let mut body = query.prepared_scope_hash.to_vec();
@@ -116,6 +117,9 @@ pub fn decode_frame_for_edition(
         return Err(NativeCommandError::Invalid("native frame length mismatch"));
     }
     let frame = match kind {
+        13 => NativeFrame::SourceFault(Box::new(super::SourceFaultFacts::decode(
+            cursor.take(cursor.0.len())?,
+        )?)),
         11 => {
             let query = super::NativeWriterQuery {
                 prepared_scope_hash: cursor.array()?,

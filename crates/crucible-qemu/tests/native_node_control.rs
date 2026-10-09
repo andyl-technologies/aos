@@ -209,6 +209,16 @@ fn run_windows(
     pit_timer: bool,
     writer_custody: bool,
 ) -> Result<Vec<NativeStopFacts>, Box<dyn Error>> {
+    run_probe(limits, require_cpu_park, pit_timer, writer_custody, false)
+}
+
+fn run_probe(
+    limits: &[u64],
+    require_cpu_park: bool,
+    pit_timer: bool,
+    writer_custody: bool,
+    expect_source_fault: bool,
+) -> Result<Vec<NativeStopFacts>, Box<dyn Error>> {
     let qemu = artifact("CRUCIBLE_NATIVE_PROBE_QEMU")?;
     let plugin = artifact("CRUCIBLE_NATIVE_PROBE_PLUGIN")?;
     let mut pit_firmware = None;
@@ -396,6 +406,44 @@ fn run_windows(
         AdvanceStopCondition::Ceiling,
     )?;
 
+    if expect_source_fault {
+        let mut diagnostic = None;
+        while diagnostic.is_none() {
+            match next_any_frame(&mut native, &mut child.0)? {
+                NativeFrame::SourceFault(facts) => diagnostic = Some(facts),
+                NativeFrame::CpuPark(_) | NativeFrame::WriterChunk(_) => {}
+                frame => panic!("source fault is not a native completion: {frame:?}"),
+            }
+        }
+        let diagnostic = diagnostic.ok_or("original fault diagnostic absent")?;
+        assert_eq!(diagnostic.code, 3);
+        assert_eq!(diagnostic.flags, 7);
+        assert_eq!(diagnostic.fault_id.get(), 1);
+        assert_eq!(diagnostic.command_sequence.get(), 0);
+        assert_eq!(diagnostic.command_digest, [0; 32]);
+        assert_eq!(diagnostic.ingress_id.get(), 0);
+        assert!(matches!(diagnostic.ingress_kind, 1 | 2));
+        assert_eq!(native.source_fault(), Some(diagnostic.as_ref()));
+        assert!(native.transmit_original(original(1, 0, limits[0])).is_err());
+        assert!(native.transmit_acknowledgement(U64::new(1)).is_err());
+        assert!(native.original_facts(U64::new(1)).is_none());
+        assert_eq!(
+            next_any_frame(&mut native, &mut child.0)?,
+            NativeFrame::SourceFault(diagnostic)
+        );
+        let retained = mapped.fault_command_transport_mut(PROBE_VM_SLOT)?;
+        assert_eq!(retained.ring.read_index(), 0);
+        assert_eq!(retained.ring.write_index(), 1);
+
+        // A diagnostic does not prove suspension. Containment uses this exact
+        // uniquely owned Child and an actual kernel kill/wait, independently.
+        child.0.kill()?;
+        let status = child.0.wait()?;
+        assert!(!status.success());
+        assert_eq!(child.0.try_wait()?, Some(status));
+        return Ok(Vec::new());
+    }
+
     let original_cpu_park = if require_cpu_park {
         assert!(native.request_cpu_park()?);
         let NativeFrame::CpuPark(facts) = next_any_frame(&mut native, &mut child.0)? else {
@@ -412,11 +460,20 @@ fn run_windows(
     };
     let original_writers = if writer_custody {
         let initial = read_writers(&mut native, &mut child.0, U64::new(0))?;
-        assert!(initial.aio.iter().any(|context| context.pending_bhs != 0));
         Some(initial)
     } else {
         None
     };
+    // Startup callbacks may settle before the authentic initial HOLD. Their
+    // actual original cut determines refusal; a fixed startup count is not an
+    // authored preparation epoch and cannot establish deterministic readiness.
+    let pending_unknown_writers = original_writers.as_ref().is_some_and(|initial| {
+        !initial.work.is_empty()
+            || initial
+                .aio
+                .iter()
+                .any(|context| context.pending_bhs != 0 || context.queued_coroutines != 0)
+    });
     let mut start = 0;
     let mut outcomes = Vec::new();
     let mut windows = limits.to_vec();
@@ -429,7 +486,7 @@ fn run_windows(
         let NativeFrame::Stopped(facts) = next_frame(&mut native, &mut child.0)? else {
             panic!("original native stop");
         };
-        let expected_kind = if writer_custody {
+        let expected_kind = if pending_unknown_writers {
             NativeStopKind::Unsupported
         } else {
             NativeStopKind::HorizonPark
@@ -438,7 +495,11 @@ fn run_windows(
         assert_eq!(facts.pending_classes, u32::MAX);
         assert_eq!(
             facts.reached,
-            position(if writer_custody { start } else { limit })
+            position(if pending_unknown_writers {
+                start
+            } else {
+                limit
+            })
         );
         assert_eq!(facts.command_digest, original.identity_digest()?);
         if let Some(initial) = &original_writers {
@@ -614,9 +675,26 @@ fn read_writers(
 fn actual_native_writer_hold_preserves_original_cuts_and_legacy_fifo() -> Result<(), Box<dyn Error>>
 {
     let observations = run_windows(&[110, 200], true, false, true)?;
-    assert_eq!(observations[0].kind, NativeStopKind::Unsupported);
-    assert_eq!(observations[1].kind, NativeStopKind::Unsupported);
-    assert_eq!(observations[0].retired_count.get(), 0);
-    assert_eq!(observations[1].retired_count.get(), 0);
+    assert_eq!(observations.len(), 2);
+    assert_eq!(observations[0].kind, observations[1].kind);
+    match observations[0].kind {
+        NativeStopKind::Unsupported => {
+            assert_eq!(observations[0].retired_count.get(), 0);
+            assert_eq!(observations[1].retired_count.get(), 0);
+        }
+        NativeStopKind::HorizonPark => {
+            assert_eq!(observations[0].retired_count.get(), 2);
+            assert_eq!(observations[1].retired_count.get(), 3);
+        }
+        kind => panic!("unexpected actual native writer stop: {kind:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires genuine GPL native IRQ/work-fault injection launcher and matching plugin"]
+fn actual_native_source_fault_requires_independent_child_containment() -> Result<(), Box<dyn Error>>
+{
+    assert!(run_probe(&[110], false, false, true, true)?.is_empty());
     Ok(())
 }

@@ -214,7 +214,11 @@ fn reader_worker_admits_original_before_notify_and_contains_unexpected_frames() 
 
     let (host, provider) = NativeChannel::supervised_pair().unwrap();
     let owner = Box::leak(Box::new(owner().with_prepared_channel(provider)));
-    owner.start_protocol_worker(notify).unwrap();
+    let workers = crate::runtime::worker_quiescence::LiveWorkerQuiescence::new(
+        crate::runtime::worker_quiescence::WORKER_REQUIRED
+            | crate::runtime::worker_quiescence::WORKER_NATIVE_CONTROL,
+    );
+    owner.start_protocol_worker(notify, workers).unwrap();
     let original = command();
     host.send(&NativeFrame::Command(Box::new(original.clone())))
         .unwrap();
@@ -248,4 +252,123 @@ fn reader_worker_admits_original_before_notify_and_contains_unexpected_frames() 
     assert!(owner.command().is_none());
     assert!(!owner.has_protocol_worker());
     assert!(NOTIFICATIONS.load(Ordering::SeqCst) >= 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn held_native_reader_preserves_command_and_ack_bytes_before_receive() {
+    use crate::runtime::worker_quiescence::{
+        LiveWorkerQuiescence, WORKER_NATIVE_CONTROL, WORKER_REQUIRED,
+    };
+    use crucible_protocol::node_control::{
+        NativeChannel, NativeFrame, NativePreparation, ReceiptAcknowledgement, encode_frame,
+    };
+
+    extern "C" fn notify() -> i32 {
+        0
+    }
+
+    let workers = LiveWorkerQuiescence::new(WORKER_REQUIRED | WORKER_NATIVE_CONTROL);
+    workers.hold();
+    let (host, provider) = NativeChannel::supervised_pair().unwrap();
+    let owner = Box::leak(Box::new(owner().with_prepared_channel(provider)));
+    owner
+        .start_protocol_worker(notify, Arc::clone(&workers))
+        .unwrap();
+    let original = command();
+    let request = NativeFrame::Command(Box::new(original.clone()));
+
+    assert!(host.send(&request).unwrap());
+    assert_eq!(
+        peek_original_datagram(owner),
+        encode_frame(&request).unwrap()
+    );
+    assert!(owner.state.lock().unwrap().journal.is_pristine());
+    let held = workers.snapshot();
+    assert!(held.held);
+    assert_ne!(held.parked_mask & WORKER_NATIVE_CONTROL, 0);
+    assert_eq!(held.pending_mask, 0);
+    assert_eq!(held.operations_in_flight, 0);
+
+    workers.release();
+    wait_for_native_reader(|| owner.command().is_some());
+    let native = owner.command().unwrap();
+    owner.record_stop(receipt(native)).unwrap();
+    workers.hold();
+    wait_for_native_reader(|| workers.snapshot().operations_in_flight == 0);
+
+    let acknowledgement = NativeFrame::Acknowledge(ReceiptAcknowledgement {
+        sequence: original.sequence,
+        command_digest: original.identity_digest().unwrap(),
+        authorization_digest: original.authorization_digest,
+    });
+    assert!(host.send(&acknowledgement).unwrap());
+    assert_eq!(
+        peek_original_datagram(owner),
+        encode_frame(&acknowledgement).unwrap()
+    );
+    assert_eq!(
+        owner.retain(original.clone()).unwrap(),
+        CommandJournalDisposition::Stopped
+    );
+    assert_eq!(workers.snapshot().pending_mask, 0);
+
+    workers.release();
+    wait_for_native_reader(|| {
+        owner.retain(original.clone()).unwrap() == CommandJournalDisposition::Acknowledged
+    });
+    assert_eq!(owner.receipt(original.sequence), Some(receipt(native)));
+
+    // The unexpected frame joins this actual reader without discarding history.
+    host.send(&NativeFrame::Prepare(Box::new(NativePreparation {
+        scope: original.scope,
+        boundary: position(0),
+        maximum_commands: U64::new(4),
+    })))
+    .unwrap();
+    owner
+        .protocol_worker
+        .lock()
+        .unwrap()
+        .take()
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(owner.receipt(U64::new(1)), Some(receipt(native)));
+}
+
+#[cfg(unix)]
+fn peek_original_datagram(owner: &NativeNodeControl) -> Vec<u8> {
+    use std::os::fd::AsRawFd;
+    let descriptor = owner.channel.as_ref().unwrap().prepared_descriptor();
+    let mut bytes = vec![
+        0u8;
+        crucible_protocol::node_control::NODE_CONTROL_HEADER_BYTES
+            + crucible_protocol::node_control::NODE_CONTROL_MAX_BODY_BYTES
+    ];
+    // SAFETY: This is the actual retained native datagram descriptor and writable
+    // byte storage. MSG_PEEK observes original bytes without dequeuing them.
+    let length = unsafe {
+        libc::recv(
+            descriptor.as_raw_fd(),
+            bytes.as_mut_ptr().cast(),
+            bytes.len(),
+            libc::MSG_PEEK,
+        )
+    };
+    assert!(length > 0);
+    bytes.truncate(length as usize);
+    bytes
+}
+
+#[cfg(unix)]
+fn wait_for_native_reader(mut predicate: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !predicate() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "native reader transition timed out"
+        );
+        std::thread::yield_now();
+    }
 }

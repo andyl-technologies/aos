@@ -10,5 +10,6 @@ mod transport;
 
 pub use transport::{NativeLaunchEndpoint, NativeQemuControlError, NativeQemuControlTransport};
 
+mod source_fault;
 mod timers;
 mod writers;

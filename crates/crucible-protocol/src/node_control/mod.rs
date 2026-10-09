@@ -21,6 +21,7 @@ mod edition;
 mod facts;
 mod frame;
 mod journal;
+mod source_fault;
 mod timers;
 mod types;
 mod writer_frames;
@@ -40,6 +41,7 @@ pub use journal::{
     CommandJournal, CommandJournalDisposition, CommandJournalSnapshot,
     NATIVE_COMMAND_JOURNAL_MAX_BYTES, NATIVE_COMMAND_JOURNAL_MAX_ENTRIES,
 };
+pub use source_fault::{SOURCE_FAULT_BYTES, SourceFaultFacts};
 pub use types::{
     BoundaryPolicy, ExecutionCommand, ExecutionKind, NODE_CONTROL_HEADER_BYTES,
     NODE_CONTROL_MAX_BODY_BYTES, NODE_CONTROL_VERSION, NativeCommandError, OwnerScope,

@@ -11,12 +11,12 @@
 pub(crate) mod callback_quiescence;
 pub(crate) mod live_callbacks;
 mod live_whitebox;
-mod worker_quiescence;
+pub(crate) mod worker_quiescence;
 
 use callback_quiescence::LiveCallbackQuiescence;
 use worker_quiescence::{
-    LiveWorkerQuiescence, WORKER_FINGERPRINT, WORKER_REQUIRED, WORKER_RUN_CONTROL, WORKER_TEARDOWN,
-    WorkerForkChildResetError, WorkerQuiescenceSnapshot,
+    LiveWorkerQuiescence, WORKER_FINGERPRINT, WORKER_NATIVE_CONTROL, WORKER_REQUIRED,
+    WORKER_RUN_CONTROL, WORKER_TEARDOWN, WorkerForkChildResetError, WorkerQuiescenceSnapshot,
 };
 
 #[cfg(test)]
@@ -1410,7 +1410,9 @@ const PLUGIN_CALLBACK_REQUIRED: u64 = ((1_u64 << 12) - 1) & !(1_u64 << 1);
 const PLUGIN_CALLBACK_TB_TRANSLATION: u64 = 1_u64 << 12;
 const PLUGIN_CALLBACK_FLUSH: u64 = 1_u64 << 13;
 fn plugin_worker_mask(args: &PluginArgs) -> u64 {
-    WORKER_REQUIRED | (u64::from(args.fingerprint().is_on()) * WORKER_FINGERPRINT)
+    WORKER_REQUIRED
+        | (u64::from(args.fingerprint().is_on()) * WORKER_FINGERPRINT)
+        | (u64::from(args.native_node_control().is_some()) * WORKER_NATIVE_CONTROL)
 }
 
 fn plugin_resource_manifest(
@@ -1418,6 +1420,13 @@ fn plugin_resource_manifest(
     args: &PluginArgs,
     callbacks: &RequiredOwnedCallbacksRegistered,
 ) -> Result<crate::native_node_control::RegisteredResourceManifest, PluginRuntimeInstallError> {
+    if args.native_node_control().is_some() {
+        let native = crate::native_node_control::registered_owner()
+            .ok_or(PluginRuntimeInstallError::ResourceManifestShape)?;
+        native
+            .start_prepared_protocol_worker(Arc::clone(&callbacks.state.as_ref().get_ref().workers))
+            .map_err(|source| PluginRuntimeInstallError::NativeControlWorkerSpawn { source })?;
+    }
     let setup = callbacks.setup();
     let node_count = setup.mapped_region().header_snapshot().node_count;
     let wake_fd = setup
@@ -2822,6 +2831,12 @@ pub(crate) enum PluginLiveBoundaryError {
 /// An error produced while building or publishing the live plugin runtime.
 #[derive(Debug, Error)]
 pub enum PluginRuntimeInstallError {
+    /// The native datagram reader could not bind the actual runtime worker gate.
+    #[error("starting plugin native-control worker failed: {source}")]
+    NativeControlWorkerSpawn {
+        /// Underlying custody or thread-start failure.
+        source: std::io::Error,
+    },
     /// The inherited control descriptor could not be duplicated safely.
     #[error("duplicating plugin control fd {fd} failed: {source}")]
     DuplicateControlFd {

@@ -105,6 +105,8 @@ impl NativePreparation {
 /// Selects a closed frame of the independently negotiated native channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeFrame {
+    /// Preserves the first native source diagnostic without certifying containment.
+    SourceFault(Box<super::SourceFaultFacts>),
     /// Selects a retained original held-writer object on an edition-two endpoint.
     QueryWriters(super::NativeWriterQuery),
     /// Returns bounded bytes from the same retained original writer object.

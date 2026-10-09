@@ -1,4 +1,4 @@
-From 2db4b349f6a36ea0cb1263918122f7b5935f3b08 Mon Sep 17 00:00:00 2001
+From 470d97150085afd5b514bdced1ef930501ff016e Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Thu, 8 Oct 2026 12:00:00 -0700
 Subject: [PATCH] Integrate deterministic execution and validated TSC source
@@ -140,6 +140,8 @@ Native x86 and ARM builds, 33 Aio tests, icount/service regressions and
 exclusive CPU/PIT partition probes pass. CPU/IRQ future producers,
 plugin journals, input/output payloads and complete device state remain
 unqualified; this stage does not enable native capture or fork.
+
+Retain the first unknown native CPU-work, interrupt or reset source diagnostic under the original prepared scope. Preserve actual queued work and expose immutable unknown-birth/effects facts without waiting for BQL or claiming physical containment. Invalidate fresh execution and stop evidence after the source fault; require independent supervisor containment. Bound original native run-owner scalar history.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -4479,10 +4481,10 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d7bfd1caf 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..fa882d25b1f5a155fe1e0d0c56056034ede58603 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,2408 @@
+@@ -27,45 +27,2515 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -5495,6 +5497,9 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d
 +        return -EINVAL;
 +    }
 +    memset(facts, 0, sizeof(*facts));
++    if (qemu_cpu_node_source_failed()) {
++        return -ENOTRECOVERABLE;
++    }
 +    if (!crucible_node_control_registered() || !bql_locked() || !first_cpu ||
 +        !qemu_cpu_is_self(first_cpu) ||
 +        !qemu_plugin_crucible_exact_boundary_active() ||
@@ -5559,6 +5564,94 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d
 +    }
 +    memcpy(facts->prepared_scope_hash, prepared_scope_hash,
 +           sizeof(facts->prepared_scope_hash));
++    return 0;
++}
++
++G_STATIC_ASSERT(sizeof(QemuPluginCrucibleNodeIngressSummary) == 96);
++G_STATIC_ASSERT(sizeof(QemuPluginCrucibleNodeIngressRow) == 80);
++G_STATIC_ASSERT(sizeof(QemuPluginCrucibleNodeSourceFault) == 112);
++G_STATIC_ASSERT(sizeof(QemuCpuNodeIngressEntry) == 80);
++G_STATIC_ASSERT(sizeof(QemuCpuNodeSourceFault) == 112);
++
++int qemu_plugin_crucible_node_query_source_fault(
++    const uint8_t prepared_scope_hash[32],
++    QemuPluginCrucibleNodeSourceFault *fault)
++{
++    QemuCpuNodeSourceFault original;
++    int result;
++
++    if (!fault) {
++        return -EINVAL;
++    }
++    memset(fault, 0, sizeof(*fault));
++    result = qemu_cpu_node_source_fault(prepared_scope_hash, &original);
++    if (!result) {
++        memcpy(fault, &original, sizeof(*fault));
++    }
++    return result;
++}
++
++int qemu_plugin_crucible_node_query_cpu_ingress(
++    const uint8_t prepared_scope_hash[32], uint64_t expected_generation,
++    QemuPluginCrucibleNodeIngressSummary *summary,
++    QemuPluginCrucibleNodeIngressRow *rows, uint32_t capacity)
++{
++    QemuPluginCrucibleNodeCpuParkFacts park;
++    g_autofree QemuCpuNodeIngressEntry *original = NULL;
++    CPUState *cpu;
++    size_t length = 0;
++    int result;
++
++    if (!summary) {
++        return -EINVAL;
++    }
++    memset(summary, 0, sizeof(*summary));
++    if (capacity > QEMU_PLUGIN_CRUCIBLE_NODE_INGRESS_MAX ||
++        (capacity && !rows)) {
++        return -EINVAL;
++    }
++    result = qemu_plugin_crucible_node_query_cpu_park(prepared_scope_hash, &park);
++    if (result < 0) {
++        return result;
++    }
++    if (!rr_node_writer_gate || expected_generation != rr_node_writer_gate) {
++        return -ESTALE;
++    }
++    original = g_new0(QemuCpuNodeIngressEntry, MAX(capacity, 1));
++    CPU_FOREACH(cpu) {
++        qemu_mutex_lock(&cpu->work_mutex);
++    }
++    CPU_FOREACH(cpu) {
++        size_t count = 0;
++
++        result = qemu_cpu_node_ingress_inventory(cpu, original + length,
++                                                capacity - length, &count);
++        if (result < 0) {
++            break;
++        }
++        length += count;
++    }
++    CPU_FOREACH(cpu) {
++        qemu_mutex_unlock(&cpu->work_mutex);
++    }
++    if (result < 0) {
++        return result;
++    }
++    if (length) {
++        memcpy(rows, original, length * sizeof(*rows));
++    }
++    *summary = (QemuPluginCrucibleNodeIngressSummary) {
++        .version = QEMU_PLUGIN_CRUCIBLE_NODE_INGRESS_VERSION,
++        .size = sizeof(*summary),
++        .row_count = length,
++        .flags = 3,
++        .gate_generation = rr_node_writer_gate,
++        .last_original_sequence = rr_node_command_valid ? rr_node_command.sequence : 0,
++    };
++    memcpy(summary->prepared_scope_hash, prepared_scope_hash, 32);
++    if (rr_node_command_valid) {
++        memcpy(summary->last_original_digest, rr_node_command.grant_hash, 32);
++    }
 +    return 0;
 +}
 +
@@ -5657,6 +5750,9 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d
 +        qemu_mutex_lock(&cpu->work_mutex);
 +    }
 +    locked = true;
++    CPU_FOREACH(cpu) {
++        qemu_cpu_node_ingress_arm(cpu, prepared_scope_hash);
++    }
 +    CPU_FOREACH(cpu) {
 +        size_t count = 0;
 +        QemuPluginCrucibleNodeWriterCpu *row = &cpu_rows[cpu_count++];
@@ -5849,12 +5945,17 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d
 +
 +static void rr_crucible_node_stop(uint32_t reason)
 +{
++    qemu_cpu_node_owner_dispatch(false);
 +    if (rr_node_writer_dispatch) {
 +        if (qemu_async_worker_node_dispatch_end(rr_node_writer_gate) < 0) {
 +            error_report("Crucible original RR writer admission is unbalanced");
 +            abort();
 +        }
 +        rr_node_writer_dispatch = false;
++    }
++    if (qemu_cpu_node_source_failed()) {
++        rr_crucible_node_wait(rr_node_command_valid ? rr_node_command.sequence : 0);
++        return;
 +    }
 +    int64_t observed = icount_crucible_sim_tick_observed();
 +    uint64_t next_service = UINT64_MAX;
@@ -5912,6 +6013,12 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d
 +    if (!crucible_node_control_registered()) {
 +        return false;
 +    }
++    if (qemu_cpu_node_source_failed()) {
++        /* Fault diagnostics are retrievable independently. Never fabricate a
++         * stopped outcome or admit another command from a poisoned source. */
++        rr_crucible_node_stop(QEMU_PLUGIN_CRUCIBLE_NODE_STOP_INVALID);
++        return true;
++    }
 +    if (!crucible_node_control_command(&command)) {
 +        rr_crucible_node_wait(rr_node_command_valid ? rr_node_command.sequence : 0);
 +        return true;
@@ -5934,6 +6041,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d
 +        rr_node_command = command;
 +        rr_node_command_valid = true;
 +        rr_node_command_stopped = false;
++        qemu_cpu_node_original_command(command.sequence, command.grant_hash);
 +        observed = icount_crucible_sim_tick_observed();
 +        if (!rr_crucible_sim_mode() || observed < 0 ||
 +            (uint64_t)observed != command.start_ps ||
@@ -5967,6 +6075,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d
 +            return true;
 +        }
 +        rr_node_writer_dispatch = true;
++        qemu_cpu_node_owner_dispatch(true);
 +    }
 +    observed = icount_crucible_sim_tick_observed();
 +    if (observed < 0 || (uint64_t)observed > command.limit_ps ||
@@ -6910,7 +7019,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +2447,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +2554,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -6943,7 +7052,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d
      }
  }
  
-@@ -110,15 +2485,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +2592,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -7077,7 +7186,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d
      }
  }
  
-@@ -140,6 +2631,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +2738,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -7096,7 +7205,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +2687,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +2794,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -7105,7 +7214,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +2709,209 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +2816,209 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -7333,7 +7442,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -252,13 +2925,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -252,13 +3032,34 @@ static void *rr_cpu_thread_fn(void *arg)
              icount_handle_deadline();
  
              cpu_budget = icount_percpu_budget(cpu_count);
@@ -7369,7 +7478,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2970,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +3077,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -7508,7 +7617,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +3094,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +3201,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -7648,7 +7757,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d
      }
  
      g_assert_not_reached();
-@@ -318,13 +3233,38 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +3340,38 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -15017,7 +15126,7 @@ index b629575fcf808d6ee0c3e3d724d49d521dc2bb6a..78c06d8272a8f57713b64e99d776e6db
  {
      SocketChardev *s = SOCKET_CHARDEV(chr);
 diff --git a/cpu-common.c b/cpu-common.c
-index adb76b3a786c06d08ae89c5623d26bf75755d432..9a85d9fc1be26fb95083c09939d3e42bebbbcb43 100644
+index adb76b3a786c06d08ae89c5623d26bf75755d432..8e1a5b74c45324f2ea9316359684e6a7383b7b43 100644
 --- a/cpu-common.c
 +++ b/cpu-common.c
 @@ -22,6 +22,7 @@
@@ -15028,11 +15137,21 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..9a85d9fc1be26fb95083c09939d3e42b
  #include "trace/trace-root.h"
  
  QemuMutex qemu_cpu_list_lock;
-@@ -33,6 +34,12 @@ static QemuCond qemu_work_cond;
+@@ -33,6 +34,22 @@ static QemuCond qemu_work_cond;
   * under qemu_cpu_list_lock, read with atomic operations.
   */
  static int pending_cpus;
 +static bool cpu_exec_dispatched;
++
++static QemuMutex node_ingress_mutex;
++static uint32_t node_ingress_count;
++static uint64_t node_ingress_next_id;
++static QemuCpuNodeSourceFault *node_first_fault;
++static QemuCpuNodeSourceFault node_fault_record;
++static QemuCpuNodeIngressEntry node_fault_original;
++static struct qemu_work_item *node_fault_work;
++static bool node_scope_published;
++static uint8_t node_scope[32];
 +
 +bool cpu_exec_has_dispatched(void)
 +{
@@ -15041,7 +15160,15 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..9a85d9fc1be26fb95083c09939d3e42b
  
  void qemu_init_cpu_list(void)
  {
-@@ -128,11 +135,24 @@ struct qemu_work_item {
+@@ -44,6 +61,7 @@ void qemu_init_cpu_list(void)
+     qemu_cond_init(&exclusive_cond);
+     qemu_cond_init(&exclusive_resume);
+     qemu_cond_init(&qemu_work_cond);
++    qemu_mutex_init(&node_ingress_mutex);
+ }
+ 
+ void cpu_list_lock(void)
+@@ -128,11 +146,253 @@ struct qemu_work_item {
      run_on_cpu_func func;
      run_on_cpu_data data;
      bool free, exclusive, done;
@@ -15049,24 +15176,253 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..9a85d9fc1be26fb95083c09939d3e42b
 +    bool crucible_node_birth_unknown;
  };
  
++typedef struct QemuCpuNodeIngress {
++    QSIMPLEQ_ENTRY(QemuCpuNodeIngress) node;
++    QemuCpuNodeIngressEntry receipt;
++} QemuCpuNodeIngress;
++
++/* A finite history of original RR-owned scalar observations. These entries
++ * describe native source ancestry, never staged-input or deferred authority. */
++static QemuCpuNodeIngress node_scalar_history[QEMU_CPU_NODE_INGRESS_MAX];
++
++static bool node_ingress_owned(CPUState *cpu)
++{
++    return cpu->crucible_node_owner_dispatch && qemu_cpu_is_self(cpu);
++}
++
++/* This first unexpected/overflowing source invalidates the native proof.
++ * Its original scalar and ordinary work item remain native diagnostics, not
++ * a claim that borrowed callback data or future autonomous writers are held.
++ * No arbitrary producer waits under BQL; original queue/caller behavior is
++ * retained. The independent controller must contain the actual process. */
++static void node_ingress_fault_locked(CPUState *cpu, uint32_t kind,
++                                      uint32_t code, uint64_t payload,
++                                      struct qemu_work_item *work)
++{
++    QemuCpuNodeSourceFault *fault = &node_fault_record;
++
++    qemu_mutex_lock(&node_ingress_mutex);
++    if (qatomic_read(&node_first_fault)) {
++        qemu_mutex_unlock(&node_ingress_mutex);
++        return;
++    }
++    *fault = (QemuCpuNodeSourceFault) {
++        .version = 1,
++        .size = sizeof(*fault),
++        .code = code,
++        .flags = 7, /* Original diagnostic retained; birth/effects unknown. */
++        .fault_id = 1,
++        .command_sequence = cpu->crucible_node_original_sequence,
++        .cpu_index = kind == QEMU_CPU_NODE_INGRESS_SYSTEM_RESET ?
++            UINT32_MAX : cpu->cpu_index,
++        .ingress_kind = kind,
++    };
++    node_fault_original = (QemuCpuNodeIngressEntry) {
++        .cpu_index = fault->cpu_index,
++        .kind = kind,
++        .flags = 1 | (work ? 2 : 0) | (node_ingress_owned(cpu) ? 4 : 0),
++        .payload_scalar = payload,
++        .source_original_sequence = cpu->crucible_node_original_sequence,
++    };
++    memcpy(node_fault_original.source_original_digest,
++           cpu->crucible_node_original_digest, 32);
++    /* Non-owning diagnostic reference: ownership stays with the original
++     * native work queue or synchronous waiting producer, never this field. */
++    node_fault_work = work;
++    memcpy(fault->prepared_scope_hash, cpu->crucible_node_scope, 32);
++    memcpy(fault->original_command_digest,
++           cpu->crucible_node_original_digest, 32);
++    /* A process-lifetime slot survives CPU removal; no published record points
++     * into a CPU object that an unqualified lifecycle writer might destroy. */
++    qatomic_store_release(&node_first_fault, fault);
++    qemu_mutex_unlock(&node_ingress_mutex);
++}
++
++static void node_scalar_observe_locked(CPUState *cpu, uint32_t kind,
++                                       uint64_t payload)
++{
++    QemuCpuNodeIngress *observation;
++
++    if (qatomic_read(&node_first_fault)) {
++        return;
++    }
++    qemu_mutex_lock(&node_ingress_mutex);
++    if (node_ingress_count == QEMU_CPU_NODE_INGRESS_MAX ||
++        node_ingress_next_id == UINT64_MAX ||
++        cpu->crucible_node_ingress_fifo == UINT64_MAX) {
++        qemu_mutex_unlock(&node_ingress_mutex);
++        node_ingress_fault_locked(cpu, kind, 1, payload, NULL);
++        return;
++    }
++    observation = &node_scalar_history[node_ingress_count++];
++    observation->receipt = (QemuCpuNodeIngressEntry) {
++        .cpu_index = kind == QEMU_CPU_NODE_INGRESS_SYSTEM_RESET ?
++            UINT32_MAX : cpu->cpu_index,
++        .kind = kind,
++        .flags = 5, /* Actual original RR ancestry; modeled birth remains unknown. */
++        .ingress_id = ++node_ingress_next_id,
++        .fifo_ordinal = ++cpu->crucible_node_ingress_fifo,
++        .payload_scalar = payload,
++        .source_original_sequence = cpu->crucible_node_original_sequence,
++    };
++    memcpy(observation->receipt.source_original_digest,
++           cpu->crucible_node_original_digest, 32);
++    qemu_mutex_unlock(&node_ingress_mutex);
++    QSIMPLEQ_INSERT_TAIL(&cpu->crucible_node_ingress, observation, node);
++}
++
++void qemu_cpu_node_ingress_arm(CPUState *cpu, const uint8_t scope[32])
++{
++    if (cpu->crucible_node_ingress_armed) {
++        g_assert(memcmp(cpu->crucible_node_scope, scope, 32) == 0);
++        return;
++    }
++    QSIMPLEQ_INIT(&cpu->crucible_node_ingress);
++    memcpy(cpu->crucible_node_scope, scope, 32);
++    qatomic_store_release(&cpu->crucible_node_ingress_armed, true);
++    if (!qatomic_load_acquire(&node_scope_published)) {
++        memcpy(node_scope, scope, 32);
++        qatomic_store_release(&node_scope_published, true);
++    }
++}
++
++int qemu_cpu_node_ingress_inventory(CPUState *cpu,
++                                   QemuCpuNodeIngressEntry *entries,
++                                   size_t capacity, size_t *count)
++{
++    QemuCpuNodeIngress *observation;
++    size_t length = 0;
++
++    QSIMPLEQ_FOREACH(observation, &cpu->crucible_node_ingress, node) {
++        if (length == capacity) {
++            return -ENOSPC;
++        }
++        entries[length++] = observation->receipt;
++    }
++    *count = length;
++    return 0;
++}
++
++bool qemu_cpu_node_source_failed(void)
++{
++    return qatomic_load_acquire(&node_first_fault) != NULL;
++}
++
++void qemu_cpu_node_original_command(uint64_t sequence, const uint8_t digest[32])
++{
++    CPUState *cpu;
++
++    CPU_FOREACH(cpu) {
++        qemu_mutex_lock(&cpu->work_mutex);
++        cpu->crucible_node_original_sequence = sequence;
++        memcpy(cpu->crucible_node_original_digest, digest, 32);
++        qemu_mutex_unlock(&cpu->work_mutex);
++    }
++}
++
++void qemu_cpu_node_owner_dispatch(bool active)
++{
++    CPUState *cpu;
++
++    CPU_FOREACH(cpu) {
++        qemu_mutex_lock(&cpu->work_mutex);
++        cpu->crucible_node_owner_dispatch = active;
++        qemu_mutex_unlock(&cpu->work_mutex);
++    }
++}
++
++void qemu_cpu_node_observe(CPUState *cpu, uint32_t kind, uint64_t payload)
++{
++    bool failed;
++
++    if (!qatomic_load_acquire(&cpu->crucible_node_ingress_armed)) {
++        return;
++    }
++    qemu_mutex_lock(&cpu->work_mutex);
++    if (!node_ingress_owned(cpu) || kind == QEMU_CPU_NODE_INGRESS_SYSTEM_RESET) {
++        /* A global reset delegates to autonomous main-loop writers even if
++         * the request originated inside the original RR dispatch. */
++        node_ingress_fault_locked(cpu, kind, 3, payload, NULL);
++    } else {
++        node_scalar_observe_locked(cpu, kind, payload);
++    }
++    failed = qemu_cpu_node_source_failed();
++    qemu_mutex_unlock(&cpu->work_mutex);
++    if (failed) {
++        cpu_exit(cpu);
++    }
++}
++
++void qemu_cpu_node_reset_traversal_guard(void)
++{
++    CPUState *cpu = first_cpu;
++
++    if (!cpu || !qatomic_load_acquire(&cpu->crucible_node_ingress_armed)) {
++        return;
++    }
++    qemu_mutex_lock(&cpu->work_mutex);
++    if (!node_ingress_owned(cpu)) {
++        /* Before reset counts/children change, classify the unmediated root.
++         * This is EffectsUnknown, never a deferred reset or NoEffects claim. */
++        node_ingress_fault_locked(cpu, QEMU_CPU_NODE_INGRESS_RESET_TRAVERSAL,
++                                  3, 0, NULL);
++    }
++    qemu_mutex_unlock(&cpu->work_mutex);
++}
++
++int qemu_cpu_node_source_fault(const uint8_t scope[32],
++                               QemuCpuNodeSourceFault *fault)
++{
++    QemuCpuNodeSourceFault *original;
++
++    if (!fault) {
++        return -EINVAL;
++    }
++    memset(fault, 0, sizeof(*fault));
++    if (!scope || !qatomic_load_acquire(&node_scope_published)) {
++        return -EPERM;
++    }
++    if (memcmp(scope, node_scope, 32) != 0) {
++        return -ESTALE;
++    }
++    original = qatomic_load_acquire(&node_first_fault);
++    if (!original) {
++        return -EAGAIN;
++    }
++    *fault = *original;
++    return 0;
++}
++
  static void queue_work_on_cpu(CPUState *cpu, struct qemu_work_item *wi)
  {
      qemu_mutex_lock(&cpu->work_mutex);
++    if (cpu->crucible_node_ingress_armed) {
++        /* No complete callback class/payload-lifetime admission exists yet.
++         * Ownership remains in the ordinary queue, not a fabricated hold. */
++        node_ingress_fault_locked(cpu, QEMU_CPU_NODE_INGRESS_WORK, 3, 0, wi);
++    }
 +    wi->crucible_node_work_id = 0;
 +    /* Queue custody alone does not authenticate a modeled birth Position. */
 +    wi->crucible_node_birth_unknown = true;
 +    if (cpu->crucible_node_work_tracking) {
 +        /* Identity exhaustion must never silently alias an earlier request. */
 +        if (cpu->crucible_node_next_work_id == UINT64_MAX) {
-+            error_report("Crucible native CPU work identity exhausted");
-+            abort();
++            if (cpu->crucible_node_ingress_armed) {
++                node_ingress_fault_locked(cpu, QEMU_CPU_NODE_INGRESS_WORK,
++                                          1, 0, wi);
++            } else {
++                error_report("Crucible native CPU work identity exhausted");
++                abort();
++            }
 +        }
-+        wi->crucible_node_work_id = ++cpu->crucible_node_next_work_id;
++        if (cpu->crucible_node_next_work_id != UINT64_MAX) {
++            wi->crucible_node_work_id = ++cpu->crucible_node_next_work_id;
++        }
 +    }
      QSIMPLEQ_INSERT_TAIL(&cpu->work_list, wi, node);
      wi->done = false;
      qemu_mutex_unlock(&cpu->work_mutex);
-@@ -141,6 +161,43 @@ static void queue_work_on_cpu(CPUState *cpu, struct qemu_work_item *wi)
+@@ -141,14 +401,63 @@ static void queue_work_on_cpu(CPUState *cpu, struct qemu_work_item *wi)
      cpu_exit(cpu);
  }
  
@@ -15110,7 +15466,29 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..9a85d9fc1be26fb95083c09939d3e42b
  void do_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data,
                     QemuMutex *mutex)
  {
-@@ -249,6 +306,7 @@ void end_exclusive(void)
+     struct qemu_work_item wi;
+ 
+     if (qemu_cpu_is_self(cpu)) {
+-        func(cpu, data);
+-        return;
++        bool direct = true;
++
++        if (qatomic_load_acquire(&cpu->crucible_node_ingress_armed)) {
++            qemu_mutex_lock(&cpu->work_mutex);
++            direct = node_ingress_owned(cpu) && !qemu_cpu_node_source_failed();
++            qemu_mutex_unlock(&cpu->work_mutex);
++        }
++        if (direct) {
++            func(cpu, data);
++            return;
++        }
++        /* Keep the borrowed stack item through the ordinary synchronous
++         * queue/wait path, which releases its supplied mutex. Never pretend
++         * the unmediated callback ran or sleep while retaining BQL. */
+     }
+ 
+     wi.func = func;
+@@ -249,6 +558,7 @@ void end_exclusive(void)
  /* Wait for exclusive ops to finish, and begin cpu execution.  */
  void cpu_exec_start(CPUState *cpu)
  {
@@ -15118,6 +15496,18 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..9a85d9fc1be26fb95083c09939d3e42b
      trace_cpu_exec_start(cpu->cpu_index);
  
      qatomic_set(&cpu->running, true);
+@@ -353,6 +663,11 @@ void process_queued_cpu_work(CPUState *cpu)
+ {
+     struct qemu_work_item *wi;
+ 
++    if (qatomic_load_acquire(&cpu->crucible_node_ingress_armed)) {
++        /* No original callback-source phase/lifetime classifier is qualified.
++         * Keep actual queued callback ownership through containment. */
++        return;
++    }
+     qemu_mutex_lock(&cpu->work_mutex);
+     if (QSIMPLEQ_EMPTY(&cpu->work_list)) {
+         qemu_mutex_unlock(&cpu->work_mutex);
 diff --git a/docs/devel/tcg-icount.rst b/docs/devel/tcg-icount.rst
 index a1dcd79e0fdd5142d6e876466e397cf8a25d6d89..d2420c492edc78614bf9bf6956c4ca47e51f6757 100644
 --- a/docs/devel/tcg-icount.rst
@@ -21849,7 +22239,7 @@ index c1973f0248fce621be7c70e15df4928337c4669f..5aae6076c3feb107c01f43f5baa4c758
          VMSTATE_VIRTIO_DEVICE,
          VMSTATE_END_OF_LIST()
 diff --git a/hw/core/cpu-common.c b/hw/core/cpu-common.c
-index e314f916f84e3de6c5cfb11981f781c46f4d6b3c..efea0d98f7af1c764434feb24b750e2f774feb94 100644
+index e314f916f84e3de6c5cfb11981f781c46f4d6b3c..25b4713b36a38bd25afbc58eef62b99118099372 100644
 --- a/hw/core/cpu-common.c
 +++ b/hw/core/cpu-common.c
 @@ -22,6 +22,7 @@
@@ -21860,7 +22250,24 @@ index e314f916f84e3de6c5cfb11981f781c46f4d6b3c..efea0d98f7af1c764434feb24b750e2f
  #include "system/hw_accel.h"
  #include "qemu/log.h"
  #include "qemu/main-loop.h"
-@@ -113,6 +114,9 @@ static void cpu_common_reset_hold(Object *obj, ResetType type)
+@@ -70,6 +71,8 @@ CPUState *cpu_create(const char *typename)
+ 
+ void cpu_reset_interrupt(CPUState *cpu, int mask)
+ {
++    qemu_cpu_node_observe(cpu, QEMU_CPU_NODE_INGRESS_IRQ_CLEAR,
++                          (uint32_t)mask);
+     qatomic_and(&cpu->interrupt_request, ~mask);
+ }
+ 
+@@ -100,6 +103,7 @@ void cpu_dump_state(CPUState *cpu, FILE *f, int flags)
+ 
+ void cpu_reset(CPUState *cpu)
+ {
++    qemu_cpu_node_observe(cpu, QEMU_CPU_NODE_INGRESS_RESET, 0);
+     device_cold_reset(DEVICE(cpu));
+ 
+     trace_cpu_reset(cpu->cpu_index);
+@@ -113,6 +117,9 @@ static void cpu_common_reset_hold(Object *obj, ResetType type)
      cpu->halted = cpu->start_powered_off;
      cpu->mem_io_pc = 0;
      cpu->icount_extra = 0;
@@ -22714,6 +23121,36 @@ index e2aab3d1fc61246ba2f1e147c0ff71c7c7712c55..c9075e7d779faaa52c16c68100eb92be
 +        qdev_unplug_event_set(dev, -1);
          DEVICE_LISTENER_CALL(unrealize, Reverse, dev);
      }
+ 
+diff --git a/hw/core/resettable.c b/hw/core/resettable.c
+index 86e16c8c6e4011d61f5bad924a6a04760a7584ff..a23386c90aef2a731ab93f0442cd840b7236bf7c 100644
+--- a/hw/core/resettable.c
++++ b/hw/core/resettable.c
+@@ -13,6 +13,7 @@
+ #include "qemu/osdep.h"
+ #include "qemu/module.h"
+ #include "hw/core/resettable.h"
++#include "hw/core/cpu.h"
+ #include "trace.h"
+ 
+ /**
+@@ -48,6 +49,9 @@ void resettable_reset(Object *obj, ResetType type)
+ 
+ void resettable_assert_reset(Object *obj, ResetType type)
+ {
++    /* Refuse an autonomous traversal before parent/child reset counts change.
++     * Deferring only CPU reset_hold would leave a partially changed tree. */
++    qemu_cpu_node_reset_traversal_guard();
+     trace_resettable_reset_assert_begin(obj, type);
+     assert(!enter_phase_in_progress);
+ 
+@@ -62,6 +66,7 @@ void resettable_assert_reset(Object *obj, ResetType type)
+ 
+ void resettable_release_reset(Object *obj, ResetType type)
+ {
++    qemu_cpu_node_reset_traversal_guard();
+     trace_resettable_reset_release_begin(obj, type);
+     assert(!enter_phase_in_progress);
  
 diff --git a/hw/cxl/cxl-component-utils.c b/hw/cxl/cxl-component-utils.c
 index a624357978956b06ff474ab2b9375f409fce4a6a..a8f9a0c6c310a3e9b6e1f1c0f1676470d138176e 100644
@@ -58084,7 +58521,7 @@ index 5f3b1327de0aa287c1859bf155a47c8815ebb08d..b726a4cbd5f2dae44f78ecbaefc4a92a
  
  SiFiveUARTState *sifive_uart_create(MemoryRegion *address_space, hwaddr base,
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index b54035fb13b22a530692186b0afbe2718f1fb8b8..1e16039779c5269b4c4c6e1aac7d9cd7b00f4dc8 100644
+index b54035fb13b22a530692186b0afbe2718f1fb8b8..a838c6f52622a95db768c81c5b1726028de45052 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -63,6 +63,7 @@ typedef int (*WriteCoreDumpFunction)(const void *buf, size_t size,
@@ -58162,10 +58599,64 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..1e16039779c5269b4c4c6e1aac7d9cd7
      const char *gdb_core_xml_file;
      const char * (*gdb_arch_name)(CPUState *cpu);
      const char * (*gdb_get_core_xml_file)(CPUState *cpu);
-@@ -400,6 +447,18 @@ typedef void (*run_on_cpu_func)(CPUState *cpu, run_on_cpu_data data);
+@@ -399,6 +446,71 @@ typedef union {
+ typedef void (*run_on_cpu_func)(CPUState *cpu, run_on_cpu_data data);
  
  struct qemu_work_item;
- 
++struct QemuCpuNodeIngress;
++
++#define QEMU_CPU_NODE_INGRESS_MAX 4096
++#define QEMU_CPU_NODE_INGRESS_WORK 1
++#define QEMU_CPU_NODE_INGRESS_IRQ_SET 2
++#define QEMU_CPU_NODE_INGRESS_IRQ_CLEAR 3
++#define QEMU_CPU_NODE_INGRESS_RESET 4
++#define QEMU_CPU_NODE_INGRESS_RESUME 5
++#define QEMU_CPU_NODE_INGRESS_ARM_LINE 6
++#define QEMU_CPU_NODE_INGRESS_SYSTEM_RESET 7
++#define QEMU_CPU_NODE_INGRESS_X86_INIT 8
++#define QEMU_CPU_NODE_INGRESS_RESET_TRAVERSAL 9
++
++/* These are native custody observations, never modeled-input authority. */
++typedef struct QemuCpuNodeIngressEntry {
++    uint32_t cpu_index;
++    uint32_t kind;
++    uint32_t flags;
++    uint32_t reserved;
++    uint64_t ingress_id;
++    uint64_t fifo_ordinal;
++    uint64_t payload_scalar;
++    uint64_t source_original_sequence;
++    uint8_t source_original_digest[32];
++} QemuCpuNodeIngressEntry;
++
++typedef struct QemuCpuNodeSourceFault {
++    uint32_t version;
++    uint32_t size;
++    uint32_t code;
++    uint32_t flags;
++    uint64_t fault_id;
++    uint64_t command_sequence;
++    uint64_t ingress_id;
++    uint32_t cpu_index;
++    uint32_t ingress_kind;
++    uint8_t prepared_scope_hash[32];
++    uint8_t original_command_digest[32];
++} QemuCpuNodeSourceFault;
++
++/* The caller holds work_mutex across activation and original FIFO inventory.
++ * All CPUs in the finalized roster are activated in one BQL-held locked cut. */
++void qemu_cpu_node_ingress_arm(CPUState *cpu, const uint8_t scope[32]);
++int qemu_cpu_node_ingress_inventory(CPUState *cpu,
++                                   QemuCpuNodeIngressEntry *entries,
++                                   size_t capacity, size_t *count);
++bool qemu_cpu_node_source_failed(void);
++void qemu_cpu_node_original_command(uint64_t sequence, const uint8_t digest[32]);
++void qemu_cpu_node_owner_dispatch(bool active);
++void qemu_cpu_node_observe(CPUState *cpu, uint32_t kind, uint64_t payload);
++void qemu_cpu_node_reset_traversal_guard(void);
++int qemu_cpu_node_source_fault(const uint8_t scope[32],
++                               QemuCpuNodeSourceFault *fault);
++
 +typedef struct QemuCpuNodeWorkEntry {
 +    uint64_t work_id;
 +    uint64_t fifo_ordinal;
@@ -58177,11 +58668,10 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..1e16039779c5269b4c4c6e1aac7d9cd7
 + * Existing entries have unknown birth; callback/data remain process-private. */
 +int qemu_cpu_node_work_inventory(CPUState *cpu, QemuCpuNodeWorkEntry *entries,
 +                                 size_t capacity, size_t *count);
-+
+ 
  #define CPU_UNSET_NUMA_NODE_ID -1
  
- /**
-@@ -442,6 +501,14 @@ struct qemu_work_item;
+@@ -442,6 +554,14 @@ struct qemu_work_item;
   * @crash_occurred: Indicates the OS reported a crash (panic) for this CPU
   * @singlestep_flags: Flags for single-stepping.
   * @icount_extra: Instructions until next timer event.
@@ -58196,7 +58686,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..1e16039779c5269b4c4c6e1aac7d9cd7
   * @cpu_ases: Pointer to array of CPUAddressSpaces (which define the
   *            AddressSpaces this CPU has)
   * @as: Pointer to the first AddressSpace, for the convenience of targets which
-@@ -508,11 +575,27 @@ struct CPUState {
+@@ -508,11 +628,36 @@ struct CPUState {
      unsigned singlestep_flags;
      int64_t icount_budget;
      int64_t icount_extra;
@@ -58221,10 +58711,19 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..1e16039779c5269b4c4c6e1aac7d9cd7
 +    /* Native node inventory only; retained identity is local to this CPU. */
 +    uint64_t crucible_node_next_work_id;
 +    bool crucible_node_work_tracking;
++    /* Original RR scalar history is separate from the runnable CPU work list. */
++    QSIMPLEQ_HEAD(, QemuCpuNodeIngress) crucible_node_ingress;
++    bool crucible_node_ingress_armed;
++    bool crucible_node_owner_dispatch;
++    uint64_t crucible_node_ingress_fifo;
++    uint64_t crucible_node_original_sequence;
++    uint8_t crucible_node_scope[32];
++    uint8_t crucible_node_original_digest[32];
++
  
      struct CPUAddressSpace *cpu_ases;
      AddressSpace *as;
-@@ -738,6 +821,138 @@ enum CPUDumpFlags {
+@@ -738,6 +883,138 @@ enum CPUDumpFlags {
   */
  void cpu_dump_state(CPUState *cpu, FILE *f, int flags);
  
@@ -58363,7 +58862,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..1e16039779c5269b4c4c6e1aac7d9cd7
  /**
   * TranslateForDebugResult: gives result of cpu_translate_for_debug()
   *
-@@ -1088,6 +1303,7 @@ void process_queued_cpu_work(CPUState *cpu);
+@@ -1088,6 +1365,7 @@ void process_queued_cpu_work(CPUState *cpu);
   * cpu_exit.
   */
  void cpu_exec_start(CPUState *cpu);
@@ -60348,7 +60847,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..36c355bf303715c91112dcceb32fb779
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..476403a5d2afd1e8eb71b899047285453140071c 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0792cb167805ff29d920fe4d83dedd6e290d5e3d 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -62195,7 +62694,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..476403a5d2afd1e8eb71b89904728545
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
-@@ -1363,6 +3179,372 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
+@@ -1363,6 +3179,456 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry);
  
@@ -62245,6 +62744,90 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..476403a5d2afd1e8eb71b89904728545
 +    uint64_t pending_service_credit_ps;
 +    uint8_t grant_hash[32];
 +} QemuPluginCrucibleNodeReceipt;
++
++/* Original RR scalar observations have Unknown birth until a qualified
++ * Position hook exists. Source ancestry never grants semantic-input authority. */
++#define QEMU_PLUGIN_CRUCIBLE_NODE_INGRESS_VERSION 1
++#define QEMU_PLUGIN_CRUCIBLE_NODE_INGRESS_MAX 4096
++
++typedef struct QemuPluginCrucibleNodeIngressSummary {
++    uint32_t version;
++    uint32_t size;
++    uint32_t row_count;
++    uint32_t flags;
++    uint64_t gate_generation;
++    uint64_t last_original_sequence;
++    uint8_t prepared_scope_hash[32];
++    uint8_t last_original_digest[32];
++} QemuPluginCrucibleNodeIngressSummary;
++
++typedef struct QemuPluginCrucibleNodeIngressRow {
++    uint32_t cpu_index; /* UINT32_MAX only for the global system-reset kind7. */
++    uint32_t kind; /* Work1, IRQset2, IRQclear3, reset4, resume5, Armline6,
++                    * globalreset7, x86INIT8. */
++    uint32_t flags; /* UnknownBirth1, opaque work payload2, RR ancestry4. */
++    uint32_t reserved;
++    uint64_t ingress_id;
++    uint64_t fifo_ordinal;
++    uint64_t payload_scalar;
++    uint64_t source_original_sequence;
++    uint8_t source_original_digest[32];
++} QemuPluginCrucibleNodeIngressRow;
++
++typedef struct QemuPluginCrucibleNodeSourceFault {
++    uint32_t version;
++    uint32_t size;
++    uint32_t code; /* Capacity/identity exhaustion1, unmediated source3. */
++    uint32_t flags; /* First diagnostic1, UnknownBirth2, EffectsUnknown4. */
++    uint64_t fault_id;
++    uint64_t command_sequence;
++    uint64_t ingress_id;
++    uint32_t cpu_index;
++    uint32_t ingress_kind;
++    uint8_t prepared_scope_hash[32];
++    uint8_t original_command_digest[32];
++} QemuPluginCrucibleNodeSourceFault;
++
++/**
++ * qemu_plugin_crucible_node_query_cpu_ingress() - observe original RR scalar history
++ * @prepared_scope_hash: exact scope authenticated by the original sealed V4 manifest
++ * @expected_generation: the original retained worker HOLD generation
++ * @summary: receives the native source cut; zero on refusal
++ * @rows: receives original native IDs, per-CPU source order and scalar payloads
++ * @capacity: at most QEMU_PLUGIN_CRUCIBLE_NODE_INGRESS_MAX
++ *
++ * The query requires the actual BQL-held RR getter/stopped seam and an already
++ * retained writer HOLD. Rows remain Unknown-birth scalar observations; no
++ * callback/data pointers leave native custody. A source command digest authenticates only the actual
++ * retained ancestor, not delivery, phase admission or execution permission.
++ * Scope and capacity errors do not release HOLD or original native queue ownership.
++ * Summary flags are UnknownBirth1 and UnknownOtherProducers2; no full closure,
++ * readiness, capture, input staging or foreign-source containment is advertised.
++ * Returns zero, or a negative errno with a zero summary.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_node_query_cpu_ingress(
++    const uint8_t prepared_scope_hash[32], uint64_t expected_generation,
++    QemuPluginCrucibleNodeIngressSummary *summary,
++    QemuPluginCrucibleNodeIngressRow *rows, uint32_t capacity);
++
++/**
++ * qemu_plugin_crucible_node_query_source_fault() - read an immutable native source fault
++ * @prepared_scope_hash: exact scope authenticated by the original sealed V4 manifest
++ * @fault: receives the original fault; zero on refusal
++ *
++ * This observational query requires no BQL and is available to the independent
++ * GPL controller after the native source proof has been invalidated. The first original
++ * record is immutable. A fault is never a stopped/no-effects receipt, physical
++ * pause, ACK, modeled event or authorization to resume. Command digest is the
++ * exact retained original grant_hash; zero ancestry means no accepted command.
++ * Returns zero, -EAGAIN before a fault, -ESTALE for another scope, or -EPERM
++ * before the native scoped ingress gate exists.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_node_query_source_fault(
++    const uint8_t prepared_scope_hash[32],
++    QemuPluginCrucibleNodeSourceFault *fault);
 +
 +/* A CPU-only observation cannot establish queue, input or resource closure. */
 +#define QEMU_PLUGIN_CRUCIBLE_NODE_CPU_PARK_VERSION 1
@@ -123574,7 +124157,7 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..3ce62e9a977ea55d839d8d625345d1b0
           * cpu_exit() is not enough to kick a halted CPU out of
           * qemu_tcg_wait_io_event.  async_run_on_cpu, instead,
 diff --git a/system/cpus.c b/system/cpus.c
-index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb260fabb9c5 100644
+index 97e5a5edee23b70d8bd170c2b984568f4e804672..394f67fe2f419dda87fc3551d454bb4fb27d361e 100644
 --- a/system/cpus.c
 +++ b/system/cpus.c
 @@ -25,11 +25,13 @@
@@ -123772,7 +124355,16 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
  bool cpu_is_stopped(CPUState *cpu)
  {
      return cpu->stopped || !runstate_is_running();
-@@ -318,6 +494,9 @@ static int do_vm_stop(RunState state, bool send_stop)
+@@ -258,6 +434,8 @@ int64_t cpus_get_elapsed_ticks(void)
+ 
+ void cpu_set_interrupt(CPUState *cpu, int mask)
+ {
++    qemu_cpu_node_observe(cpu, QEMU_CPU_NODE_INGRESS_IRQ_SET,
++                          (uint32_t)mask);
+     /* Pairs with cpu_test_interrupt(). */
+     qatomic_or(&cpu->interrupt_request, mask);
+ }
+@@ -318,6 +496,9 @@ static int do_vm_stop(RunState state, bool send_stop)
       */
      ret |= bdrv_flush_all();
      trace_vm_stop_flush_all(ret);
@@ -123782,7 +124374,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
  
      return ret;
  }
-@@ -327,6 +506,10 @@ static int do_vm_stop(RunState state, bool send_stop)
+@@ -327,6 +508,10 @@ static int do_vm_stop(RunState state, bool send_stop)
   */
  int vm_shutdown(void)
  {
@@ -123793,7 +124385,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
      return do_vm_stop(RUN_STATE_SHUTDOWN, false);
  }
  
-@@ -438,7 +621,28 @@ void qemu_init_cpu_loop(void)
+@@ -438,7 +623,28 @@ void qemu_init_cpu_loop(void)
  
  void run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data)
  {
@@ -123822,7 +124414,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
  }
  
  static void qemu_cpu_stop(CPUState *cpu, bool exit)
-@@ -506,6 +710,12 @@ void qemu_cpu_kick(CPUState *cpu)
+@@ -506,6 +712,12 @@ void qemu_cpu_kick(CPUState *cpu)
      } else { /* default */
          cpus_kick_thread(cpu);
      }
@@ -123835,7 +124427,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
  }
  
  void qemu_cpu_kick_self(void)
-@@ -611,6 +821,21 @@ void cpu_thread_signal_destroyed(CPUState *cpu)
+@@ -611,6 +823,21 @@ void cpu_thread_signal_destroyed(CPUState *cpu)
      qemu_cond_signal(&qemu_cpu_cond);
  }
  
@@ -123857,7 +124449,15 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
  void cpu_pause(CPUState *cpu)
  {
      if (qemu_cpu_is_self(cpu)) {
-@@ -683,11 +908,34 @@ void resume_all_vcpus(void)
+@@ -623,6 +850,7 @@ void cpu_pause(CPUState *cpu)
+ 
+ void cpu_resume(CPUState *cpu)
+ {
++    qemu_cpu_node_observe(cpu, QEMU_CPU_NODE_INGRESS_RESUME, 0);
+     cpu->exception_index = -1;
+     cpu->stop = false;
+     cpu->stopped = false;
+@@ -683,11 +911,34 @@ void resume_all_vcpus(void)
      }
  }
  
@@ -123892,7 +124492,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
      bql_unlock();
      qemu_thread_join(cpu->thread);
      bql_lock();
-@@ -743,6 +991,10 @@ void cpu_stop_current(void)
+@@ -743,6 +994,10 @@ void cpu_stop_current(void)
  
  int vm_stop(RunState state)
  {
@@ -123903,7 +124503,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
      if (qemu_in_vcpu_thread()) {
          qemu_system_vmstop_request_prepare();
          qemu_system_vmstop_request(state);
-@@ -768,6 +1020,14 @@ int vm_prepare_start(bool step_pending)
+@@ -768,6 +1023,14 @@ int vm_prepare_start(bool step_pending)
      RunState state = vm_was_suspended ? RUN_STATE_SUSPENDED : RUN_STATE_RUNNING;
      RunState requested;
  
@@ -123918,7 +124518,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
      qemu_vmstop_requested(&requested);
      if (runstate_is_running() && requested == RUN_STATE__MAX) {
          return -1;
-@@ -797,9 +1057,11 @@ int vm_prepare_start(bool step_pending)
+@@ -797,9 +1060,11 @@ int vm_prepare_start(bool step_pending)
      runstate_set(state);
      vm_state_notify(1, state);
      vm_was_suspended = false;
@@ -123930,7 +124530,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
  void vm_start(void)
  {
      if (!vm_prepare_start(false)) {
-@@ -820,6 +1082,10 @@ void vm_resume(RunState state)
+@@ -820,6 +1085,10 @@ void vm_resume(RunState state)
     current state is forgotten forever */
  int vm_stop_force_state(RunState state)
  {
@@ -123941,7 +124541,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb26
      if (runstate_is_live(runstate_get())) {
          return vm_stop(state);
      } else {
-@@ -928,4 +1194,3 @@ void qmp_inject_nmi(Error **errp)
+@@ -928,4 +1197,3 @@ void qmp_inject_nmi(Error **errp)
  {
      nmi_monitor_handle(monitor_get_cpu_index(monitor_cur()), errp);
  }
@@ -130282,7 +130882,7 @@ index 018609a4f9a4f56b5e3485f82513ab6ceebb3501..74dc67b8b0e01b3518e6c48513a2653d
  
  static void configure_rtc_base_datetime(const char *startdate)
 diff --git a/system/runstate.c b/system/runstate.c
-index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..d2bd1837a36b486acb75ba121fe61f8644917a6d 100644
+index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..c626b250aa82fd28d11e0f31dff176392ec949ab 100644
 --- a/system/runstate.c
 +++ b/system/runstate.c
 @@ -43,10 +43,15 @@
@@ -130405,16 +131005,19 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..d2bd1837a36b486acb75ba121fe61f86
  }
  
  /*
-@@ -736,6 +800,8 @@ void qemu_system_guest_pvshutdown(void)
+@@ -736,6 +800,11 @@ void qemu_system_guest_pvshutdown(void)
  
  void qemu_system_reset_request(ShutdownCause reason)
  {
++    if (first_cpu) {
++        qemu_cpu_node_observe(first_cpu, QEMU_CPU_NODE_INGRESS_SYSTEM_RESET, reason);
++    }
 +    qemu_crucible_cold_stop_invalidate();
 +
      if (reboot_action == REBOOT_ACTION_SHUTDOWN &&
          reason != SHUTDOWN_CAUSE_SUBSYSTEM_RESET) {
          shutdown_requested = reason;
-@@ -844,6 +910,13 @@ void qemu_system_shutdown_request(ShutdownCause reason)
+@@ -844,6 +913,13 @@ void qemu_system_shutdown_request(ShutdownCause reason)
      shutdown_requested = reason;
      if (reason == SHUTDOWN_CAUSE_HOST_QMP_QUIT) {
          force_shutdown = true;
@@ -130428,7 +131031,7 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..d2bd1837a36b486acb75ba121fe61f86
      }
      qemu_notify_event();
  }
-@@ -856,6 +929,9 @@ static void qemu_system_powerdown(void)
+@@ -856,6 +932,9 @@ static void qemu_system_powerdown(void)
  
  static void qemu_system_shutdown(ShutdownCause cause)
  {
@@ -130791,7 +131394,7 @@ index 883e8a176c3b519406a0e80a292413cd680dddbe..959461eb56b034d33739dadc6a8b7087
  }
 -
 diff --git a/target/arm/cpu.c b/target/arm/cpu.c
-index 787e4dc7ab23377fb9bc50e2532e841b193a1968..fce472cfd2aedf257fbeff0ac53a0296d6f35bf6 100644
+index 787e4dc7ab23377fb9bc50e2532e841b193a1968..8f63681fb30d16c073940459c78c4c3393fad5b3 100644
 --- a/target/arm/cpu.c
 +++ b/target/arm/cpu.c
 @@ -22,6 +22,8 @@
@@ -130861,7 +131464,16 @@ index 787e4dc7ab23377fb9bc50e2532e841b193a1968..fce472cfd2aedf257fbeff0ac53a0296
                             | CPU_INTERRUPT_EXITTB)) {
          return true;
      }
-@@ -1427,30 +1459,6 @@ static void aarch64_cpu_set_aarch64(Object *obj, bool value, Error **errp)
+@@ -830,6 +862,8 @@ static void arm_cpu_set_irq(void *opaque, int irq, int level)
+         return;
+     }
+ 
++    qemu_cpu_node_observe(cs, QEMU_CPU_NODE_INGRESS_ARM_LINE,
++                          ((uint64_t)(uint32_t)irq << 32) | (uint32_t)level);
+     if (level) {
+         env->irq_line_state |= mask[irq];
+     } else {
+@@ -1427,30 +1461,6 @@ static void aarch64_cpu_set_aarch64(Object *obj, bool value, Error **errp)
      }
  }
  
@@ -130892,7 +131504,7 @@ index 787e4dc7ab23377fb9bc50e2532e841b193a1968..fce472cfd2aedf257fbeff0ac53a0296
  static void arm_cpu_propagate_feature_implications(ARMCPU *cpu)
  {
      CPUARMState *env = &cpu->env;
-@@ -2458,6 +2466,39 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
+@@ -2458,6 +2468,39 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
      cpu_reset(cs);
  
      acc->parent_realize(dev, errp);
@@ -130932,7 +131544,7 @@ index 787e4dc7ab23377fb9bc50e2532e841b193a1968..fce472cfd2aedf257fbeff0ac53a0296
  }
  
  static ObjectClass *arm_cpu_class_by_name(const char *cpu_model)
-@@ -2551,6 +2592,19 @@ static vaddr aarch64_untagged_addr(CPUState *cs, vaddr x)
+@@ -2551,6 +2594,19 @@ static vaddr aarch64_untagged_addr(CPUState *cs, vaddr x)
  static const struct SysemuCPUOps arm_sysemu_ops = {
      .has_work = arm_cpu_has_work,
      .translate_for_debug = arm_cpu_translate_for_debug,
@@ -130952,7 +131564,7 @@ index 787e4dc7ab23377fb9bc50e2532e841b193a1968..fce472cfd2aedf257fbeff0ac53a0296
      .asidx_from_attrs = arm_asidx_from_attrs,
      .write_elf32_note = arm_cpu_write_elf32_note,
      .write_elf64_note = arm_cpu_write_elf64_note,
-@@ -2638,6 +2692,15 @@ static void arm_cpu_class_init(ObjectClass *oc, const void *data)
+@@ -2638,6 +2694,15 @@ static void arm_cpu_class_init(ObjectClass *oc, const void *data)
      cc->gdb_read_register = arm_cpu_gdb_read_register;
      cc->gdb_write_register = arm_cpu_gdb_write_register;
  #ifndef CONFIG_USER_ONLY
@@ -130968,7 +131580,7 @@ index 787e4dc7ab23377fb9bc50e2532e841b193a1968..fce472cfd2aedf257fbeff0ac53a0296
      cc->max_as = ARMASIdx_MAX;
      cc->sysemu_ops = &arm_sysemu_ops;
  #endif
-@@ -2699,6 +2762,11 @@ static const TypeInfo arm_cpu_type_info = {
+@@ -2699,6 +2764,11 @@ static const TypeInfo arm_cpu_type_info = {
  static void arm_cpu_register_types(void)
  {
      type_register_static(&arm_cpu_type_info);
@@ -135417,6 +136029,25 @@ index 5c5fa72721637cdf2258291c8d3eeaf2b3b5bc9e..57da2d164d39e02dac8b2fca4f629ccb
  
          case IDX_CTL_CR0_REG:
              return gdb_read_reg_cs64(env->hflags, mem_buf, env->cr[0]);
+diff --git a/target/i386/helper.c b/target/i386/helper.c
+index 683621416213049f8a40dadac40f6e97b6e8c41d..7eafd8d9804f1dc866b218a24e73140036dceb86 100644
+--- a/target/i386/helper.c
++++ b/target/i386/helper.c
+@@ -614,8 +614,12 @@ void do_cpu_init(X86CPU *cpu)
+ #if !defined(CONFIG_USER_ONLY)
+     CPUState *cs = CPU(cpu);
+     CPUX86State *env = &cpu->env;
+-    CPUX86State *save = g_new(CPUX86State, 1);
+-    int sipi = cs->interrupt_request & CPU_INTERRUPT_SIPI;
++    CPUX86State *save;
++    int sipi;
++
++    qemu_cpu_node_observe(cs, QEMU_CPU_NODE_INGRESS_X86_INIT, 0);
++    save = g_new(CPUX86State, 1);
++    sipi = cs->interrupt_request & CPU_INTERRUPT_SIPI;
+ 
+     *save = *env;
+ 
 diff --git a/target/i386/helper.h b/target/i386/helper.h
 index 3f67098f11f4328ee2f43a56fc054767aa62ecb1..d3a07a53b2f0392c8d8037865039ad42eff7ef92 100644
 --- a/target/i386/helper.h

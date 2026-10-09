@@ -171,3 +171,38 @@ bounds. Exact capture and fork need preservation/rebinding of the original
 plugin journal, timers and arm identities, input buffers, outputs, descriptors,
 worker custody, and fresh authority; the existing refusal stays until that
 complete state is implemented and tested.
+
+## Native reader fencing and source faults
+
+The native socket reader participates in the actual plugin worker roster as
+worker bit three. Preparation retains its thread handle and binds it to the
+same worker gate used by the existing plugin workers before sealing the V4
+manifest. The reader enters admission before a nonblocking receive, rather
+than receiving a frame and waiting with an unrecorded stack-local command.
+While the gate is held, queued command and ACK datagrams remain in the socket;
+the reader has no active admission or hidden pending frame. Its lease covers
+original journal processing and native notification. This fence preserves
+reader custody but does not preserve a whole QEMU snapshot or authorize fork.
+
+Edition-two frame 13 carries a fixed 112-byte original source-fault diagnostic.
+The source query is independent of the BQL, so the reader can report a fault
+even when its producer holds that lock. The closed diagnostic identifies the
+prepared scope, first fault, source kind, and any original command ancestry.
+Ingress identity zero explicitly means no qualified ingress reservation.
+Unknown birth and effects remain explicit. A retained diagnostic is neither
+proof of callback-payload lifetime nor evidence that the process is stopped.
+
+The plugin retains the first immutable diagnostic and its existing journal,
+then withholds commands and ACKs. Identical retries return that original
+record; changed diagnostics are refused. The host checks scope and original
+command ancestry before retaining the record, and also refuses further
+execution and ACK transmission. Historical stops and observation objects stay
+available without becoming current suspension evidence. A supervisor must
+separately contain the actual process; a source-fault frame does not certify
+successful containment, cancellation, or absence of effects.
+
+Live probes inject a genuine native IRQ or ordinary CPU-work source, receive
+the original diagnostic through the GPL/public channel, check that the legacy
+FIFO remains unconsumed, and independently kill and reap the uniquely owned
+QEMU child. These are mechanical fault-path checks. They do not qualify a
+complete source inventory or native initialization.
