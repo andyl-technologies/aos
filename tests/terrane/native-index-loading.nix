@@ -20,6 +20,9 @@
     "bucket::content::held_nodes::tests::cancelling_actual_closing_reads_cannot_complete_the_scope"
     "bucket::content::held_nodes::tests::actual_unchanged_native_deadline_expiry_refuses_node_scope_completion"
     "bucket::content::held_nodes::tests::shared_actual_node_bytes_cannot_supply_an_incompatible_auxiliary_role"
+    "store::native_effect::publication::capture::predicate_tests::directory_link_growth_keeps_original_input_recipe_and_fresh_refusals"
+    "store::native_effect::publication::capture::predicate_tests::differing_original_input_constraints_remain_distinct_and_fail_closed"
+    "store::native_effect::publication::capture::predicate_tests::missing_input_stays_absent_after_predicate_coalescence"
   ];
 in
   # Immutable loading and relationship verification precede current view checks.
@@ -43,5 +46,5 @@ in
       python3 ../tests/terrane/check_native_gate.py execution \
         "$case_log" "[\"$test_name\"]"
     done
-    printf 'PASS: twenty exact immutable index loading and held reader refusal cases\n' > "$out/result"
+    printf 'PASS: twenty-three exact immutable index loading and physical input refusal cases\n' > "$out/result"
   ''

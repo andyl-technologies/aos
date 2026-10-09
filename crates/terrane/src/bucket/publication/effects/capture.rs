@@ -11,6 +11,9 @@ use std::{collections::BTreeMap, sync::Arc};
 use terrane_core::bucket::BucketKey;
 use terrane_core::gc::publication::BackendBinding;
 
+#[cfg(all(test, feature = "tokio", unix))]
+mod predicate_tests;
+
 /// Preserves exact native binding bytes without a Unicode conversion.
 fn native_path(bytes: Vec<u8>) -> Result<PathBuf, StoreFailure> {
     #[cfg(unix)]
