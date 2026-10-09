@@ -1,0 +1,113 @@
+--- a/include/dmtcp.h
++++ b/include/dmtcp.h
+@@ -472,6 +472,16 @@
+ 
+ // FOR EXPERTS ONLY:
+ int dmtcp_is_protected_fd(int fd);
++
++/* Native capture evidence, available only after a completed checkpoint.
++ * Coordinates refer to private checkpoint-image mappings, never protocol pointers.
++ * A negative result indicates absent, oversized, or unsupported capture evidence.
++ */
++int dmtcp_crucible_checkpoint_thread_count(void);
++int dmtcp_crucible_checkpoint_thread(int index, uint64_t *address,
++                                   uint32_t *real_tid, int *state, int *role,
++                                   void *bytes, size_t capacity);
++int dmtcp_crucible_operational_shared_region(uint64_t *start, uint64_t *end);
+ DmtcpUniqueProcessId dmtcp_get_uniquepid();
+ DmtcpUniqueProcessId dmtcp_get_coord_id();
+ DmtcpUniqueProcessId dmtcp_get_computation_id();
+--- a/src/shareddata.cpp
++++ b/src/shareddata.cpp
+@@ -258,6 +258,18 @@
+   JTRACE("Shared area mapped") (sharedDataHeader);
+ }
+ 
++extern "C" int
++dmtcp_crucible_operational_shared_region(uint64_t *start, uint64_t *end)
++{
++  if (!start || !end || !sharedDataHeader) {
++    return -1;
++  }
++  const uint64_t length = (SHM_MAX_SIZE + MTCP_PAGE_SIZE - 1) & ~(MTCP_PAGE_SIZE - 1);
++  *start = (uint64_t)sharedDataHeader;
++  *end = *start + length;
++  return 0;
++}
++
+ bool
+ SharedData::isSharedDataRegion(void *addr)
+ {
+--- a/src/threadlist.cpp
++++ b/src/threadlist.cpp
+@@ -64,6 +64,62 @@
+ __thread Thread *curThread ATTR_TLS_INITIAL_EXEC = NULL;
+ Thread *ckptThread = NULL;
+ 
++// Captured while every application thread is suspended. The bounded ledger
++// lives in checkpointed private memory and is unchanged by resume/restart.
++static constexpr size_t CrucibleMaxThreads = 256;
++struct CrucibleThreadContext {
++  uint64_t address;
++  uint32_t realTid;
++  int state;
++  int role;
++  unsigned char bytes[sizeof(Thread)];
++};
++static CrucibleThreadContext crucibleContexts[CrucibleMaxThreads];
++static int crucibleContextCount = -1;
++
++static void
++crucibleRecordThreadContexts()
++{
++  crucibleContextCount = -1;
++  size_t count = 0;
++  for (Thread *thread = activeThreads; thread != NULL; thread = thread->next) {
++    JASSERT(count < CrucibleMaxThreads);
++    JASSERT(thread == ckptThread || thread->state == ST_SUSPENDED);
++    auto &record = crucibleContexts[count++];
++    record.address = (uint64_t)thread;
++    record.realTid = thread->tid;
++    record.state = thread->state;
++    record.role = thread == ckptThread ? 1 : 0;
++    memcpy(record.bytes, thread, sizeof(Thread));
++  }
++  JASSERT(count > 0);
++  crucibleContextCount = (int)count;
++}
++
++extern "C" int
++dmtcp_crucible_checkpoint_thread_count(void)
++{
++  return crucibleContextCount;
++}
++
++extern "C" int
++dmtcp_crucible_checkpoint_thread(int index, uint64_t *address,
++                               uint32_t *real_tid, int *state, int *role,
++                               void *bytes, size_t capacity)
++{
++  if (index < 0 || index >= crucibleContextCount || !address || !real_tid ||
++      !state || !role || !bytes || capacity < sizeof(Thread)) {
++    return -1;
++  }
++  const auto &record = crucibleContexts[index];
++  *address = record.address;
++  *real_tid = record.realTid;
++  *state = record.state;
++  *role = record.role;
++  memcpy(bytes, record.bytes, sizeof(Thread));
++  return sizeof(Thread);
++}
++
+ static int numUserThreads = 0;
+ static bool originalstartup;
+ // Let dmtcp.h:DMTCP_RESTART_PAUSE_WHILE(cond) use (dmtcp::restartPauseLevel
+@@ -325,6 +381,7 @@
+   // const ssize_t pagesize = Util::pageSize();
+   // ASSERT_EQ(sizeof(header) % pagesize, 0ul);
+ 
++  crucibleRecordThreadContexts();
+   CkptSerializer::writeCkptImage(header, ckptFilename);
+ }
+ 

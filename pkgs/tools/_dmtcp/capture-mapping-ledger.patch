@@ -1,0 +1,80 @@
+--- a/include/dmtcp.h
++++ b/include/dmtcp.h
+@@ -504,6 +504,12 @@
+ int dmtcp_crucible_checkpoint_fd_count(void);
+ int dmtcp_crucible_checkpoint_fd(int index, uint64_t *address,
+                                void *bytes, size_t capacity);
++int dmtcp_crucible_checkpoint_map_count(void);
++/* Returns the 1112-byte meaningful native Area prefix (all fields and name),
++ * excluding the union's non-semantic padding. Captured coordinates are private.
++ */
++int dmtcp_crucible_checkpoint_map(int index, uint64_t *address,
++                                void *bytes, size_t capacity);
+ DmtcpUniqueProcessId dmtcp_get_uniquepid();
+ DmtcpUniqueProcessId dmtcp_get_coord_id();
+ DmtcpUniqueProcessId dmtcp_get_computation_id();
+--- a/include/procselfmaps.h
++++ b/include/procselfmaps.h
+@@ -26,6 +26,9 @@
+ 
+     int getNextArea(ProcMapsArea *area);
+ 
++    // Reuses the same kernel snapshot without allocation or another maps read.
++    void rewindSnapshot() { dataIdx = 0; }
++
+     const char* getData() const { return data; }
+ 
+   private:
+--- a/src/writeckpt.cpp
++++ b/src/writeckpt.cpp
+@@ -71,6 +71,31 @@
+ 
+ // static void sync_shared_mem(void);
+ static void writememoryarea(int fd, Area area);
++
++static constexpr size_t CrucibleMaxMappings = 8192;
++static constexpr size_t CrucibleAreaPrefixBytes = 1112;
++static Area crucibleMappings[CrucibleMaxMappings];
++static int crucibleMappingCount = -1;
++
++extern "C" int
++dmtcp_crucible_checkpoint_map_count(void)
++{
++  return crucibleMappingCount;
++}
++
++extern "C" int
++dmtcp_crucible_checkpoint_map(int index, uint64_t *address,
++                            void *bytes, size_t capacity)
++{
++  if (index < 0 || index >= crucibleMappingCount || !address || !bytes ||
++      capacity < CrucibleAreaPrefixBytes) {
++    return -1;
++  }
++  const auto &record = crucibleMappings[index];
++  *address = (uint64_t)&record;
++  memcpy(bytes, &record, CrucibleAreaPrefixBytes);
++  return CrucibleAreaPrefixBytes;
++}
+ static void mtcp_write_anonymous_pages(int fd, Area area,
+                                        bool residencyScanSafe);
+ 
+@@ -177,6 +202,18 @@
+     ((void *)ProcessInfo::instance().restoreBuf.startAddr)
+     (ProcessInfo::instance().restoreBuf.endAddr);
+   procSelfMaps = new ProcSelfMaps();
++
++  // Record the identical pre-image kernel-map snapshot used below. Filling
++  // fixed private storage before any memory is written ensures every record
++  // itself is present in the image, independent of mapping traversal order.
++  crucibleMappingCount = -1;
++  size_t crucibleCount = 0;
++  while (procSelfMaps->getNextArea(&area)) {
++    JASSERT(crucibleCount < CrucibleMaxMappings);
++    memcpy(&crucibleMappings[crucibleCount++], &area, sizeof(area));
++  }
++  crucibleMappingCount = crucibleCount;
++  procSelfMaps->rewindSnapshot();
+ 
+   // We must not cause an mmap() here, or the mem regions will not be correct.
+   while (procSelfMaps->getNextArea(&area)) {

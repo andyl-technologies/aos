@@ -58,6 +58,11 @@ in
           cd dmtcp-${version}
           patch --fuzz=0 -p1 < ${./_dmtcp/restart-environment-bounds.patch}
           patch --fuzz=0 -p1 < ${./_dmtcp/checkpoint-signal-parse.patch}
+          patch --fuzz=0 -p1 < ${./_dmtcp/capture-context-ledger.patch}
+          patch --fuzz=0 -p1 < ${./_dmtcp/capture-kernel-thread-identity.patch}
+          patch --fuzz=0 -p1 < ${./_dmtcp/capture-descriptor-ledger.patch}
+          patch --fuzz=0 -p1 < ${./_dmtcp/capture-mapping-ledger.patch}
+          patch --fuzz=0 -p1 < ${./_dmtcp/capture-file-mapping-ledger.patch}
           ${findutils}/bin/find . -type f -name '*.py' \
             -exec ${sed}/bin/sed -i "1s|^#!.*python.*$|#!${python3}/bin/python3|" {} +
           ${findutils}/bin/find . -type f -name '*.sh' \

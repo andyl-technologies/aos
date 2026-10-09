@@ -1,0 +1,14 @@
+--- a/src/threadlist.cpp
++++ b/src/threadlist.cpp
+@@ -126,7 +126,10 @@
+     JASSERT(thread == ckptThread || thread->state == ST_SUSPENDED);
+     auto &record = crucibleContexts[count++];
+     record.address = (uint64_t)thread;
+-    record.realTid = thread->tid;
++    // Thread::tid remains virtual when the PID plugin is installed. Bind the
++    // kernel peer independently while preserving the original Thread body.
++    record.realTid = dmtcp_virtual_to_real_pid
++      ? dmtcp_virtual_to_real_pid(thread->tid) : thread->tid;
+     record.state = thread->state;
+     record.role = thread == ckptThread ? 1 : 0;
+     memcpy(record.bytes, thread, sizeof(Thread));

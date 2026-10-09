@@ -9,6 +9,11 @@ or removed.
 | --- | --- | --- |
 | `restart-environment-bounds.patch` | `src/dmtcpplugin.cpp` | LGPL-3.0-or-later |
 | `checkpoint-signal-parse.patch` | `src/dmtcpworker.cpp` | LGPL-3.0-or-later |
+| `capture-context-ledger.patch` | `src/threadlist.cpp`, `src/shareddata.cpp`; declarations in `include/dmtcp.h` | LGPL-3.0-or-later implementation; public-domain interface header |
+| `capture-kernel-thread-identity.patch` | `src/threadlist.cpp` | LGPL-3.0-or-later |
+| `capture-descriptor-ledger.patch` | `src/threadlist.cpp`; declarations and native capture record format in `include/dmtcp.h` | LGPL-3.0-or-later implementation; public-domain interface header |
+| `capture-mapping-ledger.patch` | `src/writeckpt.cpp`, `include/procselfmaps.h`; declarations in `include/dmtcp.h` | LGPL-3.0-or-later implementation; public-domain interface header |
+| `capture-file-mapping-ledger.patch` | `src/plugin/ipc/file/fileconnlist.cpp`; declarations in `include/dmtcp.h` | LGPL-3.0-or-later implementation; public-domain interface header |
 | Hermetic loader/path substitutions in `dmtcp.nix` | `configure`, `configure.ac`, `src/util_exec.cpp`, `src/restartscript.cpp`, `src/glibcsystem.cpp`, `src/popen.cpp`, `src/plugin/ipc/ssh/ssh.cpp`, shell and Python entry-point shebangs | Each file's unchanged upstream notice; implementation files retain LGPL-3.0-or-later |
 
 The package installs `COPYING` and `COPYING.LESSER`. Distribution of modified
