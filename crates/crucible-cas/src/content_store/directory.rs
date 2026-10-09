@@ -44,12 +44,15 @@ use super::admin::{
 use super::*;
 
 mod checked;
+mod checked_admin;
 mod checked_publication;
 pub(in crate::content_store) mod file_pin;
 mod ref_admin;
 
 pub(in crate::content_store) use checked_publication::Accepted;
-pub use checked_publication::{DirectoryPublicationOutcome, DirectoryScopeError};
+pub use checked_publication::{
+    DirectoryMaintenanceOutcome, DirectoryPublicationOutcome, DirectoryScopeError,
+};
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 static INVENTORY_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -210,8 +213,26 @@ impl DirectoryBlobBackend {
         }
     }
 
+    pub(super) fn acquire_inventory_fence_initialized<'a>(
+        &'a self,
+        original: crate::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+        initialize: &mut checked_admin::Initializer<'_>,
+    ) -> Result<CheckedInventoryFence<'a>, StoreError> {
+        checked_admin::acquire_initialized(self, original, boundary, initialize)
+    }
+
     pub(super) fn create_staging(&self, directory: &Path) -> Result<(PathBuf, File), StoreError> {
+        self.create_staging_with_boundary(directory, &mut || Ok(()))
+    }
+
+    pub(super) fn create_staging_with_boundary(
+        &self,
+        directory: &Path,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<(PathBuf, File), StoreError> {
         loop {
+            boundary()?;
             let ordinal = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
             let path = directory.join(format!(".staging-{}-{ordinal}", std::process::id()));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -490,6 +511,13 @@ impl ImmutableBlobBackend for DirectoryBlobBackend {
 }
 
 impl BlobStoreAdmin for DirectoryBlobBackend {
+    fn acquire_inventory_fence_with_boundary(
+        &self,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedInventoryFence<'_>, StoreError> {
+        checked_admin::acquire(self, boundary)
+    }
+
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
         let lock = self.acquire_inventory_lock()?;
         let state = self.load_or_create_inventory_state()?;

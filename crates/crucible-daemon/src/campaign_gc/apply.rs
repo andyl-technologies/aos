@@ -1,5 +1,6 @@
 //! Exact-generation destructive apply for one journaled single-host GC plan.
 
+use super::physical_inventory::PhysicalFence;
 use super::reachability::Reachability;
 
 use std::error::Error as StdError;
@@ -8,8 +9,8 @@ use crucible_campaign::{
     CampaignFactId, CampaignName, CampaignRepository, CampaignRepositoryError, ConfigurationId,
 };
 use crucible_cas::content_store::{
-    BlobInventoryFence, ContentId, PlannedDeleteDisposition, RefStoreAdmin, StoreError,
-    StoreGraphPhysicalAdmin, StoreGraphPhysicalRetention, WriteBackRetentionAdmin,
+    ContentId, PlannedDeleteDisposition, RefStoreAdmin, StoreError, StoreGraphPhysicalAdmin,
+    StoreGraphPhysicalRetention, WriteBackRetentionAdmin,
 };
 use thiserror::Error;
 
@@ -623,12 +624,13 @@ where
         }
     }
     for (target, planned) in physical.iter().zip(journal.plan().physical()) {
-        let mut fence = target.admin().acquire_inventory_fence().map_err(|source| {
-            CampaignGcApplyError::Blob {
-                backend: target.backend().to_owned(),
-                source,
-            }
-        })?;
+        let mut fence =
+            target
+                .acquire_inventory(operation)
+                .map_err(|source| CampaignGcApplyError::Blob {
+                    backend: target.backend().to_owned(),
+                    source,
+                })?;
         validate_physical_inventory(
             target,
             planned,
@@ -892,7 +894,7 @@ where
     // This one exclusive physical fence binds the complete initial inventory
     // and every deletion. Other writers cannot change the namespace between
     // candidates; only the bounded selected batch mutates its generation.
-    let mut fence = acquire_physical_fence(target)?;
+    let mut fence = acquire_physical_fence(target, operation)?;
     validate_physical_inventory(&target, prior, candidates, fence.as_mut(), operation)?;
     for candidate in selected
         .iter()
@@ -920,7 +922,7 @@ where
             backend: target.backend().to_owned(),
             source,
         })?;
-    let current = CampaignGcBlobInventoryBasis::from_summary(&summary)?;
+    let current = summary.basis()?;
     if current.storage_identity() != prior.storage_identity()
         || current.generation() == prior.generation()
         || Some(current.objects()) != prior.objects().checked_sub(deleted)
@@ -947,8 +949,8 @@ where
 {
     let (cache_first, operation) = ordering;
     if cache_first {
-        let mut cache_fence = acquire_physical_fence(cache)?;
-        let mut source_fence = acquire_physical_fence(source)?;
+        let mut cache_fence = acquire_physical_fence(cache, operation)?;
+        let mut source_fence = acquire_physical_fence(source, operation)?;
         delete_with_paired_fences(
             cache,
             cache_expected,
@@ -961,8 +963,8 @@ where
             operation,
         )
     } else {
-        let mut source_fence = acquire_physical_fence(source)?;
-        let mut cache_fence = acquire_physical_fence(cache)?;
+        let mut source_fence = acquire_physical_fence(source, operation)?;
+        let mut cache_fence = acquire_physical_fence(cache, operation)?;
         delete_with_paired_fences(
             cache,
             cache_expected,
@@ -982,10 +984,10 @@ where
 fn delete_with_paired_fences<E>(
     cache: CampaignGcPhysicalStore<'_>,
     cache_expected: &CampaignGcBlobInventoryBasis,
-    cache_fence: &mut dyn BlobInventoryFence,
+    cache_fence: &mut PhysicalFence<'_, '_, '_>,
     source: CampaignGcPhysicalStore<'_>,
     source_expected: &CampaignGcBlobInventoryBasis,
-    source_fence: &mut dyn BlobInventoryFence,
+    source_fence: &mut PhysicalFence<'_, '_, '_>,
     id: ContentId,
     logical_length: u64,
     operation: &CampaignGcOperationContext<'_>,
@@ -1037,7 +1039,7 @@ fn validate_required_copy_fence<E>(
 where
     E: StdError + 'static,
 {
-    let mut fence = acquire_physical_fence(source)?;
+    let mut fence = acquire_physical_fence(source, operation)?;
     validate_fenced_placement::<E, _>(
         source,
         expected,
@@ -1060,7 +1062,7 @@ fn validate_fenced_placement<'a, E, P>(
     expected: &CampaignGcBlobInventoryBasis,
     id: ContentId,
     logical_length: u64,
-    fence: &mut dyn BlobInventoryFence,
+    fence: &mut PhysicalFence<'_, '_, '_>,
     operation: &CampaignGcOperationContext<'_>,
 ) -> Result<(), CampaignGcApplyError<E>>
 where
@@ -1080,7 +1082,7 @@ where
             backend: target.backend().to_owned(),
             source,
         })?;
-    let current = CampaignGcBlobInventoryBasis::from_summary(&summary)?;
+    let current = summary.basis()?;
     if !found || current != *expected {
         return Err(CampaignGcApplyError::CandidateSetChanged {
             backend: target.backend().to_owned(),
@@ -1094,7 +1096,7 @@ fn refreshed_basis_after_delete<'a, E, P>(
     prior: &CampaignGcBlobInventoryBasis,
     deleted: ContentId,
     logical_length: u64,
-    fence: &mut dyn BlobInventoryFence,
+    fence: &mut PhysicalFence<'_, '_, '_>,
     operation: &CampaignGcOperationContext<'_>,
 ) -> Result<CampaignGcBlobInventoryBasis, CampaignGcApplyError<E>>
 where
@@ -1112,7 +1114,7 @@ where
             backend: target.backend().to_owned(),
             source,
         })?;
-    let current = CampaignGcBlobInventoryBasis::from_summary(&summary)?;
+    let current = summary.basis()?;
     let expected_objects = prior.objects().checked_sub(1);
     let expected_bytes = prior.logical_bytes().checked_sub(logical_length);
     if still_present
@@ -1130,7 +1132,7 @@ where
 
 fn delete_exact_candidate<'a, E, P>(
     target: P,
-    fence: &mut dyn BlobInventoryFence,
+    fence: &mut PhysicalFence<'_, '_, '_>,
     id: ContentId,
     operation: &CampaignGcOperationContext<'_>,
 ) -> Result<(), CampaignGcApplyError<E>>
@@ -1154,16 +1156,16 @@ where
     }
 }
 
-fn acquire_physical_fence<'a, E, P>(
+fn acquire_physical_fence<'a, 'operation, 'boundary, E, P>(
     target: P,
-) -> Result<Box<dyn BlobInventoryFence + 'a>, CampaignGcApplyError<E>>
+    operation: &'operation CampaignGcOperationContext<'boundary>,
+) -> Result<PhysicalFence<'a, 'operation, 'boundary>, CampaignGcApplyError<E>>
 where
     E: StdError + 'static,
     P: CampaignGcInventoryTarget<'a>,
 {
     target
-        .admin()
-        .acquire_inventory_fence()
+        .acquire_inventory(operation)
         .map_err(|source| CampaignGcApplyError::Blob {
             backend: target.backend().to_owned(),
             source,
@@ -1424,7 +1426,7 @@ fn validate_physical_inventory<'a, E, P>(
     target: &P,
     planned: &CampaignGcBlobInventoryBasis,
     candidates: &CampaignGcCandidateManifest,
-    fence: &mut dyn BlobInventoryFence,
+    fence: &mut PhysicalFence<'_, '_, '_>,
     operation: &CampaignGcOperationContext<'_>,
 ) -> Result<(), CampaignGcApplyError<E>>
 where
@@ -1454,7 +1456,7 @@ where
             backend: target.backend().to_owned(),
             source,
         })?;
-    let current = CampaignGcBlobInventoryBasis::from_summary(&inventory)?;
+    let current = inventory.basis()?;
     if current != *planned {
         return Err(CampaignGcApplyError::PhysicalBasisChanged {
             backend: target.backend().to_owned(),

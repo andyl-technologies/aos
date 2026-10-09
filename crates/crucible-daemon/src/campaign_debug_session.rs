@@ -802,6 +802,7 @@ fn checkpoint_store_selection_failure(
         | StoreError::DirectoryScope { .. }
         | StoreError::PackedScope { .. }
         | StoreError::MemoryScope { .. }
+        | StoreError::AdministrativeScope { .. }
         | StoreError::CompositeScope { .. }
         | StoreError::SqliteHeap { .. }
         | StoreError::SqliteScope { .. }

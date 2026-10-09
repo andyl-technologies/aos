@@ -33,6 +33,7 @@ mod manifest;
 #[cfg(test)]
 pub(crate) mod native_storage;
 mod operation;
+mod physical_inventory;
 mod planner;
 mod reachability;
 mod roots;

@@ -24,6 +24,8 @@ use super::{
     PutReceipt, StoreError, StoreGraphConfigurationId,
 };
 
+mod checked_admin;
+
 const QUOTA_STATE_MAGIC: &[u8; 8] = b"CRUCQ001";
 const QUOTA_STATE_BYTES: u64 = 89;
 const QUOTA_STATE_CHECKSUM_DOMAIN: &[u8] = b"crucible.content-store.logical-quota-state.v1";
@@ -182,9 +184,19 @@ impl LogicalQuotaStore {
     }
 
     fn persist_state(&self, state: QuotaState) -> Result<(), StoreError> {
+        self.persist_state_checked(state, &mut || Ok(()))
+    }
+
+    fn persist_state_checked(
+        &self,
+        state: QuotaState,
+        check: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        check()?;
         let path = self.state_root.join(QUOTA_STATE_FILE);
         let staging_path = self.state_root.join(QUOTA_STATE_STAGING_FILE);
         let result = (|| {
+            check()?;
             let descriptor = open(
                 &staging_path,
                 OFlags::WRONLY
@@ -200,6 +212,7 @@ impl LogicalQuotaStore {
                 source: std::io::Error::from_raw_os_error(source.raw_os_error()),
             })?;
             let mut staging = File::from(descriptor);
+            check()?;
             staging
                 .write_all(&quota_state_bytes(state))
                 .and_then(|()| staging.sync_all())
@@ -208,12 +221,15 @@ impl LogicalQuotaStore {
                     path: staging_path.clone(),
                     source,
                 })?;
+            check()?;
             fs::rename(&staging_path, &path).map_err(|source| StoreError::Io {
                 operation: "publish-logical-quota-state",
                 path: path.clone(),
                 source,
             })?;
-            sync_directory(&self.state_root)
+            check()?;
+            sync_directory(&self.state_root)?;
+            check()
         })();
         if result.is_err() {
             let _ = fs::remove_file(&staging_path);
@@ -321,6 +337,13 @@ impl ImmutableBlobBackend for LogicalQuotaStore {
 }
 
 impl BlobStoreAdmin for LogicalQuotaStore {
+    fn acquire_inventory_fence_with_boundary(
+        &self,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<super::CheckedInventoryFence<'_>, StoreError> {
+        checked_admin::acquire(self, boundary)
+    }
+
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
         let lock = self.acquire_state_lock()?;
         let state = self.load_or_recover_state(false)?;

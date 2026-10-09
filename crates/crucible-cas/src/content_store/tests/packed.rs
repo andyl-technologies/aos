@@ -241,6 +241,8 @@ fn pack_index_interruption_recovers_old_generation_and_retries() {
     let plan = store.plan_repack().expect("interrupted repack plan");
     assert_eq!(before.generation(), 2);
     assert_eq!(before.packs(), 2);
+    let index_path = root.join(".packed-admin/index-v1");
+    let before_index = fs::read(&index_path).expect("old committed index bytes");
     drop(store);
 
     let child = std::process::Command::new(std::env::current_exe().expect("current test binary"))
@@ -262,21 +264,32 @@ fn pack_index_interruption_recovers_old_generation_and_retries() {
         String::from_utf8_lossy(&child.stdout),
         String::from_utf8_lossy(&child.stderr),
     );
+    // The completed replacement pack has no temporary name at this fault
+    // edge. Root publication has not begun, so its exact old bytes survive.
     assert_eq!(pack_file_count(&root), 3);
-    assert_eq!(pack_staging_file_count(&root), 1);
+    assert_eq!(pack_staging_file_count(&root), 0);
+    assert_eq!(
+        fs::read(&index_path).expect("interrupted index"),
+        before_index
+    );
 
     let restarted =
         PackedBlobBackend::open("packed", &root, 64 * 1024).expect("restart old generation");
     assert_eq!(pack_file_count(&root), 3);
-    assert_eq!(pack_staging_file_count(&root), 1);
+    assert_eq!(pack_staging_file_count(&root), 0);
+    assert_eq!(
+        fs::read(&index_path).expect("restarted index"),
+        before_index
+    );
     let cleanup = restarted
         .cleanup_incomplete_packs()
         .expect("clean interrupted replacement material");
     assert_eq!(cleanup.index_generation(), before.generation());
     assert_eq!(cleanup.removed_unreferenced_packs(), 1);
-    assert_eq!(cleanup.removed_staging_packs(), 1);
+    assert_eq!(cleanup.removed_staging_packs(), 0);
     assert_eq!(pack_file_count(&root), 2);
     assert_eq!(pack_staging_file_count(&root), 0);
+    assert_eq!(fs::read(&index_path).expect("cleaned index"), before_index);
     assert_eq!(
         restarted.accounting().expect("recovered accounting"),
         before

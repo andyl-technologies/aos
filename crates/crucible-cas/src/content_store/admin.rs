@@ -11,9 +11,11 @@ use super::*;
 
 mod checked;
 mod checked_fence;
+pub(super) mod outcome;
 pub(super) use checked::{CheckedReceipt, PreparedResources};
 pub use checked::{DeleteBatchReceipt, InventorySummaryReceipt};
 pub use checked_fence::CheckedInventoryFence;
+pub use outcome::AdministrativeScopeError;
 
 /// Exact digest of one stable physical blob inventory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

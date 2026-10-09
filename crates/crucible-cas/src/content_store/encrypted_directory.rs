@@ -48,6 +48,7 @@ use rustix::fs::{Mode, OFlags, open};
 use zeroize::Zeroizing;
 
 mod compressed;
+mod key_state;
 
 use compressed::{
     compress_and_encrypt_source, compressed_header_authenticator, maximum_compressed_length,
@@ -65,9 +66,6 @@ use super::*;
 
 const ENCRYPTED_OBJECT_MAGIC: &[u8; 8] = b"CRUCE001";
 const COMPRESSED_ENCRYPTED_OBJECT_MAGIC: &[u8; 8] = b"CRUCC001";
-const ENCRYPTION_KEY_STATE_MAGIC: &[u8; 8] = b"CRUCK001";
-const ENCRYPTION_KEY_STATE_BYTES: u64 = 104;
-const ENCRYPTION_KEY_STATE_FILE: &str = "encryption-key-v1";
 const ENCRYPTED_OBJECT_HEADER_BYTES: u64 = 52;
 const COMPRESSED_ENCRYPTED_OBJECT_HEADER_BYTES: u64 = 92;
 const ENCRYPTED_CHUNK_BYTES: u64 = 64 * 1024;
@@ -76,8 +74,6 @@ const MAXIMUM_DECOMPRESSION_WINDOW_LOG: u32 = 23;
 pub(super) const MAXIMUM_ENCRYPTED_LOGICAL_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
 const KEY_ID_BINDING_DOMAIN: &[u8] = b"crucible.content-store.encryption-key-id.v1";
 const AES_KEY_DOMAIN: &[u8] = b"crucible.content-store.encrypted-aes-key.v1";
-const KEY_STATE_VERIFIER_DOMAIN: &[u8] = b"crucible.content-store.encryption-key-verifier.v1";
-const KEY_STATE_CHECKSUM_DOMAIN: &[u8] = b"crucible.content-store.encryption-key-state.v1";
 const CHUNK_NONCE_DOMAIN: &[u8] = b"crucible.content-store.encrypted-chunk-nonce.v1";
 const CHUNK_AAD_DOMAIN: &[u8] = b"crucible.content-store.encrypted-chunk-aad.v1";
 const COMPRESSED_CHUNK_NONCE_DOMAIN: &[u8] =
@@ -435,59 +431,6 @@ impl EncryptedDirectoryBlobBackend {
             Err(error) => Err(error),
         }
     }
-
-    fn validate_or_create_key_state_locked(&self) -> Result<(), StoreError> {
-        let directory = self.root().join(".inventory-admin");
-        create_dir_all_durable(&directory)?;
-        let path = directory.join(ENCRYPTION_KEY_STATE_FILE);
-        match read_key_state(&path, self.key_id_binding, self.key.bytes()) {
-            Ok(true) => return Ok(()),
-            Ok(false) => {}
-            Err(error) => return Err(error),
-        }
-
-        let bytes = encryption_key_state(self.key_id_binding, self.key.bytes());
-        let (staging_path, mut staging) = self.directory.create_staging(&directory)?;
-        let publish_result = (|| {
-            staging
-                .write_all(&bytes)
-                .and_then(|()| staging.sync_all())
-                .map_err(|source| StoreError::Io {
-                    operation: "write-encryption-key-state-staging",
-                    path: staging_path.clone(),
-                    source,
-                })?;
-            match fs::hard_link(&staging_path, &path) {
-                Ok(()) => sync_directory(&directory),
-                Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if read_key_state(&path, self.key_id_binding, self.key.bytes())? {
-                        Ok(())
-                    } else {
-                        Err(StoreError::InvalidComposition {
-                            reason: "encrypted directory key state disappeared during publication",
-                        })
-                    }
-                }
-                Err(source) => Err(StoreError::Io {
-                    operation: "publish-encryption-key-state",
-                    path: path.clone(),
-                    source,
-                }),
-            }
-        })();
-        let remove_result = fs::remove_file(&staging_path);
-        if let Err(source) = remove_result
-            && source.kind() != std::io::ErrorKind::NotFound
-            && publish_result.is_ok()
-        {
-            return Err(StoreError::Io {
-                operation: "remove-encryption-key-state-staging",
-                path: staging_path,
-                source,
-            });
-        }
-        publish_result
-    }
 }
 
 impl EncryptedDirectoryBlobBackend {
@@ -653,6 +596,13 @@ impl ImmutableBlobBackend for EncryptedDirectoryBlobBackend {
 }
 
 impl BlobStoreAdmin for EncryptedDirectoryBlobBackend {
+    fn acquire_inventory_fence_with_boundary<'a>(
+        &'a self,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedInventoryFence<'a>, StoreError> {
+        super::encoded_directory_admin::acquire(self, boundary)
+    }
+
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
         let lock = self.directory.acquire_inventory_lock()?;
         self.validate_or_create_key_state_locked()?;
@@ -671,84 +621,6 @@ struct EncryptedObjectHeader {
     payload_length: u64,
     key_id_binding: [u8; 32],
     encoding: EncryptedObjectEncoding,
-}
-
-fn encryption_key_state(key_id_binding: [u8; 32], key: &[u8; 32]) -> [u8; 104] {
-    let mut bytes = [0_u8; 104];
-    bytes[..8].copy_from_slice(ENCRYPTION_KEY_STATE_MAGIC);
-    bytes[8..40].copy_from_slice(&key_id_binding);
-    let mut verifier = blake3::Hasher::new_keyed(key);
-    verifier.update(KEY_STATE_VERIFIER_DOMAIN);
-    verifier.update(&key_id_binding);
-    bytes[40..72].copy_from_slice(verifier.finalize().as_bytes());
-    let mut checksum = blake3::Hasher::new();
-    checksum.update(KEY_STATE_CHECKSUM_DOMAIN);
-    checksum.update(&bytes[..72]);
-    bytes[72..].copy_from_slice(checksum.finalize().as_bytes());
-    bytes
-}
-
-fn read_key_state(
-    path: &Path,
-    expected_key_id_binding: [u8; 32],
-    key: &[u8; 32],
-) -> Result<bool, StoreError> {
-    let descriptor = match open(
-        path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-        Mode::empty(),
-    ) {
-        Ok(descriptor) => descriptor,
-        Err(source) if source == rustix::io::Errno::NOENT => return Ok(false),
-        Err(source) => {
-            return Err(StoreError::Io {
-                operation: "open-encryption-key-state",
-                path: path.to_path_buf(),
-                source: std::io::Error::from_raw_os_error(source.raw_os_error()),
-            });
-        }
-    };
-    let file = File::from(descriptor);
-    let metadata = file.metadata().map_err(|source| StoreError::Io {
-        operation: "inspect-encryption-key-state",
-        path: path.to_path_buf(),
-        source,
-    })?;
-    if !metadata.file_type().is_file() || metadata.len() != ENCRYPTION_KEY_STATE_BYTES {
-        return Err(StoreError::InvalidComposition {
-            reason: "encrypted directory key state is malformed",
-        });
-    }
-    let mut bytes = [0_u8; 104];
-    read_exact_at(&file, &mut bytes, 0).map_err(|_| StoreError::InvalidComposition {
-        reason: "encrypted directory key state is malformed",
-    })?;
-    if bytes[..8] != *ENCRYPTION_KEY_STATE_MAGIC {
-        return Err(StoreError::InvalidComposition {
-            reason: "encrypted directory key state is corrupt or belongs to another generation",
-        });
-    }
-    let mut checksum = blake3::Hasher::new();
-    checksum.update(KEY_STATE_CHECKSUM_DOMAIN);
-    checksum.update(&bytes[..72]);
-    if bytes[72..] != *checksum.finalize().as_bytes() || bytes[8..40] != expected_key_id_binding {
-        return Err(StoreError::InvalidComposition {
-            reason: "encrypted directory key state is corrupt or belongs to another generation",
-        });
-    }
-    let mut verifier = blake3::Hasher::new_keyed(key);
-    verifier.update(KEY_STATE_VERIFIER_DOMAIN);
-    verifier.update(&expected_key_id_binding);
-    let observed_verifier: [u8; 32] =
-        bytes[40..72]
-            .try_into()
-            .map_err(|_| StoreError::InvalidComposition {
-                reason: "encrypted directory key state is malformed",
-            })?;
-    if !constant_time_equal_32(verifier.finalize().as_bytes(), &observed_verifier) {
-        return Err(StoreError::Unauthorized);
-    }
-    Ok(true)
 }
 
 fn write_encrypted_header(
@@ -788,6 +660,27 @@ fn open_encrypted_object(
     expected_encoding: EncryptedObjectEncoding,
     key: &[u8; 32],
 ) -> Result<(Arc<File>, EncryptedObjectHeader), StoreError> {
+    open_encrypted_object_with_boundary(
+        path,
+        id,
+        maximum_logical_object_bytes,
+        expected_key_id_binding,
+        expected_encoding,
+        key,
+        &mut || Ok(()),
+    )
+}
+
+fn open_encrypted_object_with_boundary(
+    path: &Path,
+    id: ContentId,
+    maximum_logical_object_bytes: u64,
+    expected_key_id_binding: [u8; 32],
+    expected_encoding: EncryptedObjectEncoding,
+    key: &[u8; 32],
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<(Arc<File>, EncryptedObjectHeader), StoreError> {
+    boundary()?;
     let descriptor = match open(
         path,
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
@@ -806,6 +699,7 @@ fn open_encrypted_object(
         }
     };
     let file = File::from(descriptor);
+    boundary()?;
     let metadata = file.metadata().map_err(|source| StoreError::Io {
         operation: "inspect-encrypted-object",
         path: path.to_path_buf(),
@@ -820,7 +714,7 @@ fn open_encrypted_object(
     let header_bytes = expected_encoding.header_bytes();
     let mut bytes = [0_u8; COMPRESSED_ENCRYPTED_OBJECT_HEADER_BYTES as usize];
     let header_length = usize::try_from(header_bytes).map_err(|_| StoreError::Quota)?;
-    read_exact_at(&file, &mut bytes[..header_length], 0).map_err(|_| StoreError::Corrupt { id })?;
+    super::encoded_directory_admin::read_header(&file, &mut bytes[..header_length], id, boundary)?;
     if &bytes[..8] != expected_encoding.magic() {
         return Err(StoreError::Corrupt { id });
     }
@@ -1408,5 +1302,36 @@ fn read_at_retry(file: &File, output: &mut [u8], offset: u64) -> std::io::Result
             Err(source) if source.kind() == std::io::ErrorKind::Interrupted => continue,
             result => return result,
         }
+    }
+}
+
+impl super::encoded_directory_admin::EncodedDirectory for EncryptedDirectoryBlobBackend {
+    fn directory(&self) -> &DirectoryBlobBackend {
+        &self.directory
+    }
+
+    fn initialize(
+        &self,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        self.validate_or_create_key_state_with_boundary(boundary)
+    }
+
+    fn logical_length(
+        &self,
+        path: &Path,
+        id: ContentId,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<u64, StoreError> {
+        let (_file, header) = open_encrypted_object_with_boundary(
+            path,
+            id,
+            self.maximum_logical_object_bytes,
+            self.key_id_binding,
+            self.encoding,
+            self.key.bytes(),
+            boundary,
+        )?;
+        Ok(header.logical_length)
     }
 }

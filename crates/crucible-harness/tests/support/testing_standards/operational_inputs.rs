@@ -8,6 +8,9 @@ use super::{compact_code, mask_expression};
 #[path = "operational_catalog_gc.rs"]
 mod operational_catalog_gc;
 
+#[path = "operational_gc_marks.rs"]
+mod operational_gc_marks;
+
 #[path = "operational_packed.rs"]
 mod operational_packed;
 
@@ -136,6 +139,7 @@ pub(super) fn mask(package: &str, target: &str, code: &str) -> String {
         .chain(operational_sqlite::CONTRACTS)
         .chain(operational_ram_read::CONTRACTS)
         .chain(operational_packed::CONTRACTS)
+        .chain(operational_gc_marks::CONTRACTS)
         .find(|contract| contract.package == package && contract.target == target)
     else {
         return code.to_owned();

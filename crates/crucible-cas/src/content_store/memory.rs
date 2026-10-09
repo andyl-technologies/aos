@@ -13,6 +13,7 @@ use super::admin::{
 use super::*;
 
 mod checked;
+mod checked_admin;
 mod checked_publication;
 mod namespace;
 
@@ -482,6 +483,13 @@ impl ImmutableBlobBackend for MemoryBlobBackend {
 }
 
 impl BlobStoreAdmin for MemoryBlobBackend {
+    fn acquire_inventory_fence_with_boundary(
+        &self,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedInventoryFence<'_>, StoreError> {
+        checked_admin::acquire(self, boundary)
+    }
+
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
         let state = self.state.lock().map_err(|_| StoreError::Poisoned {
             operation: "memory-inventory-fence",
@@ -526,32 +534,7 @@ impl BlobInventoryFence for MemoryBlobInventoryFence<'_> {
     }
 
     fn delete_candidate(&mut self, id: ContentId) -> Result<PlannedDeleteDisposition, StoreError> {
-        if !self.state.objects.contains_key(&id) {
-            return Ok(PlannedDeleteDisposition::AlreadyAbsent);
-        }
-        let next_generation = self
-            .state
-            .generation
-            .checked_add(1)
-            .ok_or(StoreError::Quota)?;
-        let bytes = self.state.objects.remove(&id).ok_or(StoreError::Poisoned {
-            operation: "memory-delete-candidate",
-        })?;
-        if self.state.objects.is_empty() {
-            // Removal can retain an empty root. Its fixed namespace credit
-            // remains live across this close and any later new root.
-            self.state.objects = BTreeMap::new();
-        }
-        let logical_length = u64::try_from(bytes.bytes()?.len()).map_err(|_| StoreError::Quota)?;
-        self.state.logical_bytes =
-            self.state
-                .logical_bytes
-                .checked_sub(logical_length)
-                .ok_or(StoreError::Poisoned {
-                    operation: "memory-delete-accounting",
-                })?;
-        self.state.generation = next_generation;
-        Ok(PlannedDeleteDisposition::Deleted)
+        self.remove(id)
     }
 
     fn repair_put_if_absent(
@@ -600,6 +583,37 @@ impl BlobInventoryFence for MemoryBlobInventoryFence<'_> {
                 logical_length,
             },
         ))
+    }
+}
+
+impl MemoryBlobInventoryFence<'_> {
+    fn remove(&mut self, id: ContentId) -> Result<PlannedDeleteDisposition, StoreError> {
+        if !self.state.objects.contains_key(&id) {
+            return Ok(PlannedDeleteDisposition::AlreadyAbsent);
+        }
+        let next_generation = self
+            .state
+            .generation
+            .checked_add(1)
+            .ok_or(StoreError::Quota)?;
+        let bytes = self.state.objects.remove(&id).ok_or(StoreError::Poisoned {
+            operation: "memory-delete-candidate",
+        })?;
+        if self.state.objects.is_empty() {
+            // Removal can retain an empty root. Its fixed namespace credit
+            // remains live across this close and any later new root.
+            self.state.objects = BTreeMap::new();
+        }
+        let logical_length = u64::try_from(bytes.bytes()?.len()).map_err(|_| StoreError::Quota)?;
+        self.state.logical_bytes =
+            self.state
+                .logical_bytes
+                .checked_sub(logical_length)
+                .ok_or(StoreError::Poisoned {
+                    operation: "memory-delete-accounting",
+                })?;
+        self.state.generation = next_generation;
+        Ok(PlannedDeleteDisposition::Deleted)
     }
 }
 

@@ -22,6 +22,9 @@ use super::CampaignGcOperationContext;
 #[cfg(test)]
 mod metadata_lifecycle;
 
+#[cfg(test)]
+mod batched_tests;
+
 pub(super) struct Reachability {
     map: MerkleMap,
     root: MerkleMapRoot,
@@ -40,6 +43,7 @@ impl Reachability {
     ) -> Result<Self, StoreError> {
         operation.check()?;
         let mut marks = Self::with_backend(operation.marks(), operation.original())?;
+        let mut pending = PendingMarks::new(operation)?;
         let closure = repository
             .authenticated_storage_closure_with_boundary(roots, inventory, &mut || {
                 operation.check().map_err(Into::into)
@@ -53,10 +57,11 @@ impl Reachability {
             })?;
         for id in closure.objects().iter().copied().chain(direct) {
             operation.check()?;
-            marks.insert(id)?;
+            pending.insert(&mut marks, id, operation)?;
         }
 
         if closure.ram_roots().is_empty() {
+            pending.flush(&mut marks, operation)?;
             return Ok(marks);
         }
 
@@ -78,7 +83,9 @@ impl Reachability {
                 &mut || operation.check().map_err(Into::into),
                 &mut |id| {
                     operation.check()?;
-                    marks.insert(id).map_err(Into::into)
+                    pending
+                        .insert(&mut marks, id, operation)
+                        .map_err(Into::into)
                 },
             )
             .map_err(|error| match error {
@@ -86,6 +93,7 @@ impl Reachability {
                 other => marks.failure("authenticate GC RAM graph", other),
             })?;
         }
+        pending.flush(&mut marks, operation)?;
         Ok(marks)
     }
 
@@ -152,6 +160,7 @@ impl Reachability {
         Ok(marks)
     }
 
+    #[cfg(test)]
     fn insert(&mut self, id: ContentId) -> Result<(), StoreError> {
         let account = mark_account(&self.original)?;
         let _scope = account.enter();
@@ -204,6 +213,88 @@ impl Reachability {
             operation,
             source: io::Error::other(source),
         }
+    }
+}
+
+// One prepaid page survives graph traversal; no complete RAM closure is stored
+// in memory. A batch root becomes authoritative only after checked publication
+// and the same operation's final refusal check both succeed.
+struct PendingMarks {
+    entries: Vec<(CampaignHash, ContentId)>,
+    _credit: crucible_cas::owned_decode::ResourceLoan,
+}
+
+impl PendingMarks {
+    fn new(operation: &CampaignGcOperationContext<'_>) -> Result<Self, StoreError> {
+        let credit = operation
+            .reserve_array::<(CampaignHash, ContentId)>(MerkleMap::MAX_CHECKED_BATCH_UPSERTS)?;
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(MerkleMap::MAX_CHECKED_BATCH_UPSERTS)
+            .map_err(|source| StoreError::StreamIo {
+                operation: "allocate bounded GC mark page",
+                source: io::Error::other(source),
+            })?;
+        Ok(Self {
+            entries,
+            _credit: credit,
+        })
+    }
+
+    fn insert(
+        &mut self,
+        marks: &mut Reachability,
+        id: ContentId,
+        operation: &CampaignGcOperationContext<'_>,
+    ) -> Result<(), StoreError> {
+        operation.check()?;
+        self.entries.push((mark_key(id), id));
+        if self.entries.len() == MerkleMap::MAX_CHECKED_BATCH_UPSERTS {
+            self.flush(marks, operation)?;
+        }
+        Ok(())
+    }
+
+    fn flush(
+        &mut self,
+        marks: &mut Reachability,
+        operation: &CampaignGcOperationContext<'_>,
+    ) -> Result<(), StoreError> {
+        if self.entries.is_empty() {
+            return Ok(());
+        }
+        operation.check()?;
+        self.entries.sort_unstable_by_key(|entry| entry.0);
+        if self
+            .entries
+            .windows(2)
+            .any(|pair| pair[0].0 == pair[1].0 && pair[0].1 != pair[1].1)
+        {
+            return Err(StoreError::Corrupt {
+                id: marks.root.content_id(),
+            });
+        }
+        self.entries.dedup_by_key(|entry| entry.0);
+        let account = mark_account(&marks.original)?;
+        let root = marks
+            .map
+            .insert_batch_with_boundary(
+                marks.root.content_id(),
+                &self.entries,
+                &account,
+                &mut || operation.check(),
+            )
+            .map_err(|source| marks.failure("insert GC mark batch", source))?;
+        account
+            .check()
+            .map_err(|error| mark_admission(&account, error))?;
+        operation.check()?;
+        if root.entry_count() > MAX_CAMPAIGN_CLOSURE_OBJECTS as u64 {
+            return Err(StoreError::Quota);
+        }
+        marks.root = root;
+        self.entries.clear();
+        Ok(())
     }
 }
 
@@ -286,5 +377,18 @@ mod tests {
             .execute("DELETE FROM objects", [])
             .expect("simulate storage loss");
         assert!(marks.contains(&id).is_err());
+        let account = mark_account(&marks.original).expect("same mark child");
+        let other = ContentId::for_bytes(ObjectKind::RamExtent, 1, b"other page");
+        assert!(
+            marks
+                .map
+                .insert_batch_with_boundary(
+                    marks.root.content_id(),
+                    &[(mark_key(other), other)],
+                    &account,
+                    &mut || Ok(()),
+                )
+                .is_err()
+        );
     }
 }

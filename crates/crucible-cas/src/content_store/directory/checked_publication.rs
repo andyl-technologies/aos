@@ -15,16 +15,29 @@ pub struct DirectoryPublicationOutcome {
     pub durability_uncertain: bool,
 }
 
+/// Records logical deletion effects independently of object publication.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DirectoryMaintenanceOutcome {
+    /// Counts objects whose unlink completed, even if directory sync failed.
+    pub removed_objects: u8,
+    /// Counts supplied candidates whose absence was durably confirmed.
+    pub durable_candidates: u8,
+    /// Reports an unlink or metadata rename whose durability is unresolved.
+    pub durability_uncertain: bool,
+}
+
 /// Retains filesystem work, cleanup, and publication evidence together.
 pub struct DirectoryScopeError {
     body: Box<Failure>,
     _credit: DecodeScratch,
 }
 
-struct Failure {
+pub(super) struct Failure {
     work: Option<StoreError>,
     cleanup: Option<StoreError>,
     outcome: DirectoryPublicationOutcome,
+    maintenance: Option<DirectoryMaintenanceOutcome>,
+    post_boundary: Option<StoreError>,
     _diagnostic: Option<DecodeScratch>,
 }
 
@@ -41,6 +54,22 @@ impl DirectoryScopeError {
         self.body.cleanup.as_ref()
     }
 
+    /// Returns retained logical-deletion effects for an administrative failure.
+    #[must_use]
+    pub fn maintenance_outcome(&self) -> Option<DirectoryMaintenanceOutcome> {
+        self.body.maintenance
+    }
+
+    /// Borrows a distinct refusal observed after failed administrative work.
+    #[must_use]
+    pub fn post_boundary_failure(&self) -> Option<&StoreError> {
+        self.body.post_boundary.as_ref()
+    }
+
+    pub(super) fn retain_post_boundary(&mut self, error: Option<StoreError>) {
+        self.body.post_boundary = error;
+    }
+
     /// Returns the observed outcome while its original causes remain owned.
     #[must_use]
     pub fn outcome(&self) -> DirectoryPublicationOutcome {
@@ -55,6 +84,8 @@ impl std::fmt::Debug for DirectoryScopeError {
             .field("work", &self.body.work)
             .field("cleanup", &self.body.cleanup)
             .field("outcome", &self.body.outcome)
+            .field("maintenance", &self.body.maintenance)
+            .field("post_boundary", &self.body.post_boundary)
             .finish()
     }
 }
@@ -78,10 +109,11 @@ impl std::error::Error for DirectoryScopeError {
 }
 
 pub(in crate::content_store) struct Accepted<T> {
-    value: T,
-    outcome: DirectoryPublicationOutcome,
-    diagnostic: Option<DecodeScratch>,
-    credit: DecodeScratch,
+    pub(super) value: T,
+    pub(super) outcome: DirectoryPublicationOutcome,
+    pub(super) maintenance: Option<DirectoryMaintenanceOutcome>,
+    pub(super) diagnostic: Option<DecodeScratch>,
+    pub(super) credit: DecodeScratch,
 }
 
 impl<T> Accepted<T> {
@@ -103,11 +135,19 @@ impl<T> Accepted<T> {
                 let Self {
                     value,
                     outcome,
+                    maintenance,
                     diagnostic,
                     credit,
                 } = self;
                 drop(value);
-                Err(scope_error(Some(error), None, outcome, diagnostic, credit))
+                Err(scope_error_with_maintenance(
+                    Some(error),
+                    None,
+                    outcome,
+                    maintenance,
+                    diagnostic,
+                    credit,
+                ))
             }
         }
     }
@@ -120,12 +160,25 @@ fn scope_error(
     diagnostic: Option<DecodeScratch>,
     credit: DecodeScratch,
 ) -> StoreError {
+    scope_error_with_maintenance(work, cleanup, outcome, None, diagnostic, credit)
+}
+
+pub(super) fn scope_error_with_maintenance(
+    work: Option<StoreError>,
+    cleanup: Option<StoreError>,
+    outcome: DirectoryPublicationOutcome,
+    maintenance: Option<DirectoryMaintenanceOutcome>,
+    diagnostic: Option<DecodeScratch>,
+    credit: DecodeScratch,
+) -> StoreError {
     StoreError::DirectoryScope {
         source: DirectoryScopeError {
             body: Box::new(Failure {
                 work,
                 cleanup,
                 outcome,
+                maintenance,
+                post_boundary: None,
                 _diagnostic: diagnostic,
             }),
             _credit: credit,
@@ -134,10 +187,11 @@ fn scope_error(
 }
 
 #[derive(Default)]
-struct Progress {
-    outcome: DirectoryPublicationOutcome,
-    cleanup: Option<StoreError>,
-    cleanup_only: bool,
+pub(super) struct Progress {
+    pub(super) outcome: DirectoryPublicationOutcome,
+    pub(super) cleanup: Option<StoreError>,
+    pub(super) cleanup_only: bool,
+    pub(super) state_durability_uncertain: bool,
 }
 
 pub(super) fn publish(
@@ -194,6 +248,7 @@ pub(super) fn publish(
             Accepted {
                 value: receipts,
                 outcome: progress.outcome,
+                maintenance: None,
                 diagnostic: Some(diagnostic),
                 credit,
             },
@@ -397,7 +452,10 @@ fn remove_staging(path: &Path) -> Result<(), StoreError> {
     }
 }
 
-fn sync(path: &Path, check: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<(), StoreError> {
+pub(super) fn sync(
+    path: &Path,
+    check: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
     check()?;
     let directory =
         File::open(path).map_err(|source| io_error("open-directory-for-sync", path, source))?;
@@ -474,7 +532,7 @@ fn staging(
     }
 }
 
-fn lock_inventory(
+pub(super) fn lock_inventory(
     backend: &DirectoryBlobBackend,
     original: &DecodeBudget,
     check: &mut dyn FnMut() -> Result<(), StoreError>,
@@ -513,7 +571,7 @@ fn lock_inventory(
     }
 }
 
-fn load_state(
+pub(super) fn load_state(
     backend: &DirectoryBlobBackend,
     check: &mut dyn FnMut() -> Result<(), StoreError>,
     progress: &mut Progress,
@@ -590,7 +648,7 @@ fn new_instance(
     Ok(*hasher.finalize().as_bytes())
 }
 
-fn persist_state(
+pub(super) fn persist_state(
     backend: &DirectoryBlobBackend,
     state: DirectoryInventoryState,
     check: &mut dyn FnMut() -> Result<(), StoreError>,
@@ -629,7 +687,10 @@ fn persist_state(
         check()?;
         fs::rename(&staging_path, &path)
             .map_err(|source| io_error("publish-inventory-state", &path, source))?;
-        sync(&directory, check)
+        progress.state_durability_uncertain = true;
+        sync(&directory, check)?;
+        progress.state_durability_uncertain = false;
+        Ok(())
     })();
     drop(file);
     match (result, remove_staging(&staging_path)) {

@@ -10,6 +10,7 @@ use super::*;
 use crate::content_store::sqlite::Accepted;
 
 enum ReceiptOutcome<T> {
+    Administrative(super::outcome::Accepted<T>),
     Composite(crate::content_store::composite_publication::Accepted<T>),
     Sqlite(Accepted<T>),
     Memory(crate::content_store::memory::Accepted<T>),
@@ -20,6 +21,7 @@ enum ReceiptOutcome<T> {
 impl<T> ReceiptOutcome<T> {
     fn value(&self) -> &T {
         match self {
+            Self::Administrative(accepted) => accepted.value(),
             Self::Composite(accepted) => accepted.value(),
             Self::Sqlite(accepted) => accepted.value(),
             Self::Memory(accepted) => accepted.value(),
@@ -30,6 +32,7 @@ impl<T> ReceiptOutcome<T> {
 
     fn release_diagnostic(&mut self) {
         match self {
+            Self::Administrative(_) => {}
             Self::Composite(accepted) => accepted.release_diagnostic(),
             Self::Sqlite(accepted) => accepted.release_diagnostic(),
             Self::Memory(accepted) => accepted.release_diagnostic(),
@@ -43,6 +46,7 @@ impl<T> ReceiptOutcome<T> {
         check: impl FnOnce(&mut T) -> Result<(), StoreError>,
     ) -> Result<Self, StoreError> {
         match self {
+            Self::Administrative(accepted) => accepted.check(check).map(Self::Administrative),
             Self::Composite(accepted) => accepted.check(check).map(Self::Composite),
             Self::Sqlite(accepted) => accepted.check(check).map(Self::Sqlite),
             Self::Memory(accepted) => accepted.check(check).map(Self::Memory),
@@ -61,7 +65,7 @@ pub(in crate::content_store) struct CheckedReceipt<T> {
 
 struct Resources {
     _previous: Option<Box<Resources>>,
-    _resources: crate::owned_decode::ResourceLoan,
+    _resources: Option<crate::owned_decode::ResourceLoan>,
     _previous_credit: Option<DecodeScratch>,
 }
 
@@ -71,6 +75,26 @@ pub(in crate::content_store) struct PreparedResources {
 }
 
 impl PreparedResources {
+    pub(in crate::content_store) fn metadata(
+        account: &DecodeBudget,
+        additional_bytes: u64,
+    ) -> Result<Self, StoreError> {
+        let bytes = additional_bytes
+            .checked_add(std::mem::size_of::<Resources>() as u64)
+            .ok_or(StoreError::Quota)?;
+        let credit = account
+            .reserve_scratch_bytes(bytes)
+            .map_err(|error| admission_under(account, error))?;
+        Ok(Self {
+            node: Box::new(Resources {
+                _previous: None,
+                _resources: None,
+                _previous_credit: None,
+            }),
+            credit,
+        })
+    }
+
     pub(in crate::content_store) fn new(
         account: &DecodeBudget,
         resources: crate::owned_decode::ResourceLoan,
@@ -85,7 +109,7 @@ impl PreparedResources {
         Ok(Self {
             node: Box::new(Resources {
                 _previous: None,
-                _resources: resources,
+                _resources: Some(resources),
                 _previous_credit: None,
             }),
             credit,
@@ -94,6 +118,14 @@ impl PreparedResources {
 }
 
 impl<T> CheckedReceipt<T> {
+    fn new_administrative(accepted: super::outcome::Accepted<T>, credit: DecodeScratch) -> Self {
+        Self {
+            accepted: ReceiptOutcome::Administrative(accepted),
+            resources: None,
+            credit,
+        }
+    }
+
     pub(in crate::content_store) fn new_composite(
         accepted: crate::content_store::composite_publication::Accepted<T>,
         credit: DecodeScratch,
@@ -191,6 +223,20 @@ impl<T> CheckedReceipt<T> {
 pub struct DeleteBatchReceipt(CheckedReceipt<Vec<PlannedDeleteDisposition>>);
 
 impl DeleteBatchReceipt {
+    pub(in crate::content_store) fn new_administrative(
+        accepted: super::outcome::Accepted<Vec<PlannedDeleteDisposition>>,
+        credit: DecodeScratch,
+    ) -> Self {
+        Self(CheckedReceipt::new_administrative(accepted, credit))
+    }
+
+    pub(in crate::content_store) fn new_directory(
+        accepted: crate::content_store::directory::Accepted<Vec<PlannedDeleteDisposition>>,
+        credit: DecodeScratch,
+    ) -> Self {
+        Self(CheckedReceipt::new_directory(accepted, credit))
+    }
+
     pub(in crate::content_store) fn new_packed(
         accepted: crate::content_store::packed::Accepted<Vec<PlannedDeleteDisposition>>,
         credit: DecodeScratch,
@@ -238,6 +284,32 @@ impl std::fmt::Debug for DeleteBatchReceipt {
 pub struct InventorySummaryReceipt(CheckedReceipt<BlobInventorySummary>);
 
 impl InventorySummaryReceipt {
+    // Rewrite only the representation-dependent scalar. The child completion,
+    // label, namespace, generation and all physical owners remain attached.
+    pub(in crate::content_store) fn with_logical_bytes(
+        self,
+        bytes: u64,
+    ) -> Result<Self, StoreError> {
+        self.check(|summary| {
+            summary.logical_bytes = bytes;
+            Ok(())
+        })
+    }
+
+    pub(in crate::content_store) fn new_administrative(
+        accepted: super::outcome::Accepted<BlobInventorySummary>,
+        credit: DecodeScratch,
+    ) -> Self {
+        Self(CheckedReceipt::new_administrative(accepted, credit))
+    }
+
+    pub(in crate::content_store) fn new_directory(
+        accepted: crate::content_store::directory::Accepted<BlobInventorySummary>,
+        credit: DecodeScratch,
+    ) -> Self {
+        Self(CheckedReceipt::new_directory(accepted, credit))
+    }
+
     pub(in crate::content_store) fn new_packed(
         accepted: crate::content_store::packed::Accepted<BlobInventorySummary>,
         credit: DecodeScratch,

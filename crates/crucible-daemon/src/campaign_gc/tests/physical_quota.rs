@@ -14,6 +14,8 @@ use crucible_cas::content_store::{
 
 use super::*;
 
+mod packed_volume;
+
 struct ToggleQuotaGuard {
     allowed: AtomicBool,
     resources: crucible_linux_resource::host_services::HostServiceAllocator,
@@ -38,6 +40,10 @@ impl ToggleQuotaGuard {
 }
 
 impl StorePhysicalQuotaGuard for ToggleQuotaGuard {
+    fn decoded_metadata_limit(&self) -> Result<u64, StoreError> {
+        Ok(self.resources.maximum_resident_bytes())
+    }
+
     fn reserve_resources(
         &self,
         descriptors: u64,

@@ -339,7 +339,10 @@ fn encrypted_directory_authenticates_ranges_and_inventory_across_restart() {
     assert_eq!(summary.objects(), expected.len() as u64);
     assert_eq!(
         summary.logical_bytes(),
-        expected.values().map(|bytes| bytes.len() as u64).sum()
+        expected
+            .values()
+            .map(|bytes| bytes.len() as u64)
+            .sum::<u64>()
     );
     assert_eq!(
         fence
@@ -447,7 +450,10 @@ fn compressed_encrypted_directory_streams_round_trip_and_restart() {
     assert_eq!(summary.objects(), expected.len() as u64);
     assert_eq!(
         summary.logical_bytes(),
-        expected.values().map(|bytes| bytes.len() as u64).sum()
+        expected
+            .values()
+            .map(|bytes| bytes.len() as u64)
+            .sum::<u64>()
     );
 }
 

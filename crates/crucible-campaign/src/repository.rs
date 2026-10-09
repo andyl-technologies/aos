@@ -593,6 +593,7 @@ fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
         | StoreError::DirectoryScope { .. }
         | StoreError::PackedScope { .. }
         | StoreError::MemoryScope { .. }
+        | StoreError::AdministrativeScope { .. }
         | StoreError::CompositeScope { .. }
         | StoreError::ProviderDiagnostic { .. }
         | StoreError::SqliteHeap { .. }

@@ -33,6 +33,7 @@ mod composition;
 pub(crate) use composition::{MetricsStore, RoutedStore};
 mod compressed_directory;
 mod directory;
+mod encoded_directory_admin;
 mod encrypted_directory;
 mod graph;
 mod identity_render;
@@ -54,10 +55,11 @@ mod write_back;
 pub mod conformance;
 
 pub use admin::{
-    BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
-    CheckedInventoryFence, DeleteBatchReceipt, InventoryGeneration, InventorySummaryReceipt, PhysicalStorageIdentity,
-    PlannedDeleteDisposition, RefInventoryFence, RefInventoryGeneration, RefInventoryRecord,
-    RefInventorySummary, RefPublicationGuard, RefStoreAdmin,
+    AdministrativeScopeError, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary,
+    BlobStoreAdmin, CheckedInventoryFence, DeleteBatchReceipt, InventoryGeneration,
+    InventorySummaryReceipt, PhysicalStorageIdentity, PlannedDeleteDisposition, RefInventoryFence,
+    RefInventoryGeneration, RefInventoryRecord, RefInventorySummary, RefPublicationGuard,
+    RefStoreAdmin,
 };
 pub use batch::{OwnedBlobBytes, PutBatchReceipt};
 pub use checked_reader::{CheckedBlobReader, CheckedReader};
@@ -66,8 +68,8 @@ pub use composite_publication::{
 };
 pub use compressed_directory::CompressedDirectoryBlobBackend;
 pub use directory::{
-    DirectoryBlobAuthorities, DirectoryBlobBackend, DirectoryPublicationOutcome,
-    DirectoryRefAuthorities, DirectoryRefBackend, DirectoryScopeError,
+    DirectoryBlobAuthorities, DirectoryBlobBackend, DirectoryMaintenanceOutcome,
+    DirectoryPublicationOutcome, DirectoryRefAuthorities, DirectoryRefBackend, DirectoryScopeError,
 };
 pub use encrypted_directory::{
     EncryptedDirectoryBlobBackend, StoreEncryptionKey, StoreEncryptionKeyId, StoreGraphKeyring,
@@ -1171,6 +1173,12 @@ pub enum StoreError {
         /// Complete current failure and prior concrete outcome owners.
         source: CompositeScopeError,
     },
+    /// A checked administrative operation retains its actual deletion progress.
+    #[error(transparent)]
+    AdministrativeScope {
+        /// Original cause, confirmed deletion prefix and uncertain mutation state.
+        source: AdministrativeScopeError,
+    },
     /// A checked memory operation retains its actual visible publication state.
     #[error(transparent)]
     MemoryScope {
@@ -1452,6 +1460,7 @@ impl StoreError {
                     _ => return failure,
                 },
                 Self::MemoryScope { source } => source.work_failure(),
+                Self::AdministrativeScope { source } => source.work_failure(),
                 Self::CompositeScope { source } => {
                     match source.first_boundary().or_else(|| source.work_failure()) {
                         Some(original) => original,

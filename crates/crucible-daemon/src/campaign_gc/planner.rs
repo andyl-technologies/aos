@@ -11,9 +11,8 @@ use crucible_campaign::{
     ConfigurationId,
 };
 use crucible_cas::content_store::{
-    BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin, ContentId, PhysicalStorageIdentity,
-    RefStoreAdmin, StoreError, StoreGraphPhysicalAdmin, StoreGraphPhysicalRetention,
-    WriteBackRetentionAdmin,
+    BlobInventoryRecord, BlobStoreAdmin, ContentId, PhysicalStorageIdentity, RefStoreAdmin,
+    StoreError, StoreGraphPhysicalAdmin, StoreGraphPhysicalRetention, WriteBackRetentionAdmin,
 };
 use thiserror::Error;
 
@@ -27,6 +26,7 @@ use crate::{HotCheckpointFallbackRetentionAdmin, HotCheckpointFallbackRetentionE
 
 #[cfg(target_os = "linux")]
 use super::CampaignGcHotCheckpointRoots;
+use super::physical_inventory::{PhysicalFence, PhysicalInventory};
 use super::reachability::Reachability;
 use super::roots::{
     CampaignGcRootInventoryError, RootAccumulator, RootInsertionError, inventory_authoritative_refs,
@@ -78,6 +78,13 @@ pub(super) trait CampaignGcInventoryTarget<'a>: Copy {
     fn backend(self) -> &'a str;
 
     fn admin(self) -> &'a dyn BlobStoreAdmin;
+
+    fn acquire_inventory<'operation, 'boundary>(
+        self,
+        operation: &'operation CampaignGcOperationContext<'boundary>,
+    ) -> Result<PhysicalFence<'a, 'operation, 'boundary>, StoreError> {
+        PhysicalFence::checked(self.admin(), operation)
+    }
 }
 
 impl<'a> CampaignGcInventoryTarget<'a> for CampaignGcPhysicalStore<'a> {
@@ -124,6 +131,13 @@ impl<'a> CampaignGcInventoryTarget<'a> for CampaignGcRawPhysicalStore<'a> {
 
     fn admin(self) -> &'a dyn BlobStoreAdmin {
         self.admin()
+    }
+
+    fn acquire_inventory<'operation, 'boundary>(
+        self,
+        operation: &'operation CampaignGcOperationContext<'boundary>,
+    ) -> Result<PhysicalFence<'a, 'operation, 'boundary>, StoreError> {
+        PhysicalFence::scripted(self.admin(), operation)
     }
 }
 
@@ -649,7 +663,7 @@ where
         .try_reserve_exact(physical.len())
         .map_err(planner_allocation_failure)?;
     for target in physical {
-        let mut fence = target.admin().acquire_inventory_fence().map_err(|source| {
+        let mut fence = target.acquire_inventory(operation).map_err(|source| {
             CampaignGcPlanningError::Blob {
                 backend: target.backend().to_owned(),
                 source,
@@ -685,7 +699,7 @@ where
                 actual: summary.backend().to_owned(),
             });
         }
-        physical_basis.push(CampaignGcBlobInventoryBasis::from_summary(&summary)?);
+        physical_basis.push(summary.basis()?);
     }
     Ok(PlannedPhysical {
         unreachable_candidates: candidates.len() as u64,
@@ -710,7 +724,7 @@ where
     let summary_bytes = physical
         .len()
         .checked_mul(
-            std::mem::size_of::<BlobInventorySummary>()
+            std::mem::size_of::<PhysicalInventory>()
                 + super::MAX_CAMPAIGN_GC_BACKEND_ID_BYTES
                 + 3 * (std::mem::size_of::<PhysicalStorageIdentity>()
                     + 5 * std::mem::size_of::<usize>())
@@ -729,7 +743,7 @@ where
     // Inventory the entire graph while retaining only one bounded deletion
     // batch. More candidates can be collected by the next maintenance pass.
     for target in physical {
-        let mut fence = target.admin().acquire_inventory_fence().map_err(|source| {
+        let mut fence = target.acquire_inventory(operation).map_err(|source| {
             CampaignGcPlanningError::Blob {
                 backend: target.backend().to_owned(),
                 source,
@@ -810,12 +824,13 @@ where
         {
             continue;
         }
-        let mut fence = cache.admin().acquire_inventory_fence().map_err(|source| {
-            CampaignGcPlanningError::Blob {
-                backend: cache.backend().to_owned(),
-                source,
-            }
-        })?;
+        let mut fence =
+            cache
+                .acquire_inventory(operation)
+                .map_err(|source| CampaignGcPlanningError::Blob {
+                    backend: cache.backend().to_owned(),
+                    source,
+                })?;
         let summary = fence
             .visit_inventory(&mut |record| {
                 operation.check()?;
@@ -897,7 +912,7 @@ where
         .try_reserve_exact(summaries.len())
         .map_err(planner_allocation_failure)?;
     for summary in &summaries {
-        physical_basis.push(CampaignGcBlobInventoryBasis::from_summary(summary)?);
+        physical_basis.push(summary.basis()?);
     }
     Ok(PlannedPhysical {
         candidates,
@@ -910,19 +925,20 @@ where
 fn validate_required_copy_inventory<E>(
     target: CampaignGcPhysicalStore<'_>,
     records: &BTreeMap<crucible_cas::content_store::ContentId, BlobInventoryRecord>,
-    expected: &BlobInventorySummary,
+    expected: &PhysicalInventory,
     operation: &CampaignGcOperationContext<'_>,
 ) -> Result<(), CampaignGcPlanningError<E>>
 where
     E: StdError + 'static,
 {
     let mut observed = BTreeSet::new();
-    let mut fence = target.admin().acquire_inventory_fence().map_err(|source| {
-        CampaignGcPlanningError::Blob {
-            backend: target.backend().to_owned(),
-            source,
-        }
-    })?;
+    let mut fence =
+        target
+            .acquire_inventory(operation)
+            .map_err(|source| CampaignGcPlanningError::Blob {
+                backend: target.backend().to_owned(),
+                source,
+            })?;
     let summary = fence
         .visit_inventory(&mut |candidate| {
             operation.check()?;

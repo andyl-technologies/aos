@@ -295,6 +295,13 @@ impl ImmutableBlobBackend for CompressedDirectoryBlobBackend {
 }
 
 impl BlobStoreAdmin for CompressedDirectoryBlobBackend {
+    fn acquire_inventory_fence_with_boundary<'a>(
+        &'a self,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedInventoryFence<'a>, StoreError> {
+        super::encoded_directory_admin::acquire(self, boundary)
+    }
+
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
         let lock = self.directory.acquire_inventory_lock()?;
         let state = self.directory.load_or_create_inventory_state()?;
@@ -330,6 +337,16 @@ fn open_compressed_object(
     id: ContentId,
     maximum_logical_object_bytes: u64,
 ) -> Result<(Arc<File>, CompressedObjectHeader), StoreError> {
+    open_compressed_object_with_boundary(path, id, maximum_logical_object_bytes, &mut || Ok(()))
+}
+
+fn open_compressed_object_with_boundary(
+    path: &Path,
+    id: ContentId,
+    maximum_logical_object_bytes: u64,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<(Arc<File>, CompressedObjectHeader), StoreError> {
+    boundary()?;
     let descriptor = match open(
         path,
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
@@ -348,6 +365,7 @@ fn open_compressed_object(
         }
     };
     let file = File::from(descriptor);
+    boundary()?;
     let physical_length = file
         .metadata()
         .map_err(|source| StoreError::Io {
@@ -357,7 +375,7 @@ fn open_compressed_object(
         })?
         .len();
     let mut header_bytes = [0_u8; COMPRESSED_OBJECT_HEADER_BYTES as usize];
-    read_exact_at(&file, &mut header_bytes, 0).map_err(|_| StoreError::Corrupt { id })?;
+    super::encoded_directory_admin::read_header(&file, &mut header_bytes, id, boundary)?;
     if &header_bytes[..8] != COMPRESSED_OBJECT_MAGIC {
         return Err(StoreError::Corrupt { id });
     }
@@ -545,20 +563,6 @@ fn maximum_compressed_length(logical_length: u64) -> Option<u64> {
     u64::try_from(zstd::zstd_safe::compress_bound(logical_length)).ok()
 }
 
-fn read_exact_at(file: &File, mut output: &mut [u8], mut offset: u64) -> std::io::Result<()> {
-    while !output.is_empty() {
-        let read = read_at_retry(file, output, offset)?;
-        if read == 0 {
-            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
-        }
-        offset = offset
-            .checked_add(read as u64)
-            .ok_or_else(invalid_compressed_data)?;
-        output = &mut output[read..];
-    }
-    Ok(())
-}
-
 fn read_at_retry(file: &File, output: &mut [u8], offset: u64) -> std::io::Result<usize> {
     loop {
         match file.read_at(output, offset) {
@@ -647,4 +651,32 @@ fn visit_compressed_inventory(
         inventory.push(record)?;
         visitor(record)
     })
+}
+
+impl super::encoded_directory_admin::EncodedDirectory for CompressedDirectoryBlobBackend {
+    fn directory(&self) -> &DirectoryBlobBackend {
+        &self.directory
+    }
+
+    fn initialize(
+        &self,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        boundary()
+    }
+
+    fn logical_length(
+        &self,
+        path: &Path,
+        id: ContentId,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<u64, StoreError> {
+        let (_file, header) = open_compressed_object_with_boundary(
+            path,
+            id,
+            self.maximum_logical_object_bytes,
+            boundary,
+        )?;
+        Ok(header.logical_length)
+    }
 }
