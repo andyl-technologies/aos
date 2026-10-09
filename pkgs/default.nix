@@ -1366,12 +1366,12 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     in
       path == cratesRoot || path == "${cratesRoot}/Cargo.lock";
   };
-  aosWorkspaceVendor = fetchCargoVendor {
+  aosWorkspaceVendor = self.patchCiboriumSeedVendor (fetchCargoVendor {
     src = aosWorkspaceVendorSource;
     name = "aos-workspace-vendor";
     sourceRoot = "source";
     hash = "sha256-jdi9PHymzCJREDlWTc+fFDy19Gtx/4suPWX0ayiygos=";
-  };
+  });
 
   # Auto-discover packages from subdirectories.
   # Recursively scans for .nix files, skipping default.nix and _-prefixed
@@ -1822,6 +1822,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkAccacheEnvironment;
       inherit mkCargoPackage mkAosCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
+      patchCiboriumSeedVendor = callPackage ./build-support/_ciborium-seed-vendor.nix {};
       inherit mkOciTools ociTools mkOciMultiPlatformContainer mkOciPackageEvidence;
       # Downstream flakes use the same package argument resolution as discovery.
       inherit callPackage;

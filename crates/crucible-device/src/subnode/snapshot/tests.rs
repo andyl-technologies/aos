@@ -85,3 +85,111 @@ fn io_core_snapshot_enforces_authored_aggregate_limit() {
         })
     );
 }
+
+fn admission_fixture() -> IoCoreSnapshot {
+    let mut core = IoCore::new(1, 2, 2).expect("build I/O-core admission fixture");
+    core.enqueue_request(Request::new(10, 3, b"pending".to_vec()))
+        .expect("enqueue I/O-core admission fixture");
+    core.snapshot()
+}
+
+#[test]
+fn io_core_borrowed_admission_covers_table_payload_and_validation_output() {
+    let snapshot = admission_fixture();
+    let bytes = snapshot
+        .canonical_bytes()
+        .expect("encode admission fixture");
+    let mut allocations = Vec::new();
+    let restored = IoCoreSnapshot::from_canonical_bytes_with_admission(
+        &bytes,
+        HARD_IO_CORE_CHECKPOINT_BYTES,
+        &mut |requested| {
+            allocations.push(requested);
+            Ok(())
+        },
+    )
+    .expect("decode admitted I/O-core fixture");
+
+    assert_eq!(restored, snapshot);
+    assert_eq!(
+        allocations,
+        [
+            std::mem::size_of::<Request>() as u64,
+            7,
+            0,
+            0,
+            bytes.len() as u64,
+        ]
+    );
+}
+
+#[test]
+fn io_core_table_refusal_precedes_malformed_member() {
+    let bytes = admission_fixture()
+        .canonical_bytes()
+        .expect("encode table refusal fixture");
+    let table_end = IO_CORE_SNAPSHOT_MAGIC.len() + 44 + 4;
+    let refusal = IoCoreSnapshotCodecError::Invalid("authored admission refusal");
+    let mut requests = Vec::new();
+    let error = IoCoreSnapshot::from_canonical_bytes_with_admission(
+        &bytes[..table_end],
+        HARD_IO_CORE_CHECKPOINT_BYTES,
+        &mut |requested| {
+            requests.push(requested);
+            Err(refusal.clone())
+        },
+    )
+    .expect_err("refuse table before reading its malformed first member");
+
+    assert_eq!(error, refusal);
+    assert_eq!(requests, [std::mem::size_of::<Request>() as u64]);
+}
+
+#[test]
+fn io_core_truncated_payload_is_rejected_before_owning_admission() {
+    let bytes = admission_fixture()
+        .canonical_bytes()
+        .expect("encode payload refusal fixture");
+    let payload_start = IO_CORE_SNAPSHOT_MAGIC.len() + 44 + 4 + 16;
+    let mut requests = Vec::new();
+    let error = IoCoreSnapshot::from_canonical_bytes_with_admission(
+        &bytes[..payload_start + 1],
+        HARD_IO_CORE_CHECKPOINT_BYTES,
+        &mut |requested| {
+            requests.push(requested);
+            Ok(())
+        },
+    )
+    .expect_err("reject truncated payload before copying it");
+
+    assert_eq!(
+        error,
+        IoCoreSnapshotCodecError::Malformed("request payload")
+    );
+    assert_eq!(requests, [std::mem::size_of::<Request>() as u64]);
+}
+
+#[test]
+fn io_core_validation_output_refusal_prevents_snapshot_acceptance() {
+    let bytes = admission_fixture()
+        .canonical_bytes()
+        .expect("encode validation output refusal fixture");
+    let refusal = IoCoreSnapshotCodecError::Invalid("authored output refusal");
+    let mut requests = Vec::new();
+    let error = IoCoreSnapshot::from_canonical_bytes_with_admission(
+        &bytes,
+        HARD_IO_CORE_CHECKPOINT_BYTES,
+        &mut |requested| {
+            requests.push(requested);
+            if requests.len() == 5 {
+                Err(refusal.clone())
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .expect_err("refuse canonical validation output before accepting the snapshot");
+
+    assert_eq!(error, refusal);
+    assert_eq!(requests.last(), Some(&(bytes.len() as u64)));
+}

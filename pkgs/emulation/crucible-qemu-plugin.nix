@@ -5,6 +5,7 @@
   mkCargoArtifacts,
   mkCargoDummySource,
   fetchCargoVendor,
+  patchCiboriumSeedVendor,
   glib,
   pkg-config,
   qemu-crucible,
@@ -14,12 +15,12 @@
   version = "0.1.0";
   conformanceFlags = lib.optionalString nativeConformance " --features native-conformance";
   src = import ../tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
+  cargoDeps = patchCiboriumSeedVendor (fetchCargoVendor {
     inherit src;
     name = "crucible-vendor-${version}";
     sourceRoot = "source/crates";
     hash = import ../tools/crucible/_cargo-deps-hash.nix;
-  };
+  });
   cargoArtifactContract = {
     family = "crucible-gpl-qemu-plugin-release-and-test" + lib.optionalString nativeConformance "-native-observer";
     nativeInputs = map toString [glib glib.dev glib.tools pkg-config qemu-crucible sqlite];

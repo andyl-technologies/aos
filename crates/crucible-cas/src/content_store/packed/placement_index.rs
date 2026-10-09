@@ -218,8 +218,7 @@ impl<'s> Reader<'s> {
         let mut upper = None;
         let mut root = true;
         loop {
-            self.load(reference, root, lower, upper, buffer, operation)?;
-            let node = Node::parse(&buffer.value, root)?;
+            let node = self.load(reference, root, lower, upper, buffer, operation)?;
             if node.height == 0 {
                 return leaf_find(&node, key);
             }
@@ -258,15 +257,17 @@ impl<'s> Reader<'s> {
         })
     }
 
-    fn load(
+    // The returned node borrows exactly the bytes just read and authenticated.
+    // Its borrow ends before the caller can overwrite the paid page buffer.
+    fn load<'buffer>(
         &self,
         reference: PageReference,
         root: bool,
         lower: Option<Key>,
         upper: Option<Key>,
-        buffer: &mut Bytes,
+        buffer: &'buffer mut Bytes,
         operation: &mut Operation<'_>,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Node<'buffer>, StoreError> {
         reference.validate(self.snapshot.header.committed_bytes)?;
         let file = self.arena.as_ref().ok_or(StoreError::Incompatible)?.file();
         read_into(
@@ -290,7 +291,7 @@ impl<'s> Reader<'s> {
         {
             return Err(StoreError::Incompatible);
         }
-        Ok(())
+        Ok(node)
     }
 }
 
@@ -363,7 +364,7 @@ impl Cursor<'_, '_> {
                 let frame = self.frames[self.depth]
                     .take()
                     .ok_or(StoreError::Incompatible)?;
-                self.reader.load(
+                let parent = self.reader.load(
                     frame.reference,
                     self.depth == 0,
                     frame.lower,
@@ -371,7 +372,6 @@ impl Cursor<'_, '_> {
                     buffer,
                     operation,
                 )?;
-                let parent = Node::parse(&buffer.value, self.depth == 0)?;
                 if frame.slot + 1 < parent.count {
                     let slot = frame.slot + 1;
                     let child = parent.child(slot)?;
@@ -404,9 +404,9 @@ impl Cursor<'_, '_> {
     ) -> Result<(), StoreError> {
         loop {
             let buffer = self.buffer.as_mut().ok_or(StoreError::Incompatible)?;
-            self.reader
-                .load(reference, self.depth == 0, lower, upper, buffer, operation)?;
-            let node = Node::parse(&buffer.value, self.depth == 0)?;
+            let node =
+                self.reader
+                    .load(reference, self.depth == 0, lower, upper, buffer, operation)?;
             if node.height == 0 {
                 self.slot = 0;
                 return Ok(());

@@ -3,7 +3,7 @@
 //! The immutable operator file has this identity prefix and requires every
 //! finite resource field in `OperatorPolicy` below:
 //!
-//! ```json
+//! ```text
 //! {"schema":"crucible.measurement-operator.v1","initExecutable":"/nix/store/INIT/bin/crucible-measurement-init","actorExecutable":"/nix/store/ACTOR/bin/crucible-measurement-actor"}
 //! ```
 //!

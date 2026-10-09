@@ -75,13 +75,15 @@ pub use checkpoint_store::{
     build_streaming_production_checkpoint_codec_fixture,
 };
 pub use checkpoint_store::{
-    DecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
+    DecodedProductionExactCheckpoint, OriginalCheckpointDecodeError,
+    OriginalDecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
     ProductionBakedSnapshotCatalog, ProductionBakedSnapshotSet, ProductionExactCheckpointClosure,
     ProductionExactCheckpointObject, ProductionExactCheckpointReadSources,
     ProductionExactCheckpointRetirement, ProductionExactCheckpointRetirementError,
     ProductionExactCheckpointRetirementReport, ProductionPagedRamSource,
     ProductionVmExactNodeRestoreAdmissions, decode_authenticated_production_exact_checkpoint,
-    open_exact_checkpoint_closure, retire_production_exact_checkpoint_catalog,
+    decode_authenticated_production_exact_checkpoint_under_original, open_exact_checkpoint_closure,
+    retire_production_exact_checkpoint_catalog,
 };
 mod checkpoint_dependencies;
 pub use checkpoint_dependencies::{
@@ -565,7 +567,8 @@ enum ProductionVmExactCheckpointMaterialization {
         exact_ram: Box<ProductionExactRamCheckpoint>,
         manifest_identity: ContentHash,
     },
-    Repository,
+    // Semantic bytes authenticate a continuation without native materialization.
+    Unmaterialized,
 }
 
 #[derive(Clone, Debug)]

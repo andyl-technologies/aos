@@ -18,10 +18,12 @@ use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{ContentId, ObjectKind};
 
 mod capture_read;
+mod captured;
 mod codec;
 mod decode;
 mod repository;
 mod semantics;
+pub use captured::{ExactCheckpointCaptureBinding, authenticate_captured_exact_checkpoint};
 mod streams;
 
 pub use capture_read::CaptureReadError;
@@ -339,9 +341,10 @@ impl ExactCheckpointClosureBinding {
 
     /// Consumes and visits every authenticated semantic object once.
     ///
-    /// Each object is opened, bounded, hashed, delivered, and closed before
-    /// the next object is opened. Shared object identities count once against
-    /// `byte_limit` while each semantic role is still delivered.
+    /// Each unique object is opened, bounded, hashed, and closed before the
+    /// next object is opened. The authenticated buffers remain together until
+    /// all semantic roles have been delivered in their declared order. Shared
+    /// identities count once against `byte_limit` while each role is delivered.
     /// The visitor returns the decoded semantic identity for the fault
     /// continuation and `None` for every other role. The resulting target
     /// claims retain that identity for QMP RAM provenance authentication.
@@ -351,18 +354,17 @@ impl ExactCheckpointClosureBinding {
     /// Returns [`ExactCheckpointExecutionSourceError`] when an object is
     /// unavailable, has the wrong length or identity, exceeds the aggregate
     /// limit, or either callback rejects the operation.
-    pub fn visit_semantic_objects(
+    pub fn visit_semantic_objects<R: std::io::Read + Send>(
         self,
         byte_limit: u64,
         boundary: impl FnMut() -> std::io::Result<()>,
-        open: impl FnMut(ContentHash) -> std::io::Result<Box<dyn std::io::Read + Send>>,
+        open: impl FnMut(ContentHash) -> std::io::Result<R>,
         visit: impl FnMut(
             ExactCheckpointSemanticObjectRole<'_>,
             &[u8],
         ) -> std::io::Result<Option<ContentHash>>,
     ) -> Result<ExactCheckpointTraversedClosureBinding, ExactCheckpointExecutionSourceError> {
         let fault_semantic_identity = semantics::visit_authenticated_semantic_objects(
-            &self.repository,
             &self.closure,
             &self.targets,
             byte_limit,
@@ -751,17 +753,28 @@ fn decode_paged_ram(
 ) -> Result<ExactCheckpointPagedRamBinding, ExactCheckpointRelationError> {
     let invalid = |_| ExactCheckpointRelationError::InvalidStructure;
     let root_object = ContentId::parse(&record.root_object).map_err(invalid)?;
+    crate::owned_decode::charge_array::<u8>(root_object.encoded_len())
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
     if root_object.encode() != record.root_object
         || root_object.kind() != ObjectKind::ExactManifest
         || root_object.schema_version() != 1
     {
         return Err(ExactCheckpointRelationError::InvalidStructure);
     }
-    let root_record =
-        crucible_ram::RootRecord::decode(&record.root_record, crucible_ram::Limits::default())
-            .map_err(|_| ExactCheckpointRelationError::InvalidStructure)?;
+    let limits = crucible_ram::Limits::default();
+    let decoded_bytes = crucible_ram::RootRecord::decoding_memory_bound(limits)
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
+    crate::owned_decode::charge_bytes(decoded_bytes)
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
+    let root_record = crucible_ram::RootRecord::decode(&record.root_record, limits)
+        .map_err(|_| ExactCheckpointRelationError::InvalidStructure)?;
+    crate::owned_decode::charge_array::<u8>(root_record.encoded_len())
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
     if root_record.scope() != crucible_ram::Scope::Exact
-        || root_record.encode() != record.root_record
+        || root_record
+            .try_encode()
+            .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?
+            != record.root_record
         || root_record.digest().as_bytes() != &record.logical_root.bytes
     {
         return Err(ExactCheckpointRelationError::InvalidStructure);
@@ -940,53 +953,18 @@ pub fn authenticate_exact_checkpoint_closure(
     manifest_bytes: &[u8],
     owned_byte_limit: u64,
 ) -> Result<ExactCheckpointClosureBinding, ExactCheckpointRelationError> {
-    let payload = manifest_bytes
-        .strip_prefix(MANIFEST_MAGIC)
-        .ok_or(ExactCheckpointRelationError::InvalidStructure)?;
-    if payload.len() > MAX_EXACT_CHECKPOINT_MANIFEST_BYTES
-        || u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX) > owned_byte_limit
-    {
-        return Err(ExactCheckpointRelationError::ResourceExhausted);
-    }
-    let mut closure: ExactCheckpointClosureRecord =
-        decode::decode_cbor_with_limit(payload, owned_byte_limit)?;
-    closure
-        .objects
-        .try_reserve_exact(repository.objects.len())
-        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
-    closure.objects.extend(
+    let mut closure = decode_canonical_closure(
+        manifest_bytes,
+        owned_byte_limit,
         repository
             .objects
             .iter()
-            .map(|object| ExactCheckpointObjectRecord {
-                identity: object.identity,
-                length: object.length,
-            }),
-    );
-
-    let canonical_manifest = exact_checkpoint_closure_bytes(&closure, manifest_bytes.len())?;
-    if canonical_manifest != manifest_bytes {
-        return Err(ExactCheckpointRelationError::InvalidStructure);
-    }
-    validate_closure_structure(&closure)?;
-
-    let root = exact_checkpoint_closure_identity(&mut closure)?;
-    if closure.identity != root {
-        return Err(ExactCheckpointRelationError::RootMismatch);
-    }
-    authenticate_repository_manifest(&repository, &closure, root, &canonical_manifest)?;
-
-    for target in &closure.targets {
-        let observed = exact_checkpoint_target_manifest_identity(
-            closure.configuration,
-            closure.fault_checkpoint,
-            target,
-        );
-        if target.manifest_identity != observed {
-            return Err(ExactCheckpointRelationError::TargetManifestMismatch);
-        }
-    }
-
+            .map(|object| (object.identity, object.length)),
+    )?;
+    authenticate_repository_manifest(&repository, &closure, closure.identity, manifest_bytes)?;
+    validate_target_identities(&closure)?;
+    crate::owned_decode::charge_array::<Option<ExactCheckpointTargetRecord>>(closure.targets.len())
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
     let mut targets = Vec::new();
     targets
         .try_reserve_exact(closure.targets.len())
@@ -998,18 +976,80 @@ pub fn authenticate_exact_checkpoint_closure(
             &target.node,
         );
         let index = targets.len();
+        crate::owned_decode::charge_btree_entry::<ContentHash, usize>()
+            .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
         if target_index.insert(identity, index).is_some() {
             return Err(ExactCheckpointRelationError::InvalidStructure);
         }
         targets.push(Some(target));
     }
 
+    let (layout, _) = std::alloc::Layout::new::<[usize; 2]>()
+        .extend(std::alloc::Layout::new::<ExactCheckpointRepositoryBinding>())
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
+    crate::owned_decode::charge_array::<u8>(layout.pad_to_align().size())
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
     Ok(ExactCheckpointClosureBinding {
         repository: Arc::new(repository),
         closure,
         targets,
         target_index,
     })
+}
+
+fn decode_canonical_closure(
+    manifest_bytes: &[u8],
+    owned_byte_limit: u64,
+    objects: impl ExactSizeIterator<Item = (ContentHash, u64)>,
+) -> Result<ExactCheckpointClosureRecord, ExactCheckpointRelationError> {
+    let payload = manifest_bytes
+        .strip_prefix(MANIFEST_MAGIC)
+        .ok_or(ExactCheckpointRelationError::InvalidStructure)?;
+    if payload.len() > MAX_EXACT_CHECKPOINT_MANIFEST_BYTES
+        || u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX) > owned_byte_limit
+    {
+        return Err(ExactCheckpointRelationError::ResourceExhausted);
+    }
+    let mut closure: ExactCheckpointClosureRecord =
+        decode::decode_cbor_with_limit(payload, owned_byte_limit)?;
+    crate::owned_decode::charge_array::<ExactCheckpointObjectRecord>(objects.len())
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
+    closure
+        .objects
+        .try_reserve_exact(objects.len())
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
+    closure
+        .objects
+        .extend(objects.map(|(identity, length)| ExactCheckpointObjectRecord { identity, length }));
+
+    let canonical_manifest = exact_checkpoint_closure_bytes(&closure, manifest_bytes.len())?;
+    if canonical_manifest != manifest_bytes {
+        return Err(ExactCheckpointRelationError::InvalidStructure);
+    }
+    validate_closure_structure(&closure)?;
+
+    let root = exact_checkpoint_closure_identity(&mut closure)?;
+    if closure.identity != root {
+        return Err(ExactCheckpointRelationError::RootMismatch);
+    }
+
+    Ok(closure)
+}
+
+fn validate_target_identities(
+    closure: &ExactCheckpointClosureRecord,
+) -> Result<(), ExactCheckpointRelationError> {
+    for target in &closure.targets {
+        let observed = exact_checkpoint_target_manifest_identity(
+            closure.configuration,
+            closure.fault_checkpoint,
+            target,
+        )?;
+        if target.manifest_identity != observed {
+            return Err(ExactCheckpointRelationError::TargetManifestMismatch);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -46,6 +46,14 @@ pub(super) fn decode_cbor_with_limit<T: DeserializeOwned>(
         return Err(ExactCheckpointRelationError::ResourceExhausted);
     }
 
+    // Parser storage coexists with the decoded collections. Its temporary
+    // original loan closes after the buffer, independently of retained fields.
+    let original = crate::owned_decode::current_budget();
+    let _scratch_credit = original
+        .as_ref()
+        .map(|original| original.reserve_scratch_bytes(requested))
+        .transpose()
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
     let mut scratch = Vec::new();
     scratch
         .try_reserve_exact(bytes.len())
@@ -219,6 +227,8 @@ fn admit_allocation<E: serde::de::Error>(requested: u64) -> Result<(), E> {
             .checked_add(requested)
             .filter(|total| *total <= budget.limit)
             .ok_or_else(|| E::custom("resource exhausted"))?;
+        crate::owned_decode::charge_bytes(requested)
+            .map_err(|_| E::custom("resource exhausted"))?;
         active.set(Some(budget));
         Ok(())
     })

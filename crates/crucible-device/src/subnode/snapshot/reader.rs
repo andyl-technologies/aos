@@ -2,17 +2,25 @@
 
 use super::*;
 
-pub(super) struct IoCoreSnapshotReader<'a> {
-    bytes: &'a [u8],
+pub(super) struct IoCoreSnapshotReader<'input, 'admission> {
+    bytes: &'input [u8],
+    admit_allocation: &'admission mut dyn FnMut(u64) -> Result<(), IoCoreSnapshotCodecError>,
     offset: usize,
 }
 
-impl<'a> IoCoreSnapshotReader<'a> {
-    pub(super) fn new(bytes: &'a [u8]) -> Result<Self, IoCoreSnapshotCodecError> {
+impl<'input, 'admission> IoCoreSnapshotReader<'input, 'admission> {
+    pub(super) fn new(
+        bytes: &'input [u8],
+        admit_allocation: &'admission mut dyn FnMut(u64) -> Result<(), IoCoreSnapshotCodecError>,
+    ) -> Result<Self, IoCoreSnapshotCodecError> {
         let bytes = bytes
             .strip_prefix(IO_CORE_SNAPSHOT_MAGIC)
             .ok_or(IoCoreSnapshotCodecError::Version)?;
-        Ok(Self { bytes, offset: 0 })
+        Ok(Self {
+            bytes,
+            admit_allocation,
+            offset: 0,
+        })
     }
 
     fn take<const N: usize>(
@@ -78,6 +86,7 @@ impl<'a> IoCoreSnapshotReader<'a> {
             .bytes
             .get(self.offset..end)
             .ok_or(IoCoreSnapshotCodecError::Malformed(field))?;
+        (self.admit_allocation)(length as u64)?;
         let mut value = Vec::new();
         value.try_reserve_exact(length).map_err(|_| {
             io_core_resource_limit(
@@ -97,6 +106,7 @@ impl<'a> IoCoreSnapshotReader<'a> {
         field: &'static str,
     ) -> Result<Vec<Request>, IoCoreSnapshotCodecError> {
         let count = self.count(field)?;
+        self.admit_table::<Request>(count, field)?;
         let mut queue = Vec::new();
         queue.try_reserve_exact(count).map_err(|_| {
             io_core_resource_limit(
@@ -121,6 +131,7 @@ impl<'a> IoCoreSnapshotReader<'a> {
         field: &'static str,
     ) -> Result<Vec<PendingResponse>, IoCoreSnapshotCodecError> {
         let count = self.count(field)?;
+        self.admit_table::<PendingResponse>(count, field)?;
         let mut queue = Vec::new();
         queue.try_reserve_exact(count).map_err(|_| {
             io_core_resource_limit(
@@ -148,6 +159,20 @@ impl<'a> IoCoreSnapshotReader<'a> {
             ));
         }
         Ok(queue)
+    }
+
+    fn admit_table<T>(
+        &mut self,
+        count: usize,
+        field: &'static str,
+    ) -> Result<(), IoCoreSnapshotCodecError> {
+        let bytes = count.checked_mul(std::mem::size_of::<T>()).ok_or_else(|| {
+            io_core_resource_limit(field, 0, u64::MAX, HARD_IO_CORE_CHECKPOINT_BYTES)
+        })?;
+        let bytes = u64::try_from(bytes).map_err(|_| {
+            io_core_resource_limit(field, 0, u64::MAX, HARD_IO_CORE_CHECKPOINT_BYTES)
+        })?;
+        (self.admit_allocation)(bytes)
     }
 
     pub(super) fn finish(self) -> Result<(), IoCoreSnapshotCodecError> {

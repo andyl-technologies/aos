@@ -11,9 +11,18 @@ pub use crucible_cas::owned_decode::{
     current_child_budget, current_custody, reserve_vec,
 };
 
+mod bounded_visitors;
+pub use bounded_visitors::{deserialize_prepaid_map, deserialize_prepaid_sequence};
+
 mod serde_budget;
 pub use serde_budget::deserialize_with_budget;
 pub use serde_budget::from_json_slice;
+
+mod cbor_encode;
+pub use cbor_encode::{CborEncodeError, to_cbor_vec_prefixed};
+
+mod cbor_decode;
+pub use cbor_decode::{from_cbor_slice, from_cbor_slice_with_seed};
 
 mod json_encode;
 pub use json_encode::{to_json_vec, to_json_vec_bounded};

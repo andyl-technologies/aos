@@ -3,7 +3,7 @@
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{BoundedCborError, BoundedVec, collection_resource};
+use super::{BoundedCborError, BoundedVec, collection_resource, reserve_table};
 
 /// A canonically ordered set backed by one fallibly grown vector.
 pub(crate) struct BoundedSet<T, const MAX: u64> {
@@ -38,8 +38,7 @@ impl<T: Ord, const MAX: u64> BoundedSet<T, MAX> {
                 MAX,
             ));
         }
-        self.values
-            .try_reserve_exact(additional)
+        reserve_table(&mut self.values, additional, "bounded CBOR set", MAX, false)
             .map_err(|_| collection_resource("bounded CBOR set", current, requested, MAX))
     }
 
@@ -63,8 +62,7 @@ impl<T: Ord, const MAX: u64> BoundedSet<T, MAX> {
                 if current >= MAX {
                     return Err(collection_resource("bounded CBOR set", current, 1, MAX));
                 }
-                self.values
-                    .try_reserve(1)
+                reserve_table(&mut self.values, 1, "bounded CBOR set", MAX, true)
                     .map_err(|_| collection_resource("bounded CBOR set", current, 1, MAX))?;
                 self.values.insert(index, value);
                 Ok(true)
@@ -91,9 +89,14 @@ impl<T, const MAX: u64> BoundedSet<T, MAX> {
         allocation_error: impl FnOnce() -> E,
     ) -> Result<Self, E> {
         let mut values = Vec::new();
-        values
-            .try_reserve_exact(self.values.len())
-            .map_err(|_| allocation_error())?;
+        reserve_table(
+            &mut values,
+            self.values.len(),
+            "bounded CBOR set",
+            MAX,
+            false,
+        )
+        .map_err(|_| allocation_error())?;
         for value in &self.values {
             values.push(clone_value(value)?);
         }

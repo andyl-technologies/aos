@@ -321,3 +321,93 @@ fn parser_scratch_releases_only_its_original_temporary_credit() -> Result<(), De
     assert_eq!(authority.used.load(Ordering::SeqCst), 0);
     Ok(())
 }
+
+#[test]
+fn canonical_cbor_output_admits_before_the_second_serialization_pass()
+-> Result<(), DecodeAdmissionError> {
+    struct Borrowed<'a> {
+        calls: &'a AtomicU64,
+        bytes: &'a [u8],
+    }
+    impl serde::Serialize for Borrowed<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            serializer.serialize_bytes(self.bytes)
+        }
+    }
+    let bytes = [0_u8; 1024];
+    let calls = AtomicU64::new(0);
+    let budget = DecodeBudget::new(authority(256), 256)?;
+    let _scope = budget.enter();
+
+    let result = to_cbor_vec_prefixed(
+        &Borrowed {
+            calls: &calls,
+            bytes: &bytes,
+        },
+        b"CBOR",
+        2048,
+    );
+
+    assert_eq!(result, Err(CborEncodeError::Admission));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(budget.failure()?.is_some());
+    Ok(())
+}
+
+#[test]
+fn canonical_cbor_derived_values_keep_actual_nested_material_and_custody()
+-> Result<(), Box<dyn Error>> {
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct Material {
+        text: String,
+        nested: Vec<std::collections::BTreeMap<String, Vec<u64>>>,
+    }
+    let value = Material {
+        text: "water\n水".repeat(1024),
+        nested: vec![std::collections::BTreeMap::from([(
+            String::from("coordinate"),
+            vec![2, 5, 11],
+        )])],
+    };
+    let mut expected = Vec::new();
+    ciborium::ser::into_writer(&value, &mut expected)?;
+    let owner = authority(4 * 1024 * 1024);
+    let budget = DecodeBudget::new(owner.clone(), owner.maximum)?;
+    let initial = owner.used.load(Ordering::SeqCst);
+    let custody = budget.custody();
+    let scope = budget.enter();
+
+    let decoded: Material = from_cbor_slice(&expected)?;
+    let encoded = to_cbor_vec_prefixed(&decoded, b"", expected.len())?;
+    assert_eq!(decoded, value);
+    assert_eq!(encoded, expected);
+    assert!(owner.used.load(Ordering::SeqCst) > initial);
+    assert_eq!(
+        to_cbor_vec_prefixed(&decoded, b"", expected.len() - 1),
+        Err(CborEncodeError::Limit)
+    );
+
+    drop(scope);
+    drop(budget);
+    assert!(owner.used.load(Ordering::SeqCst) > 0);
+    drop(encoded);
+    drop(decoded);
+    drop(custody);
+    assert_eq!(owner.used.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn canonical_cbor_refuses_indefinite_text_without_changing_the_ordinary_parser()
+-> Result<(), Box<dyn Error>> {
+    let encoded = [0x7f, 0x61, b'a', 0xff];
+    let ordinary: String = from_cbor_slice(&encoded)?;
+    assert_eq!(ordinary, "a");
+    let budget = DecodeBudget::new(authority(64 * 1024), 64 * 1024)?;
+    let _scope = budget.enter();
+
+    assert!(from_cbor_slice::<String>(&encoded).is_err());
+    budget.verify_live()?;
+    Ok(())
+}

@@ -7,6 +7,7 @@
   mkCargoArtifacts,
   mkCargoDummySource,
   fetchCargoVendor,
+  patchCiboriumSeedVendor,
   rust,
   openssl,
   pkg-config,
@@ -80,12 +81,12 @@
     name = "crucible-apache-host-dummy-source";
     cargoRoot = "crates";
   };
-  cargoDeps = fetchCargoVendor {
+  cargoDeps = patchCiboriumSeedVendor (fetchCargoVendor {
     src = cargoDependencySource;
     name = "crucible-vendor-${version}";
     sourceRoot = "source/crates";
     hash = cargoDepsHash;
-  };
+  });
   packages = import ./_packages.nix;
   workspacePackages = (builtins.fromTOML (builtins.readFile ../../../crates/Cargo.toml)).workspace.members;
   nonCrucibleWorkspacePackages = builtins.filter (package: !(builtins.elem package packages)) workspacePackages;

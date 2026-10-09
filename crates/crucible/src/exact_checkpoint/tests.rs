@@ -110,7 +110,8 @@ fn fixture() -> (
     let configuration = hash(b"configuration");
     let fault_checkpoint = hash(b"fault checkpoint");
     target.manifest_identity =
-        exact_checkpoint_target_manifest_identity(configuration, fault_checkpoint, &target);
+        exact_checkpoint_target_manifest_identity(configuration, fault_checkpoint, &target)
+            .expect("finite fixture target identity");
     let mut closure = ExactCheckpointClosureRecord {
         scenario: hash(b"scenario"),
         configuration,
@@ -131,6 +132,7 @@ fn fixture() -> (
         objects: Vec::new(),
     };
     closure.objects = manifest_object_identities(&closure)
+        .expect("finite fixture object roster")
         .into_iter()
         .map(|identity| ExactCheckpointObjectRecord {
             identity,
@@ -316,9 +318,11 @@ fn semantic_traversal_reads_a_shared_snapshot_once() {
             closure.configuration,
             closure.fault_checkpoint,
             target,
-        );
+        )
+        .expect("finite fixture target identity");
     }
     closure.objects = manifest_object_identities(&closure)
+        .expect("finite fixture object roster")
         .into_iter()
         .map(|identity| ExactCheckpointObjectRecord {
             identity,

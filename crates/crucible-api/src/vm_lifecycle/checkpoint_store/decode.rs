@@ -172,6 +172,14 @@ pub(super) fn decode_cbor_with_limits<T: DeserializeOwned>(
         return Err(decode_resource_limit(0, requested, limits, hard));
     }
 
+    // The parser buffer is temporary; collection and string charges remain
+    // with the original decoded owner after this buffer has been freed.
+    let original = crucible::owned_decode::current_budget();
+    let _scratch_credit = original
+        .as_ref()
+        .map(|original| original.reserve_scratch_bytes(requested))
+        .transpose()
+        .map_err(LifecycleApiError::ConfigurationCopy)?;
     let mut scratch = Vec::new();
     scratch
         .try_reserve_exact(bytes.len())
@@ -350,6 +358,8 @@ fn admit_owned(requested: u64) -> Result<u64, DecodeAdmissionError> {
         if total > budget.configured || total > budget.hard {
             return Err(DecodeAdmissionError(resource_message(current, requested)));
         }
+        crucible::owned_decode::charge_bytes(requested)
+            .map_err(|_| DecodeAdmissionError(resource_message(current, requested)))?;
         budget.owned = total;
         active.set(Some(budget));
         Ok(current)
@@ -404,6 +414,70 @@ mod tests {
 
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
     struct FallibleStringVector(#[serde(deserialize_with = "deserialize_vec")] Vec<FallibleString>);
+
+    #[test]
+    fn checkpoint_owned_fields_charge_the_supplied_original_account() {
+        use std::sync::atomic::Ordering;
+
+        let (original, used) =
+            crate::admitted_output::tests::fixture_budget_with_counter().expect("finite original");
+        let initial = used.load(Ordering::SeqCst);
+        let bytes = [0x81, 0x61, b'x'];
+        let limits = FaultResourceLimits {
+            fat_checkpoint_bytes: 1_024,
+            ..FaultResourceLimits::default()
+        };
+
+        let scope = original.enter();
+        let decoded: FallibleStringVector =
+            decode_cbor_with_limits(&bytes, limits, "decode original checkpoint text")
+                .expect("definite checkpoint sequence");
+
+        assert_eq!(decoded.0[0].as_str(), "x");
+        assert!(used.load(Ordering::SeqCst) > initial);
+        original.verify_live().expect("same live original");
+
+        drop(decoded);
+        drop(scope);
+        drop(original);
+        assert_eq!(used.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn checkpoint_parser_preserves_the_same_sticky_original_refusal() {
+        use std::sync::atomic::Ordering;
+
+        let (original, used) =
+            crate::admitted_output::tests::fixture_budget_with_counter().expect("finite original");
+        let first = original
+            .charge_bytes(u64::MAX)
+            .expect_err("overflow refuses the original account");
+        let before = used.load(Ordering::SeqCst);
+        let scope = original.enter();
+        let bytes = [0x81, 0x61, b'x'];
+
+        let error = decode_cbor_with_limits::<FallibleStringVector>(
+            &bytes,
+            FaultResourceLimits::default(),
+            "decode original checkpoint text",
+        )
+        .expect_err("a failed original cannot create parser scratch");
+
+        assert!(matches!(
+            error,
+            LifecycleApiError::ConfigurationCopy(ref source) if source == &first
+        ));
+        assert_eq!(
+            original.failure().expect("original failure slot"),
+            Some(first)
+        );
+        assert_eq!(used.load(Ordering::SeqCst), before);
+
+        drop(error);
+        drop(scope);
+        drop(original);
+        assert_eq!(used.load(Ordering::SeqCst), 0);
+    }
 
     #[test]
     fn hostile_sequence_length_hint_is_rejected_before_owned_allocation() {

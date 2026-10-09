@@ -380,16 +380,15 @@ impl SingleSchedulerCheckpoint {
     /// Returns [`SingleSchedulerCheckpointError`] if serialization fails or the
     /// checkpoint exceeds the compiled byte ceiling.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, SingleSchedulerCheckpointError> {
-        let mut payload = Vec::new();
-        ciborium::ser::into_writer(&self.wire, &mut payload)
-            .map_err(|_| SingleSchedulerCheckpointError::Malformed)?;
-        if payload.len() > MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES {
-            return Err(SingleSchedulerCheckpointError::Limit);
-        }
-        let mut bytes = Vec::with_capacity(MAGIC.len() + payload.len());
-        bytes.extend_from_slice(MAGIC);
-        bytes.extend_from_slice(&payload);
-        Ok(bytes)
+        crate::owned_decode::to_cbor_vec_prefixed(
+            &self.wire,
+            MAGIC,
+            MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES,
+        )
+        .map_err(|error| match error {
+            crate::owned_decode::CborEncodeError::Limit => SingleSchedulerCheckpointError::Limit,
+            _ => SingleSchedulerCheckpointError::Malformed,
+        })
     }
 
     /// Computes the exact RAM frontier identity from borrowed canonical state.
@@ -424,7 +423,7 @@ impl SingleSchedulerCheckpoint {
         if payload.len() > MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES {
             return Err(SingleSchedulerCheckpointError::Limit);
         }
-        let wire: SingleSchedulerWire = ciborium::de::from_reader(payload)
+        let wire: SingleSchedulerWire = crate::owned_decode::from_cbor_slice(payload)
             .map_err(|_| SingleSchedulerCheckpointError::Malformed)?;
         Schedule::from_compact_binary(&wire.schedule)
             .map_err(|_| SingleSchedulerCheckpointError::Configuration)?;

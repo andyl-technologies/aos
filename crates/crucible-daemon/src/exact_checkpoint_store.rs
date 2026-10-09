@@ -61,6 +61,9 @@ pub use production::{
     ProductionExactCheckpointPublication,
 };
 
+mod modeled_comparison;
+pub use modeled_comparison::CapturedModeledComparisonError;
+
 /// Attempt-owned production closure awaiting no-write immutable-store preparation.
 pub struct CapturedAttemptCheckpoint {
     closure: ProductionExactCheckpointClosure,

@@ -12,8 +12,10 @@ use std::sync::Arc;
 mod authenticated_restore;
 mod decode;
 pub use authenticated_restore::{
-    DecodedProductionExactCheckpoint, ProductionExactCheckpointReadSources,
+    DecodedProductionExactCheckpoint, OriginalCheckpointDecodeError,
+    OriginalDecodedProductionExactCheckpoint, ProductionExactCheckpointReadSources,
     ProductionVmExactNodeRestoreAdmissions, decode_authenticated_production_exact_checkpoint,
+    decode_authenticated_production_exact_checkpoint_under_original,
 };
 mod io;
 use io::{BoundedReadError, read_bounded_file_with_boundary};
@@ -1501,9 +1503,8 @@ fn validate_checkpoint_set(
         .iter()
         .filter_map(|(node, state)| {
             (*state == ProductionNodeServiceState::PermanentlyFailed).then_some(node)
-        })
-        .collect::<BTreeSet<_>>();
-    if checkpoint.failed_host_io.keys().collect::<BTreeSet<_>>() != failed_nodes {
+        });
+    if checkpoint.failed_host_io.keys().ne(failed_nodes) {
         return Err(store_error(
             "exact checkpoint failed-node host-I/O owner partition is incomplete",
         ));
@@ -1629,31 +1630,16 @@ fn validate_restored_node_sets(
     generations: &BTreeMap<NodeId, u64>,
     service_states: &BTreeMap<NodeId, ProductionNodeServiceState>,
 ) -> Result<(), LifecycleApiError> {
-    let expected = source
-        .world()
-        .vm_nodes()
-        .iter()
-        .map(|node| node.id.clone())
-        .collect::<std::collections::BTreeSet<_>>();
-    let generation_nodes = generations
-        .keys()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    let service_nodes = service_states
-        .keys()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    let expected_targets = expected
-        .iter()
-        .filter(|node| {
+    let expected = authenticated_restore::admission::node_set(
+        source.world().vm_nodes().iter().map(|node| &node.id),
+    )?;
+    let generation_nodes = authenticated_restore::admission::node_set(generations.keys())?;
+    let service_nodes = authenticated_restore::admission::node_set(service_states.keys())?;
+    let expected_targets =
+        authenticated_restore::admission::node_set(expected.iter().filter(|node| {
             service_states.get(*node) != Some(&ProductionNodeServiceState::PermanentlyFailed)
-        })
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    let target_nodes = targets
-        .keys()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
+        }))?;
+    let target_nodes = authenticated_restore::admission::node_set(targets.keys())?;
     if generation_nodes != expected
         || service_nodes != expected
         || target_nodes != expected_targets

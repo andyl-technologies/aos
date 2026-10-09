@@ -69,8 +69,8 @@ pub use debug_relay::{
 };
 pub use event_log_stream::{
     ControlPlaneEventLog, EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY,
-    SessionEventLogFrame, SessionEventLogHub,
-    SessionEventLogSnapshot, SessionEventLogStream, SessionEventLogStreamError,
+    SessionEventLogFrame, SessionEventLogHub, SessionEventLogSnapshot, SessionEventLogStream,
+    SessionEventLogStreamError,
 };
 pub use lifecycle::{
     CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DebugLandedRuntimeCoordinate,
@@ -82,8 +82,8 @@ pub use lifecycle::{
     LifecycleResourceLimit, ListScenariosResponse, ListSessionsResponse, QuiescentLifecycleLoop,
     RESUME_OBSERVATION_PREPARATION_CAPACITY, RESUME_OBSERVATION_PREPARATION_TIMEOUT,
     RESUME_OBSERVATION_SOURCE_MAX_BYTES, RESUME_REPLAY_CLOSURE_MAX_BYTES,
-    ReproductionCommandDecodeError, ReproductionCommandPayload, ReproductionCommandRecord, ReproductionCommandRecordFields,
-    ReproductionCommandResult, ResumeObservationCancellation,
+    ReproductionCommandDecodeError, ReproductionCommandPayload, ReproductionCommandRecord,
+    ReproductionCommandRecordFields, ReproductionCommandResult, ResumeObservationCancellation,
     ResumeObservationCancellationRegistration, ResumeObservationLoopFactory,
     ResumeObservationPreparationContext, ResumeObservationSource, ResumeReplayClosure,
     ResumeReplayClosureValidationError, ResumeReplayClosureValidator, ResumeSessionRequest,
@@ -119,7 +119,8 @@ pub use vm_lifecycle::{
 #[cfg(target_os = "linux")]
 pub use vm_lifecycle::{
     BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,
-    DecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
+    DecodedProductionExactCheckpoint, OriginalCheckpointDecodeError,
+    OriginalDecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
     ProductionBakedSnapshotCatalog, ProductionBakedSnapshotSet, ProductionBlockFaultEvidence,
     ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
     ProductionExactCheckpointReadSources, ProductionExactCheckpointRetirement,
@@ -134,7 +135,8 @@ pub use vm_lifecycle::{
     ProductionVmReplayExactNodeRestoreAdmission, build_production_vm_exact_resume_lifecycle,
     build_production_vm_lifecycle_loop_with_launcher, collect_signal_artifact_objects,
     collect_signal_artifact_objects_bounded, collect_signal_artifact_objects_with_budget,
-    decode_authenticated_production_exact_checkpoint, open_exact_checkpoint_closure,
+    decode_authenticated_production_exact_checkpoint,
+    decode_authenticated_production_exact_checkpoint_under_original, open_exact_checkpoint_closure,
     production_vm_search_frontier, retire_production_exact_checkpoint_catalog,
 };
 #[cfg(target_os = "linux")]

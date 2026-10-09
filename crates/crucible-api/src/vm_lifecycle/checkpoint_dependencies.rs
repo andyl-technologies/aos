@@ -235,6 +235,8 @@ fn retain_object(
     objects: &mut BTreeMap<ContentHash, Vec<u8>>,
 ) -> Result<Vec<u8>, LifecycleApiError> {
     if let Some(bytes) = objects.get(&identity) {
+        crucible::owned_decode::charge_array::<u8>(bytes.len())
+            .map_err(|_| loop_factory_error("original signal artifact copy refused"))?;
         return Ok(bytes.clone());
     }
     let bytes = store.get(&identity).map_err(|error| {
@@ -303,6 +305,9 @@ fn retain_object(
             limits.fat_checkpoint_bytes,
         ));
     }
+    crucible::owned_decode::charge_array::<u8>(bytes.len())
+        .and_then(|()| crucible::owned_decode::charge_btree_entry::<ContentHash, Vec<u8>>())
+        .map_err(|_| loop_factory_error("original signal artifact retention refused"))?;
     objects.insert(identity, bytes.clone());
     Ok(bytes)
 }

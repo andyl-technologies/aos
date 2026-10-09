@@ -105,16 +105,22 @@ impl<'de, T: Deserialize<'de>, const MAX: u64> Deserialize<'de> for BoundedVec<T
                     )));
                 }
                 let mut values = Vec::new();
-                let initial = hint.min(1024);
-                values.try_reserve_exact(initial).map_err(|_| {
-                    serde::de::Error::custom(resource_message(
-                        "bounded CBOR sequence",
-                        0,
-                        initial as u64,
-                        MAX,
-                        MAX,
-                    ))
-                })?;
+                let initial = if crucible::owned_decode::current_budget().is_some() {
+                    hint
+                } else {
+                    hint.min(1024)
+                };
+                reserve_table(&mut values, initial, "bounded CBOR sequence", MAX, false).map_err(
+                    |_| {
+                        serde::de::Error::custom(resource_message(
+                            "bounded CBOR sequence",
+                            0,
+                            initial as u64,
+                            MAX,
+                            MAX,
+                        ))
+                    },
+                )?;
                 loop {
                     let current = u64::try_from(values.len()).unwrap_or(u64::MAX);
                     if current >= MAX {
@@ -130,15 +136,17 @@ impl<'de, T: Deserialize<'de>, const MAX: u64> Deserialize<'de> for BoundedVec<T
                         break;
                     }
                     if values.len() == values.capacity() {
-                        values.try_reserve(1).map_err(|_| {
-                            serde::de::Error::custom(resource_message(
-                                "bounded CBOR sequence",
-                                current,
-                                1,
-                                MAX,
-                                MAX,
-                            ))
-                        })?;
+                        reserve_table(&mut values, 1, "bounded CBOR sequence", MAX, true).map_err(
+                            |_| {
+                                serde::de::Error::custom(resource_message(
+                                    "bounded CBOR sequence",
+                                    current,
+                                    1,
+                                    MAX,
+                                    MAX,
+                                ))
+                            },
+                        )?;
                     }
                     let Some(value) = sequence.next_element()? else {
                         break;
@@ -149,7 +157,10 @@ impl<'de, T: Deserialize<'de>, const MAX: u64> Deserialize<'de> for BoundedVec<T
             }
         }
 
-        deserializer.deserialize_seq(BoundedVisitor::<T, MAX>(std::marker::PhantomData))
+        crucible::owned_decode::deserialize_prepaid_sequence(
+            deserializer,
+            BoundedVisitor::<T, MAX>(std::marker::PhantomData),
+        )
     }
 }
 
@@ -173,6 +184,11 @@ pub(crate) fn encode_prefixed<T: Serialize>(
     )?;
     let total_usize = usize::try_from(total).map_err(|_| resource(field, 0, total, configured))?;
 
+    if let Some(original) = crucible::owned_decode::current_budget() {
+        original
+            .charge_array::<u8>(total_usize)
+            .map_err(|_| resource(field, 0, total, configured))?;
+    }
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(total_usize)
@@ -221,6 +237,49 @@ fn admit(
         return Err(resource(field, current, requested, configured));
     }
     Ok(total)
+}
+
+// Custom visitors retain exact length hints and their format-specific bounds.
+// The original pays each replacement table while the old allocation is live.
+fn reserve_table<T>(
+    values: &mut Vec<T>,
+    additional: usize,
+    field: &'static str,
+    maximum: u64,
+    geometric: bool,
+) -> Result<(), BoundedCborError> {
+    let current = values.len() as u64;
+    let error = || collection_resource(field, current, additional as u64, maximum);
+    let Some(original) = crucible::owned_decode::current_budget() else {
+        return if geometric {
+            values.try_reserve(additional)
+        } else {
+            values.try_reserve_exact(additional)
+        }
+        .map_err(|_| collection_resource(field, values.len() as u64, additional as u64, maximum));
+    };
+    let required = values.len().checked_add(additional).ok_or_else(error)?;
+    if required <= values.capacity() {
+        return Ok(());
+    }
+    let maximum = usize::try_from(maximum).unwrap_or(usize::MAX);
+    let capacity = if geometric {
+        values
+            .capacity()
+            .checked_mul(2)
+            .unwrap_or(required)
+            .max(required)
+            .min(maximum)
+    } else {
+        required
+    };
+    if capacity < required {
+        return Err(error());
+    }
+    original.charge_array::<T>(capacity).map_err(|_| error())?;
+    values
+        .try_reserve_exact(capacity - values.len())
+        .map_err(|_| error())
 }
 
 fn resource(

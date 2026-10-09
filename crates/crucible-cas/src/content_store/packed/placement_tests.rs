@@ -7,11 +7,12 @@
 use super::index_format::{self as wire, Key, Node, PageReference, Value};
 use super::index_io::Operation;
 use super::index_update::Update;
-use super::placement_index::EncodedIndex;
+use super::placement_index::{EncodedIndex, IndexSnapshot};
 use super::*;
 use crate::content_store::StorePhysicalQuotaGuard;
 use crate::content_store::test_resources::FixtureResourceBudget;
 use crate::owned_decode::{DecodeAdmissionError, DecodeBudget, ResourceLoan};
+use std::os::unix::fs::FileExt;
 use std::sync::atomic::AtomicBool;
 use tempfile::TempDir;
 
@@ -97,6 +98,161 @@ fn value(ordinal: u64) -> Value {
         offset: ordinal,
         length: 1,
     })
+}
+
+fn published_two_leaf_index(fixture: &Fixture) -> Result<IndexSnapshot, FixtureError> {
+    let mut boundary = || Ok(());
+    let mut operation = Operation {
+        original: Some(&fixture.original),
+        boundary: &mut boundary,
+    };
+    let initial = EncodedIndex::empty_under(&fixture.backend, [21; 32], &mut operation)?.snapshot();
+    let mut update = Update::new(&initial, &fixture.backend, &mut operation)?;
+    for ordinal in 0..65 {
+        update.set(
+            &fixture.backend,
+            Key::object(object(ordinal)),
+            Some(value(ordinal)),
+            &mut operation,
+        )?;
+    }
+    let encoded = update.finish(&fixture.backend, &mut operation)?;
+    // Fixture publication establishes real root bytes before the selected
+    // checked reads; it does not donate checked publication capability.
+    fixture.backend.publish_index(&encoded)?;
+    Ok(encoded.snapshot())
+}
+
+#[test]
+fn placement_same_reader_rechecks_changed_page_checksum_and_reference() -> Result<(), FixtureError>
+{
+    let fixture = Fixture::new()?;
+    let baseline = fixture.quota.resources.usage()?;
+    {
+        let snapshot = published_two_leaf_index(&fixture)?;
+        let root_before = fs::read(fixture.backend.admin.join(INDEX_FILE))?;
+        let mut boundary = || Ok(());
+        let mut operation = Operation {
+            original: Some(&fixture.original),
+            boundary: &mut boundary,
+        };
+        let reader = snapshot.reader(&fixture.backend, &mut operation)?;
+        assert_eq!(
+            reader.find(Key::object(object(0)), &mut operation)?,
+            Some(value(0))
+        );
+
+        let arena = snapshot.header.arena.expect("two-leaf tree has an arena");
+        let name = index_io::arena_name(arena);
+        let path = fixture
+            .backend
+            .admin
+            .join(std::str::from_utf8(&name).unwrap());
+        let file = fs::OpenOptions::new().read(true).write(true).open(path)?;
+        let reference = PageReference::decode(snapshot.body())?;
+        let mut root_page = vec![0; reference.length as usize];
+        file.read_exact_at(&mut root_page, reference.offset)?;
+        let leaf = Node::parse(&root_page, true)?.child(0)?;
+        let mut leaf_page = vec![0; leaf.length as usize];
+        file.read_exact_at(&mut leaf_page, leaf.offset)?;
+        let original_page = leaf_page.clone();
+        let node = Node::parse(&leaf_page, false)?;
+        let (count, records) = (node.count, node.records);
+
+        // First damage the actual backing page without updating its checksum.
+        leaf_page[wire::PAGE_HEADER_BYTES + wire::KEY_BYTES] ^= 1;
+        file.write_all_at(&leaf_page, leaf.offset)?;
+        assert!(matches!(
+            reader.find(Key::object(object(0)), &mut operation),
+            Err(StoreError::Incompatible)
+        ));
+
+        // A canonically checksummed replacement still lacks the parent's
+        // authenticated digest. The same retained reader must reject it too.
+        leaf_page.truncate(leaf_page.len() - 32);
+        wire::finish_node(&mut leaf_page, count, records)?;
+        Node::parse(&leaf_page, false)?;
+        file.write_all_at(&leaf_page, leaf.offset)?;
+        assert!(matches!(
+            reader.find(Key::object(object(0)), &mut operation),
+            Err(StoreError::Incompatible)
+        ));
+
+        file.write_all_at(&original_page, leaf.offset)?;
+        assert_eq!(
+            reader.find(Key::object(object(0)), &mut operation)?,
+            Some(value(0))
+        );
+        assert_eq!(
+            fs::read(fixture.backend.admin.join(INDEX_FILE))?,
+            root_before
+        );
+    }
+    assert_eq!(fixture.quota.resources.usage()?, baseline);
+    Ok(())
+}
+
+#[test]
+fn placement_read_cuts_keep_original_refusal_and_close_paid_buffers() -> Result<(), FixtureError> {
+    let fixture = Fixture::new()?;
+    let baseline = fixture.quota.resources.usage()?;
+    {
+        let snapshot = published_two_leaf_index(&fixture)?;
+        let root_before = fs::read(fixture.backend.admin.join(INDEX_FILE))?;
+        let mut healthy = || Ok(());
+        let mut operation = Operation {
+            original: Some(&fixture.original),
+            boundary: &mut healthy,
+        };
+        let reader = snapshot.reader(&fixture.backend, &mut operation)?;
+        let reader_usage = fixture.quota.resources.usage()?;
+
+        // Callback one is the lookup entry. Two and three enclose the first
+        // actual arena read. Owned bytes witness whether that read occurred.
+        for cut in [2, 3] {
+            let mut buffer = operation.buffer(wire::PAGE_BYTES)?;
+            buffer.value.resize(wire::PAGE_BYTES, 0xa5);
+            let mut seen = 0;
+            let mut revoke = || {
+                seen += 1;
+                if seen == cut {
+                    fixture.quota.closed.store(true, Ordering::SeqCst);
+                }
+                Ok(())
+            };
+            let error = reader
+                .find_into(
+                    Key::object(object(0)),
+                    &mut buffer,
+                    &mut Operation {
+                        original: Some(&fixture.original),
+                        boundary: &mut revoke,
+                    },
+                )
+                .expect_err("original refusal must prevent a selected value");
+            assert!(matches!(error.original_failure(), StoreError::Unauthorized));
+            assert_eq!(seen, cut);
+            if cut == 2 {
+                assert_eq!(&buffer.value[..16], &[0xa5; 16]);
+            } else {
+                assert_eq!(&buffer.value[..16], b"CRUCPIDXPAGE0002");
+            }
+            drop(buffer);
+            drop(error);
+            fixture.quota.closed.store(false, Ordering::SeqCst);
+            assert_eq!(fixture.quota.resources.usage()?, reader_usage);
+            assert_eq!(
+                fs::read(fixture.backend.admin.join(INDEX_FILE))?,
+                root_before
+            );
+        }
+        assert_eq!(
+            reader.find(Key::object(object(0)), &mut operation)?,
+            Some(value(0))
+        );
+    }
+    assert_eq!(fixture.quota.resources.usage()?, baseline);
+    Ok(())
 }
 
 #[test]

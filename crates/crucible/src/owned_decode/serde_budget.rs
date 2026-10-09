@@ -10,7 +10,14 @@
 use serde::Deserialize;
 use serde::de::{DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
 
+use super::bounded_visitors::{PREPAID_MAP, PREPAID_SEQUENCE};
 use super::{DecodeBudget, current_budget};
+
+#[derive(Clone, Copy)]
+pub(super) enum CollectionHints {
+    Suppress,
+    PrepaidTable,
+}
 
 /// Decodes a JSON leaf within the current original resource account.
 ///
@@ -48,6 +55,8 @@ pub fn from_json_slice<'de, T: Deserialize<'de>>(bytes: &'de [u8]) -> Result<T, 
     let result = T::deserialize(BudgetDeserializer {
         inner: &mut decoder,
         budget,
+        borrow_parser_bytes: false,
+        collection_hints: CollectionHints::Suppress,
     })?;
     decoder.end()?;
     Ok(result)
@@ -71,10 +80,7 @@ fn admit_seed<T, E: serde::de::Error>(budget: &DecodeBudget) -> Result<(), E> {
 /// # Errors
 /// Returns the parser error or a fixed refusal marker; the account retains the
 /// original typed admission cause independently of the parser's diagnostic.
-pub fn deserialize_with_budget<'de, T, D>(
-    decoder: D,
-    budget: &DecodeBudget,
-) -> Result<T, D::Error>
+pub fn deserialize_with_budget<'de, T, D>(decoder: D, budget: &DecodeBudget) -> Result<T, D::Error>
 where
     T: Deserialize<'de>,
     D: serde::Deserializer<'de>,
@@ -83,6 +89,8 @@ where
     T::deserialize(BudgetDeserializer {
         inner: decoder,
         budget: budget.clone(),
+        borrow_parser_bytes: false,
+        collection_hints: CollectionHints::Suppress,
     })
 }
 
@@ -93,9 +101,11 @@ fn refusal<E: serde::de::Error>(budget: &DecodeBudget, error: super::DecodeAdmis
     E::custom("original decoded metadata admission refused")
 }
 
-struct BudgetDeserializer<D> {
-    inner: D,
-    budget: DecodeBudget,
+pub(super) struct BudgetDeserializer<D> {
+    pub(super) inner: D,
+    pub(super) budget: DecodeBudget,
+    pub(super) borrow_parser_bytes: bool,
+    pub(super) collection_hints: CollectionHints,
 }
 
 macro_rules! forward {
@@ -106,7 +116,7 @@ macro_rules! forward {
             // type directly, without a collection seed. Admit the visitor's
             // actual owning value before that implementation can allocate it.
             admit_seed::<V::Value, D::Error>(&self.budget)?;
-            self.inner.$method($($argument,)* BudgetVisitor { inner: visitor, budget: self.budget })
+            self.inner.$method($($argument,)* BudgetVisitor { inner: visitor, budget: self.budget, borrow_parser_bytes: self.borrow_parser_bytes, collection_hints: self.collection_hints })
         }
     };
 }
@@ -130,13 +140,70 @@ impl<'de, D: serde::Deserializer<'de>> serde::Deserializer<'de> for BudgetDeseri
     forward!(deserialize_f64);
     forward!(deserialize_char);
     forward!(deserialize_str);
-    forward!(deserialize_string);
+    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        admit_seed::<V::Value, D::Error>(&self.budget)?;
+        let wrapped = BudgetVisitor {
+            inner: visitor,
+            budget: self.budget,
+            borrow_parser_bytes: self.borrow_parser_bytes,
+            collection_hints: self.collection_hints,
+        };
+        if self.borrow_parser_bytes {
+            self.inner.deserialize_str(wrapped)
+        } else {
+            self.inner.deserialize_string(wrapped)
+        }
+    }
     forward!(deserialize_bytes);
-    forward!(deserialize_byte_buf);
+    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        admit_seed::<V::Value, D::Error>(&self.budget)?;
+        let wrapped = BudgetVisitor {
+            inner: visitor,
+            budget: self.budget,
+            borrow_parser_bytes: self.borrow_parser_bytes,
+            collection_hints: self.collection_hints,
+        };
+        if self.borrow_parser_bytes {
+            self.inner.deserialize_bytes(wrapped)
+        } else {
+            self.inner.deserialize_byte_buf(wrapped)
+        }
+    }
     forward!(deserialize_option);
     forward!(deserialize_unit);
     forward!(deserialize_unit_struct, name: &'static str);
-    forward!(deserialize_newtype_struct, name: &'static str);
+    fn deserialize_newtype_struct<V>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let collection_hints = if name == PREPAID_SEQUENCE || name == PREPAID_MAP {
+            // The transparent dispatch owns no allocation. The actual sequence
+            // or map entry below retains its ordinary typed-value admission.
+            CollectionHints::PrepaidTable
+        } else {
+            admit_seed::<V::Value, D::Error>(&self.budget)?;
+            self.collection_hints
+        };
+        self.inner.deserialize_newtype_struct(
+            name,
+            BudgetVisitor {
+                inner: visitor,
+                budget: self.budget,
+                borrow_parser_bytes: self.borrow_parser_bytes,
+                collection_hints,
+            },
+        )
+    }
     forward!(deserialize_seq);
     forward!(deserialize_tuple, len: usize);
     forward!(deserialize_tuple_struct, name: &'static str, len: usize);
@@ -154,6 +221,8 @@ impl<'de, D: serde::Deserializer<'de>> serde::Deserializer<'de> for BudgetDeseri
 struct BudgetSeed<S> {
     inner: S,
     budget: DecodeBudget,
+    borrow_parser_bytes: bool,
+    collection_hints: CollectionHints,
 }
 
 impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for BudgetSeed<S> {
@@ -164,6 +233,8 @@ impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for BudgetSeed<S> {
         self.inner.deserialize(BudgetDeserializer {
             inner: decoder,
             budget: self.budget,
+            borrow_parser_bytes: self.borrow_parser_bytes,
+            collection_hints: self.collection_hints,
         })
     }
 }
@@ -171,6 +242,8 @@ impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for BudgetSeed<S> {
 struct BudgetVisitor<V> {
     inner: V,
     budget: DecodeBudget,
+    borrow_parser_bytes: bool,
+    collection_hints: CollectionHints,
 }
 
 macro_rules! scalar {
@@ -256,6 +329,8 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for BudgetVisitor<V> {
         self.inner.visit_some(BudgetDeserializer {
             inner: decoder,
             budget: self.budget,
+            borrow_parser_bytes: self.borrow_parser_bytes,
+            collection_hints: self.collection_hints,
         })
     }
 
@@ -266,6 +341,8 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for BudgetVisitor<V> {
         self.inner.visit_newtype_struct(BudgetDeserializer {
             inner: decoder,
             budget: self.budget,
+            borrow_parser_bytes: self.borrow_parser_bytes,
+            collection_hints: self.collection_hints,
         })
     }
 
@@ -273,6 +350,8 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for BudgetVisitor<V> {
         self.inner.visit_seq(BudgetSequence {
             inner: sequence,
             budget: self.budget,
+            borrow_parser_bytes: self.borrow_parser_bytes,
+            collection_hints: self.collection_hints,
         })
     }
 
@@ -280,6 +359,8 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for BudgetVisitor<V> {
         self.inner.visit_map(BudgetMap {
             inner: map,
             budget: self.budget,
+            borrow_parser_bytes: self.borrow_parser_bytes,
+            collection_hints: self.collection_hints,
         })
     }
 
@@ -287,6 +368,8 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for BudgetVisitor<V> {
         self.inner.visit_enum(BudgetEnum {
             inner: value,
             budget: self.budget,
+            borrow_parser_bytes: self.borrow_parser_bytes,
+            collection_hints: self.collection_hints,
         })
     }
 }
@@ -294,6 +377,8 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for BudgetVisitor<V> {
 struct BudgetSequence<A> {
     inner: A,
     budget: DecodeBudget,
+    borrow_parser_bytes: bool,
+    collection_hints: CollectionHints,
 }
 
 impl<'de, A: SeqAccess<'de>> SeqAccess<'de> for BudgetSequence<A> {
@@ -305,16 +390,23 @@ impl<'de, A: SeqAccess<'de>> SeqAccess<'de> for BudgetSequence<A> {
         self.inner.next_element_seed(BudgetSeed {
             inner: seed,
             budget: self.budget.clone(),
+            borrow_parser_bytes: self.borrow_parser_bytes,
+            collection_hints: CollectionHints::Suppress,
         })
     }
     fn size_hint(&self) -> Option<usize> {
-        Some(0)
+        match self.collection_hints {
+            CollectionHints::Suppress => Some(0),
+            CollectionHints::PrepaidTable => self.inner.size_hint(),
+        }
     }
 }
 
 struct BudgetMap<A> {
     inner: A,
     budget: DecodeBudget,
+    borrow_parser_bytes: bool,
+    collection_hints: CollectionHints,
 }
 
 impl<'de, A: MapAccess<'de>> MapAccess<'de> for BudgetMap<A> {
@@ -326,6 +418,8 @@ impl<'de, A: MapAccess<'de>> MapAccess<'de> for BudgetMap<A> {
         self.inner.next_key_seed(BudgetSeed {
             inner: seed,
             budget: self.budget.clone(),
+            borrow_parser_bytes: self.borrow_parser_bytes,
+            collection_hints: CollectionHints::Suppress,
         })
     }
     fn next_value_seed<V: DeserializeSeed<'de>>(
@@ -335,16 +429,23 @@ impl<'de, A: MapAccess<'de>> MapAccess<'de> for BudgetMap<A> {
         self.inner.next_value_seed(BudgetSeed {
             inner: seed,
             budget: self.budget.clone(),
+            borrow_parser_bytes: self.borrow_parser_bytes,
+            collection_hints: CollectionHints::Suppress,
         })
     }
     fn size_hint(&self) -> Option<usize> {
-        Some(0)
+        match self.collection_hints {
+            CollectionHints::Suppress => Some(0),
+            CollectionHints::PrepaidTable => self.inner.size_hint(),
+        }
     }
 }
 
 struct BudgetEnum<A> {
     inner: A,
     budget: DecodeBudget,
+    borrow_parser_bytes: bool,
+    collection_hints: CollectionHints,
 }
 
 impl<'de, A: EnumAccess<'de>> EnumAccess<'de> for BudgetEnum<A> {
@@ -357,12 +458,16 @@ impl<'de, A: EnumAccess<'de>> EnumAccess<'de> for BudgetEnum<A> {
         let (value, variant) = self.inner.variant_seed(BudgetSeed {
             inner: seed,
             budget: self.budget.clone(),
+            borrow_parser_bytes: self.borrow_parser_bytes,
+            collection_hints: CollectionHints::Suppress,
         })?;
         Ok((
             value,
             BudgetVariant {
                 inner: variant,
                 budget: self.budget,
+                borrow_parser_bytes: self.borrow_parser_bytes,
+                collection_hints: self.collection_hints,
             },
         ))
     }
@@ -371,6 +476,8 @@ impl<'de, A: EnumAccess<'de>> EnumAccess<'de> for BudgetEnum<A> {
 struct BudgetVariant<A> {
     inner: A,
     budget: DecodeBudget,
+    borrow_parser_bytes: bool,
+    collection_hints: CollectionHints,
 }
 
 impl<'de, A: VariantAccess<'de>> VariantAccess<'de> for BudgetVariant<A> {
@@ -385,6 +492,8 @@ impl<'de, A: VariantAccess<'de>> VariantAccess<'de> for BudgetVariant<A> {
         self.inner.newtype_variant_seed(BudgetSeed {
             inner: seed,
             budget: self.budget,
+            borrow_parser_bytes: self.borrow_parser_bytes,
+            collection_hints: CollectionHints::Suppress,
         })
     }
     fn tuple_variant<V: Visitor<'de>>(
@@ -397,6 +506,8 @@ impl<'de, A: VariantAccess<'de>> VariantAccess<'de> for BudgetVariant<A> {
             BudgetVisitor {
                 inner: visitor,
                 budget: self.budget,
+                borrow_parser_bytes: self.borrow_parser_bytes,
+                collection_hints: self.collection_hints,
             },
         )
     }
@@ -410,6 +521,8 @@ impl<'de, A: VariantAccess<'de>> VariantAccess<'de> for BudgetVariant<A> {
             BudgetVisitor {
                 inner: visitor,
                 budget: self.budget,
+                borrow_parser_bytes: self.borrow_parser_bytes,
+                collection_hints: self.collection_hints,
             },
         )
     }

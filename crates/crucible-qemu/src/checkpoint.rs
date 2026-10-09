@@ -18,9 +18,9 @@ pub use node_codec::QemuNodeCheckpointCodecError;
 use node_codec::{
     MAX_NETWORK_QUEUE_FRAMES, MAX_NODE_CONTINUATION_BYTES, MAX_NODE_CONTINUATION_FRAMES,
     MAX_NODE_CONTINUATION_PAYLOAD_BYTES, MAX_NODE_CONTINUATION_RING_BYTES, NodeContinuationReader,
-    admit_node_resource, checked_node_encoded_len, map_ring_decode_error, map_ring_encode_error,
-    ring_canonical_len, write_node_continuation_blob, write_node_continuation_bytes,
-    write_node_continuation_count,
+    admit_node_resource, checked_node_encoded_len, decode_original_ring_snapshot,
+    map_ring_decode_error, map_ring_encode_error, ring_canonical_len, write_node_continuation_blob,
+    write_node_continuation_bytes, write_node_continuation_count,
 };
 
 /// Complete host block-device continuation paired with QEMU VMState.
@@ -568,12 +568,12 @@ impl QemuNodeContinuationCheckpoint {
         if queue_capacity == 0 || !queue_capacity.is_power_of_two() {
             return Err(QemuNodeCheckpointCodecError::NetworkTransport);
         }
-        let inbound = SpscRingSnapshot::from_canonical_bytes(
+        let inbound = decode_original_ring_snapshot(
             reader.blob_bounded("network inbound ring", MAX_NODE_CONTINUATION_RING_BYTES)?,
             queue_capacity as usize,
         )
         .map_err(|error| map_ring_decode_error(error, "network inbound ring", queue_capacity))?;
-        let outbound = SpscRingSnapshot::from_canonical_bytes(
+        let outbound = decode_original_ring_snapshot(
             reader.blob_bounded("network outbound ring", MAX_NODE_CONTINUATION_RING_BYTES)?,
             queue_capacity as usize,
         )

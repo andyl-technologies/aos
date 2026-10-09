@@ -24,6 +24,9 @@ use crucible_campaign::{
 };
 use thiserror::Error;
 
+mod prefix_failure;
+pub use prefix_failure::SchedulePrefixFailure;
+
 const REPLAY_CLOSURE_MAGIC: &[u8; 8] = b"CCRC\0\0\0\x01";
 const MAX_REPLAY_CLOSURE_SELECTIONS: usize = 65_536;
 const MAX_REPLAY_CLOSURE_BYTES: usize = 128 * 1024 * 1024;
@@ -207,15 +210,20 @@ impl GuardedCampaignReplayClosure {
             record.validate_references()?;
             charge_selection_record(&mut encoded_bytes, &record)?;
             let selection = record.selection.id()?;
+            crucible::owned_decode::charge_btree_entry::<
+                SelectionId,
+                GuardedCampaignReplaySelection,
+            >()?;
             if by_selection.insert(selection, record).is_some() {
                 return Err(GuardedCampaignReplayClosureError::Invalid {
                     reason: "replay closure contains a duplicate selection",
                 });
             }
         }
-        Ok(Self {
-            selections: by_selection.into_values().collect(),
-        })
+        let mut selections = Vec::new();
+        crucible::owned_decode::reserve_vec(&mut selections, by_selection.len())?;
+        selections.extend(by_selection.into_values());
+        Ok(Self { selections })
     }
 
     #[cfg(test)]
@@ -340,9 +348,7 @@ impl GuardedCampaignReplayClosure {
             });
         }
         let mut records = Vec::new();
-        records
-            .try_reserve(count)
-            .map_err(GuardedCampaignReplayClosureError::Allocation)?;
+        crucible::owned_decode::reserve_vec(&mut records, count)?;
         for _ in 0..count {
             records.push(GuardedCampaignReplaySelection {
                 domain: ChoiceDomain::from_canonical_bytes(decoder.read_record()?)?,
@@ -386,11 +392,15 @@ impl GuardedCampaignReplayClosure {
         let scenario_id = crucible_campaign::ScenarioDefId::from_hash(CampaignHash::from_bytes(
             scenario.id().bytes,
         ));
-        let records = self
-            .selections
-            .iter()
-            .map(|record| Ok((record.selection.id()?, record)))
-            .collect::<Result<BTreeMap<_, _>, GuardedCampaignReplayClosureError>>()?;
+        let mut records = BTreeMap::new();
+        for record in &self.selections {
+            let identity = record.selection.id()?;
+            crucible::owned_decode::charge_btree_entry::<
+                SelectionId,
+                &GuardedCampaignReplaySelection,
+            >()?;
+            records.insert(identity, record);
+        }
         let mut used = BTreeSet::new();
 
         for (index, decision) in schedule.decisions().iter().enumerate() {
@@ -431,7 +441,15 @@ impl GuardedCampaignReplayClosure {
                     selection.validate_replay(&record.opportunity, &record.domain)?;
                 }
                 SelectionOrigin::CampaignBranch { .. } => {
-                    let prefix = schedule.prefix(index)?;
+                    let failure = SchedulePrefixFailure::prepare()?;
+                    let prefix = schedule.prefix_admitted(index).map_err(|error| {
+                        if let crucible::EngineError::ArtifactDecodeAdmission { source } = &error
+                            && let Some(original) = crucible::owned_decode::current_budget()
+                        {
+                            original.record_failure(source.clone());
+                        }
+                        GuardedCampaignReplayClosureError::Model(failure.retain(error))
+                    })?;
                     let parent = Configuration {
                         def: scenario.scenario_def(),
                         schedule: prefix,
@@ -459,7 +477,10 @@ impl GuardedCampaignReplayClosure {
                     })?;
                 }
             }
-            used.insert(selection_id);
+            if !used.contains(&selection_id) {
+                crucible::owned_decode::charge_btree_set_entry::<SelectionId>()?;
+                used.insert(selection_id);
+            }
         }
         if used.len() != records.len() {
             return Err(GuardedCampaignReplayClosureError::Invalid {
@@ -640,6 +661,9 @@ pub enum GuardedCampaignReplayClosureError {
     /// A schedule prefix could not be reconstructed canonically.
     #[error("campaign replay closure schedule is invalid: {0}")]
     Schedule(#[from] crucible::ScheduleError),
+    /// Admitting a complete schedule prefix failed before its allocation.
+    #[error("campaign replay closure modeled prefix is invalid: {0}")]
+    Model(#[source] SchedulePrefixFailure),
     /// Publishing or resolving a closure record failed.
     #[error("campaign replay closure repository operation failed: {0}")]
     Repository(#[from] CampaignRepositoryError),
