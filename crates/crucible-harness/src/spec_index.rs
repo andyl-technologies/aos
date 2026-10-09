@@ -88,7 +88,7 @@ pub const CRATE_SPEC_INDEX: &[CrateSpecIndexEntry] = &[
         ],
         root: "src/lib.rs",
         spec_files: &[],
-        supplemental_spec: Some("RFC-0021 files 02, 03"),
+        supplemental_spec: Some("Logical RAM and Merkle format; write tracking and fingerprints"),
         section_6_row: false,
     },
     CrateSpecIndexEntry {
