@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use terrane_core::bucket::BucketKey;
 
+#[path = "tests/empty_roots.rs"]
 mod empty_roots;
 
 #[tokio::test]
