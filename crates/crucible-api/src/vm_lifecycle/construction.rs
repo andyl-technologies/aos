@@ -1025,6 +1025,14 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         source.world(),
     )
     .with_scenario_def(scenario.clone());
+    if let Some(checkpoint) = &restore_checkpoint {
+        runtime_scenario = checkpoint
+            .scheduler
+            .prepare_restore_scenario(runtime_scenario)
+            .map_err(|error| {
+                loop_factory_error(format!("prepare exact scheduler ready origins: {error}"))
+            })?;
+    }
     if let Some(interval_ticks) = config.rendezvous_interval_ticks {
         runtime_scenario = runtime_scenario
             .with_rendezvous_interval(SimDuration {

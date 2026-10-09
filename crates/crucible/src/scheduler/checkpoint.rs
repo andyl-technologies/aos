@@ -243,6 +243,64 @@ impl From<&SearchRuntimeFrontier> for SearchRuntimeFrontierWire {
 }
 
 impl SingleSchedulerCheckpoint {
+    /// Prepares a fresh scenario with this continuation's original ready origins.
+    ///
+    /// A restored backend's current counter is not its cold boot-ready counter.
+    /// This copies only the immutable epoch origins used by scheduler
+    /// construction; [`Self::restore_into`] still checks the complete mappings
+    /// and restores all mutable state atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleSchedulerCheckpointError`] for invalid wire state, a
+    /// different scenario or node inventory, or a non-epoch ready mapping.
+    pub fn prepare_restore_scenario(
+        &self,
+        mut scenario: SchedulerLivenessScenario,
+    ) -> Result<SchedulerLivenessScenario, SingleSchedulerCheckpointError> {
+        validate_wire(&self.wire)?;
+        if scenario.canonical_configuration().def.id() != self.wire.scenario {
+            return Err(SingleSchedulerCheckpointError::Configuration);
+        }
+
+        let mut nodes = scenario
+            .nodes
+            .iter()
+            .map(|node| &node.id)
+            .collect::<Vec<_>>();
+        nodes.sort_unstable();
+        if nodes.len() != self.wire.nodes.len()
+            || nodes
+                .iter()
+                .zip(&self.wire.nodes)
+                .any(|(node, retained)| **node != retained.id)
+            || self
+                .wire
+                .nodes
+                .iter()
+                .any(|node| node.ready_point_mapping.anchor_time != SimInstant::EPOCH)
+        {
+            return Err(SingleSchedulerCheckpointError::Node);
+        }
+
+        scenario.ready_point_counters = self
+            .wire
+            .nodes
+            .iter()
+            .map(|node| (node.id.clone(), node.ready_point_mapping.anchor_counter))
+            .collect();
+        // Construction projects every initial counter before mutable restore.
+        // Start at the retained epoch anchor so that projection cannot underflow.
+        for node in &mut scenario.nodes {
+            node.counter = scenario
+                .ready_point_counters
+                .get(&node.id)
+                .copied()
+                .ok_or(SingleSchedulerCheckpointError::Node)?;
+        }
+        Ok(scenario)
+    }
+
     /// Returns the immutable scenario identity owning this continuation.
     #[must_use]
     pub const fn scenario(&self) -> ContentHash {
@@ -772,6 +830,10 @@ pub enum SingleSchedulerCheckpointError {
     #[error("noncanonical single-scheduler checkpoint")]
     Noncanonical,
 }
+
+#[cfg(test)]
+#[path = "checkpoint/restore_ready_origins.rs"]
+mod restore_ready_origins;
 
 #[cfg(test)]
 mod epoch_ready_point_tests {
