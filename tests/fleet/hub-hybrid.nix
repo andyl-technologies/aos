@@ -486,7 +486,7 @@
         # Native also retains the full Hub server and initializer payload.
         aos.image.budgets.maxRuntimeClosureMiB = lib.mkForce 1024;
         # Runtime roles must survive evaluation of the retained host sources.
-        aos.activation.stages.host.configuration = ["${nativeHostModule}/module.nix"];
+        aos.activation.stages.host.configuration = lib.mkForce ["${nativeHostModule}/module.nix"];
         aos.kernel.modules = ["9pnet_virtio" "9p"];
         environment.systemPackages = [pkgs.util-linux];
       }
@@ -531,6 +531,7 @@
   workerRunner = writeFixture "hub-hybrid-fleet-worker-runner" (builtins.readFile ./_hub-worker-runner.cjs);
   # Adjacent imports select the same reviewed fixture files in every guest.
   managedFixtureModules = pkgs.runCommand "hub-managed-fleet-fixture-modules" {} ''
+    ${pkgs.python3}/bin/python3 ${./_hub-direct-queue-restart-launch-tests.py} ${./_hub-direct-queue-restart.py}
     mkdir -p "$out"
     mkdir -p "$out/protocol"
     cp ${../../pkgs/tools/aos-hub-direct-staged-races.mjs} "$out/aos-hub-direct-staged-races.mjs"
