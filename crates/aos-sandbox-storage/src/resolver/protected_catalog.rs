@@ -893,4 +893,146 @@ mod tests {
             Some(StorageResolverPolicyError::ProtectedPath)
         );
     }
+
+    #[test]
+    fn unequal_entries_preserve_big_endian_fields_digest_ranges_and_prefix_rejection() {
+        let first_assignment = assignment(2, 0x0102_0304_0506_0708);
+        let second_assignment = assignment(3, 0x1112_1314_1516_1718);
+        let first = policy_with_pool_guid(first_assignment, 0x2122_2324_2526_2728);
+        let domains = first.domains();
+        let root = ManagedDatasetRoot::from_catalog(
+            "longpool", "longpool/aosroot", 0x3132_3334_3536_3738,
+        ).unwrap();
+        let ancestor = ResolvedDataset::from_catalog(
+            root.clone(), "longpool/aosroot/project", 0x4142_4344_4546_4748,
+            [51; 32], domains,
+        ).unwrap();
+        let second = ProtectedStorageResolverPolicyV1::new(
+            second_assignment, root, 0x5152_5354_5556_5758, domains,
+            ProjectAncestorPolicyV1::new(
+                ancestor, 0x0102_0304_0506_0708, 0x1516_1718_191a_1b1c,
+                0x2526_2728_292a_2b2c,
+            ).unwrap(),
+            0x0001_0203_0405_0607, 0x0000_0102_0304_0506,
+        ).unwrap();
+        let generation = 0x6162_6364_6566_6768;
+        let bytes = encode_catalog_for_test(
+            generation, authority(), &[second.clone(), first.clone()],
+        );
+
+        for length in 0..bytes.len() {
+            assert_eq!(
+                LoadedStorageResolverPolicyCatalogV1::decode(&bytes[..length], authority()).err(),
+                Some(StorageResolverPolicyError::Malformed),
+                "prefix length {length}",
+            );
+        }
+        let loaded = LoadedStorageResolverPolicyCatalogV1::decode(&bytes, authority()).unwrap();
+        assert_eq!(loaded.generation(), generation);
+
+        // 310 fixed bytes include the assignment, three text lengths and all scalars/digests.
+        let first_end = HEADER_BYTES + 310 + "tank".len() + "tank/aos".len() + "tank/aos/project".len();
+        for (expected, range) in [(&first, HEADER_BYTES..first_end), (&second, first_end..bytes.len())] {
+            let mut hash = Sha256::new();
+            hash.update(b"aos.sandbox.storage.resolver-policy-entry.v2\0");
+            hash.update(&bytes[range]);
+            let expected_digest = ObjectDigest::from_bytes(hash.finalize().into());
+
+            let selected = LoadedStorageResolverPolicyCatalogV1::decode(&bytes, authority())
+                .unwrap().select(expected.assignment()).unwrap();
+            assert_eq!(selected.policy(), expected);
+            assert_eq!(selected.binding().entry_digest(), expected_digest);
+        }
+    }
+
+    #[test]
+    fn header_and_authority_first_causes_precede_entry_and_checksum_failures() {
+        let original = encode_catalog_for_test(7, authority(), &[policy(assignment(2, 3))]);
+        let foreign = ObjectDigest::from_bytes([42; 32]);
+        assert!(LoadedStorageResolverPolicyCatalogV1::decode(&original, authority()).is_ok());
+        assert_eq!(
+            LoadedStorageResolverPolicyCatalogV1::decode(&original, foreign).err(),
+            Some(StorageResolverPolicyError::AuthorityMismatch),
+        );
+
+        let truncated = original[..HEADER_BYTES + 1].to_vec();
+        let mut invalid_assignment = original.clone();
+        invalid_assignment[HEADER_BYTES..HEADER_BYTES + ASSIGNMENT_BYTES].fill(0);
+        let mut trailing = original.clone();
+        trailing.push(0);
+        for (name, bytes) in [
+            ("truncated entry", truncated), ("invalid assignment", invalid_assignment),
+            ("trailing bytes and stale checksum", trailing),
+        ] {
+            assert_eq!(
+                LoadedStorageResolverPolicyCatalogV1::decode(&bytes, foreign).err(),
+                Some(StorageResolverPolicyError::AuthorityMismatch), "{name}",
+            );
+            assert_eq!(
+                LoadedStorageResolverPolicyCatalogV1::decode(&bytes, authority()).err(),
+                Some(StorageResolverPolicyError::Malformed), "{name}",
+            );
+        }
+
+        for (name, range, replacement) in [
+            ("reserved header", 10..12, &[1, 0][..]),
+            ("zero generation", 12..20, &[0; 8][..]),
+            ("zero authority", 20..52, &[0; 32][..]),
+            ("entry bound", 52..56, &257_u32.to_be_bytes()[..]),
+            ("zero stated digest", 56..88, &[0; 32][..]),
+        ] {
+            let mut bytes = original.clone();
+            bytes[range].copy_from_slice(replacement);
+            assert_eq!(
+                LoadedStorageResolverPolicyCatalogV1::decode(&bytes, foreign).err(),
+                Some(StorageResolverPolicyError::Malformed), "{name}",
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_names_retain_byte_limits_utf8_validation_and_exact_boundary_acceptance() {
+        let assignment = assignment(2, 3);
+        let ordinary = policy(assignment);
+        let ancestor_name = format!("tank/aos/{}", "a".repeat(255 - "tank/aos/".len()));
+        let ancestor = ResolvedDataset::from_catalog(
+            ordinary.root().clone(), &ancestor_name, 36, [37; 32], ordinary.domains(),
+        ).unwrap();
+        let boundary = ProtectedStorageResolverPolicyV1::new(
+            assignment, ordinary.root().clone(), 17, ordinary.domains(),
+            ProjectAncestorPolicyV1::new(ancestor, 1 << 30, 64, 128).unwrap(),
+            1 << 28, 1 << 26,
+        ).unwrap();
+        let bytes = encode_catalog_for_test(7, authority(), &[boundary.clone()]);
+        let selected = LoadedStorageResolverPolicyCatalogV1::decode(&bytes, authority())
+            .unwrap().select(assignment).unwrap();
+        assert_eq!(ancestor_name.len(), 255);
+        assert_eq!(selected.policy(), &boundary);
+
+        let original = encode_catalog_for_test(7, authority(), &[ordinary]);
+        let pool_length = HEADER_BYTES + ASSIGNMENT_BYTES;
+        for length in [0_u16, 256] {
+            let mut bytes = original.clone();
+            bytes[pool_length..pool_length + 2].copy_from_slice(&length.to_be_bytes());
+            refresh_digest(&mut bytes);
+            assert_eq!(
+                LoadedStorageResolverPolicyCatalogV1::decode(&bytes, authority()).err(),
+                Some(StorageResolverPolicyError::Malformed), "pool length {length}",
+            );
+        }
+        let mut invalid_utf8 = original.clone();
+        invalid_utf8[pool_length + 2] = 0xff;
+        refresh_digest(&mut invalid_utf8);
+        assert_eq!(
+            LoadedStorageResolverPolicyCatalogV1::decode(&invalid_utf8, authority()).err(),
+            Some(StorageResolverPolicyError::Malformed),
+        );
+
+        let mut truncated = original[..pool_length + 2 + "tank".len() - 1].to_vec();
+        refresh_digest(&mut truncated);
+        assert_eq!(
+            LoadedStorageResolverPolicyCatalogV1::decode(&truncated, authority()).err(),
+            Some(StorageResolverPolicyError::Malformed),
+        );
+    }
 }
