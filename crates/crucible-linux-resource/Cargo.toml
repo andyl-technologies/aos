@@ -30,3 +30,8 @@ tempfile = { workspace = true }
 name = "crucible-measurement-init"
 path = "src/bin/measurement_init.rs"
 required-features = ["private-measurement-domain"]
+
+[[bin]]
+name = "crucible-allocation-roster-controls"
+path = "src/bin/allocation_roster_controls.rs"
+required-features = ["test-support"]
