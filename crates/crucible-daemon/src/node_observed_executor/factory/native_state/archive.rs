@@ -314,7 +314,9 @@ pub(super) fn check_installed_binding(
     Ok(())
 }
 
-pub(in crate::node_observed_executor::factory) fn check_geometry(source: &AuthenticatedNativeSource<'_>) -> Result<(), StateError> {
+pub(in crate::node_observed_executor::factory) fn check_geometry(
+    source: &AuthenticatedNativeSource<'_>,
+) -> Result<(), StateError> {
     let artifacts = &source.owner().artifacts;
     if artifacts.is_empty() || artifacts.len() > MAX_ARTIFACTS {
         return Err(state_error(
@@ -340,7 +342,9 @@ pub(in crate::node_observed_executor::factory) fn check_geometry(source: &Authen
     Ok(())
 }
 
-pub(in crate::node_observed_executor::factory) fn check_empty_private_root(root: &Path) -> Result<(), StateError> {
+pub(in crate::node_observed_executor::factory) fn check_empty_private_root(
+    root: &Path,
+) -> Result<(), StateError> {
     let metadata = fs::symlink_metadata(root).map_err(state_error)?;
     if !metadata.is_dir()
         || metadata.uid() != rustix::process::geteuid().as_raw()
@@ -360,7 +364,10 @@ pub(in crate::node_observed_executor::factory) fn check_empty_private_root(root:
 /// The generic archive separates image and resource names explicitly. The native
 /// importer selects those roots by role, so its relative name must exclude the
 /// same role prefix without changing the signed artifact inventory.
-pub(in crate::node_observed_executor::factory) fn native_relative(role: &str, name: &str) -> Result<PathBuf, StateError> {
+pub(in crate::node_observed_executor::factory) fn native_relative(
+    role: &str,
+    name: &str,
+) -> Result<PathBuf, StateError> {
     let prefix = match role {
         "image" => "image/",
         "resource" => "resource/",
@@ -390,7 +397,10 @@ fn checked_relative(name: &str) -> Result<PathBuf, StateError> {
     Ok(path.to_path_buf())
 }
 
-pub(in crate::node_observed_executor::factory) fn create_parents(root: &Path, relative: &Path) -> Result<(), StateError> {
+pub(in crate::node_observed_executor::factory) fn create_parents(
+    root: &Path,
+    relative: &Path,
+) -> Result<(), StateError> {
     let mut parent = root.to_path_buf();
     if let Some(prefix) = relative.parent() {
         for part in prefix.components() {
@@ -416,7 +426,10 @@ pub(in crate::node_observed_executor::factory) fn create_parents(root: &Path, re
     Ok(())
 }
 
-pub(in crate::node_observed_executor::factory) fn copy_original(artifact: &NativeCaptureArtifact, path: &Path) -> Result<(), StateError> {
+pub(in crate::node_observed_executor::factory) fn copy_original(
+    artifact: &NativeCaptureArtifact,
+    path: &Path,
+) -> Result<(), StateError> {
     let reference: &ContentRef = artifact.reference();
     let mut target = File::options()
         .create_new(true)
