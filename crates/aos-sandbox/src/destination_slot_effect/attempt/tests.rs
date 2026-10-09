@@ -204,7 +204,7 @@ fn request(action: DestinationSlotAction, deadline: u64) -> Vec<u8> {
 }
 
 fn attempt_body(action: DestinationSlotAction) -> Vec<u8> {
-    crate::dispatch::durable_attempt_body(&request(action, 0), DEADLINE).unwrap()
+    aos_sandbox_protocol::dispatch_template::inject_deadline(&request(action, 0), DEADLINE).unwrap()
 }
 
 fn key_reference(name: &str, usage: KeyUsage, key: &SigningKey) -> KeyReference {

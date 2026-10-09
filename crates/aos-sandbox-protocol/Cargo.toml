@@ -5,6 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+aos-sandbox-ownership-protocol = { path = "../aos-sandbox-ownership-protocol" }
 aos-proto = { path = "../aos-proto" }
 aos-sandbox-core = { path = "../aos-sandbox-core" }
 aos-sandbox-journal = { path = "../aos-sandbox-journal" }

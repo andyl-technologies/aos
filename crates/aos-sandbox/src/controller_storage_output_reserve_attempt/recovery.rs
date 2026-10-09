@@ -23,7 +23,7 @@ use aos_sandbox_protocol::storage_output_reserve::authority_archive::{
 
 use crate::Journal;
 use crate::publication::{
-    DecodedHistoricalOutputPublicationV1, decode_historical_output_publication_v1,
+    RecoveredOwnershipLeaseV1, decode_historical_output_publication_v1,
 };
 
 use super::authority::{
@@ -358,7 +358,7 @@ fn reconstruct_publication(
     publication_digest: ObjectDigest,
     encoded: &[Option<&[u8]>; 2],
 ) -> Result<
-    (Vec<u8>, DecodedHistoricalOutputPublicationV1),
+    (Vec<u8>, RecoveredOwnershipLeaseV1),
     HistoricalStorageOutputRetentionErrorV1,
 > {
     let first = HistoricalOutputPublicationChunkViewV1::decode(
@@ -449,7 +449,7 @@ mod tests {
         assert_eq!(publication, prepared.canonical_bytes());
         assert!(matches!(
             decoded.require_expected_lease(b"substituted lease", b"substituted signature"),
-            Err(crate::publication::AuthorityPublicationError::CorruptCurrent),
+            Err(aos_sandbox_protocol::publication::PublicationHistoryError::CorruptCurrent),
         ));
     }
 

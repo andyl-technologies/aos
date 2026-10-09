@@ -196,10 +196,9 @@ where
     // effect.
     let clock = observe_clock()?;
     let signed = verifier.verify_response(plan.claim(), response, &clock)?;
-    let prepared = plan
+    let prepared = crate::bind_authority_publication_lease(plan
         .publication_draft()
-        .clone()
-        .bind_lease(plan.claim(), signed)?;
+        .clone(), plan.claim(), signed)?;
     let activation = AuthorityPublicationStore::new(reconciler.journal_mut())
         .prepare_gate_activation(plan.publication_draft(), &prepared)?;
     match reconciler.activate_ownership_gate_at(operation_id, activation, clock.wall_seconds())? {
@@ -483,7 +482,7 @@ mod tests {
         let directory = TestDirectory::new();
         let (draft, _) = descriptor_free_activation_fixture(1);
         let claim = activation_claim(&draft, 1);
-        let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
+        let effect = crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap();
         let plan = OperationPlan::ownership_gated(
             OperationId::from_bytes([0x71; 16]),
             IdempotencyKey::new(b"ownership-resume".to_vec()).unwrap(),

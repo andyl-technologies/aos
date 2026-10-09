@@ -300,7 +300,7 @@ impl PreparedCurrentDestinationSlotV1 {
         let target = &self.operation.target;
         let (lease, fresh) = target.verified_plan_lease(journal, clock)?;
         let manifest = target.binding().manifest().manifest();
-        let request = crate::dispatch::durable_attempt_body(
+        let request = aos_sandbox_protocol::dispatch_template::inject_deadline(
             &self.operation.body_without_deadline,
             self.operation.valid_until_boottime_nanoseconds,
         )
@@ -736,7 +736,7 @@ fn build_replay_operation(
     record: &attempt::Record,
 ) -> Result<PreparedOperation, DestinationSlotEffectError> {
     target.validate_durable_reference(journal, record.assignment_target())?;
-    let request_bytes = crate::dispatch::durable_attempt_body(
+    let request_bytes = aos_sandbox_protocol::dispatch_template::inject_deadline(
         record.body_without_deadline(),
         record.deadline_boottime_nanoseconds(),
     )
@@ -817,7 +817,7 @@ fn validate_operation_body(
     journal: &mut Journal,
     operation: &PreparedOperation,
 ) -> Result<(), DestinationSlotEffectError> {
-    let body = crate::dispatch::durable_attempt_body(
+    let body = aos_sandbox_protocol::dispatch_template::inject_deadline(
         &operation.body_without_deadline,
         operation.valid_until_boottime_nanoseconds,
     )

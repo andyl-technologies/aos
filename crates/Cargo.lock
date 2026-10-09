@@ -1317,6 +1317,7 @@ dependencies = [
  "aos-sandbox-broker-session-protocol",
  "aos-sandbox-core",
  "aos-sandbox-journal",
+ "aos-sandbox-ownership-protocol",
  "aos-sandbox-source-provider-protocol",
  "buffa",
  "ed25519-dalek",

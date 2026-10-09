@@ -1959,7 +1959,7 @@ mod tests {
         };
 
         let operation_id = aos_sandbox_core::OperationId::from_bytes([0x81; 16]);
-        let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
+        let effect = crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap();
         let plan = OperationPlan::ownership_gated(
             operation_id,
             IdempotencyKey::new(b"controller-service-composition".to_vec()).unwrap(),
@@ -2054,8 +2054,7 @@ mod tests {
         .unwrap();
         let advance_transaction = OwnershipTransactionReferenceV1::from_claim(&advance_claim);
         let advance_operation = aos_sandbox_core::OperationId::from_bytes([0x91; 16]);
-        let advance_effect = advanced_draft
-            .bind_effect(advanced_draft.templates()[0].digest())
+        let advance_effect = crate::bind_authority_publication_effect(&advanced_draft, advanced_draft.templates()[0].digest())
             .unwrap();
         let advance_plan = OperationPlan::ownership_gated(
             advance_operation,

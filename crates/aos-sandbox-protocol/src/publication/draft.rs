@@ -12,9 +12,9 @@ pub(super) fn validate_draft(
     manifest: &CanonicalAssignmentManifestV1,
     required_audiences: &[BrokerAudience],
     templates: &[BrokerDispatchTemplateV1],
-) -> Result<aos_sandbox_core::model::KeyReference, AuthorityPublicationError> {
+) -> Result<aos_sandbox_core::model::KeyReference, PublicationHistoryError> {
     if required_audiences.contains(&BrokerAudience::Guardian) {
-        return Err(AuthorityPublicationError::UnsupportedBrokerAudience);
+        return Err(PublicationHistoryError::UnsupportedBrokerAudience);
     }
     if required_audiences.is_empty()
         || required_audiences.len() > 4
@@ -22,14 +22,14 @@ pub(super) fn validate_draft(
         || templates.len() > MAXIMUM_TEMPLATES
         || !strictly_increasing(required_audiences)
     {
-        return Err(AuthorityPublicationError::IncompleteAudienceSet);
+        return Err(PublicationHistoryError::IncompleteAudienceSet);
     }
     let assignment = manifest
         .broker_assignment()
-        .map_err(|_| AuthorityPublicationError::ContextMismatch)?;
+        .map_err(|_| PublicationHistoryError::ContextMismatch)?;
     let first = templates
         .first()
-        .ok_or(AuthorityPublicationError::IncompleteAudienceSet)?;
+        .ok_or(PublicationHistoryError::IncompleteAudienceSet)?;
     let ownership_authority = first.signed_plan().plan().ownership_authority().clone();
     let mut plans: BTreeMap<BrokerAudience, (ObjectDigest, &[u8])> = BTreeMap::new();
     let mut prior_order = None;
@@ -42,7 +42,7 @@ pub(super) fn validate_draft(
             || !required_audiences.contains(&plan.audience())
             || prior_order.is_some_and(|prior| prior >= order)
         {
-            return Err(AuthorityPublicationError::ContextMismatch);
+            return Err(PublicationHistoryError::ContextMismatch);
         }
         prior_order = Some(order);
         match plans.get(&plan.audience()) {
@@ -50,7 +50,7 @@ pub(super) fn validate_draft(
                 if *digest != template.signed_plan().digest()
                     || *signature != template.signed_plan().canonical_signature() =>
             {
-                return Err(AuthorityPublicationError::ContextMismatch);
+                return Err(PublicationHistoryError::ContextMismatch);
             }
             None => {
                 plans.insert(
@@ -69,7 +69,7 @@ pub(super) fn validate_draft(
             .iter()
             .any(|audience| !plans.contains_key(audience))
     {
-        return Err(AuthorityPublicationError::IncompleteAudienceSet);
+        return Err(PublicationHistoryError::IncompleteAudienceSet);
     }
     Ok(ownership_authority)
 }
@@ -78,7 +78,7 @@ pub(super) fn encode_draft(
     manifest: &CanonicalAssignmentManifestV1,
     required_audiences: &[BrokerAudience],
     templates: &[BrokerDispatchTemplateV1],
-) -> Result<Vec<u8>, AuthorityPublicationError> {
+) -> Result<Vec<u8>, PublicationHistoryError> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(DRAFT_MAGIC);
     bytes.extend_from_slice(&DRAFT_VERSION.to_be_bytes());
@@ -89,27 +89,9 @@ pub(super) fn encode_draft(
     }
     put_u32(&mut bytes, templates.len())?;
     for template in templates {
-        bytes.extend_from_slice(template.digest().as_bytes());
-        bytes.push(audience_code(template.signed_plan().plan().audience())?);
-        put_bytes(&mut bytes, template.signed_plan().canonical_plan())?;
-        put_bytes(&mut bytes, template.signed_plan().canonical_signature())?;
-        bytes.extend_from_slice(&(template.method() as i32).to_be_bytes());
-        put_bytes(&mut bytes, template.body_without_deadline())?;
-        put_u32(&mut bytes, template.descriptor_roles().len())?;
-        for role in template.descriptor_roles() {
-            bytes.extend_from_slice(&(*role as i32).to_be_bytes());
-        }
-        bytes.extend_from_slice(&template.semantics().verb().get().to_be_bytes());
-        encode_target(&mut bytes, template.semantics().target());
-        bytes.extend_from_slice(
-            template
-                .semantics()
-                .argument_commitment()
-                .digest()
-                .as_bytes(),
-        );
+        encode_template(&mut bytes, template)?;
         if bytes.len() > MAXIMUM_PUBLICATION_DRAFT_BYTES {
-            return Err(AuthorityPublicationError::PublicationTooLarge);
+            return Err(PublicationHistoryError::PublicationTooLarge);
         }
     }
     Ok(bytes)
@@ -119,7 +101,7 @@ pub(super) fn encode_recovered_draft(
     manifest: &CanonicalAssignmentManifestV1,
     required_audiences: &[BrokerAudience],
     templates: &[RecoveredBrokerDispatchTemplateV1],
-) -> Result<Vec<u8>, AuthorityPublicationError> {
+) -> Result<Vec<u8>, PublicationHistoryError> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(DRAFT_MAGIC);
     bytes.extend_from_slice(&DRAFT_VERSION.to_be_bytes());
@@ -135,7 +117,7 @@ pub(super) fn encode_recovered_draft(
 fn encode_recovered_templates(
     bytes: &mut Vec<u8>,
     templates: &[RecoveredBrokerDispatchTemplateV1],
-) -> Result<(), AuthorityPublicationError> {
+) -> Result<(), PublicationHistoryError> {
     put_u32(bytes, templates.len())?;
     for template in templates {
         bytes.extend_from_slice(template.digest.as_bytes());
@@ -152,7 +134,7 @@ fn encode_recovered_templates(
         encode_target(bytes, template.semantics.target());
         bytes.extend_from_slice(template.semantics.argument_commitment().digest().as_bytes());
         if bytes.len() > MAXIMUM_PUBLICATION_DRAFT_BYTES {
-            return Err(AuthorityPublicationError::PublicationTooLarge);
+            return Err(PublicationHistoryError::PublicationTooLarge);
         }
     }
     Ok(())
@@ -161,7 +143,7 @@ fn encode_recovered_templates(
 pub(super) fn encode_bound_draft(
     draft: &AuthorityPublicationDraftV1,
     lease: &SignedOwnershipLease,
-) -> Result<Vec<u8>, AuthorityPublicationError> {
+) -> Result<Vec<u8>, PublicationHistoryError> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&VERSION.to_be_bytes());
@@ -180,13 +162,13 @@ pub(super) fn encode_bound_draft(
 
 pub(super) fn decode_draft(
     bytes: &[u8],
-) -> Result<AuthorityPublicationDraftV1, AuthorityPublicationError> {
+) -> Result<AuthorityPublicationDraftV1, PublicationHistoryError> {
     if bytes.len() < 18
         || bytes.len() > MAXIMUM_PUBLICATION_DRAFT_BYTES
         || &bytes[..8] != DRAFT_MAGIC
         || bytes[8..10] != DRAFT_VERSION.to_be_bytes()
     {
-        return Err(AuthorityPublicationError::InvalidDraft);
+        return Err(PublicationHistoryError::InvalidDraft);
     }
     let mut cursor = 10;
     let manifest_bytes = take_bytes(bytes, &mut cursor)?;
@@ -194,20 +176,20 @@ pub(super) fn decode_draft(
         manifest_bytes,
         DecodeLimits::default(),
     )
-    .map_err(|_| AuthorityPublicationError::InvalidDraft)?;
+    .map_err(|_| PublicationHistoryError::InvalidDraft)?;
     let assignment = manifest
         .broker_assignment()
-        .map_err(|_| AuthorityPublicationError::InvalidDraft)?;
+        .map_err(|_| PublicationHistoryError::InvalidDraft)?;
 
     let audience_count = take_u32(bytes, &mut cursor)?;
     if audience_count == 0 || audience_count > 4 {
-        return Err(AuthorityPublicationError::InvalidDraft);
+        return Err(PublicationHistoryError::InvalidDraft);
     }
     let audience_codes = take(bytes, &mut cursor, audience_count)?;
     if audience_codes.iter().any(|code| !(1..=4).contains(code))
         || audience_codes.windows(2).any(|pair| pair[0] >= pair[1])
     {
-        return Err(AuthorityPublicationError::InvalidDraft);
+        return Err(PublicationHistoryError::InvalidDraft);
     }
     let required_audiences = audience_codes
         .iter()
@@ -216,7 +198,7 @@ pub(super) fn decode_draft(
         .collect::<Result<Vec<_>, _>>()?;
     let template_count = take_u32(bytes, &mut cursor)?;
     if template_count == 0 || template_count > MAXIMUM_TEMPLATES {
-        return Err(AuthorityPublicationError::InvalidDraft);
+        return Err(PublicationHistoryError::InvalidDraft);
     }
 
     let mut ownership_authority = None;
@@ -227,24 +209,24 @@ pub(super) fn decode_draft(
         let stored_template_digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
         let audience_code_value = *take(bytes, &mut cursor, 1)?
             .first()
-            .ok_or(AuthorityPublicationError::InvalidDraft)?;
+            .ok_or(PublicationHistoryError::InvalidDraft)?;
         let audience = audience_from_code(audience_code_value)?;
         if !required_audiences.contains(&audience) {
-            return Err(AuthorityPublicationError::InvalidDraft);
+            return Err(PublicationHistoryError::InvalidDraft);
         }
 
         let plan_bytes = take_bytes(bytes, &mut cursor)?;
         let plan = decode_broker_authorization_plan(plan_bytes, DecodeLimits::default())
-            .map_err(|_| AuthorityPublicationError::InvalidDraft)?;
+            .map_err(|_| PublicationHistoryError::InvalidDraft)?;
         let plan_signature = take_bytes(bytes, &mut cursor)?;
         let decoded = decode_signature(plan_signature, DecodeLimits::default())
-            .map_err(|_| AuthorityPublicationError::InvalidDraft)?;
+            .map_err(|_| PublicationHistoryError::InvalidDraft)?;
         let plan_media = aos_sandbox_core::MediaType::new(
             aos_sandbox_core::PortableMediaType::BrokerAuthorizationPlan
                 .as_str()
                 .to_owned(),
         )
-        .map_err(|_| AuthorityPublicationError::InvalidDraft)?;
+        .map_err(|_| PublicationHistoryError::InvalidDraft)?;
         let plan_descriptor = descriptor_for_bytes(plan_media, plan_bytes);
         if encode_signature(&decoded) != plan_signature
             || decoded.statement().subject() != &plan_descriptor
@@ -255,11 +237,11 @@ pub(super) fn decode_draft(
             || plan.assignment() != assignment
             || plan.node() != manifest.manifest().node()
         {
-            return Err(AuthorityPublicationError::InvalidDraft);
+            return Err(PublicationHistoryError::InvalidDraft);
         }
         let order = (audience_code_value, stored_template_digest);
         if prior_order.is_some_and(|prior| prior >= order) {
-            return Err(AuthorityPublicationError::InvalidDraft);
+            return Err(PublicationHistoryError::InvalidDraft);
         }
         prior_order = Some(order);
         match plans.get(&audience) {
@@ -267,7 +249,7 @@ pub(super) fn decode_draft(
                 if *digest != plan_descriptor.digest()
                     || signature.as_slice() != plan_signature =>
             {
-                return Err(AuthorityPublicationError::InvalidDraft);
+                return Err(PublicationHistoryError::InvalidDraft);
             }
             None => {
                 plans.insert(
@@ -279,7 +261,7 @@ pub(super) fn decode_draft(
         }
         match &ownership_authority {
             Some(authority) if authority != plan.ownership_authority() => {
-                return Err(AuthorityPublicationError::InvalidDraft);
+                return Err(PublicationHistoryError::InvalidDraft);
             }
             None => ownership_authority = Some(plan.ownership_authority().clone()),
             _ => {}
@@ -290,23 +272,23 @@ pub(super) fn decode_draft(
             (audience_code_value, method_code),
             (1, 1) | (2, 4) | (3, 7) | (4, 9)
         ) {
-            return Err(AuthorityPublicationError::InvalidDraft);
+            return Err(PublicationHistoryError::InvalidDraft);
         }
         let method = broker_method_from_code(method_code)?;
         let body = take_bytes(bytes, &mut cursor)?;
-        if !crate::dispatch::validate_durable_deadline_free_body(body) {
-            return Err(AuthorityPublicationError::InvalidDraft);
+        if !crate::dispatch_template::validate_durable_deadline_free_body(body) {
+            return Err(PublicationHistoryError::InvalidDraft);
         }
         let role_count = take_u32(bytes, &mut cursor)?;
         if role_count > 16 {
-            return Err(AuthorityPublicationError::InvalidDraft);
+            return Err(PublicationHistoryError::InvalidDraft);
         }
         let mut role_codes = Vec::with_capacity(role_count);
         let mut descriptor_roles = Vec::with_capacity(role_count);
         for _ in 0..role_count {
             let role = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
             if !(1..=7).contains(&role) || role_codes.contains(&role) {
-                return Err(AuthorityPublicationError::InvalidDraft);
+                return Err(PublicationHistoryError::InvalidDraft);
             }
             role_codes.push(role);
             descriptor_roles.push(broker_descriptor_role_from_code(role)?);
@@ -315,7 +297,7 @@ pub(super) fn decode_draft(
         let target_start = cursor;
         let target = *take(bytes, &mut cursor, 1)?
             .first()
-            .ok_or(AuthorityPublicationError::InvalidDraft)?;
+            .ok_or(PublicationHistoryError::InvalidDraft)?;
         take(
             bytes,
             &mut cursor,
@@ -323,7 +305,7 @@ pub(super) fn decode_draft(
                 1 => 0,
                 2 => 32,
                 3 => 64,
-                _ => return Err(AuthorityPublicationError::InvalidDraft),
+                _ => return Err(PublicationHistoryError::InvalidDraft),
             },
         )?;
         let target_bytes = &bytes[target_start..cursor];
@@ -332,9 +314,9 @@ pub(super) fn decode_draft(
             .len()
             .checked_add(11)
             .and_then(|value| u32::try_from(value).ok())
-            .ok_or(AuthorityPublicationError::InvalidDraft)?;
+            .ok_or(PublicationHistoryError::InvalidDraft)?;
         let descriptor_count =
-            u16::try_from(role_count).map_err(|_| AuthorityPublicationError::InvalidDraft)?;
+            u16::try_from(role_count).map_err(|_| PublicationHistoryError::InvalidDraft)?;
         let matching_grant = plan.grants().iter().find(|grant| {
             let mut encoded_target = Vec::new();
             encode_target(&mut encoded_target, grant.target());
@@ -344,7 +326,7 @@ pub(super) fn decode_draft(
                 && maximum_body <= grant.maximum_request_bytes()
                 && descriptor_count <= grant.maximum_descriptors()
         });
-        let grant = matching_grant.ok_or(AuthorityPublicationError::InvalidDraft)?;
+        let grant = matching_grant.ok_or(PublicationHistoryError::InvalidDraft)?;
         // The matched grant preserves the stored hash inputs. Copying its semantic
         // identity adds no admission or allocation before the digest check.
         let semantics = BrokerDispatchSemanticIdentityV1::new(
@@ -352,7 +334,7 @@ pub(super) fn decode_draft(
             grant.target(),
             grant.argument_commitment(),
         );
-        if crate::dispatch::template_digest_from_parts(
+        if crate::dispatch_template::template_digest_from_parts(
             plan_descriptor.digest(),
             plan_signature,
             method,
@@ -361,7 +343,7 @@ pub(super) fn decode_draft(
             semantics,
         ) != stored_template_digest
         {
-            return Err(AuthorityPublicationError::InvalidDraft);
+            return Err(PublicationHistoryError::InvalidDraft);
         }
         recovered_templates.push(RecoveredBrokerDispatchTemplateV1 {
             digest: stored_template_digest,
@@ -381,12 +363,12 @@ pub(super) fn decode_draft(
             .iter()
             .any(|audience| !plans.contains_key(audience))
     {
-        return Err(AuthorityPublicationError::InvalidDraft);
+        return Err(PublicationHistoryError::InvalidDraft);
     }
-    let ownership_authority = ownership_authority.ok_or(AuthorityPublicationError::InvalidDraft)?;
+    let ownership_authority = ownership_authority.ok_or(PublicationHistoryError::InvalidDraft)?;
     let canonical = encode_recovered_draft(&manifest, &required_audiences, &recovered_templates)?;
     if canonical != bytes {
-        return Err(AuthorityPublicationError::InvalidDraft);
+        return Err(PublicationHistoryError::InvalidDraft);
     }
     Ok(AuthorityPublicationDraftV1 {
         manifest,
@@ -407,12 +389,12 @@ pub(super) fn draft_digest(bytes: &[u8]) -> ObjectDigest {
 
 pub(super) fn validate_proposal(
     proposal: &AuthorityPublicationProposalV1,
-) -> Result<(), AuthorityPublicationError> {
+) -> Result<(), PublicationHistoryError> {
     if proposal
         .required_audiences
         .contains(&BrokerAudience::Guardian)
     {
-        return Err(AuthorityPublicationError::UnsupportedBrokerAudience);
+        return Err(PublicationHistoryError::UnsupportedBrokerAudience);
     }
     if proposal.required_audiences.is_empty()
         || proposal.required_audiences.len() > 4
@@ -420,12 +402,12 @@ pub(super) fn validate_proposal(
         || proposal.templates.len() > MAXIMUM_TEMPLATES
         || !strictly_increasing(&proposal.required_audiences)
     {
-        return Err(AuthorityPublicationError::IncompleteAudienceSet);
+        return Err(PublicationHistoryError::IncompleteAudienceSet);
     }
     let assignment = proposal
         .manifest
         .broker_assignment()
-        .map_err(|_| AuthorityPublicationError::ContextMismatch)?;
+        .map_err(|_| PublicationHistoryError::ContextMismatch)?;
     let lease_assignment = proposal.lease.assignment();
     if assignment.sandbox() != lease_assignment.sandbox()
         || assignment.incarnation() != lease_assignment.incarnation()
@@ -433,7 +415,7 @@ pub(super) fn validate_proposal(
         || assignment.digest() != lease_assignment.digest()
         || proposal.manifest.manifest().node() != proposal.lease.node()
     {
-        return Err(AuthorityPublicationError::ContextMismatch);
+        return Err(PublicationHistoryError::ContextMismatch);
     }
 
     let mut plans: BTreeMap<BrokerAudience, (ObjectDigest, &[u8])> = BTreeMap::new();
@@ -447,7 +429,7 @@ pub(super) fn validate_proposal(
             || plan.ownership_authority() != proposal.lease.signer()
             || prior_order.is_some_and(|prior| prior >= order)
         {
-            return Err(AuthorityPublicationError::ContextMismatch);
+            return Err(PublicationHistoryError::ContextMismatch);
         }
         prior_order = Some(order);
         match plans.get(&plan.audience()) {
@@ -455,7 +437,7 @@ pub(super) fn validate_proposal(
                 if *digest != template.signed_plan().digest()
                     || *signature != template.signed_plan().canonical_signature() =>
             {
-                return Err(AuthorityPublicationError::ContextMismatch);
+                return Err(PublicationHistoryError::ContextMismatch);
             }
             None => {
                 plans.insert(
@@ -475,14 +457,14 @@ pub(super) fn validate_proposal(
             .iter()
             .any(|audience| !plans.contains_key(audience))
     {
-        return Err(AuthorityPublicationError::IncompleteAudienceSet);
+        return Err(PublicationHistoryError::IncompleteAudienceSet);
     }
     Ok(())
 }
 
 pub(super) fn encode_proposal(
     proposal: &AuthorityPublicationProposalV1,
-) -> Result<Vec<u8>, AuthorityPublicationError> {
+) -> Result<Vec<u8>, PublicationHistoryError> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&VERSION.to_be_bytes());
@@ -497,39 +479,21 @@ pub(super) fn encode_proposal(
     }
     put_u32(&mut bytes, proposal.templates.len())?;
     for template in &proposal.templates {
-        bytes.extend_from_slice(template.digest().as_bytes());
-        bytes.push(audience_code(template.signed_plan().plan().audience())?);
-        put_bytes(&mut bytes, template.signed_plan().canonical_plan())?;
-        put_bytes(&mut bytes, template.signed_plan().canonical_signature())?;
-        bytes.extend_from_slice(&(template.method() as i32).to_be_bytes());
-        put_bytes(&mut bytes, template.body_without_deadline())?;
-        put_u32(&mut bytes, template.descriptor_roles().len())?;
-        for role in template.descriptor_roles() {
-            bytes.extend_from_slice(&(*role as i32).to_be_bytes());
-        }
-        bytes.extend_from_slice(&template.semantics().verb().get().to_be_bytes());
-        encode_target(&mut bytes, template.semantics().target());
-        bytes.extend_from_slice(
-            template
-                .semantics()
-                .argument_commitment()
-                .digest()
-                .as_bytes(),
-        );
+        encode_template(&mut bytes, template)?;
     }
     Ok(bytes)
 }
 
 pub(super) fn validate_encoded_size(
     proposal: &AuthorityPublicationProposalV1,
-) -> Result<(), AuthorityPublicationError> {
+) -> Result<(), PublicationHistoryError> {
     let mut size = 64_usize
         .checked_add(proposal.manifest.canonical_bytes().len())
         .and_then(|value| value.checked_add(proposal.lease.canonical_lease().len()))
         .and_then(|value| value.checked_add(proposal.lease.canonical_signature().len()))
         .and_then(|value| value.checked_add(proposal.lease.canonical_receipt().len()))
         .and_then(|value| value.checked_add(proposal.lease.canonical_receipt_signature().len()))
-        .ok_or(AuthorityPublicationError::PublicationTooLarge)?;
+        .ok_or(PublicationHistoryError::PublicationTooLarge)?;
     for template in &proposal.templates {
         size = size
             .checked_add(128)
@@ -537,9 +501,9 @@ pub(super) fn validate_encoded_size(
             .and_then(|value| value.checked_add(template.signed_plan().canonical_signature().len()))
             .and_then(|value| value.checked_add(template.body_without_deadline().len()))
             .and_then(|value| value.checked_add(template.descriptor_roles().len() * 4))
-            .ok_or(AuthorityPublicationError::PublicationTooLarge)?;
+            .ok_or(PublicationHistoryError::PublicationTooLarge)?;
         if size > MAXIMUM_PUBLICATION_BYTES {
-            return Err(AuthorityPublicationError::PublicationTooLarge);
+            return Err(PublicationHistoryError::PublicationTooLarge);
         }
     }
     Ok(())
@@ -562,3 +526,30 @@ pub(super) fn encode_target(bytes: &mut Vec<u8>, target: aos_sandbox_core::Broke
         }
     }
 }
+
+fn encode_template(
+    bytes: &mut Vec<u8>,
+    template: &BrokerDispatchTemplateV1,
+) -> Result<(), PublicationHistoryError> {
+    bytes.extend_from_slice(template.digest().as_bytes());
+    bytes.push(audience_code(template.signed_plan().plan().audience())?);
+    put_bytes(bytes, template.signed_plan().canonical_plan())?;
+    put_bytes(bytes, template.signed_plan().canonical_signature())?;
+    bytes.extend_from_slice(&(template.method() as i32).to_be_bytes());
+    put_bytes(bytes, template.body_without_deadline())?;
+    put_u32(bytes, template.descriptor_roles().len())?;
+    for role in template.descriptor_roles() {
+        bytes.extend_from_slice(&(*role as i32).to_be_bytes());
+    }
+    bytes.extend_from_slice(&template.semantics().verb().get().to_be_bytes());
+    encode_target(bytes, template.semantics().target());
+    bytes.extend_from_slice(
+        template
+            .semantics()
+            .argument_commitment()
+            .digest()
+            .as_bytes(),
+    );
+    Ok(())
+}
+

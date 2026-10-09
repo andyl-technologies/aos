@@ -537,7 +537,7 @@ impl PreparedCurrentAttachmentSourceResumeV1 {
                 return Err(AttachmentSourceError::Conflict);
             }
         };
-        if crate::dispatch::durable_attempt_body(&body_without_deadline, deadline)
+        if aos_sandbox_protocol::dispatch_template::inject_deadline(&body_without_deadline, deadline)
             .map_err(|_| AttachmentSourceError::Protocol)?
             != self.attempt.record.request_body
         {
@@ -694,7 +694,7 @@ where
         .get_or_insert_default()
         .deadline_boottime_nanoseconds = 0;
     let body_without_deadline = deadline_free.encode_to_vec();
-    if crate::dispatch::durable_attempt_body(&body_without_deadline, deadline_boottime_nanoseconds)
+    if aos_sandbox_protocol::dispatch_template::inject_deadline(&body_without_deadline, deadline_boottime_nanoseconds)
         .map_err(|_| AttachmentSourceError::Protocol)?
         != body
     {
@@ -805,7 +805,7 @@ where
         .get_or_insert_default()
         .deadline_boottime_nanoseconds = 0;
     let body_without_deadline = deadline_free.encode_to_vec();
-    let reconstructed = crate::dispatch::durable_attempt_body(
+    let reconstructed = aos_sandbox_protocol::dispatch_template::inject_deadline(
         &body_without_deadline,
         deadline_boottime_nanoseconds,
     )

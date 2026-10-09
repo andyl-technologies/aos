@@ -588,7 +588,7 @@ const fn min_usize(left: usize, right: usize) -> usize {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use aos_sandbox_core::format::{
         decode_broker_authorization_plan, decode_ownership_lease, encode_trust_policy,
     };
@@ -608,7 +608,7 @@ mod tests {
         lease_key: SigningKey,
     }
 
-    fn key_reference(name: &str, usage: KeyUsage, key: &SigningKey) -> KeyReference {
+    pub(crate) fn key_reference(name: &str, usage: KeyUsage, key: &SigningKey) -> KeyReference {
         KeyReference::new(
             StableKeyId::new(name.to_owned())
                 .unwrap_or_else(|error| panic!("test key ID failed: {error}")),
@@ -618,7 +618,7 @@ mod tests {
         )
     }
 
-    fn authority(
+    pub(crate) fn authority(
         name: &str,
         purpose: SignaturePurpose,
         key: &SigningKey,

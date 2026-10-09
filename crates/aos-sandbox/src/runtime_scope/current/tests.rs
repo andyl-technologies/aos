@@ -87,7 +87,7 @@ fn activate_prepared(
         sandbox: draft.manifest().manifest().sandbox(),
         holder: PrincipalId::from_bytes([0x91; 16]),
     };
-    let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
+    let effect = crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap();
     let _activation_plan = runtime_activation_support::activate(
         reconciler,
         generation,

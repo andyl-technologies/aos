@@ -61,6 +61,7 @@ fn portable_production_graphs_have_no_linux_or_effect_owner() -> Result<(), Box<
             "aos-sandbox-protocol",
             &[
                 "aos-sandbox-protocol",
+                "aos-sandbox-ownership-protocol",
                 "aos-sandbox-agent",
                 "aos-sandbox-core",
                 "aos-sandbox-journal",

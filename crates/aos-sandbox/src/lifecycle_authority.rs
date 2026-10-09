@@ -381,8 +381,7 @@ pub fn prepare_atomic_storage_lifecycle_publication_v1(
     companion_templates.sort_unstable_by_key(|template| {
         (template.signed_plan().plan().audience(), template.digest())
     });
-    AuthorityPublicationProposalV1::new(manifest, lease, required_audiences, companion_templates)
-        .prepare()
+    crate::prepare_authority_publication(AuthorityPublicationProposalV1::new(manifest, lease, required_audiences, companion_templates))
         .map_err(Into::into)
 }
 

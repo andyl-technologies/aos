@@ -15,345 +15,51 @@
 //! Durable publication encoding and its isolated journal namespace use one
 //! exact V1 schema. Unknown keys and non-V1 values fail closed as corruption.
 
-use std::collections::BTreeMap;
-
-use aos_proto::aos::sandbox::local::v1::{BrokerDescriptorRole, BrokerMethod};
-use aos_sandbox_core::format::{
-    decode_broker_authorization_plan, decode_ownership_lease, decode_signature, encode_signature,
-};
-use aos_sandbox_core::model::SignaturePurpose;
-use aos_sandbox_core::{
-    BrokerAudience, BrokerAuthorizationPlan, BrokerVerb, CanonicalAssignmentManifestV1,
-    DecodeLimits, ObjectDigest, OperationId, OwnershipLease, ProtocolVersion, RawPairedClockSample,
-    SandboxId, descriptor_for_bytes,
-};
-use sha2::{Digest as _, Sha256};
-
-use crate::{
-    AuthorityBoundEffectPlanV1, BrokerDispatchAttemptError, BrokerDispatchAttemptV1,
-    BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, GuardianPlanRequestV1,
-    IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalRecord, JournalTransaction,
-    OwnershipTransactionReceiptV1, PreparedAuthorityEffectV1, RecordNamespace,
-    SignedOwnershipLease,
-};
+use aos_sandbox_core::{BrokerAudience, BrokerVerb, CanonicalAssignmentManifestV1, ObjectDigest, OperationId, ProtocolVersion, RawPairedClockSample, SandboxId};
+use crate::{AuthorityBoundEffectPlanV1, BrokerDispatchAttemptError, BrokerDispatchAttemptV1, GuardianPlanRequestV1, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalRecord, JournalTransaction, PreparedAuthorityEffectV1, RecordNamespace, SignedOwnershipLease};
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 use aos_sandbox_ownership_protocol::{OwnershipClaimAction, OwnershipClaimV1};
 
-mod draft;
+#[cfg(test)]
+use aos_sandbox_core::{DecodeLimits, descriptor_for_bytes};
+#[cfg(test)]
+use crate::BrokerDispatchTemplateV1;
+
 mod format;
-
-use draft::{
-    decode_draft, draft_digest, encode_bound_draft, encode_draft, encode_proposal,
-    encode_recovered_draft, encode_target, validate_draft, validate_encoded_size,
-    validate_proposal,
-};
-use format::{decode_current, decode_prepared, encode_current, validate_encoded_publication};
-
-const MAGIC: &[u8; 8] = b"AOSCPUB1";
-const VERSION: u16 = 1;
-const DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-publication.v1\0";
-const MAXIMUM_TEMPLATES: usize = 256;
-const JOURNAL_RECORD_BYTES: usize = 16 * 1024 * 1024;
-const JOURNAL_RECORD_HEADER_BYTES: usize = 7;
-const CURRENT_HEADER_BYTES: usize = 186;
-const CURRENT_KEY_PREFIX: &[u8] = b"aos.sandbox.publication.current.v1/";
-const PREPARED_KEY_PREFIX: &[u8] = b"aos.sandbox.publication.prepared.v1/";
-const DRAFT_MAGIC: &[u8; 8] = b"AOSCDRF1";
-const DRAFT_VERSION: u16 = 1;
-const DRAFT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-authority-draft.v1\0";
-const MAXIMUM_PUBLICATION_DRAFT_BYTES: usize = 16 * 1024 * 1024;
-/// Bounds complete publications by the existing journal record overhead.
-pub(crate) const MAXIMUM_PUBLICATION_BYTES: usize = JOURNAL_RECORD_BYTES
-    - JOURNAL_RECORD_HEADER_BYTES
-    - CURRENT_KEY_PREFIX.len()
-    - 16
-    - CURRENT_HEADER_BYTES;
-
-/// Freezes lease-independent controller authority inputs for one assignment.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AuthorityPublicationDraftV1 {
-    manifest: CanonicalAssignmentManifestV1,
-    required_audiences: Vec<BrokerAudience>,
-    templates: Vec<RecoveredBrokerDispatchTemplateV1>,
-    ownership_authority: aos_sandbox_core::model::KeyReference,
-    digest: ObjectDigest,
-    bytes: Vec<u8>,
-}
-
-impl AuthorityPublicationDraftV1 {
-    /// Validates and freezes a complete lease-independent authority draft.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AuthorityPublicationError`] unless audiences are canonical
-    /// and complete, one to 256 checked templates are canonically ordered,
-    /// templates sharing an audience carry one exact plan and signature, every
-    /// plan matches the manifest assignment/node/desired generation and one
-    /// exact ownership authority, and the canonical encoding is bounded.
-    pub fn new(
-        manifest: CanonicalAssignmentManifestV1,
-        required_audiences: Vec<BrokerAudience>,
-        templates: Vec<BrokerDispatchTemplateV1>,
-    ) -> Result<Self, AuthorityPublicationError> {
-        validate_draft(&manifest, &required_audiences, &templates)?;
-        let bytes = encode_draft(&manifest, &required_audiences, &templates)?;
-        if bytes.len() > MAXIMUM_PUBLICATION_DRAFT_BYTES {
-            return Err(AuthorityPublicationError::PublicationTooLarge);
-        }
-        decode_draft(&bytes).map_err(|_| AuthorityPublicationError::InvalidDraft)
-    }
-
-    /// Decodes a self-contained draft from hostile controller-local bytes.
-    ///
-    /// Decoding reconstructs exact signed-plan and template artifacts and
-    /// checks their canonical encoding and semantic cross-links. It does not
-    /// re-establish signature trust; protected brokers still verify recovered
-    /// artifacts before granting authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AuthorityPublicationError::InvalidDraft`] for invalid framing,
-    /// bounds, manifest, audience codes, trailing or non-canonical bytes, or
-    /// any inconsistent signed-plan or template cross-link.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, AuthorityPublicationError> {
-        if bytes.len() < 18
-            || bytes.len() > MAXIMUM_PUBLICATION_DRAFT_BYTES
-            || &bytes[..8] != DRAFT_MAGIC
-            || bytes[8..10] != DRAFT_VERSION.to_be_bytes()
-        {
-            return Err(AuthorityPublicationError::InvalidDraft);
-        }
-        decode_draft(bytes).map_err(|_| AuthorityPublicationError::InvalidDraft)
-    }
-
-    /// Returns the canonical assignment manifest.
-    #[must_use]
-    pub const fn manifest(&self) -> &CanonicalAssignmentManifestV1 {
-        &self.manifest
-    }
-    /// Returns the canonical required broker audiences.
-    #[must_use]
-    pub fn required_audiences(&self) -> &[BrokerAudience] {
-        &self.required_audiences
-    }
-    /// Returns the exact structurally recovered, non-authorizing templates.
-    #[must_use]
-    pub fn templates(&self) -> &[RecoveredBrokerDispatchTemplateV1] {
-        &self.templates
-    }
-    /// Returns the common exact ownership-authority key generation.
-    #[must_use]
-    pub const fn ownership_authority(&self) -> &aos_sandbox_core::model::KeyReference {
-        &self.ownership_authority
-    }
-    /// Returns the domain-separated digest of the canonical draft.
-    #[must_use]
-    pub const fn digest(&self) -> ObjectDigest {
-        self.digest
-    }
-    /// Returns the exact bounded canonical controller-local encoding.
-    #[must_use]
-    pub fn canonical_bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    /// Binds one ordered effect to an exact immutable template in this draft.
-    ///
-    /// The audience, broker method, deadline-free body, and semantic identity
-    /// are derived from the selected template and cannot be substituted by the
-    /// caller.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AuthorityPublicationError::TemplateAbsent`] when the digest
-    /// is not present, or [`AuthorityPublicationError::InvalidDraft`] if a
-    /// recovered template cannot produce a bounded effect binding.
-    pub fn bind_effect(
-        &self,
-        template_digest: ObjectDigest,
-    ) -> Result<AuthorityBoundEffectPlanV1, AuthorityPublicationError> {
-        let template = self
-            .templates
-            .iter()
-            .find(|template| template.digest == template_digest)
-            .ok_or(AuthorityPublicationError::TemplateAbsent)?;
-        AuthorityBoundEffectPlanV1::from_template(
-            self.digest,
-            template.audience,
-            template.method,
-            template.digest,
-            &template.body_without_deadline,
-            template.semantics,
-            template.descriptor_roles.is_empty(),
-        )
-        .map_err(|_| AuthorityPublicationError::InvalidDraft)
-    }
-
-    /// Binds checked ownership artifacts and prepares the current V1 publication.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AuthorityPublicationError`] if the lease does not match the
-    /// manifest and common authority or complete publication validation fails.
-    pub fn bind_lease(
-        self,
-        claim: &OwnershipClaimV1,
-        lease: SignedOwnershipLease,
-    ) -> Result<PreparedAuthorityPublicationV1, AuthorityPublicationError> {
-        let assignment = self
-            .manifest
-            .broker_assignment()
-            .map_err(|_| AuthorityPublicationError::ContextMismatch)?;
-        let lease_assignment = lease.assignment();
-        let claim_assignment = claim.assignment();
-        if lease_assignment.sandbox() != assignment.sandbox()
-            || lease_assignment.incarnation() != assignment.incarnation()
-            || lease_assignment.epoch() != assignment.epoch()
-            || lease_assignment.digest() != assignment.digest()
-            || lease.node() != self.manifest.manifest().node()
-            || lease.signer() != &self.ownership_authority
-            || claim_assignment.sandbox() != assignment.sandbox()
-            || claim_assignment.incarnation() != assignment.incarnation()
-            || claim_assignment.epoch() != assignment.epoch()
-            || claim_assignment.digest() != assignment.digest()
-            || claim.node() != self.manifest.manifest().node()
-            || claim.desired_generation() != self.manifest.manifest().desired_generation()
-        {
-            return Err(AuthorityPublicationError::ContextMismatch);
-        }
-        let receipt =
-            OwnershipTransactionReceiptV1::from_canonical_bytes(lease.canonical_receipt())
-                .map_err(|_| AuthorityPublicationError::ContextMismatch)?;
-        receipt
-            .verify_context(&self.ownership_authority, claim, lease.canonical_lease())
-            .map_err(|_| AuthorityPublicationError::ContextMismatch)?;
-        let bytes = encode_bound_draft(&self, &lease)?;
-        if bytes.len() > MAXIMUM_PUBLICATION_BYTES {
-            return Err(AuthorityPublicationError::PublicationTooLarge);
-        }
-        let digest = publication_digest(&bytes);
-        let prepared = PreparedAuthorityPublicationV1 {
-            manifest: self.manifest.clone(),
-            sandbox: self.manifest.manifest().sandbox(),
-            incarnation: *self.manifest.manifest().incarnation().as_bytes(),
-            epoch: self.manifest.manifest().epoch().get(),
-            desired_generation: self.manifest.manifest().desired_generation().get(),
-            assignment_digest: self.manifest.digest(),
-            node: *self.manifest.manifest().node().as_bytes(),
-            lease_generation: lease.generation(),
-            lease_digest: lease.digest(),
-            receipt_authority: receipt.authority().clone(),
-            receipt_action: receipt.action(),
-            receipt_request_id: *receipt.request_id(),
-            receipt_claim_digest: receipt.claim_digest(),
-            source_draft_digest: self.digest,
-            digest,
-            bytes,
-        };
-        validate_encoded_publication(
-            &prepared.bytes,
-            prepared.sandbox,
-            prepared.incarnation,
-            prepared.epoch,
-            prepared.desired_generation,
-            prepared.assignment_digest,
-            prepared.node,
-            prepared.lease_generation,
-            prepared.lease_digest,
-        )
-        .map_err(|_| AuthorityPublicationError::InvalidDraft)?;
-        Ok(prepared)
-    }
-}
-
-/// Owns uncommitted authority inputs for one assignment generation.
-#[derive(Clone, Debug)]
-pub struct AuthorityPublicationProposalV1 {
-    manifest: CanonicalAssignmentManifestV1,
-    lease: SignedOwnershipLease,
-    required_audiences: Vec<BrokerAudience>,
-    templates: Vec<BrokerDispatchTemplateV1>,
-}
-
-impl AuthorityPublicationProposalV1 {
-    /// Constructs one non-durable publication proposal.
-    #[must_use]
-    pub fn new(
-        manifest: CanonicalAssignmentManifestV1,
-        lease: SignedOwnershipLease,
-        required_audiences: Vec<BrokerAudience>,
-        templates: Vec<BrokerDispatchTemplateV1>,
-    ) -> Self {
-        Self {
-            manifest,
-            lease,
-            required_audiences,
-            templates,
-        }
-    }
-
-    /// Validates completeness and freezes exact durable bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AuthorityPublicationError`] unless audiences are canonical and
-    /// complete, every plan/lease shares the manifest assignment, node, and
-    /// ownership signer, and the encoded bundle fits its fixed bound.
-    pub fn prepare(self) -> Result<PreparedAuthorityPublicationV1, AuthorityPublicationError> {
-        validate_proposal(&self)?;
-        validate_encoded_size(&self)?;
-        let bytes = encode_proposal(&self)?;
-        if bytes.len() > MAXIMUM_PUBLICATION_BYTES {
-            return Err(AuthorityPublicationError::PublicationTooLarge);
-        }
-        let digest = publication_digest(&bytes);
-        let receipt =
-            OwnershipTransactionReceiptV1::from_canonical_bytes(self.lease.canonical_receipt())
-                .map_err(|_| AuthorityPublicationError::ContextMismatch)?;
-        Ok(PreparedAuthorityPublicationV1 {
-            manifest: self.manifest.clone(),
-            sandbox: self.manifest.manifest().sandbox(),
-            incarnation: *self.manifest.manifest().incarnation().as_bytes(),
-            epoch: self.manifest.manifest().epoch().get(),
-            desired_generation: self.manifest.manifest().desired_generation().get(),
-            assignment_digest: self.manifest.digest(),
-            node: *self.manifest.manifest().node().as_bytes(),
-            lease_generation: self.lease.generation(),
-            lease_digest: self.lease.digest(),
-            receipt_authority: receipt.authority().clone(),
-            receipt_action: receipt.action(),
-            receipt_request_id: *receipt.request_id(),
-            receipt_claim_digest: receipt.claim_digest(),
-            source_draft_digest: draft_digest(&encode_draft(
-                &self.manifest,
-                &self.required_audiences,
-                &self.templates,
-            )?),
-            digest,
-            bytes,
-        })
-    }
-}
+use format::{decode_current, decode_prepared};
+use aos_sandbox_protocol::publication::{self as publication_data, PublicationHistoryV1, PublicationHistoryError};
+use publication_data::{current_key, prepared_key, CURRENT_KEY_PREFIX, PREPARED_KEY_PREFIX};
+pub(crate) use publication_data::{MAXIMUM_PUBLICATION_BYTES, decode_historical_output_publication_v1, validate_historical_output_publication_v1};
+pub use publication_data::{AuthorityPublicationDraftV1, AuthorityPublicationProposalV1, RecoveredBrokerDispatchTemplateV1, RecoveredOwnershipLeaseV1};
 
 /// Carries one complete validated bundle before its atomic journal commit.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct PreparedAuthorityPublicationV1 {
-    manifest: CanonicalAssignmentManifestV1,
-    sandbox: SandboxId,
-    incarnation: [u8; 16],
-    epoch: u64,
-    desired_generation: u64,
-    assignment_digest: ObjectDigest,
-    node: [u8; 16],
-    lease_generation: u64,
-    lease_digest: ObjectDigest,
-    receipt_authority: aos_sandbox_core::model::KeyReference,
-    receipt_action: OwnershipClaimAction,
-    receipt_request_id: [u8; 16],
-    receipt_claim_digest: ObjectDigest,
-    source_draft_digest: ObjectDigest,
-    digest: ObjectDigest,
-    bytes: Vec<u8>,
+    history: PublicationHistoryV1,
+}
+
+impl std::fmt::Debug for PreparedAuthorityPublicationV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedAuthorityPublicationV1")
+            .field("manifest", self.history.manifest())
+            .field("sandbox", &self.history.sandbox())
+            .field("incarnation", self.history.incarnation())
+            .field("epoch", &self.history.epoch())
+            .field("desired_generation", &self.history.desired_generation())
+            .field("assignment_digest", &self.history.assignment_digest())
+            .field("node", self.history.node())
+            .field("lease_generation", &self.history.lease_generation())
+            .field("lease_digest", &self.history.lease_digest())
+            .field("receipt_authority", self.history.receipt_authority())
+            .field("receipt_action", &self.history.receipt_action())
+            .field("receipt_request_id", self.history.receipt_request_id())
+            .field("receipt_claim_digest", &self.history.receipt_claim_digest())
+            .field("source_draft_digest", &self.history.source_draft_digest())
+            .field("digest", &self.history.digest())
+            .field("bytes", &self.history.canonical_bytes())
+            .finish()
+    }
 }
 
 /// Carries one validated publication mutation into atomic gate activation.
@@ -413,37 +119,37 @@ impl PreparedAuthorityPublicationV1 {
     /// Returns the complete canonical assignment bound by this publication.
     #[must_use]
     pub const fn manifest(&self) -> &CanonicalAssignmentManifestV1 {
-        &self.manifest
+        self.history.manifest()
     }
 
     /// Returns the digest of the lease-independent source draft.
     #[must_use]
     pub const fn source_draft_digest(&self) -> ObjectDigest {
-        self.source_draft_digest
+        self.history.source_draft_digest()
     }
 
     /// Returns the content digest of the complete frozen publication.
     #[must_use]
     pub const fn digest(&self) -> ObjectDigest {
-        self.digest
+        self.history.digest()
     }
 
     /// Returns the bound ownership-lease generation.
     #[must_use]
     pub const fn lease_generation(&self) -> u64 {
-        self.lease_generation
+        self.history.lease_generation()
     }
 
     /// Returns the descriptor digest of the bound ownership lease.
     #[must_use]
     pub const fn lease_digest(&self) -> ObjectDigest {
-        self.lease_digest
+        self.history.lease_digest()
     }
 
     /// Returns exact durable publication bytes.
     #[must_use]
     pub fn canonical_bytes(&self) -> &[u8] {
-        &self.bytes
+        self.history.canonical_bytes()
     }
 }
 
@@ -467,25 +173,25 @@ impl CurrentAuthorityPublicationV1 {
     /// Returns the complete publication digest.
     #[must_use]
     pub const fn digest(&self) -> ObjectDigest {
-        self.prepared.digest
+        self.prepared.history.digest()
     }
 
     /// Returns exact bytes committed during preparation.
     #[must_use]
     pub fn canonical_bytes(&self) -> &[u8] {
-        &self.prepared.bytes
+        self.prepared.history.canonical_bytes()
     }
 
     /// Returns the current lease generation.
     #[must_use]
     pub const fn lease_generation(&self) -> u64 {
-        self.prepared.lease_generation
+        self.prepared.history.lease_generation()
     }
 
     /// Returns the current exact lease digest.
     #[must_use]
     pub const fn lease_digest(&self) -> ObjectDigest {
-        self.prepared.lease_digest
+        self.prepared.history.lease_digest()
     }
 
     /// Returns the exact structurally recovered ownership lease.
@@ -502,135 +208,6 @@ impl CurrentAuthorityPublicationV1 {
     pub fn templates(&self) -> &[RecoveredBrokerDispatchTemplateV1] {
         &self.templates
     }
-}
-
-/// Retains one exact ownership lease recovered from the current publication.
-///
-/// This type proves canonical structure and publication cross-links, not
-/// signature authenticity. It therefore cannot authorize a privileged effect.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RecoveredOwnershipLeaseV1 {
-    lease: OwnershipLease,
-    canonical_lease: Vec<u8>,
-    canonical_signature: Vec<u8>,
-    canonical_receipt: Vec<u8>,
-    canonical_receipt_signature: Vec<u8>,
-    digest: ObjectDigest,
-}
-
-impl RecoveredOwnershipLeaseV1 {
-    /// Returns the decoded immutable lease semantics.
-    #[must_use]
-    pub const fn lease(&self) -> &OwnershipLease {
-        &self.lease
-    }
-
-    /// Returns the exact canonical lease bytes.
-    #[must_use]
-    pub fn canonical_lease(&self) -> &[u8] {
-        &self.canonical_lease
-    }
-
-    /// Returns the exact canonical detached-signature bytes.
-    #[must_use]
-    pub fn canonical_signature(&self) -> &[u8] {
-        &self.canonical_signature
-    }
-
-    /// Returns the exact canonical ownership-transaction receipt bytes.
-    #[must_use]
-    pub fn canonical_receipt(&self) -> &[u8] {
-        &self.canonical_receipt
-    }
-
-    /// Returns the exact canonical detached receipt-signature bytes.
-    #[must_use]
-    pub fn canonical_receipt_signature(&self) -> &[u8] {
-        &self.canonical_receipt_signature
-    }
-
-    /// Returns the descriptor digest of the exact canonical lease bytes.
-    #[must_use]
-    pub const fn digest(&self) -> ObjectDigest {
-        self.digest
-    }
-}
-
-/// Retains one exact non-authorizing dispatch template recovered as current.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RecoveredBrokerDispatchTemplateV1 {
-    digest: ObjectDigest,
-    audience: BrokerAudience,
-    plan: BrokerAuthorizationPlan,
-    canonical_plan: Vec<u8>,
-    canonical_plan_signature: Vec<u8>,
-    method: BrokerMethod,
-    body_without_deadline: Vec<u8>,
-    descriptor_roles: Vec<BrokerDescriptorRole>,
-    semantics: BrokerDispatchSemanticIdentityV1,
-}
-
-impl RecoveredBrokerDispatchTemplateV1 {
-    /// Returns the exact immutable template digest.
-    #[must_use]
-    pub const fn digest(&self) -> ObjectDigest {
-        self.digest
-    }
-
-    /// Returns the sole broker audience named by the recovered plan.
-    #[must_use]
-    pub const fn audience(&self) -> BrokerAudience {
-        self.audience
-    }
-
-    /// Returns the decoded immutable broker plan.
-    #[must_use]
-    pub const fn plan(&self) -> &BrokerAuthorizationPlan {
-        &self.plan
-    }
-
-    /// Returns the exact canonical broker-plan bytes.
-    #[must_use]
-    pub fn canonical_plan(&self) -> &[u8] {
-        &self.canonical_plan
-    }
-
-    /// Returns the exact canonical broker-plan signature bytes.
-    #[must_use]
-    pub fn canonical_plan_signature(&self) -> &[u8] {
-        &self.canonical_plan_signature
-    }
-
-    /// Returns the closed local broker method.
-    #[must_use]
-    pub const fn method(&self) -> BrokerMethod {
-        self.method
-    }
-
-    /// Returns the exact deadline-free protobuf body.
-    #[must_use]
-    pub fn body_without_deadline(&self) -> &[u8] {
-        &self.body_without_deadline
-    }
-
-    /// Returns exact ancillary descriptor roles in transport order.
-    #[must_use]
-    pub fn descriptor_roles(&self) -> &[BrokerDescriptorRole] {
-        &self.descriptor_roles
-    }
-
-    /// Returns the structurally cross-linked portable request semantics.
-    #[must_use]
-    pub const fn semantics(&self) -> BrokerDispatchSemanticIdentityV1 {
-        self.semantics
-    }
-}
-
-#[derive(Debug)]
-struct RecoveredPublicationArtifactsV1 {
-    manifest: CanonicalAssignmentManifestV1,
-    lease: RecoveredOwnershipLeaseV1,
-    templates: Vec<RecoveredBrokerDispatchTemplateV1>,
 }
 
 /// Reports whether atomic publication committed or replayed a prior decision.
@@ -675,20 +252,20 @@ impl<'a> AuthorityPublicationStore<'a> {
         self.journal.ensure_healthy()?;
         if let Some(existing) = self.journal.get(
             RecordNamespace::AuthorityPublication,
-            &prepared_key(prepared.digest),
-        ) && existing != prepared.bytes
+            &prepared_key(prepared.history.digest()),
+        ) && existing != prepared.history.canonical_bytes()
         {
             return Err(AuthorityPublicationError::PreparedConflict);
         }
         self.validate_namespace()?;
-        let request_digest = *prepared.digest.as_bytes();
+        let request_digest = *prepared.history.digest().as_bytes();
         match self
             .journal
             .check_idempotency(idempotency_key, request_digest)
         {
             IdempotencyOutcome::Replay(operation) => {
                 let recovered = self
-                    .prepared(prepared.digest)?
+                    .prepared(prepared.history.digest())?
                     .ok_or(AuthorityPublicationError::CorruptCurrent)?;
                 if &recovered != prepared {
                     return Err(AuthorityPublicationError::CorruptCurrent);
@@ -701,21 +278,21 @@ impl<'a> AuthorityPublicationStore<'a> {
             IdempotencyOutcome::Vacant => {}
         }
 
-        if let Some(current) = self.current(prepared.sandbox)? {
-            validate_successor(&current.prepared, prepared)?;
+        if let Some(current) = self.current(prepared.history.sandbox())? {
+            current.prepared.history.require_successor(&prepared.history).map_err(AuthorityPublicationError::from)?;
         }
         let transaction = JournalTransaction::new(
             transaction_id,
             vec![
                 JournalRecord::put(
                     RecordNamespace::AuthorityPublication,
-                    prepared_key(prepared.digest),
-                    prepared.bytes.clone(),
+                    prepared_key(prepared.history.digest()),
+                    prepared.history.canonical_bytes().to_vec(),
                 ),
                 JournalRecord::put(
                     RecordNamespace::AuthorityPublication,
-                    current_key(prepared.sandbox),
-                    encode_current(prepared),
+                    current_key(prepared.history.sandbox()),
+                    publication_data::encode_current(&prepared.history),
                 ),
                 JournalRecord::idempotency(idempotency_key, request_digest, operation_id),
             ],
@@ -740,39 +317,39 @@ impl<'a> AuthorityPublicationStore<'a> {
         self.journal.ensure_healthy()?;
         if let Some(existing) = self.journal.get(
             RecordNamespace::AuthorityPublication,
-            &prepared_key(prepared.digest),
-        ) && existing != prepared.bytes
+            &prepared_key(prepared.history.digest()),
+        ) && existing != prepared.history.canonical_bytes()
         {
             return Err(AuthorityPublicationError::PreparedConflict);
         }
         self.validate_namespace()?;
-        let decoded = decode_prepared(&prepared.bytes, prepared.digest)?;
-        if &decoded != prepared || prepared.source_draft_digest != draft.digest {
+        let decoded = decode_prepared(prepared.history.canonical_bytes(), prepared.history.digest())?;
+        if &decoded != prepared || prepared.history.source_draft_digest() != draft.digest() {
             return Err(AuthorityPublicationError::CorruptCurrent);
         }
         Ok(AuthorityPublicationActivationV1 {
             records: [
                 JournalRecord::put(
                     RecordNamespace::AuthorityPublication,
-                    prepared_key(prepared.digest),
-                    prepared.bytes.clone(),
+                    prepared_key(prepared.history.digest()),
+                    prepared.history.canonical_bytes().to_vec(),
                 ),
                 JournalRecord::put(
                     RecordNamespace::AuthorityPublication,
-                    current_key(prepared.sandbox),
-                    encode_current(prepared),
+                    current_key(prepared.history.sandbox()),
+                    publication_data::encode_current(&prepared.history),
                 ),
             ],
-            sandbox: prepared.sandbox,
-            assignment_digest: prepared.assignment_digest,
-            source_draft_digest: prepared.source_draft_digest,
-            ownership_authority: draft.ownership_authority.clone(),
-            publication_digest: prepared.digest,
-            lease_generation: prepared.lease_generation,
-            lease_digest: prepared.lease_digest,
-            receipt_action: prepared.receipt_action,
-            receipt_request_id: prepared.receipt_request_id,
-            receipt_claim_digest: prepared.receipt_claim_digest,
+            sandbox: prepared.history.sandbox(),
+            assignment_digest: prepared.history.assignment_digest(),
+            source_draft_digest: prepared.history.source_draft_digest(),
+            ownership_authority: draft.ownership_authority().clone(),
+            publication_digest: prepared.history.digest(),
+            lease_generation: prepared.history.lease_generation(),
+            lease_digest: prepared.history.lease_digest(),
+            receipt_action: prepared.history.receipt_action(),
+            receipt_request_id: *prepared.history.receipt_request_id(),
+            receipt_claim_digest: prepared.history.receipt_claim_digest(),
             prepared: prepared.clone(),
         })
     }
@@ -800,8 +377,8 @@ impl<'a> AuthorityPublicationStore<'a> {
         prepared: &PreparedAuthorityPublicationV1,
     ) -> Result<(), AuthorityPublicationError> {
         self.validate_namespace()?;
-        if let Some(current) = self.current(prepared.sandbox)? {
-            validate_successor(&current.prepared, prepared)?;
+        if let Some(current) = self.current(prepared.history.sandbox())? {
+            current.prepared.history.require_successor(&prepared.history).map_err(AuthorityPublicationError::from)?;
         }
         Ok(())
     }
@@ -823,7 +400,7 @@ pub(crate) fn current_in_validated_namespace(
     let Some(current) = current else {
         return Ok(None);
     };
-    if current.prepared.sandbox != sandbox {
+    if current.prepared.history.sandbox() != sandbox {
         return Err(AuthorityPublicationError::CorruptCurrent);
     }
     let prepared = journal
@@ -860,19 +437,19 @@ pub(crate) fn validate_durable_gate_publication(
     let manifest = draft.manifest();
     let semantics = manifest.manifest();
     let assignment = claim.assignment();
-    if prepared.sandbox != assignment.sandbox()
-        || prepared.incarnation != *assignment.incarnation().as_bytes()
-        || prepared.epoch != assignment.epoch().get()
-        || prepared.desired_generation != claim.desired_generation().get()
-        || prepared.assignment_digest != assignment.digest()
-        || prepared.node != *claim.node().as_bytes()
-        || prepared.source_draft_digest != draft.digest()
-        || prepared.lease_generation != lease_generation
-        || prepared.lease_digest != lease_digest
-        || &prepared.receipt_authority != draft.ownership_authority()
-        || prepared.receipt_action != claim.action()
-        || prepared.receipt_request_id != *claim.request_id()
-        || prepared.receipt_claim_digest != claim.digest()
+    if prepared.history.sandbox() != assignment.sandbox()
+        || *prepared.history.incarnation() != *assignment.incarnation().as_bytes()
+        || prepared.history.epoch() != assignment.epoch().get()
+        || prepared.history.desired_generation() != claim.desired_generation().get()
+        || prepared.history.assignment_digest() != assignment.digest()
+        || *prepared.history.node() != *claim.node().as_bytes()
+        || prepared.history.source_draft_digest() != draft.digest()
+        || prepared.history.lease_generation() != lease_generation
+        || prepared.history.lease_digest() != lease_digest
+        || prepared.history.receipt_authority() != draft.ownership_authority()
+        || prepared.history.receipt_action() != claim.action()
+        || *prepared.history.receipt_request_id() != *claim.request_id()
+        || prepared.history.receipt_claim_digest() != claim.digest()
         || semantics.sandbox() != assignment.sandbox()
     {
         return Err(AuthorityPublicationError::CorruptCurrent);
@@ -885,7 +462,7 @@ pub(crate) fn validate_durable_gate_publication(
         .map(decode_current)
         .transpose()?
         .ok_or(AuthorityPublicationError::CorruptCurrent)?;
-    validate_successor(&prepared, &current.prepared)
+    prepared.history.require_successor(&current.prepared.history).map_err(AuthorityPublicationError::from)
         .map_err(|_| AuthorityPublicationError::CorruptCurrent)?;
     Ok(())
 }
@@ -926,19 +503,19 @@ pub(crate) fn validate_durable_effect_attempt(
         .map(|bytes| format::decode_prepared_with_artifacts(bytes, digest))
         .transpose()?
         .ok_or(AuthorityPublicationError::CorruptCurrent)?;
-    if prepared.sandbox != sandbox || prepared.source_draft_digest != source_draft_digest {
+    if prepared.history.sandbox() != sandbox || prepared.history.source_draft_digest() != source_draft_digest {
         return Err(AuthorityPublicationError::CorruptCurrent);
     }
-    validate_successor(&activated, &prepared)
+    activated.history.require_successor(&prepared.history).map_err(AuthorityPublicationError::from)
         .map_err(|_| AuthorityPublicationError::CorruptCurrent)?;
     let template = artifacts
-        .templates
+        .templates()
         .iter()
-        .find(|template| template.digest == template_digest)
+        .find(|template| template.digest() == template_digest)
         .ok_or(AuthorityPublicationError::CorruptCurrent)?;
-    if template.audience != audience
-        || template.body_without_deadline != body_without_deadline
-        || !template.descriptor_roles.is_empty()
+    if template.audience() != audience
+        || template.body_without_deadline() != body_without_deadline
+        || !template.descriptor_roles().is_empty()
     {
         return Err(AuthorityPublicationError::CorruptCurrent);
     }
@@ -947,7 +524,7 @@ pub(crate) fn validate_durable_effect_attempt(
     {
         BrokerDispatchAttemptV1::from_recovered_host_launch_with_guardian_at(
             template,
-            &artifacts.lease,
+            artifacts.lease(),
             prepared_effect.attempt().body(),
             prepared_effect.preparation_host_boot_id(),
             prepared_effect.attempt().deadline_boottime_nanoseconds(),
@@ -957,7 +534,7 @@ pub(crate) fn validate_durable_effect_attempt(
     } else {
         BrokerDispatchAttemptV1::from_recovered_current_at(
             template,
-            &artifacts.lease,
+            artifacts.lease(),
             prepared_effect.attempt().deadline_boottime_nanoseconds(),
             prepared_effect.preparation_wall_seconds(),
             prepared_effect.preparation_boottime_nanoseconds(),
@@ -983,7 +560,7 @@ pub(crate) fn validate_publication_namespace(
                 .map_err(|_| AuthorityPublicationError::CorruptCurrent)?;
             let sandbox = SandboxId::from_bytes(sandbox_bytes);
             let current = decode_current(value)?;
-            if current.prepared.sandbox != sandbox {
+            if current.prepared.history.sandbox() != sandbox {
                 return Err(AuthorityPublicationError::CorruptCurrent);
             }
             let permanent = journal
@@ -1064,9 +641,9 @@ impl<'a> AuthorityPublicationStore<'a> {
         let template = current
             .templates
             .iter()
-            .find(|candidate| candidate.digest == template_digest)
+            .find(|candidate| candidate.digest() == template_digest)
             .ok_or(AuthorityPublicationError::TemplateAbsent)?;
-        if template.audience != audience {
+        if template.audience() != audience {
             return Err(AuthorityPublicationError::WrongAudience);
         }
         BrokerDispatchAttemptV1::from_recovered_current(
@@ -1094,24 +671,24 @@ impl<'a> AuthorityPublicationStore<'a> {
         let current = self
             .current(sandbox)?
             .ok_or(AuthorityPublicationError::CurrentAbsent)?;
-        validate_successor(&activated, &current.prepared)?;
-        if activated.source_draft_digest != source_draft_digest
-            || current.prepared.source_draft_digest != source_draft_digest
+        activated.history.require_successor(&current.prepared.history).map_err(AuthorityPublicationError::from)?;
+        if activated.history.source_draft_digest() != source_draft_digest
+            || current.prepared.history.source_draft_digest() != source_draft_digest
         {
             return Err(AuthorityPublicationError::StaleCurrent);
         }
         let template = current
             .templates
             .iter()
-            .find(|candidate| candidate.digest == template_digest)
+            .find(|candidate| candidate.digest() == template_digest)
             .ok_or(AuthorityPublicationError::TemplateAbsent)?;
-        if template.audience != audience {
+        if template.audience() != audience {
             return Err(AuthorityPublicationError::WrongAudience);
         }
         if template.semantics().verb() != BrokerVerb::HostLaunch {
             return Ok(None);
         }
-        if template.audience != BrokerAudience::Host
+        if template.audience() != BrokerAudience::Host
             || template.plan().protocol_version() != ProtocolVersion::new(1, 0)
         {
             return Err(AuthorityPublicationError::GuardianRequired);
@@ -1144,27 +721,27 @@ impl<'a> AuthorityPublicationStore<'a> {
         let current = self
             .current(sandbox)?
             .ok_or(AuthorityPublicationError::CurrentAbsent)?;
-        validate_successor(&activated, &current.prepared)?;
-        if activated.source_draft_digest != source_draft_digest
-            || current.prepared.source_draft_digest != source_draft_digest
+        activated.history.require_successor(&current.prepared.history).map_err(AuthorityPublicationError::from)?;
+        if activated.history.source_draft_digest() != source_draft_digest
+            || current.prepared.history.source_draft_digest() != source_draft_digest
         {
             return Err(AuthorityPublicationError::StaleCurrent);
         }
         let template = current
             .templates
             .iter()
-            .find(|candidate| candidate.digest == template_digest)
+            .find(|candidate| candidate.digest() == template_digest)
             .ok_or(AuthorityPublicationError::TemplateAbsent)?;
-        if template.audience != audience {
+        if template.audience() != audience {
             return Err(AuthorityPublicationError::WrongAudience);
         }
-        if !template.descriptor_roles.is_empty() {
+        if !template.descriptor_roles().is_empty() {
             return Err(AuthorityPublicationError::DescriptorExecutionUnsupported);
         }
         let host_launch = template.semantics().verb() == BrokerVerb::HostLaunch;
         let attempt = match (host_launch, guardian_plan) {
             (true, Some(guardian_plan))
-                if template.audience == BrokerAudience::Host
+                if template.audience() == BrokerAudience::Host
                     && template.plan().protocol_version() == ProtocolVersion::new(1, 0) =>
             {
                 BrokerDispatchAttemptV1::from_recovered_current_with_guardian(
@@ -1252,402 +829,60 @@ pub enum AuthorityPublicationError {
     DispatchAttempt(#[from] BrokerDispatchAttemptError),
 }
 
-fn validate_successor(
-    current: &PreparedAuthorityPublicationV1,
-    next: &PreparedAuthorityPublicationV1,
-) -> Result<(), AuthorityPublicationError> {
-    if next.sandbox != current.sandbox || next.receipt_authority != current.receipt_authority {
-        return Err(AuthorityPublicationError::ContextMismatch);
+impl From<PublicationHistoryError> for AuthorityPublicationError {
+    fn from(error: PublicationHistoryError) -> Self {
+        match error {
+            PublicationHistoryError::InvalidDraft => Self::InvalidDraft,
+            PublicationHistoryError::IncompleteAudienceSet => Self::IncompleteAudienceSet,
+            PublicationHistoryError::UnsupportedBrokerAudience => Self::UnsupportedBrokerAudience,
+            PublicationHistoryError::ContextMismatch => Self::ContextMismatch,
+            PublicationHistoryError::PublicationTooLarge => Self::PublicationTooLarge,
+            PublicationHistoryError::GenerationRollback => Self::GenerationRollback,
+            PublicationHistoryError::GenerationEquivocation => Self::GenerationEquivocation,
+            PublicationHistoryError::CorruptCurrent => Self::CorruptCurrent,
+        }
     }
-    if next.epoch < current.epoch
-        || (next.epoch == current.epoch && next.desired_generation < current.desired_generation)
-        || next.lease_generation < current.lease_generation
-    {
-        return Err(AuthorityPublicationError::GenerationRollback);
-    }
-    if (next.epoch == current.epoch
-        && next.desired_generation == current.desired_generation
-        && (next.assignment_digest != current.assignment_digest
-            || next.source_draft_digest != current.source_draft_digest))
-        || (next.lease_generation == current.lease_generation
-            && next.lease_digest != current.lease_digest)
-        || (next.epoch == current.epoch
-            && next.desired_generation == current.desired_generation
-            && next.lease_generation == current.lease_generation
-            && next.digest != current.digest)
-    {
-        return Err(AuthorityPublicationError::GenerationEquivocation);
-    }
-    Ok(())
 }
 
-/// Checks archived publication bytes without constructing current authority.
+pub fn prepare_authority_publication(proposal: AuthorityPublicationProposalV1) -> Result<PreparedAuthorityPublicationV1, AuthorityPublicationError> {
+    let history = proposal.prepare().map_err(AuthorityPublicationError::from)?;
+    Ok(PreparedAuthorityPublicationV1 { history })
+}
+
+pub fn bind_authority_publication_lease(draft: AuthorityPublicationDraftV1, claim: &OwnershipClaimV1, lease: SignedOwnershipLease) -> Result<PreparedAuthorityPublicationV1, AuthorityPublicationError> {
+    let history = draft.bind_lease(claim, lease).map_err(AuthorityPublicationError::from)?;
+    Ok(PreparedAuthorityPublicationV1 { history })
+}
+
+///
+/// The audience, broker method, deadline-free body, and semantic identity
+/// are derived from the selected template and cannot be substituted by the
+/// caller.
 ///
 /// # Errors
 ///
-/// Rejects a malformed/mismatched historical publication or an optional exact
-/// lease quartet that differs from its canonical retained publication bytes.
-pub(crate) fn validate_historical_output_publication_v1(
-    bytes: &[u8],
-    expected_digest: ObjectDigest,
-    expected_lease: Option<(&[u8], &[u8])>,
-) -> Result<(), AuthorityPublicationError> {
-    let decoded = decode_historical_output_publication_v1(bytes, expected_digest)?;
-
-    if let Some((lease, signature)) = expected_lease {
-        decoded.require_expected_lease(lease, signature)?;
-    }
-
-    Ok(())
-}
-
-/// Retains a fully decoded historical publication's exact lease for comparison.
-///
-/// Private fields prevent alternate construction or conversion into current
-/// publication, signature trust, funding or privileged effect authority.
-pub(crate) struct DecodedHistoricalOutputPublicationV1 {
-    lease: RecoveredOwnershipLeaseV1,
-}
-
-impl DecodedHistoricalOutputPublicationV1 {
-    /// Checks the exact lease preimages without decoding the publication again.
-    ///
-    /// # Errors
-    ///
-    /// Returns corruption when either expected canonical preimage differs.
-    pub(crate) fn require_expected_lease(
-        &self,
-        lease: &[u8],
-        signature: &[u8],
-    ) -> Result<(), AuthorityPublicationError> {
-        if self.lease.canonical_lease() != lease
-            || self.lease.canonical_signature() != signature
-        {
-            return Err(AuthorityPublicationError::CorruptCurrent);
-        }
-
-        Ok(())
-    }
-}
-
-/// Retains comparison DATA from the existing complete historical decoder.
-///
-/// This structural readback authenticates no signature or current owner. The
-/// complete decode precedes any later supported-carrier classification.
-///
-/// # Errors
-///
-/// Preserves the decoder's bounds, digest, canonical and cross-link errors.
-pub(crate) fn decode_historical_output_publication_v1(
-    bytes: &[u8],
-    expected_digest: ObjectDigest,
-) -> Result<DecodedHistoricalOutputPublicationV1, AuthorityPublicationError> {
-    let (_, artifacts) = format::decode_prepared_with_artifacts(bytes, expected_digest)?;
-
-    Ok(DecodedHistoricalOutputPublicationV1 {
-        lease: artifacts.lease,
-    })
-}
-
-fn publication_digest(bytes: &[u8]) -> ObjectDigest {
-    let mut digest = Sha256::new();
-    digest.update(DIGEST_DOMAIN);
-    digest.update(bytes);
-    ObjectDigest::from_bytes(digest.finalize().into())
-}
-
-fn current_key(sandbox: SandboxId) -> Vec<u8> {
-    [CURRENT_KEY_PREFIX, sandbox.as_bytes()].concat()
-}
-
-fn prepared_key(digest: ObjectDigest) -> Vec<u8> {
-    [PREPARED_KEY_PREFIX, digest.as_bytes()].concat()
-}
-
-fn strictly_increasing(values: &[BrokerAudience]) -> bool {
-    values.windows(2).all(|pair| pair[0] < pair[1])
-}
-
-const fn audience_code(audience: BrokerAudience) -> Result<u8, AuthorityPublicationError> {
-    match audience {
-        BrokerAudience::Host => Ok(1),
-        BrokerAudience::Mount => Ok(2),
-        BrokerAudience::Storage => Ok(3),
-        BrokerAudience::Network => Ok(4),
-        BrokerAudience::Guardian => Err(AuthorityPublicationError::UnsupportedBrokerAudience),
-        BrokerAudience::Nix => Err(AuthorityPublicationError::UnsupportedBrokerAudience),
-    }
-}
-
-fn audience_from_code(code: u8) -> Result<BrokerAudience, AuthorityPublicationError> {
-    match code {
-        1 => Ok(BrokerAudience::Host),
-        2 => Ok(BrokerAudience::Mount),
-        3 => Ok(BrokerAudience::Storage),
-        4 => Ok(BrokerAudience::Network),
-        _ => Err(AuthorityPublicationError::CorruptCurrent),
-    }
-}
-
-fn broker_method_from_code(code: i32) -> Result<BrokerMethod, AuthorityPublicationError> {
-    match code {
-        1 => Ok(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME),
-        4 => Ok(BrokerMethod::BROKER_METHOD_MOUNT_APPLY),
-        7 => Ok(BrokerMethod::BROKER_METHOD_STORAGE_APPLY),
-        25 => Ok(BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT),
-        9 => Ok(BrokerMethod::BROKER_METHOD_NETWORK_APPLY),
-        _ => Err(AuthorityPublicationError::CorruptCurrent),
-    }
-}
-
-fn broker_descriptor_role_from_code(
-    code: i32,
-) -> Result<BrokerDescriptorRole, AuthorityPublicationError> {
-    match code {
-        1 => Ok(BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_MOUNT_NAMESPACE),
-        2 => Ok(BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_ROOT),
-        3 => Ok(BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_MOUNT_SOURCE),
-        4 => Ok(BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_DETACHED_MOUNT),
-        5 => Ok(BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_RUNTIME_LEADER),
-        6 => Ok(BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_USER_NAMESPACE),
-        7 => Ok(BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_SLOT),
-        _ => Err(AuthorityPublicationError::CorruptCurrent),
-    }
-}
-
-fn put_u32(bytes: &mut Vec<u8>, value: usize) -> Result<(), AuthorityPublicationError> {
-    bytes.extend_from_slice(
-        &u32::try_from(value)
-            .map_err(|_| AuthorityPublicationError::PublicationTooLarge)?
-            .to_be_bytes(),
-    );
-    Ok(())
-}
-
-fn put_bytes(bytes: &mut Vec<u8>, value: &[u8]) -> Result<(), AuthorityPublicationError> {
-    put_u32(bytes, value.len())?;
-    bytes.extend_from_slice(value);
-    Ok(())
-}
-
-fn take<'a>(
-    bytes: &'a [u8],
-    cursor: &mut usize,
-    length: usize,
-) -> Result<&'a [u8], AuthorityPublicationError> {
-    let end = cursor
-        .checked_add(length)
-        .filter(|end| *end <= bytes.len())
-        .ok_or(AuthorityPublicationError::CorruptCurrent)?;
-    let value = &bytes[*cursor..end];
-    *cursor = end;
-    Ok(value)
-}
-
-fn take_array<const N: usize>(
-    bytes: &[u8],
-    cursor: &mut usize,
-) -> Result<[u8; N], AuthorityPublicationError> {
-    take(bytes, cursor, N)?
-        .try_into()
-        .map_err(|_| AuthorityPublicationError::CorruptCurrent)
-}
-
-fn take_u32(bytes: &[u8], cursor: &mut usize) -> Result<usize, AuthorityPublicationError> {
-    usize::try_from(u32::from_be_bytes(take_array(bytes, cursor)?))
-        .map_err(|_| AuthorityPublicationError::CorruptCurrent)
-}
-
-fn take_bytes<'a>(
-    bytes: &'a [u8],
-    cursor: &mut usize,
-) -> Result<&'a [u8], AuthorityPublicationError> {
-    let length = take_u32(bytes, cursor)?;
-    take(bytes, cursor, length)
-}
-
-#[cfg(test)]
-mod historical_output_readback_tests {
-    use super::*;
-
-    #[test]
-    fn historical_readback_preserves_exact_lease_comparison_and_unit_validation() {
-        let (_, prepared) = tests::activation_fixture(1);
-        let bytes = prepared.canonical_bytes();
-        let (_, artifacts) =
-            format::decode_prepared_with_artifacts(bytes, prepared.digest()).unwrap();
-        let lease = artifacts.lease.canonical_lease();
-        let signature = artifacts.lease.canonical_signature();
-
-        let decoded = decode_historical_output_publication_v1(bytes, prepared.digest()).unwrap();
-
-        assert!(decoded.require_expected_lease(lease, signature).is_ok());
-        assert!(decoded.require_expected_lease(lease, signature).is_ok());
-        assert!(validate_historical_output_publication_v1(bytes, prepared.digest(), None).is_ok());
-        assert!(
-            validate_historical_output_publication_v1(
-                bytes,
-                prepared.digest(),
-                Some((lease, signature)),
-            )
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn historical_readback_and_unit_wrapper_reject_each_changed_lease_preimage() {
-        let (_, prepared) = tests::activation_fixture(1);
-        let bytes = prepared.canonical_bytes();
-        let (_, artifacts) =
-            format::decode_prepared_with_artifacts(bytes, prepared.digest()).unwrap();
-        let lease = artifacts.lease.canonical_lease();
-        let signature = artifacts.lease.canonical_signature();
-
-        let mut changed_lease = lease.to_vec();
-        changed_lease[0] ^= 1;
-        let mut changed_signature = signature.to_vec();
-        changed_signature[0] ^= 1;
-        let substitutions: [(&[u8], &[u8]); 4] = [
-            (&changed_lease, signature),
-            (lease, &changed_signature),
-            (b"", signature),
-            (lease, b""),
-        ];
-        let decoded = decode_historical_output_publication_v1(bytes, prepared.digest()).unwrap();
-
-        for (lease, signature) in substitutions {
-            assert!(matches!(
-                decoded.require_expected_lease(lease, signature),
-                Err(AuthorityPublicationError::CorruptCurrent),
-            ));
-            assert!(matches!(
-                validate_historical_output_publication_v1(
-                    bytes,
-                    prepared.digest(),
-                    Some((lease, signature)),
-                ),
-                Err(AuthorityPublicationError::CorruptCurrent),
-            ));
-        }
-    }
-
-    #[test]
-    fn resealed_malformed_artifacts_still_fail_the_complete_first_decode() {
-        let (_, prepared) = tests::activation_fixture(1);
-        let bytes = prepared.canonical_bytes();
-        let mut cursor = 10;
-        let mut offsets = vec![0, 8];
-        for _ in 0..5 {
-            let field = take_bytes(bytes, &mut cursor).unwrap();
-            offsets.push(cursor - field.len());
-        }
-        let audiences = take_u32(bytes, &mut cursor).unwrap();
-        take(bytes, &mut cursor, audiences).unwrap();
-        assert!(take_u32(bytes, &mut cursor).unwrap() > 0);
-        take(bytes, &mut cursor, 33).unwrap();
-        let plan = take_bytes(bytes, &mut cursor).unwrap();
-        offsets.push(cursor - plan.len());
-
-        for offset in offsets {
-            let mut changed = bytes.to_vec();
-            changed[offset] ^= 0xff;
-            let digest = publication_digest(&changed);
-
-            assert!(
-                matches!(
-                    decode_historical_output_publication_v1(&changed, digest),
-                    Err(AuthorityPublicationError::CorruptCurrent),
-                ),
-                "decoded malformed artifact at {offset}"
-            );
-            assert!(
-                matches!(
-                    validate_historical_output_publication_v1(&changed, digest, None),
-                    Err(AuthorityPublicationError::CorruptCurrent),
-                ),
-                "unit wrapper accepted malformed artifact at {offset}"
-            );
-            assert!(
-                matches!(
-                    decode_prepared(&changed, digest),
-                    Err(AuthorityPublicationError::CorruptCurrent),
-                ),
-                "original decoder accepted malformed artifact at {offset}"
-            );
-        }
-    }
-
-    #[test]
-    fn historical_readback_preserves_digest_length_and_trailing_byte_refusals() {
-        let (_, prepared) = tests::activation_fixture(1);
-        let bytes = prepared.canonical_bytes();
-        let mut trailing = bytes.to_vec();
-        trailing.push(0);
-        let truncated = &bytes[..bytes.len() - 1];
-        let oversized = vec![0; MAXIMUM_PUBLICATION_BYTES + 1];
-        let malformed = [
-            (bytes, ObjectDigest::from_bytes([0; 32])),
-            (truncated, publication_digest(truncated)),
-            (trailing.as_slice(), publication_digest(&trailing)),
-            (oversized.as_slice(), prepared.digest()),
-            (b"".as_slice(), prepared.digest()),
-        ];
-
-        for (bytes, digest) in malformed {
-            assert!(matches!(
-                decode_historical_output_publication_v1(bytes, digest),
-                Err(AuthorityPublicationError::CorruptCurrent),
-            ));
-            assert!(matches!(
-                validate_historical_output_publication_v1(bytes, digest, None),
-                Err(AuthorityPublicationError::CorruptCurrent),
-            ));
-        }
-    }
-}
-
-#[cfg(test)]
-mod nix_audience_denial_tests {
-    use super::*;
-
-    #[test]
-    fn nix_audience_has_no_publication_code_or_decode_path() {
-        for audience in [BrokerAudience::Guardian, BrokerAudience::Nix] {
-            assert!(matches!(
-                audience_code(audience),
-                Err(AuthorityPublicationError::UnsupportedBrokerAudience)
-            ));
-        }
-
-        for reserved in [0, 5, 6, u8::MAX] {
-            assert!(matches!(
-                audience_from_code(reserved),
-                Err(AuthorityPublicationError::CorruptCurrent)
-            ));
-        }
-
-        for method_code in [50, 51, 52] {
-            assert!(matches!(
-                broker_method_from_code(method_code),
-                Err(AuthorityPublicationError::CorruptCurrent)
-            ));
-        }
-    }
-
-    #[test]
-    fn existing_publication_audience_codes_round_trip_unchanged() {
-        let audiences = [
-            BrokerAudience::Host,
-            BrokerAudience::Mount,
-            BrokerAudience::Storage,
-            BrokerAudience::Network,
-        ];
-
-        for (code, audience) in (1..=4).zip(audiences) {
-            assert_eq!(audience_code(audience).unwrap(), code);
-            assert_eq!(audience_from_code(code).unwrap(), audience);
-        }
-    }
+/// Returns [`AuthorityPublicationError::TemplateAbsent`] when the digest
+/// is not present, or [`AuthorityPublicationError::InvalidDraft`] if a
+/// recovered template cannot produce a bounded effect binding.
+pub fn bind_authority_publication_effect(
+    draft: &AuthorityPublicationDraftV1,
+    template_digest: ObjectDigest,
+) -> Result<AuthorityBoundEffectPlanV1, AuthorityPublicationError> {
+    let template = draft
+        .templates()
+        .iter()
+        .find(|template| template.digest() == template_digest)
+        .ok_or(AuthorityPublicationError::TemplateAbsent)?;
+    AuthorityBoundEffectPlanV1::from_template(
+        draft.digest(),
+        template.audience(),
+        template.method(),
+        template.digest(),
+        template.body_without_deadline(),
+        template.semantics(),
+        template.descriptor_roles().is_empty(),
+    )
+    .map_err(|_| AuthorityPublicationError::InvalidDraft)
 }
 
 #[cfg(test)]

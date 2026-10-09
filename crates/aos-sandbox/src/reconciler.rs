@@ -4509,7 +4509,7 @@ pub(crate) fn validate_delete_batch_admission_records_v1(
             let Some(OwnershipGateStatusV1::Pending(gate)) = gate.as_ref() else {
                 return Err(invalid());
             };
-            if gate.publication_draft().bind_effect(binding.template_digest)?
+            if crate::bind_authority_publication_effect(gate.publication_draft(), binding.template_digest)?
                 .into_inner(operation_id, step)? != effect.plan
             {
                 return Err(invalid());
@@ -5060,7 +5060,7 @@ mod tests {
         crate::publication::PreparedAuthorityPublicationV1,
     ) {
         let (draft, prepared) = descriptor_free_activation_fixture(lease_generation);
-        let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
+        let effect = crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap();
         let plan = OperationPlan::ownership_gated(
             OperationId::from_bytes([0x31; 16]),
             IdempotencyKey::new(b"gated-request".to_vec()).unwrap(),
@@ -5087,7 +5087,7 @@ mod tests {
         crate::publication::PreparedAuthorityPublicationV1,
     ) {
         let (draft, prepared) = descriptor_free_launch_activation_fixture(lease_generation);
-        let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
+        let effect = crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap();
         let plan = OperationPlan::ownership_gated(
             OperationId::from_bytes([0x35; 16]),
             IdempotencyKey::new(b"guardian-gated-launch".to_vec()).unwrap(),
@@ -5770,7 +5770,7 @@ mod tests {
             [0x95; 32],
             b"same-sandbox".to_vec(),
             b"competing-holder".to_vec(),
-            vec![draft.bind_effect(draft.templates()[0].digest()).unwrap()],
+            vec![crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap()],
             activation_claim(&draft, 1),
             draft.clone(),
         )
@@ -5835,7 +5835,7 @@ mod tests {
             [0xb3; 32],
             b"runtime".to_vec(),
             b"stop".to_vec(),
-            vec![draft.bind_effect(draft.templates()[0].digest()).unwrap()],
+            vec![crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap()],
             activation_claim(&draft, 2),
             draft.clone(),
         )
@@ -5908,7 +5908,7 @@ mod tests {
             RuntimeAction::RUNTIME_ACTION_STOP,
         ] {
             let (draft, _) = descriptor_free_control_activation_fixture(2, action);
-            let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
+            let effect = crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap();
             let effects = if action == RuntimeAction::RUNTIME_ACTION_STOP {
                 vec![effect.clone(), effect]
             } else {
@@ -5966,8 +5966,7 @@ mod tests {
             b"runtime".to_vec(),
             b"stop".to_vec(),
             vec![
-                replacement
-                    .bind_effect(replacement.templates()[0].digest())
+                crate::bind_authority_publication_effect(&replacement, replacement.templates()[0].digest())
                     .unwrap(),
             ],
             activation_claim(&replacement, 2),
@@ -6046,7 +6045,7 @@ mod tests {
                 [generation; 32],
                 b"runtime".to_vec(),
                 vec![generation],
-                vec![draft.bind_effect(draft.templates()[0].digest()).unwrap()],
+                vec![crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap()],
                 activation_claim(&draft, u64::from(generation)),
                 draft.clone(),
             )
@@ -6368,7 +6367,7 @@ mod tests {
         let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
         let mut reconciler = Reconciler::new(journal, Executor::default());
         let (draft, _) = descriptor_free_activation_fixture(1);
-        let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
+        let effect = crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap();
         let operation_id = OperationId::from_bytes([0xc1; 16]);
         let plan = OperationPlan::ownership_gated(
             operation_id,
@@ -7127,7 +7126,7 @@ mod tests {
     #[test]
     fn descriptor_bearing_authority_effect_is_explicitly_blocked_before_io() {
         let (draft, _) = descriptor_host_activation_fixture(1);
-        let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
+        let effect = crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap();
         assert!(matches!(
             OperationPlan::ownership_gated(
                 OperationId::from_bytes([0xa1; 16]),
@@ -7146,7 +7145,7 @@ mod tests {
     #[test]
     fn descriptor_free_mount_authority_effect_is_admitted() {
         let (draft, _) = descriptor_free_mount_activation_fixture();
-        let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
+        let effect = crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap();
         let plan = OperationPlan::ownership_gated(
             OperationId::from_bytes([0xa3; 16]),
             IdempotencyKey::new(b"mount-gated".to_vec()).unwrap(),
@@ -8816,13 +8815,13 @@ mod tests {
                 ordinary.request_digest,
                 ordinary.desired_key.clone(),
                 ordinary.desired_value.clone(),
-                vec![draft.bind_effect(draft.templates()[0].digest()).unwrap()],
+                vec![crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap()],
                 mismatched_claim,
                 draft.clone(),
             ),
             Err(ReconcilerError::InvalidPlan(_))
         ));
-        let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
+        let effect = crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap();
         assert!(matches!(
             OperationPlan::ownership_gated(
                 ordinary.operation_id,

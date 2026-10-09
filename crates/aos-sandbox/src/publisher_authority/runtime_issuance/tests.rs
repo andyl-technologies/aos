@@ -50,7 +50,7 @@ fn activate_holder(
 ) -> RuntimeAuthorityBindingV1 {
     let (draft, prepared) = runtime_scope_activation_fixture(u64::from(generation));
     let sandbox = draft.manifest().manifest().sandbox();
-    let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
+    let effect = crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap();
     let revision = (generation > 1).then_some(u64::from(generation) - 1);
     let intent = if revoked {
         RuntimeAuthorityIntentV1::revoke(revision).unwrap()

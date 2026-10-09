@@ -191,7 +191,7 @@ fn try_record_for_action_and_version(
         (action != MountAction::MOUNT_ACTION_RELEASE).then(|| ObjectDigest::from_bytes([12; 32]));
 
     let template_body = request(assignment, 0, action).encode_to_vec();
-    let body = crate::dispatch::durable_attempt_body(&template_body, deadline).unwrap();
+    let body = aos_sandbox_protocol::dispatch_template::inject_deadline(&template_body, deadline).unwrap();
     assert!(validate_durable_attempt_body(
         &template_body,
         deadline,

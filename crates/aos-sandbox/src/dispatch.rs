@@ -34,9 +34,10 @@ use crate::publication::{RecoveredBrokerDispatchTemplateV1, RecoveredOwnershipLe
 use crate::SignedOwnershipLease;
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
-const TEMPLATE_DOMAIN: &[u8] = b"aos.sandbox.broker-dispatch-template.v1\0";
-const SEMANTIC_IDENTITY_DOMAIN: &[u8] = b"aos.sandbox.broker-semantic-identity.v1\0";
-const MAXIMUM_DEADLINE_FIELD_BYTES: usize = 11;
+pub use aos_sandbox_protocol::dispatch_template::{BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, BrokerDispatchTemplateError};
+use aos_sandbox_protocol::dispatch_template::{match_plan_grant, inject_deadline};
+pub(crate) use aos_sandbox_protocol::dispatch_template::{template_digest_from_parts, semantic_identity_digest, validate_durable_deadline_free_body, validate_durable_attempt_body};
+
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
 /// Checks a fully formed selected wrapper without direct-header injection.
@@ -61,18 +62,6 @@ pub(crate) fn validate_nix_generation_plan_v1(
         bytes,
         0,
     )
-}
-
-/// Names the controller-asserted portable grant for one immutable request.
-///
-/// This value carries no proof that a protobuf body has these semantics. It is
-/// an immutable dispatch correlation value; the privileged broker independently
-/// derives and compares the authoritative semantic identity.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BrokerDispatchSemanticIdentityV1 {
-    verb: BrokerVerb,
-    target: BrokerGrantTarget,
-    argument_commitment: BrokerArgumentCommitment,
 }
 
 /// Describes the exact post-lease Guardian plan a controller must sign.
@@ -220,155 +209,6 @@ impl GuardianPlanRequestV1 {
         .map_err(|_| BrokerDispatchAttemptError::GuardianPlanMismatch)
     }
 }
-
-impl BrokerDispatchSemanticIdentityV1 {
-    /// Constructs an identity returned by a protocol semantic compiler.
-    ///
-    /// Construction is non-authorizing because this type cannot prove the
-    /// provenance of its three values.
-    #[must_use]
-    pub const fn new(
-        verb: BrokerVerb,
-        target: BrokerGrantTarget,
-        argument_commitment: BrokerArgumentCommitment,
-    ) -> Self {
-        Self {
-            verb,
-            target,
-            argument_commitment,
-        }
-    }
-
-    /// Returns the exact semantic verb.
-    #[must_use]
-    pub const fn verb(self) -> BrokerVerb {
-        self.verb
-    }
-
-    /// Returns the assignment or resource target.
-    #[must_use]
-    pub const fn target(self) -> BrokerGrantTarget {
-        self.target
-    }
-
-    /// Returns the canonical typed argument commitment.
-    #[must_use]
-    pub const fn argument_commitment(self) -> BrokerArgumentCommitment {
-        self.argument_commitment
-    }
-}
-
-/// Freezes one reusable, non-authorizing operation without lease or clock facts.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BrokerDispatchTemplateV1 {
-    signed_plan: SignedBrokerPlan,
-    method: BrokerMethod,
-    body_without_deadline: Vec<u8>,
-    descriptor_roles: Vec<BrokerDescriptorRole>,
-    semantics: BrokerDispatchSemanticIdentityV1,
-    digest: ObjectDigest,
-}
-
-impl BrokerDispatchTemplateV1 {
-    /// Constructs a byte-exact immutable dispatch template.
-    ///
-    /// `body_without_deadline` must be a protobuf request whose field 1 is its
-    /// common header and whose header omits field 5. An attempt injects that
-    /// deadline field without decoding or rewriting any other body bytes.
-    /// `semantics` should come from the corresponding portable protocol
-    /// compiler. This constructor only proves that the asserted identity occurs
-    /// in the signed plan; it deliberately cannot prove the body has that
-    /// meaning because catalog-resolved semantics remain broker-owned. The
-    /// receiving broker must decode and independently recompute it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BrokerDispatchTemplateError`] when method, protocol,
-    /// semantics, body framing, descriptors, or signed grant bounds differ.
-    pub fn new(
-        signed_plan: SignedBrokerPlan,
-        method: BrokerMethod,
-        body_without_deadline: Vec<u8>,
-        descriptor_roles: Vec<BrokerDescriptorRole>,
-        semantics: BrokerDispatchSemanticIdentityV1,
-    ) -> Result<Self, BrokerDispatchTemplateError> {
-        validate_method(&signed_plan, method)?;
-        validate_method_semantics(method, semantics.verb())?;
-        validate_descriptor_roles(&descriptor_roles)?;
-
-        let maximum_body = body_without_deadline
-            .len()
-            .checked_add(MAXIMUM_DEADLINE_FIELD_BYTES)
-            .ok_or(BrokerDispatchTemplateError::BodyTooLarge)?;
-        if maximum_body > MAXIMUM_REQUEST_BYTES {
-            return Err(BrokerDispatchTemplateError::BodyTooLarge);
-        }
-        locate_deadline_free_header(&body_without_deadline)?;
-        let request_bytes =
-            u32::try_from(maximum_body).map_err(|_| BrokerDispatchTemplateError::BodyTooLarge)?;
-        let descriptor_count = u16::try_from(descriptor_roles.len())
-            .map_err(|_| BrokerDispatchTemplateError::DescriptorTable)?;
-        match_plan_grant(
-            signed_plan.plan(),
-            semantics,
-            request_bytes,
-            descriptor_count,
-        )?;
-
-        let digest = template_digest(
-            &signed_plan,
-            method,
-            &body_without_deadline,
-            &descriptor_roles,
-            semantics,
-        );
-        Ok(Self {
-            signed_plan,
-            method,
-            body_without_deadline,
-            descriptor_roles,
-            semantics,
-            digest,
-        })
-    }
-
-    /// Returns the stable digest of every immutable template component.
-    #[must_use]
-    pub const fn digest(&self) -> ObjectDigest {
-        self.digest
-    }
-
-    /// Returns the exact signed broker plan.
-    #[must_use]
-    pub const fn signed_plan(&self) -> &SignedBrokerPlan {
-        &self.signed_plan
-    }
-
-    /// Returns the exact closed broker method.
-    #[must_use]
-    pub const fn method(&self) -> BrokerMethod {
-        self.method
-    }
-
-    /// Returns the deadline-free request body bytes.
-    #[must_use]
-    pub fn body_without_deadline(&self) -> &[u8] {
-        &self.body_without_deadline
-    }
-
-    /// Returns ancillary descriptor roles in exact descriptor order.
-    #[must_use]
-    pub fn descriptor_roles(&self) -> &[BrokerDescriptorRole] {
-        &self.descriptor_roles
-    }
-
-    /// Returns the portable operation semantics matched by the plan.
-    #[must_use]
-    pub const fn semantics(&self) -> BrokerDispatchSemanticIdentityV1 {
-        self.semantics
-    }
-}
-
 /// Owns one exact, non-authorizing packet attenuated to a lease and deadline.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BrokerDispatchAttemptV1 {
@@ -401,7 +241,7 @@ impl BrokerDispatchAttemptV1 {
         clock: RawPairedClockSample,
     ) -> Result<Self, BrokerDispatchAttemptError> {
         validate_context(template, lease)?;
-        let plan = template.signed_plan.plan();
+        let plan = template.signed_plan().plan();
         if clock.wall_seconds() < plan.issued_seconds()
             || clock.wall_seconds() >= plan.expires_seconds()
         {
@@ -415,16 +255,16 @@ impl BrokerDispatchAttemptV1 {
         }
 
         let body = inject_deadline(
-            &template.body_without_deadline,
+            template.body_without_deadline(),
             deadline_boottime_nanoseconds,
-        )?;
+        ).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
         let request_bytes =
             u32::try_from(body.len()).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
-        let descriptor_count = u16::try_from(template.descriptor_roles.len())
+        let descriptor_count = u16::try_from(template.descriptor_roles().len())
             .map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
         match_plan_grant(
-            template.signed_plan.plan(),
-            template.semantics,
+            template.signed_plan().plan(),
+            template.semantics(),
             request_bytes,
             descriptor_count,
         )
@@ -432,18 +272,18 @@ impl BrokerDispatchAttemptV1 {
 
         let packet = encode_authorized_request_envelope(
             plan.protocol(),
-            template.method,
+            template.method(),
             &body,
-            &template.descriptor_roles,
+            template.descriptor_roles(),
             AuthorizationArtifactBytes {
-                broker_plan: template.signed_plan.canonical_plan(),
-                broker_plan_signature: template.signed_plan.canonical_signature(),
+                broker_plan: template.signed_plan().canonical_plan(),
+                broker_plan_signature: template.signed_plan().canonical_signature(),
                 ownership_lease: lease.canonical_lease(),
                 ownership_lease_signature: lease.canonical_signature(),
             },
         )?;
         Ok(Self {
-            template_digest: template.digest,
+            template_digest: template.digest(),
             lease_digest: lease.digest(),
             lease_generation: lease.generation(),
             deadline_boottime_nanoseconds,
@@ -475,9 +315,9 @@ impl BrokerDispatchAttemptV1 {
         clock: RawPairedClockSample,
     ) -> Result<Self, BrokerDispatchAttemptError> {
         validate_context(template, lease)?;
-        let host_plan = template.signed_plan.plan();
+        let host_plan = template.signed_plan().plan();
         let host_template = decode_runtime_template_v1(template.body_without_deadline())?;
-        if template.method != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+        if template.method() != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
             || host_plan.audience() != BrokerAudience::Host
             || host_plan.protocol() != ProtocolId::HostBroker
             || host_plan.protocol_version() != ProtocolVersion::new(1, 0)
@@ -503,9 +343,9 @@ impl BrokerDispatchAttemptV1 {
         }
 
         let deadline_body = inject_deadline(
-            &template.body_without_deadline,
+            template.body_without_deadline(),
             deadline_boottime_nanoseconds,
-        )?;
+        ).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
         let body = encode_host_guardian_companion_v1(
             &deadline_body,
             guardian_plan.canonical_plan(),
@@ -513,11 +353,11 @@ impl BrokerDispatchAttemptV1 {
         )?;
         let request_bytes =
             u32::try_from(body.len()).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
-        let descriptor_count = u16::try_from(template.descriptor_roles.len())
+        let descriptor_count = u16::try_from(template.descriptor_roles().len())
             .map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
         match_plan_grant(
             host_plan,
-            template.semantics,
+            template.semantics(),
             request_bytes,
             descriptor_count,
         )
@@ -525,18 +365,18 @@ impl BrokerDispatchAttemptV1 {
 
         let packet = encode_authorized_request_envelope(
             host_plan.protocol(),
-            template.method,
+            template.method(),
             &body,
-            &template.descriptor_roles,
+            template.descriptor_roles(),
             AuthorizationArtifactBytes {
-                broker_plan: template.signed_plan.canonical_plan(),
-                broker_plan_signature: template.signed_plan.canonical_signature(),
+                broker_plan: template.signed_plan().canonical_plan(),
+                broker_plan_signature: template.signed_plan().canonical_signature(),
                 ownership_lease: lease.canonical_lease(),
                 ownership_lease_signature: lease.canonical_signature(),
             },
         )?;
         Ok(Self {
-            template_digest: template.digest,
+            template_digest: template.digest(),
             lease_digest: lease.digest(),
             lease_generation: lease.generation(),
             deadline_boottime_nanoseconds,
@@ -602,7 +442,7 @@ impl BrokerDispatchAttemptV1 {
         let body = inject_deadline(
             template.body_without_deadline(),
             deadline_boottime_nanoseconds,
-        )?;
+        ).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
         let request_bytes =
             u32::try_from(body.len()).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
         let descriptor_count = u16::try_from(template.descriptor_roles().len())
@@ -643,7 +483,7 @@ impl BrokerDispatchAttemptV1 {
         let deadline_body = inject_deadline(
             template.body_without_deadline(),
             deadline_boottime_nanoseconds,
-        )?;
+        ).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
         let durable_body = encode_host_guardian_companion_v1(
             &deadline_body,
             guardian_plan.canonical_plan(),
@@ -722,7 +562,7 @@ impl BrokerDispatchAttemptV1 {
         let deadline_body = inject_deadline(
             template.body_without_deadline(),
             deadline_boottime_nanoseconds,
-        )?;
+        ).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
         let body = encode_host_guardian_companion_v1(
             &deadline_body,
             companion.broker_plan(),
@@ -820,26 +660,6 @@ impl BrokerDispatchAttemptV1 {
     }
 }
 
-/// Reports invalid immutable template input.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum BrokerDispatchTemplateError {
-    /// Method is not an effect method for the signed audience and protocol.
-    #[error("broker method does not match the signed audience and protocol")]
-    MethodMismatch,
-    /// Protobuf body has no unique deadline-free common header.
-    #[error("broker request body is not a deadline-free V1 body")]
-    InvalidBody,
-    /// Body cannot remain within the fixed packet allocation ceiling.
-    #[error("broker request body exceeds the fixed V1 bound")]
-    BodyTooLarge,
-    /// Descriptor roles are oversized, unspecified, or repeated.
-    #[error("broker descriptor role table is invalid")]
-    DescriptorTable,
-    /// Portable request semantics or bounds are not present in the plan.
-    #[error("broker request is not committed by the signed plan")]
-    PlanGrantMismatch,
-}
-
 /// Reports a rejected lease-bound dispatch attempt.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum BrokerDispatchAttemptError {
@@ -875,104 +695,18 @@ pub enum BrokerDispatchAttemptError {
     Protocol(#[from] ProtocolValidationError),
 }
 
-fn validate_method(
-    signed_plan: &SignedBrokerPlan,
-    method: BrokerMethod,
-) -> Result<(), BrokerDispatchTemplateError> {
-    let method_matches_protocol = match signed_plan.plan().protocol() {
-        ProtocolId::HostBroker => method == BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
-        ProtocolId::MountBroker => matches!(
-            method,
-            BrokerMethod::BROKER_METHOD_MOUNT_APPLY
-                | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
-                | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
-                | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
-        ),
-        ProtocolId::StorageBroker => matches!(
-            method,
-            BrokerMethod::BROKER_METHOD_STORAGE_APPLY
-                | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
-        ),
-        ProtocolId::NetworkBroker => method == BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
-        _ => return Err(BrokerDispatchTemplateError::MethodMismatch),
-    };
-    if !method_matches_protocol
-        || signed_plan.plan().audience().protocol() != signed_plan.plan().protocol()
-    {
-        return Err(BrokerDispatchTemplateError::MethodMismatch);
-    }
-    Ok(())
-}
-
-fn validate_method_semantics(
-    method: BrokerMethod,
-    verb: BrokerVerb,
-) -> Result<(), BrokerDispatchTemplateError> {
-    let semantics_match = match method {
-        BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT => {
-            verb == BrokerVerb::StorageAtomicSnapshot
-        }
-        BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE => verb == BrokerVerb::MountAcquireSource,
-        BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION => {
-            verb == BrokerVerb::MountReleaseSourceAcquisition
-        }
-        _ => true,
-    };
-    if semantics_match {
-        Ok(())
-    } else {
-        Err(BrokerDispatchTemplateError::PlanGrantMismatch)
-    }
-}
-
-fn validate_descriptor_roles(
-    roles: &[BrokerDescriptorRole],
-) -> Result<(), BrokerDispatchTemplateError> {
-    if roles.len() > MAXIMUM_PACKET_DESCRIPTORS {
-        return Err(BrokerDispatchTemplateError::DescriptorTable);
-    }
-    for (index, role) in roles.iter().copied().enumerate() {
-        if role == BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_UNSPECIFIED
-            || roles[..index].contains(&role)
-        {
-            return Err(BrokerDispatchTemplateError::DescriptorTable);
-        }
-    }
-    Ok(())
-}
-
-fn match_plan_grant(
-    plan: &BrokerAuthorizationPlan,
-    semantics: BrokerDispatchSemanticIdentityV1,
-    request_bytes: u32,
-    descriptor_count: u16,
-) -> Result<(), BrokerDispatchTemplateError> {
-    let matched = plan.grants().iter().any(|grant| {
-        grant.verb() == semantics.verb
-            && grant.target() == semantics.target
-            && grant.argument_commitment() == semantics.argument_commitment
-            && request_bytes <= grant.maximum_request_bytes()
-            && descriptor_count <= grant.maximum_descriptors()
-    });
-    if matched {
-        Ok(())
-    } else {
-        Err(BrokerDispatchTemplateError::PlanGrantMismatch)
-    }
-}
-
 fn validate_context(
     template: &BrokerDispatchTemplateV1,
     lease: &SignedOwnershipLease,
 ) -> Result<(), BrokerDispatchAttemptError> {
-    let assignment = template.signed_plan.plan().assignment();
+    let assignment = template.signed_plan().plan().assignment();
     let lease_assignment = lease.assignment();
     if assignment.sandbox() != lease_assignment.sandbox()
         || assignment.incarnation() != lease_assignment.incarnation()
         || assignment.epoch() != lease_assignment.epoch()
         || assignment.digest() != lease_assignment.digest()
-        || template.signed_plan.plan().node() != lease.node()
-        || template.signed_plan.plan().ownership_authority() != lease.signer()
+        || template.signed_plan().plan().node() != lease.node()
+        || template.signed_plan().plan().ownership_authority() != lease.signer()
     {
         return Err(BrokerDispatchAttemptError::LeaseContextMismatch);
     }
@@ -1206,243 +940,6 @@ fn conservative_lease_deadline_scalar_fields(
     boottime_nanoseconds
         .checked_add(remaining)
         .ok_or(BrokerDispatchAttemptError::LeaseExpired)
-}
-
-fn template_digest(
-    signed_plan: &SignedBrokerPlan,
-    method: BrokerMethod,
-    body: &[u8],
-    roles: &[BrokerDescriptorRole],
-    semantics: BrokerDispatchSemanticIdentityV1,
-) -> ObjectDigest {
-    template_digest_from_parts(
-        signed_plan.digest(),
-        signed_plan.canonical_signature(),
-        method,
-        body,
-        roles,
-        semantics,
-    )
-}
-
-pub(crate) fn template_digest_from_parts(
-    plan_digest: ObjectDigest,
-    plan_signature: &[u8],
-    method: BrokerMethod,
-    body: &[u8],
-    roles: &[BrokerDescriptorRole],
-    semantics: BrokerDispatchSemanticIdentityV1,
-) -> ObjectDigest {
-    let mut digest = Sha256::new();
-    digest.update(TEMPLATE_DOMAIN);
-    digest.update(plan_digest.as_bytes());
-    digest.update(
-        u64::try_from(plan_signature.len())
-            .unwrap_or(u64::MAX)
-            .to_be_bytes(),
-    );
-    digest.update(plan_signature);
-    digest.update((method as i32).to_be_bytes());
-    digest.update(semantics.verb.get().to_be_bytes());
-    encode_target(&mut digest, semantics.target);
-    digest.update(semantics.argument_commitment.digest().as_bytes());
-    digest.update(u64::try_from(body.len()).unwrap_or(u64::MAX).to_be_bytes());
-    digest.update(body);
-    digest.update(u16::try_from(roles.len()).unwrap_or(u16::MAX).to_be_bytes());
-    for role in roles {
-        digest.update((*role as i32).to_be_bytes());
-    }
-    ObjectDigest::from_bytes(digest.finalize().into())
-}
-
-pub(crate) fn semantic_identity_digest(
-    semantics: BrokerDispatchSemanticIdentityV1,
-) -> ObjectDigest {
-    let mut digest = Sha256::new();
-    digest.update(SEMANTIC_IDENTITY_DOMAIN);
-    digest.update(semantics.verb.get().to_be_bytes());
-    encode_target(&mut digest, semantics.target);
-    digest.update(semantics.argument_commitment.digest().as_bytes());
-    ObjectDigest::from_bytes(digest.finalize().into())
-}
-
-fn encode_target(digest: &mut Sha256, target: BrokerGrantTarget) {
-    match target {
-        BrokerGrantTarget::Assignment => digest.update([1]),
-        BrokerGrantTarget::Resource(handle) => {
-            digest.update([2]);
-            digest.update(handle.as_bytes());
-        }
-        BrokerGrantTarget::ResourcePair {
-            previous,
-            successor,
-        } => {
-            digest.update([3]);
-            digest.update(previous.as_bytes());
-            digest.update(successor.as_bytes());
-        }
-    }
-}
-
-fn locate_deadline_free_header(body: &[u8]) -> Result<(usize, usize), BrokerDispatchTemplateError> {
-    if body.first() != Some(&0x0a) {
-        return Err(BrokerDispatchTemplateError::InvalidBody);
-    }
-    let (length, length_bytes) = decode_varint(&body[1..])?;
-    let start = 1_usize
-        .checked_add(length_bytes)
-        .ok_or(BrokerDispatchTemplateError::InvalidBody)?;
-    let length = usize::try_from(length).map_err(|_| BrokerDispatchTemplateError::InvalidBody)?;
-    let end = start
-        .checked_add(length)
-        .filter(|end| *end <= body.len())
-        .ok_or(BrokerDispatchTemplateError::InvalidBody)?;
-    validate_header_fields(&body[start..end])?;
-    validate_remaining_body_fields(&body[end..])?;
-    Ok((start, end))
-}
-
-pub(crate) fn validate_durable_deadline_free_body(body: &[u8]) -> bool {
-    body.len()
-        .checked_add(MAXIMUM_DEADLINE_FIELD_BYTES)
-        .is_some_and(|size| size <= MAXIMUM_REQUEST_BYTES)
-        && locate_deadline_free_header(body).is_ok()
-}
-
-pub(crate) fn validate_durable_attempt_body(
-    deadline_free_body: &[u8],
-    deadline_boottime_nanoseconds: u64,
-    attempt_body: &[u8],
-) -> bool {
-    durable_attempt_body(deadline_free_body, deadline_boottime_nanoseconds)
-        .is_ok_and(|body| body == attempt_body)
-}
-
-pub(crate) fn durable_attempt_body(
-    deadline_free_body: &[u8],
-    deadline_boottime_nanoseconds: u64,
-) -> Result<Vec<u8>, BrokerDispatchAttemptError> {
-    inject_deadline(deadline_free_body, deadline_boottime_nanoseconds)
-}
-
-fn validate_remaining_body_fields(bytes: &[u8]) -> Result<(), BrokerDispatchTemplateError> {
-    let mut cursor = 0;
-    while cursor < bytes.len() {
-        let (key, key_bytes) = decode_varint(&bytes[cursor..])?;
-        if key >> 3 == 0 || key >> 3 == 1 {
-            return Err(BrokerDispatchTemplateError::InvalidBody);
-        }
-        cursor = cursor
-            .checked_add(key_bytes)
-            .ok_or(BrokerDispatchTemplateError::InvalidBody)?;
-        cursor = skip_wire_value(bytes, cursor, key & 7)?;
-    }
-    Ok(())
-}
-
-fn validate_header_fields(header: &[u8]) -> Result<(), BrokerDispatchTemplateError> {
-    let mut cursor = 0;
-    while cursor < header.len() {
-        let (key, key_bytes) = decode_varint(&header[cursor..])?;
-        cursor = cursor
-            .checked_add(key_bytes)
-            .ok_or(BrokerDispatchTemplateError::InvalidBody)?;
-        if key >> 3 == 0 || key >> 3 == 5 {
-            return Err(BrokerDispatchTemplateError::InvalidBody);
-        }
-        cursor = skip_wire_value(header, cursor, key & 7)?;
-    }
-    Ok(())
-}
-
-fn skip_wire_value(
-    bytes: &[u8],
-    cursor: usize,
-    wire: u64,
-) -> Result<usize, BrokerDispatchTemplateError> {
-    match wire {
-        0 => decode_varint(&bytes[cursor..])?
-            .1
-            .checked_add(cursor)
-            .ok_or(BrokerDispatchTemplateError::InvalidBody),
-        1 => cursor
-            .checked_add(8)
-            .filter(|end| *end <= bytes.len())
-            .ok_or(BrokerDispatchTemplateError::InvalidBody),
-        2 => {
-            let (length, length_bytes) = decode_varint(&bytes[cursor..])?;
-            cursor
-                .checked_add(length_bytes)
-                .and_then(|start| start.checked_add(usize::try_from(length).ok()?))
-                .filter(|end| *end <= bytes.len())
-                .ok_or(BrokerDispatchTemplateError::InvalidBody)
-        }
-        5 => cursor
-            .checked_add(4)
-            .filter(|end| *end <= bytes.len())
-            .ok_or(BrokerDispatchTemplateError::InvalidBody),
-        _ => Err(BrokerDispatchTemplateError::InvalidBody),
-    }
-}
-
-fn inject_deadline(body: &[u8], deadline: u64) -> Result<Vec<u8>, BrokerDispatchAttemptError> {
-    let (header_start, header_end) =
-        locate_deadline_free_header(body).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
-    let mut deadline_bytes = [0_u8; 10];
-    let deadline_length = encode_varint(deadline, &mut deadline_bytes);
-    let header_length = header_end - header_start;
-    let new_header_length = header_length
-        .checked_add(1 + deadline_length)
-        .ok_or(BrokerDispatchAttemptError::BodyTooLarge)?;
-    let mut header_length_bytes = [0_u8; 10];
-    let header_length_count = encode_varint(
-        u64::try_from(new_header_length).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?,
-        &mut header_length_bytes,
-    );
-    let capacity = body
-        .len()
-        .checked_add(MAXIMUM_DEADLINE_FIELD_BYTES)
-        .ok_or(BrokerDispatchAttemptError::BodyTooLarge)?;
-    let mut result = Vec::with_capacity(capacity);
-    result.push(0x0a);
-    result.extend_from_slice(&header_length_bytes[..header_length_count]);
-    result.extend_from_slice(&body[header_start..header_end]);
-    result.push(0x28);
-    result.extend_from_slice(&deadline_bytes[..deadline_length]);
-    result.extend_from_slice(&body[header_end..]);
-    Ok(result)
-}
-
-fn decode_varint(bytes: &[u8]) -> Result<(u64, usize), BrokerDispatchTemplateError> {
-    let mut value = 0_u64;
-    for (index, byte) in bytes.iter().copied().take(10).enumerate() {
-        let shift =
-            u32::try_from(index * 7).map_err(|_| BrokerDispatchTemplateError::InvalidBody)?;
-        if index == 9 && byte > 1 {
-            return Err(BrokerDispatchTemplateError::InvalidBody);
-        }
-        value |= u64::from(byte & 0x7f) << shift;
-        if byte & 0x80 == 0 {
-            if index > 0 && byte == 0 {
-                return Err(BrokerDispatchTemplateError::InvalidBody);
-            }
-            return Ok((value, index + 1));
-        }
-    }
-    Err(BrokerDispatchTemplateError::InvalidBody)
-}
-
-fn encode_varint(mut value: u64, output: &mut [u8; 10]) -> usize {
-    let mut index = 0;
-    loop {
-        output[index] = (value as u8) & 0x7f;
-        value >>= 7;
-        if value == 0 {
-            return index + 1;
-        }
-        output[index] |= 0x80;
-        index += 1;
-    }
 }
 
 #[cfg(test)]
@@ -2033,212 +1530,8 @@ mod tests {
         assert_eq!(decoded.body(), attempt.body());
     }
 
-    #[test]
-    fn substitutions_change_identity_or_fail_closed() {
-        let fixture = fixture();
-        let body_changed = BrokerDispatchTemplateV1::new(
-            fixture.template.signed_plan().clone(),
-            fixture.template.method(),
-            vec![0x0a, 0x02, 0x08, 0x01, 0x12, 0x01, 0xcc],
-            fixture.template.descriptor_roles().to_vec(),
-            fixture.template.semantics(),
-        )
-        .unwrap_or_else(|error| panic!("changed-body template failed: {error}"));
-        let roles_changed = BrokerDispatchTemplateV1::new(
-            fixture.template.signed_plan().clone(),
-            fixture.template.method(),
-            fixture.template.body_without_deadline().to_vec(),
-            Vec::new(),
-            fixture.template.semantics(),
-        )
-        .unwrap_or_else(|error| panic!("changed-roles template failed: {error}"));
-        assert_ne!(body_changed.digest(), fixture.template.digest());
-        assert_ne!(roles_changed.digest(), fixture.template.digest());
 
-        assert_eq!(
-            BrokerDispatchTemplateV1::new(
-                fixture.template.signed_plan().clone(),
-                BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
-                fixture.template.body_without_deadline().to_vec(),
-                fixture.template.descriptor_roles().to_vec(),
-                fixture.template.semantics(),
-            ),
-            Err(BrokerDispatchTemplateError::MethodMismatch)
-        );
-        let wrong_semantics = BrokerDispatchSemanticIdentityV1::new(
-            BrokerVerb::MountInstall,
-            BrokerGrantTarget::Resource(
-                aos_sandbox_core::BrokerResourceHandle::from_bytes([44; 32])
-                    .unwrap_or_else(|error| panic!("test handle failed: {error}")),
-            ),
-            fixture.template.semantics().argument_commitment(),
-        );
-        assert_eq!(
-            BrokerDispatchTemplateV1::new(
-                fixture.template.signed_plan().clone(),
-                fixture.template.method(),
-                fixture.template.body_without_deadline().to_vec(),
-                fixture.template.descriptor_roles().to_vec(),
-                wrong_semantics,
-            ),
-            Err(BrokerDispatchTemplateError::PlanGrantMismatch)
-        );
-    }
 
-    #[test]
-    fn source_acquisition_methods_require_their_exact_plan_verbs() {
-        let fixture = fixture();
-        let signing_key = SigningKey::from_bytes(&[42; 32]);
-        let acquire_semantics = BrokerDispatchSemanticIdentityV1::new(
-            BrokerVerb::MountAcquireSource,
-            BrokerGrantTarget::Assignment,
-            BrokerArgumentCommitment::for_canonical_bytes(b"acquire-source"),
-        );
-        let release_semantics = BrokerDispatchSemanticIdentityV1::new(
-            BrokerVerb::MountReleaseSourceAcquisition,
-            BrokerGrantTarget::Resource(
-                aos_sandbox_core::BrokerResourceHandle::from_bytes([47; 32])
-                    .unwrap_or_else(|error| panic!("test handle failed: {error}")),
-            ),
-            BrokerArgumentCommitment::for_canonical_bytes(b"release-source"),
-        );
-        let plan = aos_sandbox_core::BrokerAuthorizationPlan::new(
-            BrokerAudience::Mount,
-            ProtocolId::MountBroker,
-            ProtocolVersion::new(2, 0),
-            fixture.assignment,
-            fixture.node,
-            fixture.lease_authority.clone(),
-            vec![
-                BrokerGrant::new(
-                    acquire_semantics.verb(),
-                    acquire_semantics.target(),
-                    acquire_semantics.argument_commitment(),
-                    4096,
-                    0,
-                )
-                .unwrap_or_else(|error| panic!("test Acquire grant failed: {error}")),
-                BrokerGrant::new(
-                    release_semantics.verb(),
-                    release_semantics.target(),
-                    release_semantics.argument_commitment(),
-                    4096,
-                    0,
-                )
-                .unwrap_or_else(|error| panic!("test Release grant failed: {error}")),
-            ],
-            ObjectDigest::from_bytes([48; 32]),
-            RevocationScopeId::from_bytes([49; 16]),
-            100,
-            200,
-            Vec::new(),
-        )
-        .unwrap_or_else(|error| panic!("test source-acquisition plan failed: {error}"));
-        let plan = signed_plan(plan, &signing_key);
-        let body = vec![0x0a, 0x02, 0x08, 0x01];
-
-        assert_eq!(
-            validate_method_semantics(
-                BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
-                BrokerVerb::MountAcquireSource,
-            ),
-            Ok(())
-        );
-        assert_eq!(
-            validate_method_semantics(
-                BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
-                BrokerVerb::MountReleaseSourceAcquisition,
-            ),
-            Ok(())
-        );
-        assert_eq!(
-            validate_method_semantics(
-                BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
-                BrokerVerb::MountReleaseSourceAcquisition,
-            ),
-            Err(BrokerDispatchTemplateError::PlanGrantMismatch)
-        );
-        assert_eq!(
-            validate_method_semantics(
-                BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
-                BrokerVerb::MountAcquireSource,
-            ),
-            Err(BrokerDispatchTemplateError::PlanGrantMismatch)
-        );
-        assert!(
-            BrokerDispatchTemplateV1::new(
-                plan.clone(),
-                BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
-                body.clone(),
-                Vec::new(),
-                acquire_semantics,
-            )
-            .is_ok()
-        );
-        assert!(
-            BrokerDispatchTemplateV1::new(
-                plan.clone(),
-                BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
-                body.clone(),
-                Vec::new(),
-                release_semantics,
-            )
-            .is_ok()
-        );
-        assert_eq!(
-            BrokerDispatchTemplateV1::new(
-                plan.clone(),
-                BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
-                body.clone(),
-                Vec::new(),
-                release_semantics,
-            ),
-            Err(BrokerDispatchTemplateError::PlanGrantMismatch)
-        );
-        assert_eq!(
-            BrokerDispatchTemplateV1::new(
-                plan,
-                BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
-                body,
-                Vec::new(),
-                acquire_semantics,
-            ),
-            Err(BrokerDispatchTemplateError::PlanGrantMismatch)
-        );
-
-        for method in [
-            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
-            BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
-            BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT,
-            BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
-            BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
-        ] {
-            assert_eq!(
-                validate_method_semantics(method, BrokerVerb::MountCreate),
-                Ok(())
-            );
-        }
-    }
-
-    #[test]
-    fn template_does_not_misrepresent_controller_semantics_as_body_proof() {
-        let fixture = fixture();
-        // This is valid generic protobuf framing but not a valid ApplyMount
-        // request. Construction may freeze it and correlate the controller's
-        // asserted grant, but only broker-side typed decoding can reject it.
-        let hostile_body = vec![0x0a, 0x02, 0x08, 0x01, 0x12, 0x01, 0xff];
-        let template = BrokerDispatchTemplateV1::new(
-            fixture.template.signed_plan().clone(),
-            fixture.template.method(),
-            hostile_body.clone(),
-            fixture.template.descriptor_roles().to_vec(),
-            fixture.template.semantics(),
-        )
-        .unwrap_or_else(|error| panic!("non-authorizing template failed: {error}"));
-
-        assert_eq!(template.body_without_deadline(), hostile_body);
-        assert_ne!(template.digest(), fixture.template.digest());
-    }
 
     #[test]
     fn lease_context_expiry_and_deadline_are_fail_closed() {
@@ -2303,50 +1596,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn template_enforces_deadline_absence_and_fixed_bounds() {
-        let fixture = fixture();
-        assert_eq!(
-            BrokerDispatchTemplateV1::new(
-                fixture.template.signed_plan().clone(),
-                fixture.template.method(),
-                vec![0x0a, 0x02, 0x28, 0x01],
-                Vec::new(),
-                fixture.template.semantics(),
-            ),
-            Err(BrokerDispatchTemplateError::InvalidBody)
-        );
-        assert_eq!(
-            BrokerDispatchTemplateV1::new(
-                fixture.template.signed_plan().clone(),
-                fixture.template.method(),
-                vec![0x0a, 0x02, 0x08, 0x01, 0x0a, 0x02, 0x28, 0x01],
-                Vec::new(),
-                fixture.template.semantics(),
-            ),
-            Err(BrokerDispatchTemplateError::InvalidBody)
-        );
-        assert_eq!(
-            BrokerDispatchTemplateV1::new(
-                fixture.template.signed_plan().clone(),
-                fixture.template.method(),
-                fixture.template.body_without_deadline().to_vec(),
-                vec![BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_ROOT; 2],
-                fixture.template.semantics(),
-            ),
-            Err(BrokerDispatchTemplateError::DescriptorTable)
-        );
-        let mut oversized = vec![0x0a, 0x02, 0x08, 0x01];
-        oversized.resize(MAXIMUM_REQUEST_BYTES, 0);
-        assert_eq!(
-            BrokerDispatchTemplateV1::new(
-                fixture.template.signed_plan().clone(),
-                fixture.template.method(),
-                oversized,
-                Vec::new(),
-                fixture.template.semantics(),
-            ),
-            Err(BrokerDispatchTemplateError::BodyTooLarge)
-        );
-    }
 }

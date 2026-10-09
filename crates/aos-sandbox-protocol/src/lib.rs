@@ -2878,3 +2878,6 @@ mod tests {
         );
     }
 }
+
+pub mod publication;
+pub mod dispatch_template;

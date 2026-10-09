@@ -91,8 +91,7 @@ pub(super) fn validate_intent_effects(
         || template.method()
             != aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
         || !template.descriptor_roles().is_empty()
-        || draft
-            .bind_effect(template.digest())?
+        || crate::bind_authority_publication_effect(&draft, template.digest())?
             .into_inner(operation, 0)?
             != *effect
     {

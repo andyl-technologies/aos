@@ -551,7 +551,24 @@ fn signed_ownership_lease(
         .unwrap_or_else(|error| panic!("test response verification failed: {error}"))
 }
 
-fn proposal(lease_generation: u64, expiry: i64) -> AuthorityPublicationProposalV1 {
+struct NativePublicationInputs {
+    manifest: CanonicalAssignmentManifestV1,
+    lease: SignedOwnershipLease,
+    required_audiences: Vec<BrokerAudience>,
+    templates: Vec<BrokerDispatchTemplateV1>,
+}
+
+impl NativePublicationInputs {
+    fn new(manifest: CanonicalAssignmentManifestV1, lease: SignedOwnershipLease, required_audiences: Vec<BrokerAudience>, templates: Vec<BrokerDispatchTemplateV1>) -> Self {
+        Self { manifest, lease, required_audiences, templates }
+    }
+
+    fn prepare(self) -> Result<PreparedAuthorityPublicationV1, AuthorityPublicationError> {
+        prepare_authority_publication(AuthorityPublicationProposalV1::new(self.manifest, self.lease, self.required_audiences, self.templates))
+    }
+}
+
+fn proposal(lease_generation: u64, expiry: i64) -> NativePublicationInputs {
     proposal_with_manifest(manifest(), lease_generation, expiry)
 }
 
@@ -559,7 +576,7 @@ fn proposal_with_manifest(
     manifest: CanonicalAssignmentManifestV1,
     lease_generation: u64,
     expiry: i64,
-) -> AuthorityPublicationProposalV1 {
+) -> NativePublicationInputs {
     let lease_key = SigningKey::from_bytes(&[41; 32]);
     let lease_signer = key_reference("lease", KeyUsage::OwnershipLease, &lease_key);
     let (plan, semantics) = signed_plan(&manifest, lease_signer.clone());
@@ -582,7 +599,7 @@ fn proposal_with_manifest(
         semantics,
     )
     .unwrap_or_else(|error| panic!("test template failed: {error}"));
-    AuthorityPublicationProposalV1::new(
+    NativePublicationInputs::new(
         manifest,
         signed_lease,
         vec![BrokerAudience::Mount],
@@ -602,9 +619,8 @@ pub(crate) fn activation_fixture(
     )
     .unwrap_or_else(|error| panic!("test draft failed: {error}"));
     let claim = activation_claim(&draft, lease_generation);
-    let prepared = draft
-        .clone()
-        .bind_lease(&claim, lease)
+    let prepared = crate::bind_authority_publication_lease(draft
+        .clone(), &claim, lease)
         .unwrap_or_else(|error| panic!("test bind failed: {error}"));
     (draft, prepared)
 }
@@ -692,7 +708,7 @@ pub(crate) fn consumer_resource_activation_fixture(
 }
 
 fn control_activation_from_proposal(
-    mut source: AuthorityPublicationProposalV1,
+    mut source: NativePublicationInputs,
     lease_generation: u64,
     action: RuntimeAction,
     observe_scope: bool,
@@ -719,9 +735,8 @@ fn control_activation_from_proposal(
     )
     .unwrap_or_else(|error| panic!("test draft failed: {error}"));
     let claim = activation_claim(&draft, lease_generation);
-    let prepared = draft
-        .clone()
-        .bind_lease(&claim, lease)
+    let prepared = crate::bind_authority_publication_lease(draft
+        .clone(), &claim, lease)
         .unwrap_or_else(|error| panic!("test bind failed: {error}"));
     (draft, prepared)
 }
@@ -751,9 +766,8 @@ pub(crate) fn descriptor_host_activation_fixture(
     )
     .unwrap_or_else(|error| panic!("descriptor Host draft failed: {error}"));
     let claim = activation_claim(&draft, lease_generation);
-    let prepared = draft
-        .clone()
-        .bind_lease(&claim, lease)
+    let prepared = crate::bind_authority_publication_lease(draft
+        .clone(), &claim, lease)
         .unwrap_or_else(|error| panic!("descriptor Host bind failed: {error}"));
     (draft, prepared)
 }
@@ -780,9 +794,8 @@ pub(crate) fn descriptor_free_mount_activation_fixture()
     )
     .unwrap_or_else(|error| panic!("descriptor-free Mount draft failed: {error}"));
     let claim = activation_claim(&draft, 1);
-    let prepared = draft
-        .clone()
-        .bind_lease(&claim, lease)
+    let prepared = crate::bind_authority_publication_lease(draft
+        .clone(), &claim, lease)
         .unwrap_or_else(|error| panic!("descriptor-free Mount bind failed: {error}"));
     (draft, prepared)
 }
@@ -821,9 +834,8 @@ pub(crate) fn alternate_descriptor_free_activation_fixture()
     )
     .unwrap_or_else(|error| panic!("alternate test draft failed: {error}"));
     let claim = activation_claim(&draft, 1);
-    let prepared = draft
-        .clone()
-        .bind_lease(&claim, lease)
+    let prepared = crate::bind_authority_publication_lease(draft
+        .clone(), &claim, lease)
         .unwrap_or_else(|error| panic!("alternate test bind failed: {error}"));
     (draft, prepared)
 }
@@ -892,7 +904,7 @@ fn draft_binding_rejects_receipt_claim_substitution() {
     .unwrap_or_else(|error| panic!("test wrong action claim failed: {error}"));
     for wrong in [wrong_request, wrong_generation, wrong_action] {
         assert!(matches!(
-            draft.clone().bind_lease(&wrong, lease.clone()),
+            crate::bind_authority_publication_lease(draft.clone(), &wrong, lease.clone()),
             Err(AuthorityPublicationError::ContextMismatch)
         ));
     }
@@ -907,33 +919,6 @@ fn clock(wall: i64, boottime: u64) -> RawPairedClockSample {
         boottime,
     )
     .unwrap_or_else(|error| panic!("test clock failed: {error}"))
-}
-
-fn publication_artifact_range(bytes: &[u8], artifact: usize) -> std::ops::Range<usize> {
-    let mut cursor = 10;
-    for index in 0..=artifact {
-        let length = u32::from_be_bytes(
-            bytes[cursor..cursor + 4]
-                .try_into()
-                .unwrap_or_else(|_| panic!("missing test artifact length")),
-        ) as usize;
-        cursor += 4;
-        let range = cursor..cursor + length;
-        if index == artifact {
-            return range;
-        }
-        cursor = range.end;
-    }
-    panic!("missing test artifact")
-}
-
-fn replace_publication_artifact(bytes: &mut Vec<u8>, artifact: usize, replacement: &[u8]) {
-    let range = publication_artifact_range(bytes, artifact);
-    let encoded_length = u32::try_from(replacement.len())
-        .unwrap_or_else(|_| panic!("test replacement is too large"))
-        .to_be_bytes();
-    bytes[range.start - 4..range.start].copy_from_slice(&encoded_length);
-    bytes.splice(range, replacement.iter().copied());
 }
 
 #[test]
@@ -1026,7 +1011,7 @@ fn poisoned_publication_snapshot_cannot_be_read_or_replayed_through_a_new_facade
     for _ in 0..2 {
         let mut store = AuthorityPublicationStore::new(&mut journal);
         assert!(matches!(
-            store.current(prepared.sandbox),
+            store.current(prepared.history.sandbox()),
             Err(AuthorityPublicationError::Journal(JournalError::Poisoned))
         ));
         assert!(matches!(
@@ -1044,7 +1029,7 @@ fn poisoned_publication_snapshot_cannot_be_read_or_replayed_through_a_new_facade
         .unwrap_or_else(|error| panic!("test recovery failed: {error}"));
     assert!(
         AuthorityPublicationStore::new(&mut reopened)
-            .current(prepared.sandbox)
+            .current(prepared.history.sandbox())
             .unwrap_or_else(|error| panic!("test recovered current failed: {error}"))
             .is_some()
     );
@@ -1119,7 +1104,7 @@ fn generic_desired_state_cannot_collide_with_publication_keys() {
                 vec![
                     JournalRecord::put(
                         RecordNamespace::DesiredState,
-                        current_key(prepared.sandbox),
+                        current_key(prepared.history.sandbox()),
                         b"generic-current-collision".to_vec(),
                     ),
                     JournalRecord::put(
@@ -1134,7 +1119,7 @@ fn generic_desired_state_cannot_collide_with_publication_keys() {
         .unwrap_or_else(|error| panic!("test collision commit failed: {error}"));
     assert_eq!(
         AuthorityPublicationStore::new(&mut journal)
-            .current(prepared.sandbox)
+            .current(prepared.history.sandbox())
             .unwrap_or_else(|error| panic!("test current failed: {error}"))
             .unwrap_or_else(|| panic!("missing test current"))
             .digest(),
@@ -1158,7 +1143,7 @@ fn current_key_is_bound_to_its_exact_sandbox() {
     let current_bytes = journal
         .get(
             RecordNamespace::AuthorityPublication,
-            &current_key(prepared.sandbox),
+            &current_key(prepared.history.sandbox()),
         )
         .unwrap_or_else(|| panic!("missing current bytes"))
         .to_vec();
@@ -1297,16 +1282,16 @@ fn gate_activation_bridge_owns_exact_publication_records_and_facts() {
     assert_eq!(records[0].key(), prepared_key(prepared.digest()));
     assert_eq!(records[0].value(), Some(prepared.canonical_bytes()));
     assert_eq!(records[1].key(), current_key(sandbox));
-    assert_eq!(sandbox, prepared.sandbox);
-    assert_eq!(assignment, prepared.assignment_digest);
+    assert_eq!(sandbox, prepared.history.sandbox());
+    assert_eq!(assignment, prepared.history.assignment_digest());
     assert_eq!(source_draft, draft.digest());
     assert_eq!(&authority, draft.ownership_authority());
     assert_eq!(publication, prepared.digest());
-    assert_eq!(lease_generation, prepared.lease_generation);
-    assert_eq!(lease, prepared.lease_digest);
-    assert_eq!(receipt_action, prepared.receipt_action);
-    assert_eq!(receipt_request_id, prepared.receipt_request_id);
-    assert_eq!(receipt_claim_digest, prepared.receipt_claim_digest);
+    assert_eq!(lease_generation, prepared.history.lease_generation());
+    assert_eq!(lease, prepared.history.lease_digest());
+    assert_eq!(receipt_action, prepared.history.receipt_action());
+    assert_eq!(receipt_request_id, *prepared.history.receipt_request_id());
+    assert_eq!(receipt_claim_digest, prepared.history.receipt_claim_digest());
     assert_eq!(recovered_prepared, prepared);
 }
 
@@ -1370,95 +1355,7 @@ fn direct_publish_rejects_conflicting_permanent_digest_value() {
     ));
 }
 
-#[test]
-fn authority_draft_is_golden_canonical_and_binds_checked_lease() {
-    let source = proposal(1, 190);
-    let lease = source.lease.clone();
-    let draft = AuthorityPublicationDraftV1::new(
-        source.manifest.clone(),
-        source.required_audiences.clone(),
-        source.templates.clone(),
-    )
-    .unwrap_or_else(|error| panic!("test draft failed: {error}"));
-    assert_eq!(&draft.canonical_bytes()[..10], b"AOSCDRF1\0\x01");
-    assert_eq!(draft.canonical_bytes().len(), 1_283);
-    assert_eq!(
-        draft.digest().to_string(),
-        "sha256:017c70a0062fb357ea1a11fe6630d8280912c7cf1da35be10a9a2e5688fa57ae"
-    );
-    assert_eq!(draft.manifest().digest(), source.manifest.digest());
-    assert_eq!(draft.required_audiences(), source.required_audiences);
-    assert_eq!(draft.templates().len(), source.templates.len());
-    assert!(
-        draft
-            .templates()
-            .iter()
-            .zip(&source.templates)
-            .all(
-                |(recovered, checked)| recovered.digest() == checked.digest()
-                    && recovered.canonical_plan() == checked.signed_plan().canonical_plan()
-                    && recovered.canonical_plan_signature()
-                        == checked.signed_plan().canonical_signature()
-            )
-    );
-    assert_eq!(
-        draft.ownership_authority(),
-        source.templates[0]
-            .signed_plan()
-            .plan()
-            .ownership_authority()
-    );
 
-    let draft_bytes = draft.canonical_bytes().to_vec();
-    let claim = activation_claim(&draft, 1);
-    let expected = proposal(1, 190)
-        .prepare()
-        .unwrap_or_else(|error| panic!("test proposal failed: {error}"));
-    drop(source);
-    drop(draft);
-
-    let decoded = AuthorityPublicationDraftV1::from_canonical_bytes(&draft_bytes)
-        .unwrap_or_else(|error| panic!("test draft decode failed: {error}"));
-    assert_eq!(decoded.canonical_bytes(), draft_bytes);
-    let prepared = decoded
-        .bind_lease(&claim, lease)
-        .unwrap_or_else(|error| panic!("test lease binding failed: {error}"));
-    assert_eq!(prepared, expected);
-}
-
-#[test]
-fn authority_draft_decoder_rejects_substitution_and_bounds() {
-    let source = proposal(1, 190);
-    let draft = AuthorityPublicationDraftV1::new(
-        source.manifest.clone(),
-        source.required_audiences.clone(),
-        source.templates.clone(),
-    )
-    .unwrap_or_else(|error| panic!("test draft failed: {error}"));
-    for offset in [0_usize, 9, 14, draft.canonical_bytes().len() - 1] {
-        let mut bytes = draft.canonical_bytes().to_vec();
-        bytes[offset] ^= 1;
-        assert!(matches!(
-            AuthorityPublicationDraftV1::from_canonical_bytes(&bytes),
-            Err(AuthorityPublicationError::InvalidDraft)
-        ));
-    }
-    assert!(matches!(
-        AuthorityPublicationDraftV1::new(
-            source.manifest,
-            vec![BrokerAudience::Mount, BrokerAudience::Mount],
-            source.templates,
-        ),
-        Err(AuthorityPublicationError::IncompleteAudienceSet)
-    ));
-    assert!(matches!(
-        AuthorityPublicationDraftV1::from_canonical_bytes(&vec![
-            0;
-            MAXIMUM_PUBLICATION_DRAFT_BYTES + 1
-        ]),
-        Err(AuthorityPublicationError::InvalidDraft)
-    ));
-}
 
 #[test]
 fn draft_roundtrips_multiple_templates_for_one_audience() {
@@ -1484,11 +1381,9 @@ fn draft_roundtrips_multiple_templates_for_one_audience() {
     )
     .unwrap_or_else(|error| panic!("test draft failed: {error}"));
     assert_eq!(draft.templates().len(), 2);
-    let first_binding = draft
-        .bind_effect(draft.templates()[0].digest())
+    let first_binding = crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest())
         .unwrap_or_else(|error| panic!("first effect binding failed: {error}"));
-    let second_binding = draft
-        .bind_effect(draft.templates()[1].digest())
+    let second_binding = crate::bind_authority_publication_effect(&draft, draft.templates()[1].digest())
         .unwrap_or_else(|error| panic!("second effect binding failed: {error}"));
     assert_eq!(first_binding.audience(), BrokerAudience::Mount);
     assert_ne!(
@@ -1503,9 +1398,8 @@ fn draft_roundtrips_multiple_templates_for_one_audience() {
         .unwrap_or_else(|error| panic!("test draft decode failed: {error}"));
     assert_eq!(decoded, draft);
     let claim = activation_claim(&draft, 1);
-    let prepared = draft
-        .clone()
-        .bind_lease(&claim, lease)
+    let prepared = crate::bind_authority_publication_lease(draft
+        .clone(), &claim, lease)
         .unwrap_or_else(|error| panic!("test lease binding failed: {error}"));
 
     let directory = TestDirectory::new();
@@ -1518,7 +1412,7 @@ fn draft_roundtrips_multiple_templates_for_one_audience() {
         .unwrap_or_else(|error| panic!("test publish failed: {error}"));
     assert_eq!(
         AuthorityPublicationStore::new(&mut journal)
-            .current(prepared.sandbox)
+            .current(prepared.history.sandbox())
             .unwrap_or_else(|error| panic!("test current failed: {error}"))
             .unwrap_or_else(|| panic!("missing test current"))
             .templates()
@@ -1527,54 +1421,6 @@ fn draft_roundtrips_multiple_templates_for_one_audience() {
     );
 }
 
-#[test]
-fn rich_v1_codec_round_trips_and_rejects_non_v1_headers() {
-    let prepared = proposal(1, 190)
-        .prepare()
-        .unwrap_or_else(|error| panic!("test preparation failed: {error}"));
-    assert_eq!(&prepared.canonical_bytes()[..10], b"AOSCPUB1\0\x01");
-    assert_eq!(
-        decode_prepared(prepared.canonical_bytes(), prepared.digest())
-            .unwrap_or_else(|error| panic!("test prepared decode failed: {error}")),
-        prepared
-    );
-
-    let current = encode_current(&prepared);
-    let decoded = decode_current(&current)
-        .unwrap_or_else(|error| panic!("test current decode failed: {error}"));
-    assert_eq!(decoded.canonical_bytes(), prepared.canonical_bytes());
-    assert_eq!(decoded.digest(), prepared.digest());
-
-    for version in [0_u16, 2] {
-        let mut prepared_bytes = prepared.canonical_bytes().to_vec();
-        prepared_bytes[8..10].copy_from_slice(&version.to_be_bytes());
-        assert!(matches!(
-            decode_prepared(&prepared_bytes, publication_digest(&prepared_bytes)),
-            Err(AuthorityPublicationError::CorruptCurrent)
-        ));
-
-        let mut current_bytes = current.clone();
-        current_bytes[8..10].copy_from_slice(&version.to_be_bytes());
-        assert!(matches!(
-            decode_current(&current_bytes),
-            Err(AuthorityPublicationError::CorruptCurrent)
-        ));
-    }
-
-    let mut wrong_magic = prepared.canonical_bytes().to_vec();
-    wrong_magic[0] ^= 1;
-    assert!(matches!(
-        decode_prepared(&wrong_magic, publication_digest(&wrong_magic)),
-        Err(AuthorityPublicationError::CorruptCurrent)
-    ));
-
-    let mut wrong_current_magic = current;
-    wrong_current_magic[0] ^= 1;
-    assert!(matches!(
-        decode_current(&wrong_current_magic),
-        Err(AuthorityPublicationError::CorruptCurrent)
-    ));
-}
 
 #[test]
 fn non_v1_publication_prefix_fails_closed() {
@@ -1588,7 +1434,7 @@ fn non_v1_publication_prefix_fails_closed() {
     let version_offset = non_v1_key.len() - 2;
     assert_eq!(non_v1_key[version_offset], b'1');
     non_v1_key[version_offset] = b'3';
-    non_v1_key.extend_from_slice(prepared.sandbox.as_bytes());
+    non_v1_key.extend_from_slice(prepared.history.sandbox().as_bytes());
     journal
         .commit(
             &JournalTransaction::new(
@@ -1596,14 +1442,14 @@ fn non_v1_publication_prefix_fails_closed() {
                 vec![JournalRecord::put(
                     RecordNamespace::AuthorityPublication,
                     non_v1_key,
-                    encode_current(&prepared),
+                    publication_data::encode_current(&prepared.history),
                 )],
             )
             .unwrap_or_else(|error| panic!("test transaction failed: {error}")),
         )
         .unwrap_or_else(|error| panic!("test corruption commit failed: {error}"));
     assert!(matches!(
-        AuthorityPublicationStore::new(&mut journal).current(prepared.sandbox),
+        AuthorityPublicationStore::new(&mut journal).current(prepared.history.sandbox()),
         Err(AuthorityPublicationError::CorruptCurrent)
     ));
 }
@@ -1630,22 +1476,11 @@ fn malformed_orphan_under_valid_prepared_key_fails_closed() {
         .prepare()
         .unwrap_or_else(|error| panic!("test prepare failed: {error}"));
     assert!(matches!(
-        AuthorityPublicationStore::new(&mut journal).current(prepared.sandbox),
+        AuthorityPublicationStore::new(&mut journal).current(prepared.history.sandbox()),
         Err(AuthorityPublicationError::CorruptCurrent)
     ));
 }
 
-#[test]
-fn publication_record_bound_accounts_for_current_wrapper_and_journal_header() {
-    assert_eq!(
-        MAXIMUM_PUBLICATION_BYTES
-            + CURRENT_HEADER_BYTES
-            + JOURNAL_RECORD_HEADER_BYTES
-            + CURRENT_KEY_PREFIX.len()
-            + 16,
-        JOURNAL_RECORD_BYTES
-    );
-}
 
 #[test]
 fn recovery_retains_exact_typed_lease_plan_and_template_bytes() {
@@ -1743,7 +1578,7 @@ fn selection_rejects_substitution_wrong_audience_and_stale_publication() {
         )
         .unwrap_or_else(|error| panic!("test selection failed: {error}"));
     assert_eq!(attempt.template_digest(), template_digest);
-    assert_eq!(attempt.lease_digest(), first.lease_digest);
+    assert_eq!(attempt.lease_digest(), first.history.lease_digest());
     assert!(matches!(
         store.select_current_attempt(
             SandboxId::from_bytes([1; 16]),
@@ -1792,47 +1627,6 @@ fn selection_rejects_substitution_wrong_audience_and_stale_publication() {
     ));
 }
 
-#[test]
-fn incomplete_substituted_and_noncanonical_audience_sets_fail_closed() {
-    let mut missing = proposal(1, 190);
-    missing.required_audiences = vec![BrokerAudience::Host, BrokerAudience::Mount];
-    assert!(matches!(
-        missing.prepare(),
-        Err(AuthorityPublicationError::IncompleteAudienceSet)
-    ));
-    let mut duplicate = proposal(1, 190);
-    duplicate.required_audiences = vec![BrokerAudience::Mount, BrokerAudience::Mount];
-    assert!(matches!(
-        duplicate.prepare(),
-        Err(AuthorityPublicationError::IncompleteAudienceSet)
-    ));
-    let mut dedicated_guardian = proposal(1, 190);
-    dedicated_guardian.required_audiences = vec![BrokerAudience::Guardian];
-    assert!(matches!(
-        encode_draft(
-            &dedicated_guardian.manifest,
-            &dedicated_guardian.required_audiences,
-            &dedicated_guardian.templates,
-        ),
-        Err(AuthorityPublicationError::UnsupportedBrokerAudience)
-    ));
-    assert!(matches!(
-        dedicated_guardian.prepare(),
-        Err(AuthorityPublicationError::UnsupportedBrokerAudience)
-    ));
-    for reserved in [0, 5] {
-        assert!(matches!(
-            audience_from_code(reserved),
-            Err(AuthorityPublicationError::CorruptCurrent)
-        ));
-    }
-    let mut wrong_lease = proposal(1, 190);
-    wrong_lease.manifest = manifest_with_node(99);
-    assert!(matches!(
-        wrong_lease.prepare(),
-        Err(AuthorityPublicationError::ContextMismatch)
-    ));
-}
 
 #[test]
 fn renewal_advances_and_rollback_or_equal_generation_equivocation_fails() {
@@ -1888,22 +1682,6 @@ fn renewal_advances_and_rollback_or_equal_generation_equivocation_fails() {
     ));
 }
 
-#[test]
-fn successor_cannot_change_the_receipt_authority() {
-    let current = proposal(1, 190)
-        .prepare()
-        .unwrap_or_else(|error| panic!("test current prepare failed: {error}"));
-    let mut next = proposal(2, 195)
-        .prepare()
-        .unwrap_or_else(|error| panic!("test next prepare failed: {error}"));
-    let other_key = SigningKey::from_bytes(&[42; 32]);
-    next.receipt_authority = key_reference("other-lease", KeyUsage::OwnershipLease, &other_key);
-
-    assert!(matches!(
-        validate_successor(&current, &next),
-        Err(AuthorityPublicationError::ContextMismatch)
-    ));
-}
 
 #[test]
 fn a_prepared_record_without_current_is_never_observed_as_current() {
@@ -1935,59 +1713,3 @@ fn a_prepared_record_without_current_is_never_observed_as_current() {
     );
 }
 
-#[test]
-fn recomputed_outer_digests_do_not_hide_inner_substitution() {
-    let prepared = proposal(1, 190)
-        .prepare()
-        .unwrap_or_else(|error| panic!("test prepare failed: {error}"));
-
-    let mut semantic_tamper = prepared.clone();
-    let last = semantic_tamper
-        .bytes
-        .last_mut()
-        .unwrap_or_else(|| panic!("empty publication"));
-    *last ^= 1;
-    semantic_tamper.digest = publication_digest(&semantic_tamper.bytes);
-    assert!(matches!(
-        decode_current(&encode_current(&semantic_tamper)),
-        Err(AuthorityPublicationError::CorruptCurrent)
-    ));
-
-    let mut summary_tamper = prepared;
-    summary_tamper.node = [99; 16];
-    summary_tamper.digest = publication_digest(&summary_tamper.bytes);
-    assert!(matches!(
-        decode_current(&encode_current(&summary_tamper)),
-        Err(AuthorityPublicationError::CorruptCurrent)
-    ));
-}
-
-#[test]
-fn recomputed_outer_digest_does_not_hide_receipt_substitution_or_truncation() {
-    let original = proposal(1, 190)
-        .prepare()
-        .unwrap_or_else(|error| panic!("test prepare failed: {error}"));
-    let substitute = proposal(2, 195);
-
-    for (artifact, replacement) in [
-        (3, substitute.lease.canonical_receipt()),
-        (4, substitute.lease.canonical_receipt_signature()),
-    ] {
-        let mut substituted = original.clone();
-        replace_publication_artifact(&mut substituted.bytes, artifact, replacement);
-        substituted.digest = publication_digest(&substituted.bytes);
-        assert!(matches!(
-            decode_current(&encode_current(&substituted)),
-            Err(AuthorityPublicationError::CorruptCurrent)
-        ));
-
-        let mut truncated = original.clone();
-        let range = publication_artifact_range(&truncated.bytes, artifact);
-        truncated.bytes.remove(range.end - 1);
-        truncated.digest = publication_digest(&truncated.bytes);
-        assert!(matches!(
-            decode_current(&encode_current(&truncated)),
-            Err(AuthorityPublicationError::CorruptCurrent)
-        ));
-    }
-}

@@ -313,7 +313,7 @@ impl PreparedCurrentAttachmentMountV1 {
         let scope = self.operation.target().runtime_generation().scope();
         let (lease, fresh) = scope.verified_plan_lease(journal, clock)?;
         let manifest = scope.binding().manifest().manifest();
-        let request = crate::dispatch::durable_attempt_body(
+        let request = aos_sandbox_protocol::dispatch_template::inject_deadline(
             self.body_without_deadline(),
             self.valid_until_boottime_nanoseconds(),
         )
