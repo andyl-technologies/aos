@@ -16,13 +16,18 @@
 
 enum { PAGE_BYTES = 4096, ARENA_BYTES = 2 * PAGE_BYTES };
 
+enum instruction_feature { BASELINE, CX16, AVX, AVX512 };
+
 struct writer {
   const char *name;
   unsigned offset;
   unsigned length;
   void (*store)(unsigned char *address);
-  int needs_cx16;
+  enum instruction_feature feature;
 };
+
+static int failed_cas_observed;
+static int force_cas_write;
 
 /* Keep instruction families explicit: a memcpy substitution defeats this test. */
 static void scalar8(unsigned char *address) {
@@ -62,6 +67,39 @@ static void vector128(unsigned char *address) {
   };
   __asm__ volatile("movdqu %1, %%xmm0\n\tmovdqu %%xmm0, (%0)"
                    : : "r"(address), "m"(value) : "xmm0", "memory");
+}
+
+static void vector256(unsigned char *address) {
+  const uint64_t value[4] = {
+    UINT64_C(0xfedcba9876543210), UINT64_C(0x0123456789abcdef),
+    UINT64_C(0xfedcba9876543210), UINT64_C(0x0123456789abcdef),
+  };
+  __asm__ volatile("vmovdqu %1, %%ymm0\n\tvmovdqu %%ymm0, (%0)\n\tvzeroupper"
+                   : : "r"(address), "m"(value) : "ymm0", "memory");
+}
+
+static void vector512(unsigned char *address) {
+  const uint64_t value[8] = {
+    UINT64_C(0xfedcba9876543210), UINT64_C(0x0123456789abcdef),
+    UINT64_C(0xfedcba9876543210), UINT64_C(0x0123456789abcdef),
+    UINT64_C(0xfedcba9876543210), UINT64_C(0x0123456789abcdef),
+    UINT64_C(0xfedcba9876543210), UINT64_C(0x0123456789abcdef),
+  };
+  __asm__ volatile("vmovdqu64 %1, %%zmm0\n\tvmovdqu64 %%zmm0, (%0)\n\tvzeroupper"
+                   : : "r"(address), "m"(value) : "zmm0", "memory");
+}
+
+static void failed_cas64(unsigned char *address) {
+  uint64_t expected = force_cas_write ? UINT64_C(0x3535353535353535) : 0;
+  uint64_t replacement = UINT64_C(0xfedcba9876543210);
+  unsigned char exchanged;
+  __asm__ volatile("lock cmpxchgq %3, (%2)\n\tsetz %1"
+                   : "+a"(expected), "=qm"(exchanged)
+                   : "r"(address), "r"(replacement) : "cc", "memory");
+  /* A failed CAS must execute and report the original value. Unchanged bytes
+   * alone would also accept an omitted instruction. This says nothing about
+   * the CPU's write cycle or native dirty notification for a failed CAS. */
+  failed_cas_observed = !exchanged && expected == UINT64_C(0x3535353535353535);
 }
 
 static void atomic64(unsigned char *address) {
@@ -108,15 +146,50 @@ static const struct writer writers[] = {
   {"atomic128", 208, 16, atomic128, 1},
   {"streaming64", 240, 8, streaming64, 0},
   {"cross-page-rep-stos", PAGE_BYTES - 13, 32, repeated_bytes, 0},
+  {"failed-cas64", 256, 8, failed_cas64, BASELINE},
+  {"vector256", 288, 32, vector256, AVX},
+  {"unaligned-vector256", 291, 32, vector256, AVX},
+  {"cross-page-vector256", PAGE_BYTES - 15, 32, vector256, AVX},
+  {"vector512", 384, 64, vector512, AVX512},
+  {"unaligned-vector512", 389, 64, vector512, AVX512},
+  {"cross-page-vector512", PAGE_BYTES - 31, 64, vector512, AVX512},
 };
 
-static int supports_cx16(void) {
+static int supports_feature(enum instruction_feature feature) {
   unsigned eax, ebx, ecx, edx;
-  return __get_cpuid(1, &eax, &ebx, &ecx, &edx) && (ecx & bit_CMPXCHG16B);
+  if (feature == BASELINE) {
+    return 1;
+  }
+  if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
+    return 0;
+  }
+  if (feature == CX16) {
+    return (ecx & bit_CMPXCHG16B) != 0;
+  }
+  if ((ecx & (bit_AVX | bit_OSXSAVE)) != (bit_AVX | bit_OSXSAVE)) {
+    return 0;
+  }
+
+  /* CPUID alone cannot authorize AVX: the OS must preserve its register state.
+   * XGETBV itself is legal only after the OSXSAVE check above. */
+  __asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
+  if ((eax & 6) != 6) {
+    return 0;
+  }
+  if (feature == AVX) {
+    return 1;
+  }
+  if ((eax & 0xe6) != 0xe6 || !__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+    return 0;
+  }
+  return (ebx & bit_AVX512F) != 0;
 }
 
 /* This reference uses byte arithmetic, never the instruction under test. */
 static void expected_store(const struct writer *writer, unsigned char *bytes) {
+  if (writer->store == failed_cas64) {
+    return;
+  }
   uint64_t low = UINT64_C(0xfedcba9876543210);
   uint64_t high = UINT64_C(0x0123456789abcdef);
   if (writer->store == atomic64) {
@@ -124,7 +197,7 @@ static void expected_store(const struct writer *writer, unsigned char *bytes) {
   }
   for (unsigned index = 0; index < writer->length; ++index) {
     bytes[writer->offset + index] = writer->store == repeated_bytes
-      ? 0xa7 : (unsigned char)((index < 8 ? low : high) >> (8 * (index % 8)));
+      ? 0xa7 : (unsigned char)(((index / 8) % 2 == 0 ? low : high) >> (8 * (index % 8)));
   }
 }
 
@@ -145,20 +218,27 @@ static const struct writer *find_writer(const char *name) {
 
 int main(int argc, char **argv) {
   if (argc < 2 || argc > 3) {
-    fprintf(stderr, "usage: %s CASE [--omit-store|--corrupt-byte]\n", argv[0]);
+    fprintf(stderr, "usage: %s CASE [--omit-store|--corrupt-byte|--force-cas-write]\n", argv[0]);
     return 2;
   }
   const struct writer *writer = find_writer(argv[1]);
   if (!writer || (argc == 3 && strcmp(argv[2], "--omit-store") != 0
-                            && strcmp(argv[2], "--corrupt-byte") != 0)) {
+                            && strcmp(argv[2], "--corrupt-byte") != 0
+                            && strcmp(argv[2], "--force-cas-write") != 0)) {
     return 2;
+  }
+  if (argc == 3 && strcmp(argv[2], "--force-cas-write") == 0) {
+    if (writer->store != failed_cas64) {
+      return 2;
+    }
+    force_cas_write = 1;
   }
   if (sysconf(_SC_PAGESIZE) != PAGE_BYTES) {
     fputs("UNSUPPORTED: host page size is not 4096\n", stderr);
     return 77;
   }
-  if (writer->needs_cx16 && !supports_cx16()) {
-    fputs("UNSUPPORTED: CMPXCHG16B\n", stderr);
+  if (!supports_feature(writer->feature)) {
+    fprintf(stderr, "UNSUPPORTED: instruction feature %d\n", writer->feature);
     return 77;
   }
 
@@ -186,7 +266,8 @@ int main(int argc, char **argv) {
   if (argc == 3 && strcmp(argv[2], "--corrupt-byte") == 0) {
     arena[writer->offset] ^= 1;
   }
-  if (memcmp(arena, expected, ARENA_BYTES) != 0) {
+  if (memcmp(arena, expected, ARENA_BYTES) != 0 ||
+      (writer->store == failed_cas64 && !failed_cas_observed)) {
     fputs("WRITER_MISMATCH_V1\n", stderr);
     status = 4;
     goto close_arena;

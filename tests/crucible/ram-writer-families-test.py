@@ -29,6 +29,19 @@ CASES = {
     "atomic128": (208, 16),
     "streaming64": (240, 8),
     "cross-page-rep-stos": (4083, 32),
+    "failed-cas64": (256, 8),
+    "vector256": (288, 32),
+    "unaligned-vector256": (291, 32),
+    "cross-page-vector256": (4081, 32),
+    "vector512": (384, 64),
+    "unaligned-vector512": (389, 64),
+    "cross-page-vector512": (4065, 64),
+}
+
+OPTIONAL_FEATURES = {
+    "atomic128": 1,
+    **{name: 2 for name in CASES if "vector256" in name},
+    **{name: 3 for name in CASES if "vector512" in name},
 }
 
 
@@ -51,7 +64,9 @@ def start(binary, name, option=None):
     try:
         marker = line(process)
         if not marker and process.wait(timeout=5) == 77:
-            assert name == "atomic128", process.stderr.read().decode()
+            error = process.stderr.read().decode()
+            assert name in OPTIONAL_FEATURES, (name, error)
+            assert error == f"UNSUPPORTED: instruction feature {OPTIONAL_FEATURES[name]}\n", error
             yield None
         else:
             offset, length = CASES[name]
@@ -102,6 +117,9 @@ def instruction_evidence(binary, objdump):
         "scalar32": r"\bmovl\s+\$0x76543210",
         "scalar64": r"\bmov\s+%[a-z0-9]+,\(%[a-z0-9]+\)",
         "vector128": r"\bmovdqu\s+%xmm0,\(%[a-z0-9]+\)",
+        "vector256": r"\bvmovdqu\s+%ymm0,\(%[a-z0-9]+\)",
+        "vector512": r"\bvmovdqu64\s+%zmm0,\(%[a-z0-9]+\)",
+        "failed_cas64": r"\block cmpxchg\s+",
         "atomic64": r"\block xadd\s+",
         "atomic8": r"\bxchg\s+%[a-z0-9]+,\(%[a-z0-9]+\)",
         "atomic16": r"\bxchg\s+%[a-z0-9]+,\(%[a-z0-9]+\)",
@@ -126,7 +144,7 @@ def main():
     args = parser.parse_args()
     instructions = instruction_evidence(args.binary, args.objdump)
     supported = [name for name in CASES if run_case(args.binary, name)]
-    assert len(supported) >= len(CASES) - 1
+    assert all(name in supported for name in CASES if name not in OPTIONAL_FEATURES)
 
     # Both omissions and one-bit corruptions must fail the independent byte oracle.
     negatives = 0
@@ -137,6 +155,13 @@ def main():
                 send(process, b"W")
                 finish(process, 4)
             negatives += 1
+
+    # A matching comparison deliberately writes the replacement; the no-change
+    # oracle must reject this independently of the instruction-executed witness.
+    with start(args.binary, "failed-cas64", "--force-cas-write") as process:
+        send(process, b"W")
+        finish(process, 4)
+    negatives += 1
 
     # No next-stage success may follow EOF or a wrong command at any boundary.
     for stage in range(3):
@@ -170,6 +195,7 @@ def main():
         "unsupported": [name for name in CASES if name not in supported],
         "positive_cases": len(supported),
         "negative_cases": negatives,
+        "failed_cas_scope": "real comparison failure and unchanged bytes; no hardware dirty-bit claim",
         "scope": "real guest instructions and byte oracle; no native dirty-root observation",
     }
     if args.evidence_directory:
