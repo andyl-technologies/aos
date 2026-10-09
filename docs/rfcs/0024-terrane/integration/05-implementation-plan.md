@@ -175,6 +175,14 @@ fresh recovery after waiter cancellation. These added scenarios are source-only.
 The copied first-ownership auxiliary additionally registers the real unused-Memo
 and shared-live-Index regression, raising its exact inventory from nineteen to
 twenty without changing gate names or observation bounds (GC-5, GC-24, GC-29).
+The complete private native source `b47f260281` now passes strict all-target
+Clippy with `--no-default-features --features tokio,surface-sdk` and warnings
+denied (raw log `/tmp/terrane-native-recovery-borrowed-all-target-clippy.log`).
+This includes the thirty-one actual copied/permanent test functions, the
+4,100-cycle continuation and genuine reopen additions, and all three native
+cancellation boundaries. The matching serial Nextest run has started with
+unchanged clocks and bounds; runtime results and owning Nix gates remain
+pending. No additional task or milestone exit is accepted by compilation.
 
 All ten
 exact native Active completion cases pass on `4e6c14a7f3`. The eight-case native
