@@ -130,6 +130,28 @@ pub trait SimulationNode {
         })
     }
 
+    /// Captures complete installed native custody at the authentic unchanged cut.
+    ///
+    /// Mechanical preservation work may checkpoint a stopped process, but must
+    /// not run a modeled event, drain a queue, consume input or publish output.
+    /// The result covers the entire authoritative capture owner and participant
+    /// roster. The host-specific seal cannot qualify another backend.
+    ///
+    /// # Errors
+    /// Refuses unsupported native codecs, changed original runtime custody,
+    /// unavailable image closure or an exceeded finite capture reservation.
+    fn capture_native_continuation(
+        &mut self,
+        _activation: &super::WorldActivation,
+        _source: &super::RuntimeSnapshot,
+        _limits: super::NativeCaptureLimits,
+    ) -> Result<super::InstalledNativeCapture, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "complete installed native capture is unsupported".into(),
+        })
+    }
+
     /// Stages an immutable complete input cut without modeled execution.
     ///
     /// Staging transfers buffer custody only. It must not deliver an input,

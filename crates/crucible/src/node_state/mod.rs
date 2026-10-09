@@ -15,6 +15,7 @@
 mod closure;
 mod evidence;
 mod host;
+mod native;
 mod staging_custody;
 mod transaction;
 mod validation;
@@ -25,6 +26,7 @@ mod tests;
 pub use closure::VerifiedStateContent;
 pub use evidence::*;
 pub use host::*;
+pub use native::*;
 pub use staging_custody::{PreparedNativeCustody, PreparedRestoreAllocation};
 pub use transaction::*;
 pub use validation::{VerifiedCapture, admit_capture};

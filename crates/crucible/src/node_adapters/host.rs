@@ -689,6 +689,23 @@ impl SimulationNode for HostModelNode {
         state::capture_live(self, activation, source, maximum_bytes)
     }
 
+    fn capture_native_continuation(
+        &mut self,
+        activation: &WorldActivation,
+        source: &RuntimeSnapshot,
+        limits: crate::node_contract::NativeCaptureLimits,
+    ) -> Result<crate::node_contract::InstalledNativeCapture, OperationFailure> {
+        let capture =
+            self.capture_host_continuation(activation, source, limits.maximum_record_bytes)?;
+
+        crate::node_contract::InstalledNativeCapture::from_host(
+            capture,
+            &self.descriptor,
+            &self.binding,
+            source.capture_cut,
+        )
+    }
+
     fn validate_input_acknowledgement(
         &self,
         batch: &crate::node_scheduling::RuntimeInputBatch,

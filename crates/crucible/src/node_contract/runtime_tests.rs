@@ -66,6 +66,11 @@ struct NativeState {
     evidence_reads: usize,
     evidence_corrupt: bool,
     progress_override: Option<ProgressEvidence>,
+    native_capture_calls: usize,
+    native_capture_effects: usize,
+    native_capture_bytes: Option<Vec<u8>>,
+    native_capture_artifacts: Vec<NativeCaptureArtifact>,
+    native_capture_limits: Vec<NativeCaptureLimits>,
 }
 
 struct TestNode {
@@ -201,6 +206,77 @@ impl SimulationNode for TestNode {
         }
         self.state.borrow_mut().admission = operations.last().cloned();
         Ok(())
+    }
+
+    fn capture_native_continuation(
+        &mut self,
+        _activation: &WorldActivation,
+        source: &RuntimeSnapshot,
+        limits: NativeCaptureLimits,
+    ) -> Result<InstalledNativeCapture, OperationFailure> {
+        let mut state = self.state.borrow_mut();
+        state.native_capture_calls += 1;
+        state.native_capture_limits.push(limits);
+        let bytes = state
+            .native_capture_bytes
+            .as_ref()
+            .ok_or(OperationFailure {
+                effects: EffectKnowledge::None,
+                reason: "test model has no native capture codec".into(),
+            })?;
+        let artifact_bytes: u64 = state
+            .native_capture_artifacts
+            .iter()
+            .map(|artifact| artifact.reference().length.get())
+            .sum();
+        if bytes.len() > limits.maximum_record_bytes
+            || bytes.len() > limits.maximum_total_record_bytes
+            || 1 + state.native_capture_artifacts.len() > limits.maximum_objects
+            || artifact_bytes > limits.maximum_total_artifact_bytes
+            || state
+                .native_capture_artifacts
+                .iter()
+                .any(|artifact| artifact.reference().length.get() > limits.maximum_artifact_bytes)
+        {
+            return Err(OperationFailure {
+                effects: EffectKnowledge::None,
+                reason: "model capture refused before its reserved effect".into(),
+            });
+        }
+        let payload = crate::node_scheduling::InputPayload {
+            reference: crucible_node_contract::canonical::content_ref(
+                bytes,
+                "application/octet-stream",
+            )
+            .unwrap(),
+            bytes: bytes.clone(),
+        };
+        // This counter models the preflight/effect boundary only. Its seal is
+        // confined to this custody fixture and never qualifies a native backend.
+        state.native_capture_effects += 1;
+        Ok(InstalledNativeCapture {
+            owner: self.binding.compatibility.capture_owner.id.clone(),
+            participants: self
+                .binding
+                .compatibility
+                .capture_owner
+                .participant_ids
+                .clone(),
+            key: NativeStateKey {
+                implementation: self
+                    .binding
+                    .compatibility
+                    .implementation
+                    .implementation_id
+                    .clone(),
+                profile: self.profile.clone(),
+                schema: self.binding.compatibility.implementation.formats[0].clone(),
+            },
+            cut: source.capture_cut,
+            state: payload,
+            evidence: vec![],
+            artifacts: state.native_capture_artifacts.clone(),
+        })
     }
 
     fn begin_operation(&mut self, admission: &OperationAdmission) -> Submission {
@@ -1295,6 +1371,9 @@ fn dropped_commit_after_native_ack_failure_recovers_without_republication() {
 
 #[path = "../node_dispatch/runtime_tests.rs"]
 mod dispatch_tests;
+
+#[path = "runtime_continuation/native_capture_tests.rs"]
+mod native_capture_tests;
 
 #[test]
 fn declared_external_root_requires_runtime_native_inventory_before_input_closure() {

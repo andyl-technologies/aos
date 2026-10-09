@@ -15,6 +15,15 @@ use crate::node_scheduling::{
     InputPayload, NativeInputAcknowledgement, SavedInputBatch, SavedReservation, SchedulingSnapshot,
 };
 
+#[path = "runtime_continuation/native_capture.rs"]
+mod native_capture;
+
+pub use native_capture::{
+    InstalledNativeCapture, NativeCaptureArtifact, NativeCaptureLimits, NativeStateKey,
+};
+
+pub(crate) use native_capture::validate_name as validate_native_artifact_name;
+
 /// Retains original complete world identity without serializing activation authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
