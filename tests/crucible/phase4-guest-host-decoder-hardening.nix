@@ -164,7 +164,9 @@ in
       pname = "crucible-phase4-guest-host-decoder-hardening";
       version = "0";
       src = crucibleSrc;
-      buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+      runtimeDeps = [pkgs.sqlite];
+
+      buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.rust pkgs.sed];
       phases = [
         {
           name = "unpack";

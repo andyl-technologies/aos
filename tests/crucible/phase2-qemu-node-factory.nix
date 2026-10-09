@@ -110,7 +110,9 @@ in
       pname = "crucible-phase2-qemu-node-factory";
       version = "0";
       src = crucibleSrc;
-      buildDeps = [pkgs.rust pkgs.sed];
+      runtimeDeps = [pkgs.sqlite];
+
+      buildDeps = [pkgs.sqlite pkgs.rust pkgs.sed];
 
       phases = [
         {

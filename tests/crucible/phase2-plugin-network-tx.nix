@@ -221,7 +221,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.rust
         pkgs.sed
       ];

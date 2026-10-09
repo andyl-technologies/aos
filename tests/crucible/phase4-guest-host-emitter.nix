@@ -251,7 +251,9 @@ in
       pname = "crucible-phase4-guest-host-emitter";
       version = "0";
       src = crucibleSrc;
-      buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed pkgs.patchelf pkgs.crucible-guest];
+      runtimeDeps = [pkgs.sqlite];
+
+      buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.rust pkgs.sed pkgs.patchelf pkgs.crucible-guest];
       phases = [
         {
           name = "unpack";

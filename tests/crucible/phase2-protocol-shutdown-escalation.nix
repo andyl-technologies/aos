@@ -233,7 +233,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         controlResponsiveGate
         pkgs.coreutils
         pkgs.grep

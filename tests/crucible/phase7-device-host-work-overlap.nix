@@ -57,7 +57,9 @@
     version = "0";
     src = source;
 
-    buildDeps = [pkgs.coreutils pkgs.grep pkgs.rust] ++ dependencies;
+    runtimeDeps = [pkgs.sqlite];
+
+    buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.grep pkgs.rust] ++ dependencies;
 
     phases = [
       {

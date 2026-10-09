@@ -14,6 +14,7 @@
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
   runtimeInputs = [
+    pkgs.sqlite
     pkgs.coreutils
     pkgs.grep
     pkgs.qemu-crucible
@@ -111,6 +112,8 @@
     pname = "crucible-phase2-qemu-live-block-realization";
     version = "0";
     src = crucibleSrc;
+    runtimeDeps = [pkgs.sqlite];
+
     buildDeps = runtimeInputs;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;

@@ -9,7 +9,9 @@
     pname = "crucible-qemu-host-owner-flight";
     version = "0";
     src = source;
-    buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+    runtimeDeps = [pkgs.sqlite];
+
+    buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.rust pkgs.sed];
     phases = [
       {
         name = "unpack";

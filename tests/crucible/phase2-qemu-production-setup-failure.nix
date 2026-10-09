@@ -14,7 +14,9 @@ in
     pname = "crucible-qemu-production-setup-failure";
     version = "0";
     src = source;
-    buildDeps = [pkgs.coreutils pkgs.grep pkgs.rust];
+    runtimeDeps = [pkgs.sqlite];
+
+    buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.grep pkgs.rust];
     ATTR_PATH = attrPath;
     TASK_IDS = taskList;
 
