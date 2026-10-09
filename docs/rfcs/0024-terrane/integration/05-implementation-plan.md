@@ -5036,8 +5036,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   D-114 separates a recurring pass's genuinely current collection fence cycle
   from its immutable original owner/event-key cycle. CreateOnce roots and all
   actual current qualification remain mandatory; changed roots use a genuine
-  fresh collection cycle. The pure owner association fix has a later-cycle
-  regression, while native composition and runtime qualification remain pending.
+  fresh collection cycle. On private prerequisite composition `e85b84c31c`,
+  the Core build and exact later-cycle owner-association regression pass. Its
+  complete no-default-features Core library suite passes all 630 tests with no
+  skips, and strict all-target Clippy passes. These results qualify that Core
+  source only; native composition and runtime qualification remain pending.
   Actual remote provider qualification belongs to T3. No remote conformance
   or full `gc-two-phase-delete` pass is claimed. D-78
   registers physical creation journals and recoverable deletion intent.
