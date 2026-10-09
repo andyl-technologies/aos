@@ -11,99 +11,52 @@
   config,
   pkgs,
   lib,
+  packageModulesAvailable ? false,
   ...
 }: let
   cfg = config.aos.roles.server;
 in {
-  options.aos.roles.server = {
-    enable = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = ''
-        Enable the server runtime role from host.nix. Configures chrony, SSH,
-        server identities, package capabilities, and standard security policy.
-        Golden-image storage and kernel capabilities are defined by the system
-        variant rather than this host-selectable role.
-      '';
-    };
-  };
+  imports =
+    if packageModulesAvailable
+    then []
+    else [../../pkgs/system/_aos-host-policy/role-server.nix];
 
   config = lib.mkIf cfg.enable {
-    # Time sync
-    aos.services.chrony.enable = lib.mkDefault true;
-
-    # Remote access (SSH module opens its own firewall port)
-    aos.services.ssh.enable = lib.mkDefault true;
-
-    aos.users.users.aos-gitd = {
-      uid = 800;
-      group = "aos-gitd";
-      home = "/var/lib/aos-registry-server/registries";
-      shell = "/sbin/nologin";
-      description = "AOS registry server";
-      extraGroups = [];
-    };
-    aos.users.groups.aos-gitd = {
-      gid = 800;
-      members = [];
-    };
-
-    # Security: standard level (SELinux enforcing, audit, firewall)
-    aos.security.level = lib.mkDefault "standard";
-
     aos.packages.aos-registry-server = {
       package = pkgs.aos-registry-server;
       bundle = lib.mkDefault false;
-      preset = false;
     };
-
-    # Preserve the established server-role behavior when the package is
-    # selected by a fixture or operator. Outside this role, installing the
-    # package remains inert until a runtime module enables it explicitly.
-    "aos-registry-server".enable = lib.mkDefault true;
 
     # Test fixtures: not baked into the production image by default. Test
     # systems/fixtures that need them re-enable with `bundle = true`.
     aos.packages.aos-test-agent = {
       package = pkgs.aos-test-agent;
       bundle = lib.mkDefault false;
-      preset = false;
     };
 
     aos.packages.k3s-control-plane = {
       package = lib.mkDefault pkgs.k3s-control-plane;
       bundle = lib.mkDefault false;
-      preset = lib.mkDefault false;
     };
 
     aos.packages.k3s-worker = {
       package = lib.mkDefault pkgs.k3s-worker;
       bundle = lib.mkDefault false;
-      preset = lib.mkDefault false;
     };
 
     aos.packages.k3s-combined = {
       package = lib.mkDefault pkgs.k3s-combined;
       bundle = lib.mkDefault false;
-      preset = lib.mkDefault false;
     };
 
     aos.packages.test-http-server = {
       package = pkgs.test-http-server;
       bundle = lib.mkDefault false;
-      preset = false;
     };
 
     aos.packages.test-static-cache-server = {
       package = pkgs.test-static-cache-server;
       bundle = lib.mkDefault false;
-      preset = false;
-    };
-
-    aos.packages.apm-systemd-client-test = {
-      package = pkgs.apm-systemd-client-test;
-      bundle = lib.mkDefault false;
-      preset = false;
     };
   };
 }

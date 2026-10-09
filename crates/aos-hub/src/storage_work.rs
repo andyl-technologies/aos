@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use aos_hub_core::db::{
     BindingCredentialRevisionRecord, BindingRecord, BindingWriteRevisionRecord, Database,
     OciUploadChunkRecord, SurfacePlacementRecord,
@@ -18,23 +18,25 @@ use aos_hub_core::fetch::{
     SurfaceInventoryHashChunk, SurfaceListPage, SurfaceListedEvidence, SurfaceObjectEvidence,
     SurfaceProvider,
 };
-use aos_hub_core::secret_version::{SecretVersionResolver, verify_secret_fingerprint};
+use aos_hub_core::secret_version::{verify_secret_fingerprint, SecretVersionResolver};
 use aos_hub_core::storage_work::{
+    StorageBindingAcknowledgement, StorageBindingControl, StorageBindingPublication,
+    StorageBindingSnapshot, StorageCapabilities, StorageCredentialMaterial,
+    StorageCredentialSelector, StorageGitObjectProjection, StorageOciChunkSource, StorageWorkKey,
+    StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult,
     MAX_BINDING_CONTROL_BYTES, MAX_DOCUMENTATION_ROWS, MAX_GIT_INSPECTION_BATCH,
     MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_METADATA_INSPECTION_BATCH,
     MAX_OCI_HASH_RANGE_BYTES, MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES,
     STORAGE_BINDING_CONTROL_PATH, STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
-    STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER, StorageBindingAcknowledgement,
-    StorageBindingControl, StorageBindingPublication, StorageBindingSnapshot, StorageCapabilities,
-    StorageCredentialMaterial, StorageCredentialSelector, StorageGitObjectProjection,
-    StorageOciChunkSource, StorageWorkKey, StorageWorkOperation, StorageWorkOutcome,
-    StorageWorkPlan, StorageWorkResult,
+    STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceDeleteOutcome,
     SurfaceDeletePrecondition, SurfaceWrite, SurfaceWriteProvider,
 };
-use aos_hub_core::topology_probe::{StorageCredentialProbeEvidence, StorageCredentialProbeProvider};
+use aos_hub_core::topology_probe::{
+    StorageCredentialProbeEvidence, StorageCredentialProbeProvider,
+};
 use aos_registry_surface::{object, object_bundle};
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -53,8 +55,6 @@ mod external_delete;
 mod external_oci;
 pub use external_oci::ExternalOciRuntime;
 mod execute_observation;
-#[cfg(test)]
-mod outbound_window_tests;
 mod external_copy;
 mod external_observation;
 mod fetch;
@@ -64,13 +64,15 @@ mod frozen_head;
 mod live_metadata_batch_fixture;
 #[cfg(test)]
 mod mirror_candidate;
-mod mirror_guard;
 mod mirror_external;
+mod mirror_guard;
 mod mirror_inspection;
 mod mirror_membership;
 mod oci_cleanup;
 mod oci_document_effect;
 mod oci_projection;
+#[cfg(test)]
+mod outbound_window_tests;
 mod protected_inspection;
 #[cfg(test)]
 mod result_acceptance_tests;
@@ -1769,11 +1771,7 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
                 .nar_size
                 .checked_add(MAX_METADATA_BYTES as u64)
                 .context("documentation source byte limit overflowed")?;
-            let page_rows = page
-                .search
-                .len()
-                .checked_add(page.options.len())
-                .context("documentation page row count overflowed")?;
+            let page_rows = page.search.len();
             let end = cursor
                 .checked_add(page_rows)
                 .context("documentation page cursor overflowed")?;
@@ -1785,8 +1783,7 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
                     && end <= page.total_rows
                     && (page_rows > 0 || page.total_rows == 0)
                     && page.next_cursor == (end < page.total_rows).then_some(end)
-                    && page.identity.semantic_schema_sha256 == artifact.semantic_schema_sha256
-                    && page.identity.system_module_nar_hash == artifact.system_module_nar_hash,
+                    && page.document_sha256 == artifact.document_sha256,
                 "storage Worker documentation projection disagrees with the signed artifact"
             );
         }
@@ -1797,7 +1794,7 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
                 platform,
                 artifact,
             },
-            StorageWorkOutcome::DocumentationContent { document },
+            StorageWorkOutcome::DocumentationContent { document_base64 },
         ) => {
             anyhow::ensure!(
                 result.source_bytes >= artifact.nar_size
@@ -1808,8 +1805,11 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
                             .context("documentation content source limit overflowed")?,
                 "documentation content source accounting exceeded its admitted limit"
             );
-            aos_hub_core::indexer::validate_package_documentation_content(
-                document,
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(document_base64)
+                .context("decoding Native documentation content")?;
+            aos_hub_core::indexer::native_documentation::validate_native_documentation_content(
+                &bytes,
                 package_name,
                 package_version,
                 platform,
@@ -2438,7 +2438,7 @@ impl SurfaceFetch for HybridSurfaceFetch {
         package_name: &str,
         package_version: &str,
         platform: &str,
-        artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+        artifact: &aos_registry_surface::manifest::NativeArtifactMeta,
     ) -> Result<DocumentationInspection> {
         let mut cursor = 0;
         let mut total_rows = None;
@@ -2464,23 +2464,21 @@ impl SurfaceFetch for HybridSurfaceFetch {
                 total_rows.is_none_or(|expected| expected == page.total_rows)
                     && complete
                         .as_ref()
-                        .is_none_or(|value| value.identity == page.identity),
+                        .is_none_or(|value| value.document_sha256 == page.document_sha256),
                 "documentation pages describe different verified documents"
             );
             total_rows = Some(page.total_rows);
             let assembled = complete.get_or_insert_with(|| DocumentationInspection {
-                identity: page.identity.clone(),
+                document_sha256: page.document_sha256.clone(),
                 search: Vec::new(),
-                options: Vec::new(),
             });
             assembled.search.extend(page.search);
-            assembled.options.extend(page.options);
             if let Some(next_cursor) = page.next_cursor {
                 cursor = next_cursor;
                 continue;
             }
             anyhow::ensure!(
-                assembled.search.len() + assembled.options.len() == page.total_rows,
+                assembled.search.len() == page.total_rows,
                 "documentation pages omitted index rows"
             );
             return complete.context("documentation inspection returned no pages");
@@ -2493,8 +2491,8 @@ impl SurfaceFetch for HybridSurfaceFetch {
         package_name: &str,
         package_version: &str,
         platform: &str,
-        artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
-    ) -> Result<aos_doc_model::PackageDocumentation> {
+        artifact: &aos_registry_surface::manifest::NativeArtifactMeta,
+    ) -> Result<Vec<u8>> {
         let plan = self.work.plan_for_placement(
             &self.placement,
             &self.binding,
@@ -2507,10 +2505,12 @@ impl SurfaceFetch for HybridSurfaceFetch {
             aos_hub_core::clock::now_unix_secs(),
         )?;
         let result = self.execute(&plan).await?;
-        let StorageWorkOutcome::DocumentationContent { document } = result.outcome else {
+        let StorageWorkOutcome::DocumentationContent { document_base64 } = result.outcome else {
             bail!("storage Worker returned an unexpected documentation content result");
         };
-        Ok(document)
+        base64::engine::general_purpose::STANDARD
+            .decode(document_base64)
+            .context("decoding Worker documentation query output")
     }
 
     async fn inspect_git_object(
@@ -3990,16 +3990,12 @@ mod tests {
 
     #[test]
     fn documentation_result_is_bound_to_the_signed_artifact() {
-        let semantic = format!("sha256:{}", "a".repeat(64));
-        let artifact = aos_registry_surface::manifest::DocumentationArtifactMeta {
-            format: aos_doc_model::DOCUMENT_FORMAT.into(),
-            store_path: "/nix/store/abcdf-package-docs".into(),
+        let artifact = aos_registry_surface::manifest::NativeArtifactMeta {
+            store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-package-docs".into(),
             nar_hash: format!("sha256:{}", "b".repeat(64)),
             nar_size: 1024,
             document_sha256: format!("sha256:{}", "c".repeat(64)),
             document_size: 512,
-            semantic_schema_sha256: semantic.clone(),
-            system_module_nar_hash: None,
             references: Vec::new(),
         };
         let plan = StorageWorkPlan {
@@ -4034,16 +4030,8 @@ mod tests {
             source_bytes: 1536,
             outcome: StorageWorkOutcome::Documentation {
                 page: aos_hub_core::storage_work::StorageDocumentationPage {
-                    identity: aos_doc_model::DocumentationIdentity {
-                        semantic_schema_sha256: semantic,
-                        runtime_nar_hash: format!("sha256:{}", "d".repeat(64)),
-                        config_module_nar_hash: None,
-                        system_module_nar_hash: None,
-                        expose_artifact_nar_hash: None,
-                        source_nar_hash: format!("sha256:{}", "e".repeat(64)),
-                    },
+                    document_sha256: format!("sha256:{}", "c".repeat(64)),
                     search: Vec::new(),
-                    options: Vec::new(),
                     total_rows: 0,
                     next_cursor: None,
                 },
@@ -4052,12 +4040,12 @@ mod tests {
         assert!(validate_result(&plan, &result).is_ok());
 
         if let StorageWorkOutcome::Documentation { page } = &mut result.outcome {
-            page.identity.semantic_schema_sha256 = format!("sha256:{}", "f".repeat(64));
+            page.document_sha256 = format!("sha256:{}", "f".repeat(64));
         }
         assert!(validate_result(&plan, &result).is_err());
 
         if let StorageWorkOutcome::Documentation { page } = &mut result.outcome {
-            page.identity.semantic_schema_sha256 = format!("sha256:{}", "a".repeat(64));
+            page.document_sha256 = format!("sha256:{}", "c".repeat(64));
         }
         result.source_bytes = 1024 + MAX_METADATA_BYTES as u64 + 1;
         assert!(validate_result(&plan, &result).is_err());

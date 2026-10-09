@@ -1,0 +1,350 @@
+//! The [`PlatformFetcher`] trait and the normalized data it produces.
+//!
+//! A fetcher encodes one platform's documented user-data + instance-metadata
+//! contract (endpoint paths, required headers, payload encoding, facts
+//! locations) over the shared HTTP surface ([`crate::http`]). It is
+//! the only seam the dispatcher knows about; selection uses the typed result
+//! from `detect`.
+//!
+//! # Trust boundary
+//!
+//! Everything a fetcher returns is untrusted. [`UserData`] bytes remain exact;
+//! the following initrd authorization operation owns the trust decision.
+//! A fetcher must never promote a [`Facts`] field into a security decision.
+//!
+//! # Data shapes
+//!
+//! - [`UserData`] — literal `host.nix`, a complete configuration bundle, or a
+//!   bounded transport pointer to either exact payload.
+//! - [`Facts`] — normalized, unauthenticated instance facts rendered to
+//!   `host-facts.nix` as `host.facts.*` ([`crate::facts_render`]).
+//! - [`StaticNetwork`] — the parsed DHCP-less network config seeded into
+//!   networkd ([`crate::staticnet`]).
+
+use anyhow::{Context, Result, anyhow};
+use serde::{Deserialize, Serialize};
+
+use super::http::MetadataHttp;
+
+/// A cross-cloud user-data + instance-metadata acquisition strategy.
+///
+/// Implementors encode one platform's documented contract over the shared
+/// [`MetadataHttp`] surface (or, for offline channels, a mounted directory).
+/// The dispatcher selects one from the typed platform identifier and calls
+/// [`fetch_user_data`](PlatformFetcher::fetch_user_data) then
+/// [`fetch_facts`](PlatformFetcher::fetch_facts).
+///
+/// The trait takes `&dyn MetadataHttp` rather than the concrete
+/// `aos_net::TransferEngine` named in the build spec so the cloud fetchers are
+/// unit-testable against recorded fixtures with no live network; the
+/// production adapter ([`super::http::EngineHttp`]) wraps a real
+/// `TransferEngine` plus the `tokio::time::timeout` shim.
+#[async_trait::async_trait]
+pub trait PlatformFetcher: Send + Sync {
+    /// Stable identifier from the typed detector result (for example, `"aws"`,
+    /// `"nocloud"`, `"config-drive"`, `"qemu"`, or `"aos-metadata"`).
+    fn platform_id(&self) -> &'static str;
+
+    /// Acquire the operator user-data payload, if present.
+    ///
+    /// Returns `Ok(None)` when the platform has no user-data attached — a
+    /// valid, non-error state that resolves to gen-0-only config.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` only on transport failure after retries are exhausted, or
+    /// when a required local file is unreadable. Acquisition never authorizes
+    /// the returned bytes.
+    async fn fetch_user_data(&self, http: &dyn MetadataHttp) -> Result<Option<UserData>>;
+
+    /// Acquire normalized instance facts.
+    ///
+    /// Facts are recorded-but-unauthenticated (`facts_hash` in the manifest);
+    /// a fetcher must not promote any fact into a security decision. Returns
+    /// `Ok(Facts::default())` when the platform exposes no metadata document.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` only on transport failure after retries are exhausted, or
+    /// when a present-but-malformed metadata document cannot be parsed.
+    async fn fetch_facts(&self, http: &dyn MetadataHttp) -> Result<Facts>;
+}
+
+/// Operator user-data carrying a literal module, source bundle, or transport pointer.
+///
+/// The `Pointer` form is the escape hatch for platforms with a small user-data
+/// cap (AWS 16 KB): a tiny JSON document naming a `host.nix` URL, its `sha256`
+/// content-pin, and an optional detached-signature URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserData {
+    /// Exact inline configuration or a versioned bundle transport descriptor.
+    Inline {
+        /// Verbatim user-data.
+        payload: Vec<u8>,
+        /// Detached SSHSIG over the complete payload, if carried separately.
+        sig: Option<String>,
+    },
+    /// A pointer used when user-data exceeds the platform cap. The agent
+    /// resolves it: GET `host_nix_url` with `sha256` as a content-pin
+    /// (integrity before authenticity), then GET `sig_url` if present.
+    Pointer(PointerDoc),
+}
+
+/// The JSON transport pointer used when `host.nix` exceeds a platform cap.
+///
+/// ```json
+/// { "host_nix_url": "https://…/host.nix", "sha256": "…", "sig_url": "https://…/host.nix.sig" }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PointerDoc {
+    /// URL of the complete literal `host.nix`.
+    pub host_nix_url: String,
+    /// Lowercase-hex SHA-256 content-pin enforced on the fetch.
+    pub sha256: String,
+    /// Optional URL of the detached SSHSIG.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig_url: Option<String>,
+}
+
+/// Transport descriptor shared by all native cloud metadata providers.
+///
+/// ```json
+/// {"schema":"aos.config-bundle-pointer/v1","url":"https://example.org/config.json",
+///  "sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+///  "entrypoint":"entry.nix"}
+/// ```
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BundlePointer {
+    schema: String,
+    url: String,
+    sha256: String,
+    entrypoint: String,
+    #[serde(default)]
+    sig_url: Option<String>,
+}
+
+/// The concrete operator bytes after a [`UserData`] is resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedUserData {
+    /// Exact user-data bytes.
+    pub payload: Vec<u8>,
+    /// Detached SSHSIG over `payload`, if present.
+    pub sig: Option<String>,
+}
+
+impl UserData {
+    /// Resolve to concrete bytes, fetching the pointer target if necessary.
+    ///
+    /// Recognized inline descriptors and legacy `Pointer` values trigger a
+    /// bounded, content-pinned download and optional detached-signature fetch.
+    /// Other inline payloads retain their exact bytes for authorization.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the pointer target is unreachable, the content-pin
+    /// fails, or the signature URL is set but unreachable.
+    pub async fn resolve(self, http: &dyn MetadataHttp) -> Result<ResolvedUserData> {
+        match self {
+            Self::Inline { payload, sig } => {
+                // The descriptor is transport only. Authentication still covers
+                // the complete resolved source document, including its entrypoint.
+                let value = serde_json::from_slice::<serde_json::Value>(&payload).ok();
+                if value
+                    .as_ref()
+                    .and_then(|value| value.get("schema"))
+                    .and_then(|value| value.as_str())
+                    == Some("aos.config-bundle-pointer/v1")
+                {
+                    let pointer: BundlePointer = serde_json::from_slice(&payload)?;
+                    anyhow::ensure!(
+                        pointer.schema == "aos.config-bundle-pointer/v1",
+                        "unsupported bundle pointer"
+                    );
+                    validate_bundle_url(&pointer.url)?;
+                    anyhow::ensure!(
+                        pointer.sha256.len() == 64
+                            && pointer
+                                .sha256
+                                .bytes()
+                                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                        "bundle pointer requires lowercase SHA-256"
+                    );
+                    let body = http
+                        .get_pinned_limited(
+                            &pointer.url,
+                            &pointer.sha256,
+                            super::bundle::MAX_BUNDLE_BYTES,
+                        )
+                        .await
+                        .map_err(|_| {
+                            anyhow!("bundle download failed integrity, size, or transport checks")
+                        })?
+                        .into_ok_body()
+                        .context("bundle pointer returned no body")?;
+                    anyhow::ensure!(
+                        super::bundle::sha256_hex(&body) == pointer.sha256,
+                        "bundle content digest does not match descriptor"
+                    );
+                    let bundle = super::bundle::parse(&body)?
+                        .context("bundle pointer target is not a supported bundle")?;
+                    anyhow::ensure!(
+                        bundle.entrypoint == pointer.entrypoint,
+                        "bundle entrypoint differs from descriptor"
+                    );
+                    let sig = match pointer.sig_url {
+                        Some(url) => {
+                            validate_bundle_url(&url)?;
+                            Some(
+                                http.get(&url, &[])
+                                    .await
+                                    .map_err(|_| anyhow!("bundle signature download failed"))?
+                                    .into_ok_string()
+                                    .context("bundle signature returned no UTF-8 body")?,
+                            )
+                        }
+                        None => sig,
+                    };
+                    return Ok(ResolvedUserData { payload: body, sig });
+                }
+                // This also gives GCP the legacy size-cap pointer AWS already
+                // accepts, with the same integrity and authorization semantics.
+                if let Ok(pointer) = serde_json::from_slice::<PointerDoc>(&payload) {
+                    return resolve_pointer(pointer, http).await;
+                }
+                Ok(ResolvedUserData { payload, sig })
+            }
+            Self::Pointer(p) => resolve_pointer(p, http).await,
+        }
+    }
+}
+
+fn validate_bundle_url(value: &str) -> Result<()> {
+    let url = url::Url::parse(value).context("parsing bundle URL")?;
+    anyhow::ensure!(
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.fragment().is_none(),
+        "bundle URLs require HTTPS without credentials or fragments"
+    );
+    Ok(())
+}
+
+async fn resolve_pointer(pointer: PointerDoc, http: &dyn MetadataHttp) -> Result<ResolvedUserData> {
+    let payload = http
+        .get_pinned_limited(
+            &pointer.host_nix_url,
+            &pointer.sha256,
+            super::bundle::MAX_BUNDLE_BYTES,
+        )
+        .await
+        .map_err(|_| {
+            anyhow!("host configuration download failed integrity, size, or transport checks")
+        })?
+        .into_ok_body()
+        .ok_or_else(|| anyhow!("host.nix pointer returned no body"))?;
+    let sig = match pointer.sig_url {
+        Some(url) => Some(
+            http.get(&url, &[])
+                .await
+                .map_err(|_| anyhow!("configuration signature download failed"))?
+                .into_ok_string()
+                .context("signature pointer returned no UTF-8 body")?,
+        ),
+        None => None,
+    };
+    Ok(ResolvedUserData { payload, sig })
+}
+
+/// Normalized, unauthenticated instance facts.
+///
+/// Rendered to `host-facts.nix` as `host.facts.*`
+/// ([`crate::facts_render`]) and recorded under `facts_hash`. Every
+/// field is data the operator's modules may *read*, never an authorization.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Facts {
+    /// Instance hostname (`local-hostname` / `.hostname`).
+    pub hostname: Option<String>,
+    /// SSH public keys advertised by the platform. Unauthenticated: never
+    /// seeded for gen-0 login (review M-gen0key).
+    pub ssh_authorized_keys: Vec<String>,
+    /// Opaque platform instance id.
+    pub instance_id: Option<String>,
+    /// Cloud region, when exposed.
+    pub region: Option<String>,
+    /// Availability zone, when exposed.
+    pub availability_zone: Option<String>,
+    /// Stable MAC → kernel interface name pairs, for networkd `Match=`.
+    pub mac_to_iface: Vec<MacIface>,
+    /// Disk serial / wwn identifiers, for repart device matching.
+    pub disk_ids: Vec<String>,
+    /// Parsed static network config for DHCP-less clouds. `None` ⇒ the gen-0
+    /// DHCP seed suffices.
+    pub network: Option<StaticNetwork>,
+}
+
+/// One MAC-address-to-interface-name binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MacIface {
+    /// Lowercase MAC address (`0a:1b:2c:3d:4e:5f`).
+    pub mac: String,
+    /// Kernel network interface name (`ens5`).
+    pub iface: String,
+}
+
+/// A parsed DHCP-less network configuration.
+///
+/// Normalized from OpenStack `network_data.json`, NoCloud netplan
+/// `network-config`, or a DigitalOcean IMDS interface document, and rendered
+/// to the typed network bootstrap value ([`crate::staticnet`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StaticNetwork {
+    /// MAC address used in the networkd `[Match]` section. Empty ⇒ match the
+    /// explicitly named interface instead.
+    pub mac: Option<String>,
+    /// Kernel interface name used when the platform does not report a MAC.
+    ///
+    /// A seed without either `mac` or `interface_name` is rejected rather than
+    /// producing an unqualified networkd match-all unit.
+    pub interface_name: Option<String>,
+    /// `Address=` entries in CIDR form (`203.0.113.10/24`).
+    pub addresses: Vec<String>,
+    /// Default gateway, rendered as `Gateway=`.
+    pub gateway: Option<String>,
+    /// DNS servers, rendered as repeated `DNS=`.
+    pub dns: Vec<String>,
+}
+
+impl StaticNetwork {
+    /// Whether this config carries an address and a deterministic link match.
+    pub fn is_seedable(&self) -> bool {
+        let has_selector = self.mac.as_deref().is_some_and(is_canonical_mac)
+            || self
+                .interface_name
+                .as_deref()
+                .is_some_and(is_exact_interface_name);
+        !self.addresses.is_empty() && has_selector
+    }
+}
+
+pub(super) fn is_canonical_mac(value: &str) -> bool {
+    let mut octets = value.split(':');
+    let valid = octets
+        .by_ref()
+        .take(6)
+        .all(|octet| octet.len() == 2 && octet.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    valid && octets.next().is_none() && value.matches(':').count() == 5
+}
+
+pub(super) fn is_exact_interface_name(value: &str) -> bool {
+    !value.is_empty()
+        && value == value.trim()
+        && !value
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '*' | '?' | '[' | '\\'))
+}

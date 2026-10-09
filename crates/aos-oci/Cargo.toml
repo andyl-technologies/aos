@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 aos-oci-types = { workspace = true }
-aos-net = { workspace = true }
+aos-net = { workspace = true, features = ["direct-upload"] }
 aos-remote = { workspace = true }
 aos-proto-types = { workspace = true }
 async-trait = { workspace = true }

@@ -97,14 +97,21 @@ async fn seed_creates_browsable_registry_and_login() {
         .expect("private image registry exists");
     assert_eq!(private.visibility, "private");
     assert_eq!(db.list_system_images(private.id).await.unwrap().len(), 2);
-    // Byte-identical releases in two registries must each own a complete
-    // artifact snapshot and documentation tree.
+    // Byte-identical releases in two registries must each own complete
+    // artifact and release-browse snapshots.
     for registry_id in [registry.id, private.id] {
-        assert!(db
-            .documentation_tree_commit(registry_id, "1.0.0")
+        let catalog = db
+            .release_browse_packages(registry_id, "1.0.0")
             .await
             .unwrap()
-            .is_some());
+            .expect("each registry owns its completed release catalog");
+        assert!(!catalog.is_empty());
+        // These payload-only packages publish no generated module reference.
+        assert!(db
+            .native_documentation_at_release(registry_id, "1.0.0")
+            .await
+            .unwrap()
+            .is_empty());
         let publication = db
             .registry_publication_state(registry_id)
             .await

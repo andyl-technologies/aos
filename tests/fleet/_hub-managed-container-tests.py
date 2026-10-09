@@ -27,6 +27,7 @@ TOOLS = {"aos": "/nix/store/fixture-aos/bin/aos",
     "opensshBin": "/nix/store/fixture-openssh/bin", "nixBin": "/nix/store/fixture-nix/bin",
     "helperStorePath": "/nix/store/fixture-helper", "aosStorePath": "/nix/store/fixture-aos",
     "containerPublicationInputs": "/nix/store/fixture-publication-inputs",
+    "publicationProject": "/nix/store/fixture-publication-project",
     "python": "/nix/store/fixture-python/bin/python3"}
 
 
@@ -141,7 +142,8 @@ class ProducerTests(unittest.TestCase):
         with patch.object(producer, "_run", side_effect=execute):
             result = producer._publish_action(self.root, selected, {})
         self.assertEqual(commands[0][2], TOOLS["aosStorePath"])
-        release = commands[1]
+        self.assertEqual(commands[1][2], TOOLS["helperStorePath"])
+        release = commands[2]
         self.assertIn("--container-release", release)
         self.assertEqual(release[release.index("--channel") + 1], "stable")
         self.assertIn("--init-channel", release)
@@ -218,19 +220,19 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(result["trustKey"], "containers:Ed25519:controlled")
 
     def documentation(self, *, options=None, identity_digest=None):
-        package = {"storePath": "/nix/store/selected-hub", "version": "0.1.0",
-            "baseLib": "/nix/store/selected-base-lib"}
-        body = json.dumps({"schema": "aos.package-documentation/v1",
+        package = {"storePath": "/nix/store/selected-hub", "version": "0.1.0"}
+        body = json.dumps({"schema": "aos.module.documentation",
             "options": [{"path": "aos.hub.enable"}] if options is None else options}).encode()
         source = self.root / "canonical-document"
-        source.write_bytes(body)
+        source.mkdir()
+        (source / "options.json").write_bytes(body)
         digest = hashlib.sha256(body).hexdigest()
         registry = self.root / "documentation-registry"
         (registry / "packages/a").mkdir(parents=True)
         identity = {"store_path": str(source), "document_sha256": "sha256:" + (identity_digest or digest),
             "document_size": len(body)}
         (registry / "packages/a/aos-hub.toml").write_text(
-            '[[versions]]\nversion = "0.1.0"\n[versions.platforms.x86_64-linux.documentation]\n'
+            '[[versions]]\nversion = "0.1.0"\n[versions.platforms.x86_64-linux.module_documentation]\n'
             + ''.join(name + ' = ' + json.dumps(value) + '\n' for name, value in identity.items()))
         return package, body, registry
 
@@ -241,7 +243,7 @@ class ProducerTests(unittest.TestCase):
                 {**TOOLS, "documentedPackage": package}, registry)
         command = run.call_args.args[3]
         self.assertEqual(command[:3], [TOOLS["apr"], "publish", package["storePath"]])
-        self.assertEqual(command[command.index("--documentation-base-lib") + 1], package["baseLib"])
+        self.assertNotIn("--documentation-base-lib", command)
         self.assertEqual(Path(result["file"]).read_bytes(), body)
         self.assertEqual(Path(result["file"]).stat().st_mode & 0o777, 0o600)
         self.assertEqual(result["sha256"], hashlib.sha256(body).hexdigest())
@@ -259,8 +261,8 @@ class ProducerTests(unittest.TestCase):
                     self.root = previous
 
     def test_documentation_rejects_unselected_source_before_command(self):
-        for selected in ({"storePath": "/host/hub", "version": "0.1.0", "baseLib": "/nix/store/base"},
-                {"storePath": "/nix/store/hub", "version": "0.1.0", "baseLib": "/nix/store/base", "extra": True}):
+        for selected in ({"storePath": "/host/hub", "version": "0.1.0"},
+                {"storePath": "/nix/store/hub", "version": "0.1.0", "extra": True}):
             with patch.object(producer, "_run") as run, self.assertRaises(ValueError):
                 producer._prepare_documentation(self.root, {}, {**TOOLS, "documentedPackage": selected}, self.root)
             run.assert_not_called()

@@ -29,9 +29,77 @@ pub enum Error {
     /// which only happens if the bus connection died mid-flight.
     #[error("systemd job result channel closed before completion (unit {0})")]
     JobSenderDropped(String),
+
+    /// Pinned lifecycle calls, early completions, or waiter identities
+    /// exhausted the bounded job registry capacity.
+    #[error("systemd pinned job registry capacity was exhausted")]
+    JobCompletionOverflow,
+
+    /// The caller's pinned bus/manager incarnation is no longer current.
+    #[error("systemd manager incarnation changed before the pinned operation")]
+    ManagerIncarnationChanged,
+
+    /// A configured unit name is an alias rather than its stable canonical ID.
+    #[error("systemd unit {requested} resolves to canonical unit {canonical}")]
+    UnitAlias {
+        /// Names the configured alias rejected by exact native admission.
+        requested: String,
+        /// Names the canonical unit reported by the resolved object.
+        canonical: String,
+    },
+
+    /// A canonical unit no longer resolves to its admission-qualified object.
+    #[error("systemd unit {unit} changed identity before the pinned operation")]
+    UnitIdentityChanged {
+        /// Names the exact canonical unit requested by the caller.
+        unit: String,
+        /// Carries the object identity established during admission.
+        expected: String,
+        /// Carries the object identity observed immediately before dispatch.
+        actual: String,
+    },
+
+    /// A canonical unit's loaded definition is stale relative to its files.
+    #[error("systemd unit {unit} requires a daemon reload")]
+    UnitNeedsDaemonReload {
+        /// Names the exact canonical unit requested by the caller.
+        unit: String,
+    },
+
+    /// A loaded unit carries no single AOS revision marker.
+    #[error("systemd unit {unit} has no unambiguous loaded AOS revision")]
+    UnitRevisionUnknown {
+        /// Names the exact canonical unit requested by the caller.
+        unit: String,
+    },
+
+    /// A loaded unit's parsed revision differs from the admitted revision.
+    #[error("systemd unit {unit} changed loaded revision before the pinned operation")]
+    UnitRevisionChanged {
+        /// Names the exact canonical unit requested by the caller.
+        unit: String,
+        /// Carries the revision established during admission.
+        expected: String,
+        /// Carries the revision read from the manager's loaded unit object.
+        actual: String,
+    },
 }
 
 impl Error {
+    /// Returns `true` when the admitted manager, unit, or revision authority changed.
+    #[must_use]
+    pub fn is_authority_mismatch(&self) -> bool {
+        matches!(
+            self,
+            Self::ManagerIncarnationChanged
+                | Self::UnitAlias { .. }
+                | Self::UnitIdentityChanged { .. }
+                | Self::UnitNeedsDaemonReload { .. }
+                | Self::UnitRevisionUnknown { .. }
+                | Self::UnitRevisionChanged { .. }
+        )
+    }
+
     /// Returns `true` when the error is systemd's `NoSuchUnit` method error.
     ///
     /// This lets callers treat stop/remove operations on already-unloaded
@@ -39,7 +107,16 @@ impl Error {
     pub fn is_no_such_unit(&self) -> bool {
         match self {
             Self::Zbus(err) => is_no_such_unit(err),
-            Self::SystemdUnavailable(_) | Self::Fdo(_) | Self::JobSenderDropped(_) => false,
+            Self::SystemdUnavailable(_)
+            | Self::Fdo(_)
+            | Self::JobSenderDropped(_)
+            | Self::JobCompletionOverflow
+            | Self::ManagerIncarnationChanged
+            | Self::UnitAlias { .. }
+            | Self::UnitIdentityChanged { .. }
+            | Self::UnitNeedsDaemonReload { .. }
+            | Self::UnitRevisionUnknown { .. }
+            | Self::UnitRevisionChanged { .. } => false,
         }
     }
 }

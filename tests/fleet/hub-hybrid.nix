@@ -33,6 +33,16 @@
     then "database"
     else "native";
   fixture = import ./_native-hub-production.nix {inherit lib mkSystem pkgs;};
+  publication = import ./_container-publication-project.nix {
+    inherit lib pkgs;
+    packages.aos = pkgs.aos;
+    packages.aos-hub = pkgs.aos-hub;
+    packages.hub-helper = fixture.helperV1;
+  };
+  nextPublication = import ./_container-publication-project.nix {
+    inherit lib pkgs;
+    packages.hub-helper = fixture.helperV2;
+  };
   garage =
     if externalDirect
     then import ./_hub-garage-refusal-drain.nix {inherit pkgs;}
@@ -77,12 +87,11 @@
   '';
   # The caller supplies the independently verified final committed capture.
   # Package outputs and module bytes are measured only after realization.
-  packMemorySourceDescriptor =
-    assert runtimeSource != null;
-    assert runtimeSourceIdentity != null;
-    assert builtins.attrNames runtimeSourceIdentity == ["sourceCommit" "sourceTree"];
-    assert builtins.match "[0-9a-f]{40}" runtimeSourceIdentity.sourceCommit != null;
-    assert builtins.match "[0-9a-f]{40}" runtimeSourceIdentity.sourceTree != null;
+  packMemorySourceDescriptor = assert runtimeSource != null;
+  assert runtimeSourceIdentity != null;
+  assert builtins.attrNames runtimeSourceIdentity == ["sourceCommit" "sourceTree"];
+  assert builtins.match "[0-9a-f]{40}" runtimeSourceIdentity.sourceCommit != null;
+  assert builtins.match "[0-9a-f]{40}" runtimeSourceIdentity.sourceTree != null;
     pkgs.runCommand "hub-pack-memory-source-descriptor" {buildDeps = [pkgs.python3];} ''
       mkdir -p "$out"
       ${pkgs.python3}/bin/python3 - "$out" <<'PACK_MEMORY_SOURCE_DESCRIPTOR'
@@ -193,6 +202,50 @@
     builtins.readFile ../fixtures/hub-hybrid-fleet-s3.key
   );
   s3PublicTrust = writeFixture "hub-hybrid-fleet-s3-public-trust" s3CaCertificate;
+  nativeTCPPorts =
+    [443]
+    ++ lib.optionals externalDirect [8443 8453 4644 4673 4674 4677]
+    ++ lib.optional (externalDirect && !separateDatabase) 5432;
+  edgeTCPPorts = [443] ++ lib.optionals externalDirect [8453 4643 4644 4673 4674];
+  fleetHostModule = allowedTCP:
+    pkgs.writeTextFile {
+      name = "hub-hybrid-fleet-runtime-policy";
+      destination = "/module.nix";
+      text = ''
+        {...}: {
+          aos.security.pki.certificates = [
+            ${builtins.toJSON caCertificate}
+            ${builtins.toJSON s3CaCertificate}
+          ];
+          aos.networkPolicy.allowedTCP = [${lib.concatMapStringsSep " " toString allowedTCP}];
+        }
+      '';
+    };
+  retainedHostModule = name: configuration:
+    pkgs.writeTextFile {
+      inherit name;
+      destination = "/module.nix";
+      text = "{...}: builtins.fromJSON ${builtins.toJSON (builtins.toJSON configuration)}";
+    };
+  # Credential seed files belong to the image adapter; the retained host
+  # namespace owns the role, identities and service effects.
+  nativeHostModule =
+    retainedHostModule "hub-hybrid-fleet-native-policy"
+    (builtins.removeAttrs nativeRuntimeConfiguration ["environment"]);
+  edgeHostModule = fleetHostModule edgeTCPPorts;
+  clientHostModule = fleetHostModule [];
+  databaseRuntimeConfiguration = {
+    aos.networkPolicy.allowedTCP = [5432];
+    aos.users.users.aos-hub = {
+      uid = 802;
+      group = "aos-hub";
+      home = "/var/lib/hybrid-postgres";
+      shell = "/sbin/nologin";
+      description = "Disposable fleet PostgreSQL owner";
+    };
+    aos.users.groups.aos-hub.gid = 802;
+  };
+  databaseHostModule = retainedHostModule "hub-hybrid-fleet-database-policy" databaseRuntimeConfiguration;
   garageConfig = writeFixture "hub-hybrid-fleet-garage.toml" ''
     metadata_dir = "/var/lib/hybrid-s3/meta"
     data_dir = "/var/lib/hybrid-s3/data"
@@ -343,7 +396,9 @@
     recoveryBundleMiB,
   }: {
     aos.image.budgets = {
-      maxRuntimeClosureMiB = 912;
+      # The merged Native modules produce a 912.3 MiB diagnostic closure.
+      # Retain a small allowance for package metadata and executable growth.
+      maxRuntimeClosureMiB = 920;
       maxInitrdMiB = 144;
       # The measured 160.2 MiB UKI embeds the diagnostic initrd plus the kernel.
       # Keep both boot slots within the existing 384 MiB ESP allowance.
@@ -356,34 +411,32 @@
     };
   };
 
-  nativeSystem = fixture.hubSystem.extendModules {
-    modules = [
-      (qualificationImageBudget {
-        rawDownloadMiB = 896;
-        recoveryBundleMiB = 816;
-      })
-      {
-        # Native also retains the full Hub server and initializer payload.
-        aos.image.budgets.maxRuntimeClosureMiB = lib.mkForce 1024;
-
-        # A bounded SQL child is at most 96 KiB, plus the Native log envelope.
-        aos.journald.lineMaxBytes = 128 * 1024;
-
-        aos.registry-hub = {
-          deploymentId = "fleet-hybrid-v1";
-          externalUrl = "https://aos.andyl.org";
-          listen =
-            if externalDirect
-            then "127.0.0.1:4443"
-            else "0.0.0.0:443";
-          releaseReceiptKeyId = "staging-publication-v1";
-          channelReceiptKeyId = "staging-channel-v1";
-          hybrid = {
-            enable = true;
-            workerUrl = "https://aos.andyl.org";
-            originUrl = "https://aos.staging.andyl.org";
-          };
-          credentials = {
+  nativeRuntimeConfiguration = {
+    # A bounded SQL child is at most 96 KiB, plus the Native log envelope.
+    aos.journald.lineMaxBytes = 128 * 1024;
+    aos.security.pki.certificates = [caCertificate s3CaCertificate];
+    aos.networkPolicy.allowedTCP = nativeTCPPorts;
+    environment.etc."tmpfiles.d/native-hub-credentials.conf".text =
+      fixture.hubSystem.config.environment.etc."tmpfiles.d/native-hub-credentials.conf".text;
+    aos.registry-hub =
+      fixture.hubSystem.config.aos.registry-hub
+      // {
+        deploymentId = "fleet-hybrid-v1";
+        externalUrl = "https://aos.andyl.org";
+        listen =
+          if externalDirect
+          then "127.0.0.1:4443"
+          else "0.0.0.0:443";
+        releaseReceiptKeyId = "staging-publication-v1";
+        channelReceiptKeyId = "staging-channel-v1";
+        hybrid = {
+          enable = true;
+          workerUrl = "https://aos.andyl.org";
+          originUrl = "https://aos.staging.andyl.org";
+        };
+        credentials =
+          fixture.hubSystem.config.aos.registry-hub.credentials
+          // {
             databaseUrl = "hybrid-fleet-database-url";
             hybridIngressKey = "hybrid-fleet-ingress-key";
             storageWorkKey = "hybrid-fleet-storage-key";
@@ -396,33 +449,42 @@
             tlsCertificate = "hybrid-fleet-certificate";
             tlsPrivateKey = "hybrid-fleet-private-key";
           };
-        };
-        aos.security.pki.certificates = [caCertificate s3CaCertificate];
-        aos.firewall.allowedTCP =
-          [443]
-          ++ lib.optionals externalDirect [8443 8453 4644 4673 4674 4677]
-          ++ lib.optional (externalDirect && !separateDatabase) 5432;
+      };
+    aos.services.hub.environment.variables = {
+      HUB_OCI_PULL_ENABLED = "true";
+      HUB_OCI_PUSH_ENABLED = "true";
+      HUB_OCI_GC_ENABLED = "true";
+    };
+    environment.etc."tmpfiles.d/hub-hybrid-fleet-credentials.conf".text = ''
+      d /run/credentials/@system 0700 root root -
+      C /run/credentials/@system/hybrid-fleet-database-url 0600 root root - ${databaseUrl}/value
+      C /run/credentials/@system/hybrid-fleet-ingress-key 0600 root root - ${ingressKey}/value
+      C /run/credentials/@system/hybrid-fleet-storage-key 0600 root root - ${storageKey}/value
+      C /run/credentials/@system/hybrid-fleet-instance-secret-key 0600 root root - ${instanceSecretKey}/value
+      C /run/credentials/@system/hybrid-fleet-release-receipt-key 0600 root root - ${releaseReceiptKey}/value
+      C /run/credentials/@system/hybrid-fleet-channel-receipt-key 0600 root root - ${channelReceiptKey}/value
+      C /run/credentials/@system/hybrid-fleet-release-publication-keys 0600 root root - ${releasePublicationKeys}/value
+      C /run/credentials/@system/hybrid-fleet-qualification-keys 0600 root root - ${qualificationKeys}/value
+      C /run/credentials/@system/hybrid-fleet-secret-version-manifest 0600 root root - ${secretVersionManifest}/value
+      C /run/credentials/@system/hybrid-fleet-certificate 0600 root root - ${serverCertificate}/value
+      C /run/credentials/@system/hybrid-fleet-private-key 0600 root root - ${serverPrivateKey}/value
+    '';
+  };
+
+  nativeSystem = fixture.hubSystem.extendModules {
+    modules = [
+      (qualificationImageBudget {
+        rawDownloadMiB = 896;
+        recoveryBundleMiB = 816;
+      })
+      nativeRuntimeConfiguration
+      {
+        # Native also retains the full Hub server and initializer payload.
+        aos.image.budgets.maxRuntimeClosureMiB = lib.mkForce 1024;
+        # Runtime roles must survive evaluation of the retained host sources.
+        aos.activation.stages.host.configuration = ["${nativeHostModule}/module.nix"];
         aos.kernel.modules = ["9pnet_virtio" "9p"];
         environment.systemPackages = [pkgs.util-linux];
-        systemd.services.aos-hub.serviceConfig.Environment = [
-          "HUB_OCI_PULL_ENABLED=true"
-          "HUB_OCI_PUSH_ENABLED=true"
-          "HUB_OCI_GC_ENABLED=true"
-        ];
-        environment.etc."tmpfiles.d/hub-hybrid-fleet-credentials.conf".text = ''
-          d /run/credentials/@system 0700 root root -
-          C /run/credentials/@system/hybrid-fleet-database-url 0600 root root - ${databaseUrl}/value
-          C /run/credentials/@system/hybrid-fleet-ingress-key 0600 root root - ${ingressKey}/value
-          C /run/credentials/@system/hybrid-fleet-storage-key 0600 root root - ${storageKey}/value
-          C /run/credentials/@system/hybrid-fleet-instance-secret-key 0600 root root - ${instanceSecretKey}/value
-          C /run/credentials/@system/hybrid-fleet-release-receipt-key 0600 root root - ${releaseReceiptKey}/value
-          C /run/credentials/@system/hybrid-fleet-channel-receipt-key 0600 root root - ${channelReceiptKey}/value
-          C /run/credentials/@system/hybrid-fleet-release-publication-keys 0600 root root - ${releasePublicationKeys}/value
-          C /run/credentials/@system/hybrid-fleet-qualification-keys 0600 root root - ${qualificationKeys}/value
-          C /run/credentials/@system/hybrid-fleet-secret-version-manifest 0600 root root - ${secretVersionManifest}/value
-          C /run/credentials/@system/hybrid-fleet-certificate 0600 root root - ${serverCertificate}/value
-          C /run/credentials/@system/hybrid-fleet-private-key 0600 root root - ${serverPrivateKey}/value
-        '';
       }
     ];
   };
@@ -435,7 +497,8 @@
     })
     {
       aos.security.pki.certificates = [caCertificate s3CaCertificate];
-      aos.firewall.allowedTCP = [443] ++ lib.optionals externalDirect [8453 4643 4644 4673 4674];
+      aos.activation.stages.host.configuration = ["${edgeHostModule}/module.nix"];
+      aos.networkPolicy.allowedTCP = edgeTCPPorts;
       aos.kernel.modules = ["9pnet_virtio" "9p"];
       environment.systemPackages = [pkgs.util-linux];
     }
@@ -448,6 +511,7 @@
     })
     {
       aos.security.pki.certificates = [caCertificate s3CaCertificate];
+      aos.activation.stages.host.configuration = ["${clientHostModule}/module.nix"];
       aos.kernel.modules = ["9pnet_virtio" "9p"];
       environment.systemPackages = [pkgs.util-linux];
     }
@@ -455,17 +519,8 @@
 
   databaseSystem = edgeSystem.extendModules {
     modules = [
-      {
-        aos.firewall.allowedTCP = [5432];
-        aos.users.users.aos-hub = {
-          uid = 802;
-          group = "aos-hub";
-          home = "/var/lib/hybrid-postgres";
-          shell = "/sbin/nologin";
-          description = "Disposable fleet PostgreSQL owner";
-        };
-        aos.users.groups.aos-hub.gid = 802;
-      }
+      databaseRuntimeConfiguration
+      {aos.activation.stages.host.configuration = ["${databaseHostModule}/module.nix"];}
     ];
   };
 
@@ -663,11 +718,9 @@
   });
   toolClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
     pname = "hub-hybrid-fleet-tool-closure-info";
-    rootPaths =
+    rootPaths = lib.uniqueBy builtins.toString (
       [
-        pkgs.aos
         pkgs.aos.apr
-        pkgs.aos-hub
         workerDist
         pkgs.coreutils
         pkgs.curl
@@ -689,10 +742,9 @@
         pkgs.sqlite
         pkgs.tar
         pkgs.util-linux
-        fixture.helperV1
-        fixture.helperV2
+        publication.project
+        nextPublication.project
         containerPublicationInputs
-        containerFixture.config.aos.config.evalAtBoot.baseLib
         pkgs.aos-hub-console-dist
         databaseUrl
         ingressKey
@@ -713,6 +765,8 @@
         workerOptions
         parityRouteKeys
       ]
+      ++ publication.nativeRoots
+      ++ nextPublication.nativeRoots
       ++ lib.optionals externalDirect [
         pkgs.openssl
         pkgs.aos-hub-worker-dist
@@ -750,7 +804,8 @@
         sqlObserver
       ]
       ++ lib.optional (nativeBodyObservationTools != null) nativeBodyObservationTools
-      ++ lib.optionals packMemoryEnabled [packMemoryModules packMemoryExporter packMemorySourceDescriptor];
+      ++ lib.optionals packMemoryEnabled [packMemoryModules packMemoryExporter packMemorySourceDescriptor]
+    );
   };
 in {
   name =
@@ -774,7 +829,10 @@ in {
           if externalDirect
           then 32768
           else 16384;
-        memoryMiB = 2048;
+        # Preparing signed source closures is separate from Hub throughput.
+        # Give APR enough parallel compression capacity for the real corpus.
+        memoryMiB = 8192;
+        vcpuCount = 8;
         varProvisioning = "repart";
       };
       native = {
@@ -1210,18 +1268,34 @@ in {
               "externalCopyPartialInstallation": copy_partial_hold,
               "externalWorkflowAccounting": "${managedFixtureModules}/_hub-external-workflow-accounting.py",
               "managedContainerProducer": "${managedFixtureModules}/_hub-managed-container.py",
-              "documentedPackage": {"storePath": "${pkgs.aos-hub}", "version": "${pkgs.aos-hub.version}",
-                  "baseLib": "${containerFixture.config.aos.config.evalAtBoot.baseLib}"},
+              "documentedPackage": {"storePath": "${pkgs.aos-hub}", "version": "${pkgs.aos-hub.version}"},
+              "publicationProject": "${publication.project}",
               "publicDocumentCacheObserver": "${managedFixtureModules}/_hub-worker-cache-observer.cjs",
               "readParityModule": "${managedFixtureModules}/_hub-direct-read-parity.py",
               "readIndexModule": "${managedFixtureModules}/_hub-index-parity.py",
               "readWindowModule": "${managedFixtureModules}/_hub-direct-read-window.py",
               "managedCleanupNativeHelper": "${managedCleanupNativeHelper}/bin/aos-hub-managed-cleanup-contract",
               "managedCleanupNativeHelperProvenance": "${managedCleanupHelperProvenance}/provenance.json",
-              "packMemoryModules": ${if packMemoryEnabled then builtins.toJSON (toString packMemoryModules) else "None"},
-              "packMemoryExporter": ${if packMemoryEnabled then builtins.toJSON "${packMemoryExporter}/bin/aos-pack-memory-fixture" else "None"},
-              "packMemorySourceDescriptor": ${if packMemoryEnabled then builtins.toJSON "${packMemorySourceDescriptor}/descriptor.json" else "None"},
-              "packMemoryCurrentTuple": ${if packMemoryEnabled then builtins.toJSON "${packMemorySourceDescriptor}/current-tuple.json" else "None"},
+              "packMemoryModules": ${
+            if packMemoryEnabled
+            then builtins.toJSON (toString packMemoryModules)
+            else "None"
+          },
+              "packMemoryExporter": ${
+            if packMemoryEnabled
+            then builtins.toJSON "${packMemoryExporter}/bin/aos-pack-memory-fixture"
+            else "None"
+          },
+              "packMemorySourceDescriptor": ${
+            if packMemoryEnabled
+            then builtins.toJSON "${packMemorySourceDescriptor}/descriptor.json"
+            else "None"
+          },
+              "packMemoryCurrentTuple": ${
+            if packMemoryEnabled
+            then builtins.toJSON "${packMemorySourceDescriptor}/current-tuple.json"
+            else "None"
+          },
               "verificationObservationHelper": "${verificationObservationHelper}/bin/aos-hub-worker-verification-observation",
               "verificationObservationHelperProvenance": "${verificationObservationHelperProvenance}/provenance.json",
               "consoleAssetInputs": [
@@ -1245,15 +1319,15 @@ in {
               "nativeBodyObservationTools": ${
             if nativeBodyObservationTools == null
             then "None"
-            else ''{
-                  "package": "${nativeBodyObservationTools}",
-                  "context": {"path": "${nativeBodyObservationTools}/libexec/aos-observation-tools/package-context.json",
-                      "sha256": hashlib.sha256(Path("${nativeBodyObservationTools}/libexec/aos-observation-tools/package-context.json").read_bytes()).hexdigest()},
-                  "provenance": {"path": "${nativeBodyObservationTools}/helper-build-provenance.json",
-                      "sha256": hashlib.sha256(Path("${nativeBodyObservationTools}/helper-build-provenance.json").read_bytes()).hexdigest()},
-                  "wrapper": {"path": "${nativeBodyObservationTools}/bin/aos-native-body-observer",
-                      "sha256": hashlib.sha256(Path("${nativeBodyObservationTools}/bin/aos-native-body-observer").read_bytes()).hexdigest()},
-              }''
+            else ''              {
+                                "package": "${nativeBodyObservationTools}",
+                                "context": {"path": "${nativeBodyObservationTools}/libexec/aos-observation-tools/package-context.json",
+                                    "sha256": hashlib.sha256(Path("${nativeBodyObservationTools}/libexec/aos-observation-tools/package-context.json").read_bytes()).hexdigest()},
+                                "provenance": {"path": "${nativeBodyObservationTools}/helper-build-provenance.json",
+                                    "sha256": hashlib.sha256(Path("${nativeBodyObservationTools}/helper-build-provenance.json").read_bytes()).hexdigest()},
+                                "wrapper": {"path": "${nativeBodyObservationTools}/bin/aos-native-body-observer",
+                                    "sha256": hashlib.sha256(Path("${nativeBodyObservationTools}/bin/aos-native-body-observer").read_bytes()).hexdigest()},
+                            }''
           },
               "storageCodecExecutable": {"path": "${storageBodyCodec}/bin/aos-storage-body-codec",
                   "sha256": hashlib.sha256(Path("${storageBodyCodec}/bin/aos-storage-body-codec").read_bytes()).hexdigest()},
@@ -1349,7 +1423,7 @@ in {
         ''
       else
         import ./_hub-hybrid-legacy.nix {
-          inherit channelReceiptKey containerPublicationInputs databaseUrl fixture parityRouteKeys pkgs processSampler qualificationKeys releasePublicationKeys releaseReceiptKey secretVersionManifest serverCertificate serverPrivateKey storageKey workerOptions workerRunner;
+          inherit channelReceiptKey containerPublicationInputs databaseUrl fixture nextPublication parityRouteKeys pkgs processSampler publication qualificationKeys releasePublicationKeys releaseReceiptKey secretVersionManifest serverCertificate serverPrivateKey storageKey workerOptions workerRunner;
         }
     );
 }

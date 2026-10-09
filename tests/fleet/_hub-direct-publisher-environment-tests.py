@@ -57,7 +57,8 @@ class PublisherEnvironmentTests(unittest.TestCase):
             return json.dumps({"trustKey": "external-direct:Ed25519:controlled"})
         module.private_guest_command = capture
         module.prepare_direct_signed_surface(object(), "selected-python", "selected-apr", GIT,
-            "selected-ssh", "selected-nix", "selected-helper", "https://localhost/registry")
+            "selected-ssh", "selected-nix", "selected-helper", "https://localhost/registry",
+            publication_project="selected-project")
         return commands[0].split("<<'DIRECT_SIGNED_SURFACE'\n", 1)[1].rsplit("DIRECT_SIGNED_SURFACE", 1)[0]
 
     def test_apr_initial_identity_is_command_scoped_and_home_is_inherited(self):

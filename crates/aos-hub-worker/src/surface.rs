@@ -1341,7 +1341,7 @@ pub(crate) async fn inspect_documentation(
     package_name: &str,
     package_version: &str,
     platform: &str,
-    artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+    artifact: &aos_registry_surface::manifest::NativeArtifactMeta,
     cursor: usize,
 ) -> Result<(StorageWorkOutcome, u64)> {
     let store_hash = aos_registry_surface::store::store_path_hash(&artifact.store_path)?;
@@ -1354,7 +1354,7 @@ pub(crate) async fn inspect_documentation(
         narinfo_size <= MAX_METADATA_BYTES as u64,
         "documentation narinfo exceeds the metadata limit"
     );
-    let document = aos_hub_core::indexer::fetch_package_documentation(
+    let (_, document) = aos_hub_core::indexer::native_documentation::fetch_native_documentation_content(
         fetcher,
         package_name,
         package_version,
@@ -1365,7 +1365,10 @@ pub(crate) async fn inspect_documentation(
     let source_bytes = narinfo_size
         .checked_add(artifact.nar_size)
         .context("documentation source byte count overflowed")?;
-    let inspection = DocumentationInspection::from_document(&document);
+    let inspection = DocumentationInspection {
+        document_sha256: artifact.document_sha256.clone(),
+        search: document.search_documents(),
+    };
     let page = StorageDocumentationPage::from_inspection(&inspection, cursor)?;
     Ok((StorageWorkOutcome::Documentation { page }, source_bytes))
 }

@@ -58,12 +58,10 @@ fn coverage_requires_every_exact_column_and_never_projects_raw_private_cells() {
         ))
         .is_err()
     );
-    assert!(
-        ObjectRequirementsCoverage::from_contract(
-            &COVERAGE.lines().skip(3).collect::<Vec<_>>().join("\n")
-        )
-        .is_err()
-    );
+    assert!(ObjectRequirementsCoverage::from_contract(
+        &COVERAGE.lines().skip(3).collect::<Vec<_>>().join("\n")
+    )
+    .is_err());
     let historical = SnapshotClassifier::for_supported_generation(7).unwrap();
     assert!(coverage.require_schema(historical.manifest()).is_err());
 
@@ -92,19 +90,15 @@ fn coverage_requires_every_exact_column_and_never_projects_raw_private_cells() {
         .unwrap()
         .unwrap();
     let encoded = bytes(&projection).unwrap();
-    assert!(
-        !encoded
-            .windows(b"PRIVATE-SECRET-AND-OPAQUE-ORIGINAL".len())
-            .any(|part| part == b"PRIVATE-SECRET-AND-OPAQUE-ORIGINAL")
-    );
+    assert!(!encoded
+        .windows(b"PRIVATE-SECRET-AND-OPAQUE-ORIGINAL".len())
+        .any(|part| part == b"PRIVATE-SECRET-AND-OPAQUE-ORIGINAL"));
     let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-    assert!(
-        json["cells"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|cell| cell["column"] != "hash")
-    );
+    assert!(json["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|cell| cell["column"] != "hash"));
     assert_eq!(counts.excluded_secret_cells, 1);
     assert_eq!(counts.opaque_dependencies, 1);
 }
@@ -116,12 +110,10 @@ fn current_progress_dependency_is_private_and_historical_coverage_stays_separate
     assert_eq!(historical.schema.version, 8);
     assert_eq!(current.schema.version, 12);
     assert_eq!(current.tables.len(), 287);
-    assert!(
-        !historical.tables["oci_provider_inventory_generations"]
-            .columns
-            .iter()
-            .any(|column| column.name == "object_progress")
-    );
+    assert!(!historical.tables["oci_provider_inventory_generations"]
+        .columns
+        .iter()
+        .any(|column| column.name == "object_progress"));
     assert!(current.require_schema(&historical.schema).is_err());
     assert!(historical.require_schema(&current.schema).is_err());
 
@@ -163,30 +155,24 @@ fn projection_bounds_and_original_ordinals_refuse_without_implicit_truncation() 
     let coverage = ObjectRequirementsCoverage::current8().unwrap();
     let original = row("surface_objects");
     let mut counts = ObjectRequirementsCounts::default();
-    assert!(
-        coverage
-            .project(
-                "surface_objects",
-                1,
-                &original,
-                &mut counts,
-                Default::default()
-            )
-            .is_err()
-    );
+    assert!(coverage
+        .project(
+            "surface_objects",
+            1,
+            &original,
+            &mut counts,
+            Default::default()
+        )
+        .is_err());
     let mut counts = ObjectRequirementsCounts::default();
     let limits = ObjectRequirementsLimits { max_rows: 1 };
-    assert!(
-        coverage
-            .project("surface_objects", 0, &original, &mut counts, limits)
-            .unwrap()
-            .is_some()
-    );
-    assert!(
-        coverage
-            .project("surface_objects", 1, &original, &mut counts, limits)
-            .is_err()
-    );
+    assert!(coverage
+        .project("surface_objects", 0, &original, &mut counts, limits)
+        .unwrap()
+        .is_some());
+    assert!(coverage
+        .project("surface_objects", 1, &original, &mut counts, limits)
+        .is_err());
     let wide = Row::new(
         columns("surface_objects")
             .iter()
@@ -200,28 +186,24 @@ fn projection_bounds_and_original_ordinals_refuse_without_implicit_truncation() 
             })
             .collect(),
     );
-    assert!(
-        coverage
-            .project(
-                "surface_objects",
-                0,
-                &wide,
-                &mut Default::default(),
-                Default::default()
-            )
-            .is_err()
-    );
-    assert!(
-        coverage
-            .project(
-                "unknown",
-                0,
-                &original,
-                &mut Default::default(),
-                Default::default()
-            )
-            .is_err()
-    );
+    assert!(coverage
+        .project(
+            "surface_objects",
+            0,
+            &wide,
+            &mut Default::default(),
+            Default::default()
+        )
+        .is_err());
+    assert!(coverage
+        .project(
+            "unknown",
+            0,
+            &original,
+            &mut Default::default(),
+            Default::default()
+        )
+        .is_err());
 }
 
 #[test]
@@ -246,7 +228,7 @@ fn paired_encrypted_requirements_bind_exact_source_and_reject_changed_original()
         Default::default(),
     )
     .unwrap();
-    let schema = SnapshotClassifier::for_supported_generation(13).unwrap();
+    let schema = SnapshotClassifier::for_supported_generation(16).unwrap();
     writer.require_schema(schema.manifest()).unwrap();
     let original = row("surface_objects");
     writer.row("surface_objects", 0, &original).unwrap();
@@ -305,20 +287,18 @@ fn paired_encrypted_requirements_bind_exact_source_and_reject_changed_original()
     .unwrap();
     assert!(rejected_writer.row("unknown", 0, &original).is_err());
     assert!(rejected_writer.finish(&signer, &counts).is_err());
-    assert!(
-        ObjectRequirementsReader::new(
-            output.root.as_bytes(),
-            &trust,
-            &wrapping,
-            &[],
-            Cursor::new(&output.metadata),
-            Cursor::new(&output.private),
-            &"b".repeat(64),
-            StreamLimits::default(),
-            Default::default()
-        )
-        .is_err()
-    );
+    assert!(ObjectRequirementsReader::new(
+        output.root.as_bytes(),
+        &trust,
+        &wrapping,
+        &[],
+        Cursor::new(&output.metadata),
+        Cursor::new(&output.private),
+        &"b".repeat(64),
+        StreamLimits::default(),
+        Default::default()
+    )
+    .is_err());
     let mut damaged = output.private.clone();
     damaged.truncate(damaged.len() - 1);
     let mut reader = ObjectRequirementsReader::new(
@@ -353,11 +333,9 @@ fn paired_encrypted_requirements_bind_exact_source_and_reject_changed_original()
     .unwrap();
     let first = decoder.next_chunk().unwrap().unwrap();
     first.with_private_bytes(|bytes| {
-        assert!(
-            std::str::from_utf8(bytes)
-                .unwrap()
-                .contains("old_writer_fencing")
-        )
+        assert!(std::str::from_utf8(bytes)
+            .unwrap()
+            .contains("old_writer_fencing"))
     });
 }
 

@@ -479,12 +479,12 @@ async fn upload_registry_publication_with_commit(
 }
 
 /// Uploads one publication class with bounded request concurrency.
-async fn upload_publication_object_class(
+async fn upload_publication_object_class<'objects>(
     access: &PublicationAccess,
     publication_id: &str,
     root: &std::os::fd::OwnedFd,
     inputs: &[hub_types::RegistryPublicationObjectInput],
-    objects: &[&hub_types::RegistryPublicationObject],
+    objects: &[&'objects hub_types::RegistryPublicationObject],
     printer: &Printer,
     label: &str,
 ) -> Result<()> {
@@ -523,23 +523,34 @@ async fn upload_publication_object_class(
     let progress = printer.transfer(label, total_bytes);
     let transfer_manager =
         std::sync::Arc::new(TransferManager::new(TransferManagerConfig::default()));
-    // Mutable pointers share one publication lease and advance placement
-    // watermarks. Serialize them so independent HTTP requests cannot race the
-    // durable pointer-phase transition; immutable content remains parallel.
-    let request_concurrency = if objects
+    // The first pointer upload opens the durable pointer phase and each
+    // placement's pointer advance, so it runs alone. Later pointers refresh
+    // the same publication lease and write independent per-object evidence;
+    // watermarks move only at commit, which re-verifies every object. Each
+    // pointer request costs many sequential Hub database round trips, so a
+    // few concurrent requests hide that latency without crowding the Hub.
+    const CONCURRENT_POINTER_UPLOADS: usize = 8;
+    let pointers = objects
         .iter()
-        .any(|object| object.kind == "mutable_pointer")
-    {
-        1
+        .any(|object| object.kind == "mutable_pointer");
+    let request_concurrency = if pointers {
+        CONCURRENT_POINTER_UPLOADS
     } else {
         CONCURRENT_IMMUTABLE_UPLOADS
+    };
+    let leading = if pointers {
+        objects.iter().position(|object| !object.verified)
+    } else {
+        None
     };
 
     let inputs = inputs
         .iter()
         .map(|input| (input.path.as_str(), input))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let result = stream::iter(objects.iter().copied().map(|object| {
+    // The named lifetime keeps each upload future tied to the objects slice
+    // rather than making the closure higher-ranked over its argument.
+    let upload_one = |object: &'objects hub_types::RegistryPublicationObject| {
         let declared = inputs.get(object.path.as_str()).copied();
         let snapshot_budget = std::sync::Arc::clone(&snapshot_budget);
         let multipart_budget = std::sync::Arc::clone(&multipart_budget);
@@ -606,9 +617,22 @@ async fn upload_publication_object_class(
             )
             .await
         }
-    }))
-    .buffer_unordered(request_concurrency)
-    .try_collect::<Vec<()>>()
+    };
+    let result = async {
+        if let Some(index) = leading {
+            upload_one(objects[index]).await?;
+        }
+        stream::iter(
+            objects
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| Some(*index) != leading)
+                .map(|(_, object)| upload_one(*object)),
+        )
+        .buffer_unordered(request_concurrency)
+        .try_collect::<Vec<()>>()
+        .await
+    }
     .await;
     progress.finish();
     result.map(|_| ())

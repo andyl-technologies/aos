@@ -4,15 +4,17 @@
 {
   runtimeSource,
   fixtureSource,
+  runtimeSourceIdentity ? null,
   separateDatabase ? true,
   externalDirect ? true,
 }: let
   runtime = import runtimeSource {};
   runtimePkgs = runtime.pkgs;
   fixture = import (fixtureSource + "/tests/fleet/hub-hybrid.nix") {
-    inherit (runtime) lib mkSystem;
+    inherit (runtime) lib;
+    mkSystem = import ./_hub-fixture-system.nix {inherit (runtime) mkSystem;};
     pkgs = runtimePkgs;
-    inherit runtimeSource separateDatabase externalDirect;
+    inherit runtimeSource runtimeSourceIdentity separateDatabase externalDirect;
   };
   fleetHarness = import (runtimeSource + "/lib/testing/fleet.nix") {
     inherit (runtime) lib;

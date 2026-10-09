@@ -8,13 +8,14 @@ use std::io::Write as _;
 use std::path::Path;
 
 use aos_oci_types::{
-    Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
-    CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerEvidenceMappingQualification,
-    ContainerEvidenceQualification, ContainerEvidenceQualificationCheck, ContainerNixProvenance,
-    ContainerOciRelease, ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity,
-    ContainerSignatureInput, ContainerSignatureInputEvidence, Descriptor, HistoryEntry,
-    ImageConfig, ImageIndex, ImageManifest, ImageRuntimeConfig, MediaType, NixDefinitionIdentity,
-    NixOutputIdentity, Platform, RootFs, RootFsType, Sha256Digest, to_canonical_json,
+    Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
+    CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE, CONTAINER_SIGNATURE_INPUT_SCHEMA,
+    ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
+    ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
+    ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity, ContainerSignatureInput,
+    ContainerSignatureInputEvidence, Descriptor, HistoryEntry, ImageConfig, ImageIndex,
+    ImageManifest, ImageRuntimeConfig, MediaType, NixDefinitionIdentity, NixOutputIdentity,
+    Platform, RootFs, RootFsType, Sha256Digest, to_canonical_json,
 };
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -131,6 +132,15 @@ pub fn fixture() -> Fixture {
 }
 
 pub fn add_signed_release_graph(fixture: &Fixture) -> ContainerRelease {
+    signed_release_graph(fixture, false)
+}
+
+/// Builds a signed-root fixture that retains a native deployment document.
+pub fn add_signed_release_graph_with_deployment(fixture: &Fixture) -> ContainerRelease {
+    signed_release_graph(fixture, true)
+}
+
+fn signed_release_graph(fixture: &Fixture, include_deployment: bool) -> ContainerRelease {
     let index = Descriptor {
         media_type: MediaType::OciImageIndex,
         digest: Sha256Digest::digest(&fixture.index),
@@ -238,7 +248,7 @@ pub fn add_signed_release_graph(fixture: &Fixture) -> ContainerRelease {
     };
 
     ContainerRelease {
-        schema_version: 1,
+        schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
         media_type: MediaType::AosContainerRelease,
         identity: ContainerReleaseIdentity {
             release: "1.0.0".to_string(),
@@ -264,6 +274,12 @@ pub fn add_signed_release_graph(fixture: &Fixture) -> ContainerRelease {
         },
         qualification: ready_qualification(),
         evidence: ContainerReleaseEvidence {
+            deployment: include_deployment
+                .then(|| artifact("deployment", MediaType::AosArtifactDeployment)),
+            abilities: Some(artifact(
+                "abilities",
+                MediaType::AosContainerStaticAbilities,
+            )),
             sbom: artifact("sbom", MediaType::SpdxJson),
             source: artifact("source", MediaType::AosSourceClosure),
             license: artifact("license", MediaType::AosLicenseReport),
@@ -280,6 +296,8 @@ pub fn publication_signature_input(release: &ContainerRelease) -> ContainerSigna
         oci: release.oci.clone(),
         nix: release.nix.clone(),
         evidence: ContainerSignatureInputEvidence {
+            deployment: release.evidence.deployment.clone(),
+            abilities: release.evidence.abilities.clone(),
             sbom: release.evidence.sbom.clone(),
             source: release.evidence.source.clone(),
             license: release.evidence.license.clone(),
@@ -354,7 +372,7 @@ pub fn write_publication_inputs(inputs: &Path, layout: &Path, input: &ContainerS
         to_canonical_json(&signing_request).expect("signing request"),
     )
     .expect("write signing request");
-    let roots = serde_json::json!({
+    let mut roots = serde_json::json!({
         "schema": "aos.container.publication-roots/v1",
         "image": input.oci.index,
         "referrers": [
@@ -365,6 +383,18 @@ pub fn write_publication_inputs(inputs: &Path, layout: &Path, input: &ContainerS
             input.evidence.provenance,
         ],
     });
+    if let Some(abilities) = &input.evidence.abilities {
+        roots["referrers"]
+            .as_array_mut()
+            .expect("referrers")
+            .push(serde_json::to_value(abilities).expect("abilities descriptor"));
+    }
+    if let Some(deployment) = &input.evidence.deployment {
+        roots["referrers"]
+            .as_array_mut()
+            .expect("referrers")
+            .push(serde_json::to_value(deployment).expect("deployment descriptor"));
+    }
     fs::write(
         inputs.join("publication-roots.json"),
         to_canonical_json(&roots).expect("publication roots"),

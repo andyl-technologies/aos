@@ -18,6 +18,17 @@
     pkgs.mkDerivation {
       inherit pname version;
       src = null;
+      platformSupport = {
+        build = [{os = ["linux"];}];
+        host = [{os = ["linux"];}];
+        target = [];
+        role = "public-package";
+      };
+      meta = {
+        description = message;
+        license = "MIT";
+        maintainers = ["fleet-publisher@example.test"];
+      };
       runtimeDeps = lib.optional (dependency != null) dependency;
       phases = [
         {
@@ -103,7 +114,7 @@
   # these test systems.
   qualificationImage = {
     aos.image.budgets = {
-      maxRuntimeClosureMiB = 912;
+      maxRuntimeClosureMiB = 3072;
       maxDownloadMiB = 816;
       maxRootMiB = 768;
     };
@@ -128,15 +139,6 @@
   };
 
   consumerBaseline = {
-    # The user journey installs nginx from the signed Hub registry. Its exposed
-    # service requests host networking and a bounded capability, so the
-    # qualification consumer must exercise normal permission admission with an
-    # explicit host policy instead of bypassing the package policy gate.
-    environment.etc."aos/policy.toml" = {
-      text = "tier = \"privileged\"\n";
-      mode = "0644";
-    };
-
     systemd.services.aos-upgrade-removed = {
       description = "Upgrade qualification service removed by generation two";
       wantedBy = ["multi-user.target"];
@@ -168,6 +170,10 @@
     ../../systems/server-test.nix
     qualificationImage
     {
+      aos.packages.aos-hub = {
+        package = pkgs.aos-hub;
+        bundle = true;
+      };
       aos.registry-hub = {
         enable = true;
         # The cleartext listener is deliberate in the first qualification

@@ -163,38 +163,19 @@ fn semantic_browse_counts_actual_selected_json_and_rejects_unknown_content() {
 
 #[test]
 fn canonical_document_is_counted_as_document_bytes_and_bound_to_its_digest() {
-    use aos_doc_model::{
-        DocumentationIdentity, DocumentedPackage, PackageDocumentation, DOCUMENT_SCHEMA,
-    };
-
     let fixture = Fixture::new();
-    let mut document = PackageDocumentation {
-        schema: DOCUMENT_SCHEMA.into(),
-        package: DocumentedPackage {
-            name: "package".into(),
-            version: "1".into(),
-            platform: "x86_64-linux".into(),
-            summary: "summary".into(),
-            homepage: None,
-            license: "MIT".into(),
-        },
-        identity: DocumentationIdentity {
-            semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
-            runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
-            config_module_nar_hash: None,
-            system_module_nar_hash: None,
-            expose_artifact_nar_hash: None,
-            source_nar_hash: format!("sha256:{}", "2".repeat(64)),
-        },
-        sections: vec![],
-        options: vec![],
-        runtime: Default::default(),
-    };
-    document.identity.semantic_schema_sha256 = document.computed_semantic_schema_sha256().unwrap();
-    let body = document.canonical_json().unwrap();
+    let body = serde_json::to_vec(&serde_json::json!({
+        "schema": "aos.module.documentation",
+        "scope": ["package", "package"],
+        "system": "x86_64-linux",
+        "packages": [{"name": "package", "version": "1"}],
+        "options": [],
+        "abilities": {}
+    }))
+    .unwrap();
     let path = format!(
-        "/managed/containers/-/api/v1/documentation/{}",
-        document.document_sha256().unwrap()
+        "/managed/containers/-/api/v1/documentation/sha256:{}",
+        files::digest(&body)
     );
     let rows = inspect(ingress_case(&fixture, &path, "GET", None, b"", &body, 200)).unwrap();
     assert_eq!(rows[0].class, "ingress_canonical_document_body");

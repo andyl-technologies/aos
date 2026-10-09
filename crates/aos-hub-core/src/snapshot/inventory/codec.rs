@@ -78,7 +78,7 @@ impl<M: Write, P: Write> ObjectRequirementsWriter<M, P> {
     ) -> Result<Self> {
         limits.validate()?;
         hash_string(source_capture_root_sha256)?;
-        let coverage = ObjectRequirementsCoverage::current13()?;
+        let coverage = ObjectRequirementsCoverage::current16()?;
         let archive = FreshArchiveId::generate(rng)?;
         let metadata_key = FreshStreamKey::generate(rng)?;
         let private_key = FreshStreamKey::generate(rng)?;
@@ -254,15 +254,18 @@ impl<M: Read, P: Read> ObjectRequirementsReader<M, P> {
         let id = hex::encode(root.archive_id());
         let historical = ObjectRequirementsCoverage::current8()?;
         let generation12 = ObjectRequirementsCoverage::current12()?;
-        let current = ObjectRequirementsCoverage::current13()?;
+        let generation13 = ObjectRequirementsCoverage::current13()?;
+        let current = ObjectRequirementsCoverage::current16()?;
         let selection = metadata.select_exact(&[
             historical.header(&id, "metadata", source_capture_root_sha256),
             generation12.header(&id, "metadata", source_capture_root_sha256),
+            generation13.header(&id, "metadata", source_capture_root_sha256),
             current.header(&id, "metadata", source_capture_root_sha256),
         ])?;
         let coverage = match selection {
             0 => historical,
             1 => generation12,
+            2 => generation13,
             _ => current,
         };
         private.compare(&coverage.header(&id, "private", source_capture_root_sha256))?;

@@ -96,8 +96,8 @@ impl SurfaceFetch for TopologySurfaceFetch {
         package_name: &str,
         package_version: &str,
         platform: &str,
-        artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
-    ) -> Result<aos_doc_model::PackageDocumentation> {
+        artifact: &aos_registry_surface::manifest::NativeArtifactMeta,
+    ) -> Result<Vec<u8>> {
         let path = format!(
             "{}.narinfo",
             aos_registry_surface::store::store_path_hash(&artifact.store_path)?
@@ -139,7 +139,7 @@ impl SurfaceFetch for TopologySurfaceFetch {
         package_name: &str,
         package_version: &str,
         platform: &str,
-        artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+        artifact: &aos_registry_surface::manifest::NativeArtifactMeta,
     ) -> Result<crate::fetch::DocumentationInspection> {
         let path = format!(
             "{}.narinfo",

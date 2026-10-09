@@ -6,6 +6,26 @@
   version = "1.7.0";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "libglvnd-headers";
     inherit version;
 

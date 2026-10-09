@@ -102,8 +102,8 @@ pub(super) fn decode_transport(
         StorageWorkOutcome::Documentation { page } => {
             payload.selected_data_bytes = serde_json::to_vec(page)?.len().to_string();
         }
-        StorageWorkOutcome::DocumentationContent { document } => {
-            payload.selected_data_bytes = serde_json::to_vec(document)?.len().to_string();
+        StorageWorkOutcome::DocumentationContent { document_base64 } => {
+            payload.selected_data_bytes = validated_base64_bytes(document_base64)?.to_string();
         }
         StorageWorkOutcome::GitTreeEntries { page, .. } => {
             payload.selected_data_bytes = serde_json::to_vec(page)?.len().to_string();

@@ -224,41 +224,35 @@ fn known_refusal_does_not_expand_to_unreviewed_mutation_or_noncanonical_original
 
 #[test]
 fn genuine_document_content_uses_its_operation_bound_and_signed_identity() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
     let (mut plan, mut result) = fixture();
-    result.outcome = serde_json::from_value(serde_json::json!({
-        "kind": "documentation_content",
-        "document": {
-            "schema": "aos.package-documentation/v1",
-            "package": {"name": "example", "version": "1.0.0", "platform": "x86_64-linux",
-                "summary": "Actual bounded documentation", "license": "Apache-2.0"},
-            "identity": {
-                "semantic_schema_sha256": format!("sha256:{}", "0".repeat(64)),
-                "runtime_nar_hash": format!("sha256:{}", "1".repeat(64)),
-                "source_nar_hash": format!("sha256:{}", "2".repeat(64))
-            },
-            "sections": [{"id": "usage", "title": "Usage", "blocks": [
-                {"kind": "code", "language": "text", "text": "x".repeat(150 * 1024)},
-                {"kind": "code", "language": "text", "text": "y".repeat(150 * 1024)}
-            ]}],
-            "runtime": {}
-        }
-    }))
-    .unwrap();
-    let StorageWorkOutcome::DocumentationContent { document } = &mut result.outcome else {
-        panic!("documentation fixture outcome");
+    let mut document = serde_json::json!({
+        "schema": "aos.module.documentation",
+        "scope": ["package", "example"],
+        "system": "x86_64-linux",
+        "packages": [{"name": "example", "version": "1.0.0"}],
+        "options": [
+            {"path": ["example", "first"], "owner": "example",
+                "description": "x".repeat(150 * 1024), "type": {"kind": "string"},
+                "visibility": "public", "readOnly": false, "extensible": false},
+            {"path": ["example", "second"], "owner": "example",
+                "description": "y".repeat(150 * 1024), "type": {"kind": "string"},
+                "visibility": "public", "readOnly": false, "extensible": false}
+        ],
+        "abilities": {}
+    });
+    let body = serde_json::to_vec(&document).unwrap();
+    aos_doc_model::runtime::RuntimeDocument::from_json(&body).unwrap();
+    result.outcome = StorageWorkOutcome::DocumentationContent {
+        document_base64: STANDARD.encode(&body),
     };
-    document.identity.semantic_schema_sha256 = document.computed_semantic_schema_sha256().unwrap();
-    let body = document.canonical_json().unwrap();
-    let document_sha256 = document.document_sha256().unwrap();
-    let semantic_sha256 = document.identity.semantic_schema_sha256.clone();
     let artifact = serde_json::from_value(serde_json::json!({
-        "format": "aos.package-documentation/v1+json",
-        "store_path": "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example-docs.json",
+        "store_path": "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example-options",
         "nar_hash": format!("sha256:{}", "3".repeat(64)),
         "nar_size": body.len() + 256,
-        "document_sha256": document_sha256,
+        "document_sha256": format!("sha256:{}", hex::encode(Sha256::digest(&body))),
         "document_size": body.len(),
-        "semantic_schema_sha256": semantic_sha256,
         "references": []
     }))
     .unwrap();
@@ -275,9 +269,10 @@ fn genuine_document_content_uses_its_operation_bound_and_signed_identity() {
     let (_, _, payload) = decode_transport(&request, &reply, "fixture", 200).unwrap();
     assert_eq!(payload.selected_data_bytes, body.len().to_string());
 
-    if let StorageWorkOutcome::DocumentationContent { document } = &mut result.outcome {
-        document.package.summary = "Changed document after its signed identity".into();
-    }
+    document["options"][0]["description"] = "Changed document after its signed identity".into();
+    result.outcome = StorageWorkOutcome::DocumentationContent {
+        document_base64: STANDARD.encode(serde_json::to_vec(&document).unwrap()),
+    };
     assert!(decode_transport(
         &request,
         &serde_json::to_vec(&result).unwrap(),

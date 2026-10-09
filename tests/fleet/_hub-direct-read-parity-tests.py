@@ -25,7 +25,7 @@ class ReadParityTests(unittest.TestCase):
             "packageName": "aos-hub", "origins": {mode: "https://" + mode.replace("_", "-") + ".test"
                 for mode in parity.READ_MODES}, "objects": {}}
         self.bodies = {kind: (kind.encode() + b"-controlled-source-") * 4 for kind in parity.READ_CLASSES}
-        self.bodies["document"] = json.dumps({"schema": "aos.package-documentation/v1",
+        self.bodies["document"] = json.dumps({"schema": "aos.module.documentation",
             "options": [{"controlled": True}]}).encode()
         paths = {"git": "objects/aa/" + "a" * 62, "package": "nar/controlled.nar",
             "metadata": "0" * 32 + ".narinfo"}
@@ -298,7 +298,9 @@ class ReadParityTests(unittest.TestCase):
         self.assertEqual(len(scripts), 1)
         guest = textwrap.dedent(scripts[0])
         compile(guest, "actual-document-producer-guest", "exec")
-        self.assertIn("'--documentation-base-lib'", guest)
+        self.assertNotIn("'--documentation-base-lib'", guest)
+        self.assertIn("module_documentation", guest)
+        self.assertIn("options.json", guest)
         self.assertIn("'--upload-url', 'file://' + selected['surface']", guest)
         self.assertNotIn("shell=True", guest)
         self.assertFalse(any(isinstance(node, ast.keyword) and node.arg == "HOME"
@@ -314,7 +316,7 @@ class ReadParityTests(unittest.TestCase):
         prefix = textwrap.dedent(guest).split("for number, arguments in enumerate(commands):", 1)[0]
         selected = {"publisherRoot": str(self.root / "publisher"), "apr": "controlled-unused-apr",
             "git": "controlled-git", "toolDirectories": [], "hubPackage": "controlled-unused-package",
-            "hubVersion": "1.0.0", "baseLib": "controlled-unused-library", "cacheUrl": "https://cache.test",
+            "hubVersion": "1.0.0", "cacheUrl": "https://cache.test",
             "surface": str(self.root / "surface")}
         Path(selected["publisherRoot"]).mkdir(mode=0o700)
         calls = []

@@ -67,7 +67,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use aos_proto_types as pb;
-use aos_registry_surface::manifest::{ImageCompression, ImageTarget, ImageVerificationState};
+use aos_registry_surface::manifest::{ImageCompression, ImageTarget};
 use aos_registry_surface::object::Oid;
 use base64::Engine as _;
 use futures_util::{StreamExt as _, TryStreamExt as _};
@@ -95,6 +95,8 @@ const DEFAULT_PAGE_SIZE: u32 = 500;
 const MAX_DOCUMENTATION_RESULTS: usize = 10_000;
 /// Hard ceiling on page size.
 const MAX_PAGE_SIZE: u32 = 1000;
+/// Maximum accepted reporter clock lead over Hub receipt time.
+const ABILITY_DEPLOYMENT_MAX_FUTURE_SKEW_SECS: i64 = 30;
 
 /// Default lifetime of an internal cache-upload authorization (1 hour).
 pub const INTERNAL_UPLOAD_AUTH_TTL_SECS: i64 = 3600;
@@ -628,6 +630,20 @@ struct AccessTokenRetirementPlanInput {
     token_id: String,
 }
 
+/// Immutable enrollment identities and CAS state sealed by a reporter plan.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct AbilityDeploymentReporterPlanInput {
+    registry_id: i64,
+    registry_slug: String,
+    scope_key: String,
+    deployment: String,
+    principal_kind: String,
+    principal_id: i64,
+    principal_ref: String,
+    enabled: bool,
+    baseline_resource_version: u64,
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct DomainCreatePlanInput {
     request: pb::PlanDomainMutationRequest,
@@ -1078,72 +1094,107 @@ impl std::fmt::Display for RpcError {
 
 impl std::error::Error for RpcError {}
 
-fn package_documentation_identity(
-    locator: &crate::db::PackageDocumentationLocator,
+/// Projects authenticated native locator coordinates into the release identity envelope.
+fn native_documentation_identity(
+    locator: &crate::db::NativeDocumentationLocator,
 ) -> pb::PackageDocumentationIdentity {
     pb::PackageDocumentationIdentity {
-        registry_commit: locator.indexed_commit.clone(),
-        package: locator.package_name.clone(),
-        version: locator.package_version.clone(),
+        registry_commit: locator.commit.clone(),
+        package: locator.package.clone(),
+        version: locator.version.clone(),
         platform: locator.platform.clone(),
-        format: locator.artifact.format.clone(),
+        format: aos_doc_model::runtime::MODULE_DOCUMENTATION_SCHEMA.into(),
         store_path: locator.artifact.store_path.clone(),
         nar_hash: locator.artifact.nar_hash.clone(),
         nar_size: locator.artifact.nar_size,
         document_sha256: locator.artifact.document_sha256.clone(),
         document_size: locator.artifact.document_size,
-        semantic_schema_sha256: locator.artifact.semantic_schema_sha256.clone(),
-        release: locator.release.clone().unwrap_or_default(),
-        verified_tag_oid: locator.verified_tag_oid.clone().unwrap_or_default(),
-        release_snapshot_id: locator.release_snapshot_id.clone().unwrap_or_default(),
+        release: locator.release.clone(),
+        verified_tag_oid: locator.tag_oid.clone(),
+        release_snapshot_id: locator.snapshot_id.clone(),
     }
 }
 
-fn package_option_view(
+fn package_ability_reference_identity(
+    locator: &crate::db::NativeDocumentationLocator,
+) -> pb::PackageAbilityReferenceIdentity {
+    pb::PackageAbilityReferenceIdentity {
+        registry_commit: locator.commit.clone(),
+        package: locator.package.clone(),
+        version: locator.version.clone(),
+        platform: locator.platform.clone(),
+        document_sha256: locator.artifact.document_sha256.clone(),
+        release: locator.release.clone(),
+        verified_tag_oid: locator.tag_oid.clone(),
+        release_snapshot_id: locator.snapshot_id.clone(),
+    }
+}
+
+fn stored_ability_deployment_response(
+    stored: crate::db::StoredAbilityDeploymentOverlay,
+) -> pb::PackageAbilityDeploymentResponse {
+    pb::PackageAbilityDeploymentResponse {
+        canonical_json: stored.canonical_json,
+        authority: format!(
+            "reporter-bearer:{}:{}",
+            stored.principal_kind, stored.principal_ref
+        ),
+        received_at: stored.received_at,
+        expires_at: stored.expires_at,
+        reporter_resource_version: stored.reporter_resource_version,
+    }
+}
+
+fn decode_stored_package_ability_deployment(
+    stored: &crate::db::StoredAbilityDeploymentOverlay,
+    reference: &aos_doc_model::runtime::deployment::ReleasedReference,
+) -> anyhow::Result<aos_doc_model::runtime::deployment::NativeDeploymentReport> {
+    let report =
+        aos_doc_model::runtime::deployment::NativeDeploymentReport::decode(&stored.canonical_json)?;
+    anyhow::ensure!(
+        report.deployment == stored.deployment && report.sequence == stored.sequence,
+        "stored native report identity differs"
+    );
+    let validity = i64::try_from(report.valid_for_seconds)?;
+    let reported_at = i64::try_from(report.reported_at_unix_seconds)?;
+    anyhow::ensure!(
+        stored.expires_at
+            == stored
+                .received_at
+                .saturating_add(validity)
+                .min(reported_at.saturating_add(validity))
+            && reported_at
+                <= stored
+                    .received_at
+                    .saturating_add(ABILITY_DEPLOYMENT_MAX_FUTURE_SKEW_SECS),
+        "stored native report freshness differs from its assertion and receipt"
+    );
+    report.validate_reference(reference)?;
+    Ok(report)
+}
+
+fn native_option_view(
     identity: &pb::PackageDocumentationIdentity,
-    option: &aos_doc_model::OptionDocument,
+    option: &aos_doc_model::runtime::NativeOption,
 ) -> anyhow::Result<pb::PackageOptionView> {
     Ok(pb::PackageOptionView {
         identity: Some(identity.clone()),
         path: option
             .path
             .iter()
-            .map(|segment| pb::DocumentationPathSegment {
-                segment: Some(match segment {
-                    aos_doc_model::PathSegment::Literal { value } => {
-                        pb::documentation_path_segment::Segment::Literal(value.clone())
-                    }
-                    aos_doc_model::PathSegment::Wildcard { name } => {
-                        pb::documentation_path_segment::Segment::Wildcard(name.clone())
-                    }
-                }),
+            .map(|value| pb::DocumentationPathSegment {
+                segment: Some(pb::documentation_path_segment::Segment::Literal(
+                    value.clone(),
+                )),
             })
             .collect(),
-        display_path: option.display_path.clone(),
-        r#type: option.type_signature.clone(),
-        owner_package: option.owner.package.clone(),
-        owner_root: option.owner.root.clone(),
-        contributable: option.contributable,
+        display_path: option.path.join("."),
+        r#type: aos_doc_model::runtime::type_signature(&option.option_type)?,
+        owner_package: option.owner.clone(),
+        owner_root: String::new(),
+        extensible: option.extensible,
         canonical_option_json: serde_json::to_vec(option)?,
     })
-}
-
-fn proto_documentation_path(
-    path: &[pb::DocumentationPathSegment],
-) -> Result<Vec<aos_doc_model::PathSegment>, RpcError> {
-    path.iter()
-        .map(|segment| match segment.segment.as_ref() {
-            Some(pb::documentation_path_segment::Segment::Literal(value)) if !value.is_empty() => {
-                Ok(aos_doc_model::PathSegment::Literal {
-                    value: value.clone(),
-                })
-            }
-            Some(pb::documentation_path_segment::Segment::Wildcard(name)) if !name.is_empty() => {
-                Ok(aos_doc_model::PathSegment::Wildcard { name: name.clone() })
-            }
-            _ => Err(RpcError::invalid("option path contains an empty segment")),
-        })
-        .collect()
 }
 
 fn is_sha256_digest(value: &str) -> bool {
@@ -1238,14 +1289,6 @@ fn parse_image_target(value: &str) -> Result<Option<ImageTarget>, RpcError> {
         "vmware" => Ok(Some(ImageTarget::Vmware)),
         "hyper-v" => Ok(Some(ImageTarget::HyperV)),
         _ => Err(RpcError::invalid("unknown image target")),
-    }
-}
-
-fn image_verification_name(state: ImageVerificationState) -> &'static str {
-    match state {
-        ImageVerificationState::Unsigned => "unsigned",
-        ImageVerificationState::SignedUnverified => "signed-unverified",
-        ImageVerificationState::PolicyVerified => "policy-verified",
     }
 }
 
@@ -11722,80 +11765,726 @@ impl RpcService {
     ) -> Result<pb::GetPackageDocumentationResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
-        let (locator, document) = self
-            .load_package_documentation_for_registry(
+        let locator = self
+            .db
+            .native_documentation_locator(
                 registry.id,
                 &req.package,
                 &req.version,
                 &req.platform,
+                (!req.release.is_empty()).then_some(req.release.as_str()),
             )
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("package documentation"))?;
-        let canonical_json = document.canonical_json().map_err(RpcError::internal)?;
-        let identity = package_documentation_identity(&locator);
-        let artifact = locator.artifact;
+            .ok_or_else(|| RpcError::not_found("native package documentation"))?;
+        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry.id));
+        let (canonical_json, _) =
+            crate::indexer::native_documentation::fetch_native_documentation_content(
+                fetch.as_ref(),
+                &locator.package,
+                &locator.version,
+                &locator.platform,
+                &locator.artifact,
+            )
+            .await
+            .map_err(RpcError::internal)?;
         Ok(pb::GetPackageDocumentationResponse {
-            identity: Some(identity),
+            identity: Some(native_documentation_identity(&locator)),
             canonical_json,
-            etag: artifact.document_sha256,
+            etag: locator.artifact.document_sha256,
         })
     }
 
-    /// Loads and re-verifies one indexed package document after authorization.
+    /// Returns exact native declarations retained by a completed signed release.
     ///
-    /// The caller must already have authorized access to `registry_id`. This
-    /// helper is shared by the typed API and the session-aware browser so both
-    /// runtimes render bytes from the same signed Nix-object path.
+    /// The response pins the native documentation digest, release, commit, tag,
+    /// and completed snapshot. It does not authenticate observed live state.
+    /// Empty version/platform selectors use the same deterministic package
+    /// selection rules as documentation reads. A release selector additionally
+    /// requires the indexed reference commit to equal that release's commit.
     ///
     /// # Errors
     ///
-    /// Returns an error for database, placement, transport, NAR, or canonical
-    /// document verification failures.
-    pub(crate) async fn load_package_documentation_for_registry(
+    /// Returns registry visibility failures, not-found for an absent package
+    /// reference, and internal errors for corrupted signed reference bytes.
+    pub async fn get_package_ability_reference(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetPackageAbilityReferenceRequest,
+    ) -> Result<pb::GetPackageAbilityReferenceResponse, RpcError> {
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        self.require_read(auth, &registry).await?;
+        let locator = self
+            .db
+            .native_documentation_locator(
+                registry.id,
+                &req.package,
+                &req.version,
+                &req.platform,
+                (!req.release.is_empty()).then_some(req.release.as_str()),
+            )
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("native package reference"))?;
+        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry.id));
+        let (canonical_json, _) =
+            crate::indexer::native_documentation::fetch_native_documentation_content(
+                fetch.as_ref(),
+                &locator.package,
+                &locator.version,
+                &locator.platform,
+                &locator.artifact,
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::GetPackageAbilityReferenceResponse {
+            identity: Some(package_ability_reference_identity(&locator)),
+            etag: locator.artifact.document_sha256,
+            canonical_json,
+        })
+    }
+
+    /// Returns exact native operation declarations across one completed release.
+    ///
+    /// An empty release selects the registry's configured browsing release. An
+    /// empty platform selects the first indexed platform in lexical order.
+    ///
+    /// # Errors
+    ///
+    /// Returns registry visibility failures, not-found when no release graph is
+    /// available, and internal errors for corrupted generated projection bytes.
+    pub async fn get_release_ability_graph(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetReleaseAbilityGraphRequest,
+    ) -> Result<pb::GetReleaseAbilityGraphResponse, RpcError> {
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        self.require_read(auth, &registry).await?;
+        let release = if req.release.is_empty() {
+            self.db
+                .default_browse_release(registry.id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("default release"))?
+        } else {
+            req.release
+        };
+        let graph = self
+            .native_release_graph_for_registry(registry.id, &release, &req.platform)
+            .await?;
+        let registry_commit = graph.registry_commit.clone();
+        let platform = graph.platform.clone();
+        let canonical_json = graph.canonical_bytes().map_err(RpcError::internal)?;
+        let etag = aos_contract::Sha256Digest::of_bytes(&canonical_json).to_string();
+        Ok(pb::GetReleaseAbilityGraphResponse {
+            identity: Some(pb::ReleaseAbilityGraphIdentity {
+                registry_commit,
+                release,
+                platform,
+                graph_sha256: etag.clone(),
+            }),
+            canonical_json,
+            etag,
+        })
+    }
+
+    /// Loads native desired declarations after the caller authorizes registry visibility.
+    ///
+    /// # Errors
+    /// Returns an error for incomplete releases, unavailable artifacts, or invalid native identities.
+    pub(crate) async fn native_release_graph_for_registry(
+        &self,
+        registry_id: i64,
+        release: &str,
+        selected_platform: &str,
+    ) -> Result<aos_doc_model::runtime::deployment::NativeReleaseGraph, RpcError> {
+        use aos_doc_model::runtime::deployment::{
+            NativePackageIdentity, NativeReleaseGraph, ReleasedReference,
+        };
+        let documents = self
+            .db
+            .native_documentation_at_release(registry_id, &release)
+            .await
+            .map_err(RpcError::internal)?;
+        let platform = if selected_platform.is_empty() {
+            documents
+                .iter()
+                .map(|document| document.platform.clone())
+                .min()
+                .ok_or_else(|| RpcError::not_found("native release references"))?
+        } else {
+            selected_platform.to_owned()
+        };
+        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry_id));
+        let mut references = Vec::new();
+        let mut commit = None;
+        for document in documents
+            .iter()
+            .filter(|document| document.platform == platform)
+        {
+            let locator = self
+                .db
+                .native_documentation_locator(
+                    registry_id,
+                    &document.package,
+                    &document.version,
+                    &platform,
+                    Some(&release),
+                )
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("native release reference"))?;
+            let (bytes, _) =
+                crate::indexer::native_documentation::fetch_native_documentation_content(
+                    fetch.as_ref(),
+                    &locator.package,
+                    &locator.version,
+                    &platform,
+                    &locator.artifact,
+                )
+                .await
+                .map_err(RpcError::internal)?;
+            commit = Some(locator.commit.clone());
+            references.push(ReleasedReference {
+                identity: NativePackageIdentity {
+                    registry_commit: locator.commit,
+                    package: locator.package,
+                    version: locator.version,
+                    platform: platform.clone(),
+                    document_sha256: aos_contract::Sha256Digest::parse(
+                        &locator.artifact.document_sha256,
+                    )
+                    .map_err(RpcError::internal)?,
+                },
+                reference_json: String::from_utf8(bytes).map_err(RpcError::internal)?,
+            });
+        }
+        references.sort_by(|left, right| {
+            (&left.identity.package, &left.identity.version)
+                .cmp(&(&right.identity.package, &right.identity.version))
+        });
+        let registry_commit =
+            commit.ok_or_else(|| RpcError::not_found("native release references"))?;
+        Ok(NativeReleaseGraph {
+            schema: "aos.module.release-graph".into(),
+            release: release.to_owned(),
+            registry_commit: registry_commit.clone(),
+            platform: platform.clone(),
+            references,
+        })
+    }
+
+    /// Plans creation, replacement, revocation, or re-enablement of a reporter slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication, authorization, validation, stale-version, or
+    /// database errors.
+    pub async fn plan_configure_ability_deployment_reporter(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanConfigureAbilityDeploymentReporterRequest,
+    ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        let scope_key = self
+            .db
+            .registry_authorization_scope(registry.id)
+            .await
+            .map_err(RpcError::internal)?;
+        self.require_permission(
+            &claims,
+            Permission::RegistryConfigure,
+            &Scope::parse(&scope_key),
+        )
+        .await?;
+        aos_ability_model::LocalKey::new(req.deployment.clone())
+            .map_err(|error| RpcError::invalid(error.to_string()))?;
+        let current = self
+            .db
+            .ability_deployment_reporter(registry.id, &req.deployment)
+            .await
+            .map_err(RpcError::internal)?;
+        let current_version = current
+            .as_ref()
+            .map_or(0, |reporter| reporter.resource_version);
+        if current_version != req.expected_resource_version {
+            return Err(RpcError::FailedPrecondition(
+                "ability deployment reporter resource version is stale".into(),
+            ));
+        }
+        let principal_id = if req.enabled {
+            let principal_id = self
+                .resolve_existing_principal_id(&req.principal_kind, &req.principal_ref)
+                .await?;
+            if !self
+                .db
+                .principal_is_live(&req.principal_kind, principal_id)
+                .await
+                .map_err(RpcError::internal)?
+            {
+                return Err(RpcError::FailedPrecondition(
+                    "deployment reporter principal is not active".into(),
+                ));
+            }
+            principal_id
+        } else {
+            let reporter = current.ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "cannot revoke a deployment reporter that does not exist".into(),
+                )
+            })?;
+            if reporter.principal_kind != req.principal_kind
+                || reporter.principal_ref != req.principal_ref
+            {
+                return Err(RpcError::FailedPrecondition(
+                    "reporter revocation must name the enrolled principal".into(),
+                ));
+            }
+            reporter.principal_id
+        };
+
+        let input = AbilityDeploymentReporterPlanInput {
+            registry_id: registry.id,
+            registry_slug: registry.slug,
+            scope_key,
+            deployment: req.deployment,
+            principal_kind: req.principal_kind,
+            principal_id,
+            principal_ref: req.principal_ref,
+            enabled: req.enabled,
+            baseline_resource_version: req.expected_resource_version,
+        };
+        let confirmation_hash = control_confirmation_hash(&input)?;
+        self.create_control_plan(
+            &claims,
+            "configure_ability_deployment_reporter",
+            &input.scope_key,
+            &input,
+            &req.idempotency_key,
+            vec![format!(
+                "replace deployment reporter enrollment '{}' in registry '{}'",
+                input.deployment, input.registry_slug
+            )],
+            vec!["the prior live deployment overlay will be discarded".to_string()],
+            Some(confirmation_hash),
+        )
+        .await
+    }
+
+    /// Applies a reviewed reporter enrollment change exactly once.
+    ///
+    /// Any change increments the slot version and discards its prior overlay.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication, authorization, plan, stale-version, principal,
+    /// or database errors.
+    pub async fn configure_ability_deployment_reporter(
+        &self,
+        auth: Option<&str>,
+        req: pb::ApplyTopologyPlanRequest,
+    ) -> Result<pb::AbilityDeploymentReporter, RpcError> {
+        if let Some(response) = self
+            .replayed_control_result(
+                auth,
+                &req.plan_id,
+                "configure_ability_deployment_reporter",
+                Some(&req.confirmation_hash),
+                &req.idempotency_key,
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            "configure_ability_deployment_reporter",
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
+        let (plan, input): (_, AbilityDeploymentReporterPlanInput) = self
+            .load_control_plan(
+                auth,
+                &req.plan_id,
+                "configure_ability_deployment_reporter",
+                Some(&req.confirmation_hash),
+            )
+            .await?;
+        let claims = self.require_claims(auth)?;
+        self.require_permission(
+            &claims,
+            Permission::RegistryConfigure,
+            &Scope::parse(&input.scope_key),
+        )
+        .await?;
+        let applied_version = input
+            .baseline_resource_version
+            .checked_add(1)
+            .ok_or_else(|| RpcError::FailedPrecondition("reporter version overflow".into()))?;
+        let already_applied = self
+            .db
+            .ability_deployment_reporter_matches_plan(
+                input.registry_id,
+                &input.deployment,
+                &input.principal_kind,
+                input.principal_id,
+                &input.principal_ref,
+                input.enabled,
+                applied_version,
+                &plan.plan_id,
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        let response = if already_applied {
+            // Reconstruct the original result from sealed plan input. A second
+            // slot read could observe a later enrollment after the exact match.
+            pb::AbilityDeploymentReporter {
+                registry: input.registry_slug.clone(),
+                deployment: input.deployment.clone(),
+                principal_kind: input.principal_kind.clone(),
+                principal_ref: input.principal_ref.clone(),
+                enabled: input.enabled,
+                resource_version: applied_version,
+            }
+        } else {
+            if input.enabled
+                && !self
+                    .db
+                    .principal_is_live(&input.principal_kind, input.principal_id)
+                    .await
+                    .map_err(RpcError::internal)?
+            {
+                return Err(RpcError::FailedPrecondition(
+                    "deployment reporter principal is not active".into(),
+                ));
+            }
+            let reporter = self
+                .db
+                .configure_ability_deployment_reporter(
+                    input.registry_id,
+                    &input.deployment,
+                    &input.principal_kind,
+                    input.principal_id,
+                    &input.principal_ref,
+                    input.enabled,
+                    input.baseline_resource_version,
+                    &plan.plan_id,
+                )
+                .await
+                .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+
+            pb::AbilityDeploymentReporter {
+                registry: input.registry_slug.clone(),
+                deployment: reporter.deployment,
+                principal_kind: reporter.principal_kind,
+                principal_ref: reporter.principal_ref,
+                enabled: reporter.active,
+                resource_version: reporter.resource_version,
+            }
+        };
+        self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
+            .await?;
+        Ok(response)
+    }
+
+    /// Accepts one newer bounded assertion from an enrolled deployment reporter.
+    ///
+    /// Hub authenticates the bearer and exact package reference, records its own
+    /// receipt time, bounds expiry, and performs the enrollment/sequence update
+    /// atomically. Hub does not invoke handlers from the assertion.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication, enrollment, freshness, package-reference,
+    /// replay, validation, or database errors.
+    pub async fn report_package_ability_deployment(
+        &self,
+        auth: Option<&str>,
+        req: pb::ReportPackageAbilityDeploymentRequest,
+    ) -> Result<pb::PackageAbilityDeploymentResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let principal = self.current_principal(&claims).await?;
+
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        let reporter = self
+            .db
+            .ability_deployment_reporter(registry.id, &req.deployment)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::PermissionDenied("active deployment reporter enrollment required".into())
+            })?;
+        if !reporter.active
+            || reporter.principal_kind != principal.kind.as_str()
+            || reporter.principal_id != principal.id
+            || reporter.resource_version != req.reporter_resource_version
+        {
+            return Err(RpcError::PermissionDenied(
+                "active deployment reporter enrollment required".into(),
+            ));
+        }
+        let overlay =
+            aos_doc_model::runtime::deployment::NativeDeploymentReport::decode(&req.canonical_json)
+                .map_err(|error| RpcError::invalid(error.to_string()))?;
+        if overlay.deployment != req.deployment || overlay.valid_for_seconds > 300 {
+            return Err(RpcError::invalid(
+                "native report slot differs or validity exceeds 300 seconds",
+            ));
+        }
+        let (locator, reference) = self
+            .load_exact_package_ability_reference(
+                registry.id,
+                &overlay.package.registry_commit,
+                &overlay.package.package,
+                &overlay.package.version,
+                &overlay.package.platform,
+            )
+            .await?;
+        overlay
+            .validate_reference(&reference)
+            .map_err(|error| RpcError::invalid(error.to_string()))?;
+
+        let now = clock::now_unix_secs();
+        let reported_at = i64::try_from(overlay.reported_at_unix_seconds)
+            .map_err(|_| RpcError::invalid("deployment report time is out of range"))?;
+        if reported_at > now.saturating_add(ABILITY_DEPLOYMENT_MAX_FUTURE_SKEW_SECS) {
+            return Err(RpcError::invalid(
+                "deployment report time exceeds the allowed future clock skew",
+            ));
+        }
+        let validity = i64::try_from(overlay.valid_for_seconds)
+            .map_err(|_| RpcError::invalid("deployment validity is out of range"))?;
+        let expires_at = now
+            .saturating_add(validity)
+            .min(reported_at.saturating_add(validity));
+        if expires_at <= now {
+            return Err(RpcError::FailedPrecondition(
+                "deployment report was already stale when received".into(),
+            ));
+        }
+
+        let document_sha256 = reference.identity.document_sha256.to_string();
+        let transaction_sha256 = aos_contract::Sha256Digest::of_bytes(
+            aos_contract::canonical::to_vec(&overlay.graph).map_err(RpcError::internal)?,
+        )
+        .to_string();
+        self.db
+            .accept_package_ability_deployment_overlay(
+                registry.id,
+                &req.deployment,
+                principal.kind.as_str(),
+                principal.id,
+                req.reporter_resource_version,
+                overlay.sequence,
+                &locator.commit,
+                &locator.package,
+                &locator.version,
+                &locator.platform,
+                &document_sha256,
+                &transaction_sha256,
+                &req.canonical_json,
+                overlay.reported_at_unix_seconds,
+                now,
+                expires_at,
+            )
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+
+        Ok(pb::PackageAbilityDeploymentResponse {
+            canonical_json: req.canonical_json,
+            authority: format!(
+                "reporter-bearer:{}:{}",
+                reporter.principal_kind, reporter.principal_ref
+            ),
+            received_at: now,
+            expires_at,
+            reporter_resource_version: req.reporter_resource_version,
+        })
+    }
+
+    /// Returns one exact fresh private native deployment assertion.
+    ///
+    /// The caller must hold `audit.read` at the registry scope. The read
+    /// rechecks enrollment, principal liveness, expiry, canonical bytes, and the
+    /// exact authenticated package reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication, authorization, not-found, integrity, or database
+    /// errors.
+    pub async fn get_package_ability_deployment(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetPackageAbilityDeploymentRequest,
+    ) -> Result<pb::PackageAbilityDeploymentResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        let scope_key = self
+            .db
+            .registry_authorization_scope(registry.id)
+            .await
+            .map_err(RpcError::internal)?;
+        self.require_permission(&claims, Permission::AuditRead, &Scope::parse(&scope_key))
+            .await?;
+        let (locator, reference) = self
+            .load_exact_package_ability_reference(
+                registry.id,
+                &req.registry_commit,
+                &req.package,
+                &req.version,
+                &req.platform,
+            )
+            .await?;
+        let stored = self
+            .db
+            .package_ability_deployment_overlay(
+                registry.id,
+                &req.deployment,
+                &locator.commit,
+                &locator.package,
+                &locator.version,
+                &locator.platform,
+                clock::now_unix_secs(),
+            )
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("fresh package ability deployment overlay"))?;
+        self.verify_stored_package_ability_deployment(&stored, &reference)
+            .await?;
+        Ok(stored_ability_deployment_response(stored))
+    }
+
+    async fn load_exact_package_ability_reference(
+        &self,
+        registry_id: i64,
+        registry_commit: &str,
+        package: &str,
+        version: &str,
+        platform: &str,
+    ) -> Result<
+        (
+            crate::db::NativeDocumentationLocator,
+            aos_doc_model::runtime::deployment::ReleasedReference,
+        ),
+        RpcError,
+    > {
+        use aos_doc_model::runtime::deployment::{NativePackageIdentity, ReleasedReference};
+        let releases = self
+            .db
+            .list_releases(registry_id)
+            .await
+            .map_err(RpcError::internal)?;
+        for release in releases
+            .iter()
+            .filter(|release| release.commit_oid == registry_commit)
+        {
+            let Some(locator) = self
+                .db
+                .native_documentation_locator(
+                    registry_id,
+                    package,
+                    version,
+                    platform,
+                    Some(&release.semver),
+                )
+                .await
+                .map_err(RpcError::internal)?
+            else {
+                continue;
+            };
+            let fetch =
+                self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry_id));
+            let (bytes, _) =
+                crate::indexer::native_documentation::fetch_native_documentation_content(
+                    fetch.as_ref(),
+                    package,
+                    version,
+                    platform,
+                    &locator.artifact,
+                )
+                .await
+                .map_err(RpcError::internal)?;
+            let reference = ReleasedReference {
+                identity: NativePackageIdentity {
+                    registry_commit: locator.commit.clone(),
+                    package: package.into(),
+                    version: version.into(),
+                    platform: platform.into(),
+                    document_sha256: aos_contract::Sha256Digest::parse(
+                        &locator.artifact.document_sha256,
+                    )
+                    .map_err(RpcError::internal)?,
+                },
+                reference_json: String::from_utf8(bytes).map_err(RpcError::internal)?,
+            };
+            return Ok((locator, reference));
+        }
+        Err(RpcError::not_found("exact native package reference"))
+    }
+
+    pub(crate) async fn verify_stored_package_ability_deployment(
+        &self,
+        stored: &crate::db::StoredAbilityDeploymentOverlay,
+        reference: &aos_doc_model::runtime::deployment::ReleasedReference,
+    ) -> Result<(), RpcError> {
+        if !self
+            .db
+            .principal_is_live(&stored.principal_kind, stored.principal_id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::not_found("fresh native deployment assertion"));
+        }
+        decode_stored_package_ability_deployment(stored, reference)
+            .map(|_| ())
+            .map_err(RpcError::internal)
+    }
+
+    /// Resolves and rechecks one native reference through a completed signed release.
+    ///
+    /// # Errors
+    /// Returns an error for unavailable selections, corrupt catalogs, placement failures,
+    /// or signed artifact mismatches. Callers must authorize registry reads first.
+    pub(crate) async fn load_native_documentation_for_registry(
         &self,
         registry_id: i64,
         package: &str,
         version: &str,
         platform: &str,
-    ) -> anyhow::Result<
-        Option<(
-            crate::db::PackageDocumentationLocator,
-            aos_doc_model::PackageDocumentation,
-        )>,
+        release: Option<&str>,
+    ) -> Result<
+        (
+            crate::db::NativeDocumentationLocator,
+            aos_doc_model::runtime::RuntimeDocument,
+        ),
+        RpcError,
     > {
-        let Some(locator) = self
+        let locator = self
             .db
-            .resolve_package_documentation_locator(registry_id, package, version, platform)
-            .await?
-        else {
-            return Ok(None);
-        };
-        let document = self
-            .load_package_documentation_locator(registry_id, &locator)
-            .await?;
-        Ok(Some((locator, document)))
+            .native_documentation_locator(registry_id, package, version, platform, release)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("native package documentation"))?;
+        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry_id));
+        let document = crate::indexer::native_documentation::fetch_native_documentation(
+            fetch.as_ref(),
+            &locator.package,
+            &locator.version,
+            &locator.platform,
+            &locator.artifact,
+        )
+        .await
+        .map_err(RpcError::internal)?;
+        Ok((locator, document))
     }
 
     /// Fetches and verifies a previously authorized indexed documentation reference.
     ///
     /// # Errors
     /// Returns an error for missing objects, placement failures, or invalid document integrity.
-    pub(crate) async fn load_package_documentation_locator(
-        &self,
-        registry_id: i64,
-        locator: &crate::db::PackageDocumentationLocator,
-    ) -> anyhow::Result<aos_doc_model::PackageDocumentation> {
-        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry_id));
-        crate::indexer::fetch_package_documentation(
-            fetch.as_ref(),
-            &locator.package_name,
-            &locator.package_version,
-            &locator.platform,
-            &locator.artifact,
-        )
-        .await
-    }
 
     /// `DocumentationService.SearchPackageDocumentation` — ranked index search.
     ///
@@ -11810,41 +12499,79 @@ impl RpcService {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
         let kind = (!req.kind.is_empty()).then_some(req.kind.as_str());
-        if kind.is_some_and(|kind| {
-            !matches!(
-                kind,
-                "package" | "option" | "service" | "credential" | "capability"
-            )
-        }) {
-            return Err(RpcError::invalid("unsupported documentation result kind"));
+        if kind.is_some_and(|kind| !matches!(kind, "package" | "option" | "operation")) {
+            return Err(RpcError::invalid(
+                "native documentation kind must be package, option, or operation",
+            ));
         }
-        let results = if req.query.trim().is_empty() {
-            self.db
-                .browse_package_documentation(registry.id, kind, MAX_DOCUMENTATION_RESULTS)
+        let terms = aos_doc_model::tokenize(&req.query);
+        let mut results = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for release in self
+            .db
+            .list_releases(registry.id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            let documents = self
+                .db
+                .native_documentation_at_release(registry.id, &release.semver)
                 .await
-        } else {
-            self.db
-                .search_package_documentation(
-                    registry.id,
-                    &req.query,
-                    kind,
-                    MAX_DOCUMENTATION_RESULTS,
+                .map_err(RpcError::internal)?;
+            for document in documents {
+                if !seen.insert((
+                    document.package.clone(),
+                    document.version.clone(),
+                    document.platform.clone(),
+                    document.document_sha256.clone(),
+                )) {
+                    continue;
+                }
+                for row in document.search {
+                    if kind.is_some_and(|kind| row.kind != kind)
+                        || !terms.iter().all(|term| row.terms.contains_key(term))
+                    {
+                        continue;
+                    }
+                    let score = terms
+                        .iter()
+                        .map(|term| u64::from(row.terms.get(term).copied().unwrap_or_default()))
+                        .sum();
+                    results.push(pb::PackageDocumentationSearchResult {
+                        package: document.package.clone(),
+                        version: document.version.clone(),
+                        platform: document.platform.clone(),
+                        kind: row.kind,
+                        key: row.key,
+                        title: row.title,
+                        summary: row.summary,
+                        score,
+                        release: release.semver.clone(),
+                        registry_commit: release.commit_oid.clone(),
+                        document_sha256: document.document_sha256.clone(),
+                    });
+                }
+            }
+        }
+        results.sort_by(|left, right| {
+            right.score.cmp(&left.score).then_with(|| {
+                (
+                    &left.package,
+                    &left.version,
+                    &left.platform,
+                    &left.kind,
+                    &left.key,
                 )
-                .await
-        }
-        .map_err(RpcError::internal)?
-        .into_iter()
-        .map(|result| pb::PackageDocumentationSearchResult {
-            package: result.package_name,
-            version: result.package_version,
-            platform: result.platform,
-            kind: result.kind,
-            key: result.key,
-            title: result.title,
-            summary: result.summary,
-            score: result.score,
-        })
-        .collect();
+                    .cmp(&(
+                        &right.package,
+                        &right.version,
+                        &right.platform,
+                        &right.kind,
+                        &right.key,
+                    ))
+            })
+        });
+        results.truncate(MAX_DOCUMENTATION_RESULTS);
         let (results, next_page_token) = paginate(results, req.page_size, &req.page_token)?;
         Ok(pb::SearchPackageDocumentationResponse {
             results,
@@ -11862,40 +12589,56 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::ListPackageOptionsRequest,
     ) -> Result<pb::ListPackageOptionsResponse, RpcError> {
+        self.list_package_options_at_release(auth, req, None).await
+    }
+
+    /// Lists native options from an explicit completed release when selected.
+    ///
+    /// # Errors
+    ///
+    /// Returns visibility, exact-selection, integrity, filter, or pagination errors.
+    pub(crate) async fn list_package_options_at_release(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListPackageOptionsRequest,
+        release: Option<&str>,
+    ) -> Result<pb::ListPackageOptionsResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
         let (locator, document) = self
-            .load_package_documentation_for_registry(
+            .load_native_documentation_for_registry(
                 registry.id,
                 &req.package,
                 &req.version,
                 &req.platform,
+                release,
             )
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("package documentation"))?;
-        let identity = package_documentation_identity(&locator);
+            .await?;
+        let identity = native_documentation_identity(&locator);
         let mut options = Vec::new();
-        for option in &document.options {
-            if !req.prefix.is_empty() && !option.display_path.starts_with(&req.prefix) {
+        for option in document.options() {
+            let path = option.path.join(".");
+            let signature = aos_doc_model::runtime::type_signature(&option.option_type)
+                .map_err(RpcError::internal)?;
+            if !req.prefix.is_empty() && !path.starts_with(&req.prefix) {
                 continue;
             }
-            if !req.owner.is_empty()
-                && option.owner.package != req.owner
-                && option.owner.root != req.owner
-            {
+            if !req.owner.is_empty() && option.owner != req.owner {
                 continue;
             }
-            if !req.r#type.is_empty() && option.type_signature != req.r#type {
+            if !req.r#type.is_empty() && signature != req.r#type {
                 continue;
             }
             if req
-                .contributable
-                .is_some_and(|contributable| option.contributable != contributable)
+                .extensible
+                .is_some_and(|value| option.extensible != value)
             {
                 continue;
             }
-            options.push(package_option_view(&identity, option).map_err(RpcError::internal)?);
+            if option.visibility == aos_doc_model::Visibility::Hidden {
+                continue;
+            }
+            options.push(native_option_view(&identity, option).map_err(RpcError::internal)?);
         }
         let (options, next_page_token) = paginate(options, req.page_size, &req.page_token)?;
         Ok(pb::ListPackageOptionsResponse {
@@ -11916,28 +12659,40 @@ impl RpcService {
     ) -> Result<pb::GetPackageOptionResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
-        let requested = proto_documentation_path(&req.path)?;
+        let requested = req
+            .path
+            .iter()
+            .map(|segment| match &segment.segment {
+                Some(pb::documentation_path_segment::Segment::Literal(value))
+                    if !value.is_empty() =>
+                {
+                    Ok(value.clone())
+                }
+                _ => Err(RpcError::invalid(
+                    "native option paths require exact nonempty literal segments",
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         if requested.is_empty() {
             return Err(RpcError::invalid("option path must not be empty"));
         }
         let (locator, document) = self
-            .load_package_documentation_for_registry(
+            .load_native_documentation_for_registry(
                 registry.id,
                 &req.package,
                 &req.version,
                 &req.platform,
+                None,
             )
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("package documentation"))?;
+            .await?;
         let option = document
-            .options
+            .options()
             .iter()
             .find(|option| option.path == requested)
-            .ok_or_else(|| RpcError::not_found("package option"))?;
+            .ok_or_else(|| RpcError::not_found("native package option"))?;
         Ok(pb::GetPackageOptionResponse {
             option: Some(
-                package_option_view(&package_documentation_identity(&locator), option)
+                native_option_view(&native_documentation_identity(&locator), option)
                     .map_err(RpcError::internal)?,
             ),
         })
@@ -11955,37 +12710,35 @@ impl RpcService {
     ) -> Result<pb::ComparePackageDocumentationResponse, RpcError> {
         if req.from_version.is_empty() || req.to_version.is_empty() || req.platform.is_empty() {
             return Err(RpcError::invalid(
-                "comparison requires from_version, to_version, and platform",
+                "comparison requires exact source and target versions and platform",
             ));
         }
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
         let (from_locator, from_document) = self
-            .load_package_documentation_for_registry(
+            .load_native_documentation_for_registry(
                 registry.id,
                 &req.package,
                 &req.from_version,
                 &req.platform,
+                None,
             )
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("source package documentation"))?;
+            .await?;
         let (to_locator, to_document) = self
-            .load_package_documentation_for_registry(
+            .load_native_documentation_for_registry(
                 registry.id,
                 &req.package,
                 &req.to_version,
                 &req.platform,
+                None,
             )
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("destination package documentation"))?;
+            .await?;
         let comparison = from_document
             .compare(&to_document)
             .map_err(|error| RpcError::invalid(error.to_string()))?;
         Ok(pb::ComparePackageDocumentationResponse {
-            from: Some(package_documentation_identity(&from_locator)),
-            to: Some(package_documentation_identity(&to_locator)),
+            from: Some(native_documentation_identity(&from_locator)),
+            to: Some(native_documentation_identity(&to_locator)),
             canonical_comparison_json: serde_json::to_vec(&comparison)
                 .map_err(RpcError::internal)?,
         })
@@ -12002,42 +12755,97 @@ impl RpcService {
         req: pb::GetDocumentationArtifactRequest,
     ) -> Result<pb::GetPackageDocumentationResponse, RpcError> {
         if !is_sha256_digest(&req.document_sha256) {
-            return Err(RpcError::invalid("invalid documentation SHA-256 digest"));
+            return Err(RpcError::invalid("invalid documentation digest"));
         }
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        self.require_read(auth, &registry).await?;
+        for release in self
+            .db
+            .list_releases(registry.id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            let documents = self
+                .db
+                .native_documentation_at_release(registry.id, &release.semver)
+                .await
+                .map_err(RpcError::internal)?;
+            if let Some(document) = documents
+                .iter()
+                .find(|document| document.document_sha256 == req.document_sha256)
+            {
+                let (locator, _) = self
+                    .load_native_documentation_for_registry(
+                        registry.id,
+                        &document.package,
+                        &document.version,
+                        &document.platform,
+                        Some(&release.semver),
+                    )
+                    .await?;
+                let fetch =
+                    self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry.id));
+                let (canonical_json, _) =
+                    crate::indexer::native_documentation::fetch_native_documentation_content(
+                        fetch.as_ref(),
+                        &locator.package,
+                        &locator.version,
+                        &locator.platform,
+                        &locator.artifact,
+                    )
+                    .await
+                    .map_err(RpcError::internal)?;
+                return Ok(pb::GetPackageDocumentationResponse {
+                    identity: Some(native_documentation_identity(&locator)),
+                    canonical_json,
+                    etag: locator.artifact.document_sha256,
+                });
+            }
+        }
+        Err(RpcError::not_found("native documentation artifact"))
+    }
+
+    /// Returns the exact checked native package reference used by tooling.
+    ///
+    /// # Errors
+    ///
+    /// Returns ordinary registry authorization and selection failures, or an
+    /// internal error if the signed package reference fails verification.
+    pub async fn get_package_documentation_schema(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetPackageDocumentationSchemaRequest,
+    ) -> Result<pb::GetPackageDocumentationSchemaResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
         let locator = self
             .db
-            .package_documentation_locator_by_digest(registry.id, &req.document_sha256)
+            .native_documentation_locator(
+                registry.id,
+                &req.package,
+                &req.version,
+                &req.platform,
+                (!req.release.is_empty()).then_some(req.release.as_str()),
+            )
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("documentation artifact"))?;
-        let document = self
-            .load_package_documentation_locator(registry.id, &locator)
+            .ok_or_else(|| RpcError::not_found("native package documentation"))?;
+        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry.id));
+        let (canonical_json, _) =
+            crate::indexer::native_documentation::fetch_native_documentation_content(
+                fetch.as_ref(),
+                &locator.package,
+                &locator.version,
+                &locator.platform,
+                &locator.artifact,
+            )
             .await
             .map_err(RpcError::internal)?;
-        let canonical_json = document.canonical_json().map_err(RpcError::internal)?;
-        Ok(pb::GetPackageDocumentationResponse {
-            identity: Some(package_documentation_identity(&locator)),
-            canonical_json,
-            etag: locator.artifact.document_sha256.clone(),
-        })
-    }
-
-    /// `DocumentationService.GetPackageDocumentationSchema` — closed v1 JSON Schema.
-    ///
-    /// # Errors
-    ///
-    /// This method has no expected error conditions.
-    pub async fn get_package_documentation_schema(
-        &self,
-        _auth: Option<&str>,
-        _req: pb::GetPackageDocumentationSchemaRequest,
-    ) -> Result<pb::GetPackageDocumentationSchemaResponse, RpcError> {
         Ok(pb::GetPackageDocumentationSchemaResponse {
-            schema: aos_doc_model::DOCUMENT_SCHEMA.to_string(),
-            media_type: aos_doc_model::DOCUMENT_FORMAT.to_string(),
-            json_schema: aos_doc_model::DOCUMENT_JSON_SCHEMA.as_bytes().to_vec(),
+            documentation_identity: Some(native_documentation_identity(&locator)),
+            ability_reference_identity: None,
+            canonical_json,
+            etag: locator.artifact.document_sha256,
         })
     }
 
@@ -12132,7 +12940,6 @@ impl RpcService {
         cache_delivery: bool,
     ) -> Result<pb::SystemImage, RpcError> {
         let delivery = image.delivery;
-        let uki = delivery.uki.clone();
         let store_backed =
             delivery.is_store_backed() || (cache_delivery && !image.store_path.is_empty());
         Ok(pb::SystemImage {
@@ -12159,43 +12966,29 @@ impl RpcService {
                 .map(image_target_name)
                 .map(str::to_string)
                 .collect(),
-            boot_verification: image_verification_name(delivery.uki.verification).to_string(),
+            boot_verification: format!("provider-contract:{}", delivery.artifact_contract.schema),
             object_key: delivery.object_key,
             image_info: Some(pb::ImageInfo {
-                filename: delivery.image_info.filename,
+                filename: delivery.artifact_contract.document.filename,
                 download_url: if store_backed {
                     String::new()
                 } else {
-                    Self::image_object_url(download_base, &delivery.image_info.object_key)?
+                    Self::image_object_url(
+                        download_base,
+                        &delivery.artifact_contract.document.object_key,
+                    )?
                 },
-                object_key: delivery.image_info.object_key,
-                media_type: delivery.image_info.media_type,
-                byte_size: delivery.image_info.byte_size,
-                sha256: delivery.image_info.sha256,
-                store_path: delivery.image_info.store_path,
-                nar_hash: delivery.image_info.nar_hash,
-                nar_size: delivery.image_info.nar_size,
+                object_key: delivery.artifact_contract.document.object_key,
+                media_type: delivery.artifact_contract.document.media_type,
+                byte_size: delivery.artifact_contract.document.byte_size,
+                sha256: delivery.artifact_contract.document.sha256,
+                store_path: delivery.artifact_contract.document.store_path,
+                nar_hash: delivery.artifact_contract.document.nar_hash,
+                nar_size: delivery.artifact_contract.document.nar_size,
             }),
             logical_disk_sha256: delivery.logical_disk_sha256,
-            rootfs_sha256: delivery.rootfs_sha256,
-            uki: Some(pb::ImageUki {
-                filename: uki.filename,
-                esp_path: uki.esp_path,
-                byte_size: uki.byte_size,
-                sha256: uki.sha256,
-                verification: image_verification_name(uki.verification).to_string(),
-                signer_cert_sha256: uki.signer_cert_sha256.unwrap_or_default(),
-                sbat: uki
-                    .sbat
-                    .into_iter()
-                    .map(|entry| pb::SbatGeneration {
-                        component: entry.component,
-                        generation: entry.generation,
-                    })
-                    .collect(),
-                measured: uki.measured,
-                expected_pcr11: uki.expected_pcr11.unwrap_or_default(),
-            }),
+            rootfs_sha256: String::new(),
+            uki: None,
             release_verification: "verified".to_string(),
             store_path: store_backed.then_some(image.store_path).unwrap_or_default(),
             nar_hash: store_backed.then_some(image.nar_hash).unwrap_or_default(),
@@ -28061,10 +28854,10 @@ impl RpcService {
                 sha256: image.delivery.sha256.clone(),
             },
             IndexedSystemImageObject::ImageInfo(image) => ImageHttpMetadata {
-                filename: image.delivery.image_info.filename.clone(),
-                media_type: image.delivery.image_info.media_type.clone(),
-                byte_size: image.delivery.image_info.byte_size,
-                sha256: image.delivery.image_info.sha256.clone(),
+                filename: image.delivery.artifact_contract.document.filename.clone(),
+                media_type: image.delivery.artifact_contract.document.media_type.clone(),
+                byte_size: image.delivery.artifact_contract.document.byte_size,
+                sha256: image.delivery.artifact_contract.document.sha256.clone(),
             },
         };
         let access = if cacheable {
@@ -37539,6 +38332,341 @@ pub(crate) mod cache_upload_tests {
     }
 
     #[tokio::test]
+    async fn package_ability_reference_authorizes_before_lookup() {
+        let (service, db, _lease, underprivileged_auth) = injected_service(vec![], vec![]).await;
+        let org_id = db.create_org("ability-auth", "Ability auth").await.unwrap();
+        db.create_managed_registry(org_id, "", "packages", "private", &[], true)
+            .await
+            .unwrap();
+        let request = pb::GetPackageAbilityReferenceRequest {
+            registry: "ability-auth/packages".into(),
+            package: "missing".into(),
+            version: String::new(),
+            platform: String::new(),
+            release: String::new(),
+        };
+
+        assert!(matches!(
+            service
+                .get_package_ability_reference(None, request.clone())
+                .await,
+            Err(RpcError::Unauthenticated(_))
+        ));
+        assert!(matches!(
+            service
+                .get_package_ability_reference(Some(&underprivileged_auth), request)
+                .await,
+            Err(RpcError::PermissionDenied(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn release_ability_graph_authorizes_before_lookup() {
+        let (service, db, _lease, underprivileged_auth) = injected_service(vec![], vec![]).await;
+        let org_id = db
+            .create_org("ability-graph-auth", "Ability graph auth")
+            .await
+            .unwrap();
+        db.create_managed_registry(org_id, "", "packages", "private", &[], true)
+            .await
+            .unwrap();
+        let request = pb::GetReleaseAbilityGraphRequest {
+            registry: "ability-graph-auth/packages".into(),
+            release: String::new(),
+            platform: String::new(),
+        };
+
+        assert!(matches!(
+            service
+                .get_release_ability_graph(None, request.clone())
+                .await,
+            Err(RpcError::Unauthenticated(_))
+        ));
+        assert!(matches!(
+            service
+                .get_release_ability_graph(Some(&underprivileged_auth), request)
+                .await,
+            Err(RpcError::PermissionDenied(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn package_tooling_schema_authorizes_before_lookup() {
+        let (service, db, _lease, underprivileged_auth) = injected_service(vec![], vec![]).await;
+        let org_id = db.create_org("tooling-auth", "Tooling auth").await.unwrap();
+        db.create_managed_registry(org_id, "", "packages", "private", &[], true)
+            .await
+            .unwrap();
+        let request = pb::GetPackageDocumentationSchemaRequest {
+            registry: "tooling-auth/packages".into(),
+            package: "missing".into(),
+            version: String::new(),
+            platform: String::new(),
+            release: String::new(),
+        };
+
+        assert!(matches!(
+            service
+                .get_package_documentation_schema(None, request.clone())
+                .await,
+            Err(RpcError::Unauthenticated(_))
+        ));
+        assert!(matches!(
+            service
+                .get_package_documentation_schema(Some(&underprivileged_auth), request)
+                .await,
+            Err(RpcError::PermissionDenied(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn deployment_reports_require_the_exact_live_enrollment() {
+        let (service, db, _lease, reporter_auth) = injected_service(vec![], vec![]).await;
+        let org_id = db
+            .create_org("deployment-auth", "Deployment auth")
+            .await
+            .unwrap();
+        db.create_managed_registry(org_id, "", "packages", "private", &[], true)
+            .await
+            .unwrap();
+
+        let enrollment_plan = service
+            .plan_configure_ability_deployment_reporter(
+                Some(&reporter_auth),
+                pb::PlanConfigureAbilityDeploymentReporterRequest {
+                    registry: "deployment-auth/packages".into(),
+                    deployment: "production".into(),
+                    principal_kind: "user".into(),
+                    principal_ref: "writer@example.test".into(),
+                    enabled: true,
+                    expected_resource_version: 0,
+                    idempotency_key: "plan-enroll-production".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let enrollment_plan = enrollment_plan.plan.unwrap();
+        let enrollment = service
+            .configure_ability_deployment_reporter(
+                Some(&reporter_auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: enrollment_plan.plan_id,
+                    idempotency_key: "apply-enroll-production".into(),
+                    confirmation_hash: enrollment_plan.confirmation_hash,
+                },
+            )
+            .await
+            .unwrap();
+
+        let other_user = db
+            .create_user("other-reporter@example.test", None)
+            .await
+            .unwrap();
+        db.grant_membership("user", other_user, "instance", Role::Owner.as_str())
+            .await
+            .unwrap();
+        let other_authority = crate::service::authentication::provisioned_test_auth(
+            &db,
+            Principal::user(other_user),
+            Scope::root(),
+            &[Permission::Read],
+        )
+        .await;
+        let other_token = JwtKeys::from_secret(b"injected-write-flow-test-key")
+            .mint(&other_authority, 3600)
+            .unwrap();
+        let other_auth = format!("Bearer {other_token}");
+        let report = pb::ReportPackageAbilityDeploymentRequest {
+            registry: "deployment-auth/packages".into(),
+            deployment: "production".into(),
+            reporter_resource_version: enrollment.resource_version,
+            canonical_json: b"not canonical JSON".to_vec(),
+        };
+
+        assert!(matches!(
+            service
+                .report_package_ability_deployment(Some(&other_auth), report.clone())
+                .await,
+            Err(RpcError::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            service
+                .report_package_ability_deployment(Some(&reporter_auth), report.clone())
+                .await,
+            Err(RpcError::InvalidArgument(_))
+        ));
+
+        let reporter_user = db
+            .user_by_email("writer@example.test")
+            .await
+            .unwrap()
+            .unwrap();
+        let report_authority = crate::service::authentication::provisioned_test_auth(
+            &db,
+            Principal::user(reporter_user),
+            Scope::root(),
+            &[Permission::Read],
+        )
+        .await;
+        let report_token = JwtKeys::from_secret(b"injected-write-flow-test-key")
+            .mint(&report_authority, 3600)
+            .unwrap();
+        let report_auth = format!("Bearer {report_token}");
+
+        assert!(matches!(
+            service
+                .report_package_ability_deployment(Some(&report_auth), report.clone())
+                .await,
+            Err(RpcError::InvalidArgument(_))
+        ));
+
+        db.revoke_token(&report_authority.token_id).await.unwrap();
+
+        // A revoked token must fail before parsing, even while its owner's
+        // enrollment and account remain active.
+        assert!(matches!(
+            service
+                .report_package_ability_deployment(Some(&report_auth), report.clone())
+                .await,
+            Err(RpcError::PermissionDenied(_))
+        ));
+
+        let revoke_plan = service
+            .plan_configure_ability_deployment_reporter(
+                Some(&reporter_auth),
+                pb::PlanConfigureAbilityDeploymentReporterRequest {
+                    registry: "deployment-auth/packages".into(),
+                    deployment: "production".into(),
+                    principal_kind: "user".into(),
+                    principal_ref: "writer@example.test".into(),
+                    enabled: false,
+                    expected_resource_version: enrollment.resource_version,
+                    idempotency_key: "plan-revoke-production".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let revoke_plan = revoke_plan.plan.unwrap();
+        service
+            .configure_ability_deployment_reporter(
+                Some(&reporter_auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: revoke_plan.plan_id,
+                    idempotency_key: "apply-revoke-production".into(),
+                    confirmation_hash: revoke_plan.confirmation_hash,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            service
+                .report_package_ability_deployment(Some(&reporter_auth), report)
+                .await,
+            Err(RpcError::PermissionDenied(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn reporter_apply_recovers_after_mutation_and_revokes_an_inactive_principal() {
+        let (service, db, _lease, admin_auth) = injected_service(vec![], vec![]).await;
+        let org_id = db
+            .create_org("reporter-recovery", "Reporter recovery")
+            .await
+            .unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "packages", "private", &[], true)
+            .await
+            .unwrap();
+        let reporter_id = db
+            .create_user("deployment-reporter@example.test", None)
+            .await
+            .unwrap();
+
+        let planned = service
+            .plan_configure_ability_deployment_reporter(
+                Some(&admin_auth),
+                pb::PlanConfigureAbilityDeploymentReporterRequest {
+                    registry: "reporter-recovery/packages".into(),
+                    deployment: "production".into(),
+                    principal_kind: "user".into(),
+                    principal_ref: "deployment-reporter@example.test".into(),
+                    enabled: true,
+                    expected_resource_version: 0,
+                    idempotency_key: "plan-reporter-recovery".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+
+        // Simulate a crash after the CAS mutation and before generic plan completion.
+        db.configure_ability_deployment_reporter(
+            registry_id,
+            "production",
+            "user",
+            reporter_id,
+            "deployment-reporter@example.test",
+            true,
+            0,
+            &planned.plan_id,
+        )
+        .await
+        .unwrap();
+        assert!(db.delete_user(reporter_id).await.unwrap());
+
+        let apply = pb::ApplyTopologyPlanRequest {
+            plan_id: planned.plan_id,
+            idempotency_key: "apply-reporter-recovery".into(),
+            confirmation_hash: planned.confirmation_hash,
+        };
+        let recovered = service
+            .configure_ability_deployment_reporter(Some(&admin_auth), apply.clone())
+            .await
+            .unwrap();
+        let replayed = service
+            .configure_ability_deployment_reporter(Some(&admin_auth), apply)
+            .await
+            .unwrap();
+        assert_eq!(recovered, replayed);
+        assert_eq!(recovered.resource_version, 1);
+        assert_eq!(recovered.principal_ref, "deployment-reporter@example.test");
+        assert!(recovered.enabled);
+
+        let revoke = service
+            .plan_configure_ability_deployment_reporter(
+                Some(&admin_auth),
+                pb::PlanConfigureAbilityDeploymentReporterRequest {
+                    registry: "reporter-recovery/packages".into(),
+                    deployment: "production".into(),
+                    principal_kind: "user".into(),
+                    principal_ref: "deployment-reporter@example.test".into(),
+                    enabled: false,
+                    expected_resource_version: recovered.resource_version,
+                    idempotency_key: "plan-revoke-inactive-reporter".into(),
+                },
+            )
+            .await
+            .unwrap()
+            .plan
+            .unwrap();
+        let revoked = service
+            .configure_ability_deployment_reporter(
+                Some(&admin_auth),
+                pb::ApplyTopologyPlanRequest {
+                    plan_id: revoke.plan_id,
+                    idempotency_key: "apply-revoke-inactive-reporter".into(),
+                    confirmation_hash: revoke.confirmation_hash,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(!revoked.enabled);
+        assert_eq!(revoked.resource_version, 2);
+    }
+
+    #[tokio::test]
     async fn registry_without_a_canonical_route_has_no_consumer_url() {
         let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
         let binding = db
@@ -39337,9 +40465,9 @@ pub(crate) mod cache_upload_tests {
 
     fn one_signed_raw_image_package() -> aos_registry_surface::manifest::PackageToml {
         use aos_registry_surface::manifest::{
-            immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
-            ImageDelivery, ImageEntry, ImageInfoReference, ImageTarget, ImageUkiIdentity,
-            ImageVerificationState,
+            immutable_image_contract_object_key, immutable_image_object_key,
+            ImageArtifactContractDocumentReference, ImageArtifactContractReference,
+            ImageCompression, ImageDelivery, ImageEntry, ImageTarget,
         };
 
         let image_sha256 = "a".repeat(64);
@@ -39357,7 +40485,6 @@ pub(crate) mod cache_upload_tests {
                 architecture: "x86_64".into(),
                 logical_image_id: "c".repeat(64),
                 logical_disk_sha256: image_sha256.clone(),
-                rootfs_sha256: "d".repeat(64),
                 filename: filename.into(),
                 object_key: immutable_image_object_key(&image_sha256, filename),
                 media_type: "application/vnd.aos.disk-image.raw+zstd".into(),
@@ -39365,39 +40492,25 @@ pub(crate) mod cache_upload_tests {
                 byte_size: 16,
                 sha256: image_sha256.clone(),
                 compatible_targets: vec![ImageTarget::BareMetal],
-                uki: ImageUkiIdentity {
-                    filename: "aos-system.efi".into(),
-                    esp_path: "EFI/Linux/aos-system.efi".into(),
-                    byte_size: 8,
-                    sha256: "e".repeat(64),
-                    verification: ImageVerificationState::Unsigned,
-                    signer_cert_sha256: None,
-                    sbat: Vec::new(),
-                    measured: false,
-                    expected_pcr11: None,
+                artifact_contract: ImageArtifactContractReference {
+                    schema: "aos.test.boot-artifacts/v1".into(),
+                    document: ImageArtifactContractDocumentReference {
+                        filename: "image-info.json".into(),
+                        object_key: immutable_image_contract_object_key(
+                            &image_sha256,
+                            &info_sha256,
+                            "image-info.json",
+                        ),
+                        store_path: String::new(),
+                        nar_hash: String::new(),
+                        nar_size: 0,
+                        media_type: "application/vnd.aos.image-info+json".into(),
+                        byte_size: 8,
+                        sha256: info_sha256,
+                    },
+                    artifacts: None,
                 },
-                image_info: ImageInfoReference {
-                    filename: "image-info.json".into(),
-                    object_key: immutable_image_info_object_key(&image_sha256, &info_sha256),
-                    store_path: String::new(),
-                    nar_hash: String::new(),
-                    nar_size: 0,
-                    media_type: "application/vnd.aos.image-info+json".into(),
-                    byte_size: 8,
-                    sha256: info_sha256,
-                },
-                update_payload: None,
             },
-            sb_signer_cert_sha256: None,
-            sbat: Vec::new(),
-            expected_pcr11: None,
-            ukis: Vec::new(),
-            recovery_ukis: Vec::new(),
-            recovery_bundle: None,
-            root_image: None,
-            root_verity: None,
-            root_hash: None,
-            root_hash_sig: None,
         };
         let mut package: toml::Value = toml::from_str(
             "[package]\nname = \"aos-system\"\ndescription = \"AOS system\"\nlicense = \"MIT\"\nmaintainer = \"aos\"\nsysroot = true\n\n[[versions]]\nversion = \"2026.8.0\"\n\n[versions.platforms.x86_64-linux]\nstore_path = \"/aos/store/aos-system\"\nclosure_size = 1\nsource_drv = \"\"\nsource_nar_hash = \"\"\n",
@@ -39522,9 +40635,12 @@ pub(crate) mod cache_upload_tests {
                         strong_etag: "test-version".into(),
                     },
                     VerifiedRegistryImageObject {
-                        object_key: image.delivery.image_info.object_key.clone(),
-                        sha256: image.delivery.image_info.sha256.clone(),
-                        byte_size: i64::try_from(image.delivery.image_info.byte_size).unwrap(),
+                        object_key: image.delivery.artifact_contract.document.object_key.clone(),
+                        sha256: image.delivery.artifact_contract.document.sha256.clone(),
+                        byte_size: i64::try_from(
+                            image.delivery.artifact_contract.document.byte_size,
+                        )
+                        .unwrap(),
                         strong_etag: "test-version".into(),
                     },
                 ]
@@ -39588,7 +40704,7 @@ pub(crate) mod cache_upload_tests {
         let size = match object {
             crate::db::IndexedSystemImageObject::Disk(image) => image.delivery.byte_size,
             crate::db::IndexedSystemImageObject::ImageInfo(image) => {
-                image.delivery.image_info.byte_size
+                image.delivery.artifact_contract.document.byte_size
             }
         };
         let placement = service

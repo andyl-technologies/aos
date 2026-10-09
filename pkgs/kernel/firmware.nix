@@ -1,5 +1,6 @@
 ##! linux-firmware — Firmware files for Linux kernel drivers
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -7,7 +8,63 @@
   version = "20260110";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "firmware";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "WHENCE identifies upstream firmware and the selected tree contains many payload files.";
+        "files" = {};
+        "input" = "The selected Linux firmware tree and its WHENCE inventory.";
+        "operation" = "Read the inventory and verify that installed payload families contain regular files.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib\nroot = pathlib.Path(\"@out@/lib/firmware\")\nwhence = (root / \"WHENCE\").read_text(errors=\"replace\")\nfiles = [path for path in root.rglob(\"*\") if path.is_file() and path.name != \"WHENCE\"]\nassert \"Driver:\" in whence and \"File:\" in whence and len(files) > 10\nprint(\"firmware data passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "firmware data passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The firmware lookup rejects the unknown payload.";
+        "files" = {};
+        "input" = "A request for a firmware payload name absent from the selected tree.";
+        "operation" = "Resolve the nonexistent payload beneath the firmware root.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, sys\nif pathlib.Path(\"@out@/lib/firmware/aos/nonexistent.bin\").exists():\n    raise SystemExit(2)\nsys.stderr.write(\"firmware rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "firmware rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

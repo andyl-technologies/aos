@@ -4,9 +4,15 @@
 # and maintenance commands an operator uses around the long-running native Hub.
 # It never enables development mode or demo seeding.
 {
+  lib,
   testing,
   pkgs,
 }: let
+  publication = import ../fleet/_container-publication-project.nix {
+    inherit lib pkgs;
+    packages.grep = pkgs.grep;
+  };
+
   jwtSecret = pkgs.writeTextFile {
     name = "hub-native-operations-jwt-secret";
     destination = "/value";
@@ -36,31 +42,34 @@ in
   testing.mkVMTest {
     name = "hub-native-operations";
     memory = 2048;
-    rootfsDeps = [
-      pkgs.aos
-      pkgs.aos.apm
-      pkgs.aos.apr
-      pkgs.aos.packageRuntime
-      pkgs.aos-hub
-      pkgs.coreutils
-      pkgs.curl
-      pkgs.grep
-      pkgs.git
-      pkgs.iproute2
-      pkgs.jq
-      pkgs.nix
-      pkgs.openssh
-      pkgs.sed
-      jwtSecret
-      probeSigners
-      routeKeys
-      webhookSecret
-      cutoverRecipe
-    ];
+    rootfsDeps =
+      [
+        pkgs.aos
+        pkgs.aos.apm
+        pkgs.aos.apr
+        pkgs.aos.packageRuntime
+        pkgs.aos-hub
+        pkgs.coreutils
+        pkgs.curl
+        pkgs.grep
+        pkgs.git
+        pkgs.iproute2
+        pkgs.jq
+        pkgs.nix
+        pkgs.openssh
+        pkgs.sed
+        jwtSecret
+        probeSigners
+        routeKeys
+        webhookSecret
+        cutoverRecipe
+        publication.project
+      ]
+      ++ publication.nativeRoots;
     testScript = ''
       set -eu
 
-      hub_root=/tmp/aos-hub
+      hub_root=/var/lib/aos-hub
       hub_url=http://127.0.0.1:18420
       credential_dir=/run/aos-hub-credentials
       jwt_secret=$credential_dir/jwt-secret
@@ -159,63 +168,66 @@ in
       ${pkgs.grep}/bin/grep -Eiq 'manifest|schema|invalid|fingerprint' \
         /tmp/cutover-verify-invalid.json
 
-      echo '==> Exercise package credential authoring and render service boundaries'
+      echo '==> Exercise package credential authoring and native command boundaries'
       printf '%s' 'production-bootstrap-secret' >/tmp/credential-plaintext
-      mkdir -p /tmp/apm-author-home /tmp/apm-render-config
+      mkdir -p /tmp/apm-author-home
       if HOME=/tmp/apm-author-home \
-        ${pkgs.aos.apm}/bin/apm --json credential encrypt bootstrap-token \
-          /tmp/credential-plaintext --unit bootstrap.socket \
-          >/tmp/credential-invalid-unit.json 2>&1; then
-        echo 'credential encryption unexpectedly accepted a non-service unit' >&2
+        ${pkgs.aos.apm}/bin/apm --json credential encrypt ../bootstrap-token \
+          /tmp/credential-plaintext --output /tmp/credential-ciphertext \
+          >/tmp/credential-invalid-name.json 2>&1; then
+        echo 'credential encryption unexpectedly accepted a path as its name' >&2
         exit 1
       fi
-      ${pkgs.grep}/bin/grep -Eiq 'must be a service unit' \
-        /tmp/credential-invalid-unit.json || {
-        ${pkgs.coreutils}/bin/cat /tmp/credential-invalid-unit.json >&2
+      ${pkgs.jq}/bin/jq -e \
+        '.error | contains("credential name is not a canonical local key")' \
+        /tmp/credential-invalid-name.json >/dev/null || {
+        ${pkgs.coreutils}/bin/cat /tmp/credential-invalid-name.json >&2
         exit 1
       }
-      echo '==> Rejected credential targeting a non-service unit'
-      if LC_ALL=C APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
-        ${pkgs.aos.packageRuntime}/bin/aos-package-runtime --json render-one example \
-          --manifest /tmp/nonexistent-config-manifest.json \
-          --marker-root /tmp/render-markers --staging-root /tmp/render-stage \
-          >/tmp/render-one-non-aos.json 2>&1; then
-        echo 'render-one unexpectedly accepted a non-AOS runtime' >&2
+      test ! -e /tmp/credential-ciphertext
+      echo '==> Rejected invalid credential name before encryption'
+      if LC_ALL=C ${pkgs.aos.apm}/bin/apm --json image list \
+        >/tmp/image-list-non-aos.json 2>&1; then
+        echo 'image list unexpectedly accepted a non-AOS runtime' >&2
         exit 1
       fi
       ${pkgs.jq}/bin/jq -e \
         '.error | contains("the running system is not AOS")' \
-        /tmp/render-one-non-aos.json >/dev/null || {
-        ${pkgs.coreutils}/bin/cat /tmp/render-one-non-aos.json >&2
+        /tmp/image-list-non-aos.json >/dev/null || {
+        ${pkgs.coreutils}/bin/cat /tmp/image-list-non-aos.json >&2
         exit 1
       }
-      echo '==> Rejected private runtime command outside AOS'
+      echo '==> Rejected host image command outside AOS'
       mount -o remount,rw /
       mkdir -p /usr/lib/aos/toplevel
-      printf '%s\n' 'ID=aos' 'AOS_MODULE_ABI=2' >/usr/lib/aos/toplevel/os-release
+      printf '%s\n' 'ID=aos' 'AOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-aos-module-library' >/usr/lib/aos/toplevel/os-release
       echo '==> Installed live AOS identity fixture'
-      if LC_ALL=C APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
-        ${pkgs.aos.packageRuntime}/bin/aos-package-runtime --json render-one example \
-          --manifest /tmp/nonexistent-config-manifest.json \
-          --marker-root /tmp/render-markers --staging-root /tmp/render-stage \
-          >/tmp/render-one-missing.json 2>&1; then
-        echo 'render-one unexpectedly accepted a missing eval manifest' >&2
+      if LC_ALL=C ${pkgs.aos.packageRuntime}/bin/aos-package-runtime --json verify-deployment \
+        --input /nix/store/00000000000000000000000000000000-missing-native-input \
+        --state-directory /tmp/native-verification-state \
+        --nix-store ${pkgs.nix}/bin/nix-store \
+        --admission /nix/store/00000000000000000000000000000000-missing-native-authority \
+        --admission-sha256 \
+          sha256:0000000000000000000000000000000000000000000000000000000000000000 \
+        >/tmp/native-verification-missing.json 2>&1; then
+        echo 'native verification unexpectedly accepted missing immutable inputs' >&2
         exit 1
       fi
       ${pkgs.jq}/bin/jq -e \
-        '.op == "render-one" and .package == "example"
-          and (.error | contains("reading manifest"))' \
-        /tmp/render-one-missing.json >/dev/null || {
-        ${pkgs.coreutils}/bin/cat /tmp/render-one-missing.json >&2
+        '.error | contains("resolving immutable native deployment input")' \
+        /tmp/native-verification-missing.json >/dev/null || {
+        ${pkgs.coreutils}/bin/cat /tmp/native-verification-missing.json >&2
         exit 1
       }
-      echo '==> Rejected private runtime command without an evaluated manifest'
+      test ! -e /tmp/native-verification-state
+      echo '==> Rejected native verification without immutable inputs'
 
       echo '==> Schema is inspectable before instance creation'
       $hub_exec schema dump > /tmp/schema.json
       ${pkgs.jq}/bin/jq -e 'type == "array" and length > 0' /tmp/schema.json >/dev/null
 
       echo '==> Initialize a fresh native instance without seed data'
+      ${pkgs.coreutils}/bin/install -d -m 0700 -o 65534 -g 65534 "$hub_root"
       test ! -e "$hub_root/hub.db"
       printf '%s\n' 'initial-password' | \
         $hub_exec --root "$hub_root" init \
@@ -278,14 +290,21 @@ in
       ${pkgs.curl}/bin/curl -fsS -H "Cookie: $cookie" "$hub_url/-/instance" > /tmp/instance.html
       csrf=$(${pkgs.sed}/bin/sed -n 's/.*name="aos-session-csrf" content="\([^"]*\)".*/\1/p' /tmp/instance.html | ${pkgs.coreutils}/bin/head -n1)
       test -n "$csrf"
-      token=$(${pkgs.curl}/bin/curl -fsS -X POST \
-        -H "Cookie: $cookie" \
-        -H "Origin: $hub_url" \
-        -H "x-aos-csrf: $csrf" \
-        -H 'x-aos-console-route: /-/instance' \
-        "$hub_url/-/auth/session-token" | ${pkgs.jq}/bin/jq -er .accessToken)
+      # Browser access tokens expire in five minutes. The operator workflow
+      # includes large cache publications, so exchange the existing session
+      # again before each command rather than retaining one expired token.
+      refresh_token() {
+        token=$(${pkgs.curl}/bin/curl -fsS -X POST \
+          -H "Cookie: $cookie" \
+          -H "Origin: $hub_url" \
+          -H "x-aos-csrf: $csrf" \
+          -H 'x-aos-console-route: /-/instance' \
+          "$hub_url/-/auth/session-token" | ${pkgs.jq}/bin/jq -er .accessToken)
+      }
+      refresh_token
 
       reviewed() {
+        refresh_token
         label=$1
         shift
         plan_file="/tmp/$label-plan.json"
@@ -300,6 +319,7 @@ in
         ${pkgs.coreutils}/bin/cat "$plan_file" >&2
         plan_id=$(${pkgs.jq}/bin/jq -er .data.plan.plan_id "$plan_file")
         confirm_hash=$(${pkgs.jq}/bin/jq -er .data.plan.confirmation_hash "$plan_file")
+        refresh_token
         if ! ${pkgs.aos}/bin/aos --json hub "$@" \
           --hub "$hub_url" --token "$token" \
           --plan-id "$plan_id" --confirm-hash "$confirm_hash" --yes \
@@ -312,6 +332,7 @@ in
       }
 
       hub_cli() {
+        refresh_token
         ${pkgs.aos}/bin/aos --json hub "$@" \
           --hub "$hub_url" --token "$token"
       }
@@ -456,9 +477,12 @@ in
         /tmp/org-list-empty.json >/dev/null
       reviewed org-create org create --slug operations --display-name 'Operations qualification' \
         > /tmp/org-create.json
-      producer_home=/tmp/producer-home
+      # Real publication retains build recipes and their source closures.
+      # Keep those multi-GiB files on disk rather than the guest's small tmpfs.
+      producer_root=/var/lib/producer
+      producer_home=$producer_root/home
       mkdir -p "$producer_home"
-      producer_path=${pkgs.git}/bin:${pkgs.openssh}/bin:${pkgs.coreutils}/bin
+      producer_path=${pkgs.git}/bin:${pkgs.openssh}/bin:${pkgs.coreutils}/bin:${pkgs.nix}/bin
       HOME="$producer_home" ${pkgs.git}/bin/git config --global \
         user.name 'Operations Maintainer'
       HOME="$producer_home" ${pkgs.git}/bin/git config --global \
@@ -543,18 +567,19 @@ in
         ${pkgs.aos.apr}/bin/apr --json keys register maintainer \
         --key "$producer_key" --registry maintenance \
         >/tmp/apr-register-maintainer-key.json
-      if ! HOME="$producer_home" PATH="$producer_path" \
-        ${pkgs.aos.apr}/bin/apr --json publish ${pkgs.grep} \
-        --name qualification-grep --version 1.0.0 \
-        --description 'Hermetic package used by native Hub qualification' \
-        --license GPL-3.0-or-later \
-        --maintainer maintainer@example.test --registry maintenance \
-        --key-id maintainer \
-        >/tmp/apr-publish-package.json 2>&1; then
+      # Repository discovery uses the working directory; AOS_ROOT would also
+      # redirect store queries away from the guest's registered /nix/store.
+      if ! (
+        cd ${publication.project}
+        HOME="$producer_home" PATH="$producer_path" \
+          ${pkgs.aos.apr}/bin/apr --json publish ${pkgs.grep} \
+          --registry maintenance --key-id maintainer
+      ) >/tmp/apr-publish-package.json 2>&1; then
         ${pkgs.coreutils}/bin/cat /tmp/apr-publish-package.json >&2
         exit 1
       fi
       ${pkgs.coreutils}/bin/cat /tmp/apr-publish-package.json
+      echo '==> Create the initial signed release'
       # The public catalog projects the default channel's released tree, so
       # the published package becomes visible only through a signed release.
       if ! HOME="$producer_home" PATH="$producer_path" \
@@ -564,12 +589,14 @@ in
         ${pkgs.coreutils}/bin/cat /tmp/apr-release-initial.json >&2
         exit 1
       fi
+      echo '==> Generate the registry website'
       HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json web generate --registry maintenance \
-        --output /tmp/producer-web >/tmp/apr-web-generate.json
-      test -s /tmp/producer-web/index.html
-      test -s /tmp/producer-web/web/config.json
-      producer_cache=/tmp/producer-cache
+        --output "$producer_root/web" >/tmp/apr-web-generate.json
+      test -s "$producer_root/web"/index.html
+      test -s "$producer_root/web"/web/config.json
+      producer_cache=$producer_root/cache
+      echo '==> Generate the registry cache'
       if ! HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json cache generate \
           --registry maintenance --output "$producer_cache" --no-commit \
@@ -577,7 +604,8 @@ in
         ${pkgs.coreutils}/bin/cat /tmp/apr-cache-generate.json >&2
         exit 1
       fi
-      producer_surface=/tmp/producer-surface
+      producer_surface=$producer_root/surface
+      echo '==> Upload the registry surface to a local file origin'
       HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json origin upload \
         --registry maintenance --cache-dir "$producer_cache" \
@@ -624,7 +652,7 @@ in
       hub_cli_into /tmp/registry-packages-indexed.json registry package list \
         operations/maintenance
       ${pkgs.jq}/bin/jq -e \
-        '.data | tostring | contains("qualification-grep")' \
+        '.data.packages | any(.name == "grep")' \
         /tmp/registry-packages-indexed.json >/dev/null
       hub_cli_into /tmp/publication-list.json registry publish list operations/maintenance \
         --state ready --page-size 1
@@ -775,9 +803,13 @@ in
         /tmp/config-diff.json >/dev/null
 
       echo '==> Publish a producer-signed cache stack and draft structural edits'
+      # Both cache endpoints publish the same closure. Reuse its verified NARs
+      # while each command creates and signs its own registry cache pointer.
+      ${pkgs.coreutils}/bin/cp -al "$producer_cache" "$producer_root/cache-a"
+      ${pkgs.coreutils}/bin/cp -al "$producer_cache" "$producer_root/cache-b"
       if ! HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json cache generate --registry maintenance \
-          --output /tmp/producer-cache-a \
+          --output "$producer_root/cache-a" \
           --cache-url https://cache-a.example.test --priority 100 \
           >/tmp/apr-cache-a.json 2>&1; then
         ${pkgs.coreutils}/bin/cat /tmp/apr-cache-a.json >&2
@@ -785,7 +817,7 @@ in
       fi
       if ! HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json cache generate --registry maintenance \
-          --output /tmp/producer-cache-b \
+          --output "$producer_root/cache-b" \
           --cache-url https://cache-b.example.test --priority 90 \
           >/tmp/apr-cache-b.json 2>&1; then
         ${pkgs.coreutils}/bin/cat /tmp/apr-cache-b.json >&2
@@ -1997,7 +2029,7 @@ in
       ${pkgs.aos}/bin/aos --json hub registry package list operations/maintenance \
         --hub "$hub_url" --token "$token" \
         | ${pkgs.jq}/bin/jq -e \
-          '.data | tostring | contains("qualification-grep")' >/dev/null
+          '.data.packages | any(.name == "grep")' >/dev/null
 
       reviewed project-delete org project delete operations --path platform \
         --if-version "$project_version" \

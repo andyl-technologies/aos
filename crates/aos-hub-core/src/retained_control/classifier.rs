@@ -286,6 +286,7 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                         | "DirectUploadService/ReportPartsBatch"
                         | "DirectUploadService/CompleteBatch"
                         | "DirectUploadService/Abort"
+                        | "AbilityDeploymentService/ReportPackageOverlay"
                 ) {
                     violations.push(violation(
                         method,

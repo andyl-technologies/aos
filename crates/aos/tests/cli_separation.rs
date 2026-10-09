@@ -1,6 +1,9 @@
-//! Command-surface contracts for the three independent public CLIs.
+//! Command-surface contracts for public CLIs and installed private helpers.
 
 use std::process::{Command, Output};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use anyhow::{Context, Result, bail};
 use tempfile::tempdir;
@@ -10,6 +13,50 @@ fn run(binary: &str, arguments: &[&str]) -> Result<Output> {
         .args(arguments)
         .output()
         .with_context(|| format!("running {} {}", binary, arguments.join(" ")))
+}
+
+#[test]
+fn switch_dispatches_to_native_worktree_before_registry_configuration() -> Result<()> {
+    let temporary = tempdir()?;
+    let root = temporary.path().join("aos-root");
+    std::fs::create_dir_all(root.join("etc"))?;
+    std::fs::write(
+        root.join("etc/os-release"),
+        "ID=aos\nAOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-module-library\n",
+    )?;
+    let blocked_parent = temporary.path().join("selected-authoring-parent");
+    std::fs::write(&blocked_parent, b"preserve this foreign file")?;
+    let worktree = blocked_parent.join("modules.d");
+    let eval_root = temporary.path().join("selected-evaluation");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_apm"))
+        .arg("switch")
+        .arg("--worktree")
+        .arg(&worktree)
+        .arg("--eval-root")
+        .arg(&eval_root)
+        .env("AOS_ROOT", &root)
+        .env_remove("AOS_RUNTIME")
+        .env_remove("AOS_CONTAINER_READ_ONLY")
+        .output()
+        .context("running public switch with a blocked authoring parent")?;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains(&format!(
+        "creating runtime config directory {}",
+        blocked_parent.display()
+    )));
+    assert!(!stderr.contains("panicked"));
+    assert!(!stderr.contains("handled before ApmConfig::load"));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        std::fs::read(&blocked_parent)?,
+        b"preserve this foreign file"
+    );
+    assert!(!eval_root.exists());
+    assert!(!root.join("var").exists());
+    Ok(())
 }
 
 fn require_success(output: Output, description: &str) -> Result<String> {
@@ -67,6 +114,16 @@ fn commands_do_not_cross_public_cli_boundaries() -> Result<()> {
             .success()
     );
     assert!(
+        !run(env!("CARGO_BIN_EXE_apm"), &["--json", "__eval", "--help"])?
+            .status
+            .success()
+    );
+    assert!(
+        !run(env!("CARGO_BIN_EXE_apm"), &["apply-deployment", "--help"])?
+            .status
+            .success()
+    );
+    assert!(
         !run(
             env!("CARGO_BIN_EXE_aos-package-runtime"),
             &["install", "--help"]
@@ -86,9 +143,9 @@ fn commands_do_not_cross_public_cli_boundaries() -> Result<()> {
     require_success(
         run(
             env!("CARGO_BIN_EXE_aos-package-runtime"),
-            &["__eval", "--help"],
+            &["apply-deployment", "--help"],
         )?,
-        "aos-package-runtime __eval --help",
+        "aos-package-runtime apply-deployment --help",
     )?;
     Ok(())
 }
@@ -108,5 +165,153 @@ fn system_scope_rejects_an_unidentified_target_before_loading_state() -> Result<
         stderr.contains("is not an AOS root"),
         "unexpected system-target error: {stderr}"
     );
+    Ok(())
+}
+
+#[test]
+fn native_deployment_dispatch_stays_private_and_rejects_retired_stage_commands() -> Result<()> {
+    for command in [
+        "apply-deployment",
+        "verify-deployment",
+        "deployment-current",
+        "deployment-result",
+    ] {
+        for arguments in [vec![command, "--help"], vec!["--json", command, "--help"]] {
+            assert!(!run(env!("CARGO_BIN_EXE_apm"), &arguments)?.status.success());
+            require_success(
+                run(env!("CARGO_BIN_EXE_aos-package-runtime"), &arguments)?,
+                &format!("native runtime {command} help"),
+            )?;
+        }
+    }
+
+    for command in [
+        "__ability-materialize-source-stage",
+        "__ability-stage-run",
+        "__ability-stage-validate",
+        "__ability-stage-receive",
+    ] {
+        for binary in [
+            env!("CARGO_BIN_EXE_apm"),
+            env!("CARGO_BIN_EXE_aos-package-runtime"),
+        ] {
+            assert!(!run(binary, &[command, "--help"])?.status.success());
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn image_preparation_is_public_and_rejects_container_before_state_access() -> Result<()> {
+    let help = require_success(
+        run(env!("CARGO_BIN_EXE_apm"), &["image", "prepare", "--help"])?,
+        "apm image prepare help",
+    )?;
+    assert!(help.contains("--qualified"));
+    assert!(
+        !run(env!("CARGO_BIN_EXE_aos"), &["image", "prepare", "--help"])?
+            .status
+            .success()
+    );
+    assert!(
+        !run(
+            env!("CARGO_BIN_EXE_aos-package-runtime"),
+            &["image", "prepare", "--help"]
+        )?
+        .status
+        .success()
+    );
+
+    let home = tempdir()?;
+    let output = Command::new(env!("CARGO_BIN_EXE_apm"))
+        .args(["image", "prepare", "server", "--dry-run", "--yes"])
+        .env_clear()
+        .env("HOME", home.path())
+        .env("AOS_RUNTIME", "container")
+        .output()?;
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("requires host boot or TPM facilities unavailable in an AOS container")
+    );
+    assert_eq!(std::fs::read_dir(home.path())?.count(), 0);
+    Ok(())
+}
+
+#[cfg(unix)]
+fn run_boot_entry(binary: &str, entry: &str, arguments: &[&str]) -> Result<Output> {
+    Command::new(binary)
+        .arg0(entry)
+        .env_clear()
+        .env("TOKIO_WORKER_THREADS", "2")
+        .args(arguments)
+        .output()
+        .with_context(|| format!("running boot entry {entry}"))
+}
+
+#[cfg(unix)]
+#[test]
+fn shared_boot_entry_preserves_host_and_handoff_command_surfaces() -> Result<()> {
+    for entry in [
+        "aos-boot-configuration",
+        ".aos-boot-configuration-unwrapped",
+    ] {
+        for arguments in [vec!["--help"], vec!["handoff-initrd-store", "--help"]] {
+            let standalone = run_boot_entry(
+                env!("CARGO_BIN_EXE_aos-boot-configuration"),
+                entry,
+                &arguments,
+            )?;
+            let shared = run_boot_entry(env!("CARGO_BIN_EXE_apm"), entry, &arguments)?;
+
+            assert!(standalone.status.success());
+            assert!(shared.status.success());
+            assert_eq!(shared.stdout, standalone.stdout);
+            assert_eq!(shared.stderr, standalone.stderr);
+            assert!(String::from_utf8_lossy(&shared.stdout).contains("--admission-sha256"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn shared_boot_entry_preserves_source_rejection_before_state_access() -> Result<()> {
+    let root = tempdir()?;
+    let input = root.path().to_str().context("fixture path is not UTF-8")?;
+    let digest = format!("sha256:{}", "0".repeat(64));
+    let arguments = [
+        "--input",
+        input,
+        "--state-directory",
+        input,
+        "--nix-store",
+        "/unreachable/bin/nix-store",
+        "--admission",
+        input,
+        "--admission-sha256",
+        &digest,
+    ];
+
+    let standalone = run_boot_entry(
+        env!("CARGO_BIN_EXE_aos-boot-configuration"),
+        "aos-boot-configuration",
+        &arguments,
+    )?;
+    let shared = run_boot_entry(
+        env!("CARGO_BIN_EXE_apm"),
+        ".aos-boot-configuration-unwrapped",
+        &arguments,
+    )?;
+
+    assert_eq!(standalone.status.code(), Some(1));
+    assert_eq!(shared.status.code(), Some(1));
+    assert!(shared.stdout.is_empty());
+    assert_eq!(shared.stderr, standalone.stderr);
+    assert!(String::from_utf8_lossy(&shared.stderr).contains(
+        "aos-boot-configuration: host metadata adoption requires the fixed verified image and system profile"
+    ));
+    assert_eq!(std::fs::read_dir(root.path())?.count(), 0);
     Ok(())
 }

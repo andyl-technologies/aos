@@ -53,8 +53,15 @@ const GENERATION6_CONTRACT: &str = include_str!("schema-v6.tsv");
 const GENERATION7_CONTRACT: &str = include_str!("schema-v7.tsv");
 const GENERATION8_CONTRACT: &str = include_str!("schema-v8.tsv");
 const GENERATION12_CONTRACT: &str = include_str!("schema-v12.tsv");
-static CONTRACT: LazyLock<String> =
+static GENERATION13_CONTRACT: LazyLock<String> =
     LazyLock::new(|| [GENERATION12_CONTRACT, include_str!("schema-v13-delta.tsv")].concat());
+static CONTRACT: LazyLock<String> = LazyLock::new(|| {
+    [
+        GENERATION13_CONTRACT.as_str(),
+        include_str!("schema-v16-delta.tsv"),
+    ]
+    .concat()
+});
 const LEGACY_CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
     "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061",
     "8da079db002b25543fc856e9cc57f335e67a73b3272c9a339ef8cc66c65ae51d",
@@ -116,9 +123,17 @@ const GENERATION12_MIGRATION_DIGESTS: &[&str] = &[
     "f365fc114aa545eb5b2db8483c2dbf604b04e733e488376bc34b961812f367b8",
 ];
 
-static CONTRACT_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+static GENERATION13_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     let mut digests = GENERATION12_MIGRATION_DIGESTS.to_vec();
     digests.push("aeb9dc5f0234e34a1d460bf2ec8542e3d030df4da3da213e52fd767700831d26");
+    digests
+});
+
+static CONTRACT_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut digests = GENERATION13_MIGRATION_DIGESTS.clone();
+    digests.push("15df8cc9b1ea3e4546c9c69c9f5f3d030af2adb925af1edba2cfebe86268783a");
+    digests.push("c8685bb51efd8d56adedd391e802495da07c8402410137f791262c5611ee4727");
+    digests.push("adbdf1c0eae8e3749ff314f1ebb7e5103e90e12a8e7e8814d6bc38ceb3eed66a");
     digests
 });
 
@@ -487,7 +502,11 @@ fn generation_contract(version: usize) -> Result<(&'static str, &'static [&'stat
         7 => Ok((GENERATION7_CONTRACT, GENERATION7_MIGRATION_DIGESTS)),
         8 => Ok((GENERATION8_CONTRACT, GENERATION8_MIGRATION_DIGESTS)),
         12 => Ok((GENERATION12_CONTRACT, GENERATION12_MIGRATION_DIGESTS)),
-        13 => Ok((CONTRACT.as_str(), CONTRACT_MIGRATION_DIGESTS.as_slice())),
+        13 => Ok((
+            GENERATION13_CONTRACT.as_str(),
+            GENERATION13_MIGRATION_DIGESTS.as_slice(),
+        )),
+        16 => Ok((CONTRACT.as_str(), CONTRACT_MIGRATION_DIGESTS.as_slice())),
         _ => anyhow::bail!("snapshot generation is unsupported"),
     }
 }

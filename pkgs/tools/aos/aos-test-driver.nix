@@ -11,24 +11,76 @@
 {
   lib,
   mkDerivation,
-  stdenv,
   buildPackages,
   python3,
   socat,
   bash,
 }:
 mkDerivation {
+  platformSupport = {
+    build = [{abi = ["gnu"]; os = ["linux"];}];
+    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+    target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+    role = "public-package";
+  };
   pname = "aos-test-driver";
+  qualification.packageProbe = lib.qualification.commandProbe {
+    "primary" = {
+      "artifacts" = [];
+      "expected" = "The driver returns success and documents manifest and test inputs.";
+      "files" = {};
+      "input" = "The test driver's command-line interface.";
+      "operation" = "Request its help without booting a virtual machine.";
+      "steps" = [
+        {
+          "argv" = [
+            "@python@"
+            "-c"
+            "import subprocess\nresult = subprocess.run([\"@out@/bin/aos-test-driver\", \"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"--manifest\" in result.stdout and \"--test\" in result.stdout\nprint(\"aos-test-driver operation passed\")\n"
+          ];
+          "exit_code" = 0;
+          "stderr" = {
+            "exact" = "";
+          };
+          "stdout" = {
+            "exact" = "aos-test-driver operation passed\n";
+          };
+        }
+      ];
+    };
+    "badInput" = {
+      "artifacts" = [];
+      "expected" = "The driver rejects the missing required arguments before VM startup.";
+      "files" = {};
+      "input" = "A driver invocation without its required manifest and test paths.";
+      "operation" = "Parse the incomplete invocation.";
+      "steps" = [
+        {
+          "argv" = [
+            "@python@"
+            "-c"
+            "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/aos-test-driver\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"required\" in result.stderr, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"aos-test-driver rejected invalid input\\n\")\nraise SystemExit(7)\n"
+          ];
+          "exit_code" = 7;
+          "observes_rejection" = true;
+          "stderr" = {
+            "exact" = "aos-test-driver rejected invalid input\n";
+          };
+          "stdout" = {
+            "exact" = "";
+          };
+        }
+      ];
+    };
+  };
+
   version = "1.0";
   src = null;
 
-  # python3 and socat must be in the runtime closure: the shim re-execs
-  # python3 directly, and qemu.py shells out to socat for serial drain. Cross
-  # builds also retain the target Bash referenced by the installed shim;
-  # native builds already retain that direct output reference.
-  runtimeDeps =
-    [python3 socat]
-    ++ lib.optionals stdenv.isCross [bash];
+  # The installed shim uses Bash and re-execs Python; qemu.py also launches
+  # socat for serial drain. Declare all three for native and cross builds so
+  # reference scrubbing preserves the interpreter paths.
+  runtimeDeps = [bash python3 socat];
 
   phases = [
     {
@@ -95,6 +147,25 @@ mkDerivation {
     pkgs,
     ...
   }: {
+    deadline = pkgs.buildPackages.mkDerivation {
+      pname = "aos-test-driver-deadline";
+      version = "0";
+      src = null;
+      buildDeps = [pkgs.buildPackages.python3];
+      phases = [
+        {
+          name = "check";
+          script = ''
+            export PYTHONDONTWRITEBYTECODE=1
+            export PYTHONPATH=${./aos-test-driver}
+            ${pkgs.buildPackages.python3}/bin/python3 -m unittest discover \
+              -s ${./aos-test-driver/tests} -v
+            touch "$out"
+          '';
+        }
+      ];
+    };
+
     pyrefly = pkgs.buildPackages.mkDerivation {
       pname = "aos-test-driver-pyrefly";
       version = "0";

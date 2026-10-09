@@ -5,9 +5,11 @@
   containerPublicationInputs,
   databaseUrl,
   fixture,
+  nextPublication,
   parityRouteKeys,
   pkgs,
   processSampler,
+  publication,
   qualificationKeys,
   releasePublicationKeys,
   releaseReceiptKey,
@@ -996,6 +998,29 @@
   )
   print("hybrid OCI route ready through public Worker")
 
+  reviewed(
+      "hybrid-registry-route",
+      "route add registry:fleet/containers --stable-id hybrid-registry-route "
+      f"--endpoint hybrid-oci@{oci_generation} --base-path /fleet/containers "
+      "--mode hub-proxy --placement primary --serves git --serves cache --access public",
+  )
+  registry_route = next(route for route in json.loads(client.succeed(hub_command(
+      "route list registry:fleet/containers"
+  )))["data"]["routes"] if route["stable_id"] == "hybrid-registry-route")
+  reviewed(
+      "hybrid-registry-route-enable",
+      "route enable hybrid-registry-route "
+      f"--if-version {shlex.quote(registry_route['resource_version'])}",
+  )
+  client.wait_until_succeeds(
+      hub_command("route list registry:fleet/containers")
+      + " | ${pkgs.jq}/bin/jq -e '.data.routes[] "
+      "| select(.stable_id == \"hybrid-registry-route\") "
+      "| .observation.state == \"healthy\"' > /dev/null",
+      timeout=180,
+  )
+
+
   external_cache_bytes = b"fleet external S3 delivery through Worker\n"
   external_cache_path = "nar/fleet-external-probe.nar.zst"
   external_store_hash = "a" * 32
@@ -1064,6 +1089,20 @@
       ${pkgs.coreutils}/bin/install -m 0600 -o 802 -g 802 \\
         ${secretVersionManifest}/value /var/lib/aos-hub/fleet-credentials/secret-version-manifest
   """))
+  def observe_credential_clocks(purpose, phase):
+      samples = []
+      for role, machine in (("native", native), ("worker", worker)):
+          before = time.time_ns()
+          guest = int(machine.succeed(
+              "${pkgs.python3}/bin/python3 -c 'import time; print(time.time_ns())'"
+          ).strip())
+          after = time.time_ns()
+          samples.append({"role": role, "hostBeforeUnixNs": before,
+              "guestUnixNs": guest, "hostAfterUnixNs": after})
+      print("hybrid credential staging clock brackets:", json.dumps({
+          "purpose": purpose, "phase": phase, "samples": samples,
+      }, sort_keys=True))
+
   for purpose in ("delete", "list", "read", "write"):
       validated = reviewed(
           f"hybrid-external-{purpose}-credential-validate",
@@ -1080,16 +1119,21 @@
       assert unstaged["operation"]["state"] == "failed", unstaged
       assert "custody challenge with HTTP 409" in unstaged["error"], unstaged
 
-      native.succeed(
-          f"{CHROOT} ${pkgs.aos-hub}/bin/aos-hub-authority-bootstrap "
-          "--database-url-file /var/lib/aos-hub/fleet-credentials/database-url "
-          f"stage-credential --operation-id {shlex.quote(validation_operation_id)} "
-          "--deployment-id fleet-hybrid-v1 --worker-url https://aos.andyl.org "
-          "--storage-work-key-file /var/lib/aos-hub/fleet-credentials/storage-key "
-          "--secret-version-manifest /var/lib/aos-hub/fleet-credentials/secret-version-manifest "
-          f"--output /var/lib/aos-hub/fleet-credentials/{purpose}-stage",
-          timeout=60,
-      )
+      observe_credential_clocks(purpose, "before-stage")
+      try:
+          native.succeed(
+              f"{CHROOT} ${pkgs.aos-hub}/bin/aos-hub-authority-bootstrap "
+              "--database-url-file /var/lib/aos-hub/fleet-credentials/database-url "
+              f"stage-credential --operation-id {shlex.quote(validation_operation_id)} "
+              "--deployment-id fleet-hybrid-v1 --worker-url https://aos.andyl.org "
+              "--storage-work-key-file /var/lib/aos-hub/fleet-credentials/storage-key "
+              "--secret-version-manifest /var/lib/aos-hub/fleet-credentials/secret-version-manifest "
+              f"--output /var/lib/aos-hub/fleet-credentials/{purpose}-stage",
+              timeout=60,
+          )
+      except Exception:
+          observe_credential_clocks(purpose, "stage-failure")
+          raise
       client.succeed(hub_command(
           f"operation retry {shlex.quote(validation_operation_id)} "
           f"--if-version {shlex.quote(unstaged['resource_version'])}"
@@ -1292,22 +1336,6 @@
   """), timeout=900).splitlines()[-1])
   assert finalized_container["verification"] == "verified-external-sshsig", finalized_container
   assert finalized_container["release_identity"] == "1.0.0", finalized_container
-  session_token = refresh_session_token()
-  client.succeed("install -d -m 0700 /var/lib/hybrid-container-upload-state")
-  container_stage = json.loads(client.succeed(
-      "XDG_CACHE_HOME=/var/lib/hybrid-container-upload-state "
-      f"{AOS} --json --progress off --color never container publish aos "
-      "aos.andyl.org/aos:parity "
-      f"--release {shlex.quote(finalized_container['release'])} "
-      f"--release-layout {shlex.quote(finalized_container['layout'])} "
-      f"--signature-input {shlex.quote(finalized_container['signature_input'])} "
-      "--registry fleet/containers --registry-origin https://aos.andyl.org "
-      f"--registry-token {shlex.quote(session_token)} "
-      "--idempotency-key hybrid-container-parity-stage --stage-only",
-      timeout=900,
-  ))
-  assert container_stage["state"] == "staged" and not container_stage["tag_updated"], container_stage
-  assert container_stage["index_digest"] == finalized_container["index_digest"], container_stage
   client.succeed(textwrap.dedent(f"""
       set -eu
       export HOME=/tmp/hybrid-apr-home USER=fleet-publisher
@@ -1328,25 +1356,105 @@
         "$registry" "$key" > "$HOME/.config/apm/registries.d/containers.toml"
       # The signed image identity requires its exact package/version in
       # the signed release tree, alongside the changing helper package.
-      {APR} publish ${pkgs.aos} --registry containers --name aos --version 0.1.0 \\
-        --description 'AOS command-line package for the base-image release' \\
-        --license Apache-2.0 --maintainer fleet-publisher@example.test --key-id initial
-      {APR} release 1.0.0 --registry containers \\
+      (
+        cd ${publication.project}
+        {APR} publish ${pkgs.aos} --registry containers --key-id initial
+      )
+      {APR} origin upload --registry containers \\
+        --upload-url file:///tmp/hybrid-bootstrap-surface
+  """), timeout=600)
+  publisher_token_response = reviewed_control(
+      "hybrid-release-publisher-token",
+      f"access-token issue plan {shlex.quote(org['stable_id'])} "
+      "--owner service_account:fleet/hybrid-controller "
+      "--permission read --permission publish --ttl-secs 3600 "
+      "--comment 'Hybrid fleet release publisher'",
+      "access-token issue apply",
+  )
+  publisher_secret = publisher_token_response["data"]["result"]["secret"]
+  publisher_token = json.loads(client.succeed(
+      f"{CURL} -fsS -X POST -H 'Content-Type: application/x-www-form-urlencoded' "
+      f"-H 'Authorization: Bearer {publisher_secret}' "
+      "--data-urlencode 'grant_type=urn:aos:params:oauth:grant-type:provisioning-token' "
+      "https://aos.andyl.org/oauth2/token",
+  ))["access_token"]
+  # The VM agent has no login HOME. Give each publication an explicit private
+  # retry journal so uploads exercise the same durable custody as real users.
+  client.succeed("${pkgs.coreutils}/bin/install -d -m 0700 /var/lib/hybrid-client/publication-journals")
+  bootstrap = json.loads(client.succeed(
+      f"{AOS} --json --progress off --color never hub registry publish upload fleet/containers "
+      "--root /tmp/hybrid-bootstrap-surface --hub https://aos.andyl.org "
+      "--direct-upload-journal /var/lib/hybrid-client/publication-journals/bootstrap.sqlite "
+      f"--token {shlex.quote(publisher_token)}",
+      timeout=900,
+  ))["data"]
+  assert bootstrap["state"] == "ready", bootstrap
+
+  client.succeed(textwrap.dedent(f"""
+      set -euo pipefail
+      export HOME=/tmp/hybrid-apr-home USER=fleet-publisher
+      export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
+      export NIX_REMOTE="" NIX_CONF_DIR="$HOME/.config/nix"
+      registry="$HOME/.local/share/apm/registries/containers"
+      git -C "$registry" switch -c qualification/hybrid-container
+      (cd ${publication.project}
+        {APR} publish ${fixture.helperV1} --registry containers --key-id initial)
+      {APR} release 1.0.0 --registry containers --stage hybrid-container \\
         --container-release /var/lib/hybrid-container-final/container-release.json \\
         --container-signature-input /var/lib/hybrid-container-final/signature-input.json \\
-        --store-path ${fixture.helperV1} --name hub-helper \\
-        --description 'Hybrid release indexing fixture' --license MIT \\
-        --maintainer fleet-publisher@example.test --key-id initial \\
-        --cache-url https://aos.andyl.org/fleet/containers \\
-        --upload-url file:///tmp/hybrid-publication-surface
+        --container-layout /var/lib/hybrid-container-final/layout \\
+        --key-id initial \\
+        --cache-url https://aos.andyl.org/fleet/containers/ \\
+        --upload-url https://aos.andyl.org/fleet/containers \\
+        --token {shlex.quote(publisher_token)}
+      {APR} --json stage show hybrid-container --registry containers \\
+        > /var/lib/hybrid-container-registry-stage.json
+  """), timeout=900)
+  registry_stage = json.loads(client.succeed("cat /var/lib/hybrid-container-registry-stage.json"))
+  assert registry_stage["state"] == "ready", registry_stage
+  assert registry_stage["revision"]["registry"] == "fleet/containers", registry_stage
+  assert registry_stage["revision"]["revision"] == 1, registry_stage
+  assert registry_stage["revision"]["release_id"] == "1.0.0", registry_stage
+  assert registry_stage["revision"]["source_branch"] == "qualification/hybrid-container", registry_stage
+  assert registry_stage["revision"]["container"]["release"]["oci"]["index"]["digest"] == finalized_container["index_digest"]
+  session_token = refresh_session_token()
+  client.succeed("install -d -m 0700 /var/lib/hybrid-container-upload-state")
+  container_stage = json.loads(client.succeed(
+      "XDG_CACHE_HOME=/var/lib/hybrid-container-upload-state "
+      f"{AOS} --json --progress off --color never container publish aos "
+      "aos.andyl.org/aos:parity "
+      f"--release {shlex.quote(finalized_container['release'])} "
+      f"--release-layout {shlex.quote(finalized_container['layout'])} "
+      f"--signature-input {shlex.quote(finalized_container['signature_input'])} "
+      "--registry fleet/containers --registry-origin https://aos.andyl.org "
+      f"--registry-token {shlex.quote(session_token)} "
+      "--registry-stage /var/lib/hybrid-container-registry-stage.json "
+      "--hub https://aos.andyl.org "
+      f"--token {shlex.quote(session_token)} "
+      "--idempotency-key hybrid-container-parity-stage --stage-only",
+      timeout=900,
+  ))
+  assert container_stage["state"] == "staged" and not container_stage["tag_updated"], container_stage
+  assert container_stage["index_digest"] == finalized_container["index_digest"], container_stage
+  assert container_stage["registry_stage"]["state"] == "ready", container_stage
+  assert container_stage["missing_paths"] == [], container_stage
+  client.succeed(textwrap.dedent(f"""
+      set -eu
+      export HOME=/tmp/hybrid-apr-home USER=fleet-publisher
+      export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
+      export NIX_REMOTE="" NIX_CONF_DIR="$HOME/.config/nix"
+      registry="$HOME/.local/share/apm/registries/containers"
+      {APR} release 1.0.0 --registry containers --from-stage hybrid-container \\
+        --stage-revision 1 --upload-url https://aos.andyl.org/fleet/containers \\
+        --token {shlex.quote(publisher_token)}
       # The next release has no container; remove its predecessor's sidecar
       # through a real commit rather than carrying a mismatched identity.
       git -C "$registry" rm containers/v1/index.json
       git -C "$registry" commit -m 'Remove the previous release container sidecar'
+      (cd ${nextPublication.project}
+        {APR} publish ${fixture.helperV2} --registry containers --previous 1.0.0 --key-id initial)
       {APR} release 2.0.0 --registry containers \\
-        --store-path ${fixture.helperV2} --name hub-helper --previous 1.0.0 \\
-        --description 'Hybrid release indexing fixture' --license MIT \\
-        --maintainer fleet-publisher@example.test --key-id initial \\
+        --key-id initial \\
         --channel stable --init-channel \\
         --cache-url https://aos.andyl.org/fleet/containers \\
         --upload-url file:///tmp/hybrid-publication-surface
@@ -1365,6 +1473,7 @@
           lambda token: (
               f"{AOS} --json hub registry publish upload fleet/containers "
               "--root /tmp/hybrid-publication-surface --hub https://aos.andyl.org "
+              "--direct-upload-journal /var/lib/hybrid-client/publication-journals/containers.sqlite "
               f"--token {shlex.quote(token)}"
           ),
           session_token,
@@ -1543,10 +1652,10 @@
       registry="$HOME/.local/share/apm/registries/metadata"
       printf '[registry]\\nname = "metadata"\\nurl = "file://%s"\\n\\n[registry.signing_keys]\\ninitial = "%s"\\n' \\
         "$registry" "$key" > "$HOME/.config/apm/registries.d/metadata.toml"
+      (cd ${publication.project}
+        {APR} publish ${fixture.helperV1} --registry metadata --key-id initial)
       {APR} release 1.0.0 --registry metadata \\
-        --store-path ${fixture.helperV1} --name hub-helper \\
-        --description 'Hybrid metadata-only indexing fixture' --license MIT \\
-        --maintainer fleet-publisher@example.test --key-id initial \\
+        --key-id initial \\
         --channel stable --init-channel \\
         --cache-url https://aos.andyl.org/fleet/objects \\
         --upload-url file:///tmp/hybrid-metadata-surface
@@ -1558,6 +1667,7 @@
       lambda token: (
           f"{AOS} --json hub registry publish upload fleet/metadata "
           "--root /tmp/hybrid-metadata-surface --hub https://aos.andyl.org "
+          "--direct-upload-journal /var/lib/hybrid-client/publication-journals/metadata.sqlite "
           f"--token {shlex.quote(token)}"
       ),
       session_token,

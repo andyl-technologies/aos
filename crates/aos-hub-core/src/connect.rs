@@ -300,6 +300,19 @@ fn browse_response(rendered: Rendered) -> Response {
             body,
         )
             .into_response(),
+        Rendered::PrivateHtml(body) => (
+            [
+                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (
+                    header::CONTENT_SECURITY_POLICY,
+                    "default-src 'self'; frame-ancestors 'none'",
+                ),
+                (header::CACHE_CONTROL, "private, no-store"),
+                (header::VARY, "Cookie, Authorization"),
+            ],
+            body,
+        )
+            .into_response(),
         Rendered::Json(body) => {
             ([(header::CONTENT_TYPE, "application/json")], body).into_response()
         }
@@ -415,6 +428,7 @@ async fn browse_dispatch(
             browse_page_response(rendered)
         };
     }
+    let api_auth = auth_header(&headers);
     let api_rest = rest
         .strip_prefix("api/v1/")
         .or_else(|| rest.strip_prefix("api/"));
@@ -422,8 +436,15 @@ async fn browse_dispatch(
         Some(api) => match api {
             "registry" => browse::api_registry(&svc, &slug).await,
             "packages" => browse::api_packages(&svc, &slug).await,
-            "docs/search" => browse::api_documentation_search(&svc, &slug, &q).await,
-            "docs/schema" => browse::api_documentation_schema(&svc, &slug).await,
+            "abilities" => {
+                browse::api_release_ability_graph(&svc, api_auth.as_deref(), &slug, &q).await
+            }
+            "docs/search" => {
+                browse::api_documentation_search(&svc, api_auth.as_deref(), &slug, &q).await
+            }
+            "docs/schema" => {
+                browse::api_documentation_schema(&svc, api_auth.as_deref(), &slug).await
+            }
             "channels" => browse::api_channels(&svc, &slug).await,
             "releases" => browse::api_releases(&svc, &slug).await,
             other => {
@@ -431,7 +452,8 @@ async fn browse_dispatch(
                     .strip_prefix("documentation/")
                     .filter(|digest| !digest.is_empty() && !digest.contains('/'))
                 {
-                    browse::api_documentation_artifact(&svc, &slug, digest).await
+                    browse::api_documentation_artifact(&svc, api_auth.as_deref(), &slug, digest)
+                        .await
                 } else if let Some(name) = other
                     .strip_prefix("packages/")
                     .filter(|name| !name.is_empty())
@@ -439,17 +461,49 @@ async fn browse_dispatch(
                     if let Some((package, suffix)) = name.split_once('/') {
                         match suffix {
                             "documentation" => {
-                                browse::api_package_documentation(&svc, &slug, package, &q).await
+                                browse::api_package_documentation(
+                                    &svc,
+                                    api_auth.as_deref(),
+                                    &slug,
+                                    package,
+                                    &q,
+                                )
+                                .await
+                            }
+                            "abilities" => {
+                                browse::api_package_ability_reference(
+                                    &svc,
+                                    api_auth.as_deref(),
+                                    &slug,
+                                    package,
+                                    &q,
+                                )
+                                .await
                             }
                             "options" => {
-                                browse::api_package_options(&svc, &slug, package, &q).await
+                                browse::api_package_options(
+                                    &svc,
+                                    api_auth.as_deref(),
+                                    &slug,
+                                    package,
+                                    &q,
+                                )
+                                .await
                             }
                             "compare" => {
-                                browse::api_documentation_compare(&svc, &slug, package, &q).await
+                                browse::api_documentation_compare(
+                                    &svc,
+                                    api_auth.as_deref(),
+                                    &slug,
+                                    package,
+                                    &q,
+                                )
+                                .await
                             }
                             option if option.starts_with("options/") => {
                                 browse::api_package_option(
                                     &svc,
+                                    api_auth.as_deref(),
                                     &slug,
                                     package,
                                     option.trim_start_matches("options/"),
@@ -463,8 +517,15 @@ async fn browse_dispatch(
                         browse::api_package(&svc, &slug, name).await
                     }
                 } else if let Some(selection) = documentation_selection(other, "docs/") {
-                    browse::api_documentation(&svc, &slug, selection.0, selection.1, selection.2)
-                        .await
+                    browse::api_documentation(
+                        &svc,
+                        api_auth.as_deref(),
+                        &slug,
+                        selection.0,
+                        selection.1,
+                        selection.2,
+                    )
+                    .await
                 } else {
                     Rendered::NotFound
                 }
@@ -473,6 +534,7 @@ async fn browse_dispatch(
         None => match rest.as_str() {
             "" => browse::registry_home(&svc, &headers, &slug, host_routes.as_ref()).await,
             "packages" => browse::packages(&svc, &headers, &slug, &q).await,
+            "abilities" => browse::abilities(&svc, &headers, &slug, &q).await,
             "docs/children" => {
                 crate::web::documentation_browser::browse(&svc, &headers, &slug, &q, true).await
             }
@@ -519,7 +581,20 @@ async fn browse_dispatch(
         },
     };
     if api_rest.is_some() {
-        browse_response(rendered)
+        let mut response = browse_response(rendered);
+        if api_auth.is_some() {
+            // Exact document identity never grants another caller read access.
+            // Credentialed reads must not inherit public immutable cache policy.
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, no-store"),
+            );
+            response.headers_mut().insert(
+                header::VARY,
+                HeaderValue::from_static("Cookie, Authorization"),
+            );
+        }
+        response
     } else {
         browse_page_response(rendered)
     }
@@ -939,7 +1014,9 @@ fn delivery_audience(surface: crate::db::SurfaceTarget, path: &str) -> DeliveryA
             || path.starts_with("objects/")
             || path.starts_with("releases/")
             || path.starts_with("channels/")
-            || path.starts_with("images/"))
+            || path.starts_with("images/")
+            || path.starts_with("tuf/")
+            || path.starts_with("publication-receipts/"))
     {
         return DeliveryAudience::Git;
     }
@@ -2877,6 +2954,16 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     );
     r = rpc_route!(
         r,
+        "/aos.hub.v1.DocumentationService/GetPackageAbilityReference",
+        get_package_ability_reference
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.DocumentationService/GetReleaseAbilityGraph",
+        get_release_ability_graph
+    );
+    r = rpc_route!(
+        r,
         "/aos.hub.v1.DocumentationService/SearchPackageDocumentation",
         search_package_documentation
     );
@@ -2904,6 +2991,27 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         r,
         "/aos.hub.v1.DocumentationService/GetPackageDocumentationSchema",
         get_package_documentation_schema
+    );
+    // AbilityDeploymentService - authenticated, private live reference overlays.
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.AbilityDeploymentService/PlanConfigureReporter",
+        plan_configure_ability_deployment_reporter
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.AbilityDeploymentService/ConfigureReporter",
+        configure_ability_deployment_reporter
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.AbilityDeploymentService/ReportPackageOverlay",
+        report_package_ability_deployment
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.AbilityDeploymentService/GetPackageOverlay",
+        get_package_ability_deployment
     );
     // ChannelService
     r = rpc_route!(r, "/aos.hub.v1.ChannelService/ListChannels", list_channels);
@@ -4470,8 +4578,20 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         // First-party static assets (`/_assets/*`) the browse pages + console
         // link. Served from the shared router so the Worker exposes them too
         // (otherwise its CSS/JS/fonts 404).
-        use crate::web::assets;
+        use crate::web::{assets, runtime_documentation};
         r = r
+            .route(
+                "/-/runtime-abilities",
+                get(runtime_documentation::viewer).post(runtime_documentation::preview),
+            )
+            .route(
+                "/-/api/runtime-documentation",
+                post(runtime_documentation::inspect),
+            )
+            .route(
+                "/_assets/runtime-documentation.js",
+                get(runtime_documentation::script),
+            )
             .route("/_assets/style.css", get(assets::stylesheet))
             .route("/_assets/app.js", get(assets::app_js))
             .route("/_assets/theme.js", get(assets::theme_js))
@@ -5020,6 +5140,29 @@ mod tests {
     }
 
     #[test]
+    fn authorized_deployment_html_is_private_and_varies_by_credentials() {
+        let response = browse_response(Rendered::PrivateHtml(
+            "<p>private deployment overlay</p>".into(),
+        ));
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("private, no-store"))
+        );
+        assert_eq!(
+            response.headers().get(header::VARY),
+            Some(&HeaderValue::from_static("Cookie, Authorization"))
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_SECURITY_POLICY),
+            Some(&HeaderValue::from_static(
+                "default-src 'self'; frame-ancestors 'none'"
+            ))
+        );
+    }
+
+    #[test]
     fn unconfigured_delivery_assertion_is_rejected_not_ignored() {
         let request = Request::builder()
             .method("GET")
@@ -5236,6 +5379,16 @@ mod tests {
         assert_eq!(
             delivery_audience(registry, "abc.narinfo"),
             DeliveryAudience::NixCache
+        );
+        // Signed release metadata is machine data served from storage; the
+        // browse renderer has no page for it.
+        assert_eq!(
+            delivery_audience(registry, "tuf/1.root.json"),
+            DeliveryAudience::Git
+        );
+        assert_eq!(
+            delivery_audience(registry, "publication-receipts/aa.json"),
+            DeliveryAudience::Git
         );
         assert_eq!(
             delivery_audience(registry, "-/packages"),

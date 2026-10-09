@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use aos_oci_types::{
-    CONTAINER_RELEASE_SIDECAR_PATH, ContainerRelease, ContainerSignatureInput, Descriptor,
-    ImageIndex, ImageManifest, MediaType,
+    CONTAINER_RELEASE_SIDECAR_PATH, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE, ContainerRelease,
+    ContainerSignatureInput, Descriptor, ImageIndex, ImageManifest, MediaType,
 };
 use aos_release::artifact::{ArtifactKind, ArtifactRelation, ArtifactRelationship, Compression};
 use aos_release::digest::Sha256Digest;
@@ -52,7 +52,7 @@ pub(super) fn assemble(
     }
 
     let layout = root.join("layout");
-    let roots = [
+    let mut roots = vec![
         &release.oci.index,
         &release.nix.closure,
         &release.evidence.sbom,
@@ -61,6 +61,9 @@ pub(super) fn assemble(
         &release.evidence.provenance,
         &release.evidence.signature,
     ];
+    roots.extend(release.evidence.abilities.as_ref());
+    roots.extend(release.evidence.deployment.as_ref());
+
     let mut graph = BTreeMap::new();
     for descriptor in roots {
         visit(&layout, descriptor, &mut graph)?;
@@ -144,7 +147,7 @@ pub(super) fn assemble(
             relation: ArtifactRelation::Contains,
             target: ids[&index_digest].clone(),
         }],
-        ..ArtifactAttributes::plain("application/vnd.aos.container-release.v1+json")
+        ..ArtifactAttributes::plain(release.media_type.as_str())
     };
     payload.copy(
         &release_path,
@@ -164,10 +167,7 @@ pub(super) fn assemble(
         "provenance/container-signature-input".to_owned(),
         ArtifactKind::Provenance,
         "oci/signature-input.json".to_owned(),
-        ArtifactAttributes::exact(
-            "application/vnd.aos.container.signature-input.v1+json",
-            &input_bytes,
-        )?,
+        ArtifactAttributes::exact(CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE, &input_bytes)?,
     )?;
     Ok(())
 }

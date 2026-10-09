@@ -144,13 +144,13 @@ def _digest(value):
     return value
 
 
-def _run(root, environment, label, argv, *, json_output=False):
+def _run(root, environment, label, argv, *, json_output=False, cwd=None):
     command_root = root / label
     command_root.mkdir(mode=0o700)
     _write_private(command_root / "arguments.private.json", argv)
     with (command_root / "stdout.private").open("xb") as stdout:
         with (command_root / "stderr.private").open("xb") as stderr:
-            result = subprocess.run(argv, env=environment, stdout=stdout, stderr=stderr,
+            result = subprocess.run(argv, cwd=cwd, env=environment, stdout=stdout, stderr=stderr,
                 timeout=1100, check=False)
     _write_private(command_root / "terminal.json", {"exitCode": result.returncode})
     if result.returncode:
@@ -203,24 +203,21 @@ def _prepare_documentation(root, environment, tools, registry_root):
     selected = tools.get("documentedPackage")
     if selected is None:
         return None
-    if (not isinstance(selected, dict) or set(selected) != {"storePath", "version", "baseLib"}
+    if (not isinstance(selected, dict) or set(selected) != {"storePath", "version"}
             or any(not isinstance(selected[field], str)
-                or not selected[field].startswith("/nix/store/") for field in ("storePath", "baseLib"))
+                or not selected[field].startswith("/nix/store/") for field in ("storePath",))
             or not isinstance(selected["version"], str)
             or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", selected["version"])):
-        raise ValueError("Documented package must use the selected source-built package and base library")
+        raise ValueError("Documented package must use the selected source-built package")
     _run(root, environment, "apr-publish-documentation", [tools["apr"], "publish", selected["storePath"],
-        "--registry", "containers", "--name", "aos-hub", "--version", selected["version"],
-        "--description", "Native and Worker registry Hub service.", "--license", "Apache-2.0",
-        "--maintainer", "fleet-publisher@example.test", "--documentation-base-lib", selected["baseLib"],
-        "--key-id", "initial"])
+        "--registry", "containers", "--key-id", "initial"], cwd=tools["publicationProject"])
     catalog = tomllib.loads((registry_root / "packages/a/aos-hub.toml").read_text())
-    matches = [entry["platforms"]["x86_64-linux"]["documentation"]
+    matches = [entry["platforms"]["x86_64-linux"]["module_documentation"]
         for entry in catalog["versions"] if entry["version"] == selected["version"]]
     if len(matches) != 1:
         raise ValueError("Actual documented package identity is missing or ambiguous")
     identity = matches[0]
-    descriptor = os.open(identity["store_path"], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    descriptor = os.open(Path(identity["store_path"]) / "options.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as source:
         before = os.fstat(source.fileno())
         if not stat.S_ISREG(before.st_mode) or not 16 <= before.st_size <= 262144:
@@ -233,7 +230,7 @@ def _prepare_documentation(root, environment, tools, registry_root):
     digest = hashlib.sha256(body).hexdigest()
     document = json.loads(body)
     if (identity["document_sha256"] != "sha256:" + digest or identity["document_size"] != len(body)
-            or document.get("schema") != "aos.package-documentation/v1" or not document.get("options")):
+            or document.get("schema") != "aos.module.documentation" or not document.get("options")):
         raise ValueError("Actual signed documentation lacks canonical option content")
     path = root / "document.private.json"
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -351,16 +348,14 @@ def _publish_action(root, selected, environment):
 
     if action == "release":
         _run(root, environment, "apr-publish", [tools["apr"], "publish", tools["aosStorePath"],
-            "--registry", "containers", "--name", "aos", "--version", "0.1.0",
-            "--description", "AOS container release package", "--license", "Apache-2.0",
-            "--maintainer", "fleet-publisher@example.test", "--key-id", "initial"])
+            "--registry", "containers", "--key-id", "initial"], cwd=tools["publicationProject"])
+        _run(root, environment, "apr-publish-helper", [tools["apr"], "publish", tools["helperStorePath"],
+            "--registry", "containers", "--key-id", "initial"], cwd=tools["publicationProject"])
         finalized = source["finalized"]
         _run(root, environment, "apr-release", [tools["apr"], "release", finalized["release_identity"],
             "--registry", "containers", "--container-release", finalized["release"],
             "--container-signature-input", finalized["signature_input"],
-            "--store-path", tools["helperStorePath"], "--name", "hub-helper",
-            "--description", "Managed release indexing fixture", "--license", "MIT",
-            "--maintainer", "fleet-publisher@example.test", "--key-id", "initial",
+            "--key-id", "initial",
             "--channel", "stable", "--init-channel",
             "--cache-url", coordinates["workerOrigin"] + "/" + slug,
             "--upload-url", "file://" + source["surfaceRoot"]])

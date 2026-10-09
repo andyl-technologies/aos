@@ -26,6 +26,7 @@ in
     version = "0.1.0";
     src = source;
     cargoRoot = "crates";
+    cargoWorkspaceMembers = import ./_hub-retained-workspace.nix source;
     cargoDeps = vendor;
     cargoEnv = contract.cargoEnv // {AOS_PROVIDER_READBACK_SOURCE_SHA256 = sourceSha256;};
     cargoFlags = "--package aos-hub --bin aos-hub-provider-readback";

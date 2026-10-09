@@ -12,6 +12,23 @@ struct Fixture {
     store: LocalStageStore,
 }
 
+#[test]
+fn stage_lock_releases_ownership_despite_a_retained_descriptor() {
+    let temporary = TempDir::new().unwrap();
+    git2::Repository::init(temporary.path()).unwrap();
+    let store = LocalStageStore::open(temporary.path()).unwrap();
+    let lock = store.lock().unwrap();
+    let inherited = lock.file.try_clone().unwrap();
+
+    assert!(store.lock().is_err());
+    drop(lock);
+
+    let next = store.lock().unwrap();
+    assert!(store.lock().is_err());
+    drop(next);
+    drop(inherited);
+}
+
 impl Fixture {
     fn new() -> Self {
         let temporary = TempDir::new().unwrap();

@@ -15,6 +15,7 @@ in
       version = "0.1.0";
       src = source;
       cargoRoot = "crates";
+      cargoWorkspaceMembers = import ./_hub-retained-workspace.nix source;
       cargoDeps = builtins.elemAt sources 1;
       cargoEnv = contract.cargoEnv;
       cargoFlags = "-p aos-hub-core --example lease_scale_observe";

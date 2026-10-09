@@ -1137,9 +1137,13 @@ mod tests {
             Some(disk.as_str())
         );
         assert_eq!(
-            LocalFsFetch::immutable_digest(&format!(
-                "images/sha256/{disk}/metadata/{metadata}/image-info.json"
-            )),
+            LocalFsFetch::immutable_digest(
+                &aos_registry_surface::manifest::immutable_image_contract_object_key(
+                    &disk,
+                    &metadata,
+                    "image-info.json",
+                ),
+            ),
             Some(metadata.as_str())
         );
         assert_eq!(
@@ -1148,7 +1152,7 @@ mod tests {
         );
         for rejected in [
             format!("images/sha256/{disk}/aliases/{metadata}"),
-            format!("images/sha256/{disk}/metadata/{metadata}/other.json"),
+            format!("images/sha256/{disk}/contracts/{metadata}/other.json"),
             format!("images/sha256/{}/disk.img", "A".repeat(64)),
             format!("images/sha256/{disk}/nested/disk.img"),
             format!("images/sha256/{disk}/unsafe..img"),

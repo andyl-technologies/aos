@@ -3,13 +3,15 @@
 # observations; it does not use the interactive harness or change VM networking.
 {
   source,
+  runtimeSourceIdentity ? null,
   separateDatabase ? true,
   readRevisionFixture ? null,
 }: let
   aos = import source {};
   spec = import (source + "/tests/fleet/hub-hybrid.nix") {
-    inherit (aos) lib mkSystem pkgs;
-    inherit separateDatabase readRevisionFixture;
+    inherit (aos) lib pkgs;
+    mkSystem = import ./_hub-fixture-system.nix {inherit (aos) mkSystem;};
+    inherit runtimeSourceIdentity separateDatabase readRevisionFixture;
     externalDirect = true;
     runtimeSource = source;
   };

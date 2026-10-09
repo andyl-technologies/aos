@@ -42,6 +42,7 @@ def wait_fixture_tls_response(machine, curl, python, url, method, expected_statu
     observations.mkdir(mode=0o700)
     deadline = time.monotonic() + timeout
     attempt = 0
+    last_response = None
 
     while time.monotonic() < deadline:
         attempt += 1
@@ -69,6 +70,11 @@ def wait_fixture_tls_response(machine, curl, python, url, method, expected_statu
         if status != 0:
             raise RuntimeError("fixture startup observation command failed")
         value = json.loads(stdout)
+        last_response = {
+            "curl_exit": value["curl_exit"],
+            "http_status": value["http_status"],
+            "stderr": value["stderr"][-2048:],
+        }
         value.update({
             "version": 1, "attempt": attempt, "url": url, "method": method,
             "scope": "actual unsigned TLS response; transport startup only",
@@ -84,4 +90,7 @@ def wait_fixture_tls_response(machine, curl, python, url, method, expected_statu
             return value
         time.sleep(1)
 
-    raise RuntimeError("fixture TLS startup response unavailable; actual observations retained")
+    raise RuntimeError(
+        f"fixture TLS startup response unavailable ({observation_label}): "
+        + json.dumps(last_response, sort_keys=True)
+    )

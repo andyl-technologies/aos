@@ -1,6 +1,6 @@
 //! Held read-only PostgreSQL input for inert logical archives.
 //!
-//! PostgreSQL 18 and the exact current generation-thirteen semantic catalogue are
+//! PostgreSQL 18 and the exact current generation-sixteen semantic catalogue are
 //! admitted. One REPEATABLE READ READ ONLY transaction owns catalogue checks,
 //! source audit and bounded row pages. ACCESS SHARE locks prevent physical heap
 //! rewriting while internal `ctid` locators enumerate the held snapshot. Neither
@@ -118,8 +118,8 @@ impl PostgresSnapshotReader {
     pub async fn open(database_url: &str, limits: PostgresSnapshotLimits) -> Result<Self> {
         limits.validate()?;
         ensure!(
-            crate::db::MIGRATIONS.len() == 13,
-            "PostgreSQL capture contract requires explicit generation-thirteen support"
+            crate::db::MIGRATIONS.len() == 16,
+            "PostgreSQL capture contract requires explicit generation-sixteen support"
         );
         Self::open_inner(database_url, limits)
             .await
@@ -175,7 +175,7 @@ impl PostgresSnapshotReader {
             );
         }
 
-        let compiled = CompiledSqliteSnapshotCatalogue::load_generation(13).await?;
+        let compiled = CompiledSqliteSnapshotCatalogue::load_generation(16).await?;
         let schema = compiled.schema().clone();
         // All names come from the compiled catalogue. These locks prohibit
         // concurrent rewrite/drop while ordinary DML and VACUUM remain allowed.
@@ -207,7 +207,7 @@ impl PostgresSnapshotReader {
             "changed PostgreSQL semantic catalogue"
         );
         let version_matches: bool = sqlx::query_scalar(
-            "SELECT count(*)=1 AND min(version)=13 AND max(version)=13 FROM public.schema_version",
+            "SELECT count(*)=1 AND min(version)=16 AND max(version)=16 FROM public.schema_version",
         )
         .fetch_one(&mut *transaction)
         .await?;

@@ -640,7 +640,7 @@ fn validate_initial_release(release: &ContainerRelease) -> Result<(), RpcError> 
 }
 
 fn release_roots(release: &ContainerRelease) -> Vec<Descriptor> {
-    vec![
+    let mut descriptors = vec![
         release.oci.index.clone(),
         release.nix.closure.clone(),
         release.evidence.sbom.clone(),
@@ -648,7 +648,12 @@ fn release_roots(release: &ContainerRelease) -> Vec<Descriptor> {
         release.evidence.license.clone(),
         release.evidence.provenance.clone(),
         release.evidence.signature.clone(),
-    ]
+    ];
+    descriptors.extend(release.evidence.abilities.clone());
+    if let Some(deployment) = &release.evidence.deployment {
+        descriptors.push(deployment.clone());
+    }
+    descriptors
 }
 
 fn validate_release_graph(
@@ -725,6 +730,13 @@ fn descriptor_role(
         ContainerReleaseDescriptorRole::PlatformManifest
     } else if descriptor.digest == release.nix.closure.digest {
         ContainerReleaseDescriptorRole::NixClosure
+    } else if release
+        .evidence
+        .abilities
+        .as_ref()
+        .is_some_and(|abilities| descriptor.digest == abilities.digest)
+    {
+        ContainerReleaseDescriptorRole::Abilities
     } else if descriptor.digest == release.evidence.sbom.digest {
         ContainerReleaseDescriptorRole::Sbom
     } else if descriptor.digest == release.evidence.source.digest {
@@ -733,6 +745,13 @@ fn descriptor_role(
         ContainerReleaseDescriptorRole::License
     } else if descriptor.digest == release.evidence.provenance.digest {
         ContainerReleaseDescriptorRole::Provenance
+    } else if release
+        .evidence
+        .deployment
+        .as_ref()
+        .is_some_and(|deployment| deployment.digest == descriptor.digest)
+    {
+        ContainerReleaseDescriptorRole::Deployment
     } else if descriptor.digest == release.evidence.signature.digest {
         ContainerReleaseDescriptorRole::Signature
     } else {
@@ -879,6 +898,11 @@ mod staging_tests {
             },
             qualification: qualification_fixture(),
             evidence: ContainerReleaseEvidence {
+                deployment: None,
+                abilities: Some(evidence_descriptor(
+                    MediaType::AosContainerStaticAbilities,
+                    "abilities",
+                )),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
                 license: evidence_descriptor(MediaType::AosLicenseReport, "license"),
