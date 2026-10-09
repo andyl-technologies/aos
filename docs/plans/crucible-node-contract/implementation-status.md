@@ -722,6 +722,29 @@ qualification of this final version. The broader hermetic gate is rerun
 separately before its result can be extended to the repaired stack. This repair
 does not issue native execution epochs, authorize effects or qualify capture.
 
+## Canonical semantic profiles and exclusive reaction cuts
+
+Generated semantic profiles sort the complete ownership and port rosters before
+deriving identities. This makes version-one construction valid while retaining
+the full original version-two no-ingress identity fixture byte for byte.
+Imported compatibility tuples and native codecs are not retagged.
+
+The selected semantic model retains its checked successor-microstep reaction.
+Before executing a staged immutable batch, the adapter refuses an exclusive cut
+that passes a delivery but excludes its reaction. No earlier batch input takes
+effect on that refusal; a later valid grant consumes the same original staged
+input once. Generic Block reactions retain their same-microstep convention.
+
+Central verification passes 139 selected cases: the original golden fixture,
+four actual installed semantic scenarios, 97 existing adapter cases and 37
+source-quality cases. The actual cohort completes in 6.27 seconds; the existing
+adapter cohort retains seven explicit ignored cases. Five-file formatting and
+nine-crate all-target strict checks pass. Changed program/schema/compatibility
+and unsupported controls refuse before allocation. Current source-review
+metadata changes only two existing hashes and line counts, preserving the
+runtime repair inventory. This stage does not qualify captured semantic input
+state, imported compatibility migration or external-input profiles.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

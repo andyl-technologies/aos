@@ -283,6 +283,9 @@ pub(super) fn build_world(
         &mut contents,
     )?);
     connections.sort_by(|left, right| left.id.cmp(&right.id));
+    // Semantic routes append transfer custody after the storage helper. The
+    // complete inventory must be canonical before deriving its world identity.
+    objects.sort_by(|left, right| left.id.cmp(&right.id));
     owners.sort_by(|left, right| left.owner.id.cmp(&right.owner.id));
     domains.sort_by(|left, right| left.id.cmp(&right.id));
     captures.sort_by(|left, right| left.owner_id.cmp(&right.owner_id));

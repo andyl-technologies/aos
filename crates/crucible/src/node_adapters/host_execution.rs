@@ -454,6 +454,24 @@ impl HostModelNode {
                 ));
             }
             self.validate_staged_inputs(inputs, &staged.acknowledgement)?;
+            if matches!(self.model.as_ref(), Some(HostModel::Semantics(_))) {
+                // A closed prefix cannot pass an unconsumed original delivery.
+                // Refuse a cut between delivery and its selected reaction before
+                // any earlier input in this immutable batch can take effect.
+                for delivery in staged
+                    .original
+                    .deliveries()
+                    .iter()
+                    .skip(staged.consumed)
+                    .take_while(|delivery| delivery.delivery < limit)
+                {
+                    if self.input_reaction(delivery.delivery)? >= limit {
+                        return Err(failure(
+                            "semantic exclusive cut excludes the original input reaction",
+                        ));
+                    }
+                }
+            }
         } else if self
             .staged
             .as_ref()
@@ -477,7 +495,8 @@ impl HostModelNode {
                 .inputs()
                 .and(self.staged.as_ref())
                 .and_then(|staged| staged.original.deliveries().get(staged.consumed))
-                .map(|delivery| reaction(delivery.delivery));
+                .map(|delivery| self.input_reaction(delivery.delivery))
+                .transpose()?;
             let local_position = match self.model.as_ref() {
                 Some(HostModel::ScriptedSource(source)) => source.next_position(),
                 Some(HostModel::Semantics(model)) => model.next_position(),
@@ -626,6 +645,25 @@ impl HostModelNode {
         }
     }
 
+    fn input_reaction(&self, delivery: Position) -> Result<Position, OperationFailure> {
+        if matches!(self.model.as_ref(), Some(HostModel::Semantics(_))) {
+            // The unchanged semantic codec records a strict successor reaction.
+            // Select it before the exclusive grant comparison and consumption.
+            let microstep = delivery
+                .microstep
+                .checked_add(U64::new(1))
+                .map_err(|_| failure("semantic input reaction microstep exhausted"))?;
+            if microstep >= self.maximum_microsteps {
+                return Err(failure(
+                    "semantic input reaction exceeds selected microstep ceiling",
+                ));
+            }
+            Ok(Position::new(delivery.time_ps, microstep, Phase::Reaction))
+        } else {
+            Ok(reaction(delivery))
+        }
+    }
+
     fn consume_input(&mut self) -> Result<(), OperationFailure> {
         let pending_limit = self
             .lane(self.output_endpoint.as_ref())?
@@ -653,6 +691,7 @@ impl HostModelNode {
             .ok_or_else(|| failure("original host input prefix exhausted"))?;
         let bytes = payload(&staged.original, &delivery.payload)?;
         let cause = vec![delivery.delivery];
+        let input_reaction = self.input_reaction(delivery.delivery)?;
         match self.model.as_mut() {
             Some(HostModel::Io(io)) => {
                 let before: BTreeSet<_> = io.pending_completion_keys().collect();
@@ -719,7 +758,7 @@ impl HostModelNode {
                 }
             }
             Some(HostModel::Semantics(model)) => {
-                model.consume(delivery, bytes, reaction(delivery.delivery))?;
+                model.consume(delivery, bytes, input_reaction)?;
             }
             _ => return Err(failure("host clock has no input reaction")),
         }

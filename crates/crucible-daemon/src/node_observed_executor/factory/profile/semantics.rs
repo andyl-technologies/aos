@@ -151,9 +151,9 @@ pub(super) fn semantic_profile(
             extensions: Extensions::new(),
         });
     }
-    if definition.version == 2 {
-        ports.sort_by(|left, right| left.id.cmp(&right.id));
-    }
+    // Every edition hashes the canonical port roster. Sorting the generated
+    // v1 roster does not repair or retag an imported compatibility tuple.
+    ports.sort_by(|left, right| left.id.cmp(&right.id));
     descriptor.ports = ports;
     if definition.version == 2 {
         let mut terminal = binding

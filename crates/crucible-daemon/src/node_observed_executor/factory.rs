@@ -24,6 +24,9 @@ mod artifact_tests;
 #[cfg(test)]
 mod semantic_terminal_tests;
 
+#[cfg(test)]
+mod semantic_profile_tests;
+
 pub(super) use transcript::replay_stepper::{ReplayStep, ReplayStepper};
 
 pub use capabilities::{
