@@ -554,10 +554,14 @@ in
         ${pkgs.aos.apr}/bin/apr --json keys register maintainer \
         --key "$producer_key" --registry maintenance \
         >/tmp/apr-register-maintainer-key.json
-      if ! HOME="$producer_home" PATH="$producer_path" AOS_ROOT=${publication.project} \
-        ${pkgs.aos.apr}/bin/apr --json publish ${pkgs.grep} \
-        --registry maintenance --key-id maintainer \
-        >/tmp/apr-publish-package.json 2>&1; then
+      # Repository discovery uses the working directory; AOS_ROOT would also
+      # redirect store queries away from the guest's registered /nix/store.
+      if ! (
+        cd ${publication.project}
+        HOME="$producer_home" PATH="$producer_path" \
+          ${pkgs.aos.apr}/bin/apr --json publish ${pkgs.grep} \
+          --registry maintenance --key-id maintainer
+      ) >/tmp/apr-publish-package.json 2>&1; then
         ${pkgs.coreutils}/bin/cat /tmp/apr-publish-package.json >&2
         exit 1
       fi

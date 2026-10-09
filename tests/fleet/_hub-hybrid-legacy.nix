@@ -1336,8 +1336,10 @@
         "$registry" "$key" > "$HOME/.config/apm/registries.d/containers.toml"
       # The signed image identity requires its exact package/version in
       # the signed release tree, alongside the changing helper package.
-      AOS_ROOT=${publication.project} {APR} publish ${pkgs.aos} \\
-        --registry containers --key-id initial
+      (
+        cd ${publication.project}
+        {APR} publish ${pkgs.aos} --registry containers --key-id initial
+      )
       {APR} origin upload --registry containers \\
         --upload-url file:///tmp/hybrid-bootstrap-surface
   """), timeout=600)
