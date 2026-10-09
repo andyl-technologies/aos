@@ -25,6 +25,39 @@ fn native_path(bytes: Vec<u8>) -> Result<PathBuf, StoreFailure> {
     }
 }
 
+/// Compares the ordered ancestor constraints evaluated by native continuity.
+fn same_parent_predicates(left: &[ParentFence], right: &[ParentFence]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            left.path == right.path && left.stamp.same_incarnation(right.stamp)
+        })
+}
+
+/// Keeps every named constraint, including its actual exclusion descriptor.
+fn same_name_predicate(left: &NamedFence, right: &NamedFence) -> bool {
+    left.path == right.path
+        && left.stamp.same_incarnation(right.stamp)
+        && left.policy == right.policy
+        && left.descriptor == right.descriptor
+        && same_parent_predicates(&left.parents, &right.parents)
+}
+
+/// Compares whole-value and original physical constraints without rewriting them.
+fn same_read_predicate(left: &ExactRead, right: &ExactRead) -> bool {
+    let same_metadata = match (left.metadata, right.metadata) {
+        (Some(left), Some(right)) => left.same_incarnation(right),
+        (None, None) => true,
+        _ => false,
+    };
+    left.path == right.path
+        && left.expected == right.expected
+        && left.identity == right.identity
+        && same_metadata
+        && left.policy == right.policy
+        && left.owner == right.owner
+        && same_parent_predicates(&left.parents, &right.parents)
+}
+
 impl Frame {
     /// Captures every ordered ancestor under its independently configured owner.
     ///
@@ -305,13 +338,26 @@ impl Frame {
     /// Rejects malformed or incomplete captured parent projections.
     fn physical_inputs(&self) -> Result<(Vec<NamedFence>, Vec<ExactRead>), StoreFailure> {
         // Repeated projection installs can capture the same name many times.
-        // Coalesce only identical predicates; distinct policy, descriptor,
-        // ancestry or incarnation observations still reach every native check.
+        // Coalesce only equivalent checked predicates, keeping the first actual
+        // original recipe unchanged. Directory link counts are not continuity
+        // constraints; every policy, descriptor, body and incarnation remains.
+        #[cfg(all(test, feature = "tokio", unix))]
+        let mut equivalent_name_rows = 0usize;
+        #[cfg(all(test, feature = "tokio", unix))]
+        let mut equivalent_read_rows = 0usize;
+
         let mut names = Vec::new();
         let mut recorded_names: BTreeMap<&Path, Vec<&NamedFence>> = BTreeMap::new();
         for name in &self.names {
             let recorded = recorded_names.entry(name.path.as_path()).or_default();
-            if recorded.contains(&name) {
+            if recorded
+                .iter()
+                .any(|previous| same_name_predicate(previous, name))
+            {
+                #[cfg(all(test, feature = "tokio", unix))]
+                if !recorded.contains(&name) {
+                    equivalent_name_rows += 1;
+                }
                 continue;
             }
             recorded.push(name);
@@ -328,7 +374,14 @@ impl Frame {
         let mut recorded_reads: BTreeMap<&Path, Vec<&ExactRead>> = BTreeMap::new();
         for read in &self.reads {
             let recorded = recorded_reads.entry(read.path.as_path()).or_default();
-            if recorded.contains(&read) {
+            if recorded
+                .iter()
+                .any(|previous| same_read_predicate(previous, read))
+            {
+                #[cfg(all(test, feature = "tokio", unix))]
+                if !recorded.contains(&read) {
+                    equivalent_read_rows += 1;
+                }
                 continue;
             }
             recorded.push(read);
@@ -342,6 +395,19 @@ impl Frame {
                 parents: copy_parents(&read.parents),
             });
         }
+        #[cfg(all(test, feature = "tokio", unix))]
+        if std::env::var_os("TERRANE_REF_PHASE_TRACE").is_some()
+            && (equivalent_name_rows != 0 || equivalent_read_rows != 0)
+        {
+            eprintln!(
+                "physical-input-coalescence captured_names={} captured_reads={} retained_explicit_names={} retained_reads={} equivalent_name_rows={equivalent_name_rows} equivalent_read_rows={equivalent_read_rows}",
+                self.names.len(),
+                self.reads.len(),
+                names.len(),
+                preimages.len(),
+            );
+        }
+
         // Complete parent names also participate in the executor's final
         // fence after all exact reads. Unchanged leaf bytes cannot hide an
         // ancestor replacement or permission change during those reads.
