@@ -77,6 +77,30 @@ fn foreground_verification_uses_actual_remainder_uncertainty_and_explicit_reserv
 }
 
 #[test]
+fn queued_verification_preserves_foreground_limits_and_settlement_reserve() {
+    let mut reference = runtime_reference();
+    reference.maximum_verification_seconds = WireInteger::new(180);
+    reference.settlement_reserve_seconds = WireInteger::new(30);
+
+    reference.validate_queue_window(212, 2).unwrap();
+    assert!(reference.validate_queue_window(211, 2).is_err());
+    assert!(reference.validate_queue_window(212, 3).is_err());
+    assert!(reference.validate_foreground_window(30, 2).is_err());
+
+    for (remaining, uncertainty) in [(0, 2), (901, 2), (900, 0), (900, 30), (1, 2)] {
+        assert!(reference
+            .validate_queue_window(remaining, uncertainty)
+            .is_err());
+    }
+    reference.maximum_verification_seconds = WireInteger::new(869);
+    reference.validate_queue_window(900, 1).unwrap();
+    reference.maximum_verification_seconds = WireInteger::new(870);
+    assert!(reference.validate_queue_window(900, 1).is_err());
+    reference.settlement_reserve_seconds = WireInteger::new(u64::MAX);
+    assert!(reference.validate_queue_window(900, 1).is_err());
+}
+
+#[test]
 fn managed_full_pin_commits_runtime_policy_clock_and_material_without_redefining_material_fp() {
     let original = managed();
     let pin = original.digest().unwrap();

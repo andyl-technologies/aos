@@ -406,6 +406,11 @@ before provider creation. Objects exceeding the measured foreground budget use
 that qualified queue profile. Small objects may use it too when foreground
 verification is unavailable; neither mode is selected after provider creation.
 
+Queued verification capacity is checked against the queue consumer wall time
+limit, independently of the foreground deadline. The verification ceiling,
+clock uncertainty and explicit settlement reserve must fit within that window;
+accepting a queued profile never extends an HTTP request deadline.
+
 A successful provider Complete response establishes closed staging, not a
 verified whole object digest. The client may observe `CompletingStaging` and
 poll its original operation while the storage Worker verifies the object

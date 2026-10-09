@@ -328,8 +328,10 @@ impl DirectWorkerQualificationEvidence {
                 && self.clock.expired_mutation_dispatches.get() == 0,
             "direct accepted mutation clock or validity insufficient"
         );
+        // Whole-object verification runs in the mandatory queue consumers.
+        // Its capacity must not be constrained by the unrelated HTTP deadline.
         self.runtime
-            .validate_foreground_window(30, self.clock.uncertainty_seconds.get())?;
+            .validate_queue_window(900, self.clock.uncertainty_seconds.get())?;
         let capacity = &self.runtime_measurement;
         ensure!(
             self.runtime.qualification_digest == direct_qualification_digest(capacity)?
