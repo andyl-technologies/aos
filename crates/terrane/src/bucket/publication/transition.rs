@@ -521,7 +521,7 @@ impl<
     /// # Errors
     /// Rejects stale or mismatched held observations, malformed whole logical
     /// preimages and successors, incomplete catalogs and unavailable exact reads.
-    pub(super) async fn prepare_raw(
+    pub(in crate::bucket) async fn prepare_raw(
         &self,
         observed: &super::SelectedObservation<'_>,
         changes: Vec<LogicalChange>,

@@ -5083,6 +5083,22 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   submitted effect, including disappearance of its waiter. It adds neither a
   caller callback nor a decoded age constructor. Native implementation and real
   cancellation/continuity qualification remain pending.
+  The first composed production-only native build on private `7b84c7a7a4`
+  fails with thirteen compiler errors: ten aliased child-module paths, one
+  private facade import, one slice/vector conversion and one synchronization
+  argument order. The disjoint workers have sealed corrections; no native test
+  or owning gate passes from this build. Source review also finds ordinary Sweep
+  recovery must use its actual registered genesis and authenticated current
+  retention traversal, rather than requiring copied visibility at genesis or
+  reviving every selected predecessor's expired content (GC-3, GC-4, GC-5,
+  GC-15). These ordinary-owner corrections remain unqualified; the distinct
+  D-113 copied physical placement path retains its existing obligations.
+  Fresh-placement restoration may call the existing whole-observation raw
+  proposal validator from the private bucket subtree. Only its Rust visibility
+  changes; its complete compare/catalog validation and signature remain fixed.
+  The closed restoration producer must still retain genuine current owner,
+  lease, Original and source descriptors and consume a real native durability
+  acknowledgment. This access change grants no collector or serving permission.
   Actual remote provider qualification belongs to T3. No remote conformance
   or full `gc-two-phase-delete` pass is claimed. D-78
   registers physical creation journals and recoverable deletion intent.
