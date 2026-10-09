@@ -132,17 +132,22 @@ for every native failure.
 
 Isolated native Cargo recipes exposed missing SQLite build and runtime
 dependencies through the existing native content-addressed store. Corrections
-in 200 affected recipes declare the AOS-built SQLite package explicitly and
+in 201 affected recipes declare the AOS-built SQLite package explicitly and
 retain test semantics,
 feature selection, and timeouts. An attempted starting-master taxonomy build
 stops earlier at a vendor fixed-output hash mismatch, so it does not prove the
 linker failure is a baseline runtime failure.
 
-The production build checkpoint is `033823ad53`. Later edits complete native
-test-recipe dependency declarations and documentation; production Rust code and
-production package recipes are unchanged. Native unit and integration test
-results are associated with their source checkpoints; four final Rust
-import-order corrections changed no executable statements.
+The retained controller scope passed 5,565 tests and failed one evidence-path
+check because its filtered source omitted two existing files. The source filter
+now retains those exact files and their directory ancestors. The integrity test
+passes against the actual stored filtered source; the full release graph is
+being rebuilt with that source closure. No test assertion was weakened.
+
+Native unit and integration results are associated with their source
+checkpoints. Later source-selection corrections and explicit native test
+dependencies are recorded separately from Rust implementation changes; four
+final Rust import-order corrections changed no executable statements.
 
 ## Reproduction and evidence
 
