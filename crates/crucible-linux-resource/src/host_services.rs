@@ -9,6 +9,9 @@ use std::sync::{Arc, Mutex};
 
 mod bootstrap;
 
+#[cfg(feature = "private-measurement-domain")]
+mod native_extents;
+
 pub use bootstrap::{AdmittedHostServiceBootstrap, HostServiceBootstrap};
 
 /// A refused or uncertain host service resource reservation.
