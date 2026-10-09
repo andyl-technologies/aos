@@ -298,6 +298,18 @@ fixture and selected-Guard physical-ledger failures. The unchanged 1,024-record
 publication, other five population cases, twenty-case owning loading check
 and complete T1 floor remain unqualified. No task checkbox or milestone exit
 advances.
+The first unchanged 1,024-record ordinary publication on `c0f87d4e56` is
+terminal with `Advance(Expired)` (56.488 seconds, one failure, 925 unrelated
+tests skipped; run `435e2846-a53d-4873-a517-a069c925928b`,
+`/tmp/terrane-held-node-c0-1024-ordinary-phase-nextest.log`). The genuine retained
+deadline first refuses at 30.008514493 seconds against the unchanged thirty-second
+maximum, during output directory synchronization. Its real phase trace records
+22.639387041 seconds from catalog-cohort publication entry to acknowledgment;
+candidate history returns after a further 1.552987296 seconds and final
+dispatch begins at 27.234916705 seconds from the original deadline origin.
+These observations locate the expensive interval without proving a particular
+source correction or relaxing current, physical or deadline predicates. The
+other five populations and twenty-case owning loading check remain unrun.
 The reviewed permanent recovery candidate `b0d2b176f0` retains original
 directory continuity while staging fresh, unselected progress proposals and
 restores full canonical candidate enumeration before preselection directory
@@ -311,6 +323,10 @@ Store-failure assertions. Correction `373333121f` now pins the exact unavailable
 kind and first native named-fence, policy, candidate-timestamp or preimage
 diagnostic. Independent source-order review confirms those expectations;
 their actual runtime and changed test-source lint qualification remain pending.
+Strict native all-target Clippy on corrected witness source `373333121f` now
+passes with warnings denied (59.41 seconds;
+`/tmp/terrane-permanent-stage-clippy-373.log`). The eleven runtime witnesses
+remain unqualified until their original process terminates.
 Strict native all-target Clippy also passes with warnings denied (5 minutes
 5 seconds, including a recorded wait for an external shared-target lock;
 `/tmp/terrane-permanent-stage-clippy.log`). This elapsed observation does not
