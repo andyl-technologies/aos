@@ -11,15 +11,19 @@ use crucible_cas::content_store::{
 };
 use crucible_node_contract::canonical;
 
+mod complete;
+
 /// Publishes an activation event into durable content and an immutable ref slot.
 ///
 /// The slot is write-once. A repeated exact record reconciles to the same bytes;
 /// an existing different generation is refused, never replaced or relabeled.
-/// Its reference namespace must be included in the daemon's ordinary GC roots.
+/// Both `node-world-activations/` and `node-world-coordinators/` belong to the
+/// daemon's ordinary authoritative ref inventory and publication/GC fence.
 pub struct StoredWorldActivationPublisher {
     blobs: Arc<dyn ImmutableBlobBackend>,
     refs: Arc<dyn MutableRefBackend>,
     reference: RefName,
+    prepared: Option<complete::PreparedCoordinator>,
 }
 
 impl StoredWorldActivationPublisher {
@@ -47,6 +51,7 @@ impl StoredWorldActivationPublisher {
             blobs,
             refs,
             reference,
+            prepared: None,
         })
     }
 
@@ -80,6 +85,31 @@ impl StoredWorldActivationPublisher {
 }
 
 impl ActivationPublisher for StoredWorldActivationPublisher {
+    fn prepare_coordinator(
+        &mut self,
+        record: &ActivationRecord,
+        nodes: &[crucible::node_contract::ValidatedNodePreparation],
+    ) -> Result<crucible::node_scheduling::InputPayload, crucible::node_contract::RuntimeError>
+    {
+        self.prepare_complete_coordinator(record, nodes)
+    }
+
+    fn publish_complete(
+        &mut self,
+        record: &ActivationRecord,
+        prepared: &crucible::node_contract::PreparedWorldPublication,
+    ) -> PublicationStatus {
+        self.publish_complete_record(record, prepared)
+    }
+
+    fn reconcile_complete(
+        &mut self,
+        record: &ActivationRecord,
+        prepared: &crucible::node_contract::PreparedWorldPublication,
+    ) -> PublicationStatus {
+        self.reconcile_complete_record(record, prepared)
+    }
+
     fn publish(&mut self, record: &ActivationRecord) -> PublicationStatus {
         let Some(bytes) = Self::record_bytes(record) else {
             return PublicationStatus::NotCommitted;
@@ -107,3 +137,6 @@ impl ActivationPublisher for StoredWorldActivationPublisher {
         self.reconcile_exact(record)
     }
 }
+
+#[cfg(test)]
+mod tests;
