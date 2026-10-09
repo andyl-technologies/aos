@@ -319,6 +319,7 @@ pub(super) fn limit(component: &str) -> StateError {
 #[cfg(test)]
 mod payload_tests {
     // Panics identify a regression in authenticated object or byte-budget bounds.
+    // crucible-lint: allow panic-shortcut -- These closure tests deliberately panic on invalid fixtures or failed invariants.
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;

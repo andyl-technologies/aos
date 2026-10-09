@@ -1,5 +1,6 @@
 //! Data-only replay custody-chain counterexamples; these mint no live authority.
 
+// crucible-lint: allow panic-shortcut -- These custody chain tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)] // Test fixture invariants deliberately panic.
 
 use super::*;

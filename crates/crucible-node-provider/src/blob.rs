@@ -916,6 +916,7 @@ fn progress(key: &TransferKey, offset: usize, chunk: usize) -> Result<BlobProgre
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These blob tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use crucible_node_contract::canonical;

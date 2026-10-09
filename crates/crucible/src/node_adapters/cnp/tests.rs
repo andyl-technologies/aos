@@ -1,6 +1,7 @@
 //! Actual public preparation and original process custody, without fidelity qualification.
 
 // crucible-lint: allow rust-allow -- native fixture assertions deliberately panic on lost original resources.
+// crucible-lint: allow panic-shortcut -- These cnp tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 #[path = "world_tests.rs"]

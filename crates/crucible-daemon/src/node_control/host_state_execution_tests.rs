@@ -1,6 +1,7 @@
 //! Actual installed-driver regression for a dirty disk with a pending reply.
 
 // crucible-lint: allow rust-allow -- genuine source fixtures and byte-preservation oracles panic on failure.
+// crucible-lint: allow panic-shortcut -- These host state execution tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

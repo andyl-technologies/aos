@@ -57,6 +57,10 @@ impl OperationLedger {
         self.operations.iter()
     }
 
+    /// Constructs a ledger with finite operation, prefix and byte credits.
+    ///
+    /// # Errors
+    /// Refuses zero credits or credits exceeding the supported finite ceilings.
     pub fn new(
         maximum_operations: usize,
         maximum_prefixes: usize,
@@ -89,6 +93,9 @@ impl OperationLedger {
     }
 
     /// Retains exact immutable administrative evidence before publishing a reference.
+    ///
+    /// # Errors
+    /// Refuses invalid content, changed original bytes, or exhausted object and byte credits.
     pub fn retain_standalone(
         &mut self,
         objects: &[(&ContentRef, &[u8])],
@@ -138,6 +145,10 @@ impl OperationLedger {
         Ok(())
     }
 
+    /// Retains a new original operation under its admitted identity.
+    ///
+    /// # Errors
+    /// Refuses an already retained operation identity or exhausted operation credit.
     pub fn reserve(&mut self, original: &OperationAdmission) -> Result<(), OperationFailure> {
         if self.operations.contains_key(original.token().operation())
             || self.operations.len() >= self.maximum_operations
@@ -162,6 +173,10 @@ impl OperationLedger {
         Ok(())
     }
 
+    /// Borrows the operation retained under the original opaque token.
+    ///
+    /// # Errors
+    /// Refuses absent custody, a different authority allocation, or a different route.
     pub fn original(&self, token: &OperationToken) -> Result<&OriginalOperation, OperationFailure> {
         let original = self
             .operations
@@ -177,6 +192,10 @@ impl OperationLedger {
         Ok(original)
     }
 
+    /// Mutably borrows the operation retained under the original opaque token.
+    ///
+    /// # Errors
+    /// Refuses absent custody, a different authority allocation, or a different route.
     pub fn original_mut(
         &mut self,
         token: &OperationToken,
@@ -188,6 +207,9 @@ impl OperationLedger {
     }
 
     /// Reserves worst-case private frame credit before another native callback.
+    ///
+    /// # Errors
+    /// Refuses exhausted prefix credit, byte-accounting overflow, or an insufficient retained-byte ceiling.
     pub fn can_run_prefix(&self, maximum_frame_bytes: usize) -> Result<(), OperationFailure> {
         if self.retained_prefixes >= self.maximum_prefixes
             || self
@@ -201,6 +223,9 @@ impl OperationLedger {
     }
 
     /// Reserves complete selected-profile receipt credit and slots before effects.
+    ///
+    /// # Errors
+    /// Refuses insufficient byte or prefix credit, a foreign token, or unavailable prefix and evidence slots.
     pub fn prepare_prefix(&mut self, token: &OperationToken) -> Result<(), OperationFailure> {
         self.can_run_prefix(PREFIX_STORAGE_CREDIT)?;
         let original = self.original_mut(token)?;
@@ -220,6 +245,9 @@ impl OperationLedger {
     }
 
     /// Copies an authenticated native receipt before any administrative ACK.
+    ///
+    /// # Errors
+    /// Refuses a foreign token, exhausted credits, or an unrepresentable canonical receipt or content reference.
     pub fn retain_prefix(
         &mut self,
         token: &OperationToken,
@@ -255,6 +283,10 @@ impl OperationLedger {
         Ok(reference)
     }
 
+    /// Copies selected evidence from the original operation custody.
+    ///
+    /// # Errors
+    /// Refuses a foreign token, repeated or unavailable references, or exhausted response byte credit.
     pub fn evidence(
         &self,
         token: &OperationToken,
@@ -290,6 +322,10 @@ impl OperationLedger {
             .collect()
     }
 
+    /// Retains verified evidence objects under the original operation token.
+    ///
+    /// # Errors
+    /// Refuses a foreign token, invalid or changed object bytes, excessive object counts, or exhausted byte credit.
     pub fn retain_objects(
         &mut self,
         token: &OperationToken,
@@ -343,6 +379,7 @@ impl OperationLedger {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These ledger tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use crucible_node_contract::{HashRef, Phase, Position};

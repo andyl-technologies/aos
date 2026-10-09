@@ -37,5 +37,6 @@ const PLAN_VERSION: u32 = 1;
 const REPORT_VERSION: u32 = 1;
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- Conformance fixtures deliberately panic when expected protocol verdicts or retained original identities differ.
 #[allow(clippy::unwrap_used)]
 mod tests;

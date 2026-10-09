@@ -165,6 +165,7 @@ fn validate_states(
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These capture tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use crucible_node_contract::{Phase, canonical};

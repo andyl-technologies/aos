@@ -1,5 +1,6 @@
 //! Exercises measured discovery, sealed registration and retained refusal custody.
 
+// crucible-lint: allow panic-shortcut -- These service tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Duration};

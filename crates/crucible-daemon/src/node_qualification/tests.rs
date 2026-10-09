@@ -1,5 +1,6 @@
 //! Adversarial ledger models; these cases do not qualify a native provider.
 
+// crucible-lint: allow panic-shortcut -- These node qualification tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{

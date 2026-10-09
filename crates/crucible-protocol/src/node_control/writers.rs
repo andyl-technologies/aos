@@ -473,6 +473,7 @@ fn read_u64(cursor: &mut Cursor<'_>) -> Result<U64, NativeCommandError> {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These writers tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;

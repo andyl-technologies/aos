@@ -161,6 +161,7 @@ fn check_limit(maximum_bytes: usize) -> Result<(), ProviderError> {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These transport tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use std::io::Cursor;

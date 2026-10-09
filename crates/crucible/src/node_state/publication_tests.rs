@@ -2,6 +2,7 @@
 
 // These fixtures exercise retained publisher data, not native readiness or
 // installed capture qualification. Assertion panics report protocol misuse.
+// crucible-lint: allow panic-shortcut -- These publication tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use super::*;

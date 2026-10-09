@@ -1,6 +1,7 @@
 //! Native storage construction, immutable enrollment and sibling independence.
 
 // These native fixtures panic when an asserted construction invariant fails.
+// crucible-lint: allow panic-shortcut -- These io tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

@@ -1,6 +1,7 @@
 //! Model-only supervisor tests for finite reservation and surviving complete ACK custody.
 
 // Test panics expose discarded native handles, original ACK state or reservations.
+// crucible-lint: allow panic-shortcut -- These supervisor tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

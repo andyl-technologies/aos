@@ -1,5 +1,6 @@
 //! Checks source-plan integrity without claiming executed native qualification.
 
+// crucible-lint: allow panic-shortcut -- These criteria tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

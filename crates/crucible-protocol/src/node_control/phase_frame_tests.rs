@@ -1,5 +1,6 @@
 //! Explicit phase edition pinning and unchanged earlier native record bodies.
 
+// crucible-lint: allow panic-shortcut -- These phase frame tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use crucible_node_contract::U64;

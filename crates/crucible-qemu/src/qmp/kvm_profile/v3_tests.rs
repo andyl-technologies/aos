@@ -1,6 +1,7 @@
 //! Wire-model tests for disjoint component editions, never native qualification.
 
 // crucible-lint: allow rust-allow -- closed wire-model setup and refusals deliberately panic on failure.
+// crucible-lint: allow panic-shortcut -- These v3 tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use super::*;

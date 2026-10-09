@@ -1,5 +1,6 @@
 //! Data-only typed closure checks without native continuation authority.
 
+// crucible-lint: allow panic-shortcut -- These typed closure tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)] // Model fixture failures deliberately panic.
 
 use super::closure::{ContentInventoryEdition, verify_closure, verify_closure_with_edition};

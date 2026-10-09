@@ -2,6 +2,7 @@
 
 #![cfg(target_os = "linux")]
 // crucible-lint: allow rust-allow -- native caller setup and refusal assertions deliberately panic on failure.
+// crucible-lint: allow panic-shortcut -- These node kvm process tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{path::PathBuf, process::Command};

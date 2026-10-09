@@ -1,5 +1,6 @@
 //! Adversarial source-birth data codecs; fixtures establish no native qualification.
 
+// crucible-lint: allow panic-shortcut -- These phase timer tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use crucible_node_contract::{Phase, Position, U64};

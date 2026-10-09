@@ -1,5 +1,6 @@
 //! Canonical streaming identities and adversarial original-extent checks.
 
+// crucible-lint: allow panic-shortcut -- These streaming tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use super::*;

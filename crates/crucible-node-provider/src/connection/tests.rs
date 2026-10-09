@@ -1,5 +1,6 @@
 //! Exercises authenticated stream failure with model-only installation evidence.
 
+// crucible-lint: allow panic-shortcut -- These connection tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use std::cell::RefCell;

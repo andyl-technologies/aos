@@ -274,6 +274,7 @@ impl Envelope {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These envelope tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used)]
 pub(crate) mod tests {
     use serde_json::json;

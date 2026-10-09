@@ -202,6 +202,7 @@ fn real_private_socket_retries_original_native_facts_without_reexecution() {
 
 #[cfg(unix)]
 #[test]
+// crucible-lint: allow clippy-disallowed-method -- Operational deadlines in these native node control tests bound native supervision and never enter modeled state.
 #[allow(clippy::disallowed_methods)] // Watches the test's real reader thread, never simulated time.
 fn reader_worker_admits_original_before_notify_and_contains_unexpected_frames() {
     use crucible_protocol::node_control::{NativeChannel, NativeFrame, NativePreparation};
@@ -363,6 +364,7 @@ fn peek_original_datagram(owner: &NativeNodeControl) -> Vec<u8> {
 }
 
 #[cfg(unix)]
+// crucible-lint: allow clippy-disallowed-method -- Operational deadlines in these native node control tests bound native supervision and never enter modeled state.
 #[allow(clippy::disallowed_methods)] // Bounds the test's real reader wait, never simulated time.
 fn wait_for_native_reader(mut predicate: impl FnMut() -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

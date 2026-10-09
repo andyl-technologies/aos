@@ -1,5 +1,6 @@
 //! Complete original future closure without fictitious producer progress.
 
+// crucible-lint: allow panic-shortcut -- These complete future bound tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

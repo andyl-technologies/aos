@@ -1,5 +1,6 @@
 //! Data-only proof-integrity and legacy-format regressions; no native authority.
 
+// crucible-lint: allow panic-shortcut -- These runtime input provenance tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

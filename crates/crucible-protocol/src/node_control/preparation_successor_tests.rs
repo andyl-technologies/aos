@@ -1,4 +1,5 @@
 //! Adversarial schema and byte-custody checks, without native qualification.
+// crucible-lint: allow panic-shortcut -- These preparation successor tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use super::*;

@@ -4,6 +4,7 @@
 //! do not assert process image, hardware or backend continuation qualification.
 
 // Test panics expose missing reservation preflights or original stream corruption.
+// crucible-lint: allow panic-shortcut -- These native capture tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

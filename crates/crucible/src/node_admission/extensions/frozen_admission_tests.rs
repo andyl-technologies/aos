@@ -1,5 +1,6 @@
 //! Refuses post-qualification semantic drift without issuing model admission.
 
+// crucible-lint: allow panic-shortcut -- These frozen admission tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

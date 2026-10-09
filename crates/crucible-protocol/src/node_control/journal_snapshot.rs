@@ -297,6 +297,7 @@ fn read_frame(cursor: &mut Cursor<'_>) -> Result<NativeFrame, NativeCommandError
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These journal snapshot tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;

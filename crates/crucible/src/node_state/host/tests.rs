@@ -5,6 +5,7 @@
 //! or profiles for production use.
 
 // Assertion panics expose failures of native bytes and signed original lineage.
+// crucible-lint: allow panic-shortcut -- These host tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{

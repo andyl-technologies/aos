@@ -1,5 +1,6 @@
 //! Identity and complete immutable-content checks for the reference profile.
 
+// crucible-lint: allow panic-shortcut -- These profile tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use super::*;

@@ -1,5 +1,6 @@
 //! Verifies local probe credit refusals without claiming native qualification.
 
+// crucible-lint: allow panic-shortcut -- These preparation probe tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

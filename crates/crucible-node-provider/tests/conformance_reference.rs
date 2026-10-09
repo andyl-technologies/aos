@@ -6,6 +6,7 @@
 
 #![cfg(target_os = "linux")]
 // crucible-lint: allow rust-allow -- actual-process fixture setup and independent protocol oracles deliberately panic on failure.
+// crucible-lint: allow panic-shortcut -- These conformance reference tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use std::path::Path;

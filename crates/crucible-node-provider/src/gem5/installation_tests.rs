@@ -1,6 +1,7 @@
 //! Checks atomic private native installation under a permissive process umask.
 
 // Test failures intentionally panic; the subprocess isolates the global umask.
+// crucible-lint: allow panic-shortcut -- These installation tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use std::{

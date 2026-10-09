@@ -1,5 +1,6 @@
 //! Original construction result correlation and unknown-effects regressions.
 
+// crucible-lint: allow panic-shortcut -- These initialization command tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use crucible_node_contract::U64;

@@ -1,6 +1,7 @@
 //! Partial inventory wire models; these cases do not execute or qualify KVM.
 
 // crucible-lint: allow rust-allow -- closed model response assertions deliberately panic on failure.
+// crucible-lint: allow panic-shortcut -- These userspace tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use super::*;

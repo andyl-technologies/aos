@@ -1,5 +1,6 @@
 //! Adversarial codecs for original construction preparation, without native claims.
 
+// crucible-lint: allow panic-shortcut -- These initialization tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use crucible_node_contract::{HashRef, Id, Phase, Position, U64};

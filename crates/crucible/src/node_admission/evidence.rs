@@ -237,6 +237,10 @@ impl<'a> VerifiedContent<'a> {
         });
     }
 
+    /// Authenticates nonempty extensions against the installed semantic registry.
+    ///
+    /// # Errors
+    /// Refuses absent installed interpretation or a record that fails semantic application admission.
     pub fn extension_record<'p>(
         &mut self,
         record: &impl Serialize,
@@ -268,6 +272,10 @@ impl<'a> VerifiedContent<'a> {
             .unwrap_or_default()
     }
 
+    /// Reads and verifies one immutable object within the remaining fetch credits.
+    ///
+    /// # Errors
+    /// Refuses invalid references, unavailable or mismatched content, unrepresentable lengths, or exhausted object and cumulative byte ceilings.
     pub fn read(&mut self, reference: &ContentRef) -> Result<Vec<u8>, AdmissionError> {
         reference
             .validate()
@@ -313,6 +321,10 @@ impl<'a> VerifiedContent<'a> {
         Ok(bytes)
     }
 
+    /// Decodes a verified immutable object as the requested policy type.
+    ///
+    /// # Errors
+    /// Refuses content-fetch failures, invalid bounded canonical JSON, or a policy that does not match the requested schema.
     pub fn policy<T: DeserializeOwned>(
         &mut self,
         reference: &ContentRef,
@@ -331,10 +343,18 @@ impl<'a> VerifiedContent<'a> {
         })
     }
 
+    /// Verifies an immutable content reference through the bounded evidence source.
+    ///
+    /// # Errors
+    /// Refuses invalid references, unavailable or mismatched content, or exhausted fetch credits.
     pub fn verify(&mut self, reference: &ContentRef) -> Result<(), AdmissionError> {
         self.read(reference).map(|_| ())
     }
 
+    /// Authenticates the selected qualification scope through the installed evidence source.
+    ///
+    /// # Errors
+    /// Refuses claims that the installed source cannot authenticate for the requested subject.
     pub fn qualify(
         &self,
         subject: AdmissionSubject,

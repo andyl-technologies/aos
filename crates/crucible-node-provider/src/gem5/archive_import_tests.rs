@@ -1,5 +1,6 @@
 //! Model-only historical import tests; no simulated data qualifies a live owner.
 
+// crucible-lint: allow panic-shortcut -- These archive import tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use super::*;

@@ -1,5 +1,6 @@
 //! Adversarial causal, reservation, equality and publication regression tests.
 
+// crucible-lint: allow panic-shortcut -- These node scheduling tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

@@ -29,6 +29,10 @@ impl<'a> ExtensionAdmission<'a> {
         }
     }
 
+    /// Admits nonempty extension semantics for one original graph record.
+    ///
+    /// # Errors
+    /// Refuses an invalid bounded application or semantics unsupported by the installed registry.
     pub fn check(
         &mut self,
         record: &impl Serialize,

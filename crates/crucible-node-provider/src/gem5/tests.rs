@@ -1,5 +1,6 @@
 //! Adversarial receipt checks and actual source-built native image witnesses.
 
+// crucible-lint: allow panic-shortcut -- These gem5 tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{

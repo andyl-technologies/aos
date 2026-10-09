@@ -59,6 +59,7 @@ impl HostArchive {
     /// Refuses unsupported native profiles, moving cuts, pending/failed native
     /// operations, incomplete immutable content, unavailable installed model
     /// qualification, unsupported owners or any finite state bound violation.
+    // crucible-lint: allow rust-allow -- Capture inputs keep the exact graph, native runtime, cut, source evidence and factory authority explicit.
     #[allow(clippy::too_many_arguments)]
     pub fn capture_world(
         &self,

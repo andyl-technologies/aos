@@ -4,6 +4,7 @@
 //! support. A production-positive graph needs independently enrolled native
 //! evidence for its exact extension-bearing world and selected profile.
 
+// crucible-lint: allow panic-shortcut -- These extensions tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 #[path = "frozen_admission_tests.rs"]

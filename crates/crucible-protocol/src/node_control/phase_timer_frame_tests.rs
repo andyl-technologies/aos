@@ -1,5 +1,6 @@
 //! Separate phase-aware transport limits without legacy timer upgrades.
 
+// crucible-lint: allow panic-shortcut -- These phase timer frame tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use crucible_node_contract::U64;

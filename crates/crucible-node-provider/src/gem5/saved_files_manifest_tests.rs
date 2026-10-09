@@ -1,6 +1,7 @@
 //! Original byte seals, closed directory inventories and normal relocation paths.
 
 // Test panics identify an unexpected relaxation of native custody requirements.
+// crucible-lint: allow panic-shortcut -- These saved files manifest tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{

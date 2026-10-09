@@ -1,6 +1,7 @@
 //! Fail-closed guarantee checks before legacy replay and native worker admission.
 
 // crucible-lint: allow rust-allow -- test setup and exact authority regressions deliberately panic on failure.
+// crucible-lint: allow panic-shortcut -- These node guarantees tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::{BTreeMap, BTreeSet};

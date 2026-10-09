@@ -163,6 +163,7 @@ fn remaining(deadline: Instant) -> Result<Duration, NodeControlError> {
 }
 
 // crucible-lint: allow rust-allow -- operational I/O deadlines never enter modeled clocks or canonical identities.
+// crucible-lint: allow clippy-disallowed-method -- Real connection deadlines bound host socket waiting and never enter simulation state.
 #[allow(clippy::disallowed_methods)]
 pub(super) fn operational_now() -> Instant {
     Instant::now()

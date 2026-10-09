@@ -244,6 +244,7 @@ fn parse_clock_component_edition(
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These kvm profile tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;

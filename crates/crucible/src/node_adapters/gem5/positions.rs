@@ -32,6 +32,7 @@ pub(super) fn callback_positions(
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These positions tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;

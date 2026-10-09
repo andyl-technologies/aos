@@ -113,6 +113,7 @@ fn visit(
 
 #[cfg(test)]
 // crucible-lint: allow rust-allow -- invalid content closure fixtures must fail assertions.
+// crucible-lint: allow panic-shortcut -- These closure tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;

@@ -1,5 +1,6 @@
 //! Socket-level original custody tests with a mechanical provider fixture.
 
+// crucible-lint: allow panic-shortcut -- These transport tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use super::*;

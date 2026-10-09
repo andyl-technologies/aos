@@ -1,5 +1,6 @@
 //! Population assembly models; these checks issue no native qualification.
 
+// crucible-lint: allow panic-shortcut -- These issuance tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

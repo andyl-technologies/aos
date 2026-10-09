@@ -6,8 +6,10 @@
 
 #![cfg(target_os = "linux")]
 // crucible-lint: allow rust-allow -- real process fixtures and independent byte/provenance oracles panic on failure.
+// crucible-lint: allow panic-shortcut -- These node storage process tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 // crucible-lint: allow rust-allow -- physical deadlines bound process cleanup and never enter modeled state.
+// crucible-lint: allow clippy-disallowed-method -- Operational deadlines in these node storage process tests bound native supervision and never enter modeled state.
 #![allow(clippy::disallowed_methods)]
 
 use std::{

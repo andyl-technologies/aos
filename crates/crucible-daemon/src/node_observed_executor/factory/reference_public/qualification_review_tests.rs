@@ -4,6 +4,7 @@
 //! provider, produce a behavioral qualification report, or establish Ready.
 //! The fixture path is test-only; production installation remains compile-pinned.
 
+// crucible-lint: allow panic-shortcut -- These qualification review tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{path::Path, rc::Rc};

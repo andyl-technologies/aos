@@ -425,6 +425,7 @@ fn gem5_profile(
 #[cfg(test)]
 mod tests {
     // Candidate profile checks intentionally panic when exact identity changes.
+    // crucible-lint: allow panic-shortcut -- These profile tests deliberately panic on invalid fixtures or failed invariants.
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;

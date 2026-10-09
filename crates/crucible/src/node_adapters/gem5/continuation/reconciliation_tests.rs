@@ -1,5 +1,6 @@
 //! Data-only adversarial cache checks; these records grant no native authority.
 
+// crucible-lint: allow panic-shortcut -- These reconciliation tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crucible_node_contract::Endpoint;

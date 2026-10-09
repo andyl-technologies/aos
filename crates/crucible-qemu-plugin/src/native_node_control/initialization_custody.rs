@@ -300,5 +300,6 @@ fn validate_receipt(
 
 #[cfg(test)]
 #[path = "initialization_custody_tests.rs"]
+// crucible-lint: allow panic-shortcut -- These initialization custody tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests;

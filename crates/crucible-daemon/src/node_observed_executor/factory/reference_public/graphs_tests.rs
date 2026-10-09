@@ -1,5 +1,6 @@
 //! Exercises closed graph policy; no model case supplies native qualification.
 
+// crucible-lint: allow panic-shortcut -- These graphs tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use super::*;

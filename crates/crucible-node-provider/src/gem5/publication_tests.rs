@@ -1,5 +1,6 @@
 //! Adversarial birth/order checks without native admission authority.
 
+// crucible-lint: allow panic-shortcut -- These publication tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use crucible_node_contract::U64;

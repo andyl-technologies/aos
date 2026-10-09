@@ -1,6 +1,8 @@
 //! Exercises actual source-built native owners through durable observed storage.
 
 // Test assertions panic deliberately; host deadlines only bound native test waits.
+// crucible-lint: allow clippy-disallowed-method -- Operational deadlines in these node observed executor tests bound native supervision and never enter modeled state.
+// crucible-lint: allow panic-shortcut -- These node observed executor tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
 
 use super::*;

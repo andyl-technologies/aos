@@ -1,6 +1,7 @@
 //! Private format negatives and exact qualification identity, without native proof.
 
 // crucible-lint: allow rust-allow -- closed private data fixture assertions deliberately panic.
+// crucible-lint: allow panic-shortcut -- These installed tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use super::*;

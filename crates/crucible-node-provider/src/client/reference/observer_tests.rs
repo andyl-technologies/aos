@@ -1,6 +1,7 @@
 //! Component checks for independently reserved inert observation custody.
 
 // crucible-lint: allow rust-allow -- malformed and partial observation assertions deliberately panic.
+// crucible-lint: allow panic-shortcut -- These observer tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use crucible_node_contract::canonical;

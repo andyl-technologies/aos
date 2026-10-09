@@ -4,6 +4,8 @@
 //! succeeded. It tests complete original-world containment without claiming
 //! native fidelity qualification from the injected fault.
 
+// crucible-lint: allow clippy-disallowed-method -- Operational deadlines in these preparation tests bound native supervision and never enter modeled state.
+// crucible-lint: allow panic-shortcut -- These preparation tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
 
 use std::{

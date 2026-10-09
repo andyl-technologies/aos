@@ -3,6 +3,7 @@
 //! The helper is this package's test executable. These tests exercise kernel
 //! ownership only; they do not qualify a gem5 CPU or a replay profile.
 
+// crucible-lint: allow panic-shortcut -- These containment tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Kernel fixture failures deliberately panic.
 
 use std::{

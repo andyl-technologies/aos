@@ -1,6 +1,7 @@
 //! Adversarial tests of real host-model state and opaque operation custody.
 
 // Assertion panics expose changes to original model state and custody contracts.
+// crucible-lint: allow panic-shortcut -- These host tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::task::Waker;

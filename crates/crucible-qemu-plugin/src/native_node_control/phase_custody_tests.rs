@@ -1,5 +1,6 @@
 //! Model-only original phase custody regressions, without native qualification.
 
+// crucible-lint: allow panic-shortcut -- These phase custody tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use std::cell::{Cell, RefCell};

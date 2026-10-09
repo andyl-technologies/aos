@@ -1,6 +1,7 @@
 //! Wire adversaries that must refuse before actor or native admission.
 
 // crucible-lint: allow rust-allow -- test setup and exact authority regressions deliberately panic on failure.
+// crucible-lint: allow panic-shortcut -- These node control tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{io::Write, os::unix::net::UnixStream};

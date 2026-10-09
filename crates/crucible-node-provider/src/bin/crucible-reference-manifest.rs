@@ -484,6 +484,7 @@ fn write_canonical(path: &Path, value: &impl Serialize) -> Result<(), Failure> {
 #[cfg(test)]
 mod tests {
     // crucible-lint: allow rust-allow -- geometry assertions intentionally panic on a failed fixture invariant.
+    // crucible-lint: allow panic-shortcut -- Manifest geometry tests deliberately panic when measured source or closure fixtures violate their expected invariants.
     #![allow(clippy::unwrap_used)]
 
     use std::io::Cursor;

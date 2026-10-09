@@ -884,6 +884,8 @@ impl Write for DeadlineIo<'_> {
     }
 }
 
+// crucible-lint: allow clippy-disallowed-method -- Native transport deadlines are operational budgets, never modeled time
+// crucible-lint: allow rust-allow -- Native transport deadlines are operational budgets, never modeled time
 #[allow(
     clippy::disallowed_methods,
     reason = "Native transport deadlines are operational budgets, never modeled time"

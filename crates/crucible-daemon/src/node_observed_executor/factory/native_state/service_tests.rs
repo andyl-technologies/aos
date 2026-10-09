@@ -1,6 +1,7 @@
 //! Actual installed production actor preservation and original-request retry proof.
 
 // Panics identify failure of actual source custody, fresh native reconstruction or ACK.
+// crucible-lint: allow panic-shortcut -- These service tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};

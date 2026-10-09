@@ -1,5 +1,6 @@
 //! Initialization channel framing and immutable edition boundaries.
 
+// crucible-lint: allow panic-shortcut -- These initialization frame tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use crucible_node_contract::U64;

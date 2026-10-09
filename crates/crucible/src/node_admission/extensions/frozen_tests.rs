@@ -1,5 +1,6 @@
 //! Tests exact immutable typed semantic retention without native qualification.
 
+// crucible-lint: allow panic-shortcut -- These frozen tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crucible_node_contract::{HashRef, SemanticVersion, U64, canonical};

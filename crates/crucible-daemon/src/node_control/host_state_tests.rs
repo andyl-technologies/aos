@@ -1,6 +1,7 @@
 //! Tests durable nonce commitments without issuing native qualification.
 
 // crucible-lint: allow rust-allow -- test setup and exact authority regressions deliberately panic on failure.
+// crucible-lint: allow panic-shortcut -- These host state tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

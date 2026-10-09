@@ -712,6 +712,8 @@ fn failure(error: impl std::fmt::Display) -> ProviderError {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- Actual native fixture failure must fail the test
+// crucible-lint: allow rust-allow -- Actual native fixture failure must fail the test
 #[allow(
     clippy::unwrap_used,
     reason = "Actual native fixture failure must fail the test"

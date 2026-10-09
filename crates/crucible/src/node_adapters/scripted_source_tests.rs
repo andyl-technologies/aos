@@ -1,5 +1,6 @@
 //! Native source codec, pending same-instant transition and cold future tests.
 
+// crucible-lint: allow panic-shortcut -- These scripted source tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

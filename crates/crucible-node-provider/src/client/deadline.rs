@@ -125,6 +125,7 @@ impl ProviderStream for DeadlineStream {
 // Host time only bounds blocking transport. It never supplies modeled time,
 // execution progress, event ordering, persisted state or a provider guarantee.
 // crucible-lint: allow rust-allow -- operational socket deadline outside modeled state.
+// crucible-lint: allow clippy-disallowed-method -- Operational socket deadlines bound blocking I/O and never supply modeled state or progress.
 #[allow(clippy::disallowed_methods)]
 fn transport_now() -> Instant {
     Instant::now()
@@ -132,6 +133,7 @@ fn transport_now() -> Instant {
 
 #[cfg(test)]
 // crucible-lint: allow rust-allow -- invalid socket/deadline fixtures must fail assertions.
+// crucible-lint: allow panic-shortcut -- These deadline tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;

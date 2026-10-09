@@ -1,5 +1,6 @@
 //! Exercises whole-graph admission with an explicit trusted test evidence store.
 
+// crucible-lint: allow panic-shortcut -- These node admission tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use std::collections::BTreeMap;

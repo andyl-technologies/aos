@@ -432,6 +432,7 @@ fn validate_extension_identifier(identifier: &Id) -> Result<(), ContractError> {
 #[cfg(test)]
 mod tests {
     // Contract regressions deliberately panic when canonical identities change.
+    // crucible-lint: allow panic-shortcut -- Canonical extension identity regressions deliberately panic when an expected contract invariant changes.
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;

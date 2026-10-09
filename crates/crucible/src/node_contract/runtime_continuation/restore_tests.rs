@@ -1,6 +1,7 @@
 //! Model-only tests for shared-domain exclusion in restored original grants.
 
 // Test panics expose lost or incorrectly reminted original grant custody.
+// crucible-lint: allow panic-shortcut -- These restore tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

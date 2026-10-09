@@ -1,5 +1,6 @@
 //! Adversarial codec tests; no fixture constructs native or archive authority.
 
+// crucible-lint: allow panic-shortcut -- These continuation tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crucible_node_contract::{HashRef, Phase};

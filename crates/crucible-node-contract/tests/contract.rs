@@ -1,5 +1,6 @@
 //! Exercises normative CNP/1 vectors and hostile portable contract inputs.
 
+// crucible-lint: allow panic-shortcut -- These contract tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 #![forbid(unsafe_code)]
 

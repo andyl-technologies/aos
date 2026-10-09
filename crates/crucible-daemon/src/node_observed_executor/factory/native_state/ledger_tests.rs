@@ -1,6 +1,7 @@
 //! Data-only original reservation tests; these tests issue no native authority.
 
 // Panics identify loss or reinterpretation of an original durable commitment.
+// crucible-lint: allow panic-shortcut -- These ledger tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{

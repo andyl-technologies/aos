@@ -1,6 +1,7 @@
 //! Component checks for bounded original observations and secret exclusion.
 
 // crucible-lint: allow rust-allow -- invalid component evidence deliberately fails assertions.
+// crucible-lint: allow panic-shortcut -- These evidence tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use crucible_node_contract::{Extensions, U64};

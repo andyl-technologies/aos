@@ -4,6 +4,8 @@
 //! Storage fault injection tests publication semantics; it confers no additional
 //! native timing, snapshot or device fidelity qualification.
 
+// crucible-lint: allow clippy-disallowed-method -- Operational deadlines in these activation tests bound native supervision and never enter modeled state.
+// crucible-lint: allow panic-shortcut -- These activation tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
 
 mod faults;

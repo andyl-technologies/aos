@@ -1,5 +1,6 @@
 //! Original future-publication custody across a split exact cut and restoration.
 
+// crucible-lint: allow panic-shortcut -- These future birth tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

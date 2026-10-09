@@ -239,6 +239,7 @@ impl ClientContent {
 
 #[cfg(test)]
 // crucible-lint: allow rust-allow -- invalid immutable transfer fixtures must fail assertions.
+// crucible-lint: allow panic-shortcut -- These content tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;

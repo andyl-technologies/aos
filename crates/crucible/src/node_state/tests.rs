@@ -1,6 +1,7 @@
 //! Exercises host contracts with explicitly synthetic proof and native-custody fixtures.
 
 // These model-only fixtures intentionally panic on preserved-state regressions.
+// crucible-lint: allow panic-shortcut -- These node state tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{

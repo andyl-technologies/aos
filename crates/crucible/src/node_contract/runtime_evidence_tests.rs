@@ -1,5 +1,6 @@
 //! Tests immutable original evidence custody across native ACK and corrupt readout.
 
+// crucible-lint: allow panic-shortcut -- These runtime evidence tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

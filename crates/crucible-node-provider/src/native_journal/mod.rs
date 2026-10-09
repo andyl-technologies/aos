@@ -446,5 +446,6 @@ fn canonical_map(value: &Map<String, Value>) -> Result<Vec<u8>, ProviderError> {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- Native journal tests deliberately panic when original custody, capacity or conflict invariants fail.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests;

@@ -3,6 +3,7 @@
 //! One genuine candidate supplies immutable original observations. These tests
 //! exercise rejection, not full behavioral qualification or ordinary readiness.
 
+// crucible-lint: allow panic-shortcut -- These issuer tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

@@ -1,5 +1,6 @@
 //! Executes real runtime dispatch while controlling native completion readiness.
 
+// crucible-lint: allow panic-shortcut -- These runtime tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

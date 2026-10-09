@@ -1,5 +1,6 @@
 //! Independent arithmetic and observation-mutation models, not native qualification.
 
+// crucible-lint: allow panic-shortcut -- These reference oracle tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use crucible_node_contract::Position;

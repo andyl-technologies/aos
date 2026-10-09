@@ -1,5 +1,6 @@
 //! Numeric version and phase interoperability across direct and strict decoding.
 
+// crucible-lint: allow panic-shortcut -- These version numbers tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use crucible_node_contract::{Phase, Position, SchemaRef, Validate, Version, canonical};

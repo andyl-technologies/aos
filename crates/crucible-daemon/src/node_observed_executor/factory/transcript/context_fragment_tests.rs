@@ -1,5 +1,6 @@
 //! Original context byte and bounded fragment closure counterexamples.
 
+// crucible-lint: allow panic-shortcut -- These context fragment tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)] // A failed fixture invariant deliberately panics.
 
 use super::*;

@@ -4,6 +4,7 @@
 //! source archive. No synthetic native proof or admission evidence is supplied.
 
 // These native fixtures panic when an asserted custody or continuation invariant fails.
+// crucible-lint: allow panic-shortcut -- These host state transfer tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 #[path = "host_state_ninep_transfer_tests.rs"]

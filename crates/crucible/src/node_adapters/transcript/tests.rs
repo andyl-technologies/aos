@@ -1,5 +1,6 @@
 //! Adversarial data, preallocation and authenticated replay-cursor model checks.
 
+// crucible-lint: allow panic-shortcut -- These transcript tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Test failures deliberately panic.
 
 use std::{

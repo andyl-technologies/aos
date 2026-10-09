@@ -1,6 +1,7 @@
 //! Portable native control preflight; no installed qualification is issued here.
 
 // Panics identify an incorrectly accepted edition or operator-policy boundary.
+// crucible-lint: allow panic-shortcut -- These native state tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::os::unix::fs::PermissionsExt;

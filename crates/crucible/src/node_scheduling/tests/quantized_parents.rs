@@ -1,5 +1,6 @@
 //! Original quantized input provenance, independently of evaluation timing.
 
+// crucible-lint: allow panic-shortcut -- These quantized parents tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

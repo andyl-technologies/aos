@@ -70,6 +70,7 @@ pub(super) fn is_key(key: &str) -> bool {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These native phase tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use crate::args::PluginArgs;

@@ -1,5 +1,6 @@
 //! Regression tests for versioned realization identity and conservative guarantees.
 
+// crucible-lint: allow panic-shortcut -- These executor node capabilities tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::cell::Cell;

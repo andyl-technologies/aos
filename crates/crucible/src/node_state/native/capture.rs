@@ -65,6 +65,7 @@ impl NativeArchive {
     /// Refuses unsupported preservation/continuation profiles, moving cuts,
     /// incomplete native or immutable closure, failed installed authentication,
     /// corrupt streamed data, missing ownership or any finite limit excess.
+    // crucible-lint: allow rust-allow -- Capture inputs keep the exact graph, native runtime, cut, source evidence and factory authority explicit.
     #[allow(clippy::too_many_arguments)]
     pub fn capture_world(
         &self,
@@ -102,6 +103,7 @@ impl NativeArchive {
     /// Refuses moving cuts, unavailable native evidence, inconsistent typed roles,
     /// failed installed authentication, incomplete dependency closure or exceeded
     /// original object, edge, content and native resource credits.
+    // crucible-lint: allow rust-allow -- Capture inputs keep the exact graph, native runtime, cut, source evidence and factory authority explicit.
     #[allow(clippy::too_many_arguments)]
     pub fn capture_world_typed(
         &self,
@@ -129,6 +131,7 @@ impl NativeArchive {
         )
     }
 
+    // crucible-lint: allow rust-allow -- Capture inputs keep the exact graph, native runtime, cut, source evidence and factory authority explicit.
     #[allow(clippy::too_many_arguments)]
     fn capture_world_with_inventory(
         &self,

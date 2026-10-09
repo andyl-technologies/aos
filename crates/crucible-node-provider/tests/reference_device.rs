@@ -1,5 +1,6 @@
 //! Real source-built child lifecycle, immutable input and output-custody checks.
 
+// crucible-lint: allow panic-shortcut -- These reference device tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use std::path::Path;

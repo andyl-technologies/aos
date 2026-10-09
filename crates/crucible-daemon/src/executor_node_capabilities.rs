@@ -126,6 +126,7 @@ pub fn roster_from_admitted_graph(
 
 #[cfg(test)]
 // crucible-lint: allow rust-allow -- synthetic codec tests deliberately panic without issuing native evidence.
+// crucible-lint: allow panic-shortcut -- These executor node capabilities tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     //! Checks conversion from a genuinely sealed synthetic graph admission.

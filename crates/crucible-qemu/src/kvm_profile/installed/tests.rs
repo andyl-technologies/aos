@@ -1,6 +1,7 @@
 //! Candidate installation and refusal regressions, without native qualification.
 
 // crucible-lint: allow rust-allow -- bounded test fixtures and refusal oracles deliberately panic on failure.
+// crucible-lint: allow panic-shortcut -- These installed tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use std::{fs, os::unix::fs::PermissionsExt};

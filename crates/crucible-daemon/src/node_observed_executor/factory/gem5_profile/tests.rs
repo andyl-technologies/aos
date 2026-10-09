@@ -1,5 +1,6 @@
 //! Installed-package measurement and refusal checks without native authority.
 
+// crucible-lint: allow panic-shortcut -- These gem5 profile tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{fs, os::unix::fs::PermissionsExt, time::Duration};

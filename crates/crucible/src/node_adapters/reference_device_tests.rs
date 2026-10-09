@@ -1,5 +1,6 @@
 //! Actual child-process integration and bounded executable authentication tests.
 
+// crucible-lint: allow panic-shortcut -- These reference device tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{

@@ -228,6 +228,7 @@ impl KvmMediationManifest {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These coverage tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;

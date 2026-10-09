@@ -1,4 +1,5 @@
 //! Edition pinning and byte-preserving original successor slice recovery.
+// crucible-lint: allow panic-shortcut -- These preparation successor frame tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use super::*;

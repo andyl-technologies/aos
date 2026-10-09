@@ -1,5 +1,6 @@
 //! Actual datagram assembly regressions with model facts, without native qualification.
 
+// crucible-lint: allow panic-shortcut -- These phase tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use crucible_node_contract::{HashRef, Id, Phase, Position};

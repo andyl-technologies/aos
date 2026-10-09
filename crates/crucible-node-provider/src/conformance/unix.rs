@@ -199,6 +199,8 @@ impl DeadlineIo<'_> {
     }
 }
 
+// crucible-lint: allow clippy-disallowed-method -- host time bounds independent transport probes and never enters modeled state or report identities
+// crucible-lint: allow rust-allow -- host time bounds independent transport probes and never enters modeled state or report identities
 #[allow(
     clippy::disallowed_methods,
     reason = "host time bounds independent transport probes and never enters modeled state or report identities"

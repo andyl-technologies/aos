@@ -2,6 +2,7 @@
 
 // Fixture assertions exercise process I/O and locale isolation, not native
 // preservation qualification or an installed profile certificate.
+// crucible-lint: allow panic-shortcut -- These closure locale tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};

@@ -6,6 +6,7 @@
 
 #![cfg(target_os = "linux")]
 // crucible-lint: allow rust-allow -- actual-process assertions deliberately panic on invalid fixture evidence.
+// crucible-lint: allow panic-shortcut -- These client reference tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use std::cell::RefCell;

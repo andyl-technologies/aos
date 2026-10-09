@@ -1,5 +1,6 @@
 //! Actual World projection tests for source/model capture custody separation.
 
+// crucible-lint: allow panic-shortcut -- These inventory tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

@@ -265,6 +265,7 @@ impl CorrelationGuard {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These session tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use crucible_node_contract::U64;

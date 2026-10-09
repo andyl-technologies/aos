@@ -361,5 +361,6 @@ impl Validate for HelloResult {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These handshake tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used)]
 pub(crate) mod tests;

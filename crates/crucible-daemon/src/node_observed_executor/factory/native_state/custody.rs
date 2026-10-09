@@ -589,6 +589,7 @@ fn cleanup_turn(shared: &Arc<Shared>) -> bool {
 #[cfg(test)]
 mod tests {
     // These fixtures panic when a finite reservation or metadata invariant fails.
+    // crucible-lint: allow panic-shortcut -- These custody tests deliberately panic on invalid fixtures or failed invariants.
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;

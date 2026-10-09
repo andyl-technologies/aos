@@ -1,5 +1,6 @@
 //! Adversarial owner-custody and complete-world activation tests.
 
+// crucible-lint: allow panic-shortcut -- These runtime tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{cell::RefCell, task::Waker, time::Duration};

@@ -640,6 +640,8 @@ impl Write for DeadlineIo<'_> {
     }
 }
 
+// crucible-lint: allow clippy-disallowed-method -- Quantized host budgets use operational time, never modeled publication time
+// crucible-lint: allow rust-allow -- Quantized host budgets use operational time, never modeled publication time
 #[allow(
     clippy::disallowed_methods,
     reason = "Quantized host budgets use operational time, never modeled publication time"

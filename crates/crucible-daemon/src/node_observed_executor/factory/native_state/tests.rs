@@ -1,6 +1,7 @@
 //! Actual installed mixed-world cold witnesses with no constructed native seals.
 
 // Panics report failures of actual original custody and complete native reconstruction.
+// crucible-lint: allow panic-shortcut -- These native state tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{

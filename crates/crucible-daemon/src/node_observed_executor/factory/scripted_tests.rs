@@ -1,6 +1,7 @@
 //! Independently enrolled script bytes and exact request-lane profile coherence.
 
 // These native fixtures panic when an asserted construction invariant fails.
+// crucible-lint: allow panic-shortcut -- These scripted tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

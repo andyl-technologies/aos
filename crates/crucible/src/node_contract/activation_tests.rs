@@ -1,5 +1,6 @@
 //! Model-only activation regressions for original preparation and publication custody.
 
+// crucible-lint: allow panic-shortcut -- These activation tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crucible_node_contract::{Extensions, Phase, PreparedOwner, canonical};
