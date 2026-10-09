@@ -5468,50 +5468,82 @@ mod tests {
     }
 
     #[test]
-    fn opaque_legacy_effect_is_blocked_before_executor_io() {
-        let directory = TestDirectory::new();
-        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
-        let mut reconciler = Reconciler::new(journal, Executor::default());
-        let operation = operation();
-        reconciler.accept(&operation).unwrap();
-
-        let legacy = EffectLedgerRecord {
-            plan: EffectPlan {
-                domain: EffectDomain::Storage,
-                method: None,
-                controller_method: None,
-                request: b"legacy".to_vec(),
-                authority: None,
-            },
-            state: EffectState::Planned,
-            dispatch: None,
-            project_admission: None,
-        };
-        reconciler
-            .journal_mut()
-            .commit(
-                &JournalTransaction::new(
-                    [0xa7; 16],
-                    vec![JournalRecord::put(
-                        RecordNamespace::Effect,
-                        effect_key(operation.operation_id(), 0).to_vec(),
-                        encode_effect(&legacy).unwrap(),
-                    )],
+    fn v1_effect_rejection_preserves_retained_rows_before_executor_activity() {
+        for (profile, operation) in [
+            ("generic", operation()),
+            ("authority-bound", gated_operation()),
+        ] {
+            let directory = TestDirectory::new();
+            let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+            let mut reconciler = Reconciler::new(journal, Executor::default());
+            reconciler.accept(&operation).unwrap();
+            let operation_id = operation.operation_id();
+            let key = effect_key(operation_id, 0);
+            let mut legacy = reconciler
+                .journal
+                .get(RecordNamespace::Effect, &key)
+                .unwrap()
+                .to_vec();
+            assert_eq!(legacy[0], 2, "{profile}");
+            legacy[0] = 1;
+            legacy.drain(18..22);
+            reconciler
+                .journal_mut()
+                .commit(
+                    &JournalTransaction::new(
+                        [0xa7; 16],
+                        vec![JournalRecord::put(
+                            RecordNamespace::Effect,
+                            key.to_vec(),
+                            legacy.clone(),
+                        )],
+                    )
+                    .unwrap(),
                 )
-                .unwrap(),
-            )
-            .unwrap();
+                .unwrap();
+            let retained_operation = reconciler
+                .journal
+                .get(RecordNamespace::Operation, operation_id.as_bytes())
+                .unwrap()
+                .to_vec();
+            let retained_sequence = reconciler.journal.snapshot_sequence();
 
-        assert_eq!(
-            reconciler.reconcile_once(operation.operation_id()).unwrap(),
-            ReconcileOutcome::Progressed
-        );
-        assert_eq!(
-            reconciler.reconcile_once(operation.operation_id()).unwrap(),
-            ReconcileOutcome::PermanentlyBlocked
-        );
-        assert_eq!(reconciler.executor.observe_calls, 0);
-        assert_eq!(reconciler.executor.apply_calls, 0);
+            assert!(
+                matches!(
+                    reconciler.reconcile_once(operation_id),
+                    Err(ReconcilerError::CorruptLedger(
+                        "invalid effect record header"
+                    ))
+                ),
+                "{profile}",
+            );
+
+            assert_eq!(reconciler.executor.observe_calls, 0, "{profile}");
+            assert_eq!(reconciler.executor.apply_calls, 0, "{profile}");
+            assert_eq!(reconciler.executor.timing_calls, 0, "{profile}");
+            assert!(
+                reconciler.executor.guardian_plan_requests.is_empty(),
+                "{profile}",
+            );
+            assert!(reconciler.executor.applied.is_empty(), "{profile}");
+            assert_eq!(
+                reconciler.journal.get(RecordNamespace::Effect, &key),
+                Some(legacy.as_slice()),
+                "{profile}",
+            );
+            assert_eq!(
+                reconciler
+                    .journal
+                    .get(RecordNamespace::Operation, operation_id.as_bytes()),
+                Some(retained_operation.as_slice()),
+                "{profile}",
+            );
+            assert_eq!(
+                reconciler.journal.snapshot_sequence(),
+                retained_sequence,
+                "{profile}",
+            );
+        }
     }
 
     #[test]

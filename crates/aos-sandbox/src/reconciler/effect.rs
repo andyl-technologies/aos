@@ -34,7 +34,6 @@ use crate::{BrokerDispatchAttemptV1, BrokerDispatchSemanticIdentityV1};
 pub(super) const MAXIMUM_REQUEST_BYTES: usize = 1024 * 1024;
 pub(super) const MAXIMUM_RECEIPT_BYTES: usize = 64 * 1024;
 pub(super) const MAXIMUM_DIAGNOSTIC_BYTES: usize = 4096;
-const LEGACY_EFFECT_VERSION: u8 = 1;
 const EFFECT_VERSION: u8 = 2;
 const CONTROLLER_EFFECT_VERSION: u8 = 3;
 pub(super) const RESERVED_OBSERVE_EFFECT_VERSION: u8 = 4;
@@ -1436,17 +1435,14 @@ fn encode_effect_with_q04(
     } else if record.plan.method.is_some() {
         EFFECT_VERSION
     } else {
-        LEGACY_EFFECT_VERSION
+        return Err(ReconcilerError::InvalidPlan("broker effect has no method"));
     };
     let metadata_bytes = record
         .project_admission
         .as_ref()
         .map(ProjectAdmissionMetadata::encode)
         .transpose()?;
-    let header_length = if matches!(
-        version,
-        LEGACY_EFFECT_VERSION | RESERVED_OBSERVE_EFFECT_VERSION
-    ) {
+    let header_length = if version == RESERVED_OBSERVE_EFFECT_VERSION {
         18
     } else if version == CONTROLLER_Q04_EFFECT_VERSION {
         30
@@ -1603,8 +1599,7 @@ fn decode_effect_with_extensions(
     if bytes.len() < 18
         || !matches!(
             bytes[0],
-            LEGACY_EFFECT_VERSION
-                | EFFECT_VERSION
+            EFFECT_VERSION
                 | CONTROLLER_EFFECT_VERSION
                 | RESERVED_OBSERVE_EFFECT_VERSION
                 | CONTROLLER_PROJECT_EFFECT_VERSION
@@ -1835,7 +1830,6 @@ fn decode_effect_with_extensions(
     } else {
         (None, None)
     };
-    let method = method.or_else(|| authority.as_ref().map(|binding| binding.method));
     if let Some(method) = method {
         validate_broker_method_domain(domain, method)
             .map_err(|_| ReconcilerError::CorruptLedger("broker effect method/domain mismatch"))?;
@@ -2355,28 +2349,87 @@ mod tests {
     }
 
     #[test]
-    fn generic_v1_effect_bytes_remain_exact_in_every_state() {
+    fn generic_v1_effect_is_rejected_in_every_state() {
+        let cases = [
+            (
+                "planned",
+                vec![
+                    1, 1, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'a', b'b', b'c',
+                ],
+            ),
+            (
+                "applying",
+                vec![
+                    1, 1, 2, 0, 2, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 3, 0, b'a', b'b', b'c', b't',
+                    b'r', b'y',
+                ],
+            ),
+            (
+                "applied",
+                vec![
+                    1, 1, 3, 0, 3, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0, 0, 0, b'a', b'b', b'c', 9, 8,
+                ],
+            ),
+            (
+                "permanently blocked",
+                vec![
+                    1, 1, 4, 0, 4, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 2, 0, b'a', b'b', b'c', b'n',
+                    b'o',
+                ],
+            ),
+        ];
+        for (state, bytes) in cases {
+            assert!(
+                matches!(
+                    decode_effect(&bytes),
+                    Err(ReconcilerError::CorruptLedger(
+                        "invalid effect record header"
+                    ))
+                ),
+                "{state}",
+            );
+        }
+    }
+
+    #[test]
+    fn opaque_effect_plan_is_rejected_by_the_encoder() {
         let record = EffectLedgerRecord {
-            plan: legacy_effect_plan(b"abc"),
+            plan: EffectPlan {
+                domain: EffectDomain::Host,
+                method: None,
+                controller_method: None,
+                request: b"abc".to_vec(),
+                authority: None,
+            },
             state: EffectState::Planned,
             dispatch: None,
             project_admission: None,
         };
-        let expected = vec![
-            1, 1, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'a', b'b', b'c',
-        ];
-        assert_eq!(encode_effect(&record).unwrap(), expected);
-        assert_eq!(decode_effect(&expected).unwrap(), record);
 
+        assert!(matches!(
+            encode_effect(&record),
+            Err(ReconcilerError::InvalidPlan("broker effect has no method"))
+        ));
+    }
+
+    #[test]
+    fn generic_v2_effect_bytes_remain_exact_in_every_state() {
         let cases = [
+            (
+                EffectState::Planned,
+                vec![
+                    2, 2, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, b'a', b'b',
+                    b'c',
+                ],
+            ),
             (
                 EffectState::Applying {
                     attempt: 2,
                     diagnostic: "try".to_owned(),
                 },
                 vec![
-                    1, 1, 2, 0, 2, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 3, 0, b'a', b'b', b'c', b't',
-                    b'r', b'y',
+                    2, 2, 2, 0, 2, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 7, b'a', b'b',
+                    b'c', b't', b'r', b'y',
                 ],
             ),
             (
@@ -2385,7 +2438,8 @@ mod tests {
                     receipt: EffectReceipt::new(vec![9, 8]).unwrap(),
                 },
                 vec![
-                    1, 1, 3, 0, 3, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0, 0, 0, b'a', b'b', b'c', 9, 8,
+                    2, 2, 3, 0, 3, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 7, b'a', b'b',
+                    b'c', 9, 8,
                 ],
             ),
             (
@@ -2394,14 +2448,19 @@ mod tests {
                     diagnostic: "no".to_owned(),
                 },
                 vec![
-                    1, 1, 4, 0, 4, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 2, 0, b'a', b'b', b'c', b'n',
-                    b'o',
+                    2, 2, 4, 0, 4, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 7, b'a', b'b',
+                    b'c', b'n', b'o',
                 ],
             ),
         ];
         for (state, expected) in cases {
             let record = EffectLedgerRecord {
-                plan: legacy_effect_plan(b"abc"),
+                plan: EffectPlan::new(
+                    EffectDomain::Storage,
+                    BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
+                    b"abc".to_vec(),
+                )
+                .unwrap(),
                 state,
                 dispatch: None,
                 project_admission: None,
@@ -2508,7 +2567,7 @@ mod tests {
     }
 
     #[test]
-    fn authority_bound_v1_record_recovers_its_method_from_the_binding() {
+    fn authority_bound_v1_record_is_rejected_before_binding_recovery() {
         let record = EffectLedgerRecord {
             plan: authority_bound_plan(),
             state: EffectState::Planned,
@@ -2516,14 +2575,15 @@ mod tests {
             project_admission: None,
         };
         let mut legacy = encode_effect(&record).unwrap();
-        legacy[0] = LEGACY_EFFECT_VERSION;
+        legacy[0] = 1;
         legacy.drain(18..22);
 
-        assert_eq!(decode_effect(&legacy).unwrap(), record);
-        assert_eq!(
-            encode_effect(&decode_effect(&legacy).unwrap()).unwrap()[0],
-            2
-        );
+        assert!(matches!(
+            decode_effect(&legacy),
+            Err(ReconcilerError::CorruptLedger(
+                "invalid effect record header"
+            ))
+        ));
     }
 
     #[test]
@@ -2667,16 +2727,6 @@ mod tests {
                 descriptor_free: true,
                 digest,
             }),
-        }
-    }
-
-    fn legacy_effect_plan(request: &[u8]) -> EffectPlan {
-        EffectPlan {
-            domain: EffectDomain::Host,
-            method: None,
-            controller_method: None,
-            request: request.to_vec(),
-            authority: None,
         }
     }
 }
