@@ -36,6 +36,12 @@ pub mod exact_checkpoint;
 pub mod example_corpus;
 mod local_backend;
 pub mod model;
+pub mod node_admission;
+pub mod node_adapters;
+pub mod node_contract;
+pub mod node_dispatch;
+pub mod node_scheduling;
+pub mod node_state;
 pub mod node_time;
 pub mod scheduler;
 #[cfg(feature = "test-double")]

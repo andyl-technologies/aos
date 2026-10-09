@@ -795,6 +795,18 @@ impl ScheduledIoNode {
             .map(|head| head.delivery_icount)
     }
 
+    /// Returns every retained completion identity in canonical delivery order.
+    ///
+    /// This immutable inventory lets common node adapters bind actual newly
+    /// computed responses to their original causal input without guessing from
+    /// request IDs or exposing mutable device internals.
+    pub fn pending_completion_keys(&self) -> impl Iterator<Item = (u64, u32, u32)> + '_ {
+        self.resolved
+            .iter()
+            .filter(|completion| !completion.delivered)
+            .map(PendingCompletion::delivery_key)
+    }
+
     /// DELIVERs every completion due at or before `consumer_icount` in canonical
     /// order, emitting [`IoCompletion`] events and the fault decisions they drew
     /// (RFC-0010 [SCHED-29], [SCHED-30], §8.9.4).
