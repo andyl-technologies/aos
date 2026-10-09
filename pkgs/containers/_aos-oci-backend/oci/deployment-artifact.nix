@@ -19,6 +19,8 @@
   evaluationInput ? null,
   osRelease ? null,
   runtimeRoots ? [],
+  knownPackageCatalog ? [],
+  backendConfigurationInputs ? [],
   contracts ? [],
   pname ? "aos-oci-deployment-artifact",
   artifactClass ? "container",
@@ -131,7 +133,7 @@
     }
     else
       import ./deployment-evidence.nix {
-        inherit lib packages bundle artifact;
+        inherit lib packages bundle artifact knownPackageCatalog backendConfigurationInputs;
       };
 in {
   inherit evidence;

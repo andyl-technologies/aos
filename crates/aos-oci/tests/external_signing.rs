@@ -14,13 +14,16 @@ use std::fs;
 
 #[test]
 fn external_signing_verifies_and_atomically_assembles_complete_bundle() {
-    for include_deployment in [false, true] {
+    for contract in ["abilities", "deployment", "both"] {
         let fixture = support::fixture();
-        let release = if include_deployment {
+        let mut release = if contract != "abilities" {
             support::add_signed_release_graph_with_deployment(&fixture)
         } else {
             support::add_signed_release_graph(&fixture)
         };
+        if contract == "deployment" {
+            release.evidence.abilities = None;
+        }
         let input = support::publication_signature_input(&release);
         let workspace = tempfile::tempdir().expect("workspace");
         let inputs = workspace.path().join("publication-inputs");

@@ -1778,11 +1778,6 @@ fn container_evidence_descriptors(
 ) -> Vec<(&'static str, ContainerReleaseDescriptorRole, &Descriptor)> {
     let mut descriptors = vec![
         (
-            "abilities",
-            ContainerReleaseDescriptorRole::Abilities,
-            &release.evidence.abilities,
-        ),
-        (
             "Nix closure",
             ContainerReleaseDescriptorRole::NixClosure,
             &release.nix.closure,
@@ -1813,6 +1808,14 @@ fn container_evidence_descriptors(
             &release.evidence.signature,
         ),
     ];
+
+    if let Some(abilities) = &release.evidence.abilities {
+        descriptors.push((
+            "abilities",
+            ContainerReleaseDescriptorRole::Abilities,
+            abilities,
+        ));
+    }
 
     if let Some(deployment) = &release.evidence.deployment {
         descriptors.push((
@@ -3458,7 +3461,7 @@ mod tests {
         };
         let release_evidence = ContainerReleaseEvidence {
             deployment: None,
-            abilities: evidence(MediaType::AosContainerStaticAbilities, "abilities"),
+            abilities: Some(evidence(MediaType::AosContainerStaticAbilities, "abilities")),
             sbom: evidence(MediaType::SpdxJson, "sbom"),
             source: evidence(MediaType::AosSourceClosure, "source"),
             license: evidence(MediaType::AosLicenseReport, "license"),

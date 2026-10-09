@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
 use aos_hub::db::{
@@ -23,15 +23,15 @@ use aos_hub::db::{
 };
 use aos_hub::domain::{Permission, Principal, iam};
 use aos_hub::fetch::LocalFsFetch;
-use aos_hub::server::{router, AppState};
+use aos_hub::server::{AppState, router};
 use aos_hub_core::db::oci_blob_object_key;
 use aos_oci::{PullOptions, RegistryClient, RegistryReference};
 use aos_oci_types::{
-    to_canonical_json, ContainerDsseEnvelope, ContainerDsseSignature,
+    CONTAINER_DSSE_SIGNATURE_NAMESPACE, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
+    CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerDsseEnvelope, ContainerDsseSignature,
     ContainerEvidenceQualificationCheck, ContainerEvidenceUnknownPath, ContainerRelease,
     ContainerSignatureInput, ContainerSignatureInputEvidence, MediaType, RepositoryName,
-    Sha256Digest, Tag, CONTAINER_DSSE_SIGNATURE_NAMESPACE, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
-    CONTAINER_SIGNATURE_INPUT_SCHEMA,
+    Sha256Digest, Tag, to_canonical_json,
 };
 use aos_package::security::parse_signing_key;
 use axum::body::Body;
@@ -452,9 +452,11 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
     assert_eq!(published["target_tag"], TARGET_TAG);
     assert_eq!(published["source_kind"], "channel");
     assert_eq!(published["required_placement_count"], 2);
-    assert!(published["topology_digest"]
-        .as_str()
-        .is_some_and(|value| { Sha256Digest::parse(value).is_ok() }));
+    assert!(
+        published["topology_digest"]
+            .as_str()
+            .is_some_and(|value| { Sha256Digest::parse(value).is_ok() })
+    );
     assert_control_sequence(&hub, None, release.oci.index.digest);
     assert_tag(&hub.db, repository.id, Some(release.oci.index.digest)).await?;
 
@@ -586,16 +588,18 @@ fn signed_container_envelope(
 }
 
 fn release_roots(release: &ContainerRelease) -> Vec<aos_oci_types::Descriptor> {
-    vec![
+    let mut roots = vec![
         release.oci.index.clone(),
         release.nix.closure.clone(),
-        release.evidence.abilities.clone(),
         release.evidence.sbom.clone(),
         release.evidence.source.clone(),
         release.evidence.license.clone(),
         release.evidence.provenance.clone(),
         release.evidence.signature.clone(),
-    ]
+    ];
+    roots.extend(release.evidence.abilities.clone());
+    roots.extend(release.evidence.deployment.clone());
+    roots
 }
 
 async fn assert_local_publication_rejections(

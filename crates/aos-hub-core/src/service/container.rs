@@ -643,13 +643,13 @@ fn release_roots(release: &ContainerRelease) -> Vec<Descriptor> {
     let mut descriptors = vec![
         release.oci.index.clone(),
         release.nix.closure.clone(),
-        release.evidence.abilities.clone(),
         release.evidence.sbom.clone(),
         release.evidence.source.clone(),
         release.evidence.license.clone(),
         release.evidence.provenance.clone(),
         release.evidence.signature.clone(),
     ];
+    descriptors.extend(release.evidence.abilities.clone());
     if let Some(deployment) = &release.evidence.deployment {
         descriptors.push(deployment.clone());
     }
@@ -730,7 +730,12 @@ fn descriptor_role(
         ContainerReleaseDescriptorRole::PlatformManifest
     } else if descriptor.digest == release.nix.closure.digest {
         ContainerReleaseDescriptorRole::NixClosure
-    } else if descriptor.digest == release.evidence.abilities.digest {
+    } else if release
+        .evidence
+        .abilities
+        .as_ref()
+        .is_some_and(|abilities| descriptor.digest == abilities.digest)
+    {
         ContainerReleaseDescriptorRole::Abilities
     } else if descriptor.digest == release.evidence.sbom.digest {
         ContainerReleaseDescriptorRole::Sbom
@@ -894,7 +899,10 @@ mod staging_tests {
             qualification: qualification_fixture(),
             evidence: ContainerReleaseEvidence {
                 deployment: None,
-                abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
+                abilities: Some(evidence_descriptor(
+                    MediaType::AosContainerStaticAbilities,
+                    "abilities",
+                )),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
                 license: evidence_descriptor(MediaType::AosLicenseReport, "license"),

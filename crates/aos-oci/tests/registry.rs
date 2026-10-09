@@ -208,7 +208,11 @@ async fn signed_release_push_uploads_every_evidence_object_by_digest_only() {
         &release.oci.index,
         &release.oci.platform_manifests[0],
         &release.nix.closure,
-        &release.evidence.abilities,
+        release
+            .evidence
+            .abilities
+            .as_ref()
+            .expect("legacy abilities fixture"),
         &release.evidence.sbom,
         &release.evidence.source,
         &release.evidence.license,

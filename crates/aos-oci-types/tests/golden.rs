@@ -194,7 +194,7 @@ fn container_release_golden_vector() {
         },
         evidence: ContainerReleaseEvidence {
             deployment: None,
-            abilities: artifact_descriptor(MediaType::AosContainerStaticAbilities, b"abilities"),
+            abilities: Some(artifact_descriptor(MediaType::AosContainerStaticAbilities, b"abilities")),
             sbom: artifact_descriptor(MediaType::SpdxJson, b"sbom"),
             source: artifact_descriptor(MediaType::AosSourceClosure, b"source"),
             license: artifact_descriptor(MediaType::AosLicenseReport, b"license"),

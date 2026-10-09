@@ -271,6 +271,8 @@
     scope = ["profile" "/var/lib/profiles/per-user/root"];
     platform = {inherit (container.platform) os architecture;};
     runtimeRoots = auditRoots;
+    knownPackageCatalog = payloadEvidence.catalog;
+    backendConfigurationInputs = lib.optional container.filesystem.shell shellInitConfiguration;
   };
   osRelease = ''
     NAME="${systemIdentity.name}"
@@ -303,6 +305,15 @@
     # runtime path without one unique package and source identity.
     packageNames = pkgs.platformSupport.publicationEligibleNames container.platform.aosSystem pkgs.allPackageNames;
     overrides = container.publication.evidenceOverrides;
+    # Retained replay scripts use the library's bootstrap Bash, whose output
+    # can differ from the public target Bash. Attribute its exact derivation.
+    additionalPackages = [
+      (pkgs.stdenv.bash
+        // {
+          pname = "bash";
+          version = (builtins.parseDrvName pkgs.stdenv.bash.name).version;
+        })
+    ];
   };
 
   packageEvidence = {

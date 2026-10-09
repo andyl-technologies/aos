@@ -350,13 +350,13 @@ impl ReleaseGraph {
         let mut roots = vec![
             &release.oci.index,
             &release.nix.closure,
-            &release.evidence.abilities,
             &release.evidence.sbom,
             &release.evidence.source,
             &release.evidence.license,
             &release.evidence.provenance,
             &release.evidence.signature,
         ];
+        roots.extend(release.evidence.abilities.as_ref());
         if let Some(deployment) = &release.evidence.deployment {
             roots.push(deployment);
         }

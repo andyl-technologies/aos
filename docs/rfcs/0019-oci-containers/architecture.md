@@ -498,15 +498,16 @@ binds:
 - Nix definition and output provenance;
 - full-closure package mapping, corresponding-source, and license
   qualification, with `readyForVerifiedPublication = true`;
-- required static ability and launch-obligation evidence;
+- native deployment or static ability and launch-obligation evidence;
 - closure manifest and SBOM descriptors;
 - source, license, signature, and attestation referrers.
 
 The signature input, DSSE payload type, signed release sidecar, and static
-ability evidence each use their single `/v1` contract. The static ability
-descriptor is required in both the signature input and the final release, so
-every parser, verifier, Hub indexer, and graph traversal sees the same signed
-evidence set.
+ability evidence each use their single `/v1` contract. A release requires a
+native deployment descriptor, a legacy static ability descriptor, or both.
+Every supplied descriptor must appear unchanged in the signature input and
+final release, so every parser, verifier, Hub indexer, and graph traversal sees
+the same signed deployment contract. Omitting both descriptors is invalid.
 
 Images that retain a native deployment document also include its OCI referrer
 descriptor as `evidence.deployment` in the signature input and final release.

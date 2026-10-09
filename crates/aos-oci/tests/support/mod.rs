@@ -276,7 +276,10 @@ fn signed_release_graph(fixture: &Fixture, include_deployment: bool) -> Containe
         evidence: ContainerReleaseEvidence {
             deployment: include_deployment
                 .then(|| artifact("deployment", MediaType::AosArtifactDeployment)),
-            abilities: artifact("abilities", MediaType::AosContainerStaticAbilities),
+            abilities: Some(artifact(
+                "abilities",
+                MediaType::AosContainerStaticAbilities,
+            )),
             sbom: artifact("sbom", MediaType::SpdxJson),
             source: artifact("source", MediaType::AosSourceClosure),
             license: artifact("license", MediaType::AosLicenseReport),
@@ -374,13 +377,18 @@ pub fn write_publication_inputs(inputs: &Path, layout: &Path, input: &ContainerS
         "image": input.oci.index,
         "referrers": [
             input.nix.closure,
-            input.evidence.abilities,
             input.evidence.sbom,
             input.evidence.source,
             input.evidence.license,
             input.evidence.provenance,
         ],
     });
+    if let Some(abilities) = &input.evidence.abilities {
+        roots["referrers"]
+            .as_array_mut()
+            .expect("referrers")
+            .push(serde_json::to_value(abilities).expect("abilities descriptor"));
+    }
     if let Some(deployment) = &input.evidence.deployment {
         roots["referrers"]
             .as_array_mut()
