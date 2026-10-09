@@ -4,8 +4,8 @@
 //! brings its own UI (indicatif, ratatui, etc.) -- this module only
 //! defines the callback interface.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// A structured lifecycle event emitted by one transfer.

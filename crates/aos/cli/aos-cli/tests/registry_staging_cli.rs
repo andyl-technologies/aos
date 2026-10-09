@@ -6,8 +6,8 @@ use std::process::{Command, Output};
 
 use anyhow::{Context, Result, ensure};
 use aos_registry_authoring::registry::staging::LocalStageStore;
-use aos_registry_client::registry::{keys, state};
 use aos_registry_authoring::sshkey::Ed25519Keypair;
+use aos_registry_client::registry::{keys, state};
 use aos_release_format::RELEASE_JOURNAL_ENTRY;
 use aos_release_format::canonical;
 use aos_release_format::digest::Sha256Digest;

@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use anyhow::{Context, Result, bail};
-use aos_registry_client::registry::keys;
 use aos_registry_authoring::sshkey::Ed25519Keypair;
+use aos_registry_client::registry::keys;
 
 #[path = "support/git_ssh.rs"]
 mod git_ssh;
