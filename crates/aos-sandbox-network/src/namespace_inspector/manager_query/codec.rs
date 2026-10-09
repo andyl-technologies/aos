@@ -1247,6 +1247,100 @@ mod tests {
     }
 
     #[test]
+    fn outer_records_reject_every_short_prefix_with_matching_declared_length() {
+        for bytes in [
+            contract().encode().unwrap(),
+            test_snapshot().encode().unwrap(),
+        ] {
+            let contract_frame = bytes[10] == contract_kind();
+            for length in 0..bytes.len() {
+                let mut prefix = bytes[..length].to_vec();
+                if length >= HEADER_BYTES {
+                    // Reach the body parser instead of failing only the header length check.
+                    prefix[12..16].copy_from_slice(&u32::try_from(length).unwrap().to_le_bytes());
+                }
+
+                let rejected = if contract_frame {
+                    NamespaceInspectorDeploymentContractV1::decode_untrusted(&prefix).is_err()
+                } else {
+                    ObservedNamespaceInspectorActivationSnapshotV1::decode_untrusted(&prefix)
+                        .is_err()
+                };
+                assert!(rejected, "short prefix {length}, contract={contract_frame}");
+            }
+        }
+    }
+
+    #[test]
+    fn tuple_and_command_leaves_reject_every_short_prefix() {
+        for signature in ["(ss)", "(bas)", "a(sasbttttuii)", "a(sasasttttuii)"] {
+            let descriptor = descriptor(signature);
+            let valid = test_property_value(descriptor, false);
+            let bytes = match valid {
+                CanonicalManagerPropertyValueV1::Scalar(bytes) => bytes,
+                CanonicalManagerPropertyValueV1::OrderedArray(mut elements) => elements.remove(0),
+                _ => panic!("representative leaf fixtures are scalars or ordered arrays"),
+            };
+            for length in 0..bytes.len() {
+                let prefix = bytes[..length].to_vec();
+                let value = if descriptor.shape == ManagerPropertyShapeV1::Scalar {
+                    CanonicalManagerPropertyValueV1::Scalar(prefix)
+                } else {
+                    CanonicalManagerPropertyValueV1::OrderedArray(vec![prefix])
+                };
+
+                assert_eq!(
+                    validate_property_value(descriptor, &value, false),
+                    Err(NamespaceInspectorManagerQueryError::PropertyTableMismatch),
+                    "{signature} short prefix {length}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn missing_text_blob_and_leaf_payloads_keep_distinct_error_categories() {
+        let mut missing_text = contract().encode().unwrap();
+        // Retain the first argv count and text length, but omit its text payload.
+        missing_text.truncate(HEADER_BYTES + 2 + 2);
+        let frame_length = u32::try_from(missing_text.len()).unwrap();
+        missing_text[12..16].copy_from_slice(&frame_length.to_le_bytes());
+
+        assert_eq!(
+            NamespaceInspectorDeploymentContractV1::decode_untrusted(&missing_text),
+            Err(NamespaceInspectorManagerQueryError::FieldTooLarge),
+        );
+
+        let snapshot = test_snapshot();
+        let CanonicalManagerPropertyValueV1::Scalar(last_value) =
+            &snapshot.properties.last().unwrap().value
+        else {
+            panic!("the final property is a scalar tuple");
+        };
+        let mut missing_blob = snapshot.encode().unwrap();
+        let length_offset = missing_blob.len() - last_value.len() - 4;
+        let declared_length = u32::try_from(last_value.len() + 1).unwrap();
+        missing_blob[length_offset..length_offset + 4]
+            .copy_from_slice(&declared_length.to_le_bytes());
+
+        assert_eq!(
+            ObservedNamespaceInspectorActivationSnapshotV1::decode_untrusted(&missing_blob),
+            Err(NamespaceInspectorManagerQueryError::InvalidFrame),
+        );
+
+        let mut missing_leaf = last_value.clone();
+        missing_leaf.pop();
+        assert_eq!(
+            validate_property_value(
+                MANAGER_PROPERTY_TABLE_V1.last().unwrap(),
+                &CanonicalManagerPropertyValueV1::Scalar(missing_leaf),
+                false,
+            ),
+            Err(NamespaceInspectorManagerQueryError::PropertyTableMismatch),
+        );
+    }
+
+    #[test]
     fn matcher_is_nonminting_and_rejects_dynamic_drift() {
         let contract = contract();
         let first = test_snapshot();
