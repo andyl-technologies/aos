@@ -87,6 +87,7 @@ in {
   ];
 
   native-resources = suite "native-resources" [
+    ./baseline-ordering.nix
     ../effects/configuration-lower.nix
     ../effects/boot-consumers.nix
     ../effects/security-services.nix
