@@ -206,7 +206,23 @@ changing production receipt traits. The actual whole-lease witness queues a
 real renewal behind the held barrier and checks its selected durable value;
 its refusal may precede native ownership dispatch and proves no ownership ACK,
 not an in-worker refusal. Four focused runtime cases have started with unchanged
-bounds; full native qualification remains pending. The inventory audit finds
+bounds; that run finishes with one pass, one failure and two timeouts (run
+`85b6db8f-4402-402f-8edd-b9685ad15bcd`, raw log
+`/tmp/terrane-copied-preimage-focused-nextest.log`). Missing selected history
+now refuses correctly, while positive ownership and whole-lease change time out.
+The fallback oracle additionally mixed the pack reader's verified plaintext
+with serving's encoded envelope; the corrected assertion compares verified
+plaintext without changing native permissions or inputs.
+The next private source `9d122397a6` adds test-only actual effect/lock tracing
+and that codec-oracle correction. Both exact positive all-absent first ownership
+and burned-fallback refusal pass in one 126.038-second run with unchanged bounds
+(run `5467c18a-ab1a-48cd-bad9-b1e946f7ed95`, raw log
+`/tmp/terrane-copied-native-boundary-trace-nextest.log`). No production code
+changed between those two runs, so the earlier timeout's cause is not established.
+The matching full thirty-one-case runtime has started (run
+`cf52bbd2-6224-4a3c-bf53-54dba13b7583`, raw log
+`/tmp/terrane-native-recovery-corrected-full-nextest.log`); full native
+qualification remains pending. The inventory audit finds
 that every admitted writable native selection validates known ref, catalog and
 exclusion inventories. Unknown legacy inputs remain read-only: their ref
 enumeration returns `Unsupported`, and Original/held mutation admission refuses
