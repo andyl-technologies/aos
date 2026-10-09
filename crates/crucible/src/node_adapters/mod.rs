@@ -1,10 +1,12 @@
-//! Owned adapters for deterministic host-side device and clock models.
+//! Owned host-model adapters and authenticated native node preparation.
 //!
 //! Models retain their existing continuation codecs. Qualified host profiles
 //! execute authentic staged requests and pending events within exact grants,
 //! preserving original input, publication and native receipt custody. The
 //! controlled reference child provides a distinct coarse quantized profile.
+//! Native gem5 preparation retains real resources beneath a qualification gate.
 
+pub mod gem5;
 mod host;
 mod inventory;
 mod reference_device;
