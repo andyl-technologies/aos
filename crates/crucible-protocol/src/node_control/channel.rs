@@ -203,6 +203,8 @@ mod tests {
                 | NativeControlEdition::PhaseProjection
                 | NativeControlEdition::PreparationSuccessor => NativeControlEdition::Original,
                 NativeControlEdition::Administration => NativeControlEdition::Original,
+                NativeControlEdition::Construction => NativeControlEdition::Administration,
+                NativeControlEdition::FixedMicrovm => NativeControlEdition::Construction,
             };
             let frame = NativeFrame::QueryCpuPark([7; 32]);
             let foreign = super::super::encode_frame_for_edition(other, &frame).unwrap();

@@ -19,3 +19,6 @@ mod initialization;
 
 mod phase;
 mod preparation_successor;
+
+mod root;
+pub use root::NativeFixedMicrovmParameters;

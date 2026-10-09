@@ -1,0 +1,114 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Actual writer guards; native BQL/roster eligibility is modeled, not proved. */
+#include "qemu/osdep.h"
+#include "qemu/atomic.h"
+#include "qemu/error-report.h"
+#include "hw/core/irq.h"
+#include <sys/syscall.h>
+#include <sys/wait.h>
+
+static bool model_bql = true, model_main = true;
+static int effects = -1;
+static unsigned calls;
+
+void error_report(const char *format, ...)
+{
+}
+
+int qemu_get_thread_id(void)
+{
+    return syscall(SYS_gettid);
+}
+
+static bool bql_locked(void)
+{
+    return model_bql;
+}
+
+static bool qemu_in_main_thread(void)
+{
+    return model_main;
+}
+
+@NATIVE_IRQ@
+
+static void actual_handler(void *opaque, int line, int level)
+{
+    calls++;
+    if (effects >= 0) {
+        char byte = 'x';
+        assert(write(effects, &byte, 1) == 1);
+    }
+}
+
+static void invoke(unsigned operation)
+{
+    IRQState irq = { .handler = actual_handler };
+
+    if (operation == 0) {
+        qemu_set_irq(&irq, 1);
+    } else if (operation == 1) {
+        qemu_irq_node_root_lifetime_guard();
+        actual_handler(NULL, 0, 1);
+    } else {
+        qemu_irq_node_root_cpu_mutation_guard("source-model CPU mutation");
+        actual_handler(NULL, 0, 1);
+    }
+}
+
+static void refuse(unsigned operation, unsigned context)
+{
+    int descriptors[2], status;
+    char byte;
+    pid_t child;
+
+    assert(pipe(descriptors) == 0);
+    child = fork();
+    assert(child >= 0);
+    if (!child) {
+        close(descriptors[0]);
+        effects = descriptors[1];
+        memset(&node_irq_roots, 0, sizeof(node_irq_roots));
+        assert(qemu_irq_node_roots_enable() == 0);
+        if (context == 0) {
+            node_irq_roots.sealed = true;
+        } else if (context == 1) {
+            model_bql = false;
+        } else if (context == 2) {
+            node_irq_roots.original_process++;
+        } else if (context == 3) {
+            node_irq_roots.original_constructor_thread++;
+        } else {
+            model_main = false;
+        }
+        invoke(operation);
+        _exit(94);
+    }
+    close(descriptors[1]);
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 125);
+    assert(read(descriptors[0], &byte, 1) == 0);
+    close(descriptors[0]);
+}
+
+int main(void)
+{
+    for (unsigned operation = 0; operation < 3; operation++) {
+        unsigned before = calls;
+        invoke(operation);
+        assert(calls == before + 1);
+    }
+    assert(qemu_irq_node_roots_enable() == 0);
+    for (unsigned operation = 0; operation < 3; operation++) {
+        unsigned before = calls;
+        invoke(operation);
+        assert(calls == before + 1);
+        for (unsigned context = 0; context < (operation == 2 ? 4 : 5); context++) {
+            refuse(operation, context);
+        }
+    }
+    puts("PASS actual IRQ/lifetime/CPU guard bodies: disabled and constructor "
+         "paths preserved, sealed/foreign/BQL contexts die before callbacks; "
+         "native owner eligibility remains modeled");
+    return 0;
+}

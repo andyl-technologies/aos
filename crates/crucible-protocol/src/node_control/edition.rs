@@ -23,6 +23,13 @@ pub enum NativeControlEdition {
     PreparationSuccessor,
     /// Enrolls the original source-observed reader without modeled-source coverage.
     Administration,
+    /// Selects construction-only original administrative effects, never compute.
+    Construction,
+    /// Pins complete source-root preparation before separately authorized native effects.
+    ///
+    /// Its bootstrap rejects legacy compute commands. Source enrollment, an owned
+    /// input epoch and a finite original effect cut remain independent requirements.
+    FixedMicrovm,
 }
 
 impl NativeControlEdition {
@@ -34,6 +41,8 @@ impl NativeControlEdition {
             Self::PhaseProjection => 3,
             Self::PreparationSuccessor => 4,
             Self::Administration => 5,
+            Self::Construction => 6,
+            Self::FixedMicrovm => 7,
         }
     }
 }
@@ -50,6 +59,22 @@ pub fn encode_frame_for_edition(
     edition: NativeControlEdition,
     frame: &NativeFrame,
 ) -> Result<Vec<u8>, NativeCommandError> {
+    if edition == NativeControlEdition::FixedMicrovm {
+        return super::fixed_microvm_frames::encode(frame);
+    }
+    if matches!(frame, NativeFrame::PrepareFixedMicrovm(_)) {
+        return Err(NativeCommandError::UnsupportedVersion(7));
+    }
+    if edition == NativeControlEdition::Construction {
+        if !construction_frame(frame) {
+            return Err(NativeCommandError::Invalid(
+                "construction profile refuses compute",
+            ));
+        }
+        let mut bytes = encode_frame_for_edition(NativeControlEdition::Administration, frame)?;
+        bytes[8..10].copy_from_slice(&edition.version().to_be_bytes());
+        return Ok(bytes);
+    }
     if edition == NativeControlEdition::Administration {
         let (kind, body) = match frame {
             NativeFrame::PrepareAdministration(preparation) => (26u16, preparation.encode()?),
@@ -205,7 +230,22 @@ pub fn decode_frame_for_edition(
     if edition == NativeControlEdition::Original {
         return super::decode_frame(bytes);
     }
+    if edition == NativeControlEdition::FixedMicrovm {
+        return super::fixed_microvm_frames::decode(bytes);
+    }
 
+    if edition == NativeControlEdition::Construction {
+        let mut previous = bytes.to_vec();
+        previous[8..10]
+            .copy_from_slice(&NativeControlEdition::Administration.version().to_be_bytes());
+        let frame = decode_frame_for_edition(NativeControlEdition::Administration, &previous)?;
+        if !construction_frame(&frame) {
+            return Err(NativeCommandError::Invalid(
+                "construction profile refuses compute",
+            ));
+        }
+        return Ok(frame);
+    }
     let mut cursor = Cursor(bytes);
     if cursor.take(8)? != MAGIC {
         return Err(NativeCommandError::Invalid("wrong native command magic"));
@@ -446,3 +486,21 @@ mod initialization_tests;
 #[cfg(test)]
 #[path = "phase_frame_tests.rs"]
 mod phase_frame_tests;
+
+fn construction_frame(frame: &NativeFrame) -> bool {
+    matches!(
+        frame,
+        NativeFrame::PrepareAdministration(_)
+            | NativeFrame::QueryAdministration { .. }
+            | NativeFrame::AdministrationFacts(_)
+            | NativeFrame::QueryInitialization(_)
+            | NativeFrame::InitializationCut(_)
+            | NativeFrame::Initialize(_)
+            | NativeFrame::InitializationStopped(_)
+            | NativeFrame::AcknowledgeInitialization(_)
+            | NativeFrame::InitializationAcknowledged(_)
+            | NativeFrame::SourceFault(_)
+            | NativeFrame::QueryPreparationSuccessor(_)
+            | NativeFrame::PreparationSuccessorChunk(_)
+    )
+}

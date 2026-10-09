@@ -46,6 +46,71 @@ fn receipt() -> NativeInitializationReceipt {
     }
 }
 
+#[test]
+fn authentic_ack_waits_for_busy_cache_but_foreign_query_or_failed_source_never_waits() {
+    let (initializer, command, source_receipt) =
+        super::super::initialization_custody::tests::fixture();
+    initializer.retain(command.clone()).unwrap();
+    let receipt = initializer.record_receipt(source_receipt).unwrap();
+    let query = NativePreparationSuccessorQuery {
+        prepared_scope_hash: initializer.scope,
+        initialization_sequence: receipt.sequence,
+        original_cut_digest: receipt.original_cut_digest,
+        offset: U64::new(0),
+    };
+    let successor = custody();
+    assert!(
+        successor
+            .try_acknowledged_original_chunk(&initializer, &query)
+            .is_err()
+    );
+    initializer
+        .acknowledge(
+            &crucible_protocol::node_control::NativeInitializationAcknowledgement {
+                prepared_scope_hash: initializer.scope,
+                initialization_commitment: initializer.commitment,
+                sequence: command.sequence,
+                command_digest: command.identity_digest().unwrap(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        successor
+            .try_acknowledged_original_chunk(&initializer, &query)
+            .unwrap(),
+        None
+    );
+    let mut storage = successor.original.lock().unwrap();
+    storage.receipt = Some(receipt);
+    storage.bytes.extend_from_slice(&[9, 8, 7]);
+    assert_eq!(
+        successor
+            .try_acknowledged_original_chunk(&initializer, &query)
+            .unwrap(),
+        None
+    );
+    let mut foreign = query.clone();
+    foreign.original_cut_digest = [99; 32];
+    assert!(
+        successor
+            .try_acknowledged_original_chunk(&initializer, &foreign)
+            .is_err()
+    );
+    assert_eq!(storage.bytes, [9, 8, 7]);
+    storage.failed = true;
+    drop(storage);
+
+    assert!(
+        successor
+            .try_acknowledged_original_chunk(&initializer, &query)
+            .is_err()
+    );
+    assert_eq!(successor.original.lock().unwrap().bytes, [9, 8, 7]);
+    QUERIES.with(|count| assert_eq!(count.get(), 0));
+    OFFSETS.with(|offsets| assert!(offsets.borrow().is_empty()));
+}
+
 extern "C" fn query(
     _scope: *const u8,
     _sequence: u64,

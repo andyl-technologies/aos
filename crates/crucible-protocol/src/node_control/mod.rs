@@ -23,6 +23,8 @@ mod channel;
 mod codec;
 mod edition;
 mod facts;
+mod fixed_microvm;
+mod fixed_microvm_frames;
 mod frame;
 mod initialization;
 mod initialization_command;
@@ -42,6 +44,10 @@ mod writers;
 
 pub use administrative_preparation::NativeAdministrativePreparation;
 pub use administrative_role::NativeAdministrativeFacts;
+pub use fixed_microvm::{
+    NATIVE_FIXED_MICROVM_CONTROLLER_EDITION, NATIVE_FIXED_MICROVM_EARLY_PIN_BYTES,
+    NATIVE_FIXED_MICROVM_POLICY_BYTES, NativeFixedMicrovmMapping, NativeFixedMicrovmPreparation,
+};
 
 #[cfg(unix)]
 pub use channel::NativeChannel;

@@ -1,0 +1,91 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Actual source admission gates; no endpoint peer or node qualification. */
+#include "qemu/osdep.h"
+#include "qemu/atomic.h"
+#include "qemu/error-report.h"
+#include "qemu/crucible-endpoint-roots.h"
+#include <sys/wait.h>
+
+void error_report(const char *format, ...)
+{
+}
+
+@NATIVE_ENDPOINT@
+
+static int effects;
+
+static void cleanup_writer(void)
+{
+    char byte = 'x';
+    assert(write(effects, &byte, 1) == 1);
+}
+
+static void original_process(void)
+{
+    endpoint_observation_enabled = false;
+    memset(endpoint_state, 0, sizeof(endpoint_state));
+    qemu_crucible_endpoint_roots_enable_early();
+}
+
+static void refusal(unsigned kind, bool input, bool inherited)
+{
+    int descriptors[2], status;
+    char byte;
+    pid_t child;
+
+    assert(pipe(descriptors) == 0);
+    child = fork();
+    assert(child >= 0);
+    if (!child) {
+        close(descriptors[0]);
+        effects = descriptors[1];
+        assert(atexit(cleanup_writer) == 0);
+        if (!inherited) {
+            endpoint_original_process = getpid();
+        }
+        if (input) {
+            qemu_crucible_endpoint_root_input_guard(kind);
+        } else {
+            qemu_crucible_endpoint_root_allocate(kind);
+        }
+        _exit(94);
+    }
+    close(descriptors[1]);
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 125);
+    assert(read(descriptors[0], &byte, 1) == 0);
+    close(descriptors[0]);
+}
+
+int main(void)
+{
+    /* Disabled source preserves ordinary admissions and has no HOLD proof. */
+    qemu_crucible_endpoint_root_allocate(CRUCIBLE_ENDPOINT_MONITOR);
+    assert(qemu_crucible_endpoint_roots_hold_empty() == -EPERM);
+
+    for (unsigned kind = 0; kind < CRUCIBLE_ENDPOINT_ROOT_KINDS; kind++) {
+        original_process();
+        qemu_crucible_endpoint_root_allocate(kind);
+        assert(qemu_crucible_endpoint_roots_hold_empty() == -ENOTSUP);
+        assert(qemu_crucible_endpoint_roots_hold_empty() == -ENOTSUP);
+        refusal(kind, false, false);
+        refusal(kind, true, false);
+    }
+    original_process();
+    assert(qemu_crucible_endpoint_roots_hold_empty() == 0);
+    for (unsigned kind = 0; kind < CRUCIBLE_ENDPOINT_ROOT_KINDS; kind++) {
+        assert(qemu_crucible_endpoint_root_held_without_receiver(kind));
+        refusal(kind, false, false);
+        refusal(kind, true, false);
+    }
+    original_process();
+    refusal(CRUCIBLE_ENDPOINT_MONITOR, false, true);
+    original_process();
+    endpoint_state[0] = ENDPOINT_ALLOCATIONS;
+    refusal(0, false, false);
+    original_process();
+    refusal(CRUCIBLE_ENDPOINT_ROOT_KINDS, false, false);
+    puts("PASS actual endpoint gates: seven histories/HOLDs, direct writers, "
+         "overflow/foreign source and immediate child exit; no peer closure");
+    return 0;
+}

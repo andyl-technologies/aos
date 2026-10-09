@@ -1,4 +1,4 @@
-From d30f55c938098ba47c94d9ebb30634a1b5412781 Mon Sep 17 00:00:00 2001
+From c1ca2f5d3f6593cc5620de25a0f39d3797229750 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0700
 Subject: [PATCH] Integrate deterministic execution and validated TSC source
@@ -280,6 +280,24 @@ preserving older manifest prefixes. Explicitly refuse the old scalar RUN
 lane in a root-pinned launch. These constructor and lifetime observations
 do not grant root-epoch authority, complete readiness, effects, capture,
 restore or fork. Ordinary unpinned launches retain their existing behavior.
+
+Retain bounded native root epochs and exact held writer lifetimes.
+
+Negotiate dormant version-nine epoch registration without admitting native
+acquisition or effects. Preserve initialization ACK ownership, callback
+userdata lifetime, original RUN transport and the default version-eight path.
+
+Fence actual IRQ delivery and CPU source mutation before their first effects.
+Bind original IRQ handles, callbacks and payloads; revalidate original CPU
+roster and retain sticky source divergence. Seal original endpoint inventories
+and refuse later block, character, network, monitor or iothread mutation.
+
+Configured two-ISA source builds, existing native regressions and extracted
+production assertions pass for the exact reviewed components. Actual dormant
+construction and source-refusal probes preserve original custody. These
+checks do not qualify RootSeal, a successful execution epoch, complete input
+or output closure, Ready, capture or fork. Ordinary disabled paths retain
+existing behavior. Full registered-package qualification is separate.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -10713,17 +10731,19 @@ index 2a76a296127e81edc61f45a59785a89705daae90..cee022c189b36ad77f77b6d75bd223e6
  #endif /* TCG_ACCEL_OPS_RR_H */
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..6e91390f40ad120eca529dc77d9489d99ba750ac
+index 0000000000000000000000000000000000000000..404f767656d197cdccf582c8e2df9a53379cfb89
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
-@@ -0,0 +1,957 @@
+@@ -0,0 +1,1024 @@
 +/*
 + * QEMU TCG Crucible deterministic simulation shmem dispatch glue
 + */
 +
 +#include "qemu/osdep.h"
++#include "qemu/crucible-endpoint-roots.h"
 +#include "qemu/crucible-node-root.h"
 +#include "hw/core/loader.h"
++#include "hw/core/irq.h"
 +#include "hw/core/crucible-device-roots.h"
 +#include "qemu/crucible-fault.h"
 +#include "qemu/error-report.h"
@@ -11131,6 +11151,16 @@ index 0000000000000000000000000000000000000000..6e91390f40ad120eca529dc77d9489d9
 +static void *node_root_original_board;
 +static bool node_root_factory_prepared;
 +
++/* Callback storage is immutable after original registration and remains dormant
++ * until a separately qualified source owns an actual RootSeal and EffectCut. */
++static struct {
++    qemu_plugin_crucible_node_epoch_acquire_cb_t acquire;
++    qemu_plugin_crucible_node_epoch_effect_cb_t begin;
++    qemu_plugin_crucible_node_epoch_effect_cb_t end;
++    void *userdata;
++    bool registered;
++} node_root_epoch;
++
 +int crucible_node_root_pin_early(const char *argument)
 +{
 +    uint8_t bytes[CRUCIBLE_NODE_ROOT_EARLY_BYTES];
@@ -11198,11 +11228,13 @@ index 0000000000000000000000000000000000000000..6e91390f40ad120eca529dc77d9489d9
 +    memcpy(node_root_policy.initial_firmware_digest, bytes + 224, 32);
 +    if (qemu_crucible_device_roots_enable() < 0 ||
 +        qemu_timer_node_roots_enable() < 0 ||
-+        rom_crucible_root_enable() < 0) {
++        rom_crucible_root_enable() < 0 ||
++        qemu_irq_node_roots_enable() < 0) {
 +        memset(&node_root_policy, 0, sizeof(node_root_policy));
 +        return -EALREADY;
 +    }
 +    node_root_launch_process = getpid();
++    qemu_crucible_endpoint_roots_enable_early();
 +    node_root_launch_pinned = true;
 +    return 0;
 +}
@@ -11231,6 +11263,55 @@ index 0000000000000000000000000000000000000000..6e91390f40ad120eca529dc77d9489d9
 +    }
 +    node_root_registered = true;
 +    return 0;
++}
++
++int qemu_plugin_register_crucible_node_root_epoch(
++    uint32_t version, const CrucibleNodeRootPolicy *original,
++    qemu_plugin_crucible_node_epoch_acquire_cb_t acquire,
++    qemu_plugin_crucible_node_epoch_effect_cb_t begin,
++    qemu_plugin_crucible_node_epoch_effect_cb_t end, void *userdata)
++{
++    if (version != QEMU_PLUGIN_CRUCIBLE_NODE_ROOT_EPOCH_VERSION ||
++        !original || !acquire || !begin || !end || !userdata ||
++        !bql_locked() || !node_root_registered || !node_root_launch_pinned ||
++        node_root_launch_process != getpid() ||
++        original->version != CRUCIBLE_NODE_ROOT_POLICY_VERSION ||
++        original->size != sizeof(*original) ||
++        memcmp(original, &node_root_policy, sizeof(*original)) ||
++        !crucible_node_root_original_pins_match() ||
++        !current_accel_is_sim() || !icount_crucible_sim_configuration_valid()) {
++        return -EINVAL;
++    }
++    if (node_root_epoch.registered) {
++        return node_root_epoch.acquire == acquire &&
++            node_root_epoch.begin == begin && node_root_epoch.end == end &&
++            node_root_epoch.userdata == userdata ? 0 : -EALREADY;
++    }
++    if (qemu_plugin_icount_raw() ||
++        crucible_node_control_prepared_scope_matches(
++            original->prepared_scope_hash)) {
++        return -ESTALE;
++    }
++    node_root_epoch.acquire = acquire;
++    node_root_epoch.begin = begin;
++    node_root_epoch.end = end;
++    node_root_epoch.userdata = userdata;
++    node_root_epoch.registered = true;
++    qemu_plugin_crucible_callback_registered(
++        0, QEMU_PLUGIN_CRUCIBLE_CALLBACK_NODE_ROOT_EPOCH);
++    return 0;
++}
++
++bool crucible_node_root_epoch_registered(void)
++{
++    return bql_locked() && node_root_epoch.registered &&
++        node_root_launch_process == getpid();
++}
++
++bool crucible_node_root_epoch_manifest_matches(uint32_t version)
++{
++    return version == QEMU_PLUGIN_CRUCIBLE_NODE_ROOT_EPOCH_VERSION &&
++        crucible_node_root_epoch_registered();
 +}
 +
 +bool crucible_node_root_manifest_matches(const uint8_t scope[32],
@@ -11276,6 +11357,10 @@ index 0000000000000000000000000000000000000000..6e91390f40ad120eca529dc77d9489d9
 +    if (!node_root_factory ||
 +        !rr_crucible_node_root_factory_origin(&node_root_policy)) {
 +        return -EPERM;
++    }
++    result = qemu_crucible_endpoint_roots_prepare_empty();
++    if (result < 0) {
++        return result;
 +    }
 +    result = node_root_factory(&node_root_policy, node_root_original_board);
 +    if (result == 0) {
@@ -12897,10 +12982,27 @@ index bc9c7a5ab3b989aaac1c8341ab60c52544c45d7a..3fd95b9225c5f2131a3b7daa1f4695b8
  
          QSIMPLEQ_INSERT_TAIL(&s->requests, req, next);
 diff --git a/block.c b/block.c
-index f0a6042e616031076bda4618737fdac804431712..a851e3ea2adfddd7f59ccdfcb72c595edf26dc97 100644
+index f0a6042e616031076bda4618737fdac804431712..556623483e03d70e212310c3277d7b019e2cb160 100644
 --- a/block.c
 +++ b/block.c
-@@ -5564,6 +5564,8 @@ static void bdrv_delete(BlockDriverState *bs)
+@@ -24,6 +24,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/crucible-endpoint-roots.h"
+ #include "block/trace.h"
+ #include "block/block_int.h"
+ #include "block/blockjob.h"
+@@ -415,6 +416,8 @@ BlockDriverState *bdrv_new(void)
+ 
+     GLOBAL_STATE_CODE();
+ 
++    qemu_crucible_endpoint_root_allocate(CRUCIBLE_ENDPOINT_BLOCK_NODE);
++
+     bs = g_new0(BlockDriverState, 1);
+     QLIST_INIT(&bs->dirty_bitmaps);
+     for (i = 0; i < BLOCK_OP_TYPE_MAX; i++) {
+@@ -5564,6 +5567,8 @@ static void bdrv_delete(BlockDriverState *bs)
      bdrv_close(bs);
  
      qemu_mutex_destroy(&bs->reqs_lock);
@@ -12910,10 +13012,18 @@ index f0a6042e616031076bda4618737fdac804431712..a851e3ea2adfddd7f59ccdfcb72c595e
      g_free(bs);
  }
 diff --git a/block/block-backend.c b/block/block-backend.c
-index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f231c5609ef 100644
+index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..1d529c692bdeb82b80ee423bccf97268b8fa3d48 100644
 --- a/block/block-backend.c
 +++ b/block/block-backend.c
-@@ -93,6 +93,21 @@ struct BlockBackend {
+@@ -11,6 +11,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/crucible-endpoint-roots.h"
+ #include "system/block-backend.h"
+ #include "block/block_int.h"
+ #include "block/blockjob.h"
+@@ -93,6 +94,21 @@ struct BlockBackend {
       * Accessed with atomic ops.
       */
      unsigned int in_flight;
@@ -12935,7 +13045,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
  };
  
  typedef struct BlockBackendAIOCB {
-@@ -119,6 +134,598 @@ static QTAILQ_HEAD(, BlockBackend) block_backends =
+@@ -119,6 +135,598 @@ static QTAILQ_HEAD(, BlockBackend) block_backends =
  static QTAILQ_HEAD(, BlockBackend) monitor_block_backends =
      QTAILQ_HEAD_INITIALIZER(monitor_block_backends);
  
@@ -13534,7 +13644,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
  static int coroutine_mixed_fn GRAPH_RDLOCK
  blk_set_perm_locked(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
                      Error **errp);
-@@ -199,6 +806,7 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
+@@ -199,6 +807,7 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
      }
  
      blk->disable_perm = false;
@@ -13542,7 +13652,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
  
      /*
       * blk->shared_perm contains the permissions we want to share once
-@@ -213,9 +821,11 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
+@@ -213,9 +822,11 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
      if (local_err) {
          error_propagate(errp, local_err);
          blk->disable_perm = true;
@@ -13554,7 +13664,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
  
      if (runstate_check(RUN_STATE_INMIGRATE)) {
          /* Activation can happen when migration process is still active, for
-@@ -232,6 +842,7 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
+@@ -232,6 +843,7 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
      if (local_err) {
          error_propagate(errp, local_err);
          blk->disable_perm = true;
@@ -13562,7 +13672,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
          return;
      }
  }
-@@ -274,6 +885,7 @@ static int GRAPH_RDLOCK blk_root_inactivate(BdrvChild *child)
+@@ -274,6 +886,7 @@ static int GRAPH_RDLOCK blk_root_inactivate(BdrvChild *child)
      }
  
      blk->disable_perm = true;
@@ -13570,7 +13680,16 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
      if (blk->root) {
          bdrv_child_try_set_perm(blk->root, 0, BLK_PERM_ALL, &error_abort);
      }
-@@ -377,6 +989,7 @@ BlockBackend *blk_new(AioContext *ctx, uint64_t perm, uint64_t shared_perm)
+@@ -359,6 +972,8 @@ BlockBackend *blk_new(AioContext *ctx, uint64_t perm, uint64_t shared_perm)
+ 
+     GLOBAL_STATE_CODE();
+ 
++    qemu_crucible_endpoint_root_allocate(CRUCIBLE_ENDPOINT_BLOCK_BACKEND);
++
+     blk = g_new0(BlockBackend, 1);
+     blk->refcnt = 1;
+     blk->ctx = ctx;
+@@ -377,6 +992,7 @@ BlockBackend *blk_new(AioContext *ctx, uint64_t perm, uint64_t shared_perm)
      notifier_list_init(&blk->insert_bs_notifiers);
      QLIST_INIT(&blk->aio_notifiers);
  
@@ -13578,7 +13697,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
      QTAILQ_INSERT_TAIL(&block_backends, blk, link);
      return blk;
  }
-@@ -499,6 +1112,7 @@ static void blk_delete(BlockBackend *blk)
+@@ -499,6 +1115,7 @@ static void blk_delete(BlockBackend *blk)
      QTAILQ_REMOVE(&block_backends, blk, link);
      drive_info_del(blk->legacy_dinfo);
      block_acct_cleanup(&blk->stats);
@@ -13586,7 +13705,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
      g_free(blk);
  }
  
-@@ -526,6 +1140,7 @@ void blk_ref(BlockBackend *blk)
+@@ -526,6 +1143,7 @@ void blk_ref(BlockBackend *blk)
      assert(blk->refcnt > 0);
      GLOBAL_STATE_CODE();
      blk->refcnt++;
@@ -13594,7 +13713,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
  }
  
  /*
-@@ -540,6 +1155,7 @@ void blk_unref(BlockBackend *blk)
+@@ -540,6 +1158,7 @@ void blk_unref(BlockBackend *blk)
          assert(blk->refcnt > 0);
          if (blk->refcnt > 1) {
              blk->refcnt--;
@@ -13602,7 +13721,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
          } else {
              blk_drain(blk);
              /* blk_drain() cannot resurrect blk, nobody held a reference */
-@@ -706,6 +1322,7 @@ bool monitor_add_blk(BlockBackend *blk, const char *name, Error **errp)
+@@ -706,6 +1325,7 @@ bool monitor_add_blk(BlockBackend *blk, const char *name, Error **errp)
  
      blk->name = g_strdup(name);
      QTAILQ_INSERT_TAIL(&monitor_block_backends, blk, monitor_link);
@@ -13610,7 +13729,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
      return true;
  }
  
-@@ -724,6 +1341,7 @@ void monitor_remove_blk(BlockBackend *blk)
+@@ -724,6 +1344,7 @@ void monitor_remove_blk(BlockBackend *blk)
      QTAILQ_REMOVE(&monitor_block_backends, blk, monitor_link);
      g_free(blk->name);
      blk->name = NULL;
@@ -13618,7 +13737,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
  }
  
  /*
-@@ -889,6 +1507,7 @@ void blk_remove_bs(BlockBackend *blk)
+@@ -889,6 +1510,7 @@ void blk_remove_bs(BlockBackend *blk)
      blk_drain(blk);
      root = blk->root;
      blk->root = NULL;
@@ -13626,7 +13745,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
  
      bdrv_graph_wrlock_drained();
      bdrv_root_unref_child(root);
-@@ -921,8 +1540,10 @@ int blk_insert_bs(BlockBackend *blk, BlockDriverState *bs, Error **errp)
+@@ -921,8 +1543,10 @@ int blk_insert_bs(BlockBackend *blk, BlockDriverState *bs, Error **errp)
                                         perm, shared_perm, blk, errp);
      bdrv_graph_wrunlock();
      if (blk->root == NULL) {
@@ -13637,7 +13756,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
  
      notifier_list_notify(&blk->insert_bs_notifiers, blk);
      if (tgm->throttle_state) {
-@@ -961,6 +1582,7 @@ blk_set_perm_locked(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
+@@ -961,6 +1585,7 @@ blk_set_perm_locked(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
  
      blk->perm = perm;
      blk->shared_perm = shared_perm;
@@ -13645,7 +13764,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
  
      return 0;
  }
-@@ -997,10 +1619,12 @@ int blk_attach_dev(BlockBackend *blk, DeviceState *dev)
+@@ -997,10 +1622,12 @@ int blk_attach_dev(BlockBackend *blk, DeviceState *dev)
       * job or NBD server writing to the image for storage migration. */
      if (runstate_check(RUN_STATE_INMIGRATE)) {
          blk->disable_perm = true;
@@ -13658,7 +13777,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
      blk_iostatus_reset(blk);
  
      return 0;
-@@ -1015,6 +1639,7 @@ void blk_detach_dev(BlockBackend *blk, DeviceState *dev)
+@@ -1015,6 +1642,7 @@ void blk_detach_dev(BlockBackend *blk, DeviceState *dev)
      assert(blk->dev == dev);
      GLOBAL_STATE_CODE();
      blk->dev = NULL;
@@ -13666,7 +13785,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
      blk->dev_ops = NULL;
      blk->dev_opaque = NULL;
      blk_set_perm(blk, 0, BLK_PERM_ALL, &error_abort);
-@@ -2419,6 +3044,7 @@ int blk_set_aio_context(BlockBackend *blk, AioContext *new_context,
+@@ -2419,6 +3047,7 @@ int blk_set_aio_context(BlockBackend *blk, AioContext *new_context,
  
      if (!bs) {
          qatomic_set(&blk->ctx, new_context);
@@ -13674,7 +13793,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
          return 0;
      }
  
-@@ -2448,6 +3074,7 @@ static void blk_root_set_aio_ctx_commit(void *opaque)
+@@ -2448,6 +3077,7 @@ static void blk_root_set_aio_ctx_commit(void *opaque)
      ThrottleGroupMember *tgm = &blk->public.throttle_group_member;
  
      qatomic_set(&blk->ctx, new_context);
@@ -18514,6 +18633,27 @@ index b629575fcf808d6ee0c3e3d724d49d521dc2bb6a..78c06d8272a8f57713b64e99d776e6db
  static int tcp_chr_new_client(Chardev *chr, QIOChannelSocket *sioc)
  {
      SocketChardev *s = SOCKET_CHARDEV(chr);
+diff --git a/chardev/char.c b/chardev/char.c
+index 22e5bae388ad085568f624747cf94285877c0f34..f45d7aea4e8e43b7cf93961c31d508e6c2ee99be 100644
+--- a/chardev/char.c
++++ b/chardev/char.c
+@@ -23,6 +23,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/crucible-endpoint-roots.h"
+ #include "qemu/cutils.h"
+ #include "monitor/monitor.h"
+ #include "monitor/qmp-helpers.h"
+@@ -311,6 +312,8 @@ static void char_init(Object *obj)
+ {
+     Chardev *chr = CHARDEV(obj);
+ 
++    qemu_crucible_endpoint_root_allocate(CRUCIBLE_ENDPOINT_CHARACTER);
++
+     chr->handover_yank_instance = false;
+     chr->logfd = -1;
+     chr->log_line_start = true;
 diff --git a/cpu-common.c b/cpu-common.c
 index adb76b3a786c06d08ae89c5623d26bf75755d432..32eb22dfc37efb9bbb5d73c0289e4e67312c0cb1 100644
 --- a/cpu-common.c
@@ -25914,35 +26054,43 @@ index 53f392fdda842dbeb3773153b6b1a6721cc0b686..a466cfdfe4274e06bc5711a4e38b49f7
      object_property_add_link(obj, QDEV_HOTPLUG_HANDLER_PROPERTY,
                               TYPE_HOTPLUG_HANDLER,
 diff --git a/hw/core/cpu-common.c b/hw/core/cpu-common.c
-index e314f916f84e3de6c5cfb11981f781c46f4d6b3c..25b4713b36a38bd25afbc58eef62b99118099372 100644
+index e314f916f84e3de6c5cfb11981f781c46f4d6b3c..ef8744bd9ebd93e1c8248eac876c1e7ff338dc13 100644
 --- a/hw/core/cpu-common.c
 +++ b/hw/core/cpu-common.c
-@@ -22,6 +22,7 @@
+@@ -22,6 +22,8 @@
  #include "exec/cpu-common.h"
  #include "qapi/error.h"
  #include "hw/core/cpu.h"
++#include "hw/core/irq.h"
 +#include "qemu/crucible-fault.h"
  #include "system/hw_accel.h"
  #include "qemu/log.h"
  #include "qemu/main-loop.h"
-@@ -70,6 +71,8 @@ CPUState *cpu_create(const char *typename)
+@@ -70,6 +72,9 @@ CPUState *cpu_create(const char *typename)
  
  void cpu_reset_interrupt(CPUState *cpu, int mask)
  {
++    qemu_irq_node_root_cpu_mutation_guard("CPU IRQ clear");
 +    qemu_cpu_node_observe(cpu, QEMU_CPU_NODE_INGRESS_IRQ_CLEAR,
 +                          (uint32_t)mask);
      qatomic_and(&cpu->interrupt_request, ~mask);
  }
  
-@@ -100,6 +103,7 @@ void cpu_dump_state(CPUState *cpu, FILE *f, int flags)
+@@ -100,6 +105,8 @@ void cpu_dump_state(CPUState *cpu, FILE *f, int flags)
  
  void cpu_reset(CPUState *cpu)
  {
++    qemu_irq_node_root_cpu_mutation_guard("CPU reset");
 +    qemu_cpu_node_observe(cpu, QEMU_CPU_NODE_INGRESS_RESET, 0);
      device_cold_reset(DEVICE(cpu));
  
      trace_cpu_reset(cpu->cpu_index);
-@@ -113,6 +117,9 @@ static void cpu_common_reset_hold(Object *obj, ResetType type)
+@@ -109,10 +116,14 @@ static void cpu_common_reset_hold(Object *obj, ResetType type)
+ {
+     CPUState *cpu = CPU(obj);
+ 
++    qemu_irq_node_root_cpu_mutation_guard("CPU reset hold");
+     cpu->interrupt_request = 0;
      cpu->halted = cpu->start_powered_off;
      cpu->mem_io_pc = 0;
      cpu->icount_extra = 0;
@@ -26157,10 +26305,10 @@ index 14eb4ed87f85aa9365125a0d4215e6e4e11c99f5..be06a3623832f481035b36524ccfc83d
 +}
 diff --git a/hw/core/crucible-device-roots.c b/hw/core/crucible-device-roots.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..91bd49692bc63b4f6a7b6583ae2d90fecbd01bd7
+index 0000000000000000000000000000000000000000..b22fce3cd0251795afd4ddeffbdf9cdf4a53d89b
 --- /dev/null
 +++ b/hw/core/crucible-device-roots.c
-@@ -0,0 +1,290 @@
+@@ -0,0 +1,313 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Fixed native device and bus lifetime custody for an opted-in microvm. */
 +#include "qemu/osdep.h"
@@ -26169,6 +26317,7 @@ index 0000000000000000000000000000000000000000..91bd49692bc63b4f6a7b6583ae2d90fe
 +#include "qemu/rcu.h"
 +#include "qemu/main-loop.h"
 +#include "hw/core/qdev.h"
++#include "hw/core/irq.h"
 +#include "hw/core/crucible-device-roots.h"
 +
 +typedef struct CrucibleDeviceRoot {
@@ -26355,6 +26504,7 @@ index 0000000000000000000000000000000000000000..91bd49692bc63b4f6a7b6583ae2d90fe
 +{
 +    CrucibleDeviceRootCensus census = { 0 };
 +    BusChild *child;
++    DeviceState *actual_devices[CRUCIBLE_DEVICE_ROOT_COUNT];
 +    int result;
 +
 +    assert(bql_locked());
@@ -26422,8 +26572,29 @@ index 0000000000000000000000000000000000000000..91bd49692bc63b4f6a7b6583ae2d90fe
 +        }
 +    }
 +
++    for (unsigned index = 0; index < CRUCIBLE_DEVICE_ROOT_COUNT; index++) {
++        actual_devices[index] = native_roots.devices[index].device;
++    }
++    result = qdev_node_gpio_roots_seal(actual_devices,
++                                      CRUCIBLE_DEVICE_ROOT_COUNT);
++    if (result < 0) {
++        return result;
++    }
++
 +    native_roots.sealed = true;
 +    return 0;
++}
++
++DeviceState *qemu_crucible_device_root_lookup(CrucibleDeviceRootKind kind,
++                                             unsigned ordinal)
++{
++    int slot = device_slot(kind, ordinal);
++
++    if (!bql_locked() || !native_roots.enabled || !original_process() ||
++        slot < 0) {
++        return NULL;
++    }
++    return native_roots.devices[slot].device;
 +}
 +
 +bool qemu_crucible_device_roots_sealed(void)
@@ -26451,6 +26622,754 @@ index 0000000000000000000000000000000000000000..91bd49692bc63b4f6a7b6583ae2d90fe
 +    /* A void producer cannot borrow a new lifetime or report silent success. */
 +    _exit(125);
 +}
+diff --git a/hw/core/gpio.c b/hw/core/gpio.c
+index 37cda5ce4d33f6071b8fc5fd65b1f2b94ff1049f..48a406b62248d279197e887711bce272bdd3ac4c 100644
+--- a/hw/core/gpio.c
++++ b/hw/core/gpio.c
+@@ -21,6 +21,316 @@
+ #include "hw/core/qdev.h"
+ #include "hw/core/irq.h"
+ #include "qapi/error.h"
++#include "qemu/main-loop.h"
++#include "qemu/error-report.h"
++
++#define NODE_GPIO_MAX_GROUPS 64
++#define NODE_GPIO_MAX_PINS 32
++#define NODE_GPIO_MAX_NAME 64
++
++typedef struct NodeGPIOProperty {
++    ObjectProperty *property;
++    ObjectPropertyAccessor *get;
++    ObjectPropertyAccessor *set;
++    ObjectPropertyResolve *resolve;
++    ObjectPropertyRelease *release;
++    ObjectPropertyInit *init;
++    void *payload;
++    QObject *default_value;
++    char name[128];
++} NodeGPIOProperty;
++
++typedef struct NodeGPIOGroup {
++    DeviceState *device;
++    NamedGPIOList *group;
++    bool unnamed;
++    char name[NODE_GPIO_MAX_NAME];
++    qemu_irq *original_inputs;
++    unsigned input_count;
++    unsigned constructed_inputs;
++    NodeGPIOProperty input_properties[NODE_GPIO_MAX_PINS];
++    NodeGPIOProperty output_properties[NODE_GPIO_MAX_PINS];
++    unsigned output_count;
++    qemu_irq inputs[NODE_GPIO_MAX_PINS];
++    qemu_irq *output_slots[NODE_GPIO_MAX_PINS];
++    qemu_irq outputs[NODE_GPIO_MAX_PINS];
++} NodeGPIOGroup;
++
++static struct {
++    uint64_t original_process;
++    unsigned count;
++    bool sealed;
++    NodeGPIOGroup groups[NODE_GPIO_MAX_GROUPS];
++} node_gpio_roots;
++
++static G_NORETURN void node_gpio_fault(const char *reason)
++{
++    error_report("Crucible original GPIO route refused: %s", reason);
++    _exit(125);
++}
++
++static NodeGPIOGroup *node_gpio_group_find(NamedGPIOList *group)
++{
++    for (unsigned index = 0; index < node_gpio_roots.count; index++) {
++        if (node_gpio_roots.groups[index].group == group) {
++            return &node_gpio_roots.groups[index];
++        }
++    }
++    return NULL;
++}
++
++static void node_gpio_property_release(Object *object, const char *name,
++                                        void *payload)
++{
++    qemu_irq_node_root_lifetime_guard();
++    for (unsigned group = 0; group < node_gpio_roots.count; group++) {
++        NodeGPIOGroup *original = &node_gpio_roots.groups[group];
++
++        if (OBJECT(original->device) != object) {
++            continue;
++        }
++        for (unsigned pin = 0; pin < NODE_GPIO_MAX_PINS; pin++) {
++            NodeGPIOProperty *properties[] = {
++                &original->input_properties[pin],
++                &original->output_properties[pin],
++            };
++
++            for (unsigned direction = 0; direction < ARRAY_SIZE(properties);
++                 direction++) {
++                NodeGPIOProperty *property = properties[direction];
++
++                if (property->property && property->payload == payload &&
++                    !strcmp(property->name, name)) {
++                    property->release(object, name, payload);
++                    return;
++                }
++            }
++        }
++    }
++    node_gpio_fault("property release has no original constructor custody");
++}
++
++static void node_gpio_property_retain(NamedGPIOList *group, bool output,
++                                       unsigned pin, ObjectProperty *property)
++{
++    NodeGPIOGroup *original;
++    NodeGPIOProperty *record;
++    size_t name_length;
++
++    if (!qemu_irq_node_roots_enabled()) {
++        return;
++    }
++    original = node_gpio_group_find(group);
++    if (!original || pin >= NODE_GPIO_MAX_PINS || !property ||
++        !property->name || !property->type || !property->release ||
++        strcmp(property->type, output ? "link<irq>" : "child<irq>")) {
++        node_gpio_fault("property has no bounded original constructor");
++    }
++    record = output ? &original->output_properties[pin] :
++                      &original->input_properties[pin];
++    name_length = strlen(property->name);
++    if (record->property || name_length >= sizeof(record->name)) {
++        node_gpio_fault("duplicate or oversized original GPIO property");
++    }
++    *record = (NodeGPIOProperty) {
++        .property = property, .get = property->get, .set = property->set,
++        .resolve = property->resolve, .release = property->release,
++        .init = property->init, .payload = property->opaque,
++        .default_value = property->defval,
++    };
++    memcpy(record->name, property->name, name_length + 1);
++    property->release = node_gpio_property_release;
++}
++
++static bool node_gpio_property_matches(DeviceState *device,
++                                        NodeGPIOProperty *original,
++                                        const char *type)
++{
++    ObjectProperty *property;
++
++    if (!original->property) {
++        return false;
++    }
++    property = object_property_find(OBJECT(device), original->name);
++    return property == original->property && property->name && property->type &&
++        !strcmp(property->name, original->name) && !strcmp(property->type, type) &&
++        property->get == original->get && property->set == original->set &&
++        property->resolve == original->resolve &&
++        property->release == node_gpio_property_release &&
++        property->init == original->init && property->opaque == original->payload &&
++        property->defval == original->default_value;
++}
++
++static void node_gpio_input_preflight(NamedGPIOList *group, int count)
++{
++    NodeGPIOGroup *original;
++
++    if (!qemu_irq_node_roots_enabled()) {
++        return;
++    }
++    original = node_gpio_group_find(group);
++    if (!original || count < 0 || count > NODE_GPIO_MAX_PINS ||
++        group->num_in < 0 || group->num_in > NODE_GPIO_MAX_PINS - count ||
++        group->num_in != original->constructed_inputs) {
++        node_gpio_fault("input backing exceeds original constructor credit");
++    }
++    original->constructed_inputs += count;
++}
++
++static void node_gpio_group_retain(DeviceState *device, NamedGPIOList *group)
++{
++    NodeGPIOGroup *original;
++    size_t name_length = group->name ? strlen(group->name) : 0;
++
++    if (!qemu_irq_node_roots_enabled()) {
++        return;
++    }
++    if (!bql_locked() || !qemu_in_main_thread() || node_gpio_roots.sealed ||
++        node_gpio_roots.count == NODE_GPIO_MAX_GROUPS ||
++        name_length >= NODE_GPIO_MAX_NAME || node_gpio_group_find(group) ||
++        (node_gpio_roots.original_process &&
++         node_gpio_roots.original_process != getpid())) {
++        node_gpio_fault("foreign or unbounded constructor group");
++    }
++    node_gpio_roots.original_process = getpid();
++    original = &node_gpio_roots.groups[node_gpio_roots.count++];
++    original->device = device;
++    original->group = group;
++    original->unnamed = !group->name;
++    if (group->name) {
++        memcpy(original->name, group->name, name_length + 1);
++    }
++    /* The actual owning DeviceState retains group storage and embedded links.
++     * Constructor custody does not authorize future GPIO deliveries. */
++    object_ref(OBJECT(device));
++}
++
++static void node_gpio_output_retain(NamedGPIOList *group,
++                                    qemu_irq *pins, int count)
++{
++    NodeGPIOGroup *original;
++
++    if (!qemu_irq_node_roots_enabled()) {
++        return;
++    }
++    original = node_gpio_group_find(group);
++    if (!bql_locked() || !qemu_in_main_thread() ||
++        node_gpio_roots.original_process != getpid() ||
++        !original || count < 0 || count > NODE_GPIO_MAX_PINS ||
++        group->num_out < 0 ||
++        group->num_out > NODE_GPIO_MAX_PINS - count ||
++        original->output_count != group->num_out) {
++        node_gpio_fault("output backing has no bounded original constructor");
++    }
++    for (unsigned index = 0; index < count; index++) {
++        original->output_slots[group->num_out + index] = &pins[index];
++    }
++    original->output_count += count;
++}
++
++static void node_gpio_allow_set_link(const Object *object, const char *name,
++                                     Object *value, Error **errp)
++{
++    /* Guard the actual QOM setter too: callers may bypass qdev_connect. */
++    qemu_irq_node_root_lifetime_guard();
++    object_property_allow_set_link(object, name, value, errp);
++}
++
++int qdev_node_gpio_roots_seal(DeviceState *const devices[], size_t count)
++{
++    bool seen[NODE_GPIO_MAX_GROUPS] = { 0 };
++
++    if (!qemu_irq_node_roots_enabled()) {
++        return 0;
++    }
++    if (!bql_locked() || node_gpio_roots.original_process != getpid() ||
++        !devices || count != 17) {
++        return -EPERM;
++    }
++    for (size_t index = 0; index < count; index++) {
++        NamedGPIOList *group;
++
++        if (!devices[index] || !devices[index]->realized) {
++            return -ESTALE;
++        }
++        for (size_t previous = 0; previous < index; previous++) {
++            if (devices[previous] == devices[index]) {
++                return -ESTALE;
++            }
++        }
++        QLIST_FOREACH(group, &devices[index]->gpios, node) {
++            NodeGPIOGroup *original = node_gpio_group_find(group);
++            unsigned slot;
++
++            if (!original || original->device != devices[index]) {
++                return -ESTALE;
++            }
++            slot = original - node_gpio_roots.groups;
++            if (seen[slot] || (original->unnamed != !group->name) ||
++                (!original->unnamed && strcmp(original->name, group->name)) ||
++                group->num_in < 0 || group->num_in > NODE_GPIO_MAX_PINS ||
++                group->num_out < 0 || group->num_out > NODE_GPIO_MAX_PINS ||
++                original->constructed_inputs != group->num_in ||
++                original->output_count != group->num_out ||
++                (group->num_in && !group->in)) {
++                return -ESTALE;
++            }
++            seen[slot] = true;
++            if (node_gpio_roots.sealed &&
++                (original->original_inputs != group->in ||
++                 original->input_count != group->num_in)) {
++                return -ESTALE;
++            }
++            for (unsigned pin = 0; pin < group->num_in; pin++) {
++                if (!group->in[pin] ||
++                    OBJECT(group->in[pin])->parent != OBJECT(devices[index]) ||
++                    !node_gpio_property_matches(devices[index],
++                        &original->input_properties[pin], "child<irq>") ||
++                    original->input_properties[pin].payload != group->in[pin] ||
++                    (node_gpio_roots.sealed &&
++                     original->inputs[pin] != group->in[pin])) {
++                    return -ESTALE;
++                }
++            }
++            for (unsigned pin = 0; pin < group->num_out; pin++) {
++                qemu_irq *link = original->output_slots[pin];
++                qemu_irq actual;
++                if (!link || !node_gpio_property_matches(devices[index],
++                        &original->output_properties[pin], "link<irq>")) {
++                    return -ESTALE;
++                }
++                actual = qdev_get_gpio_out_connector(
++                    devices[index], group->name, pin);
++                if (actual != *link ||
++                    (node_gpio_roots.sealed &&
++                     original->outputs[pin] != actual)) {
++                    return -ESTALE;
++                }
++            }
++        }
++    }
++    for (unsigned index = 0; index < node_gpio_roots.count; index++) {
++        NodeGPIOGroup *original = &node_gpio_roots.groups[index];
++
++        if (!seen[index]) {
++            return -ESTALE;
++        }
++        if (!node_gpio_roots.sealed) {
++            original->original_inputs = original->group->in;
++            original->input_count = original->group->num_in;
++            if (original->input_count) {
++                memcpy(original->inputs, original->group->in,
++                        sizeof(qemu_irq) * original->input_count);
++            }
++            for (unsigned pin = 0; pin < original->output_count; pin++) {
++                original->outputs[pin] = *original->output_slots[pin];
++            }
++        }
++    }
++    node_gpio_roots.sealed = true;
++    return 0;
++}
++
+ 
+ static NamedGPIOList *qdev_get_named_gpio_list(DeviceState *dev,
+                                                const char *name)
+@@ -34,9 +344,11 @@ static NamedGPIOList *qdev_get_named_gpio_list(DeviceState *dev,
+         }
+     }
+ 
++    qemu_irq_node_root_lifetime_guard();
+     ngl = g_malloc0(sizeof(*ngl));
+     ngl->name = g_strdup(name);
+     QLIST_INSERT_HEAD(&dev->gpios, ngl, node);
++    node_gpio_group_retain(dev, ngl);
+     return ngl;
+ }
+ 
+@@ -46,9 +358,12 @@ void qdev_init_gpio_in_named_with_opaque(DeviceState *dev,
+                                          const char *name, int n)
+ {
+     int i;
+-    NamedGPIOList *gpio_list = qdev_get_named_gpio_list(dev, name);
++    NamedGPIOList *gpio_list;
+ 
++    qemu_irq_node_root_lifetime_guard();
++    gpio_list = qdev_get_named_gpio_list(dev, name);
+     assert(gpio_list->num_out == 0 || !name);
++    node_gpio_input_preflight(gpio_list, n);
+     gpio_list->in = qemu_extend_irqs(gpio_list->in, gpio_list->num_in, handler,
+                                      opaque, n);
+ 
+@@ -58,8 +373,10 @@ void qdev_init_gpio_in_named_with_opaque(DeviceState *dev,
+     for (i = gpio_list->num_in; i < gpio_list->num_in + n; i++) {
+         gchar *propname = g_strdup_printf("%s[%u]", name, i);
+ 
+-        object_property_add_child(OBJECT(dev), propname,
+-                                  OBJECT(gpio_list->in[i]));
++        ObjectProperty *property = object_property_add_child(
++            OBJECT(dev), propname, OBJECT(gpio_list->in[i]));
++
++        node_gpio_property_retain(gpio_list, false, i, property);
+         g_free(propname);
+     }
+ 
+@@ -75,22 +392,29 @@ void qdev_init_gpio_out_named(DeviceState *dev, qemu_irq *pins,
+                               const char *name, int n)
+ {
+     int i;
+-    NamedGPIOList *gpio_list = qdev_get_named_gpio_list(dev, name);
++    NamedGPIOList *gpio_list;
+ 
++    qemu_irq_node_root_lifetime_guard();
++    gpio_list = qdev_get_named_gpio_list(dev, name);
+     assert(gpio_list->num_in == 0 || !name);
+ 
+     if (!name) {
+         name = "unnamed-gpio-out";
+     }
++    node_gpio_output_retain(gpio_list, pins, n);
+     memset(pins, 0, sizeof(*pins) * n);
+     for (i = 0; i < n; ++i) {
+         gchar *propname = g_strdup_printf("%s[%u]", name,
+                                           gpio_list->num_out + i);
+ 
+-        object_property_add_link(OBJECT(dev), propname, TYPE_IRQ,
+-                                 (Object **)&pins[i],
+-                                 object_property_allow_set_link,
+-                                 OBJ_PROP_LINK_STRONG);
++        ObjectProperty *property = object_property_add_link(
++            OBJECT(dev), propname, TYPE_IRQ, (Object **)&pins[i],
++            qemu_irq_node_roots_enabled() ? node_gpio_allow_set_link :
++                object_property_allow_set_link,
++            OBJ_PROP_LINK_STRONG);
++
++        node_gpio_property_retain(gpio_list, true, gpio_list->num_out + i,
++                                   property);
+         g_free(propname);
+     }
+     gpio_list->num_out += n;
+@@ -117,8 +441,11 @@ qemu_irq qdev_get_gpio_in(DeviceState *dev, int n)
+ void qdev_connect_gpio_out_named(DeviceState *dev, const char *name, int n,
+                                  qemu_irq input_pin)
+ {
+-    char *propname = g_strdup_printf("%s[%d]",
+-                                     name ? name : "unnamed-gpio-out", n);
++    char *propname;
++
++    qemu_irq_node_root_lifetime_guard();
++    propname = g_strdup_printf("%s[%d]",
++                              name ? name : "unnamed-gpio-out", n);
+     if (input_pin && !OBJECT(input_pin)->parent) {
+         /* We need a name for object_property_set_link to work */
+         object_property_add_child(machine_get_container("unattached"),
+@@ -146,11 +473,13 @@ qemu_irq qdev_get_gpio_out_connector(const DeviceState *dev,
+ static qemu_irq qdev_disconnect_gpio_out_named(DeviceState *dev,
+                                                const char *name, int n)
+ {
+-    char *propname = g_strdup_printf("%s[%d]",
+-                                     name ? name : "unnamed-gpio-out", n);
++    char *propname;
++    qemu_irq ret;
+ 
+-    qemu_irq ret = (qemu_irq)object_property_get_link(OBJECT(dev), propname,
+-                                                      NULL);
++    qemu_irq_node_root_lifetime_guard();
++    propname = g_strdup_printf("%s[%d]",
++                              name ? name : "unnamed-gpio-out", n);
++    ret = (qemu_irq)object_property_get_link(OBJECT(dev), propname, NULL);
+     if (ret) {
+         object_property_set_link(OBJECT(dev), propname, NULL, NULL);
+     }
+@@ -175,8 +504,10 @@ void qdev_pass_gpios(DeviceState *dev, DeviceState *container,
+                      const char *name)
+ {
+     int i;
+-    NamedGPIOList *ngl = qdev_get_named_gpio_list(dev, name);
++    NamedGPIOList *ngl;
+ 
++    qemu_irq_node_root_lifetime_guard();
++    ngl = qdev_get_named_gpio_list(dev, name);
+     for (i = 0; i < ngl->num_in; i++) {
+         const char *nm = ngl->name ? ngl->name : "unnamed-gpio-in";
+         char *propname = g_strdup_printf("%s[%d]", nm, i);
+diff --git a/hw/core/irq.c b/hw/core/irq.c
+index 1b610e75e15d2924f7f7faf82c5bcb9e1e732f63..8fa7260f2eee1cb93d8f4e6a323f81666166faa4 100644
+--- a/hw/core/irq.c
++++ b/hw/core/irq.c
+@@ -23,14 +23,216 @@
+  */
+ #include "qemu/osdep.h"
+ #include "qemu/main-loop.h"
++#include "qemu/atomic.h"
++#include "qemu/error-report.h"
++#include "qemu/crucible-hot-fork-async.h"
+ #include "hw/core/irq.h"
+ #include "qom/object.h"
+ 
++#define QEMU_IRQ_NODE_ROOT_MAX 128
++
++typedef struct QemuIrqNodeRoot {
++    IRQState *irq;
++    qemu_irq_handler handler;
++    void *payload;
++    int line;
++    QemuIrqNodeRootKind kind;
++    uint64_t original_id;
++} QemuIrqNodeRoot;
++
++static struct {
++    bool enabled;
++    bool sealed;
++    uint64_t original_process;
++    uint64_t original_constructor_thread;
++    unsigned count;
++    QemuIrqNodeRoot entries[QEMU_IRQ_NODE_ROOT_MAX];
++} node_irq_roots;
++
++static G_NORETURN void node_irq_root_fault(const char *reason)
++{
++    error_report("Crucible original IRQ lifetime refused: %s", reason);
++    _exit(125);
++}
++
++int qemu_irq_node_roots_enable(void)
++{
++    if (qatomic_load_acquire(&node_irq_roots.enabled) || node_irq_roots.count) {
++        return -EALREADY;
++    }
++    /* The original early root policy calls this before model construction. */
++    node_irq_roots.original_process = getpid();
++    node_irq_roots.original_constructor_thread = qemu_get_thread_id();
++    qatomic_store_release(&node_irq_roots.enabled, true);
++    return 0;
++}
++
++bool qemu_irq_node_roots_enabled(void)
++{
++    return qatomic_load_acquire(&node_irq_roots.enabled);
++}
++
++void qemu_irq_node_root_lifetime_guard(void)
++{
++    if (qatomic_load_acquire(&node_irq_roots.enabled) &&
++        (qatomic_load_acquire(&node_irq_roots.sealed) || !bql_locked() ||
++         !qemu_in_main_thread() ||
++         node_irq_roots.original_process != getpid() ||
++         node_irq_roots.original_constructor_thread != qemu_get_thread_id())) {
++        node_irq_root_fault("IRQ allocation, release, or connection changed");
++    }
++}
++
++void qemu_irq_node_root_cpu_mutation_guard(const char *entry)
++{
++    if (!qatomic_load_acquire(&node_irq_roots.enabled)) {
++        return;
++    }
++    /* The original constructor may initialize the CPU. A lifetime seal or
++     * inherited BQL cannot authorize later IRQ, reset or exception effects. */
++    if (qatomic_load_acquire(&node_irq_roots.sealed) ||
++        node_irq_roots.original_process != getpid() ||
++        node_irq_roots.original_constructor_thread != qemu_get_thread_id() ||
++        !bql_locked()) {
++        error_report("Crucible original CPU source refused: %s; "
++                     "no original source effect cut", entry);
++        _exit(125);
++    }
++}
++
++static QemuIrqNodeRoot *node_irq_root_find(IRQState *irq)
++{
++    for (unsigned index = 0; index < node_irq_roots.count; index++) {
++        if (node_irq_roots.entries[index].irq == irq) {
++            return &node_irq_roots.entries[index];
++        }
++    }
++    return NULL;
++}
++
++static void node_irq_root_retain(IRQState *irq)
++{
++    QemuIrqNodeRoot *original;
++
++    if (!qatomic_load_acquire(&node_irq_roots.enabled)) {
++        return;
++    }
++    if (!bql_locked() || !qemu_in_main_thread() || qatomic_load_acquire(&node_irq_roots.sealed) ||
++        node_irq_roots.original_process != getpid() ||
++        node_irq_roots.original_constructor_thread != qemu_get_thread_id() ||
++        node_irq_roots.count == QEMU_IRQ_NODE_ROOT_MAX ||
++        node_irq_root_find(irq)) {
++        node_irq_root_fault("unbounded or foreign original IRQ constructor");
++    }
++    original = &node_irq_roots.entries[node_irq_roots.count++];
++    *original = (QemuIrqNodeRoot) {
++        .irq = irq,
++        .handler = irq->handler,
++        .payload = irq->opaque,
++        .line = irq->n,
++        .original_id = node_irq_roots.count,
++    };
++    /* These references retain actual objects, not callback payload ownership
++     * invented from a pointer. Known source constructors enroll payloads below. */
++    object_ref(OBJECT(irq));
++}
++
++int qemu_irq_node_root_enroll(qemu_irq irq, QemuIrqNodeRootKind kind,
++                             qemu_irq_handler original_handler,
++                             void *original_payload, int original_line)
++{
++    QemuIrqNodeRoot *original;
++
++    if (!qatomic_load_acquire(&node_irq_roots.enabled)) {
++        return 0;
++    }
++    if (!bql_locked() || !qemu_in_main_thread() ||
++        qatomic_load_acquire(&node_irq_roots.sealed) ||
++        node_irq_roots.original_process != getpid() ||
++        node_irq_roots.original_constructor_thread != qemu_get_thread_id()) {
++        return -EPERM;
++    }
++    original = node_irq_root_find(irq);
++    if (!original ||
++        original->kind || kind < QEMU_IRQ_NODE_ROOT_GSI ||
++        kind > QEMU_IRQ_NODE_ROOT_CPU_PIC ||
++        original->handler != original_handler ||
++        original->payload != original_payload || original->line != original_line ||
++        irq->observer) {
++        return -EPERM;
++    }
++    original->kind = kind;
++    return 0;
++}
++
++bool qemu_irq_node_root_matches(qemu_irq irq, QemuIrqNodeRootKind kind,
++                                void *original_payload, int original_line)
++{
++    QemuIrqNodeRoot *original;
++
++    if (!bql_locked() || !qemu_irq_node_roots_enabled() ||
++        node_irq_roots.original_process != getpid()) {
++        return false;
++    }
++    original = node_irq_root_find(irq);
++    return original && original->kind == kind &&
++           original->payload == original_payload &&
++           original->line == original_line &&
++           irq->handler == original->handler &&
++           irq->opaque == original->payload && irq->n == original->line &&
++           !irq->observer;
++}
++
++int qemu_irq_node_roots_seal(void)
++{
++    static const unsigned expected[] = { 0, 24, 24, 8, 8, 1, 1 };
++    unsigned counts[ARRAY_SIZE(expected)] = { 0 };
++    QemuAsyncWorkerHotForkBarrierInventory barrier;
++
++    if (!bql_locked() || !qatomic_load_acquire(&node_irq_roots.enabled) ||
++        node_irq_roots.original_process != getpid()) {
++        return -EPERM;
++    }
++    qemu_async_worker_hot_fork_barrier(
++        QEMU_ASYNC_WORKER_HOT_FORK_BARRIER_QUERY, &barrier);
++    if (!barrier.held || !barrier.quiescent || !barrier.generation ||
++        barrier.owner_thread_id != qemu_get_thread_id()) {
++        return -EAGAIN;
++    }
++    for (unsigned index = 0; index < node_irq_roots.count; index++) {
++        QemuIrqNodeRoot *original = &node_irq_roots.entries[index];
++        IRQState *irq = original->irq;
++
++        if (!irq || !original->original_id || !original->kind ||
++            original->kind >= ARRAY_SIZE(expected) ||
++            irq->handler != original->handler || irq->opaque != original->payload ||
++            irq->n != original->line || irq->observer) {
++            return -ESTALE;
++        }
++        counts[original->kind]++;
++    }
++    if (memcmp(counts, expected, sizeof(expected))) {
++        return -ENOTSUP;
++    }
++    qatomic_store_release(&node_irq_roots.sealed, true);
++    return 0;
++}
++
+ void qemu_set_irq(qemu_irq irq, int level)
+ {
+     if (!irq)
+         return;
+ 
++    if (qatomic_load_acquire(&node_irq_roots.enabled) &&
++        (qatomic_load_acquire(&node_irq_roots.sealed) || !bql_locked() ||
++         !qemu_in_main_thread() ||
++         node_irq_roots.original_process != getpid() ||
++         node_irq_roots.original_constructor_thread != qemu_get_thread_id())) {
++        /* No installed source EffectCut exists yet. Retaining lifetimes does
++         * not grant callback evaluation, even to a genuine RR instruction. */
++        node_irq_root_fault("IRQ delivery has no original source effect cut");
++    }
++
+     irq->handler(irq->opaque, irq->n, level);
+     if (unlikely(irq->observer)) {
+         irq->observer(irq->opaque, irq->n, level);
+@@ -43,11 +245,13 @@ static void init_irq_fields(IRQState *irq, qemu_irq_handler handler,
+     irq->handler = handler;
+     irq->opaque = opaque;
+     irq->n = n;
++    node_irq_root_retain(irq);
+ }
+ 
+ void qemu_init_irq(IRQState *irq, qemu_irq_handler handler, void *opaque,
+                    int n)
+ {
++    qemu_irq_node_root_lifetime_guard();
+     object_initialize(irq, sizeof(*irq), TYPE_IRQ);
+     init_irq_fields(irq, handler, opaque, n);
+ }
+@@ -56,6 +260,7 @@ void qemu_init_irq_child(Object *parent, const char *propname,
+                          IRQState *irq, qemu_irq_handler handler,
+                          void *opaque, int n)
+ {
++    qemu_irq_node_root_lifetime_guard();
+     object_initialize_child(parent, propname, irq, TYPE_IRQ);
+     init_irq_fields(irq, handler, opaque, n);
+ }
+@@ -63,6 +268,11 @@ void qemu_init_irq_child(Object *parent, const char *propname,
+ void qemu_init_irqs(IRQState irq[], size_t count,
+                     qemu_irq_handler handler, void *opaque)
+ {
++    qemu_irq_node_root_lifetime_guard();
++    if (qemu_irq_node_roots_enabled() &&
++        count > QEMU_IRQ_NODE_ROOT_MAX - node_irq_roots.count) {
++        node_irq_root_fault("original IRQ constructor credit exhausted");
++    }
+     for (size_t i = 0; i < count; i++) {
+         qemu_init_irq(&irq[i], handler, opaque, i);
+     }
+@@ -77,6 +287,14 @@ qemu_irq *qemu_extend_irqs(qemu_irq *old, int n_old, qemu_irq_handler handler,
+     if (!old) {
+         n_old = 0;
+     }
++    /* Refuse before reallocating the retained original array. */
++    qemu_irq_node_root_lifetime_guard();
++    if (qemu_irq_node_roots_enabled() &&
++        (n_old < 0 || n_old > QEMU_IRQ_NODE_ROOT_MAX || n < 0 ||
++         n > QEMU_IRQ_NODE_ROOT_MAX - n_old ||
++         n > QEMU_IRQ_NODE_ROOT_MAX - node_irq_roots.count)) {
++        node_irq_root_fault("original IRQ constructor credit exhausted");
++    }
+     s = old ? g_renew(qemu_irq, old, n + n_old) : g_new(qemu_irq, n);
+     for (i = n_old; i < n + n_old; i++) {
+         s[i] = qemu_allocate_irq(handler, opaque, i);
+@@ -91,7 +309,10 @@ qemu_irq *qemu_allocate_irqs(qemu_irq_handler handler, void *opaque, int n)
+ 
+ qemu_irq qemu_allocate_irq(qemu_irq_handler handler, void *opaque, int n)
+ {
+-    IRQState *irq = IRQ(object_new(TYPE_IRQ));
++    IRQState *irq;
++
++    qemu_irq_node_root_lifetime_guard();
++    irq = IRQ(object_new(TYPE_IRQ));
+     init_irq_fields(irq, handler, opaque, n);
+     return irq;
+ }
+@@ -99,6 +320,9 @@ qemu_irq qemu_allocate_irq(qemu_irq_handler handler, void *opaque, int n)
+ void qemu_free_irqs(qemu_irq *s, int n)
+ {
+     int i;
++
++    /* Even an empty extent must not release retained original backing. */
++    qemu_irq_node_root_lifetime_guard();
+     for (i = 0; i < n; i++) {
+         qemu_free_irq(s[i]);
+     }
+@@ -107,6 +331,7 @@ void qemu_free_irqs(qemu_irq *s, int n)
+ 
+ void qemu_free_irq(qemu_irq irq)
+ {
++    qemu_irq_node_root_lifetime_guard();
+     object_unref(OBJECT(irq));
+ }
+ 
+@@ -127,6 +352,8 @@ qemu_irq qemu_irq_invert(qemu_irq irq)
+ void qemu_irq_set_observer(qemu_irq *gpio_in, qemu_irq_handler handler, int n)
+ {
+     int i;
++
++    qemu_irq_node_root_lifetime_guard();
+     for (i = 0; i < n; i++) {
+         gpio_in[i]->observer = handler;
+     }
 diff --git a/hw/core/loader.c b/hw/core/loader.c
 index 5cbfba0a86d24569923c863d6ecda125ce43bceb..0cde579a1135dc981c7e19da9db9772aec7c5690 100644
 --- a/hw/core/loader.c
@@ -30259,7 +31178,7 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..e9c79954f161fd440a43ca67537509fd
          VMSTATE_UINT8(patched, AcpiBuildState),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/i386/microvm.c b/hw/i386/microvm.c
-index e7adab7d2ef7a30fb87697ad54a67e6d134e4d3c..587ed397f789055fc06990de1ec5539399976cb9 100644
+index e7adab7d2ef7a30fb87697ad54a67e6d134e4d3c..01fad0fd993619726c97830c1fee3288cae3ae34 100644
 --- a/hw/i386/microvm.c
 +++ b/hw/i386/microvm.c
 @@ -16,9 +16,13 @@
@@ -30292,7 +31211,7 @@ index e7adab7d2ef7a30fb87697ad54a67e6d134e4d3c..587ed397f789055fc06990de1ec55393
  #include "hw/virtio/virtio-mmio.h"
  #include "hw/acpi/acpi.h"
  #include "hw/acpi/generic_event_device.h"
-@@ -58,6 +64,111 @@
+@@ -58,6 +64,177 @@
  #define MICROVM_QBOOT_FILENAME "qboot.rom"
  #define MICROVM_BIOS_FILENAME  "bios-microvm.bin"
  
@@ -30340,6 +31259,70 @@ index e7adab7d2ef7a30fb87697ad54a67e6d134e4d3c..587ed397f789055fc06990de1ec55393
 +        x86ms->pit == ON_OFF_AUTO_ON && x86ms->pic == ON_OFF_AUTO_ON &&
 +        qemu_guest_random_original_seed(&seed) &&
 +        seed == policy->deterministic_seed;
++}
++
++int microvm_crucible_root_irq_validate(MicrovmMachineState *mms)
++{
++    if (!bql_locked() || !mms || OBJECT(mms) != qdev_get_machine()) {
++        return -EPERM;
++    }
++
++    X86MachineState *x86ms = X86_MACHINE(mms);
++    GSIState *owner = mms->crucible_gsi_owner;
++    DeviceState *master = qemu_crucible_device_root_lookup(
++        CRUCIBLE_DEVICE_ROOT_PIC_MASTER, 0);
++    DeviceState *slave = qemu_crucible_device_root_lookup(
++        CRUCIBLE_DEVICE_ROOT_PIC_SLAVE, 0);
++    DeviceState *ioapic = qemu_crucible_device_root_lookup(
++        CRUCIBLE_DEVICE_ROOT_IOAPIC, 0);
++    DeviceState *pit = qemu_crucible_device_root_lookup(
++        CRUCIBLE_DEVICE_ROOT_PIT, 0);
++
++    if (!owner || !mms->crucible_gsi_inputs ||
++        x86ms->gsi != mms->crucible_gsi_inputs ||
++        !mms->crucible_isa_bus ||
++        mms->crucible_isa_bus->irqs_in != x86ms->gsi ||
++        !master || !slave || !ioapic || !pit) {
++        return -ESTALE;
++    }
++    for (unsigned line = 0; line < IOAPIC_NUM_PINS; line++) {
++        qemu_irq input = qdev_get_gpio_in(ioapic, line);
++
++        if (!qemu_irq_node_root_matches(x86ms->gsi[line],
++                                        QEMU_IRQ_NODE_ROOT_GSI, owner, line) ||
++            !qemu_irq_node_root_matches(input, QEMU_IRQ_NODE_ROOT_IOAPIC,
++                                        ioapic, line) ||
++            owner->ioapic_irq[line] != input || owner->ioapic2_irq[line]) {
++            return -ESTALE;
++        }
++    }
++    for (unsigned line = 0; line < ISA_NUM_IRQS; line++) {
++        DeviceState *pic = line < 8 ? master : slave;
++        QemuIrqNodeRootKind kind = line < 8 ?
++            QEMU_IRQ_NODE_ROOT_PIC_MASTER : QEMU_IRQ_NODE_ROOT_PIC_SLAVE;
++        qemu_irq input = qdev_get_gpio_in(pic, line % 8);
++
++        if (owner->i8259_irq[line] != input ||
++            !qemu_irq_node_root_matches(input, kind, pic, line % 8)) {
++            return -ESTALE;
++        }
++    }
++    if (!qemu_irq_node_root_matches(qdev_get_gpio_out_connector(master, NULL, 0),
++                                    QEMU_IRQ_NODE_ROOT_CPU_PIC, NULL, 0) ||
++        qdev_get_gpio_out_connector(slave, NULL, 0) != owner->i8259_irq[2] ||
++        qdev_get_gpio_out_connector(pit, NULL, 0) != x86ms->gsi[0]) {
++        return -ESTALE;
++    }
++    for (unsigned ordinal = 0; ordinal < 8; ordinal++) {
++        DeviceState *transport = qemu_crucible_device_root_lookup(
++            CRUCIBLE_DEVICE_ROOT_VIRTIO_MMIO, ordinal);
++
++        if (!transport || qdev_get_gpio_out_connector(
++                transport, "sysbus-irq", 0) != x86ms->gsi[5 + ordinal]) {
++            return -ESTALE;
++        }
++    }
++    return 0;
 +}
 +
 +static int microvm_root_prepare(const CrucibleNodeRootPolicy *policy,
@@ -30394,7 +31377,9 @@ index e7adab7d2ef7a30fb87697ad54a67e6d134e4d3c..587ed397f789055fc06990de1ec55393
 +    }
 +    if (cpu_throttle_crucible_root_enroll() < 0 ||
 +        qemu_crucible_fault_clock_root_dormant_enroll() < 0 ||
-+        qemu_timer_node_roots_seal() < 0) {
++        qemu_timer_node_roots_seal() < 0 ||
++        microvm_crucible_root_irq_validate(mms) < 0 ||
++        qemu_irq_node_roots_seal() < 0) {
 +        return -ENOTSUP;
 +    }
 +    return qemu_crucible_device_roots_seal(OBJECT(machine));
@@ -30404,7 +31389,7 @@ index e7adab7d2ef7a30fb87697ad54a67e6d134e4d3c..587ed397f789055fc06990de1ec55393
  static void microvm_set_rtc(MicrovmMachineState *mms, MC146818RtcState *s)
  {
      X86MachineState *x86ms = X86_MACHINE(mms);
-@@ -162,6 +273,7 @@ static void microvm_devices_init(MicrovmMachineState *mms)
+@@ -162,6 +339,7 @@ static void microvm_devices_init(MicrovmMachineState *mms)
      X86MachineState *x86ms = X86_MACHINE(mms);
      ISABus *isa_bus;
      GSIState *gsi_state;
@@ -30412,12 +31397,33 @@ index e7adab7d2ef7a30fb87697ad54a67e6d134e4d3c..587ed397f789055fc06990de1ec55393
      int ioapics;
      int i;
  
-@@ -174,8 +286,15 @@ static void microvm_devices_init(MicrovmMachineState *mms)
+@@ -170,12 +348,36 @@ static void microvm_devices_init(MicrovmMachineState *mms)
+     gsi_state = g_malloc0(sizeof(*gsi_state));
+     x86ms->gsi = qemu_allocate_irqs(gsi_handler, gsi_state,
+                                     IOAPIC_NUM_PINS * ioapics);
++    if (qemu_crucible_device_roots_enabled()) {
++        mms->crucible_gsi_owner = gsi_state;
++        mms->crucible_gsi_inputs = x86ms->gsi;
++        /* The actual machine owns the process-lifetime GSI payload. */
++        object_ref(OBJECT(mms));
++        for (unsigned line = 0; line < IOAPIC_NUM_PINS * ioapics; line++) {
++            if (qemu_irq_node_root_enroll(x86ms->gsi[line],
++                                         QEMU_IRQ_NODE_ROOT_GSI,
++                                         gsi_handler, gsi_state, line) < 0) {
++                error_report("Original GSI IRQ constructor enrollment failed");
++                exit(EXIT_FAILURE);
++            }
++        }
++    }
+ 
      isa_bus = isa_bus_new(NULL, get_system_memory(), get_system_io(),
                            &error_abort);
      isa_bus_register_input_irqs(isa_bus, x86ms->gsi);
 -
 -    ioapic_init_gsi(gsi_state, OBJECT(mms));
++    if (qemu_crucible_device_roots_enabled()) {
++        mms->crucible_isa_bus = isa_bus;
++    }
 +    microvm_root_enroll(BUS(isa_bus)->parent, CRUCIBLE_DEVICE_ROOT_ISA_BRIDGE,
 +                        0, "isabus-bridge");
 +    microvm_root_enroll_bus(BUS(isa_bus), CRUCIBLE_DEVICE_ROOT_ISA_BUS,
@@ -30430,7 +31436,7 @@ index e7adab7d2ef7a30fb87697ad54a67e6d134e4d3c..587ed397f789055fc06990de1ec55393
      if (ioapics > 1) {
          x86ms->ioapic2 = ioapic_init_secondary(gsi_state);
      }
-@@ -197,9 +316,16 @@ static void microvm_devices_init(MicrovmMachineState *mms)
+@@ -197,9 +399,16 @@ static void microvm_devices_init(MicrovmMachineState *mms)
      }
  
      for (i = 0; i < mms->virtio_num_transports; i++) {
@@ -30450,7 +31456,7 @@ index e7adab7d2ef7a30fb87697ad54a67e6d134e4d3c..587ed397f789055fc06990de1ec55393
      }
  
      /* Optional and legacy devices */
-@@ -250,8 +376,14 @@ static void microvm_devices_init(MicrovmMachineState *mms)
+@@ -250,8 +459,14 @@ static void microvm_devices_init(MicrovmMachineState *mms)
  
      if (x86ms->pic == ON_OFF_AUTO_ON || x86ms->pic == ON_OFF_AUTO_AUTO) {
          qemu_irq *i8259;
@@ -30467,7 +31473,7 @@ index e7adab7d2ef7a30fb87697ad54a67e6d134e4d3c..587ed397f789055fc06990de1ec55393
          for (i = 0; i < ISA_NUM_IRQS; i++) {
              gsi_state->i8259_irq[i] = i8259[i];
          }
-@@ -262,7 +394,10 @@ static void microvm_devices_init(MicrovmMachineState *mms)
+@@ -262,7 +477,10 @@ static void microvm_devices_init(MicrovmMachineState *mms)
          if (kvm_pit_in_kernel()) {
              kvm_pit_init(isa_bus, 0x40);
          } else {
@@ -30479,7 +31485,7 @@ index e7adab7d2ef7a30fb87697ad54a67e6d134e4d3c..587ed397f789055fc06990de1ec55393
          }
      }
  
-@@ -321,6 +456,8 @@ static void microvm_memory_init(MicrovmMachineState *mms)
+@@ -321,6 +539,8 @@ static void microvm_memory_init(MicrovmMachineState *mms)
      }
  
      fw_cfg = fw_cfg_init_io_dma(FW_CFG_IO_BASE, &address_space_memory);
@@ -30488,7 +31494,7 @@ index e7adab7d2ef7a30fb87697ad54a67e6d134e4d3c..587ed397f789055fc06990de1ec55393
  
      fw_cfg_add_i16(fw_cfg, FW_CFG_NB_CPUS, machine->smp.cpus);
      fw_cfg_add_i16(fw_cfg, FW_CFG_MAX_CPUS, machine->smp.max_cpus);
-@@ -482,6 +619,16 @@ static void microvm_machine_state_init(MachineState *machine)
+@@ -482,6 +702,16 @@ static void microvm_machine_state_init(MachineState *machine)
      MicrovmMachineState *mms = MICROVM_MACHINE(machine);
      X86MachineState *x86ms = X86_MACHINE(machine);
  
@@ -30505,7 +31511,7 @@ index e7adab7d2ef7a30fb87697ad54a67e6d134e4d3c..587ed397f789055fc06990de1ec55393
      /* State */
      mms->kernel_cmdline_fixed = false;
  
-@@ -493,6 +640,20 @@ static void microvm_machine_state_init(MachineState *machine)
+@@ -493,6 +723,20 @@ static void microvm_machine_state_init(MachineState *machine)
      microvm_memory_init(mms);
  
      x86_cpus_init(x86ms, CPU_VERSION_LATEST);
@@ -30794,6 +31800,34 @@ index 8f9419e7d3681a029a48cbbc4cf3d9271019b50c..2c68d43b15d3f58465a86482b046cfa5
  }
  
  DeviceState *ioapic_init_secondary(GSIState *gsi_state)
+diff --git a/hw/i386/x86-cpu.c b/hw/i386/x86-cpu.c
+index 95e08e3c2a073236db2e4a8230b159bdf03ee3f5..a6db7e2888903f848ce277fa1b243a0aec54f708 100644
+--- a/hw/i386/x86-cpu.c
++++ b/hw/i386/x86-cpu.c
+@@ -21,6 +21,7 @@
+  * THE SOFTWARE.
+  */
+ #include "qemu/osdep.h"
++#include "qemu/error-report.h"
+ #include "system/whpx.h"
+ #include "system/cpu-timers.h"
+ #include "trace.h"
+@@ -63,7 +64,14 @@ static void pic_irq_request(void *opaque, int irq, int level)
+ 
+ qemu_irq x86_allocate_cpu_irq(void)
+ {
+-    return qemu_allocate_irq(pic_irq_request, NULL, 0);
++    qemu_irq irq = qemu_allocate_irq(pic_irq_request, NULL, 0);
++
++    if (qemu_irq_node_root_enroll(irq, QEMU_IRQ_NODE_ROOT_CPU_PIC,
++                                 pic_irq_request, NULL, 0) < 0) {
++        error_report("Original CPU/PIC IRQ constructor enrollment failed");
++        exit(EXIT_FAILURE);
++    }
++    return irq;
+ }
+ 
+ int cpu_get_pic_interrupt(CPUX86State *env)
 diff --git a/hw/i3c/aspeed_i3c.c b/hw/i3c/aspeed_i3c.c
 index de61d67dfdeef6cf3726febbce8493c172f350a5..fc1171f382af191f6f7754d422aab2410e9c2fd6 100644
 --- a/hw/i3c/aspeed_i3c.c
@@ -35177,7 +36211,7 @@ index b821f1feb3bdc2fddbc9b8ece30729ece7e1166a..2cef7ac6fd987753b61ee4e12841512a
  }
  
 diff --git a/hw/intc/i8259.c b/hw/intc/i8259.c
-index 8f2aa1f0fb115ecb107b705add80852f99f8d32e..da8ff3f25f917c7b530ee863cc26262c56f66f8c 100644
+index 8f2aa1f0fb115ecb107b705add80852f99f8d32e..f0eb7d0d567cd423438a93d57967caeaf8f107e4 100644
 --- a/hw/intc/i8259.c
 +++ b/hw/intc/i8259.c
 @@ -23,6 +23,10 @@
@@ -35421,10 +36455,20 @@ index 8f2aa1f0fb115ecb107b705add80852f99f8d32e..da8ff3f25f917c7b530ee863cc26262c
  #ifdef DEBUG_IRQ_LATENCY
      printf("IRQ%d latency=%0.3fus\n",
             irq,
-@@ -398,10 +579,25 @@ static void pic_realize(DeviceState *dev, Error **errp)
+@@ -398,10 +579,35 @@ static void pic_realize(DeviceState *dev, Error **errp)
      qdev_init_gpio_out(dev, s->int_out, ARRAY_SIZE(s->int_out));
      qdev_init_gpio_in(dev, pic_set_irq, 8);
  
++    for (unsigned line = 0; line < 8; line++) {
++        if (qemu_irq_node_root_enroll(qdev_get_gpio_in(dev, line),
++                s->master ? QEMU_IRQ_NODE_ROOT_PIC_MASTER :
++                            QEMU_IRQ_NODE_ROOT_PIC_SLAVE,
++                pic_set_irq, dev, line) < 0) {
++            error_setg(errp, "Original PIC IRQ constructor enrollment failed");
++            return;
++        }
++    }
++
 +    if (!qemu_crucible_fault_interrupt_register_family(
 +            QEMU_CRUCIBLE_INTERRUPT_X86_PIC,
 +            1ULL << (QEMU_CRUCIBLE_INTERRUPT_PHASE_DELIVER - 1),
@@ -35448,7 +36492,7 @@ index 8f2aa1f0fb115ecb107b705add80852f99f8d32e..da8ff3f25f917c7b530ee863cc26262c
  {
      qemu_irq *irq_set;
      DeviceState *dev;
-@@ -419,6 +615,9 @@ qemu_irq *i8259_init(ISABus *bus, qemu_irq parent_irq_in)
+@@ -419,6 +625,9 @@ qemu_irq *i8259_init(ISABus *bus, qemu_irq parent_irq_in)
      }
  
      isa_pic = PIC_COMMON(dev);
@@ -35458,7 +36502,7 @@ index 8f2aa1f0fb115ecb107b705add80852f99f8d32e..da8ff3f25f917c7b530ee863cc26262c
  
      isadev = i8259_init_chip(TYPE_I8259, bus, false);
      dev = DEVICE(isadev);
-@@ -429,10 +628,18 @@ qemu_irq *i8259_init(ISABus *bus, qemu_irq parent_irq_in)
+@@ -429,10 +638,18 @@ qemu_irq *i8259_init(ISABus *bus, qemu_irq parent_irq_in)
      }
  
      slave_pic = PIC_COMMON(dev);
@@ -35630,18 +36674,19 @@ index 8ceb5841b9b63ff9d13f5ccfdb6eb9d951205dbe..757dfc298b5c34a2691f96ead75928bb
      device_class_set_props(dc, pic_properties_common);
      dc->realize = pic_common_realize;
 diff --git a/hw/intc/ioapic.c b/hw/intc/ioapic.c
-index 1b3f1e824ac45834e9290dfc1681a25736536d97..ccbfc7021384f3239a568cbd177ce172e2f0c356 100644
+index 1b3f1e824ac45834e9290dfc1681a25736536d97..7fe1e49f8bf1cdc418c77440818476dbea45c636 100644
 --- a/hw/intc/ioapic.c
 +++ b/hw/intc/ioapic.c
-@@ -21,6 +21,7 @@
+@@ -21,6 +21,8 @@
   */
  
  #include "qemu/osdep.h"
++#include "hw/core/irq.h"
 +#include "qemu/crucible-fault.h"
  #include "qapi/error.h"
  #include "monitor/monitor.h"
  #include "hw/i386/apic.h"
-@@ -45,6 +46,7 @@
+@@ -45,6 +47,7 @@
  #define APIC_DELIVERY_MODE_SHIFT 8
  #define APIC_POLARITY_SHIFT 14
  #define APIC_TRIG_MODE_SHIFT 15
@@ -35649,7 +36694,7 @@ index 1b3f1e824ac45834e9290dfc1681a25736536d97..ccbfc7021384f3239a568cbd177ce172
  
  static IOAPICCommonState *ioapics[MAX_IOAPICS];
  
-@@ -141,15 +143,22 @@ static void ioapic_service(IOAPICCommonState *s)
+@@ -141,15 +144,22 @@ static void ioapic_service(IOAPICCommonState *s)
                   * the IOAPIC message into a MSI one, and its
                   * address space will decide whether we need a
                   * translation. */
@@ -35676,7 +36721,7 @@ index 1b3f1e824ac45834e9290dfc1681a25736536d97..ccbfc7021384f3239a568cbd177ce172
  static void delayed_ioapic_service_cb(void *opaque)
  {
      IOAPICCommonState *s = opaque;
-@@ -285,9 +294,11 @@ void ioapic_eoi_broadcast(int vector)
+@@ -285,9 +295,11 @@ void ioapic_eoi_broadcast(int vector)
                       * detect an interrupt storm.
                       */
                      s->irq_eoi[n] = 0;
@@ -35691,7 +36736,7 @@ index 1b3f1e824ac45834e9290dfc1681a25736536d97..ccbfc7021384f3239a568cbd177ce172
                      trace_ioapic_eoi_delayed_reassert(n);
                  } else {
                      ioapic_service(s);
-@@ -456,6 +467,7 @@ static void ioapic_machine_done_notify(Notifier *notifier, void *data)
+@@ -456,6 +468,7 @@ static void ioapic_machine_done_notify(Notifier *notifier, void *data)
  static void ioapic_realize(DeviceState *dev, Error **errp)
  {
      IOAPICCommonState *s = IOAPIC_COMMON(dev);
@@ -35699,7 +36744,7 @@ index 1b3f1e824ac45834e9290dfc1681a25736536d97..ccbfc7021384f3239a568cbd177ce172
  
      if (s->version != 0x11 && s->version != 0x20) {
          error_setg(errp, "IOAPIC only supports version 0x11 or 0x20 "
-@@ -468,9 +480,26 @@ static void ioapic_realize(DeviceState *dev, Error **errp)
+@@ -468,9 +481,35 @@ static void ioapic_realize(DeviceState *dev, Error **errp)
  
      s->delayed_ioapic_service_timer =
          timer_new_ns(QEMU_CLOCK_VIRTUAL, delayed_ioapic_service_cb, s);
@@ -35712,6 +36757,15 @@ index 1b3f1e824ac45834e9290dfc1681a25736536d97..ccbfc7021384f3239a568cbd177ce172
  
      qdev_init_gpio_in(dev, ioapic_set_irq, IOAPIC_NUM_PINS);
  
++    for (unsigned line = 0; line < IOAPIC_NUM_PINS; line++) {
++        if (qemu_irq_node_root_enroll(qdev_get_gpio_in(dev, line),
++                                     QEMU_IRQ_NODE_ROOT_IOAPIC,
++                                     ioapic_set_irq, dev, line) < 0) {
++            error_setg(errp, "Original IOAPIC IRQ constructor enrollment failed");
++            return;
++        }
++    }
++
 +    controller_version = g_strdup_printf(
 +        "qemu-11.1.1-ioapic-%02x-crucible-v1", s->version);
 +    if (!qemu_crucible_fault_interrupt_register_family(
@@ -53344,7 +54398,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..d5419ccd482a68cacaf6b73af4f47e29
      device_class_set_legacy_reset(dc, hpet_reset);
      dc->vmsd = &vmstate_hpet;
 diff --git a/hw/timer/i8254.c b/hw/timer/i8254.c
-index 1a8b6bf9abe54632011ba7fd37fc6d2400bfbbe8..fd048961da94b297c7449602588a85fc44e73bf1 100644
+index 1a8b6bf9abe54632011ba7fd37fc6d2400bfbbe8..3a7d3edb75e7976cb1f52b17489115f78f67b34f 100644
 --- a/hw/timer/i8254.c
 +++ b/hw/timer/i8254.c
 @@ -25,6 +25,9 @@
@@ -53683,8 +54737,7 @@ index 1a8b6bf9abe54632011ba7fd37fc6d2400bfbbe8..fd048961da94b297c7449602588a85fc
 +        }
 +        scheduler_deadline = exact_deadline;
 +    }
- 
--    pit_irq_timer_update(s, s->next_transition_time);
++
 +    if (!qemu_crucible_fault_clock_timer_fire(
 +            QEMU_CRUCIBLE_CLOCK_X86_PIT, 0,
 +            QEMU_CRUCIBLE_CLOCK_TIMER_PRIMARY, 0,
@@ -53695,7 +54748,8 @@ index 1a8b6bf9abe54632011ba7fd37fc6d2400bfbbe8..fd048961da94b297c7449602588a85fc
 +        qemu_crucible_fault_clock_event_terminal();
 +        return;
 +    }
-+
+ 
+-    pit_irq_timer_update(s, s->next_transition_time);
 +    if (qemu_timer_tcg_ps_enabled()) {
 +        pit_irq_timer_update(s, s->next_transition_time_ps);
 +    } else {
@@ -53768,9 +54822,17 @@ index 1a8b6bf9abe54632011ba7fd37fc6d2400bfbbe8..fd048961da94b297c7449602588a85fc
      qdev_init_gpio_out(dev, &s->irq, 1);
  
      memory_region_init_io(&pit->ioports, OBJECT(pit), &pit_ioport_ops,
-@@ -354,6 +585,35 @@ static void pit_realizefn(DeviceState *dev, Error **errp)
+@@ -353,7 +584,43 @@ static void pit_realizefn(DeviceState *dev, Error **errp)
+ 
      qdev_init_gpio_in(dev, pit_irq_control, 1);
  
++    if (qemu_irq_node_root_enroll(qdev_get_gpio_in(dev, 0),
++                                 QEMU_IRQ_NODE_ROOT_PIT_CONTROL,
++                                 pit_irq_control, dev, 0) < 0) {
++        error_setg(errp, "Original PIT IRQ constructor enrollment failed");
++        return;
++    }
++
      pc->parent_realize(dev, errp);
 +    if (!errp || !*errp) {
 +        const QemuCrucibleClockSourceDescriptor clock = {
@@ -64057,10 +65119,10 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..f0be19d515a15637132f7f903ecd7811
   * cpu_exec_end:
 diff --git a/include/hw/core/crucible-device-roots.h b/include/hw/core/crucible-device-roots.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..a8e388bd738b8863be9167627938b7e75f3709cf
+index 0000000000000000000000000000000000000000..628ef6ebdc3c628aaf5435eab4f68c611fc315ce
 --- /dev/null
 +++ b/include/hw/core/crucible-device-roots.h
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,63 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Native constructor custody. This header is not a process protocol. */
 +#ifndef HW_CRUCIBLE_DEVICE_ROOTS_H
@@ -64112,6 +65174,10 @@ index 0000000000000000000000000000000000000000..a8e388bd738b8863be9167627938b7e7
 + */
 +int qemu_crucible_device_roots_seal(Object *actual_machine);
 +bool qemu_crucible_device_roots_sealed(void);
++/* Borrow the exact native constructor object retained by this registry. This
++ * process-local lookup conveys no effect, input, or readiness permission. */
++DeviceState *qemu_crucible_device_root_lookup(CrucibleDeviceRootKind kind,
++                                             unsigned ordinal);
 +
 +/* Foreign lifecycle transitions are rejected before native effects. Void
 + * producers require whole-child containment rather than silent success.
@@ -64120,6 +65186,41 @@ index 0000000000000000000000000000000000000000..a8e388bd738b8863be9167627938b7e7
 +void qemu_crucible_device_root_lifecycle_guard(const char *boundary);
 +
 +#endif
+diff --git a/include/hw/core/irq.h b/include/hw/core/irq.h
+index 299a4a9a8ceebad816dd903795c4c2cceda9e3b8..66620e5b770b38f75662619360fca98f1eca298f 100644
+--- a/include/hw/core/irq.h
++++ b/include/hw/core/irq.h
+@@ -19,6 +19,30 @@ struct IRQState {
+ 
+ void qemu_set_irq(qemu_irq irq, int level);
+ 
++/* Native fixed-profile lifetimes, never public input or effect authority. */
++typedef enum QemuIrqNodeRootKind {
++    QEMU_IRQ_NODE_ROOT_GSI = 1,
++    QEMU_IRQ_NODE_ROOT_IOAPIC,
++    QEMU_IRQ_NODE_ROOT_PIC_MASTER,
++    QEMU_IRQ_NODE_ROOT_PIC_SLAVE,
++    QEMU_IRQ_NODE_ROOT_PIT_CONTROL,
++    QEMU_IRQ_NODE_ROOT_CPU_PIC,
++} QemuIrqNodeRootKind;
++
++int qemu_irq_node_roots_enable(void);
++bool qemu_irq_node_roots_enabled(void);
++/* All supplied devices must be the actual retained native constructor roster. */
++int qdev_node_gpio_roots_seal(DeviceState *const devices[], size_t count);
++int qemu_irq_node_root_enroll(qemu_irq irq, QemuIrqNodeRootKind kind,
++                             qemu_irq_handler original_handler,
++                             void *original_payload, int original_line);
++bool qemu_irq_node_root_matches(qemu_irq irq, QemuIrqNodeRootKind kind,
++                                void *original_payload, int original_line);
++int qemu_irq_node_roots_seal(void);
++void qemu_irq_node_root_lifetime_guard(void);
++/* Source constructor ownership only; no installed CPU effect permit exists. */
++void qemu_irq_node_root_cpu_mutation_guard(const char *entry);
++
+ static inline void qemu_irq_raise(qemu_irq irq)
+ {
+     qemu_set_irq(irq, 1);
 diff --git a/include/hw/core/loader.h b/include/hw/core/loader.h
 index d9431e8a8d12e3b676160f70ed141f1064143ea3..809df206302ffdba8d7be9c04647690666adc8fc 100644
 --- a/include/hw/core/loader.h
@@ -64511,6 +65612,32 @@ index a26d53bb9d9157747870a9c54d13a83513ec3e2c..560953f5606256176e34fd9781ec38fb
 +bool vapic_crucible_root_initial(DeviceState *original_device);
 +
  #endif /* QEMU_APIC_INTERNAL_H */
+diff --git a/include/hw/i386/microvm.h b/include/hw/i386/microvm.h
+index 184b7a8c094880fb178cee5a21f9735b9160b5ee..02d8fcf5fbe849a7b7ae1cdc54ef61fa192e74bb 100644
+--- a/include/hw/i386/microvm.h
++++ b/include/hw/i386/microvm.h
+@@ -98,6 +98,12 @@ struct MicrovmMachineState {
+     uint32_t virtio_irq_base;
+     uint32_t virtio_num_transports;
+     bool kernel_cmdline_fixed;
++    /* Actual construction-owned GSI payload and array backing. Neither is
++     * portable state or an interrupt-delivery permission. */
++    GSIState *crucible_gsi_owner;
++    qemu_irq *crucible_gsi_inputs;
++    ISABus *crucible_isa_bus;
++
+     Notifier machine_done;
+     Notifier powerdown_req;
+     struct GPEXConfig gpex;
+@@ -108,4 +114,8 @@ struct MicrovmMachineState {
+ #define TYPE_MICROVM_MACHINE   MACHINE_TYPE_NAME("microvm")
+ OBJECT_DECLARE_TYPE(MicrovmMachineState, MicrovmMachineClass, MICROVM_MACHINE)
+ 
++/* Observes exact native routing on the original held microvm. This does not
++ * admit a callback, input, effect, or complete ready/capture operation. */
++int microvm_crucible_root_irq_validate(MicrovmMachineState *mms);
++
+ #endif
 diff --git a/include/hw/i386/x86.h b/include/hw/i386/x86.h
 index 71fe6b5e12206fd58b044526403179634fb7e64b..7dc34908e8bae2c63c2c31bb43d2c24be5767902 100644
 --- a/include/hw/i386/x86.h
@@ -66203,7 +67330,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..36c355bf303715c91112dcceb32fb779
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..2d44ab1a868ae6455869c915e674d029ffba2cc5 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..d50b91b9e3f29990aa24d00d0dd6be841331b02f 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -66533,7 +67660,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..2d44ab1a868ae6455869c915e674d029
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -827,224 +1147,1231 @@ QEMU_PLUGIN_API
+@@ -827,224 +1147,1288 @@ QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
  /**
@@ -66892,6 +68019,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..2d44ab1a868ae6455869c915e674d029
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_PHASE_VERSION 6
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_ADMINISTRATION_VERSION 7
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_ROOT_VERSION 8
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_ROOT_EPOCH_VERSION 9
 +
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_CONTROL_SOCKET (UINT64_C(1) << 0)
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_SHMEM_MAPPING (UINT64_C(1) << 1)
@@ -66912,6 +68040,10 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..2d44ab1a868ae6455869c915e674d029
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_PHASE (UINT64_C(1) << 17)
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_ADMINISTRATION (UINT64_C(1) << 18)
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_ROOT (UINT64_C(1) << 19)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_ROOT_EPOCH (UINT64_C(1) << 20)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_ROOT_EPOCH_ALL \
++    (QEMU_PLUGIN_CRUCIBLE_RESOURCE_ROOT_ALL | \
++     QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_ROOT_EPOCH)
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_ROOT_ALL \
 +    (QEMU_PLUGIN_CRUCIBLE_RESOURCE_ADMINISTRATION_ALL | \
 +     QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_ROOT)
@@ -66948,6 +68080,10 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..2d44ab1a868ae6455869c915e674d029
 +#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_RR_HANDOFF (UINT64_C(1) << 14)
 +#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_NODE_CONTROL (UINT64_C(1) << 15)
 +#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_NODE_INITIALIZATION (UINT64_C(1) << 16)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_NODE_ROOT_EPOCH (UINT64_C(1) << 17)
++#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_ROOT_EPOCH_ALL \
++    (QEMU_PLUGIN_CRUCIBLE_CALLBACK_ALL | \
++     QEMU_PLUGIN_CRUCIBLE_CALLBACK_NODE_ROOT_EPOCH)
 +#define QEMU_PLUGIN_CRUCIBLE_CALLBACK_ALL \
 +    (QEMU_PLUGIN_CRUCIBLE_CALLBACK_VCPU_INIT | \
 +     QEMU_PLUGIN_CRUCIBLE_CALLBACK_VCPU_IDLE_RESUME | \
@@ -67026,6 +68162,54 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..2d44ab1a868ae6455869c915e674d029
 +    struct qemu_plugin_crucible_resource_manifest_v7 administration;
 +    uint8_t root_preparation_commitment[32];
 +};
++
++/* V9 inventories a dormant process-private epoch callback registration. */
++struct qemu_plugin_crucible_resource_manifest_v9 {
++    struct qemu_plugin_crucible_resource_manifest_v8 root;
++    uint32_t epoch_version;
++    uint32_t reserved;
++};
++
++/* These capabilities have no public fields, wire encoding or caller constructor.
++ * Only a future qualified native source seam may issue them. */
++typedef struct CrucibleNodeRootSeal CrucibleNodeRootSeal;
++typedef struct CrucibleNodeEffectCut CrucibleNodeEffectCut;
++
++typedef int (*qemu_plugin_crucible_node_epoch_acquire_cb_t)(
++    const CrucibleNodeRootSeal *root, void **owned_epoch, void *userdata);
++typedef int (*qemu_plugin_crucible_node_epoch_effect_cb_t)(
++    const CrucibleNodeRootSeal *root, void *owned_epoch,
++    const CrucibleNodeEffectCut *cut, void *userdata);
++
++#define QEMU_PLUGIN_CRUCIBLE_NODE_ROOT_EPOCH_VERSION 1
++
++/**
++ * qemu_plugin_register_crucible_node_root_epoch() - retain private epoch callbacks
++ * @version: exact callback ABI version, currently 1
++ * @original: complete original policy matching the immutable native root pin
++ * @acquire: retain an original epoch; EAGAIN leaves its output NULL
++ * @begin: install only the same original source cut's scoped admission
++ * @end: clear all scoped admission before returning, including every error
++ * @userdata: process-lifetime plugin custody retained until QEMU exits
++ *
++ * Registration requires the BQL and precedes the first resource manifest seal.
++ * Exact retries retain the same callbacks and userdata. A V9 manifest records
++ * installation without exempting workers or proving readiness. There is no
++ * source RootSeal emitter or effect invocation in this registration component.
++ *
++ * An acquire retry retains partial original holds privately. A begin EAGAIN
++ * grants no admission; an end failure requires containment and cannot yield a
++ * successful stopped inventory. Capabilities and pointers stay inside QEMU.
++ *
++ * Returns: 0 for original registration or an identical retry, negative on refusal.
++ */
++struct CrucibleNodeRootPolicy;
++QEMU_PLUGIN_API
++int qemu_plugin_register_crucible_node_root_epoch(
++    uint32_t version, const struct CrucibleNodeRootPolicy *original,
++    qemu_plugin_crucible_node_epoch_acquire_cb_t acquire,
++    qemu_plugin_crucible_node_epoch_effect_cb_t begin,
++    qemu_plugin_crucible_node_epoch_effect_cb_t end, void *userdata);
 +
 +/**
 + * qemu_plugin_register_crucible_node_root_policy() - bind the original root policy
@@ -67921,7 +69105,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..2d44ab1a868ae6455869c915e674d029
   */
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_start_code(void);
-@@ -1172,125 +2499,838 @@ void qemu_plugin_set_pc(uint64_t vaddr);
+@@ -1172,125 +2556,838 @@ void qemu_plugin_set_pc(uint64_t vaddr);
   * avoid attempting to read data which may not yet be written and should use
   * the memory callback API instead.
   *
@@ -68840,7 +70024,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..2d44ab1a868ae6455869c915e674d029
  
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
-@@ -1363,6 +3403,737 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
+@@ -1363,6 +3460,737 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry);
  
@@ -69809,6 +70993,45 @@ index 1c31de60f9406a93f04dcc04f435a40596c4cef4..9bf1523320ff6c7a4635eb0b11faa4fd
  /**
   * Yield the coroutine until the next call to qemu_co_sleep_wake.
   */
+diff --git a/include/qemu/crucible-endpoint-roots.h b/include/qemu/crucible-endpoint-roots.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..a9583051df6b5360959a064906f700987d14dbf2
+--- /dev/null
++++ b/include/qemu/crucible-endpoint-roots.h
+@@ -0,0 +1,33 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#ifndef QEMU_CRUCIBLE_ENDPOINT_ROOTS_H
++#define QEMU_CRUCIBLE_ENDPOINT_ROOTS_H
++
++/* Source-local negative admission gates. These are not process-protocol facts,
++ * an executable epoch, or evidence for the unrelated peer/IRQ/worker roots. */
++typedef enum CrucibleEndpointRootKind {
++    CRUCIBLE_ENDPOINT_MONITOR,
++    CRUCIBLE_ENDPOINT_CHARACTER,
++    CRUCIBLE_ENDPOINT_QTEST,
++    CRUCIBLE_ENDPOINT_BLOCK_NODE,
++    CRUCIBLE_ENDPOINT_BLOCK_BACKEND,
++    CRUCIBLE_ENDPOINT_NETWORK,
++    CRUCIBLE_ENDPOINT_IOTHREAD,
++    CRUCIBLE_ENDPOINT_ROOT_KINDS,
++} CrucibleEndpointRootKind;
++
++/* Enabled only by the validated original early fixed-profile source policy. */
++void qemu_crucible_endpoint_roots_enable_early(void);
++void qemu_crucible_endpoint_root_allocate(CrucibleEndpointRootKind kind);
++void qemu_crucible_endpoint_root_input_guard(CrucibleEndpointRootKind kind);
++int qemu_crucible_endpoint_roots_hold_empty(void);
++/* This only identifies an absent receiver class, never an effect permission. */
++bool qemu_crucible_endpoint_root_held_without_receiver(
++    CrucibleEndpointRootKind kind);
++
++/* All helpers below inspect their actual native registries. No caller counts. */
++int monitor_crucible_endpoint_root_empty(void);
++int monitor_fdsets_crucible_endpoint_root_empty(void);
++int qtest_crucible_endpoint_root_empty(void);
++int qemu_crucible_endpoint_roots_prepare_empty(void);
++
++#endif
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..99e2214a7fbfd46155ddd5aa921a677302ad1f72
@@ -71169,10 +72392,10 @@ index 0000000000000000000000000000000000000000..af115a7c8f106667ceca6af7304a72e3
 +#endif
 diff --git a/include/qemu/crucible-hot-fork-plugin.h b/include/qemu/crucible-hot-fork-plugin.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..f4742b052a767f57e6f156cdf168e5232dd5cbf9
+index 0000000000000000000000000000000000000000..b2d6f7263338de961da483133145ec7e01fab4d7
 --- /dev/null
 +++ b/include/qemu/crucible-hot-fork-plugin.h
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,64 @@
 +/*
 + * Crucible plugin resource inventory shared by QEMU subsystems and QMP.
 + *
@@ -71204,6 +72427,8 @@ index 0000000000000000000000000000000000000000..f4742b052a767f57e6f156cdf168e523
 +    bool administration_registered;
 +    struct qemu_plugin_crucible_resource_manifest_v8 root_manifest;
 +    bool root_registered;
++    struct qemu_plugin_crucible_resource_manifest_v9 root_epoch_manifest;
++    bool root_epoch_registered;
 +} QemuPluginCrucibleHotForkInventory;
 +
 +typedef struct QemuPluginCrucibleHotForkBarrierInventory {
@@ -71301,10 +72526,10 @@ index 0000000000000000000000000000000000000000..cbd838fd1869464a864c6accf040fee2
 +#endif /* QEMU_CRUCIBLE_IDLE_WAIT_H */
 diff --git a/include/qemu/crucible-node-root.h b/include/qemu/crucible-node-root.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e9bee6516b11d3668df6c72b5221fb4ef3f2f7a6
+index 0000000000000000000000000000000000000000..7a0753450c285e71387cefbe65dbb51d7293a9cf
 --- /dev/null
 +++ b/include/qemu/crucible-node-root.h
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,62 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Native source policy; its early argv encoding is explicitly little endian. */
 +#ifndef QEMU_CRUCIBLE_NODE_ROOT_H
@@ -71353,6 +72578,10 @@ index 0000000000000000000000000000000000000000..e9bee6516b11d3668df6c72b5221fb4e
 +bool crucible_node_root_manifest_matches(const uint8_t scope[32],
 +                                         const uint8_t commitment[32]);
 +const CrucibleNodeRootPolicy *crucible_node_root_policy(void);
++
++/* Registration is observational. No native capability is emitted or invoked. */
++bool crucible_node_root_epoch_registered(void);
++bool crucible_node_root_epoch_manifest_matches(uint32_t version);
 +
 +/* Installed by the actual native board constructor, not a process request. */
 +typedef int (*CrucibleNodeRootFactoryFn)(const CrucibleNodeRootPolicy *policy,
@@ -75118,13 +76347,14 @@ index 95f574af2be90781bd488e0f30a8e7c6e1ca713a..2df736e72c69a415cf373bf2e8560039
   * tcg_prologue_init(): Generate the code for the TCG prologue
   *
 diff --git a/iothread.c b/iothread.c
-index 3558535b40f52fc841e4790433d41aab39f062cd..f07b4c572b614166eb161b924759fe0d5deb42b0 100644
+index 3558535b40f52fc841e4790433d41aab39f062cd..6067f85f1fde513f5c5adceb6b7c74133902f76b 100644
 --- a/iothread.c
 +++ b/iothread.c
-@@ -12,6 +12,10 @@
+@@ -12,6 +12,11 @@
   */
  
  #include "qemu/osdep.h"
++#include "qemu/crucible-endpoint-roots.h"
 +#include "qemu/crucible-hot-fork-child.h"
 +#ifdef CONFIG_LINUX
 +#include <sys/syscall.h>
@@ -75132,7 +76362,7 @@ index 3558535b40f52fc841e4790433d41aab39f062cd..f07b4c572b614166eb161b924759fe0d
  #include "qom/object.h"
  #include "qom/object_interfaces.h"
  #include "qemu/module.h"
-@@ -25,19 +29,51 @@
+@@ -25,19 +30,51 @@
  #include "qemu/rcu.h"
  #include "qemu/main-loop.h"
  
@@ -75184,7 +76414,16 @@ index 3558535b40f52fc841e4790433d41aab39f062cd..f07b4c572b614166eb161b924759fe0d
  
      while (iothread->running) {
          /*
-@@ -416,6 +452,119 @@ void iothread_destroy(IOThread *iothread)
+@@ -91,6 +128,8 @@ static void iothread_instance_init(Object *obj)
+ {
+     IOThread *iothread = IOTHREAD(obj);
+ 
++    qemu_crucible_endpoint_root_allocate(CRUCIBLE_ENDPOINT_IOTHREAD);
++
+     iothread->poll_max_ns = IOTHREAD_POLL_MAX_NS_DEFAULT;
+     iothread->poll_grow = IOTHREAD_POLL_GROW_DEFAULT;
+     iothread->poll_shrink = IOTHREAD_POLL_SHRINK_DEFAULT;
+@@ -416,6 +455,119 @@ void iothread_destroy(IOThread *iothread)
      object_unparent(OBJECT(iothread));
  }
  
@@ -76422,10 +77661,18 @@ index 50ebe37845285d7cc1d427d35a261dff58b914b7..5eeea254a92db653b4a84f0a58e16d00
              /* it doesn't have a valid subsection name */
              return true;
 diff --git a/monitor/fds.c b/monitor/fds.c
-index cc35d2ec334929216bb9653890b058406035f4f6..5553aa8e9f7a6f6018c3965da69b9ced631c0ff3 100644
+index cc35d2ec334929216bb9653890b058406035f4f6..03f73b28fff28803deebe4cf416888d69dac2161 100644
 --- a/monitor/fds.c
 +++ b/monitor/fds.c
-@@ -166,6 +166,36 @@ int monitor_get_fd(Monitor *mon, const char *fdname, Error **errp)
+@@ -23,6 +23,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/crucible-endpoint-roots.h"
+ #include "monitor-internal.h"
+ #include "qapi/error.h"
+ #include "qapi/qapi-commands-misc.h"
+@@ -166,6 +167,36 @@ int monitor_get_fd(Monitor *mon, const char *fdname, Error **errp)
      return -1;
  }
  
@@ -76462,7 +77709,7 @@ index cc35d2ec334929216bb9653890b058406035f4f6..5553aa8e9f7a6f6018c3965da69b9ced
  static void monitor_fdset_free(MonFdset *mon_fdset)
  {
      QLIST_REMOVE(mon_fdset, next);
-@@ -192,6 +222,29 @@ static void monitor_fdset_fd_free(MonFdsetFd *mon_fdset_fd)
+@@ -192,6 +223,29 @@ static void monitor_fdset_fd_free(MonFdsetFd *mon_fdset_fd)
      g_free(mon_fdset_fd);
  }
  
@@ -76492,10 +77739,22 @@ index cc35d2ec334929216bb9653890b058406035f4f6..5553aa8e9f7a6f6018c3965da69b9ced
  void monitor_fdsets_cleanup(void)
  {
      MonFdset *mon_fdset;
-@@ -203,6 +256,13 @@ void monitor_fdsets_cleanup(void)
+@@ -203,6 +257,25 @@ void monitor_fdsets_cleanup(void)
      }
  }
  
++int monitor_fdsets_crucible_endpoint_root_empty(void)
++{
++    int result;
++
++    if (qemu_mutex_trylock(&mon_fdsets_lock) != 0) {
++        return -EAGAIN;
++    }
++    result = QLIST_EMPTY(&mon_fdsets) ? 0 : -ENOTSUP;
++    qemu_mutex_unlock(&mon_fdsets_lock);
++    return result;
++}
++
 +static bool monitor_fdsets_is_empty(void)
 +{
 +    QEMU_LOCK_GUARD(&mon_fdsets_lock);
@@ -76506,7 +77765,7 @@ index cc35d2ec334929216bb9653890b058406035f4f6..5553aa8e9f7a6f6018c3965da69b9ced
  AddfdInfo *qmp_add_fd(bool has_fdset_id, int64_t fdset_id,
                        const char *opaque, Error **errp)
  {
-@@ -331,6 +391,171 @@ FdsetInfoList *qmp_query_fdsets(Error **errp)
+@@ -331,6 +404,171 @@ FdsetInfoList *qmp_query_fdsets(Error **errp)
      return fdset_list;
  }
  
@@ -76678,7 +77937,15 @@ index cc35d2ec334929216bb9653890b058406035f4f6..5553aa8e9f7a6f6018c3965da69b9ced
  AddfdInfo *monitor_fdset_add_fd(int fd, bool has_fdset_id, int64_t fdset_id,
                                  const char *opaque, Error **errp)
  {
-@@ -512,4 +737,7 @@ int monitor_fd_param(Monitor *mon, const char *fdname, Error **errp)
+@@ -338,6 +576,7 @@ AddfdInfo *monitor_fdset_add_fd(int fd, bool has_fdset_id, int64_t fdset_id,
+     MonFdsetFd *mon_fdset_fd;
+     AddfdInfo *fdinfo;
+ 
++    qemu_crucible_endpoint_root_input_guard(CRUCIBLE_ENDPOINT_MONITOR);
+     QEMU_LOCK_GUARD(&mon_fdsets_lock);
+     if (has_fdset_id) {
+         QLIST_FOREACH(mon_fdset, &mon_fdsets, next) {
+@@ -512,4 +751,7 @@ int monitor_fd_param(Monitor *mon, const char *fdname, Error **errp)
  static void __attribute__((__constructor__)) monitor_fds_init(void)
  {
      qemu_mutex_init(&mon_fdsets_lock);
@@ -76914,12 +78181,14 @@ index 23829f32f9ab6e083a86b90e1104022ae4326617..2f17906f2ec86fffc90256a40337e33a
  int hmp_compare_cmd(const char *name, const char *list);
  
 diff --git a/monitor/monitor.c b/monitor/monitor.c
-index ed195fd97bbca2a99d1827c16e3f602051b6403d..c685a7bb09a10d1f35a5decf9f250224aa095d61 100644
+index ed195fd97bbca2a99d1827c16e3f602051b6403d..085a123b596445596a36965ab7f9dc23c4802abb 100644
 --- a/monitor/monitor.c
 +++ b/monitor/monitor.c
-@@ -24,12 +24,14 @@
+@@ -23,13 +23,16 @@
+  */
  
  #include "qemu/osdep.h"
++#include "qemu/crucible-endpoint-roots.h"
  #include "monitor-internal.h"
 +#include "qemu/aio-wait.h"
  #include "qapi/error.h"
@@ -76932,7 +78201,7 @@ index ed195fd97bbca2a99d1827c16e3f602051b6403d..c685a7bb09a10d1f35a5decf9f250224
  #include "qemu/error-report.h"
  #include "qemu/option.h"
  #include "system/qtest.h"
-@@ -73,6 +75,39 @@ static GHashTable *coroutine_mon; /* Maps Coroutine* to Monitor* */
+@@ -73,6 +76,39 @@ static GHashTable *coroutine_mon; /* Maps Coroutine* to Monitor* */
  
  MonitorList mon_list;
  static bool monitor_destroyed;
@@ -76972,7 +78241,7 @@ index ed195fd97bbca2a99d1827c16e3f602051b6403d..c685a7bb09a10d1f35a5decf9f250224
  
  int monitor_device_index;
  
-@@ -91,6 +126,12 @@ static void monitor_finalize(Object *obj)
+@@ -91,6 +127,12 @@ static void monitor_finalize(Object *obj)
      qemu_chr_fe_deinit(&mon->chr, false);
      g_string_free(mon->outbuf, true);
      qemu_mutex_destroy(&mon->mon_lock);
@@ -76985,8 +78254,11 @@ index ed195fd97bbca2a99d1827c16e3f602051b6403d..c685a7bb09a10d1f35a5decf9f250224
  }
  
  static char *monitor_get_chardev_id(Object *obj, Error **errp)
-@@ -127,6 +168,10 @@ static void monitor_init(Object *obj)
+@@ -125,8 +167,13 @@ static void monitor_init(Object *obj)
+ {
+     Monitor *mon = MONITOR(obj);
  
++    qemu_crucible_endpoint_root_allocate(CRUCIBLE_ENDPOINT_MONITOR);
      qemu_mutex_init(&mon->mon_lock);
      mon->outbuf = g_string_new(NULL);
 +
@@ -76996,7 +78268,27 @@ index ed195fd97bbca2a99d1827c16e3f602051b6403d..c685a7bb09a10d1f35a5decf9f250224
  }
  
  Monitor *monitor_cur(void)
-@@ -613,6 +658,7 @@ void monitor_list_append(Monitor *mon)
+@@ -463,6 +510,19 @@ void qapi_event_emit(QAPIEvent event, QDict *qdict)
+     static __thread bool reentered;
+     MonitorQapiEvent *ev;
+ 
++    /* QAPI RESUME is also emitted by administrative VM-start with no monitor.
++     * It is output, not an input endpoint allocation. Once the original source
++     * class is held empty, validate the actual receiver and dispatcher state
++     * before omitting an event which has no audience. This bypasses no parser,
++     * producer, callback, or guest effect; an unheld legacy class is unchanged. */
++    if (qemu_crucible_endpoint_root_held_without_receiver(
++            CRUCIBLE_ENDPOINT_MONITOR)) {
++        if (monitor_crucible_endpoint_root_empty() != 0) {
++            qemu_crucible_endpoint_root_input_guard(CRUCIBLE_ENDPOINT_MONITOR);
++        }
++        return;
++    }
++
+     if (!reentered) {
+         QSIMPLEQ_INIT(&event_queue);
+     }
+@@ -613,6 +673,7 @@ void monitor_list_append(Monitor *mon)
       */
      if (!monitor_destroyed) {
          QTAILQ_INSERT_HEAD(&mon_list, mon, entry);
@@ -77004,7 +78296,7 @@ index ed195fd97bbca2a99d1827c16e3f602051b6403d..c685a7bb09a10d1f35a5decf9f250224
          mon = NULL;
      }
      qemu_mutex_unlock(&monitor_lock);
-@@ -622,6 +668,706 @@ void monitor_list_append(Monitor *mon)
+@@ -622,6 +683,724 @@ void monitor_list_append(Monitor *mon)
      }
  }
  
@@ -77090,6 +78382,24 @@ index ed195fd97bbca2a99d1827c16e3f602051b6403d..c685a7bb09a10d1f35a5decf9f250224
 +    inventory->complete = !inventory->overflowed &&
 +        inventory->unstable_monitors == 0 &&
 +        monitor_hot_fork_lifecycle_transitions == 0;
++}
++
++int monitor_crucible_endpoint_root_empty(void)
++{
++    int result;
++
++    if (qemu_mutex_trylock(&monitor_lock) != 0) {
++        return -EAGAIN;
++    }
++    result = QTAILQ_EMPTY(&mon_list) && !mon_iothread &&
++             !monitor_destroyed && !monitor_hot_fork_lifecycle_transitions &&
++             !monitor_hot_fork_generation_overflowed &&
++             g_hash_table_size(monitor_qapi_event_state) == 0 &&
++             g_hash_table_size(coroutine_mon) == 0 &&
++             monitor_qmp_hot_fork_dispatcher_is_idle(qmp_dispatcher_co) ?
++             0 : -ENOTSUP;
++    qemu_mutex_unlock(&monitor_lock);
++    return result;
 +}
 +
 +void monitor_hot_fork_inventory(MonitorHotForkInventory *inventory)
@@ -77711,7 +79021,7 @@ index ed195fd97bbca2a99d1827c16e3f602051b6403d..c685a7bb09a10d1f35a5decf9f250224
  void monitor_cleanup(void)
  {
      /*
-@@ -664,6 +1410,7 @@ void monitor_cleanup(void)
+@@ -664,6 +1443,7 @@ void monitor_cleanup(void)
      while (!QTAILQ_EMPTY(&mon_list)) {
          Monitor *mon = QTAILQ_FIRST(&mon_list);
          QTAILQ_REMOVE(&mon_list, mon, entry);
@@ -77719,7 +79029,7 @@ index ed195fd97bbca2a99d1827c16e3f602051b6403d..c685a7bb09a10d1f35a5decf9f250224
          /* Permit QAPI event emission from character frontend release */
          qemu_mutex_unlock(&monitor_lock);
          monitor_flush(mon);
-@@ -700,6 +1447,9 @@ void monitor_init_globals(void)
+@@ -700,6 +1480,9 @@ void monitor_init_globals(void)
       * rid of those assumptions.
       */
      qmp_dispatcher_co = qemu_coroutine_create(monitor_qmp_dispatcher_co, NULL);
@@ -77729,7 +79039,7 @@ index ed195fd97bbca2a99d1827c16e3f602051b6403d..c685a7bb09a10d1f35a5decf9f250224
      aio_co_schedule(iohandler_get_aio_context(), qmp_dispatcher_co);
  }
  
-@@ -730,6 +1480,11 @@ static void monitor_complete(UserCreatable *uc, Error **errp)
+@@ -730,6 +1513,11 @@ static void monitor_complete(UserCreatable *uc, Error **errp)
      if (monitor_requires_iothread(mon)) {
          if (!mon_iothread) {
              mon_iothread = iothread_create("mon_iothread", &error_abort);
@@ -84950,18 +86260,19 @@ index 427da24097f2ec0897f69ba4ec5c9d7dbe6e9a52..0497d6cec2f466ee4ca1a1b606613746
  }
  
 diff --git a/net/net.c b/net/net.c
-index 0a30579ca4a7440f38aaa376265e991142cb5aa8..85fe933d5261809993f60ad4629b07750dd0c971 100644
+index 0a30579ca4a7440f38aaa376265e991142cb5aa8..b5cf4aa90723e948a02b02614e1acf11fa1acdbd 100644
 --- a/net/net.c
 +++ b/net/net.c
-@@ -23,6 +23,7 @@
+@@ -23,6 +23,8 @@
   */
  
  #include "qemu/osdep.h"
++#include "qemu/crucible-endpoint-roots.h"
 +#include "exec/icount.h"
  
  #include "net/net.h"
  #include "clients.h"
-@@ -48,9 +49,13 @@
+@@ -48,9 +50,13 @@
  #include "qemu/iov.h"
  #include "qemu/qemu-print.h"
  #include "qemu/main-loop.h"
@@ -84975,7 +86286,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..85fe933d5261809993f60ad4629b0775
  #include "qapi/opts-visitor.h"
  #include "system/runstate.h"
  #include "net/colo-compare.h"
-@@ -78,6 +83,55 @@ typedef QSIMPLEQ_HEAD(, NetdevQueueEntry) NetdevQueue;
+@@ -78,6 +84,55 @@ typedef QSIMPLEQ_HEAD(, NetdevQueueEntry) NetdevQueue;
  static NetdevQueue nd_queue = QSIMPLEQ_HEAD_INITIALIZER(nd_queue);
  
  static GHashTable *nic_model_help;
@@ -85031,7 +86342,40 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..85fe933d5261809993f60ad4629b0775
  
  static int nb_nics;
  static NICInfo nd_table[MAX_NICS];
-@@ -742,6 +796,9 @@ static ssize_t qemu_send_packet_async_with_flags(NetClientState *sender,
+@@ -269,6 +324,8 @@ static void qemu_net_client_setup(NetClientState *nc,
+                                   NetClientDestructor *destructor,
+                                   bool is_datapath)
+ {
++    qemu_crucible_endpoint_root_allocate(CRUCIBLE_ENDPOINT_NETWORK);
++
+     nc->info = info;
+     nc->model = g_strdup(model);
+     if (name) {
+@@ -299,6 +356,7 @@ NetClientState *qemu_new_net_client(NetClientInfo *info,
+ 
+     assert(info->size >= sizeof(NetClientState));
+ 
++    qemu_crucible_endpoint_root_allocate(CRUCIBLE_ENDPOINT_NETWORK);
+     nc = g_malloc0(info->size);
+     qemu_net_client_setup(nc, info, peer, model, name,
+                           qemu_net_client_destructor, true);
+@@ -315,6 +373,7 @@ NetClientState *qemu_new_net_control_client(NetClientInfo *info,
+ 
+     assert(info->size >= sizeof(NetClientState));
+ 
++    qemu_crucible_endpoint_root_allocate(CRUCIBLE_ENDPOINT_NETWORK);
+     nc = g_malloc0(info->size);
+     qemu_net_client_setup(nc, info, peer, model, name,
+                           qemu_net_client_destructor, false);
+@@ -336,6 +395,7 @@ NICState *qemu_new_nic(NetClientInfo *info,
+     assert(info->type == NET_CLIENT_DRIVER_NIC);
+     assert(info->size >= sizeof(NICState));
+ 
++    qemu_crucible_endpoint_root_allocate(CRUCIBLE_ENDPOINT_NETWORK);
+     nic = g_malloc0(info->size + sizeof(NetClientState) * queues);
+     nic->ncs = (void *)nic + info->size;
+     nic->conf = conf;
+@@ -742,6 +802,9 @@ static ssize_t qemu_send_packet_async_with_flags(NetClientState *sender,
      if (sender->link_down || !sender->peer) {
          return size;
      }
@@ -85041,7 +86385,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..85fe933d5261809993f60ad4629b0775
  
      /* Let filters handle the packet first */
      ret = filter_receive(sender, NET_FILTER_DIRECTION_TX,
-@@ -886,16 +943,47 @@ ssize_t qemu_sendv_packet_async(NetClientState *sender,
+@@ -886,16 +949,47 @@ ssize_t qemu_sendv_packet_async(NetClientState *sender,
                                  NetPacketSent *sent_cb)
  {
      NetQueue *queue;
@@ -85092,6 +86436,26 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..85fe933d5261809993f60ad4629b0775
  
      /* Let filters handle the packet first */
      ret = filter_receive_iov(sender, NET_FILTER_DIRECTION_TX, sender,
+@@ -1344,12 +1438,14 @@ static int net_client_init1(const Netdev *netdev, bool is_netdev, Error **errp)
+                        NetClientDriver_str(netdev->type));
+             return -1;
+         }
++    }
+ 
+-        /* Do not add to a hub if it's a nic with a netdev= parameter. */
+-        if (netdev->type != NET_CLIENT_DRIVER_NIC ||
+-            !netdev->u.nic.netdev) {
+-            peer = net_hub_add_port(0, NULL, NULL);
+-        }
++    /* A parsed -net none option is not an allocation. Reserve only the real
++     * typed constructor path, before hub creation or backend descriptor opens. */
++    qemu_crucible_endpoint_root_allocate(CRUCIBLE_ENDPOINT_NETWORK);
++    if (!is_netdev && (netdev->type != NET_CLIENT_DRIVER_NIC ||
++                      !netdev->u.nic.netdev)) {
++        peer = net_hub_add_port(0, NULL, NULL);
+     }
+ 
+     nc = qemu_find_netdev(netdev->id);
 diff --git a/net/slirp-time.h b/net/slirp-time.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..4041c045068c2a5f943b3a87b5441cad46b3380c
@@ -85186,10 +86550,10 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..91fa6aefc60e3d5b88a5d42e34c26371a20547e2 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..5211d4fb5b7ed95b70c52ee1898068dde74c929a 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -11,12 +11,50 @@
+@@ -11,12 +11,51 @@
   */
  
  #include "qemu/osdep.h"
@@ -85237,10 +86601,11 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..91fa6aefc60e3d5b88a5d42e34c26371
 +G_STATIC_ASSERT(sizeof(struct qemu_plugin_crucible_resource_manifest_v6) == 192);
 +G_STATIC_ASSERT(sizeof(struct qemu_plugin_crucible_resource_manifest_v7) == 224);
 +G_STATIC_ASSERT(sizeof(struct qemu_plugin_crucible_resource_manifest_v8) == 256);
++G_STATIC_ASSERT(sizeof(struct qemu_plugin_crucible_resource_manifest_v9) == 264);
  
  /*
   * In system mode we cannot trace the binary being executed so the
-@@ -101,14 +139,1212 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
+@@ -101,14 +140,1248 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
   */
  static bool has_control;
  static Error *migration_blocker;
@@ -85557,7 +86922,9 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..91fa6aefc60e3d5b88a5d42e34c26371
 +    QEMU_LOCK_GUARD(&qemu_plugin_crucible_resource_lock);
 +
 +    if (callback_mask == 0 ||
-+        (callback_mask & ~QEMU_PLUGIN_CRUCIBLE_CALLBACK_ALL) != 0) {
++        (callback_mask & ~QEMU_PLUGIN_CRUCIBLE_CALLBACK_ROOT_EPOCH_ALL) != 0 ||
++        ((callback_mask & QEMU_PLUGIN_CRUCIBLE_CALLBACK_NODE_ROOT_EPOCH) &&
++         !crucible_node_root_epoch_registered())) {
 +        return;
 +    }
 +    if (plugin_id != 0) {
@@ -85635,6 +87002,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..91fa6aefc60e3d5b88a5d42e34c26371
 +    uint64_t allowed_workers = QEMU_PLUGIN_CRUCIBLE_WORKER_ALL;
 +    uint64_t allowed_callbacks = QEMU_PLUGIN_CRUCIBLE_CALLBACK_ALL &
 +        ~QEMU_PLUGIN_CRUCIBLE_CALLBACK_NODE_INITIALIZATION;
++    const struct qemu_plugin_crucible_resource_manifest_v9 *epoch = NULL;
 +    const struct qemu_plugin_crucible_resource_manifest_v8 *root = NULL;
 +    const struct qemu_plugin_crucible_resource_manifest_v7 *administration = NULL;
 +    const struct qemu_plugin_crucible_resource_manifest_v6 *phase = NULL;
@@ -85647,8 +87015,25 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..91fa6aefc60e3d5b88a5d42e34c26371
 +        return -EINVAL;
 +    }
 +    if (manifest->schema_version ==
++            QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_ROOT_EPOCH_VERSION &&
++        manifest->struct_size == sizeof(*epoch)) {
++        epoch = (const struct qemu_plugin_crucible_resource_manifest_v9 *)manifest;
++        if (epoch->reserved ||
++            !crucible_node_root_epoch_manifest_matches(epoch->epoch_version) ||
++            !(manifest->resource_mask &
++              QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_ROOT_EPOCH) ||
++            !(manifest->callback_mask &
++              QEMU_PLUGIN_CRUCIBLE_CALLBACK_NODE_ROOT_EPOCH)) {
++            return -EINVAL;
++        }
++        root = &epoch->root;
++    } else if (crucible_node_root_epoch_registered()) {
++        /* Installed epoch callbacks cannot be hidden by a V8 declaration. */
++        return -EINVAL;
++    }
++    if (root || (manifest->schema_version ==
 +            QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_ROOT_VERSION &&
-+        manifest->struct_size == sizeof(*root)) {
++        manifest->struct_size == sizeof(*root))) {
 +        root = (const struct qemu_plugin_crucible_resource_manifest_v8 *)manifest;
 +        if (!crucible_node_root_manifest_matches(
 +                root->administration.phase.initialization.native.prepared_scope_hash,
@@ -85708,11 +87093,13 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..91fa6aefc60e3d5b88a5d42e34c26371
 +              QEMU_PLUGIN_CRUCIBLE_CALLBACK_NODE_INITIALIZATION)) {
 +            return -EINVAL;
 +        }
-+        allowed_resources = root ? QEMU_PLUGIN_CRUCIBLE_RESOURCE_ROOT_ALL :
++        allowed_resources = epoch ? QEMU_PLUGIN_CRUCIBLE_RESOURCE_ROOT_EPOCH_ALL :
++            root ? QEMU_PLUGIN_CRUCIBLE_RESOURCE_ROOT_ALL :
 +            administration ? QEMU_PLUGIN_CRUCIBLE_RESOURCE_ADMINISTRATION_ALL :
 +            phase ? QEMU_PLUGIN_CRUCIBLE_RESOURCE_PHASE_ALL :
 +            QEMU_PLUGIN_CRUCIBLE_RESOURCE_INITIALIZATION_ALL;
-+        allowed_callbacks = QEMU_PLUGIN_CRUCIBLE_CALLBACK_ALL;
++        allowed_callbacks = epoch ? QEMU_PLUGIN_CRUCIBLE_CALLBACK_ROOT_EPOCH_ALL :
++            QEMU_PLUGIN_CRUCIBLE_CALLBACK_ALL;
 +    }
 +    if (initialization ||
 +        (manifest->schema_version ==
@@ -85773,6 +87160,16 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..91fa6aefc60e3d5b88a5d42e34c26371
 +        return -EINVAL;
 +    }
 +    if (qemu_plugin_crucible_resource_inventory.registered) {
++        if (epoch) {
++            QemuPluginCrucibleHotForkInventory *retained =
++                &qemu_plugin_crucible_resource_inventory;
++
++            return retained->root_epoch_registered &&
++                retained->native_fd_device == native_identity.st_dev &&
++                retained->native_fd_inode == native_identity.st_ino &&
++                !memcmp(&retained->root_epoch_manifest, epoch, sizeof(*epoch)) ?
++                0 : -EALREADY;
++        }
 +        if (root) {
 +            QemuPluginCrucibleHotForkInventory *retained =
 +                &qemu_plugin_crucible_resource_inventory;
@@ -85877,6 +87274,10 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..91fa6aefc60e3d5b88a5d42e34c26371
 +        qemu_plugin_crucible_resource_inventory.administration_manifest =
 +            *administration;
 +        qemu_plugin_crucible_resource_inventory.administration_registered = true;
++    }
++    if (epoch) {
++        qemu_plugin_crucible_resource_inventory.root_epoch_manifest = *epoch;
++        qemu_plugin_crucible_resource_inventory.root_epoch_registered = true;
 +    }
 +    if (root) {
 +        qemu_plugin_crucible_resource_inventory.root_manifest = *root;
@@ -86456,7 +87857,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..91fa6aefc60e3d5b88a5d42e34c26371
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1359,1998 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1396,1998 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -131691,7 +133092,7 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..3ce62e9a977ea55d839d8d625345d1b0
           * cpu_exit() is not enough to kick a halted CPU out of
           * qemu_tcg_wait_io_event.  async_run_on_cpu, instead,
 diff --git a/system/cpus.c b/system/cpus.c
-index 97e5a5edee23b70d8bd170c2b984568f4e804672..4ad84232bff938efa6b0aed96a63c74e0d51fdbe 100644
+index 97e5a5edee23b70d8bd170c2b984568f4e804672..c1de91c50dc81c31db7ca8adba8624ebf66abed5 100644
 --- a/system/cpus.c
 +++ b/system/cpus.c
 @@ -25,11 +25,13 @@
@@ -131708,7 +133109,15 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..4ad84232bff938efa6b0aed96a63c74e
  #include "exec/gdbstub.h"
  #include "accel/accel-cpu-ops.h"
  #include "system/hw_accel.h"
-@@ -76,6 +78,180 @@ static QemuMutex bql;
+@@ -40,6 +42,7 @@
+ #include "system/cpus.h"
+ #include "qemu/guest-random.h"
+ #include "hw/core/nmi.h"
++#include "hw/core/irq.h"
+ #include "system/physmem.h"
+ #include "system/replay.h"
+ #include "system/runstate.h"
+@@ -76,6 +79,180 @@ static QemuMutex bql;
   */
  static const AccelOpsClass *cpus_accel;
  
@@ -131889,7 +133298,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..4ad84232bff938efa6b0aed96a63c74e
  bool cpu_is_stopped(CPUState *cpu)
  {
      return cpu->stopped || !runstate_is_running();
-@@ -83,7 +259,9 @@ bool cpu_is_stopped(CPUState *cpu)
+@@ -83,7 +260,9 @@ bool cpu_is_stopped(CPUState *cpu)
  
  bool cpu_work_list_empty(CPUState *cpu)
  {
@@ -131900,16 +133309,17 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..4ad84232bff938efa6b0aed96a63c74e
  }
  
  bool cpu_thread_is_idle(CPUState *cpu)
-@@ -258,6 +436,8 @@ int64_t cpus_get_elapsed_ticks(void)
+@@ -258,6 +437,9 @@ int64_t cpus_get_elapsed_ticks(void)
  
  void cpu_set_interrupt(CPUState *cpu, int mask)
  {
++    qemu_irq_node_root_cpu_mutation_guard("CPU IRQ set");
 +    qemu_cpu_node_observe(cpu, QEMU_CPU_NODE_INGRESS_IRQ_SET,
 +                          (uint32_t)mask);
      /* Pairs with cpu_test_interrupt(). */
      qatomic_or(&cpu->interrupt_request, mask);
  }
-@@ -318,6 +498,9 @@ static int do_vm_stop(RunState state, bool send_stop)
+@@ -318,6 +500,9 @@ static int do_vm_stop(RunState state, bool send_stop)
       */
      ret |= bdrv_flush_all();
      trace_vm_stop_flush_all(ret);
@@ -131919,7 +133329,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..4ad84232bff938efa6b0aed96a63c74e
  
      return ret;
  }
-@@ -327,6 +510,10 @@ static int do_vm_stop(RunState state, bool send_stop)
+@@ -327,6 +512,10 @@ static int do_vm_stop(RunState state, bool send_stop)
   */
  int vm_shutdown(void)
  {
@@ -131930,7 +133340,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..4ad84232bff938efa6b0aed96a63c74e
      return do_vm_stop(RUN_STATE_SHUTDOWN, false);
  }
  
-@@ -438,7 +625,28 @@ void qemu_init_cpu_loop(void)
+@@ -438,7 +627,28 @@ void qemu_init_cpu_loop(void)
  
  void run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data)
  {
@@ -131959,7 +133369,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..4ad84232bff938efa6b0aed96a63c74e
  }
  
  static void qemu_cpu_stop(CPUState *cpu, bool exit)
-@@ -466,6 +674,13 @@ void qemu_process_cpu_events(CPUState *cpu)
+@@ -466,6 +676,13 @@ void qemu_process_cpu_events(CPUState *cpu)
      bool slept = false;
  
      qatomic_set(&cpu->exit_request, false);
@@ -131973,7 +133383,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..4ad84232bff938efa6b0aed96a63c74e
      while (cpu_thread_is_idle(cpu)) {
          if (!slept) {
              slept = true;
-@@ -506,6 +721,12 @@ void qemu_cpu_kick(CPUState *cpu)
+@@ -506,6 +723,12 @@ void qemu_cpu_kick(CPUState *cpu)
      } else { /* default */
          cpus_kick_thread(cpu);
      }
@@ -131986,7 +133396,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..4ad84232bff938efa6b0aed96a63c74e
  }
  
  void qemu_cpu_kick_self(void)
-@@ -611,6 +832,21 @@ void cpu_thread_signal_destroyed(CPUState *cpu)
+@@ -611,6 +834,21 @@ void cpu_thread_signal_destroyed(CPUState *cpu)
      qemu_cond_signal(&qemu_cpu_cond);
  }
  
@@ -132008,7 +133418,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..4ad84232bff938efa6b0aed96a63c74e
  void cpu_pause(CPUState *cpu)
  {
      if (qemu_cpu_is_self(cpu)) {
-@@ -623,6 +859,7 @@ void cpu_pause(CPUState *cpu)
+@@ -623,6 +861,7 @@ void cpu_pause(CPUState *cpu)
  
  void cpu_resume(CPUState *cpu)
  {
@@ -132016,7 +133426,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..4ad84232bff938efa6b0aed96a63c74e
      cpu->exception_index = -1;
      cpu->stop = false;
      cpu->stopped = false;
-@@ -683,11 +920,34 @@ void resume_all_vcpus(void)
+@@ -683,11 +922,34 @@ void resume_all_vcpus(void)
      }
  }
  
@@ -132051,7 +133461,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..4ad84232bff938efa6b0aed96a63c74e
      bql_unlock();
      qemu_thread_join(cpu->thread);
      bql_lock();
-@@ -743,6 +1003,10 @@ void cpu_stop_current(void)
+@@ -743,6 +1005,10 @@ void cpu_stop_current(void)
  
  int vm_stop(RunState state)
  {
@@ -132062,7 +133472,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..4ad84232bff938efa6b0aed96a63c74e
      if (qemu_in_vcpu_thread()) {
          qemu_system_vmstop_request_prepare();
          qemu_system_vmstop_request(state);
-@@ -768,6 +1032,14 @@ int vm_prepare_start(bool step_pending)
+@@ -768,6 +1034,14 @@ int vm_prepare_start(bool step_pending)
      RunState state = vm_was_suspended ? RUN_STATE_SUSPENDED : RUN_STATE_RUNNING;
      RunState requested;
  
@@ -132077,7 +133487,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..4ad84232bff938efa6b0aed96a63c74e
      qemu_vmstop_requested(&requested);
      if (runstate_is_running() && requested == RUN_STATE__MAX) {
          return -1;
-@@ -797,9 +1069,11 @@ int vm_prepare_start(bool step_pending)
+@@ -797,9 +1071,11 @@ int vm_prepare_start(bool step_pending)
      runstate_set(state);
      vm_state_notify(1, state);
      vm_was_suspended = false;
@@ -132089,7 +133499,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..4ad84232bff938efa6b0aed96a63c74e
  void vm_start(void)
  {
      if (!vm_prepare_start(false)) {
-@@ -820,6 +1094,10 @@ void vm_resume(RunState state)
+@@ -820,6 +1096,10 @@ void vm_resume(RunState state)
     current state is forgotten forever */
  int vm_stop_force_state(RunState state)
  {
@@ -132100,7 +133510,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..4ad84232bff938efa6b0aed96a63c74e
      if (runstate_is_live(runstate_get())) {
          return vm_stop(state);
      } else {
-@@ -928,4 +1206,3 @@ void qmp_inject_nmi(Error **errp)
+@@ -928,4 +1208,3 @@ void qmp_inject_nmi(Error **errp)
  {
      nmi_monitor_handle(monitor_get_cpu_index(monitor_cur()), errp);
  }
@@ -134283,6 +135693,69 @@ index 0000000000000000000000000000000000000000..d03a053bf825c69dd0bca673f693874f
 +CrucibleCheckpointEpochState *qemu_query_crucible_checkpoint_epoch(void)
 +{
 +    return crucible_checkpoint_epoch_report();
++}
+diff --git a/system/crucible-endpoint-roots.c b/system/crucible-endpoint-roots.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..298c4669c770351a4093b35e6130b9bd443e02b2
+--- /dev/null
++++ b/system/crucible-endpoint-roots.c
+@@ -0,0 +1,57 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Native empty endpoint classes for the original fixed-microvm constructor. */
++#include "qemu/osdep.h"
++#include "qemu/crucible-endpoint-roots.h"
++#include "qemu/crucible-node-root.h"
++#include "qemu/main-loop.h"
++#include "qom/object.h"
++#include "chardev/char.h"
++#include "block/block-global-state.h"
++#include "system/block-backend.h"
++#include "system/iothread.h"
++#include "net/net.h"
++
++static int reject_endpoint_object(Object *object, void *opaque)
++{
++    if (object_dynamic_cast(object, TYPE_CHARDEV) ||
++        object_dynamic_cast(object, TYPE_IOTHREAD) ||
++        object_dynamic_cast(object, "qtest")) {
++        return -ENOTSUP;
++    }
++    return 0;
++}
++
++int qemu_crucible_endpoint_roots_prepare_empty(void)
++{
++    const CrucibleNodeRootPolicy *policy = crucible_node_root_policy();
++    int result;
++
++    if (!bql_locked() || !policy ||
++        !rr_crucible_node_root_factory_origin(policy)) {
++        return -EPERM;
++    }
++    result = qemu_crucible_endpoint_roots_hold_empty();
++    if (result < 0) {
++        return result;
++    }
++    result = monitor_crucible_endpoint_root_empty();
++    if (result < 0) {
++        return result;
++    }
++    result = monitor_fdsets_crucible_endpoint_root_empty();
++    if (result < 0) {
++        return result;
++    }
++    result = qtest_crucible_endpoint_root_empty();
++    if (result < 0) {
++        return result;
++    }
++    /* BQL plus the already-held source constructor classes protects these
++     * actual global lists. Include anonymous nodes and unattached backends. */
++    if (blk_all_next(NULL) || bdrv_next_all_states(NULL) ||
++        !QTAILQ_EMPTY(&net_clients)) {
++        return -ENOTSUP;
++    }
++    return object_child_foreach_recursive(object_get_root(),
++                                           reject_endpoint_object, NULL);
 +}
 diff --git a/system/crucible-hot-fork-coordinator.c b/system/crucible-hot-fork-coordinator.c
 new file mode 100644
@@ -137495,20 +138968,21 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..4e0bad5c8604c9af0772696084027480
      }
  }
 diff --git a/system/meson.build b/system/meson.build
-index cd3193d170b2b5759cb34e4087a6d0ebfa805287..ce7f42b183e3e8eb61c0e1915fc1ff99828278da 100644
+index cd3193d170b2b5759cb34e4087a6d0ebfa805287..05af5951fca262503cf393e63004354908a5dab6 100644
 --- a/system/meson.build
 +++ b/system/meson.build
-@@ -8,6 +8,9 @@ system_ss.add(files(
+@@ -8,6 +8,10 @@ system_ss.add(files(
    'bootdevice.c',
    'cpus.c',
    'cpu-timers.c',
 +  'crucible-checkpoint.c',
++  'crucible-endpoint-roots.c',
 +  'crucible-checkpoint-restore.c',
 +  'crucible-hot-fork-plugin-child.c',
    'dirtylimit.c',
    'dma-helpers.c',
    'exit-with-parent.c',
-@@ -37,5 +40,8 @@ system_ss.add(when: 'CONFIG_DEVICE_TREE',
+@@ -37,5 +41,8 @@ system_ss.add(when: 'CONFIG_DEVICE_TREE',
                if_true: [fdt, files('device_tree.c')],
                if_false: files('device_tree-stub.c'))
  if host_os == 'linux'
@@ -138359,6 +139833,83 @@ index 00fed791cce124ed7b31b785f09d771dfef09390..8e14228aa2987df00f2fa35ee895d21b
              error_setg(errp, "Device %s is already in the "
                               "process of unplug", id);
              return;
+diff --git a/system/qtest.c b/system/qtest.c
+index cf301239177416bf0e4b9856dfaafda05f701f06..31e562aee1cd473eef28f4a7beb8b6ac6a3b7963 100644
+--- a/system/qtest.c
++++ b/system/qtest.c
+@@ -12,6 +12,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/crucible-endpoint-roots.h"
+ #include "qapi/error.h"
+ #include "system/qtest.h"
+ #include "system/runstate.h"
+@@ -56,6 +57,7 @@ static DeviceState *irq_intercept_dev;
+ static FILE *qtest_log_fp;
+ static QTest *qtest;
+ static GString *inbuf;
++static GString *qtest_inproc_inbuf;
+ static int irq_levels[MAX_IRQ];
+ static GTimer *timer;
+ static bool qtest_opened;
+@@ -933,6 +935,8 @@ static bool qtest_server_start(QTest *q, Error **errp)
+ void qtest_server_set_send_handler(void (*send)(void*, const char*),
+                                    void *opaque)
+ {
++    qemu_crucible_endpoint_root_input_guard(CRUCIBLE_ENDPOINT_QTEST);
++
+     qtest_server_send = send;
+     qtest_server_send_opaque = opaque;
+ }
+@@ -944,14 +948,15 @@ bool qtest_driver(void)
+ 
+ void qtest_server_inproc_recv(void *dummy, const char *buf)
+ {
+-    static GString *gstr;
+-    if (!gstr) {
+-        gstr = g_string_new(NULL);
++    qemu_crucible_endpoint_root_input_guard(CRUCIBLE_ENDPOINT_QTEST);
++
++    if (!qtest_inproc_inbuf) {
++        qtest_inproc_inbuf = g_string_new(NULL);
+     }
+-    g_string_append(gstr, buf);
+-    if (gstr->str[gstr->len - 1] == '\n') {
+-        qtest_process_inbuf(NULL, gstr);
+-        g_string_truncate(gstr, 0);
++    g_string_append(qtest_inproc_inbuf, buf);
++    if (qtest_inproc_inbuf->str[qtest_inproc_inbuf->len - 1] == '\n') {
++        qtest_process_inbuf(NULL, qtest_inproc_inbuf);
++        g_string_truncate(qtest_inproc_inbuf, 0);
+     }
+ }
+ 
+@@ -1072,11 +1077,24 @@ static void qtest_finalize(Object *obj)
+     object_unref(q->chr);
+ }
+ 
++static void qtest_endpoint_instance_init(Object *obj)
++{
++    qemu_crucible_endpoint_root_allocate(CRUCIBLE_ENDPOINT_QTEST);
++}
++
++int qtest_crucible_endpoint_root_empty(void)
++{
++    return qtest || qtest_allowed || qtest_log_fp || inbuf ||
++           qtest_inproc_inbuf ||
++           qtest_server_send || qtest_server_send_opaque ? -ENOTSUP : 0;
++}
++
+ static const TypeInfo qtest_info = {
+     .name = TYPE_QTEST,
+     .parent = TYPE_OBJECT,
+     .class_init = qtest_class_init,
+     .instance_finalize = qtest_finalize,
++    .instance_init = qtest_endpoint_instance_init,
+     .instance_size = sizeof(QTest),
+     .interfaces = (const InterfaceInfo[]) {
+         { TYPE_USER_CREATABLE },
 diff --git a/system/rtc.c b/system/rtc.c
 index 018609a4f9a4f56b5e3485f82513ab6ceebb3501..74dc67b8b0e01b3518e6c48513a2653d78bd3141 100644
 --- a/system/rtc.c
@@ -201563,6 +203114,122 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..168b74b3aa684659383bec991a328d8b
  }
  
  void aio_context_set_thread_pool_params(AioContext *ctx, int64_t min,
+diff --git a/util/crucible-endpoint-roots.c b/util/crucible-endpoint-roots.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8041e6515fef7c65ff0c2cb793d3554ed24949f
+--- /dev/null
++++ b/util/crucible-endpoint-roots.c
+@@ -0,0 +1,110 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Original early allocation history and nonblocking zero-class admission. */
++#include "qemu/osdep.h"
++#include "qemu/atomic.h"
++#include "qemu/error-report.h"
++#include "qemu/crucible-endpoint-roots.h"
++
++#define ENDPOINT_HELD (UINT64_C(1) << 63)
++#define ENDPOINT_ALLOCATIONS (ENDPOINT_HELD - 1)
++
++static bool endpoint_observation_enabled;
++static pid_t endpoint_original_process;
++static uint64_t endpoint_state[CRUCIBLE_ENDPOINT_ROOT_KINDS];
++
++static G_NORETURN void endpoint_refuse(void)
++{
++    /* A producer request is not a complete stopped or NoEffects receipt. The
++     * original child and journals must be supervised with effects unknown. */
++    error_report("Crucible original endpoint lifetime refused: input or "
++                 "allocation has no original source effect cut");
++    /* Do not invoke QEMU atexit/plugin cleanup or acquire their BQL here. */
++    _exit(125);
++}
++
++void qemu_crucible_endpoint_roots_enable_early(void)
++{
++    assert(!qatomic_read(&endpoint_observation_enabled));
++    endpoint_original_process = getpid();
++    qatomic_store_release(&endpoint_observation_enabled, true);
++}
++
++void qemu_crucible_endpoint_root_allocate(CrucibleEndpointRootKind kind)
++{
++    uint64_t observed;
++
++    if (!qatomic_load_acquire(&endpoint_observation_enabled)) {
++        return;
++    }
++    if (getpid() != endpoint_original_process ||
++        kind < 0 || kind >= CRUCIBLE_ENDPOINT_ROOT_KINDS) {
++        endpoint_refuse();
++    }
++
++    observed = qatomic_read(&endpoint_state[kind]);
++    for (;;) {
++        uint64_t previous;
++
++        if ((observed & ENDPOINT_HELD) ||
++            (observed & ENDPOINT_ALLOCATIONS) == ENDPOINT_ALLOCATIONS) {
++            endpoint_refuse();
++        }
++        /* Reservation precedes allocation. A racing original constructor is
++         * therefore visible to HOLD even before QOM or list publication. */
++        previous = qatomic_cmpxchg(&endpoint_state[kind], observed,
++                                  observed + 1);
++        if (previous == observed) {
++            return;
++        }
++        observed = previous;
++    }
++}
++
++void qemu_crucible_endpoint_root_input_guard(CrucibleEndpointRootKind kind)
++{
++    /* A direct producer need not create a QOM object. Retain its original
++     * entry in the same monotone history before it mutates or publishes state,
++     * so an earlier transient producer cannot disappear into an empty census. */
++    qemu_crucible_endpoint_root_allocate(kind);
++}
++
++bool qemu_crucible_endpoint_root_held_without_receiver(
++    CrucibleEndpointRootKind kind)
++{
++    uint64_t original;
++
++    if (!qatomic_load_acquire(&endpoint_observation_enabled)) {
++        return false;
++    }
++    if (getpid() != endpoint_original_process ||
++        kind < 0 || kind >= CRUCIBLE_ENDPOINT_ROOT_KINDS) {
++        endpoint_refuse();
++    }
++    original = qatomic_read(&endpoint_state[kind]);
++    if (!(original & ENDPOINT_HELD)) {
++        return false;
++    }
++    if (original & ENDPOINT_ALLOCATIONS) {
++        endpoint_refuse();
++    }
++    return true;
++}
++
++int qemu_crucible_endpoint_roots_hold_empty(void)
++{
++    bool nonempty = false;
++
++    if (!qatomic_load_acquire(&endpoint_observation_enabled) ||
++        getpid() != endpoint_original_process) {
++        return -EPERM;
++    }
++    for (unsigned int kind = 0; kind < CRUCIBLE_ENDPOINT_ROOT_KINDS; kind++) {
++        uint64_t original = qatomic_fetch_or(&endpoint_state[kind],
++                                             ENDPOINT_HELD);
++        nonempty |= (original & ENDPOINT_ALLOCATIONS) != 0;
++
++    }
++    /* All holds survive a refused class, retry, failure or caller drop. No
++     * registry is adopted after the fact and no generic RELEASE exists. */
++    return nonempty ? -ENOTSUP : 0;
++}
 diff --git a/util/crucible-hot-fork-child.c b/util/crucible-hot-fork-child.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..e7eee6cdc9d8a4c33a3545864fd8b1931a7d29ae
@@ -203698,10 +205365,17 @@ index 65e5dbcc941bd2d397c42befad5b212959329714..d86c66d40d6fca1d7120748e7d31228b
  
  /* Functions to operate on the main QEMU AioContext.  */
 diff --git a/util/meson.build b/util/meson.build
-index fa174c07a57a422f19315e990147ea9364782ba7..c4c9cb0b7e7bbcb42a7de312f7a038debdd4039c 100644
+index fa174c07a57a422f19315e990147ea9364782ba7..2376112dfe2e5bb3f8546561dc9006a809ac67c8 100644
 --- a/util/meson.build
 +++ b/util/meson.build
-@@ -71,6 +71,7 @@ if have_system
+@@ -1,4 +1,5 @@
+-util_ss.add(files('osdep.c', 'cutils.c', 'unicode.c', 'qemu-timer-common.c'))
++util_ss.add(files('osdep.c', 'cutils.c', 'unicode.c', 'qemu-timer-common.c',
++                  'crucible-endpoint-roots.c'))
+ util_ss.add(files('thread-context.c'), numa)
+ if host_os != 'windows'
+   util_ss.add(files('aio-posix.c'))
+@@ -71,6 +72,7 @@ if have_system
    util_ss.add(files('crc-ccitt.c'))
    util_ss.add(when: gio, if_true: files('dbus.c'))
    if host_os == 'linux'
@@ -203709,7 +205383,7 @@ index fa174c07a57a422f19315e990147ea9364782ba7..c4c9cb0b7e7bbcb42a7de312f7a038de
      util_ss.add(files('userfaultfd.c'))
    endif
  endif
-@@ -83,6 +84,7 @@ if have_block or have_ga
+@@ -83,6 +85,7 @@ if have_block or have_ga
    util_ss.add(files('qemu-coroutine.c', 'qemu-coroutine-lock.c', 'qemu-coroutine-io.c'))
    util_ss.add(files(f'coroutine-@coroutine_backend@.c'))
    util_ss.add(files('thread-pool.c', 'qemu-timer.c'))

@@ -596,6 +596,50 @@ replaced. This stage does not qualify reconnect, loss during uncertain native
 execution, complete vendor conformance or ordinary provider Ready admission.
 Broader hermetic package qualification remains pending.
 
+## Native root construction and retained transport ownership
+
+The fixed microvm construction protocol records source-authenticated board,
+timer, CPU, IRQ and endpoint facts under explicit protocol editions. Native
+registration retains the original initialization ACK, administrative FIFO, RUN
+transport and teardown custody. Callback userdata remains pinned for the
+registered process lifetime. Pending transport operations preserve their
+original request and reply rather than block unrelated callbacks or substitute
+a new operation.
+
+The native epoch acquisition callback still clears its output and refuses with
+`EAGAIN`. No execution epoch is issued. Root construction does not qualify
+RootSeal, peer-input closure, effects, Ready, capture or fork. The recorded
+instruction-then-timers mapping remains inert; a production finite dispatcher
+and its distinct mapping edition are required before execution. The default
+administrative edition and ordinary worker path remain unchanged.
+
+The signed atomic native source is commit
+`c1ca2f5d3f6593cc5620de25a0f39d3797229750`, with patch SHA256
+`ec380a206d67caaca306d2e21f8472fdc64ad02e3f81d44f826102213cf85cb9`.
+Its complete source bundle, licenses and mandatory source-derived fixtures are
+co-retained. Regeneration passes for the complete default two-ISA build. The
+new fixtures include 20 compiled causal mutants and 34 guard-before-effect
+checks, alongside the unchanged existing proofs. Their modeled admission
+conditions do not establish production execution authority.
+
+Central checks pass all three affected native packages' test targets, 37
+source-quality cases and strict all-target checks across nine crates. The test
+output reports 1,828 passes including nested test runners; this is not a count
+of distinct cases. ABI conformance and the hermetic application test-target
+build also pass. Full license-boundary qualification is recorded separately
+when its complete package run finishes.
+
+The installed matched QEMU/plugin pair passes the actual held-epoch refusal
+and eight preserved ownership/transport selectors. A separate source diagnostic
+pair passes 23 actual cumulative custody probes, including IRQ, reset, endpoint
+and foreign-thread adversaries. That diagnostic binary has the exact enrolled
+native source but its original diagnostic build identity; these 23 probes are
+not attributed to the installed package. An initial mismatched plugin correctly
+refuses identity authentication. A later installed endpoint fixture stops
+because stripping removes its required private source symbol. Both original
+failed cohorts remain retained locally, and neither is presented as a passing
+native semantic test.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

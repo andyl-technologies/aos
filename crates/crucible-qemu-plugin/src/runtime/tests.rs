@@ -408,7 +408,11 @@ fn wait_until_callback_admission_closed(quiescence: &LiveCallbackQuiescence) {
     panic!("teardown worker did not close callback admission");
 }
 
-fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStream>) {
+/// Creates an actual paired RUN lifecycle for sibling retention tests.
+///
+/// # Panics
+/// Panics when the test socket pair or original setup handshake fails.
+pub(super) fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStream>) {
     let (mut host, plugin_socket) = UnixStream::pair()
         .unwrap_or_else(|error| panic!("control socket pair should open: {error}"));
     let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)

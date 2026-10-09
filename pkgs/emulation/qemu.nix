@@ -1889,6 +1889,15 @@ in
                 "$PWD" "$CC" "$PWD/native-fwcfg-root-proof" --mutations
               ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-root-argv.py \
                 "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64"
+              # Compile dormant epoch and actual held-writer gates. Native
+              # owner eligibility remains modeled; no callback/effect is admitted.
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-held-roots-guards.py "$PWD"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-held-roots-model.py \
+                "$PWD" "$CC" "$PWD/native-held-epoch-proof" --case epoch
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-held-roots-model.py \
+                "$PWD" "$CC" "$PWD/native-held-irq-proof" --case irq
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-held-roots-model.py \
+                "$PWD" "$CC" "$PWD/native-held-endpoint-proof" --case endpoint
               ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-guards.py "$PWD"
               ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-model.py \
                 "$PWD" "$CC" "$PWD/kvm-userspace-exit-proof"

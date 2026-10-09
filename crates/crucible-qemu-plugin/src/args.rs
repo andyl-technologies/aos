@@ -18,6 +18,7 @@ mod native_administration;
 mod native_initialization;
 mod native_node;
 mod native_phase;
+mod native_root;
 pub use native_administration::NativeAdministrationConfig;
 pub use native_initialization::NativeInitializationConfig;
 pub use native_node::{
@@ -25,6 +26,7 @@ pub use native_node::{
     PLUGIN_ARG_NODE_CONTROL_VERSION,
 };
 pub use native_phase::NativePhaseConfig;
+pub use native_root::NativeFixedMicrovmConfig;
 mod resource_limits;
 mod whitebox;
 pub use app_random::{

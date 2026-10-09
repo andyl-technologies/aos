@@ -101,6 +101,26 @@ impl NativeNodeControl {
             .map_err(|_| std::io::Error::other("source refused original native reader enrollment"))
     }
 
+    pub(crate) fn with_construction_reducer(mut self) -> Result<Self, NativeCommandError> {
+        let actor = self
+            .administrative_actor
+            .as_ref()
+            .ok_or(NativeCommandError::Conflict)?;
+        self.construction = Some(
+            super::super::construction_reducer::NativeConstructionReducer::new(
+                Arc::clone(actor),
+                Arc::clone(
+                    self.initialization
+                        .as_ref()
+                        .ok_or(NativeCommandError::Conflict)?,
+                ),
+                self.preparation_successor.as_ref().map(Arc::clone),
+                1024,
+            )?,
+        );
+        Ok(self)
+    }
+
     fn run_administration_reader(
         &'static self,
         started: std::sync::mpsc::SyncSender<Result<(), NativeCommandError>>,
@@ -129,15 +149,54 @@ impl NativeNodeControl {
             self.fail_administration();
             return;
         };
+        let mut pending_construction = None;
         loop {
+            if self
+                .construction
+                .as_ref()
+                .is_some_and(|construction| construction.recover().is_err())
+            {
+                self.fail_administration();
+                return;
+            }
+            if let (Some(construction), Some(cursor)) = (&self.construction, pending_construction) {
+                match construction.try_admit(actor, cursor) {
+                    Ok(true) => {
+                        pending_construction = None;
+                        if let Some(notify) = self.protocol_notify
+                            && notify() != 0
+                        {
+                            self.fail_administration();
+                            return;
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(_) => {
+                        self.fail_administration();
+                        return;
+                    }
+                }
+            }
             let mut readiness = libc::pollfd {
                 fd: descriptor,
-                events: libc::POLLIN,
+                // Original-cursor retries cannot admit a later packet, even
+                // when the socket already contains more administrative input.
+                events: if pending_construction.is_some() {
+                    0
+                } else {
+                    libc::POLLIN
+                },
                 revents: 0,
             };
             // SAFETY: The process-lifetime actor owns this descriptor. Only this
             // reader dequeues packets; poll observes availability without effects.
-            let result = unsafe { libc::poll(&mut readiness, 1, -1) };
+            // This administrative retry interval recovers only cached original
+            // responses after socket backpressure. It neither advances guest
+            // time nor admits HOME or guest execution; the old lane still waits
+            // indefinitely. No source callback waits for this reader under BQL.
+            let timeout = if self.construction.is_some() { 50 } else { -1 };
+            // SAFETY: The retained actor owns the descriptor; poll writes only this one live record.
+            let result = unsafe { libc::poll(&mut readiness, 1, timeout) };
             if result < 0
                 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
             {
@@ -148,6 +207,45 @@ impl NativeNodeControl {
             {
                 self.fail_administration();
                 return;
+            }
+            if pending_construction.is_some() {
+                continue;
+            }
+            if let Some(construction) = &self.construction {
+                match actor.receive_one() {
+                    Ok(NativeAdministrativeReceive::Empty) => continue,
+                    Ok(NativeAdministrativeReceive::Retained(cursor, _)) => {
+                        let frame = actor.original_frame(cursor);
+                        let result = if matches!(frame, Ok(NativeFrame::QueryAdministration { .. }))
+                        {
+                            self.reply_original_administration(actor, custody, cursor)
+                        } else {
+                            match construction.try_admit(actor, cursor) {
+                                Ok(true) => Ok(()),
+                                Ok(false) => {
+                                    pending_construction = Some(cursor);
+                                    continue;
+                                }
+                                Err(error) => Err(error),
+                            }
+                        };
+                        if result.is_err() {
+                            self.fail_administration();
+                            return;
+                        }
+                        if let Some(notify) = self.protocol_notify
+                            && notify() != 0
+                        {
+                            self.fail_administration();
+                            return;
+                        }
+                    }
+                    _ => {
+                        self.fail_administration();
+                        return;
+                    }
+                }
+                continue;
             }
             match actor.receive_one() {
                 Ok(NativeAdministrativeReceive::Empty) => continue,

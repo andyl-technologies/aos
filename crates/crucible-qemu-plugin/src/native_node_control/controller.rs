@@ -39,15 +39,19 @@ struct State {
 /// activation and original complete input custody before calling `retain`.
 /// This correlation mechanism does not qualify complete native queue closure.
 pub(crate) struct NativeNodeControl {
+    pub(super) root_run_control:
+        OnceLock<Arc<crate::runtime::native_run_control::NativeRunControlCustody>>,
+    pub(super) root_policy: Option<super::root_policy::RootPolicyCustody>,
+    construction: Option<super::construction_reducer::NativeConstructionReducer>,
     administration_faulted: AtomicBool,
     pub(super) administrative_actor:
         Option<Arc<super::administrative_inbox::NativeAdministrativeInbox>>,
     pub(super) administration: Option<super::administration_custody::AdministrationCustody>,
-    initialization: Option<super::initialization_custody::InitializationCustody>,
+    initialization: Option<Arc<super::initialization_custody::InitializationCustody>>,
     initialization_registered: AtomicBool,
     phase_projection: Option<super::phase_custody::PhaseProjectionCustody>,
     preparation_successor:
-        Option<super::preparation_successor_custody::PreparationSuccessorCustody>,
+        Option<Arc<super::preparation_successor_custody::PreparationSuccessorCustody>>,
     state: Mutex<State>,
     protocol_worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     worker_gate: OnceLock<Arc<crate::runtime::worker_quiescence::LiveWorkerQuiescence>>,
@@ -65,6 +69,38 @@ pub(crate) struct NativeNodeControl {
 mod administration_reader;
 
 impl NativeNodeControl {
+    /// Borrows only the original installed owners; missing RUN custody stays pending.
+    pub(crate) fn prepare_runtime_epoch_transport(
+        &self,
+        region: &crucible_shmem::MappedSetupRegion,
+        callbacks: Arc<crate::runtime::callback_quiescence::LiveCallbackQuiescence>,
+        workers: Arc<crate::runtime::worker_quiescence::LiveWorkerQuiescence>,
+    ) -> Result<
+        Option<super::preparation_transport::NativePreparationTransportState>,
+        super::preparation_transport::NativePreparationTransportError,
+    > {
+        let (Some(initialization), Some(inbox), Some(run)) = (
+            &self.initialization,
+            &self.administrative_actor,
+            self.root_run_control.get(),
+        ) else {
+            return Ok(None);
+        };
+        super::preparation_transport::NativePreparationTransportState::new(
+            Arc::clone(initialization),
+            callbacks,
+            workers,
+            region,
+            Arc::clone(inbox),
+            Arc::clone(run),
+            super::preparation_transport::NativePreparationTransportCredit {
+                fifo_bytes: 64 * 1024 * 1024,
+                inbox_bytes: 16 * 1024 * 1024,
+            },
+        )
+        .map(Some)
+    }
+
     pub(crate) fn administrative_modeled_workers(
         &self,
     ) -> Option<&Arc<crate::runtime::worker_quiescence::LiveWorkerQuiescence>> {
@@ -77,6 +113,9 @@ impl NativeNodeControl {
     ) -> Result<Self, NativeCommandError> {
         let prepared_scope_hash = scope.identity_digest()?;
         Ok(Self {
+            root_run_control: OnceLock::new(),
+            root_policy: None,
+            construction: None,
             administration_faulted: AtomicBool::new(false),
             administrative_actor: None,
             administration: None,
@@ -204,6 +243,7 @@ impl NativeNodeControl {
                 | NativeFrame::PhaseTimerChunk(_)
                 | NativeFrame::PreparationSuccessorChunk(_)
                 | NativeFrame::PrepareAdministration(_)
+                | NativeFrame::PrepareFixedMicrovm(_)
                 | NativeFrame::QueryAdministration { .. }
                 | NativeFrame::AdministrationFacts(_)
                 | NativeFrame::PrepareInitialization(_)
@@ -435,7 +475,7 @@ impl NativeNodeControl {
             (self as *const Self).cast_mut().cast(),
         );
         if result == 0 {
-            if self.register_phase_projection().is_err() {
+            if self.register_phase_projection().is_err() || self.register_root_policy().is_err() {
                 // Native control already retains callbacks into this library.
                 // An ordinary error return could unload still-referenced code.
                 std::process::abort();

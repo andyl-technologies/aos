@@ -179,3 +179,45 @@ fn malformed_response_cannot_be_followed_by_a_new_successful_enrollment() {
     assert!(transport.request_original().is_err());
     assert!(transport.receive_original().is_err());
 }
+
+#[test]
+fn fixed_root_bootstrap_binds_actual_measured_socket_and_preserves_all_companions() {
+    let phase = phase();
+    let parameters = super::super::super::root::NativeFixedMicrovmParameters {
+        policy_digest: [15; 32],
+        firmware_sha256: [16; 32],
+        firmware_length: U64::new(65536),
+        ram_length: U64::new(32 * 1024 * 1024),
+        seed: U64::new(8254),
+        maximum_service_span: U64::new(64),
+        maximum_callbacks: 64,
+        mapping: crucible_protocol::node_control::NativeFixedMicrovmMapping::InstructionThenTimers,
+    };
+    let (transport, endpoint) = NativeAdministrationTransport::prepare_fixed_microvm(
+        phase.clone(),
+        [14; 32],
+        9,
+        parameters,
+    )
+    .unwrap();
+    assert_eq!(endpoint.edition(), NativeControlEdition::FixedMicrovm);
+    let preparation = transport.fixed_microvm_preparation().unwrap();
+    assert_eq!(preparation.administration, *transport.preparation());
+    assert_eq!(preparation.administration.phase, phase);
+    assert_eq!(
+        preparation.maximum_microstep,
+        preparation.administration.phase.maximum_microstep
+    );
+    let provider = NativeChannel::from_prepared_socket_for_edition(
+        endpoint.into_socket(),
+        NativeControlEdition::FixedMicrovm,
+    )
+    .unwrap();
+    assert_eq!(
+        provider.receive().unwrap(),
+        Some(NativeFrame::PrepareFixedMicrovm(Box::new(
+            preparation.clone()
+        )))
+    );
+    assert!(provider.receive().unwrap().is_none());
+}

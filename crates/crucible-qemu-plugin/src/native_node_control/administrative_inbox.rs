@@ -114,6 +114,27 @@ impl NativeAdministrativeInbox {
         Ok(self.try_mailbox()?.socket_identity())
     }
 
+    /// Copies original consumed packets and credits without dequeuing kernel data.
+    ///
+    /// The real mailbox remains owned separately and may retain later bounded
+    /// administrative replies. This historical image is not a peer-write fence.
+    ///
+    /// # Errors
+    /// Refuses poison or exhausted image credit. None reports only busy custody.
+    pub(crate) fn try_snapshot(
+        &self,
+        maximum_bytes: usize,
+    ) -> Result<Option<Vec<u8>>, NativeAdministrativeInboxError> {
+        let mailbox = match self.mailbox.try_lock() {
+            Ok(mailbox) => mailbox,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(NativeAdministrativeInboxError::Poisoned);
+            }
+        };
+        Ok(Some(mailbox.snapshot(maximum_bytes)?))
+    }
+
     /// Retains one complete original packet with response credit before dequeue.
     ///
     /// # Errors
@@ -164,6 +185,31 @@ impl NativeAdministrativeInbox {
         Ok(self.try_mailbox()?.reserve_reply(cursor)?)
     }
 
+    /// Recovers original construction reply credit before native admission.
+    ///
+    /// # Errors
+    /// Refuses busy custody, an unknown original request or invalid reply credit.
+    pub(crate) fn reserve_construction_reply(
+        &self,
+        cursor: u64,
+    ) -> Result<NativeAdministrativeReplyCredit, NativeAdministrativeInboxError> {
+        Ok(self.try_mailbox()?.reserve_construction_reply(cursor)?)
+    }
+
+    /// Consumes credit only while holding the actual original mailbox ledger.
+    ///
+    /// # Errors
+    /// Refuses missing credit, poisoned custody, changed correlation or bytes.
+    pub(crate) fn retain_construction_reply(
+        &self,
+        credit: &mut Option<NativeAdministrativeReplyCredit>,
+        frame: &NativeFrame,
+    ) -> Result<(), NativeAdministrativeInboxError> {
+        let mut mailbox = self.try_mailbox()?;
+        let credit = credit.take().ok_or(NativeAdministrativeInboxError::Busy)?;
+        Ok(mailbox.retain_reply(credit, frame)?)
+    }
+
     /// Retains an independently authenticated original reply before socket publication.
     ///
     /// # Errors
@@ -192,7 +238,7 @@ impl NativeAdministrativeInbox {
     // crucible-lint: allow rust-allow -- This private test helper deliberately panics when ledger custody is poisoned.
     // crucible-lint: allow panic-shortcut -- Child tests hold this exact ledger to verify contention and poison refusal.
     #[allow(clippy::unwrap_used)]
-    fn test_hold_mailbox(&self) -> MutexGuard<'_, NativeAdministrativeMailbox> {
+    pub(super) fn test_hold_mailbox(&self) -> MutexGuard<'_, NativeAdministrativeMailbox> {
         self.mailbox.lock().unwrap()
     }
 

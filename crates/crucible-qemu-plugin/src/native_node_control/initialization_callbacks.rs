@@ -38,7 +38,10 @@ impl NativeNodeControl {
         let query = initialization_abi::resolve_query_initialization_cut().ok_or(
             NativeCommandError::Invalid("native initialization source API unavailable"),
         )?;
-        self.initialization = Some(InitializationCustody::new(preparation, query)?);
+        self.initialization = Some(std::sync::Arc::new(InitializationCustody::new(
+            preparation,
+            query,
+        )?));
         Ok(self)
     }
 
@@ -195,6 +198,13 @@ extern "C" fn get_initialization_command(
         owner.fail_initialization();
         return false;
     }
+    if let Some(construction) = &owner.construction {
+        // A busy reader keeps original custody; its retry recovers this cache.
+        if construction.recover().is_err() {
+            owner.fail_initialization();
+            return false;
+        }
+    }
     let Some(command) = initialization.command() else {
         return false;
     };
@@ -235,6 +245,12 @@ extern "C" fn publish_initialization_receipt(
     }
     if retained.status == crucible_protocol::node_control::NativeInitializationStatus::Applied
         && owner.observe_preparation_successor(&retained).is_err()
+    {
+        owner.fail_initialization();
+        return;
+    }
+    if let Some(construction) = &owner.construction
+        && construction.recover().is_err()
     {
         owner.fail_initialization();
         return;

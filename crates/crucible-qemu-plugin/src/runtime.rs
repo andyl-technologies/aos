@@ -11,6 +11,8 @@
 pub(crate) mod callback_quiescence;
 pub(crate) mod live_callbacks;
 mod live_whitebox;
+pub(crate) mod native_run_control;
+mod root_epoch_callbacks;
 pub(crate) mod worker_quiescence;
 
 use callback_quiescence::LiveCallbackQuiescence;
@@ -350,6 +352,7 @@ impl OwnedCallbackRegistrationMask {
 /// owned callback may be registered. The allocation remains pinned while the
 /// proof is live, so moving the proof never moves callback-addressable state.
 pub(crate) struct OwnedCallbackRuntimeState {
+    root_epoch: root_epoch_callbacks::NativeRuntimeRootEpoch,
     quiescence: Arc<LiveCallbackQuiescence>,
     workers: Arc<LiveWorkerQuiescence>,
     teardown_router: Arc<LiveRuntimeTeardownRouter>,
@@ -382,6 +385,7 @@ impl OwnedCallbackRuntimeState {
         request_shutdown: QemuRequestShutdownFn,
     ) -> Pin<Box<Self>> {
         Box::pin(Self {
+            root_epoch: root_epoch_callbacks::NativeRuntimeRootEpoch::new(),
             quiescence: Arc::new(LiveCallbackQuiescence::new()),
             workers: crate::native_node_control::registered_owner()
                 .and_then(|owner| owner.administrative_modeled_workers())
@@ -981,10 +985,23 @@ impl OwnedCallbackRuntimeState {
 /// a logical milestone. It can be constructed only after the exact callback
 /// mask for the selected launch mode is complete.
 pub struct RequiredOwnedCallbacksRegistered {
-    state: Pin<Box<OwnedCallbackRuntimeState>>,
+    state: std::mem::ManuallyDrop<Pin<Box<OwnedCallbackRuntimeState>>>,
     registration_mask: OwnedCallbackRegistrationMask,
     #[cfg(test)]
     _teardown_receiver: Option<mpsc::Receiver<LiveRuntimeTeardownTrigger>>,
+}
+
+impl Drop for RequiredOwnedCallbacksRegistered {
+    fn drop(&mut self) {
+        if self.state.root_epoch.is_registered() {
+            // Native V9 has no unregister operation. Keep exact userdata, setup
+            // mapping and all original holds alive until the child process exits.
+            return;
+        }
+        // SAFETY: This is the sole drop of the ordinary unregistered allocation;
+        // the epoch case above intentionally retains it for native callbacks.
+        unsafe { std::mem::ManuallyDrop::drop(&mut self.state) };
+    }
 }
 
 impl std::fmt::Debug for RequiredOwnedCallbacksRegistered {
@@ -1002,7 +1019,7 @@ impl RequiredOwnedCallbacksRegistered {
         registration_mask: OwnedCallbackRegistrationMask,
     ) -> Self {
         Self {
-            state,
+            state: std::mem::ManuallyDrop::new(state),
             registration_mask,
             #[cfg(test)]
             _teardown_receiver: None,
@@ -1476,6 +1493,7 @@ fn plugin_resource_manifest(
     crate::native_node_control::RegisteredResourceManifest::from_prepared(
         legacy,
         args.native_node_control(),
+        callbacks.state.root_epoch.is_registered(),
     )
     .ok_or(PluginRuntimeInstallError::ResourceManifestShape)
 }
@@ -2187,8 +2205,14 @@ impl OwnedCallbackRegistrar for FailClosedOwnedCallbackRegistrar {
     fn register(
         &self,
         args: &PluginArgs,
-        state: Pin<&mut OwnedCallbackRuntimeState>,
+        mut state: Pin<&mut OwnedCallbackRuntimeState>,
     ) -> Result<OwnedCallbackRegistrationMask, OwnedCallbackRegistrationError> {
+        let userdata = state.as_mut().userdata();
+        state
+            .as_ref()
+            .get_ref()
+            .root_epoch
+            .register(args, userdata)?;
         self.live_vcpu_time.register(args, state)
     }
 }
@@ -2616,12 +2640,51 @@ where
                 };
                 let reader_sender = teardown_sender.clone();
                 let control_workers = callbacks_registered.worker_quiescence();
+                enum RunControlOwner {
+                    FixedRoot(Arc<native_run_control::NativeRunControlCustody>),
+                    Legacy(ControlLifecycleStream<UnixStream>),
+                }
+                let control_owner = if let Some(owner) =
+                    crate::native_node_control::registered_owner()
+                    && owner.registered_root_commitment().is_some()
+                {
+                    let preparation =
+                        native_run_control::NativeRunControlCustody::prepare(control_stream);
+                    if owner
+                        .install_root_run_control(Arc::clone(&preparation.owner), &control_workers)
+                        .is_err()
+                    {
+                        fatal_policy.terminate(PluginRuntimeInstallError::RootRunControl {
+                            source: std::io::Error::other(
+                                "original ROOT RUN owner could not be retained",
+                            ),
+                        });
+                    }
+                    if let Err(error) = preparation.status {
+                        fatal_policy.terminate(PluginRuntimeInstallError::RootRunControl {
+                            source: std::io::Error::other(error),
+                        });
+                    }
+                    RunControlOwner::FixedRoot(preparation.owner)
+                } else {
+                    RunControlOwner::Legacy(control_stream)
+                };
                 let control_reader = match std::thread::Builder::new()
                     .name(String::from("crucible-run-control"))
                     .spawn(move || {
                         run_runtime_thread_fail_loud("RUN control reader", || {
-                            let _delivered =
-                                run_control_reader(control_stream, reader_sender, control_workers);
+                            let _delivered = match control_owner {
+                                RunControlOwner::FixedRoot(custody) => {
+                                    native_run_control::run_reader(
+                                        custody,
+                                        reader_sender,
+                                        control_workers,
+                                    )
+                                }
+                                RunControlOwner::Legacy(control) => {
+                                    run_control_reader(control, reader_sender, control_workers)
+                                }
+                            };
                         });
                     }) {
                     Ok(reader) => reader,
@@ -2859,6 +2922,12 @@ pub enum PluginRuntimeInstallError {
     TeardownSlot {
         /// Underlying mapped-region access error.
         source: crucible_shmem::MappedSetupRegionAccessError,
+    },
+    /// The original fixed-root RUN socket could not be retained in installed custody.
+    #[error("retaining original fixed-root run-control failed: {source}")]
+    RootRunControl {
+        /// Underlying lifecycle, endpoint or retained-owner failure.
+        source: std::io::Error,
     },
     /// The lifecycle control worker thread could not be started.
     #[error("spawning plugin run-control worker failed: {source}")]

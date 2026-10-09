@@ -54,7 +54,9 @@ pub(crate) fn install(
             super::writer_abi::resolve_query_writers()
                 .ok_or(NativeControlInstallError::MissingCapability)?,
         ),
-        crucible_protocol::node_control::NativeControlEdition::Administration => Some(
+        crucible_protocol::node_control::NativeControlEdition::Administration
+        | crucible_protocol::node_control::NativeControlEdition::Construction
+        | crucible_protocol::node_control::NativeControlEdition::FixedMicrovm => Some(
             super::writer_abi::resolve_query_writers()
                 .ok_or(NativeControlInstallError::MissingCapability)?,
         ),
@@ -69,6 +71,7 @@ pub(crate) fn install(
     }
     let mut actor = None;
     let mut administration = None;
+    let mut root_preparation = None;
     let first = if config.administration().is_some() {
         let owner = std::sync::Arc::new(
             super::administrative_inbox::NativeAdministrativeInbox::from_pinned_endpoint(
@@ -104,6 +107,29 @@ pub(crate) fn install(
             .receive()?
     };
     let (plan, initialization, phase) = match (first, config.initialization()) {
+        (Some(NativeFrame::PrepareFixedMicrovm(preparation)), Some(pinned))
+            if config
+                .fixed_microvm()
+                .is_some_and(|pin| pin.matches(&preparation) == Ok(true))
+                && pinned.matches(&preparation.administration.phase.initialization)?
+                && config.phase().is_some_and(|pin| {
+                    pin.matches(&preparation.administration.phase) == Ok(true)
+                })
+                && config
+                    .administration()
+                    .is_some_and(|pin| pin.matches(&preparation.administration) == Ok(true))
+                && preparation.administration.descriptor_slot == config.descriptor() =>
+        {
+            let phase = preparation.administration.phase.clone();
+            administration = Some(preparation.administration.clone());
+            root_preparation = Some(*preparation);
+            (
+                phase.initialization.preparation.clone(),
+                Some(phase.initialization.clone()),
+                Some(phase),
+            )
+        }
+
         (Some(NativeFrame::PrepareAdministration(preparation)), Some(pinned))
             if config
                 .administration()
@@ -182,12 +208,28 @@ pub(crate) fn install(
         (None, None) => control,
         _ => return Err(NativeControlInstallError::MissingPreparation),
     };
-    let control = if config.edition()
-        == crucible_protocol::node_control::NativeControlEdition::PreparationSuccessor
-    {
+    let control = if matches!(
+        config.edition(),
+        crucible_protocol::node_control::NativeControlEdition::PreparationSuccessor
+            | crucible_protocol::node_control::NativeControlEdition::Construction
+            | crucible_protocol::node_control::NativeControlEdition::FixedMicrovm
+    ) {
         control.with_preparation_successor()?
     } else {
         control
+    };
+    let control = if matches!(
+        config.edition(),
+        crucible_protocol::node_control::NativeControlEdition::Construction
+            | crucible_protocol::node_control::NativeControlEdition::FixedMicrovm
+    ) {
+        control.with_construction_reducer()?
+    } else {
+        control
+    };
+    let control = match root_preparation {
+        Some(preparation) => control.with_fixed_microvm(preparation)?,
+        None => control,
     };
     // Callback ownership lasts until process termination. A leaked transport
     // token cannot drop this controller or its unresolved native journal.
@@ -229,8 +271,7 @@ fn validate_descriptor(descriptor: i32) -> Result<(), NativeControlInstallError>
     let mut address = std::mem::MaybeUninit::<libc::sockaddr_storage>::zeroed();
     let mut address_length = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
     let result = unsafe {
-        // SAFETY: Both writable buffers have their declared sizes; a successful
-        // call initializes the reported prefix before its address family is read.
+        // SAFETY: The zeroed address storage and its writable length outlive this metadata call.
         libc::getpeername(descriptor, address.as_mut_ptr().cast(), &mut address_length)
     };
     if result != 0 || address_length < std::mem::size_of::<libc::sa_family_t>() as libc::socklen_t {

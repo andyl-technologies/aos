@@ -376,3 +376,24 @@ fn wait_for_native_reader(mut predicate: impl FnMut() -> bool) {
         std::thread::yield_now();
     }
 }
+
+#[test]
+fn unregistered_native_root_cannot_adopt_an_original_control_owner() {
+    let (_peer, socket) = std::os::unix::net::UnixStream::pair().unwrap();
+    let lifecycle =
+        crucible_protocol::ControlLifecycleStream::connected_unix_stream(socket).unwrap();
+    let custody =
+        crate::runtime::native_run_control::NativeRunControlCustody::prepare(lifecycle).owner;
+    let original = custody.snapshot().unwrap();
+    let workers = crate::runtime::worker_quiescence::LiveWorkerQuiescence::new(
+        crate::runtime::worker_quiescence::WORKER_REQUIRED,
+    );
+    let root = owner();
+
+    assert!(
+        root.install_root_run_control(std::sync::Arc::clone(&custody), &workers)
+            .is_err()
+    );
+    assert!(root.root_run_control.get().is_none());
+    assert_eq!(custody.snapshot().unwrap(), original);
+}

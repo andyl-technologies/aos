@@ -365,6 +365,27 @@ impl NativeAdministrativeMailbox {
         })
     }
 
+    pub(crate) fn reserve_construction_reply(
+        &mut self,
+        cursor: u64,
+    ) -> Result<NativeAdministrativeReplyCredit, NativeAdministrativeError> {
+        let frame = self.decode_original(cursor)?;
+        if matches!(frame, NativeFrame::Initialize(_)) {
+            let record = self
+                .records
+                .get(&cursor)
+                .ok_or(NativeAdministrativeError::Conflict)?;
+            if self.failed || !record.reply_reserved || record.reply.is_some() {
+                return Err(NativeAdministrativeError::Conflict);
+            }
+            return Ok(NativeAdministrativeReplyCredit {
+                owner: Arc::clone(&self.owner),
+                cursor,
+            });
+        }
+        self.reserve_reply(cursor)
+    }
+
     /// Retains the original authenticated reply before attempting publication.
     ///
     /// The original-object reducer supplies the reply; this mailbox validates
@@ -465,7 +486,6 @@ impl NativeAdministrativeMailbox {
     ///
     /// # Errors
     /// Refuses inadequate caller credit or allocation failure before copying.
-    #[cfg(test)]
     pub(crate) fn snapshot(
         &self,
         maximum_bytes: usize,
@@ -526,6 +546,15 @@ fn reply_matches(original: &NativeFrame, reply: &NativeFrame, scope: [u8; 32]) -
         (NativeFrame::QueryCpuPark(_), NativeFrame::CpuPark(facts)) => {
             facts.prepared_scope_hash == scope
         }
+        (
+            NativeFrame::QueryPreparationSuccessor(query),
+            NativeFrame::PreparationSuccessorChunk(chunk),
+        ) => {
+            chunk.facts.prepared_scope_hash == scope
+                && chunk.facts.initialization_sequence == query.initialization_sequence
+                && chunk.facts.original_cut_digest == query.original_cut_digest
+                && chunk.offset == query.offset
+        }
         (NativeFrame::QueryTimers(query), NativeFrame::TimerChunk(chunk)) => {
             chunk.prepared_scope_hash == scope
                 && chunk.sequence == query.sequence
@@ -544,6 +573,13 @@ fn reply_matches(original: &NativeFrame, reply: &NativeFrame, scope: [u8; 32]) -
         (NativeFrame::QueryInitialization(query), NativeFrame::InitializationCut(cut)) => {
             cut.prepared_scope_hash == scope
                 && cut.initialization_commitment == query.initialization_commitment
+        }
+        (NativeFrame::Initialize(command), NativeFrame::InitializationStopped(receipt)) => {
+            receipt.prepared_scope_hash == scope
+                && receipt.sequence == command.sequence
+                && receipt.initialization_commitment == command.initialization_commitment
+                && receipt.original_cut_digest == command.original_cut_digest
+                && receipt.realize_request_digest == command.realize_request_digest
         }
         (NativeFrame::Acknowledge(original), NativeFrame::Acknowledged(reply)) => original == reply,
         (
@@ -564,6 +600,18 @@ fn classify(
         return NativeAdministrativeClass::Invalid;
     };
     match frame {
+        NativeFrame::PrepareFixedMicrovm(plan)
+            if plan
+                .administration
+                .phase
+                .initialization
+                .preparation
+                .scope
+                .identity_digest()
+                == Ok(scope) =>
+        {
+            NativeAdministrativeClass::Preparation
+        }
         NativeFrame::PrepareAdministration(plan)
             if plan
                 .phase
@@ -593,6 +641,9 @@ fn classify(
             NativeAdministrativeClass::Preparation
         }
         NativeFrame::QueryCpuPark(actual) if actual == scope => {
+            NativeAdministrativeClass::ReadOriginal
+        }
+        NativeFrame::QueryPreparationSuccessor(query) if query.prepared_scope_hash == scope => {
             NativeAdministrativeClass::ReadOriginal
         }
         NativeFrame::QueryTimers(query) if query.prepared_scope_hash == scope => {

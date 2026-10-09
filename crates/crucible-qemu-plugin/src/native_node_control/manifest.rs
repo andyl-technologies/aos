@@ -8,6 +8,7 @@ const NATIVE_WORKER: u64 = 1_u64 << 3;
 const INITIALIZATION: u64 = 1_u64 << 16;
 const PHASE_PROJECTION: u64 = 1_u64 << 17;
 const ADMINISTRATION: u64 = 1_u64 << 18;
+const FIXED_MICROVM: u64 = 1_u64 << 19;
 
 /// Extends the legacy C resource inventory only for a prepared native controller.
 #[repr(C)]
@@ -36,6 +37,12 @@ pub(crate) struct AdministrativeResourceManifest {
     administration_commitment: [u8; 32],
 }
 
+#[repr(C)]
+pub(crate) struct RootResourceManifest {
+    administration: AdministrativeResourceManifest,
+    root_preparation_commitment: [u8; 32],
+}
+
 /// Retains the complete edition-specific object during native registration.
 pub(crate) enum RegisteredResourceManifest {
     Legacy(QemuPluginResourceManifest),
@@ -43,6 +50,8 @@ pub(crate) enum RegisteredResourceManifest {
     Initialized(InitializedResourceManifest),
     Phase(PhaseResourceManifest),
     Administration(AdministrativeResourceManifest),
+    Root(RootResourceManifest),
+    RootEpoch(super::root_epoch_abi::NativeRootEpochManifest),
 }
 
 impl RegisteredResourceManifest {
@@ -50,6 +59,7 @@ impl RegisteredResourceManifest {
     pub(crate) fn from_prepared(
         legacy: QemuPluginResourceManifest,
         config: Option<NativeNodeControlConfig>,
+        epoch_registered: bool,
     ) -> Option<Self> {
         let Some(config) = config else {
             return super::registered_owner()
@@ -116,7 +126,7 @@ impl RegisteredResourceManifest {
             }
             _ => None,
         }?;
-        match (
+        let administration = match (
             config.administration(),
             owner.registered_administration_commitment(),
             phase,
@@ -134,6 +144,44 @@ impl RegisteredResourceManifest {
                 }))
             }
             _ => None,
+        }?;
+        let root = match (
+            config.fixed_microvm(),
+            owner.registered_root_commitment(),
+            administration,
+        ) {
+            (None, None, administration) => Some(administration),
+            (Some(pinned), Some(commitment), Self::Administration(mut administration))
+                if pinned.commitment == commitment =>
+            {
+                let legacy = &mut administration.phase.initialization.native.legacy;
+                legacy.schema_version = 8;
+                legacy.struct_size = 256;
+                legacy.resource_mask |= FIXED_MICROVM;
+                Some(Self::Root(RootResourceManifest {
+                    administration,
+                    root_preparation_commitment: commitment,
+                }))
+            }
+            _ => None,
+        }?;
+        match (config.root_epoch_version(), epoch_registered, root) {
+            (None, false, root) => Some(root),
+            (Some(1), true, Self::Root(mut root)) => {
+                let legacy = &mut root.administration.phase.initialization.native.legacy;
+                legacy.schema_version = 9;
+                legacy.struct_size = 264;
+                legacy.resource_mask |= super::root_epoch_abi::RESOURCE_NATIVE_ROOT_EPOCH;
+                legacy.callback_mask |= super::root_epoch_abi::CALLBACK_NATIVE_ROOT_EPOCH;
+                Some(Self::RootEpoch(
+                    super::root_epoch_abi::NativeRootEpochManifest {
+                        root,
+                        epoch_version: 1,
+                        reserved: 0,
+                    },
+                ))
+            }
+            _ => None,
         }
     }
 
@@ -145,11 +193,23 @@ impl RegisteredResourceManifest {
             Self::Initialized(manifest) => &manifest.native.legacy,
             Self::Phase(manifest) => &manifest.initialization.native.legacy,
             Self::Administration(manifest) => &manifest.phase.initialization.native.legacy,
+            Self::Root(manifest) => &manifest.administration.phase.initialization.native.legacy,
+            Self::RootEpoch(manifest) => {
+                &manifest
+                    .root
+                    .administration
+                    .phase
+                    .initialization
+                    .native
+                    .legacy
+            }
         }
     }
 }
 
 const _: () = {
+    assert!(std::mem::size_of::<RootResourceManifest>() == 256);
+    assert!(std::mem::offset_of!(RootResourceManifest, root_preparation_commitment) == 224);
     assert!(std::mem::size_of::<QemuPluginResourceManifest>() == 88);
     assert!(std::mem::size_of::<NativeResourceManifest>() == 128);
     assert!(std::mem::offset_of!(NativeResourceManifest, node_control_fd) == 88);

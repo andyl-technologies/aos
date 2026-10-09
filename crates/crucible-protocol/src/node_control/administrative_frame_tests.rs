@@ -105,3 +105,57 @@ fn prior_packet_kind_and_body_are_identical() {
         prior
     );
 }
+
+#[test]
+fn construction_lane_preserves_original_body_and_refuses_compute_header_substitution() {
+    let query = NativeFrame::QueryPreparationSuccessor(NativePreparationSuccessorQuery {
+        prepared_scope_hash: [1; 32],
+        initialization_sequence: crucible_node_contract::U64::new(1),
+        original_cut_digest: [2; 32],
+        offset: crucible_node_contract::U64::new(0),
+    });
+    let historical =
+        encode_frame_for_edition(NativeControlEdition::Administration, &query).unwrap();
+    let construction =
+        encode_frame_for_edition(NativeControlEdition::Construction, &query).unwrap();
+    assert_eq!(&construction[8..10], &[0, 6]);
+    assert_eq!(&historical[..8], &construction[..8]);
+    assert_eq!(&historical[10..], &construction[10..]);
+    assert_eq!(
+        decode_frame_for_edition(NativeControlEdition::Construction, &construction).unwrap(),
+        query
+    );
+    assert!(decode_frame_for_edition(NativeControlEdition::Administration, &construction).is_err());
+    assert!(decode_frame_for_edition(NativeControlEdition::Construction, &historical).is_err());
+
+    let preparation = super::administrative_preparation::test_preparation();
+    let start = preparation.phase.initialization.preparation.boundary;
+    let mut limit = start;
+    limit.time_ps = crucible_node_contract::U64::new(start.time_ps.get() + 100);
+    let hash = crucible_node_contract::HashRef {
+        algorithm: "blake3-256".into(),
+        domain: "cnp.input-batch.v1".into(),
+        digest: "01".repeat(32),
+    };
+    let command = NativeFrame::Command(Box::new(ExecutionCommand {
+        sequence: crucible_node_contract::U64::new(1),
+        scope: preparation.phase.initialization.preparation.scope,
+        operation: crucible_node_contract::Id::new("operation/1").unwrap(),
+        grant: crucible_node_contract::Id::new("grant/1").unwrap(),
+        input_epoch: crucible_node_contract::Id::new("epoch/1").unwrap(),
+        input_batch: crucible_node_contract::Id::new("batch/1").unwrap(),
+        input_batch_hash: hash,
+        closed_input_prefix: limit,
+        authorization_digest: [7; 32],
+        kind: ExecutionKind::ExactRun {
+            start,
+            limit,
+            boundary_policy: BoundaryPolicy::HorizonPark,
+        },
+    }));
+    assert!(encode_frame_for_edition(NativeControlEdition::Construction, &command).is_err());
+    let mut forged =
+        encode_frame_for_edition(NativeControlEdition::Administration, &command).unwrap();
+    forged[8..10].copy_from_slice(&NativeControlEdition::Construction.version().to_be_bytes());
+    assert!(decode_frame_for_edition(NativeControlEdition::Construction, &forged).is_err());
+}

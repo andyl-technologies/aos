@@ -105,6 +105,10 @@ impl NativePreparation {
 /// Selects a closed frame of the independently negotiated native channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeFrame {
+    /// Preserves every original root companion before native fixed-profile enrollment.
+    ///
+    /// This portable preparation grants no root closure, readiness or effect permission.
+    PrepareFixedMicrovm(Box<super::NativeFixedMicrovmPreparation>),
     /// Pins the original reader role and complete preparation before enrollment.
     PrepareAdministration(Box<super::NativeAdministrativePreparation>),
     /// Recovers the same source-owned historical reader enrollment.

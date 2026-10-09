@@ -113,6 +113,8 @@ impl NativeQemuControlTransport {
             NativeControlEdition::PhaseProjection
                 | NativeControlEdition::PreparationSuccessor
                 | NativeControlEdition::Administration
+                | NativeControlEdition::Construction
+                | NativeControlEdition::FixedMicrovm
         ) {
             // This edition requires the complete original construction companion.
             return Err(NativeCommandError::Conflict.into());

@@ -40,7 +40,9 @@ impl NativeNodeControl {
         let read = preparation_successor_abi::resolve_read_preparation_successor().ok_or(
             NativeCommandError::Invalid("native preparation successor read unavailable"),
         )?;
-        self.preparation_successor = Some(PreparationSuccessorCustody::new(query, read));
+        self.preparation_successor = Some(std::sync::Arc::new(PreparationSuccessorCustody::new(
+            query, read,
+        )));
         Ok(self)
     }
 

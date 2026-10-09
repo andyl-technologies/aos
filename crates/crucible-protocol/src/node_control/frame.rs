@@ -15,6 +15,9 @@ use super::{
 /// Rejects invalid local records, zero sequences or exhausted byte allowances.
 pub fn encode_frame(frame: &NativeFrame) -> Result<Vec<u8>, NativeCommandError> {
     let (kind, body) = match frame {
+        NativeFrame::PrepareFixedMicrovm(_) => {
+            return Err(NativeCommandError::UnsupportedVersion(7));
+        }
         NativeFrame::PrepareAdministration(_)
         | NativeFrame::QueryAdministration { .. }
         | NativeFrame::AdministrationFacts(_) => {

@@ -31,6 +31,9 @@ The atomic integration patch creates these QEMU source files:
 | `hw/core/crucible-device-roots.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/hw/core/crucible-device-roots.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-node-root.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-endpoint-roots.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-endpoint-roots.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `util/crucible-endpoint-roots.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-timer-selection.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `util/crucible-timer-selection.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `accel/kvm/crucible-clock.c` | GPL-2.0-only | Explicit SPDX identifier |

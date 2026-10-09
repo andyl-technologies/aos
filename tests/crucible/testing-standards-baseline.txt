@@ -371,3 +371,25 @@ crucible	src/node_adapters/cnp/original_conflict_tests	std::thread::sleep	1
 # Source: crates/crucible-node-provider/tests/client_reference/original_conflict.rs
 # SHA-256: 759be2d4a03c185f7ec48fc7aaba24512369b3b01a70499655aa2ae385e332c7
 crucible-node-provider	tests/client_reference/original_conflict	retry	1
+
+# Original child waits are bounded by absolute process watchdogs; the fixed setup-refusal delay preserves stderr diagnostics. Each first assertion, native mismatch or deadline failure terminates the single test; no test or model computation is repeated.
+# Source: crates/crucible-qemu/tests/native_node_control/construction.rs
+# SHA-256: 5f5bc377e3d08d3759b4ecc85a8d22e1787d576e23041f36a6c0b8a5a2d5c3a6
+crucible-qemu	tests/native_node_control/construction	thread::sleep	1
+crucible-qemu	tests/native_node_control/construction	std::thread::sleep	1
+
+# A repeated original datagram recovers retained reply bytes after modeled loss and must leave the original HOME command absent. The case explicitly forbids a second native effect; its name does not implement a failed-test rerun.
+# Source: crates/crucible-qemu-plugin/src/native_node_control/construction_reducer_tests.rs
+# SHA-256: 893a5774324011b68851dfefd405069329582e06e28984c5a446f488c14d09d1
+crucible-qemu-plugin	src/native_node_control/construction_reducer_tests	retry	1
+crucible-qemu-plugin	src/native_node_control/construction_reducer_tests	rerun	1
+
+# The case repeats a foreign original mapping request and requires sticky taint with unchanged original bytes; it never reruns an assertion or a test.
+# Source: crates/crucible-qemu-plugin/src/native_node_control/preparation_fifo_tests.rs
+# SHA-256: 1f68603a102b7be138d3e93030f16f5b7e7b82e2a4667a90d8c0cc7114fc29c2
+crucible-qemu-plugin	src/native_node_control/preparation_fifo_tests	retry	1
+
+# The cases recover the same retained RUN prefix and terminal frame, asserting endpoint identity and that a successor frame remains undequeued. They exercise protocol idempotence, not failed-test repetition.
+# Source: crates/crucible-qemu-plugin/src/runtime/native_run_control_tests.rs
+# SHA-256: dbe8ae4619e08d9c01e99080c1f34bec7fde24488875a63ca4eaba6ccde7778d
+crucible-qemu-plugin	src/runtime/native_run_control_tests	retry	1

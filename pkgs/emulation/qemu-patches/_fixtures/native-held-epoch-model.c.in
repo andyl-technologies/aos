@@ -1,0 +1,144 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Dormant actual registrar. Root/BQL/manifest eligibility is modeled. */
+#include "qemu/osdep.h"
+#include "qemu/crucible-node-root.h"
+#include "plugins/qemu-plugin.h"
+
+static CrucibleNodeRootPolicy node_root_policy;
+static bool node_root_registered = true, node_root_launch_pinned = true;
+static uint64_t node_root_launch_process;
+static bool model_bql = true, model_pins = true, model_sim = true;
+static bool model_configuration = true, model_prepared;
+static uint64_t model_raw;
+static unsigned callback_registrations, callback_calls;
+static struct {
+    qemu_plugin_crucible_node_epoch_acquire_cb_t acquire;
+    qemu_plugin_crucible_node_epoch_effect_cb_t begin, end;
+    void *userdata;
+    bool registered;
+} node_root_epoch;
+
+static bool bql_locked(void)
+{
+    return model_bql;
+}
+bool crucible_node_root_original_pins_match(void)
+{
+    return model_pins;
+}
+static bool current_accel_is_sim(void)
+{
+    return model_sim;
+}
+static bool icount_crucible_sim_configuration_valid(void)
+{
+    return model_configuration;
+}
+uint64_t qemu_plugin_icount_raw(void)
+{
+    return model_raw;
+}
+static bool crucible_node_control_prepared_scope_matches(const uint8_t *scope)
+{
+    return model_prepared;
+}
+
+void qemu_plugin_crucible_callback_registered(unsigned int id, uint64_t mask);
+void qemu_plugin_crucible_callback_registered(unsigned int id, uint64_t mask)
+{
+    assert(id == 0 && mask == QEMU_PLUGIN_CRUCIBLE_CALLBACK_NODE_ROOT_EPOCH);
+    callback_registrations++;
+}
+
+@NATIVE_EPOCH@
+
+static int acquire(const CrucibleNodeRootSeal *root, void **epoch, void *data)
+{
+    callback_calls++;
+    return -EAGAIN;
+}
+
+static int effect(const CrucibleNodeRootSeal *root, void *epoch,
+                  const CrucibleNodeEffectCut *cut, void *data)
+{
+    callback_calls++;
+    return -EAGAIN;
+}
+
+static int other_effect(const CrucibleNodeRootSeal *root, void *epoch,
+                        const CrucibleNodeEffectCut *cut, void *data)
+{
+    callback_calls++;
+    return -EAGAIN;
+}
+
+static int register_original(void)
+{
+    return qemu_plugin_register_crucible_node_root_epoch(
+        1, &node_root_policy, acquire, effect, effect, &node_root_policy);
+}
+
+int main(void)
+{
+    node_root_policy.version = CRUCIBLE_NODE_ROOT_POLICY_VERSION;
+    node_root_policy.size = sizeof(node_root_policy);
+    node_root_launch_process = getpid();
+
+    assert(qemu_plugin_register_crucible_node_root_epoch(
+        0, &node_root_policy, acquire, effect, effect, &node_root_policy) < 0);
+    assert(qemu_plugin_register_crucible_node_root_epoch(
+        1, NULL, acquire, effect, effect, &node_root_policy) < 0);
+    assert(qemu_plugin_register_crucible_node_root_epoch(
+        1, &node_root_policy, NULL, effect, effect, &node_root_policy) < 0);
+    assert(qemu_plugin_register_crucible_node_root_epoch(
+        1, &node_root_policy, acquire, NULL, effect, &node_root_policy) < 0);
+    assert(qemu_plugin_register_crucible_node_root_epoch(
+        1, &node_root_policy, acquire, effect, NULL, &node_root_policy) < 0);
+    assert(qemu_plugin_register_crucible_node_root_epoch(
+        1, &node_root_policy, acquire, effect, effect, NULL) < 0);
+    for (size_t index = 0; index < sizeof(node_root_policy); index++) {
+        CrucibleNodeRootPolicy changed = node_root_policy;
+        ((uint8_t *)&changed)[index] ^= 1;
+        assert(qemu_plugin_register_crucible_node_root_epoch(
+            1, &changed, acquire, effect, effect, &node_root_policy) < 0);
+    }
+    model_bql = false;
+    assert(register_original() < 0);
+    model_bql = true;
+    node_root_registered = false;
+    assert(register_original() < 0);
+    node_root_registered = true;
+    node_root_launch_process++;
+    assert(register_original() < 0);
+    node_root_launch_process = getpid();
+    model_pins = false;
+    assert(register_original() < 0);
+    model_pins = true;
+    model_sim = false;
+    assert(register_original() < 0);
+    model_sim = true;
+    model_configuration = false;
+    assert(register_original() < 0);
+    model_configuration = true;
+    model_raw = 1;
+    assert(register_original() == -ESTALE);
+    model_raw = 0;
+    model_prepared = true;
+    assert(register_original() == -ESTALE);
+    model_prepared = false;
+    assert(register_original() == 0 && callback_registrations == 1);
+    assert(register_original() == 0 && callback_registrations == 1);
+    assert(qemu_plugin_register_crucible_node_root_epoch(
+        1, &node_root_policy, acquire, other_effect, effect,
+        &node_root_policy) == -EALREADY);
+    assert(qemu_plugin_register_crucible_node_root_epoch(
+        1, &node_root_policy, acquire, effect, other_effect,
+        &node_root_policy) == -EALREADY);
+    assert(qemu_plugin_register_crucible_node_root_epoch(
+        1, &node_root_policy, acquire, effect, effect,
+        &callback_calls) == -EALREADY);
+    assert(callback_calls == 0);
+    puts("PASS actual dormant epoch registrar: original 328-byte policy, "
+         "version/callback/userdata/freshness/retry guards; no callbacks invoked");
+    return 0;
+}

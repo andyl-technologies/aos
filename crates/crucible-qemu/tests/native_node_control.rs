@@ -1143,3 +1143,7 @@ fn actual_native_successor_keeps_pre_home_evidence_and_original_ack_distinct()
 
 #[path = "native_node_control/administration.rs"]
 mod administration;
+
+#[cfg(target_os = "linux")]
+#[path = "native_node_control/construction.rs"]
+mod construction;

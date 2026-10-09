@@ -54,8 +54,8 @@ mod doorbell_marker;
 mod golden_vectors;
 pub mod guest_introspection;
 pub mod guest_introspection_doorbell;
-pub mod plugin_setup_plan;
 pub mod node_control;
+pub mod plugin_setup_plan;
 mod preemption;
 mod selectable;
 pub mod selectable_catalog_plan;
@@ -1224,6 +1224,28 @@ impl<S> ControlLifecycleStream<S> {
     #[must_use]
     pub fn into_inner(self) -> S {
         self.stream
+    }
+
+    /// Preserves this stream's lifecycle while returning its adapted owner and context.
+    ///
+    /// This method transforms storage only. It authenticates no replacement
+    /// endpoint and creates no native execution or readiness authority.
+    ///
+    /// # Panics
+    /// Panics if the caller's transformation panics.
+    #[must_use]
+    pub fn map_stream_with_context<T, C>(
+        self,
+        transform: impl FnOnce(S) -> (T, C),
+    ) -> (ControlLifecycleStream<T>, C) {
+        let (stream, context) = transform(self.stream);
+        (
+            ControlLifecycleStream {
+                stream,
+                lifecycle: self.lifecycle,
+            },
+            context,
+        )
     }
 
     /// Borrows the setup-phase stream for plugin setup failure reporting.

@@ -18,10 +18,22 @@ pub struct NativeNodeControlConfig {
     initialization: Option<super::NativeInitializationConfig>,
     phase: Option<super::NativePhaseConfig>,
     administration: Option<super::NativeAdministrationConfig>,
+    fixed_microvm: Option<super::NativeFixedMicrovmConfig>,
     fingerprint_worker: bool,
+    root_epoch_version: Option<u32>,
 }
 
 impl NativeNodeControlConfig {
+    /// Returns the explicitly selected dormant native callback ABI.
+    pub const fn root_epoch_version(self) -> Option<u32> {
+        self.root_epoch_version
+    }
+
+    /// Returns the complete original root-policy commitment, if explicitly selected.
+    pub const fn fixed_microvm(self) -> Option<super::NativeFixedMicrovmConfig> {
+        self.fixed_microvm
+    }
+
     pub(crate) const fn fingerprint_worker(self) -> bool {
         self.fingerprint_worker
     }
@@ -63,10 +75,17 @@ pub(super) fn parse(
     let initialization = super::native_initialization::parse(parsed)?;
     let phase = super::native_phase::parse(parsed)?;
     let administration = super::native_administration::parse(parsed)?;
+    let fixed_microvm = super::native_root::parse(parsed)?;
+    let root_epoch_version = match parsed.value("node_root_epoch_version") {
+        None => None,
+        Some("1") if fixed_microvm.is_some() => Some(1),
+        _ => return Err(PluginArgsParseError::InvalidNativeNodeControl),
+    };
     if keys.iter().all(|key| parsed.value(key).is_none())
         && initialization.is_none()
         && phase.is_none()
         && administration.is_none()
+        && fixed_microvm.is_none()
     {
         return Ok(None);
     }
@@ -84,6 +103,12 @@ pub(super) fn parse(
         Some("4") if phase.is_some() => {
             crucible_protocol::node_control::NativeControlEdition::PreparationSuccessor
         }
+        Some("7") if phase.is_some() && administration.is_some() && fixed_microvm.is_some() => {
+            crucible_protocol::node_control::NativeControlEdition::FixedMicrovm
+        }
+        Some("6") if phase.is_some() && administration.is_some() => {
+            crucible_protocol::node_control::NativeControlEdition::Construction
+        }
         Some("5") if phase.is_some() && administration.is_some() => {
             crucible_protocol::node_control::NativeControlEdition::Administration
         }
@@ -95,9 +120,15 @@ pub(super) fn parse(
             && (initialization.is_none()
                 || !matches!(edition, crucible_protocol::node_control::NativeControlEdition::PhaseProjection
                     | crucible_protocol::node_control::NativeControlEdition::PreparationSuccessor
-                    | crucible_protocol::node_control::NativeControlEdition::Administration)))
+                    | crucible_protocol::node_control::NativeControlEdition::Administration
+                    | crucible_protocol::node_control::NativeControlEdition::Construction
+                    | crucible_protocol::node_control::NativeControlEdition::FixedMicrovm)))
         || (administration.is_some()
-            && edition != crucible_protocol::node_control::NativeControlEdition::Administration)
+            && !matches!(edition, crucible_protocol::node_control::NativeControlEdition::Administration
+                | crucible_protocol::node_control::NativeControlEdition::Construction
+                | crucible_protocol::node_control::NativeControlEdition::FixedMicrovm))
+        || (fixed_microvm.is_some()
+            && edition != crucible_protocol::node_control::NativeControlEdition::FixedMicrovm)
     {
         return Err(PluginArgsParseError::InvalidNativeNodeControl);
     }
@@ -108,17 +139,21 @@ pub(super) fn parse(
         initialization,
         phase,
         administration,
+        fixed_microvm,
+        root_epoch_version,
         fingerprint_worker: parsed.value(super::PLUGIN_ARG_FINGERPRINT) == Some("on"),
     }))
 }
 
 pub(super) fn is_key(key: &str) -> bool {
-    super::native_administration::is_key(key)
+    super::native_root::is_key(key)
+        || super::native_administration::is_key(key)
         || super::native_phase::is_key(key)
         || super::native_initialization::is_key(key)
         || matches!(
             key,
-            PLUGIN_ARG_NODE_CONTROL_FD
+            "node_root_epoch_version"
+                | PLUGIN_ARG_NODE_CONTROL_FD
                 | PLUGIN_ARG_NODE_CONTROL_SCOPE_HASH
                 | PLUGIN_ARG_NODE_CONTROL_VERSION
         )

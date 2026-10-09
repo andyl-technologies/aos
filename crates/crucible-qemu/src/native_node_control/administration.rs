@@ -19,6 +19,7 @@ pub struct NativeAdministrationTransport {
     preparation: NativeAdministrativePreparation,
     original: Option<NativeAdministrativeFacts>,
     expected_process: Option<u32>,
+    fixed_microvm: Option<crucible_protocol::node_control::NativeFixedMicrovmPreparation>,
     requested: bool,
     failed: bool,
 }
@@ -37,8 +38,72 @@ impl NativeAdministrationTransport {
         policy_digest: [u8; 32],
         descriptor_slot: i32,
     ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
+        Self::prepare_for_edition(
+            phase,
+            policy_digest,
+            descriptor_slot,
+            NativeControlEdition::Administration,
+        )
+    }
+
+    /// Prepares the isolated construction-only controller, never compute authority.
+    ///
+    /// # Errors
+    /// Rejects invalid original preparation or socket/framing failure.
+    pub fn prepare_construction(
+        phase: NativePhasePreparation,
+        policy_digest: [u8; 32],
+        descriptor_slot: i32,
+    ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
+        Self::prepare_for_edition(
+            phase,
+            policy_digest,
+            descriptor_slot,
+            NativeControlEdition::Construction,
+        )
+    }
+
+    /// Pins complete root preparation on a separate bootstrap that rejects legacy compute.
+    ///
+    /// The actual inherited socket is measured before binding the parameters.
+    /// The native source must independently match its original Root328 pin and
+    /// V8 resource seal. This transport provides no root closure or effects.
+    ///
+    /// # Errors
+    /// Rejects invalid original parameters/companions or socket, metadata and
+    /// framing failure before any native process is launched.
+    pub fn prepare_fixed_microvm(
+        phase: NativePhasePreparation,
+        reader_policy_digest: [u8; 32],
+        descriptor_slot: i32,
+        parameters: super::super::root::NativeFixedMicrovmParameters,
+    ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
+        Self::prepare_profile(
+            phase,
+            reader_policy_digest,
+            descriptor_slot,
+            NativeControlEdition::FixedMicrovm,
+            Some(parameters),
+        )
+    }
+
+    fn prepare_for_edition(
+        phase: NativePhasePreparation,
+        policy_digest: [u8; 32],
+        descriptor_slot: i32,
+        edition: NativeControlEdition,
+    ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
+        Self::prepare_profile(phase, policy_digest, descriptor_slot, edition, None)
+    }
+
+    fn prepare_profile(
+        phase: NativePhasePreparation,
+        policy_digest: [u8; 32],
+        descriptor_slot: i32,
+        edition: NativeControlEdition,
+        parameters: Option<super::super::root::NativeFixedMicrovmParameters>,
+    ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
         phase.validate()?;
-        let edition = NativeControlEdition::Administration;
         let (channel, provider) = NativeChannel::supervised_pair_for_edition(edition)?;
         let descriptor = provider
             .prepared_descriptor()
@@ -56,9 +121,14 @@ impl NativeAdministrationTransport {
         };
         preparation.validate()?;
         let scope_digest = phase.initialization.preparation.scope.identity_digest()?;
-        if !channel.send(&NativeFrame::PrepareAdministration(Box::new(
-            preparation.clone(),
-        )))? {
+        let fixed_microvm = parameters
+            .map(|parameters| parameters.bind(preparation.clone()))
+            .transpose()?;
+        let frame = match &fixed_microvm {
+            Some(root) => NativeFrame::PrepareFixedMicrovm(Box::new(root.clone())),
+            None => NativeFrame::PrepareAdministration(Box::new(preparation.clone())),
+        };
+        if !channel.send(&frame)? {
             return Err(NativeCommandError::ResourceLimit.into());
         }
         Ok((
@@ -67,6 +137,7 @@ impl NativeAdministrationTransport {
                 preparation,
                 original: None,
                 expected_process: None,
+                fixed_microvm,
                 requested: false,
                 failed: false,
             },
@@ -78,6 +149,47 @@ impl NativeAdministrationTransport {
                 phase_projection: Some(phase),
             },
         ))
+    }
+
+    /// Sends an original construction diagnostic after actual reader correlation.
+    ///
+    /// # Errors
+    /// Refuses absent original reader facts, failed custody or a nonconstruction endpoint.
+    pub fn send_construction(&self, frame: &NativeFrame) -> Result<bool, NativeQemuControlError> {
+        if self.failed
+            || self.original.is_none()
+            || !matches!(
+                self.channel.edition(),
+                NativeControlEdition::Construction | NativeControlEdition::FixedMicrovm
+            )
+        {
+            return Err(NativeCommandError::Conflict.into());
+        }
+        Ok(self.channel.send(frame)?)
+    }
+
+    /// Receives a construction diagnostic without granting common node authority.
+    ///
+    /// # Errors
+    /// Refuses failed custody or incompatible framing.
+    pub fn receive_construction(&self) -> Result<Option<NativeFrame>, NativeQemuControlError> {
+        if self.failed
+            || self.original.is_none()
+            || !matches!(
+                self.channel.edition(),
+                NativeControlEdition::Construction | NativeControlEdition::FixedMicrovm
+            )
+        {
+            return Err(NativeCommandError::Conflict.into());
+        }
+        Ok(self.channel.receive()?)
+    }
+
+    /// Returns complete original root preparation, without an execution or readiness claim.
+    pub fn fixed_microvm_preparation(
+        &self,
+    ) -> Option<&crucible_protocol::node_control::NativeFixedMicrovmPreparation> {
+        self.fixed_microvm.as_ref()
     }
 
     /// Returns the immutable full endpoint preparation for the original native launch.

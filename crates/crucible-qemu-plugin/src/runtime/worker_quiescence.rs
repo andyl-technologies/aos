@@ -37,6 +37,11 @@ pub(crate) enum WorkerForkChildResetError {
     },
 }
 
+/// Refuses poisoned original worker ownership rather than inferring a hold.
+#[derive(Debug, Error)]
+#[error("original worker admission ownership is poisoned")]
+pub(crate) struct NativeWorkerOwnershipError;
+
 #[derive(Debug)]
 struct WorkerQuiescenceState {
     held: bool,
@@ -91,6 +96,40 @@ impl LiveWorkerQuiescence {
         let mut state = self.lock_state();
         state.held = true;
         self.snapshot_locked(&state)
+    }
+
+    /// Tries to retain the original modeled-worker hold without waiting under BQL.
+    ///
+    /// None reports only concurrent ownership. A successful hold persists after
+    /// the caller returns or drops its snapshot; this method grants no release.
+    ///
+    /// # Errors
+    /// Refuses poisoned ownership without adopting its accounting as a proof.
+    pub(crate) fn try_hold(
+        &self,
+    ) -> Result<Option<WorkerQuiescenceSnapshot>, NativeWorkerOwnershipError> {
+        let mut state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err(NativeWorkerOwnershipError),
+        };
+        state.held = true;
+        Ok(Some(self.snapshot_locked(&state)))
+    }
+
+    /// Observes the same original held worker accounting without lock waits.
+    ///
+    /// # Errors
+    /// Refuses poisoned ownership. None reports a busy owner, never quiescence.
+    pub(crate) fn try_snapshot(
+        &self,
+    ) -> Result<Option<WorkerQuiescenceSnapshot>, NativeWorkerOwnershipError> {
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err(NativeWorkerOwnershipError),
+        };
+        Ok(Some(self.snapshot_locked(&state)))
     }
 
     pub(crate) fn snapshot(&self) -> WorkerQuiescenceSnapshot {
@@ -415,3 +454,7 @@ mod tests {
         assert!(!quiescence.release().held);
     }
 }
+
+#[cfg(test)]
+#[path = "native_worker_hold_tests.rs"]
+mod native_worker_hold_tests;

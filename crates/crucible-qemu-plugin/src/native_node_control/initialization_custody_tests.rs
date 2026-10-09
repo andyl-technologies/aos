@@ -48,7 +48,7 @@ extern "C" fn query(
     })
 }
 
-fn fixture() -> (
+pub(crate) fn fixture() -> (
     InitializationCustody,
     NativeInitializationCommand,
     SourceReceipt,
@@ -120,6 +120,69 @@ fn fixture() -> (
         realize_request_digest: preparation.realize_request_digest,
     };
     (custody, command, receipt)
+}
+
+#[test]
+fn original_ack_custody_cannot_be_minted_from_applied_or_adopted_by_equal_initializer() {
+    let (custody, command, receipt) = fixture();
+    custody.retain(command.clone()).unwrap();
+    custody.record_receipt(receipt).unwrap();
+    assert!(custody.acknowledged_original().is_err());
+    let acknowledgement = NativeInitializationAcknowledgement {
+        prepared_scope_hash: custody.scope,
+        initialization_commitment: custody.commitment,
+        sequence: command.sequence,
+        command_digest: command.identity_digest().unwrap(),
+    };
+    custody.acknowledge(&acknowledgement).unwrap();
+    let original = custody.acknowledged_original().unwrap();
+    assert_eq!(original.acknowledgement(), &acknowledgement);
+    original.validate_original(&custody).unwrap();
+
+    let (foreign, foreign_command, foreign_receipt) = fixture();
+    foreign.retain(foreign_command).unwrap();
+    foreign.record_receipt(foreign_receipt).unwrap();
+    foreign.acknowledge(&acknowledgement).unwrap();
+    assert_eq!(
+        foreign.acknowledged_original().unwrap().receipt(),
+        original.receipt()
+    );
+    assert!(original.validate_original(&foreign).is_err());
+
+    custody.fail();
+    assert!(original.validate_original(&custody).is_err());
+    assert_eq!(original.acknowledgement(), &acknowledgement);
+}
+
+#[test]
+fn actual_ack_identity_survives_a_busy_original_journal_without_becoming_authority() {
+    let (custody, command, receipt) = fixture();
+    custody.retain(command.clone()).unwrap();
+    custody.record_receipt(receipt).unwrap();
+    custody
+        .acknowledge(&NativeInitializationAcknowledgement {
+            prepared_scope_hash: custody.scope,
+            initialization_commitment: custody.commitment,
+            sequence: command.sequence,
+            command_digest: command.identity_digest().unwrap(),
+        })
+        .unwrap();
+    let original = custody.try_acknowledged_original().unwrap().unwrap();
+    let guard = custody.state.lock().unwrap();
+
+    assert!(custody.try_acknowledged_original().unwrap().is_none());
+    assert!(!original.try_validate_original(&custody).unwrap());
+    drop(guard);
+
+    assert!(original.try_validate_original(&custody).unwrap());
+    assert_eq!(
+        custody
+            .try_acknowledged_original()
+            .unwrap()
+            .unwrap()
+            .receipt(),
+        original.receipt()
+    );
 }
 
 fn ack(command: &NativeInitializationCommand) -> NativeInitializationAcknowledgement {

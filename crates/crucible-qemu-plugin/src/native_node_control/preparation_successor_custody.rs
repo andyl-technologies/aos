@@ -180,19 +180,57 @@ impl PreparationSuccessorCustody {
         initialization: &InitializationCustody,
         query: &NativePreparationSuccessorQuery,
     ) -> Result<NativePreparationSuccessorChunk, NativeCommandError> {
+        self.try_acknowledged_original_chunk(initialization, query)?
+            .ok_or(NativeCommandError::Conflict)
+    }
+
+    /// Returns pending while the authentic Applied callback retains its original cache.
+    ///
+    /// Query identity and the real ACK are checked before considering readiness.
+    /// Busy or incomplete source storage is recoverable, never a new source query.
+    /// Poison, failed observations and foreign identities remain permanent refusals.
+    ///
+    /// # Errors
+    /// Refuses absent original ACK, changed source identity, poisoned/failed custody,
+    /// malformed offsets or exhausted copy credit. A pending result keeps all bytes.
+    pub(crate) fn try_acknowledged_original_chunk(
+        &self,
+        initialization: &InitializationCustody,
+        query: &NativePreparationSuccessorQuery,
+    ) -> Result<Option<NativePreparationSuccessorChunk>, NativeCommandError> {
         query.validate()?;
-        if !initialization.permits_execution_transport() {
+        if query.prepared_scope_hash != initialization.scope {
             return Err(NativeCommandError::Conflict);
         }
-        let receipt = initialization
-            .original_receipt()
-            .ok_or(NativeCommandError::Conflict)?;
-        let original = self.try_original()?;
-        if original.failed
-            || original.decoded.is_none()
-            || original.receipt.as_ref() != Some(&receipt)
+        let Some(acknowledged) = initialization.try_acknowledged_original()? else {
+            return Ok(None);
+        };
+        if !acknowledged.try_validate_original(initialization)? {
+            return Ok(None);
+        }
+        acknowledged.acknowledgement().encode()?;
+        let receipt = acknowledged.receipt();
+        if query.prepared_scope_hash != receipt.prepared_scope_hash
+            || query.initialization_sequence != receipt.sequence
+            || query.original_cut_digest != receipt.original_cut_digest
         {
             return Err(NativeCommandError::Conflict);
+        }
+        let original = match self.original.try_lock() {
+            Ok(original) => original,
+            Err(TryLockError::WouldBlock) => return Ok(None),
+            Err(TryLockError::Poisoned(_)) => return Err(NativeCommandError::Conflict),
+        };
+        if original.failed
+            || original
+                .receipt
+                .as_ref()
+                .is_some_and(|value| value != receipt)
+        {
+            return Err(NativeCommandError::Conflict);
+        }
+        if original.decoded.is_none() {
+            return Ok(None);
         }
         let facts = original
             .facts
@@ -215,11 +253,11 @@ impl PreparationSuccessorCustody {
             .try_reserve_exact(length)
             .map_err(|_| NativeCommandError::ResourceLimit)?;
         bytes.extend_from_slice(&original.bytes[offset..offset + length]);
-        Ok(NativePreparationSuccessorChunk {
+        Ok(Some(NativePreparationSuccessorChunk {
             facts: facts.clone(),
             offset: query.offset,
             bytes,
-        })
+        }))
     }
 
     fn try_original(

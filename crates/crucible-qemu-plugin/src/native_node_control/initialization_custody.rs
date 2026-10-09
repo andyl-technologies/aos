@@ -5,7 +5,7 @@
 //! callbacks. Unknown effects retain the whole original journal and withhold
 //! execution; construction ACKs establish no ready-state guarantee.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crucible_node_contract::U64;
 use crucible_protocol::node_control::{
@@ -27,6 +27,7 @@ struct State {
     command: Option<NativeInitializationCommand>,
     receipt: Option<NativeInitializationReceipt>,
     acknowledged: bool,
+    acknowledgement: Option<NativeInitializationAcknowledgement>,
     failed: bool,
 }
 
@@ -35,7 +36,73 @@ pub(crate) struct InitializationCustody {
     pub(crate) scope: [u8; 32],
     pub(crate) commitment: [u8; 32],
     query: QueryInitializationCut,
+    owner: Arc<()>,
     state: Mutex<State>,
+}
+
+/// Retains one actually accepted ACK and its original Applied receipt.
+///
+/// The private owner identity prevents another initializer with equal portable
+/// fields from adopting this record. It authenticates construction custody
+/// only; native source roots, complete input and effect permission stay separate.
+pub(crate) struct AcknowledgedInitialization {
+    owner: Arc<()>,
+    receipt: NativeInitializationReceipt,
+    acknowledgement: NativeInitializationAcknowledgement,
+}
+
+impl AcknowledgedInitialization {
+    pub(crate) fn receipt(&self) -> &NativeInitializationReceipt {
+        &self.receipt
+    }
+
+    pub(crate) fn acknowledgement(&self) -> &NativeInitializationAcknowledgement {
+        &self.acknowledgement
+    }
+
+    /// Rechecks actual original custody without sampling or admitting native work.
+    ///
+    /// # Errors
+    /// Refuses another initializer, a fault, poisoned/busy ownership or changed
+    /// original receipt/ACK. No refused validation replaces historical bytes.
+    #[cfg(test)]
+    pub(crate) fn validate_original(
+        &self,
+        initialization: &InitializationCustody,
+    ) -> Result<(), NativeCommandError> {
+        if self.try_validate_original(initialization)? {
+            Ok(())
+        } else {
+            Err(NativeCommandError::Conflict)
+        }
+    }
+
+    /// Checks retained original ACK ownership without waiting on the native journal.
+    ///
+    /// # Errors
+    /// Refuses another owner, poison, fault or changed receipt/ACK. False reports
+    /// only concurrent ownership; it supplies no effect or readiness authority.
+    pub(crate) fn try_validate_original(
+        &self,
+        initialization: &InitializationCustody,
+    ) -> Result<bool, NativeCommandError> {
+        if !Arc::ptr_eq(&self.owner, &initialization.owner) {
+            return Err(NativeCommandError::Conflict);
+        }
+        let state = match initialization.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(false),
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err(NativeCommandError::Conflict),
+        };
+        if state.failed
+            || !state.acknowledged
+            || state.receipt.as_ref() != Some(&self.receipt)
+            || state.acknowledgement.as_ref() != Some(&self.acknowledgement)
+        {
+            return Err(NativeCommandError::Conflict);
+        }
+        Ok(true)
+    }
 }
 
 impl InitializationCustody {
@@ -49,6 +116,7 @@ impl InitializationCustody {
             commitment: preparation.identity_digest()?,
             preparation,
             query,
+            owner: Arc::new(()),
             state: Mutex::new(State::default()),
         })
     }
@@ -245,7 +313,89 @@ impl InitializationCustody {
             return Err(NativeCommandError::Conflict);
         }
         state.acknowledged = true;
+        // The accepted original frame remains distinct from an inferred ACK
+        // assembled later from scalar Applied or matching preparation fields.
+        state.acknowledgement = Some(ack.clone());
         Ok(())
+    }
+
+    /// Copies the actual original ACK under the initializer's private custody.
+    ///
+    /// # Errors
+    /// Refuses an absent ACK, a non-Applied receipt, fault or busy/poisoned journal.
+    /// Matching portable fields cannot mint this record for another live owner.
+    #[cfg(test)]
+    pub(crate) fn acknowledged_original(
+        &self,
+    ) -> Result<AcknowledgedInitialization, NativeCommandError> {
+        self.try_acknowledged_original()?
+            .ok_or(NativeCommandError::Conflict)
+    }
+
+    /// Distinguishes a temporarily owned journal from an invalid original ACK.
+    ///
+    /// # Errors
+    /// Refuses an absent actual ACK, failed/poisoned custody or non-Applied receipt.
+    /// None retains the same original owner while a native callback owns its lock.
+    pub(crate) fn try_acknowledged_original(
+        &self,
+    ) -> Result<Option<AcknowledgedInitialization>, NativeCommandError> {
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err(NativeCommandError::Conflict),
+        };
+        if state.failed || !state.acknowledged {
+            return Err(NativeCommandError::Conflict);
+        }
+        self.acknowledged_from_state(&state).map(Some)
+    }
+
+    /// Waits without holding admission when the original ACK has not arrived.
+    ///
+    /// # Errors
+    /// Refuses failed/poisoned custody and original non-Applied receipts. None
+    /// reports only a busy journal or the still-pending same-original ACK.
+    pub(crate) fn try_pending_acknowledged_original(
+        &self,
+    ) -> Result<Option<AcknowledgedInitialization>, NativeCommandError> {
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err(NativeCommandError::Conflict),
+        };
+        if state.failed
+            || state
+                .receipt
+                .as_ref()
+                .is_some_and(|receipt| receipt.status != NativeInitializationStatus::Applied)
+        {
+            return Err(NativeCommandError::Conflict);
+        }
+        if !state.acknowledged {
+            return Ok(None);
+        }
+        self.acknowledged_from_state(&state).map(Some)
+    }
+
+    fn acknowledged_from_state(
+        &self,
+        state: &State,
+    ) -> Result<AcknowledgedInitialization, NativeCommandError> {
+        let receipt = state
+            .receipt
+            .as_ref()
+            .filter(|receipt| receipt.status == NativeInitializationStatus::Applied)
+            .ok_or(NativeCommandError::Conflict)?;
+        let acknowledgement = state
+            .acknowledgement
+            .as_ref()
+            .ok_or(NativeCommandError::Conflict)?;
+        Ok(AcknowledgedInitialization {
+            owner: Arc::clone(&self.owner),
+            receipt: receipt.clone(),
+            acknowledgement: acknowledgement.clone(),
+        })
     }
 
     pub(crate) fn permits_execution_transport(&self) -> bool {
@@ -302,4 +452,4 @@ fn validate_receipt(
 #[path = "initialization_custody_tests.rs"]
 // crucible-lint: allow panic-shortcut -- These initialization custody tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests;
+pub(crate) mod tests;
