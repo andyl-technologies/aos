@@ -11,7 +11,6 @@
 {
   lib,
   mkDerivation,
-  stdenv,
   buildPackages,
   python3,
   socat,
@@ -78,13 +77,9 @@ mkDerivation {
   version = "1.0";
   src = null;
 
-  # python3 and socat must be in the runtime closure: the shim re-execs
-  # python3 directly, and qemu.py shells out to socat for serial drain. Cross
-  # builds also retain the target Bash referenced by the installed shim;
-  # native builds already retain that direct output reference.
-  runtimeDeps =
-    [python3 socat]
-    ++ lib.optionals stdenv.isCross [bash];
+  # Retain the shim's interpreter in native builds as well as cross builds;
+  # reference scrubbing otherwise treats it as a disposable build input.
+  runtimeDeps = [bash python3 socat];
 
   phases = [
     {
