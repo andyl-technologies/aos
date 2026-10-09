@@ -677,7 +677,6 @@
     rootPaths =
       [
         pkgs.aos.apr
-        pkgs.aos-hub
         workerDist
         pkgs.coreutils
         pkgs.curl
@@ -699,8 +698,6 @@
         pkgs.sqlite
         pkgs.tar
         pkgs.util-linux
-        fixture.helperV1
-        fixture.helperV2
         publication.project
         nextPublication.project
         containerPublicationInputs
