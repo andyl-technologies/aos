@@ -124,7 +124,8 @@ impl PublicMutationContextV1 {
     /// protobuf requests at this explicit validation step.
     pub fn validated_request(
         &self,
-    ) -> Result<crate::public_api::request::DormantSandboxRequestKindV1, InvalidPublicMutationContext> {
+    ) -> Result<crate::public_api::request::DormantSandboxRequestKindV1, InvalidPublicMutationContext>
+    {
         crate::public_api::mutation::PublicMutationRequestV1::decode(&self.canonical_request)
             .and_then(|request| request.decode_validated_kind())
             .map_err(|_| InvalidPublicMutationContext("invalid controller effect request"))
@@ -256,12 +257,17 @@ mod tests {
             ProjectId::from_bytes([2; 16]),
             123,
             b"historical-request-data".to_vec(),
-        ).unwrap();
+        )
+        .unwrap();
         let mut bytes = context.encode().unwrap();
         bytes[16..32].fill(0);
 
-        assert_eq!(PublicMutationContextV1::decode(&bytes).unwrap_err().reason(),
-            "invalid public mutation effect");
+        assert_eq!(
+            PublicMutationContextV1::decode(&bytes)
+                .unwrap_err()
+                .reason(),
+            "invalid public mutation effect"
+        );
 
         let request_end = bytes.len() - PUBLIC_MUTATION_EFFECT_DIGEST_BYTES;
         let digest = Sha256::new()
@@ -270,9 +276,15 @@ mod tests {
             .finalize();
         bytes[request_end..].copy_from_slice(&digest);
 
-        assert_eq!(PublicMutationContextV1::decode(&bytes).unwrap_err().reason(),
-            "invalid authenticated public mutation effect");
-        assert_eq!(context.validated_request().unwrap_err().reason(),
-            "invalid controller effect request");
+        assert_eq!(
+            PublicMutationContextV1::decode(&bytes)
+                .unwrap_err()
+                .reason(),
+            "invalid authenticated public mutation effect"
+        );
+        assert_eq!(
+            context.validated_request().unwrap_err().reason(),
+            "invalid controller effect request"
+        );
     }
 }
