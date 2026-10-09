@@ -63,6 +63,24 @@
           FZF_CTRL_T_COMMAND="''${FZF_CTRL_T_COMMAND-}" \
           FZF_ALT_C_COMMAND="''${FZF_ALT_C_COMMAND-}" \
             . ${lib.escapeShellArg "${fzf}/share/fzf/key-bindings.bash"}
+
+          # Readline clears the editing row before bind -x runs. Reuse its
+          # prompt in the finder so search keeps the same visual anchor.
+          __aos_fzf_history() {
+            local prompt="''${PS1@P}"
+            prompt="''${prompt//$'\001'/}"
+            prompt="''${prompt//$'\002'/}"
+            prompt="''${prompt//\\/\\\\}"
+            prompt="''${prompt//\"/\\\"}"
+            local FZF_CTRL_R_OPTS="--prompt=\"$prompt\" ''${FZF_CTRL_R_OPTS-}"
+            __fzf_history__
+          }
+
+          if [ "''${FZF_CTRL_R_COMMAND-x}" != "" ]; then
+            bind -m emacs-standard -x '"\C-r": __aos_fzf_history'
+            bind -m vi-command -x '"\C-r": __aos_fzf_history'
+            bind -m vi-insert -x '"\C-r": __aos_fzf_history'
+          fi
         fi
         ;;
     esac

@@ -15,9 +15,11 @@ defaults. Press Ctrl+R to search history with fzf, Enter to place a selected
 command at the prompt, or Escape to cancel. Ctrl+L clears the screen while
 preserving the command being edited; Ctrl+C cancels it quietly. History search
 fits short histories and grows to at most 40% of the terminal, with the search
-bar at the top. Set `FZF_CTRL_R_OPTS` to customize its layout. Customize
-`/root/.bashrc` or `/root/.inputrc` normally; package transactions do not rewrite
-those files. These shell defaults are shared with the host base image.
+bar at the top. Search reuses your current shell prompt and starts with the
+command being edited, keeping the prompt line in place above the matches.
+Set `FZF_CTRL_R_OPTS` to customize its layout or override the search prompt
+with `--prompt`. Customize `/root/.bashrc` or `/root/.inputrc` normally;
+package transactions do not rewrite those files. These shell defaults are shared with the host base image.
 
 The container inherits the system variation's APM registry configuration,
 channel, and trust keys. These local settings are present even when the registry
