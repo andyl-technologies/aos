@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import importlib
+import json
 import os
 from pathlib import Path
 import re
@@ -85,8 +86,9 @@ def pe_command_line(path: Path) -> str:
 def root_hash_from_uki(system: dict[str, Any], metadata: dict[str, Any]) -> str | None:
     """Binds the observed dm-verity root to the exact image's UKI."""
 
-    uki = Path(system["images"]["raw"]) / "uki-a.efi"
-    require(hash_file(uki) == metadata["uki"]["sha256"], "sidecar UKI differs from image metadata")
+    fact = metadata["efi"]["normal_a"]["artifact"]
+    uki = Path(system["images"]["raw"]) / fact["path"]
+    require("sha256:" + hash_file(uki) == fact["sha256"], "sidecar UKI differs from image metadata")
     matches = re.findall(r"(?:^| )roothash=([0-9a-f]{64})(?= |$)", pe_command_line(uki))
     if system["expected"]["security"]["verity"]:
         require(len(matches) == 1, "verity image lacks one UKI root hash")
@@ -206,19 +208,18 @@ def observe(machine: Any, system: dict[str, Any], phase: str, root_hash: str | N
     guest(
         machine,
         "test -d /sys/firmware/efi; "
-        "systemctl is-active --quiet multi-user.target sshd.service aos-config.target",
+        "systemctl is-active --quiet multi-user.target sshd.service aos-ability-host-controller.service",
     )
     identity = guest(
         machine,
-        '. /etc/os-release; printf "%s\\n%s\\n" "$VERSION_ID" "$AOS_MODULE_ABI"',
+        '. /etc/os-release; printf "%s\\n" "$VERSION_ID"',
     ).splitlines()
-    require(len(identity) == 2, "guest os-release identity is incomplete")
+    require(len(identity) == 1, "guest os-release identity is incomplete")
     return {
         "phase": phase,
         "machine": guest(machine, "uname -m").strip(),
         "kernel": guest(machine, "uname -r").strip(),
         "version": identity[0],
-        "moduleAbi": int(identity[1]),
         "toplevel": guest(machine, "readlink /usr/lib/aos/toplevel").strip(),
         "security": observed_security(machine, system["expected"]["security"], root_hash),
         "configuration": configuration_identity(machine, require_runtime=phase != "initial"),
@@ -231,7 +232,11 @@ def configuration_checks(machine: Any, system: dict[str, Any]) -> dict[str, Any]
     apm = shlex.quote(system["guestTools"]["apm"])
     prefix = "XDG_CACHE_HOME=/var/cache/aos-image-matrix " + apm
     guest(machine, "mkdir -p /run/image-matrix /var/cache/aos-image-matrix /var/lib/image-matrix")
-    module = '{ environment.etc."image-matrix-active".text = "matrix-active\\n"; }\n'
+    module = '''{ aos.abilities.configuration.operations.file.effects.image-matrix-active.input = {
+  path = "/etc/image-matrix-active";
+  content = "matrix-active\\n";
+  mode = "0444";
+}; }\n'''
     guest_write(machine, "/run/image-matrix/10-proof.nix", module)
     initial = read_guest_generation(machine)
     guest(machine, f"{prefix} config add /run/image-matrix/10-proof.nix")
@@ -249,8 +254,7 @@ def configuration_checks(machine: Any, system: dict[str, Any]) -> dict[str, Any]
         "cat /run/image-matrix/rejection.log; "
         "echo 'invalid configuration was accepted' >&2; exit 1; fi; "
         "cat /run/image-matrix/rejection.log; "
-        "grep -F 'config eval failed:' /run/image-matrix/rejection.log; "
-        "grep -F 'cannot coerce a list to a string' /run/image-matrix/rejection.log",
+        "grep -F 'aos.networking.hostName' /run/image-matrix/rejection.log",
         timeout=1800,
     )
     require(read_guest_generation(machine) == configured, "rejected configuration changed the active generation")
@@ -263,27 +267,29 @@ def configuration_checks(machine: Any, system: dict[str, Any]) -> dict[str, Any]
 def read_guest_generation(machine: Any) -> int:
     """Reads the active host-configuration generation without guest JSON tools."""
 
-    import json
-
-    generation = json.loads(guest(machine, "cat /var/lib/profiles/system/state.json"))["current"]
+    generation = json.loads(guest(machine,
+        shlex.quote(machine.native_package_runtime)
+        + " deployment-current --profile /var/lib/profiles/system --committed-during-recovery"
+    ))["generation"]
     require(type(generation) is int, "active configuration generation is not an integer")
     return generation
 
 
 def configuration_identity(machine: Any, *, require_runtime: bool = True) -> dict[str, Any]:
-    """Identifies the committed runtime module set and platform host input."""
-
-    import json
+    """Identifies the committed native evaluator and ordered source snapshots."""
 
     generation = read_guest_generation(machine)
-    manifest = json.loads(guest(machine, f"cat /var/lib/profiles/system/gen-{generation}/manifest.json"))
-    inputs = manifest["inputs"]
+    inputs = json.loads(guest(machine, f"cat /var/lib/profiles/system/gen-{generation}/evaluation.json"))
+    require(inputs.get("schema") == "aos.package.evaluation-input"
+            and inputs.get("scope") == ["profile", "system"],
+            "committed generation lacks a native profile evaluation descriptor")
     if require_runtime:
-        require("runtime_modules" in inputs, "configured generation lacks runtime-module binding")
+        require(bool(inputs.get("runtimeConfiguration")), "configured generation lacks runtime-module binding")
     return {
         "generation": generation,
-        "runtimeModulesDigest": digest(inputs.get("runtime_modules")),
-        "hostNixDigest": digest(inputs["host_nix"]),
+        "runtimeModulesDigest": digest(inputs.get("runtimeConfiguration", [])),
+        "baselineModulesDigest": digest(inputs["configuration"]),
+        "libraryNarHash": inputs["libraryNarHash"],
     }
 
 
@@ -297,7 +303,7 @@ def persistent_state(machine: Any, configured: dict[str, Any]) -> None:
     )
     current = configuration_identity(machine)
     require(current["generation"] >= configured["generation"], "reboot reverted the committed configuration")
-    for field in ("runtimeModulesDigest", "hostNixDigest"):
+    for field in ("runtimeModulesDigest", "baselineModulesDigest", "libraryNarHash"):
         require(current[field] == configured[field], f"reboot changed committed configuration input: {field}")
 
 
@@ -321,7 +327,11 @@ def boot_system(
         '  aos.services.ssh.enable = true;\n'
         '  aos.services.ssh.permitRootLogin = "prohibit-password";\n'
         '  aos.networking.hostName = "image-matrix";\n'
-        f'  environment.etc."ssh/authorized_keys/root".text = "{public_key}";\n'
+        '  aos.abilities.configuration.operations.file.effects.image-matrix-root-key.input = {\n'
+        '    path = "/etc/ssh/authorized_keys/root";\n'
+        f'    content = "{public_key}\\n";\n'
+        '    mode = "0600";\n'
+        '  };\n'
         "}\n"
     )
     counts = module.Counts()
@@ -333,9 +343,14 @@ def boot_system(
         counts,
         extra_disks=system["extraDisks"],
     )
+    machine.native_package_runtime = system["guestTools"]["packageRuntime"]
     try:
         machine.start()
+        admitted_runtime = module.Scenario._native_package_runtime(machine)
+        require(admitted_runtime == machine.native_package_runtime,
+                "image admission differs from the exact declared private package runtime")
         guest(machine, f"test -x {shlex.quote(system['guestTools']['apm'])}")
+        guest(machine, f"test -x {shlex.quote(machine.native_package_runtime)}")
         if system["expected"]["security"]["secureBoot"]:
             enroll(machine, system)
         observations = [observe(machine, system, "initial", root_hash)]
@@ -352,7 +367,7 @@ def boot_system(
         persistent_state(machine, configured)
         observations.append(observe(machine, system, "cold", root_hash))
         return {
-            "logicalDiskSha256": metadata["logicalDiskSha256"],
+            "logicalDiskSha256": metadata["disk"]["logical"]["sha256"].removeprefix("sha256:"),
             "formatBinding": "decoded-logical-disk",
             "warmBoots": counts.reboot_cycles,
             "coldBoots": counts.cold_boot_cycles,

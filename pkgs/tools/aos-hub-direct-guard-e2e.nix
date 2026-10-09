@@ -12,6 +12,29 @@
   driver = ./aos-hub-direct-guard-e2e.mjs;
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      role = "build-input";
+    };
     pname = "aos-hub-direct-guard-e2e";
     version = "0.1.0";
     src = null;

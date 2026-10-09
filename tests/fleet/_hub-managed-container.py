@@ -203,24 +203,24 @@ def _prepare_documentation(root, environment, tools, registry_root):
     selected = tools.get("documentedPackage")
     if selected is None:
         return None
-    if (not isinstance(selected, dict) or set(selected) != {"storePath", "version", "baseLib"}
+    if (not isinstance(selected, dict) or set(selected) != {"storePath", "version"}
             or any(not isinstance(selected[field], str)
-                or not selected[field].startswith("/nix/store/") for field in ("storePath", "baseLib"))
+                or not selected[field].startswith("/nix/store/") for field in ("storePath",))
             or not isinstance(selected["version"], str)
             or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", selected["version"])):
-        raise ValueError("Documented package must use the selected source-built package and base library")
+        raise ValueError("Documented package must use the selected source-built package")
     _run(root, environment, "apr-publish-documentation", [tools["apr"], "publish", selected["storePath"],
         "--registry", "containers", "--name", "aos-hub", "--version", selected["version"],
         "--description", "Native and Worker registry Hub service.", "--license", "Apache-2.0",
-        "--maintainer", "fleet-publisher@example.test", "--documentation-base-lib", selected["baseLib"],
+        "--maintainer", "fleet-publisher@example.test",
         "--key-id", "initial"])
     catalog = tomllib.loads((registry_root / "packages/a/aos-hub.toml").read_text())
-    matches = [entry["platforms"]["x86_64-linux"]["documentation"]
+    matches = [entry["platforms"]["x86_64-linux"]["module_documentation"]
         for entry in catalog["versions"] if entry["version"] == selected["version"]]
     if len(matches) != 1:
         raise ValueError("Actual documented package identity is missing or ambiguous")
     identity = matches[0]
-    descriptor = os.open(identity["store_path"], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    descriptor = os.open(Path(identity["store_path"]) / "options.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as source:
         before = os.fstat(source.fileno())
         if not stat.S_ISREG(before.st_mode) or not 16 <= before.st_size <= 262144:
@@ -233,7 +233,7 @@ def _prepare_documentation(root, environment, tools, registry_root):
     digest = hashlib.sha256(body).hexdigest()
     document = json.loads(body)
     if (identity["document_sha256"] != "sha256:" + digest or identity["document_size"] != len(body)
-            or document.get("schema") != "aos.package-documentation/v1" or not document.get("options")):
+            or document.get("schema") != "aos.module.documentation" or not document.get("options")):
         raise ValueError("Actual signed documentation lacks canonical option content")
     path = root / "document.private.json"
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

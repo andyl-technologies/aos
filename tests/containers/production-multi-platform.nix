@@ -19,9 +19,8 @@
   platforms,
   platformChecks,
 }: let
-  # The fragments below are spliced into the script after indentation
-  # stripping. With both platforms released they reproduce the original
-  # two-platform script byte for byte, so the derivation keeps its identity.
+  # Render exact-set checks from the reviewed release roster, including
+  # releases that defer one platform.
   quoted = value: "\"${value}\"";
   jsonList = values: "[" + lib.concatMapStringsSep ", " quoted values + "]";
   systems = map (platform: platform.system) platforms;
@@ -62,6 +61,7 @@ in
         pkgs.diffutils
         pkgs.findutils
         pkgs.jq
+        pkgs.aos-deployment-check
         pkgs.tar
         primaryIndex
         repeatIndex
@@ -105,6 +105,23 @@ in
           ' ${primaryIndex}/image-index.json >/dev/null \
             || fail "production index is not the exact canonical ${lib.concatStringsSep "+" architectures} set"
 
+          ${builtins.readFile ../../pkgs/containers/_aos-oci-backend/oci/deployment-validation.sh}
+          validate_deployment_artifact ${primaryIndex}/deployment.json \
+            ${pkgs.aos-deployment-check}/bin/aos-deployment-check ${pkgs.jq}/bin/jq
+          deployment_digest=$(sha256sum ${primaryIndex}/deployment.json | cut -d ' ' -f 1)
+          jq -e '
+            .schema == "aos.artifact.deployment/v1"
+            and .artifactClass == "container"
+            and .executionStage == null
+            and [.platforms[].platform] == [${evidencePlatforms}]
+          ' ${primaryIndex}/deployment.json >/dev/null \
+            || fail "production deployment is not the exact released platform transaction set"
+          jq -e \
+            --arg digest "sha256:$deployment_digest" '
+              .annotations."dev.andyl.aos.deployment.digest" == $digest
+            ' ${primaryIndex}/image-index.json >/dev/null \
+            || fail "production index does not bind its native deployment"
+
           jq -e \
             --arg referenceName ${lib.escapeShellArg referenceName} \
             --slurpfile descriptor ${primaryIndex}/index-descriptor.json \
@@ -122,6 +139,8 @@ in
               and .oci.index == $descriptor[0]
               and .oci.platformManifests == $index[0].manifests
               and (.oci.platformManifests | length) == ${toString (builtins.length architectures)}
+              and .evidence.deployment.artifactType
+                == "application/vnd.aos.artifact.deployment.v1+json"
               and .qualification.readyForVerifiedPublication == true
             ' ${evidence}/signature-input.json >/dev/null \
             || fail "signature input does not bind the coordinated production index"
@@ -132,6 +151,8 @@ in
               and .qualified == true
               and .unsignedRelease.oci == $input[0].oci
               and .requiredOutput.finalSidecarPath == "containers/v1/index.json"
+              and .requiredOutput.finalSidecarMediaType
+                == "application/vnd.aos.container-release.v1+json"
               and .constraints.privateMaterialPermittedInNixBuild == false
               and .constraints.exactInputBytesRequired == true
             ' ${evidence}/signing-request.json >/dev/null \

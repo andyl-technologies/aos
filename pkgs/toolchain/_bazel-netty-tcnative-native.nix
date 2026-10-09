@@ -5,7 +5,7 @@
   fetchurl,
   buildPackages,
   stdenv,
-  apr,
+  apache-portable-runtime,
   bazelNettyBoringssl,
   bazelNettyTcnativeClasses,
 }: let
@@ -63,7 +63,7 @@ in
       buildPackages.python3
       bazelNettyTcnativeClasses
     ];
-    runtimeDeps = [apr bazelNettyBoringssl bazelNettyTcnativeClasses];
+    runtimeDeps = [apache-portable-runtime bazelNettyBoringssl bazelNettyTcnativeClasses];
 
     phases = [
       {
@@ -115,7 +115,7 @@ in
             object="objects/$(basename "''${input%.c}").o"
             cc -O2 -fPIC -fvisibility=hidden -DHAVE_OPENSSL \
               -I${buildJdk}/include -I${buildJdk}/include/linux \
-              -I${apr}/include/apr-1 -I${bazelNettyBoringssl}/include \
+              -I${apache-portable-runtime}/include/apr-1 -I${bazelNettyBoringssl}/include \
               -I"$native" -Isource/jni-util \
               -c "$input" -o "$object"
           done
@@ -123,7 +123,7 @@ in
           c++ ${linkFlags} objects/*.o \
             ${bazelNettyBoringssl}/lib/libssl.a \
             ${bazelNettyBoringssl}/lib/libcrypto.a \
-            ${apr}/lib/libapr-1.a \
+            ${apache-portable-runtime}/lib/libapr-1.a \
             -o "native-jar/META-INF/native/${nativeLibrary}"
         '';
       }
@@ -172,7 +172,7 @@ in
             "$out/share/licenses/netty-tcnative/"
           cp -R source "$out/share/source/netty-tcnative"
 
-          printf '%s\n' '${apr}' '${bazelNettyBoringssl}' \
+          printf '%s\n' '${apache-portable-runtime}' '${bazelNettyBoringssl}' \
             '${bazelNettyTcnativeClasses}' > "$out/nix-support/java-runtime"
         '';
       }

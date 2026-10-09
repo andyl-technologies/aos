@@ -27,6 +27,25 @@
   };
 in
   mkDerivation {
+    # The native tools and shared libraries use the GNU/Linux C++ runtime.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "spirv-tools";
     inherit version;
 

@@ -5,6 +5,8 @@
 
 use std::sync::Mutex;
 
+use base64::Engine as _;
+
 use anyhow::{bail, Context as _, Result};
 use aos_hub_core::{fetch::SurfaceFetch, storage_work::StorageWorkOutcome};
 
@@ -18,26 +20,29 @@ pub(crate) async fn inspect_content(
     package_name: &str,
     package_version: &str,
     platform: &str,
-    artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+    artifact: &aos_registry_surface::manifest::NativeArtifactMeta,
 ) -> Result<(StorageWorkOutcome, u64)> {
     let reads = SourceReads {
         fetcher,
         bytes: Mutex::new(0),
     };
-    let document = aos_hub_core::indexer::fetch_package_documentation(
-        &reads,
-        package_name,
-        package_version,
-        platform,
-        artifact,
-    )
-    .await?;
+    let (bytes, _) =
+        aos_hub_core::indexer::native_documentation::fetch_native_documentation_content(
+            &reads,
+            package_name,
+            package_version,
+            platform,
+            artifact,
+        )
+        .await?;
     let source_bytes = *reads
         .bytes
         .lock()
         .map_err(|_| anyhow::anyhow!("documentation source accounting lock failed"))?;
     Ok((
-        StorageWorkOutcome::DocumentationContent { document },
+        StorageWorkOutcome::DocumentationContent {
+            document_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        },
         source_bytes,
     ))
 }

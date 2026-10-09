@@ -36,15 +36,29 @@ const GENERATION8_COVERAGE: &str = include_str!("coverage-v8.tsv");
 const GENERATION8_SOURCE: &str = include_str!("../schema-v8.tsv");
 const GENERATION12_COVERAGE: &str = include_str!("coverage-v12.tsv");
 const GENERATION12_SOURCE: &str = include_str!("../schema-v12.tsv");
-static COVERAGE: LazyLock<String> = LazyLock::new(|| {
+static GENERATION13_COVERAGE: LazyLock<String> = LazyLock::new(|| {
     [
         GENERATION12_COVERAGE,
         include_str!("coverage-v13-delta.tsv"),
     ]
     .concat()
 });
-static SOURCE: LazyLock<String> =
+static GENERATION13_SOURCE: LazyLock<String> =
     LazyLock::new(|| [GENERATION12_SOURCE, include_str!("../schema-v13-delta.tsv")].concat());
+static COVERAGE: LazyLock<String> = LazyLock::new(|| {
+    [
+        GENERATION13_COVERAGE.as_str(),
+        include_str!("coverage-v16-delta.tsv"),
+    ]
+    .concat()
+});
+static SOURCE: LazyLock<String> = LazyLock::new(|| {
+    [
+        GENERATION13_SOURCE.as_str(),
+        include_str!("../schema-v16-delta.tsv"),
+    ]
+    .concat()
+});
 const PROFILE: &str = "aos.hub.object-requirements/v1";
 const RECORD_BYTES: usize = 1024 * 1024;
 const FAMILIES: [&str; 10] = [
@@ -147,16 +161,28 @@ impl ObjectRequirementsCoverage {
         Self::from_generation_contract(GENERATION12_COVERAGE, GENERATION12_SOURCE, 12)
     }
 
-    /// Admits the current generation-thirteen requirements coverage.
+    /// Admits immutable generation-thirteen requirements coverage.
     ///
     /// # Errors
     /// Refuses missing, reordered or changed columns and incompatible privacy policies.
     pub fn current13() -> Result<Self> {
+        Self::from_generation_contract(
+            GENERATION13_COVERAGE.as_str(),
+            GENERATION13_SOURCE.as_str(),
+            13,
+        )
+    }
+
+    /// Admits the current Native documentation and deployment requirements.
+    ///
+    /// # Errors
+    /// Refuses changed columns or inconsistent confidentiality policies.
+    pub fn current16() -> Result<Self> {
         Self::from_contract(COVERAGE.as_str())
     }
 
     fn from_contract(coverage: &str) -> Result<Self> {
-        Self::from_generation_contract(coverage, SOURCE.as_str(), 13)
+        Self::from_generation_contract(coverage, SOURCE.as_str(), 16)
     }
 
     fn from_generation_contract(coverage: &str, source: &str, generation: usize) -> Result<Self> {
@@ -195,7 +221,10 @@ impl ObjectRequirementsCoverage {
             ensure!(
                 (original[6] == "secret") == matches!(policy, Policy::SecretExcluded)
                     && (!matches!(policy, Policy::Value)
-                        || !matches!(original[6], "private_json" | "private_cell" | "secret" | "oci_inventory_progress"))
+                        || !matches!(
+                            original[6],
+                            "private_json" | "private_cell" | "secret" | "oci_inventory_progress"
+                        ))
                     && (original[1] == "retain" || fields[2] == "none"),
                 "object coverage confidentiality policy differs"
             );

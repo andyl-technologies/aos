@@ -115,10 +115,14 @@ def registry_index_observations(query, slug):
     )
     observe(
         "documentation",
-        "indexed_commit, package_name, package_version, platform, format, store_path, "
-        "nar_hash, nar_size, document_sha256, document_size, semantic_schema_sha256, "
-        "system_module_nar_hash",
-        "package_documentation",
+        "source_commit, package_name, package_version, platform, document_sha256, "
+        "store_path, search_json, content_digest",
+        "release_native_documentation",
+    )
+    observe(
+        "ability_graphs",
+        "source_commit, platform, canonical_json, content_digest",
+        "release_ability_graphs",
     )
     observe(
         "browse_catalogs",

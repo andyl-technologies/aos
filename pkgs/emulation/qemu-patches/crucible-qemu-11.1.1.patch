@@ -1,89 +1,3 @@
-From 33343f63cb5e8749caadcb251c6b8a90ed0482cf Mon Sep 17 00:00:00 2001
-From: Dylan Plecki <dylan@andyl.com>
-Date: Sat, 3 Oct 2026 07:08:17 +0000
-Subject: [PATCH] Integrate deterministic execution and private fork I/O
- custody
-
-Retain versioned process control, deterministic virtual coordinates,
-private child resources, and canonical guest-state projection. Drain
-the original registered reader and native callback before admitting
-template barriers. Preserve stopped-owner generation, exact time,
-connection lifetime, and descriptor failure refusal.
-
-End an admitted current-CPU stop at the TCG chain while retaining the
-asynchronous runstate transition. Reconstruct each child's private
-Linux epoll backend under the original authenticated fork barrier,
-preserving active and standby modes and the parent's kernel object.
-Validate retained handler membership and inherited descriptor identity
-before starting child workers.
-
-Observe stop admission, publication, rearm refusal, and original wake
-reader outcomes only under the existing delivery trace opt-in. Keep
-unowned architecture and unlocked runstate fields unavailable, retain
-late generations, and preserve native operation and error semantics.
-Carry production-body regressions and explicit causal negatives.
-Declare extracted public entry points with their original types so
-configured prototype diagnostics remain enforced in the fork fixture.
-
-Transfer an outstanding running-owner control request at genuine stopped
-publication to the existing paused owner. Preserve the original request
-counters, stop-clearing rearm, flush and callback ownership checks.
-Exercise reader-before-publication and reader-after-publication ordering,
-no-request behavior, and nested next-generation exactly-once completion.
-
-Avoid empty fault-queue mutex and clock work with an atomically published
-pending count, retaining lifecycle and custom deadlines. Observe instruction
-completion icount only after finding an active execution context. Exercise
-production queue transitions, restored counts, cross-thread publication,
-active completion/exception semantics, and causal negative controls.
-
-Cache tracked Linux mutex owner thread IDs after their first observation.
-Suspend the cache across fork callback ordering, retain uncached fallback,
-and refresh native child ownership before registry reconstruction. Verify
-real worker/fork IDs, earlier RCU child callbacks, parent stability,
-registration failure, syscall-free steady tracking, and causal negatives.
-
-Check snapshot continuation before consulting the accelerator quantum.
-Avoid accelerator identity lookups on cold TB paths while retaining the
-predicate result, active continuation, RR cursor and TB semantics.
-Exercise production genesis, resume, selection and VMState post-load
-bodies, exhaustive predicate cases, and the reversed-order negative.
-
-Classify the current accelerator instance once before publication and its
-initialization callback. Preserve exact sim display name matching, independent
-failed-init retries, nameless and early startup false results, reset and restore
-identity, fork inheritance, diagnostic names, and predicate operand order.
-Use the instance classification on icount, RR and fault mode predicates without
-changing timer effects, execution counts, scheduling or BQL fences. Exercise
-production init, getter and predicate bodies, all modes, inherited and custom
-class names, call-count and order assertions, and compiled causal negatives.
-
-Query register-rule presence directly while retaining initialization and the
-complete ordered rule scan. Preserve instruction-context and phase-deadline
-conditions and their evaluation order. Exercise production bodies, arbitrary
-kinds, complete comparison reads, modeled vector replacement, native fork
-inheritance and compiled causal negatives. Retain uninstrumented O2 object
-evidence with explicit reduced-translation-unit and runtime limits.
-
-Restrict pre-stop FIFO invalidation barriers to the initialized Sim
-accelerator, retaining every common-event pass and FIFO owner restoration.
-Restore ordinary common stop-before-work ordering and avoid redundant empty
-queue locks on healthy single-threaded TCG turns. Preserve Sim global flush
-fixed points and callback/stop ordering. Exercise production wrapper, drain,
-common, FIFO, wait, kick and pause/resume bodies with causal negatives and a
-Git-free source-archive fixture. Keep bounded-provider and full-process
-qualification limits explicit.
-
-Use the cached accelerator instance classification when observing Sim ticks.
-Retain mode-before-icount admission, precise-only observation, the -1 error
-and signed tick result. Exercise the production API body with early and
-nameless safe-getter contracts, named mode matrices, lifecycle identity
-continuity, exact query order and counts, signed edge values and compiled
-causal negatives. Carry the exact rule-presence lazy-memory test adapter.
-Keep ordinary RR barriers unchanged and qualification limits explicit.
-
-Signed-off-by: Dylan Plecki <dylan@andyl.com>
-
 diff --git a/MAINTAINERS b/MAINTAINERS
 index 902db77218eacc2461b54fe675c9816b3d98aec6..efa17b3715547e731699fcd0edcb3de3ce8d49bd 100644
 --- a/MAINTAINERS
@@ -3023,7 +2937,7 @@ index 1ffcb4b2d2d0fc37c80f92ebcd76ed8a85fa7cae..9645e74d829fb2d8fd078305a5907b90
      tcg_gen_ld_i32(cpu_index, tcg_env,
                     offsetof(CPUState, cpu_index) - sizeof(CPUState));
 diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
-index 4313864d2c5d24e30dc1cfbcdf9a81eb7eb0e323..bcab8b991987caece86e5f7db7aa6f7cad1cb332 100644
+index 4313864d2c5d24e30dc1cfbcdf9a81eb7eb0e323..60629a0a66e5e5556e30d46bab1912fbcdb2c7f2 100644
 --- a/accel/tcg/tb-maint.c
 +++ b/accel/tcg/tb-maint.c
 @@ -20,6 +20,7 @@
@@ -3034,6 +2948,406 @@ index 4313864d2c5d24e30dc1cfbcdf9a81eb7eb0e323..bcab8b991987caece86e5f7db7aa6f7c
  #include "exec/cputlb.h"
  #include "exec/log.h"
  #include "exec/page-protection.h"
+@@ -189,6 +190,11 @@ static void *l1_map[V_L1_MAX_SIZE];
+ 
+ struct PageDesc {
+     QemuSpin lock;
++    /*
++     * Recorded memberships needing another physical page's lock. Protected
++     * by lock; UINT32_MAX is sticky unknown until the list is cleared.
++     */
++    uint32_t crossing_tb_count;
+     /* list of TBs intersecting this ram page */
+     uintptr_t first_tb;
+ };
+@@ -292,29 +298,30 @@ struct page_entry {
+     bool locked;
+ };
+ 
++#define PAGE_COLLECTION_INLINE_CAPACITY 4
++
+ /**
+- * struct page_collection - tracks a set of pages (i.e. &struct page_entry's)
+- * @tree:   Binary search tree (BST) of the pages, with key == page index
+- * @max:    Pointer to the page in @tree with the highest page index
++ * struct page_collection - caller-owned set of page locks
++ * @tree: Heap entries after the inline capacity is exceeded; NULL otherwise
++ * @max_index: Highest collected index, valid when the collection is nonempty
++ * @inline_count: Number of active inline entries; zero after spilling
++ * @inline_entries: Entries sorted by page index, owned by this collection
+  *
+- * To avoid deadlock we lock pages in ascending order of page index.
+- * When operating on a set of pages, we need to keep track of them so that
+- * we can lock them in order and also unlock them later. For this we collect
+- * pages (i.e. &struct page_entry's) in a binary search @tree. Given that the
+- * @tree implementation we use does not provide an O(1) operation to obtain the
+- * highest-ranked element, we use @max to keep track of the inserted page
+- * with the highest index. This is valuable because if a page is not in
+- * the tree and its index is higher than @max's, then we can lock it
+- * without breaking the locking order rule.
++ * Initial discovery may trylock lower indexes, but only blocks above the
++ * highest collected index. After a failed trylock, all entries are unlocked
++ * and reacquired in ascending order. Sorting inline storage does not change
++ * the order in which discovery acquires locks.
+  *
+- * Note on naming: 'struct page_set' would be shorter, but we already have a few
+- * page_set_*() helpers, so page_collection is used instead to avoid confusion.
+- *
+- * See also: page_collection_lock().
++ * Small collections need no allocations. Spilling transfers their lock
++ * ownership to stable heap entries without releasing any page locks. The
++ * collection itself stays in its caller's stack frame, including cleanup
++ * before a precise-SMC nonlocal exit.
+  */
+ struct page_collection {
+     QTree *tree;
+-    struct page_entry *max;
++    tb_page_addr_t max_index;
++    unsigned int inline_count;
++    struct page_entry inline_entries[PAGE_COLLECTION_INLINE_CAPACITY];
+ };
+ 
+ typedef int PageForEachNext;
+@@ -549,17 +556,115 @@ static gboolean page_entry_unlock(gpointer key, gpointer value, gpointer data)
+     return FALSE;
+ }
+ 
+-/*
+- * Trylock a page, and if successful, add the page to a collection.
+- * Returns true ("busy") if the page could not be locked; false otherwise.
+- */
++static gint tb_page_addr_cmp(gconstpointer ap, gconstpointer bp, gpointer udata)
++{
++    tb_page_addr_t a = *(const tb_page_addr_t *)ap;
++    tb_page_addr_t b = *(const tb_page_addr_t *)bp;
++
++    if (a == b) {
++        return 0;
++    } else if (a < b) {
++        return -1;
++    }
++    return 1;
++}
++
++static struct page_entry *page_collection_lookup(struct page_collection *set,
++                                                tb_page_addr_t index)
++{
++    if (set->tree) {
++        return q_tree_lookup(set->tree, &index);
++    }
++
++    for (unsigned int i = 0; i < set->inline_count; i++) {
++        struct page_entry *pe = &set->inline_entries[i];
++
++        if (pe->index == index) {
++            return pe;
++        }
++        if (pe->index > index) {
++            break;
++        }
++    }
++    return NULL;
++}
++
++static void page_collection_spill(struct page_collection *set)
++{
++    QTree *tree;
++
++    g_assert(!set->tree);
++    g_assert(set->inline_count == PAGE_COLLECTION_INLINE_CAPACITY);
++
++    tree = q_tree_new_full(tb_page_addr_cmp, NULL, NULL, page_entry_destroy);
++    for (unsigned int i = 0; i < set->inline_count; i++) {
++        struct page_entry *pe = g_new(struct page_entry, 1);
++
++        /* Preserve held and busy entries; retry still owns their lock state. */
++        *pe = set->inline_entries[i];
++        q_tree_insert(tree, &pe->index, pe);
++    }
++
++    set->tree = tree;
++    set->inline_count = 0;
++}
++
++static struct page_entry *page_collection_insert(struct page_collection *set,
++                                                PageDesc *pd,
++                                                tb_page_addr_t index)
++{
++    struct page_entry *pe;
++    unsigned int position;
++
++    if (!set->tree && set->inline_count == PAGE_COLLECTION_INLINE_CAPACITY) {
++        page_collection_spill(set);
++    }
++    if (set->tree) {
++        pe = page_entry_new(pd, index);
++        q_tree_insert(set->tree, &pe->index, pe);
++        return pe;
++    }
++
++    for (position = 0; position < set->inline_count; position++) {
++        if (set->inline_entries[position].index > index) {
++            break;
++        }
++    }
++    memmove(&set->inline_entries[position + 1],
++            &set->inline_entries[position],
++            (set->inline_count - position) * sizeof(*pe));
++    pe = &set->inline_entries[position];
++    *pe = (struct page_entry) { .pd = pd, .index = index, .locked = false };
++    set->inline_count++;
++    return pe;
++}
++
++static void page_collection_foreach(struct page_collection *set,
++                                    GTraverseFunc callback)
++{
++    if (set->tree) {
++        q_tree_foreach(set->tree, callback, NULL);
++        return;
++    }
++
++    for (unsigned int i = 0; i < set->inline_count; i++) {
++        struct page_entry *pe = &set->inline_entries[i];
++
++        if (callback(&pe->index, pe, NULL)) {
++            break;
++        }
++    }
++}
++
++/* Returns true if the new page is busy; existing entries are already owned. */
+ static bool page_trylock_add(struct page_collection *set, tb_page_addr_t addr)
+ {
+     tb_page_addr_t index = addr >> TARGET_PAGE_BITS;
+     struct page_entry *pe;
+     PageDesc *pd;
++    bool in_order;
+ 
+-    pe = q_tree_lookup(set->tree, &index);
++    pe = page_collection_lookup(set, index);
+     if (pe) {
+         return false;
+     }
+@@ -569,47 +674,24 @@ static bool page_trylock_add(struct page_collection *set, tb_page_addr_t addr)
+         return false;
+     }
+ 
+-    pe = page_entry_new(pd, index);
+-    q_tree_insert(set->tree, &pe->index, pe);
+-
+-    /*
+-     * If this is either (1) the first insertion or (2) a page whose index
+-     * is higher than any other so far, just lock the page and move on.
+-     */
+-    if (set->max == NULL || pe->index > set->max->index) {
+-        set->max = pe;
++    in_order = (!set->tree && !set->inline_count) || index > set->max_index;
++    pe = page_collection_insert(set, pd, index);
++    if (in_order) {
++        set->max_index = index;
+         do_page_entry_lock(pe);
+         return false;
+     }
+-    /*
+-     * Try to acquire out-of-order lock; if busy, return busy so that we acquire
+-     * locks in order.
+-     */
+     return page_entry_trylock(pe);
+ }
+ 
+-static gint tb_page_addr_cmp(gconstpointer ap, gconstpointer bp, gpointer udata)
+-{
+-    tb_page_addr_t a = *(const tb_page_addr_t *)ap;
+-    tb_page_addr_t b = *(const tb_page_addr_t *)bp;
+-
+-    if (a == b) {
+-        return 0;
+-    } else if (a < b) {
+-        return -1;
+-    }
+-    return 1;
+-}
+-
+ /*
+  * Lock a range of pages ([@start,@last]) as well as the pages of all
+  * intersecting TBs.
+  * Locking order: acquire locks in ascending order of page index.
+  */
+-static struct page_collection *page_collection_lock(tb_page_addr_t start,
+-                                                    tb_page_addr_t last)
++static void page_collection_lock(struct page_collection *set,
++                                 tb_page_addr_t start, tb_page_addr_t last)
+ {
+-    struct page_collection *set = g_malloc(sizeof(*set));
+     tb_page_addr_t index;
+     PageDesc *pd;
+ 
+@@ -617,13 +699,13 @@ static struct page_collection *page_collection_lock(tb_page_addr_t start,
+     last >>= TARGET_PAGE_BITS;
+     g_assert(start <= last);
+ 
+-    set->tree = q_tree_new_full(tb_page_addr_cmp, NULL, NULL,
+-                                page_entry_destroy);
+-    set->max = NULL;
++    set->tree = NULL;
++    set->max_index = 0;
++    set->inline_count = 0;
+     assert_no_pages_locked();
+ 
+  retry:
+-    q_tree_foreach(set->tree, page_entry_lock, NULL);
++    page_collection_foreach(set, page_entry_lock);
+ 
+     for (index = start; index <= last; index++) {
+         TranslationBlock *tb;
+@@ -634,28 +716,45 @@ static struct page_collection *page_collection_lock(tb_page_addr_t start,
+             continue;
+         }
+         if (page_trylock_add(set, index << TARGET_PAGE_BITS)) {
+-            q_tree_foreach(set->tree, page_entry_unlock, NULL);
++            page_collection_foreach(set, page_entry_unlock);
+             goto retry;
+         }
+         assert_page_locked(pd);
++        /* Recheck under the page lock on every retry, before walking the list. */
++        if (pd->crossing_tb_count == 0) {
++            continue;
++        }
+         PAGE_FOR_EACH_TB(unused, unused, pd, tb, n) {
+-            if (page_trylock_add(set, tb_page_addr0(tb)) ||
+-                (tb_page_addr1(tb) != -1 &&
+-                 page_trylock_add(set, tb_page_addr1(tb)))) {
++            tb_page_addr_t other_addr = n ? tb_page_addr0(tb)
++                                         : tb_page_addr1(tb);
++
++            /* The tagged page is already locked and in the collection. */
++            if (other_addr != -1 &&
++                (other_addr >> TARGET_PAGE_BITS) != index &&
++                page_trylock_add(set, other_addr)) {
+                 /* drop all locks, and reacquire in order */
+-                q_tree_foreach(set->tree, page_entry_unlock, NULL);
++                page_collection_foreach(set, page_entry_unlock);
+                 goto retry;
+             }
+         }
+     }
+-    return set;
+ }
+ 
+ static void page_collection_unlock(struct page_collection *set)
+ {
+-    /* entries are unlocked and freed via page_entry_destroy */
+-    q_tree_destroy(set->tree);
+-    g_free(set);
++    if (set->tree) {
++        /* Heap entries release their page locks before they are freed. */
++        q_tree_destroy(set->tree);
++    } else {
++        for (unsigned int i = 0; i < set->inline_count; i++) {
++            struct page_entry *pe = &set->inline_entries[i];
++
++            g_assert(pe->locked);
++            page_unlock(pe->pd);
++        }
++    }
++    set->tree = NULL;
++    set->inline_count = 0;
+ }
+ 
+ /* Set to NULL all the 'first_tb' fields in all PageDescs. */
+@@ -672,6 +771,7 @@ static void tb_remove_all_1(int level, void **lp)
+         for (i = 0; i < V_L2_SIZE; ++i) {
+             page_lock(&pd[i]);
+             pd[i].first_tb = (uintptr_t)NULL;
++            pd[i].crossing_tb_count = 0;
+             page_unlock(&pd[i]);
+         }
+     } else {
+@@ -692,6 +792,15 @@ static void tb_remove_all(void)
+     }
+ }
+ 
++static bool tb_spans_distinct_pages(const TranslationBlock *tb)
++{
++    tb_page_addr_t second = tb_page_addr1(tb);
++
++    return second != -1 &&
++           (tb_page_addr0(tb) >> TARGET_PAGE_BITS) !=
++           (second >> TARGET_PAGE_BITS);
++}
++
+ /*
+  * Add the tb in the target page and protect it if necessary.
+  * Called with @p->lock held.
+@@ -705,6 +814,9 @@ static void tb_page_add(PageDesc *p, TranslationBlock *tb, unsigned int n)
+     tb->page_next[n] = p->first_tb;
+     page_already_protected = p->first_tb != 0;
+     p->first_tb = (uintptr_t)tb | n;
++    if (tb_spans_distinct_pages(tb) && p->crossing_tb_count != UINT32_MAX) {
++        p->crossing_tb_count++;
++    }
+ 
+     /*
+      * If some code is already present, then the pages are already
+@@ -741,6 +853,14 @@ static void tb_page_remove(PageDesc *pd, TranslationBlock *tb)
+     PAGE_FOR_EACH_TB(unused, unused, pd, tb1, n1) {
+         if (tb1 == tb) {
+             *pprev = tb1->page_next[n1];
++            /* Only actual unlinking changes membership, even for invalid TBs. */
++            if (!pd->first_tb) {
++                pd->crossing_tb_count = 0;
++            } else if (tb_spans_distinct_pages(tb) &&
++                       pd->crossing_tb_count != UINT32_MAX) {
++                g_assert(pd->crossing_tb_count > 0);
++                pd->crossing_tb_count--;
++            }
+             return;
+         }
+         pprev = &tb1->page_next[n1];
+@@ -1179,10 +1299,10 @@ tb_invalidate_phys_page_range__locked(CPUState *cpu,
+ void tb_invalidate_phys_range(CPUState *cpu, tb_page_addr_t start,
+                               tb_page_addr_t last)
+ {
+-    struct page_collection *pages;
++    struct page_collection pages;
+     tb_page_addr_t index, index_last;
+ 
+-    pages = page_collection_lock(start, last);
++    page_collection_lock(&pages, start, last);
+ 
+     index_last = last >> TARGET_PAGE_BITS;
+     for (index = start >> TARGET_PAGE_BITS; index <= index_last; index++) {
+@@ -1196,10 +1316,10 @@ void tb_invalidate_phys_range(CPUState *cpu, tb_page_addr_t start,
+         page_start = index << TARGET_PAGE_BITS;
+         page_last = page_start | ~TARGET_PAGE_MASK;
+         page_last = MIN(page_last, last);
+-        tb_invalidate_phys_page_range__locked(cpu, pages, pd,
++        tb_invalidate_phys_page_range__locked(cpu, &pages, pd,
+                                               page_start, page_last, 0);
+     }
+-    page_collection_unlock(pages);
++    page_collection_unlock(&pages);
+ }
+ 
+ /*
+@@ -1214,11 +1334,13 @@ void tb_invalidate_phys_range_fast(CPUState *cpu, ram_addr_t start,
+ 
+     if (p) {
+         ram_addr_t last = start + len - 1;
+-        struct page_collection *pages = page_collection_lock(start, last);
++        struct page_collection pages;
+ 
+-        tb_invalidate_phys_page_range__locked(cpu, pages, p,
++        page_collection_lock(&pages, start, last);
++
++        tb_invalidate_phys_page_range__locked(cpu, &pages, p,
+                                               start, last, ra);
+-        page_collection_unlock(pages);
++        page_collection_unlock(&pages);
+     }
+ }
+ 
 diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
 index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..ab3d984e1c76c500e35fe8cfd2cf747623a074b0 100644
 --- a/accel/tcg/tcg-accel-ops-icount.c
@@ -81202,10 +81516,10 @@ index 0000000000000000000000000000000000000000..72b2a1320db867cae97f384a2e47c167
 +}
 diff --git a/plugins/crucible-fault-clock.c b/plugins/crucible-fault-clock.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..4eb0540ef5f26a902381bd985e7e0e4410800034
+index 0000000000000000000000000000000000000000..8c78247aa6a1c0d10fe52311c552eadbc15761d9
 --- /dev/null
 +++ b/plugins/crucible-fault-clock.c
-@@ -0,0 +1,4640 @@
+@@ -0,0 +1,4662 @@
 +/*
 + * Crucible deterministic guest-clock fault transforms
 + *
@@ -81616,15 +81930,37 @@ index 0000000000000000000000000000000000000000..4eb0540ef5f26a902381bd985e7e0e44
 +static CrucibleClockSource *crucible_clock_source_by_kind(
 +    uint16_t kind, uint32_t instance)
 +{
++    static __thread guint tsc_index = G_MAXUINT;
++
 +    if (!crucible_clock_sources) {
 +        return NULL;
 +    }
++
++    /*
++     * Cache only a search position. Registration can grow the array and
++     * manifest finalization sorts it, so resolve and validate the current
++     * row on every hit. Activation and clock values remain live reads.
++     */
++    if (kind == QEMU_CRUCIBLE_CLOCK_X86_TSC &&
++        tsc_index < crucible_clock_sources->len) {
++        CrucibleClockSource *source = &g_array_index(
++            crucible_clock_sources, CrucibleClockSource, tsc_index);
++
++        if (source->capability.source_kind == kind &&
++            source->instance == instance) {
++            return source;
++        }
++    }
++
 +    for (guint i = 0; i < crucible_clock_sources->len; i++) {
 +        CrucibleClockSource *source = &g_array_index(
 +            crucible_clock_sources, CrucibleClockSource, i);
 +
 +        if (source->capability.source_kind == kind &&
 +            source->instance == instance) {
++            if (kind == QEMU_CRUCIBLE_CLOCK_X86_TSC) {
++                tsc_index = i;
++            }
 +            return source;
 +        }
 +    }
@@ -148057,6 +148393,241 @@ index d7f8f0ae0ad4ed24f91b1c44ec36fff81c37631e..1e4bc21cff92c508a934a2affb52c19a
  endif
  if t.length() > 0
    alias_target('test-plugins', t)
+diff --git a/tests/tcg/x86_64/system/self-modifying-code.c b/tests/tcg/x86_64/system/self-modifying-code.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..7a1f9001f3dcbbbd1f1a4678973b1f791210ff13
+--- /dev/null
++++ b/tests/tcg/x86_64/system/self-modifying-code.c
+@@ -0,0 +1,229 @@
++/*
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ *
++ * Exercise system-mode code invalidation through guest writes. Boundary
++ * instructions cover both tagged page lists; a temporary mapping reverses
++ * their physical order. The boot support identity-maps the backing pages.
++ */
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <minilib.h>
++
++#define PAGE_SIZE 4096
++#define ADDRESS_MASK UINT64_C(0x000ffffffffff000)
++#define TEST_MAPPING UINT64_C(0x40000000)
++#define SECOND_PAGE_COUNT 5
++
++static uint8_t code_pages[2 * PAGE_SIZE]
++    __attribute__((aligned(PAGE_SIZE)));
++
++static uint64_t test_page_table[512]
++    __attribute__((aligned(PAGE_SIZE)));
++
++static uint8_t spill_pages[(SECOND_PAGE_COUNT + 1) * PAGE_SIZE]
++    __attribute__((aligned(PAGE_SIZE)));
++
++static __attribute__((noinline)) uint32_t execute_code(volatile uint8_t *code)
++{
++    uint32_t (*function)(void) = (uint32_t (*)(void))(uintptr_t)code;
++
++    /* Keep guest code writes on their intended side of each execution. */
++    asm volatile("" ::: "memory");
++    return function();
++}
++
++static void emit_return(volatile uint8_t *code, uint32_t value)
++{
++    code[0] = 0xb8; /* mov immediate, %eax */
++    for (unsigned int i = 0; i < 4; i++) {
++        code[i + 1] = value >> (i * 8);
++    }
++    code[5] = 0xc3; /* ret */
++}
++
++static bool check_value(const char *name, volatile uint8_t *code,
++                         uint32_t expected)
++{
++    uint32_t actual = execute_code(code);
++
++    if (actual != expected) {
++        ml_printf("%s: expected %x, got %x\n", name, expected, actual);
++        return false;
++    }
++    return true;
++}
++
++static bool check_boundary(const char *name, volatile uint8_t *pages)
++{
++    volatile uint8_t *code = pages + PAGE_SIZE - 2;
++
++    emit_return(code, UINT32_C(0x44332211));
++    if (!check_value(name, code, UINT32_C(0x44332211))) {
++        return false;
++    }
++
++    /* The immediate's first byte belongs to the TB's first physical page. */
++    code[1] = 0x12;
++    if (!check_value(name, code, UINT32_C(0x44332212))) {
++        return false;
++    }
++
++    /* Its second byte belongs to the TB's second physical page. */
++    code[2] = 0x23;
++    return check_value(name, code, UINT32_C(0x44332312));
++}
++
++static void invalidate_mapping(unsigned int pages)
++{
++    for (unsigned int i = 0; i < pages; i++) {
++        uintptr_t address = TEST_MAPPING + i * PAGE_SIZE;
++
++        asm volatile("invlpg (%0)" :: "r"(address) : "memory");
++    }
++}
++
++static bool check_reverse_mapping(void)
++{
++    uint64_t root_address;
++    uint64_t *root, *directory_pointer, *directory;
++    uint64_t original_entry;
++    bool passed;
++
++    asm volatile("mov %%cr3, %0" : "=r"(root_address));
++    root = (uint64_t *)(uintptr_t)(root_address & ADDRESS_MASK);
++    directory_pointer = (uint64_t *)(uintptr_t)(root[0] & ADDRESS_MASK);
++    directory = (uint64_t *)(uintptr_t)(directory_pointer[1] & ADDRESS_MASK);
++    original_entry = directory[0];
++
++    /* Replace only the unused 1 GiB mapping; retain the boot identity map. */
++    test_page_table[0] = (uintptr_t)(code_pages + PAGE_SIZE) | 7;
++    test_page_table[1] = (uintptr_t)code_pages | 7;
++    directory[0] = (uintptr_t)test_page_table | 7;
++    invalidate_mapping(2);
++    passed = check_boundary("reverse physical pages",
++                            (volatile uint8_t *)(uintptr_t)TEST_MAPPING);
++
++    directory[0] = original_entry;
++    invalidate_mapping(2);
++    return passed;
++}
++
++static bool check_current_block(volatile uint8_t *code)
++{
++    static const uint8_t instructions[] = {
++        /* movb $42, 1(%rip): patches the following instruction's immediate. */
++        0xc6, 0x05, 0x01, 0x00, 0x00, 0x00, 0x2a,
++        0xb8, 0x01, 0x00, 0x00, 0x00, /* mov $1, %eax */
++        0xc3,                         /* ret */
++    };
++
++    for (unsigned int i = 0; i < sizeof(instructions); i++) {
++        code[i] = instructions[i];
++    }
++    return check_value("current block", code, 42);
++}
++
++static bool check_shared_first_page(void)
++{
++    uint64_t root_address;
++    uint64_t *root, *directory_pointer, *directory;
++    uint64_t original_entry;
++    bool passed = false;
++
++    asm volatile("mov %%cr3, %0" : "=r"(root_address));
++    root = (uint64_t *)(uintptr_t)(root_address & ADDRESS_MASK);
++    directory_pointer = (uint64_t *)(uintptr_t)(root[0] & ADDRESS_MASK);
++    directory = (uint64_t *)(uintptr_t)(directory_pointer[1] & ADDRESS_MASK);
++    original_entry = directory[0];
++
++    /* Each boundary instruction shares page zero and has its own page one. */
++    for (unsigned int i = 0; i < SECOND_PAGE_COUNT; i++) {
++        test_page_table[2 * i] = (uintptr_t)spill_pages | 7;
++        test_page_table[2 * i + 1] =
++            (uintptr_t)(spill_pages + (i + 1) * PAGE_SIZE) | 7;
++    }
++    directory[0] = (uintptr_t)test_page_table | 7;
++    invalidate_mapping(SECOND_PAGE_COUNT * 2);
++
++    /* Populate every mapping before execution so all crossing TBs survive. */
++    for (unsigned int i = 0; i < SECOND_PAGE_COUNT; i++) {
++        volatile uint8_t *code = (volatile uint8_t *)(uintptr_t)
++            (TEST_MAPPING + (2 * i + 1) * PAGE_SIZE - 2);
++
++        emit_return(code, UINT32_C(0x44330011) + (i << 8));
++    }
++    for (unsigned int i = 0; i < SECOND_PAGE_COUNT; i++) {
++        volatile uint8_t *code = (volatile uint8_t *)(uintptr_t)
++            (TEST_MAPPING + (2 * i + 1) * PAGE_SIZE - 2);
++
++        if (!check_value("shared first page", code,
++                         UINT32_C(0x44330011) + (i << 8))) {
++            goto out;
++        }
++    }
++
++    /* Invalidation must retain every distinct second-page lock on spill. */
++    ((volatile uint8_t *)spill_pages)[PAGE_SIZE - 1] = 0x12;
++    for (unsigned int i = 0; i < SECOND_PAGE_COUNT; i++) {
++        volatile uint8_t *code = (volatile uint8_t *)(uintptr_t)
++            (TEST_MAPPING + (2 * i + 1) * PAGE_SIZE - 2);
++
++        if (!check_value("patch shared first page", code,
++                         UINT32_C(0x44330012) + (i << 8))) {
++            goto out;
++        }
++    }
++
++    ((volatile uint8_t *)spill_pages)[PAGE_SIZE] = 0x5a;
++    for (unsigned int i = 0; i < SECOND_PAGE_COUNT; i++) {
++        volatile uint8_t *code = (volatile uint8_t *)(uintptr_t)
++            (TEST_MAPPING + (2 * i + 1) * PAGE_SIZE - 2);
++        uint32_t expected = i ? UINT32_C(0x44330012) + (i << 8)
++                              : UINT32_C(0x44335a12);
++
++        if (!check_value("patch one second page", code, expected)) {
++            goto out;
++        }
++    }
++
++    /* The other crossing TBs force spill during a precise-SMC nonlocal exit. */
++    passed = check_current_block(spill_pages + 128);
++
++ out:
++    directory[0] = original_entry;
++    invalidate_mapping(SECOND_PAGE_COUNT * 2);
++    return passed;
++}
++
++int main(void)
++{
++    volatile uint8_t *single = code_pages + 63;
++
++    emit_return(single, 1);
++    if (!check_value("single page", single, 1)) {
++        return 1;
++    }
++
++    /* A data write on the same physical page must preserve code protection. */
++    ((volatile uint8_t *)code_pages)[0] = 0x5a;
++    single[1] = 2;
++    if (!check_value("patch after non-code write", single, 2)) {
++        return 1;
++    }
++
++    /* The immediate is naturally aligned for an atomic guest write. */
++    __atomic_store_n((uint32_t *)(uintptr_t)(single + 1), 3, __ATOMIC_SEQ_CST);
++    if (!check_value("atomic patch", single, 3)) {
++        return 1;
++    }
++
++    if (!check_boundary("consecutive physical pages", code_pages) ||
++        !check_reverse_mapping() || !check_shared_first_page() ||
++        !check_current_block(code_pages + 128)) {
++        return 1;
++    }
++
++    ml_printf("self-modifying code: passed\n");
++    return 0;
++}
 diff --git a/tests/unit/check-json-parser.c b/tests/unit/check-json-parser.c
 index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561aa604abe 100644
 --- a/tests/unit/check-json-parser.c
@@ -156781,10 +157352,10 @@ index 0000000000000000000000000000000000000000..8d80e3052d7c9a6b187e2f7095f7ab8e
 +    main()
 diff --git a/tests/unit/test-crucible-cold-fault-predicates.py b/tests/unit/test-crucible-cold-fault-predicates.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a52e32aabb49f817afba9fdeddbdc3f437f45aff
+index 0000000000000000000000000000000000000000..962b0dba612e5ea5407517d6188d2189f443076d
 --- /dev/null
 +++ b/tests/unit/test-crucible-cold-fault-predicates.py
-@@ -0,0 +1,685 @@
+@@ -0,0 +1,686 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise cold memory and clock predicates with unchanged production bodies.
 +
@@ -157386,6 +157957,7 @@ index 0000000000000000000000000000000000000000..a52e32aabb49f817afba9fdeddbdc3f4
 +    modes = source_range(icount_header, "typedef enum {",
 +                         "/* Ordinary -icount")
 +    types = "\n\n".join([
++        definition(memory_header, "enum QemuCrucibleClockSourceKind {") + ";",
 +        source_range(memory_header, "enum QemuCrucibleMemoryAccessClass {",
 +                     "enum QemuCrucibleFwCfgDmaDirection {"),
 +        source_range(node, "typedef struct CrucibleMemoryIndexEntry {",
@@ -170858,6 +171430,487 @@ index 0000000000000000000000000000000000000000..92f7e7b7c4fdbe109ae0754186357da2
 +
 +if __name__ == "__main__":
 +    main()
+diff --git a/tests/unit/test-crucible-mutex-waiter-counters.py b/tests/unit/test-crucible-mutex-waiter-counters.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7c0e740270c5f06ea7e1dde755888dfe36b4266e
+--- /dev/null
++++ b/tests/unit/test-crucible-mutex-waiter-counters.py
+@@ -0,0 +1,475 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise guarded production waiter counters with real pthread operations.
++
++The native mutex/condition operations and registry bodies execute unchanged.
++Hook barriers expose transaction boundaries without changing their ordering.
++An optional reference source runs the same checks and must produce the same
++normalized inventory trace. This fixture does not prove a running guest or
++the complete retained-runtime transaction; the owner-cache and hot-fork child
++tests supply the existing native fork and retained-transaction coverage.
++
++Dependencies are Python 3, a C compiler, pthreads, GLib development headers
++and libraries, and the repository headers. CC, CFLAGS, and LDFLAGS select the
++configured source-built toolchain and GLib flags.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++OWNER_FIXTURE = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-mutex-owner-cache.py")))
++definition = OWNER_FIXTURE["definition"]
++
++
++HOOKS = r"""
++#include <time.h>
++
++enum Window { NONE, ADMITTED, NATIVE_ACQUIRED, UNLOCK_BEGIN, NATIVE_UNLOCKED,
++              CONDITION_ONE, CONDITION_TWO };
++
++static QemuMutex tested;
++static QemuCond condition;
++static pthread_mutex_t schedule_lock = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t schedule_changed = PTHREAD_COND_INITIALIZER;
++static enum Window arrived, released;
++static __thread bool expose_lock_windows;
++static __thread enum Window expose_condition_window;
++static bool condition_released;
++
++static void rendezvous(enum Window window)
++{
++    assert(pthread_mutex_lock(&schedule_lock) == 0);
++    arrived = window;
++    assert(pthread_cond_broadcast(&schedule_changed) == 0);
++    while (released != window) {
++        assert(pthread_cond_wait(&schedule_changed, &schedule_lock) == 0);
++    }
++    assert(pthread_mutex_unlock(&schedule_lock) == 0);
++}
++
++static void await_window(enum Window window)
++{
++    assert(pthread_mutex_lock(&schedule_lock) == 0);
++    while (arrived != window) {
++        assert(pthread_cond_wait(&schedule_changed, &schedule_lock) == 0);
++    }
++    assert(pthread_mutex_unlock(&schedule_lock) == 0);
++}
++
++static void release_window(enum Window window)
++{
++    assert(pthread_mutex_lock(&schedule_lock) == 0);
++    released = window;
++    assert(pthread_cond_broadcast(&schedule_changed) == 0);
++    assert(pthread_mutex_unlock(&schedule_lock) == 0);
++}
++
++static void qemu_mutex_pre_lock(QemuMutex *mutex, const char *file, int line)
++{
++    if (mutex == &tested && expose_lock_windows) {
++        rendezvous(ADMITTED);
++    }
++}
++
++static void qemu_mutex_post_lock(QemuMutex *mutex, const char *file, int line)
++{
++    if (mutex == &tested && expose_lock_windows) {
++        rendezvous(NATIVE_ACQUIRED);
++    }
++}
++
++static void qemu_mutex_pre_unlock(QemuMutex *mutex, const char *file, int line)
++{
++    if (mutex == &tested && expose_lock_windows) {
++        rendezvous(UNLOCK_BEGIN);
++    } else if (mutex == &tested && expose_condition_window != NONE) {
++        enum Window window = expose_condition_window;
++
++        expose_condition_window = NONE;
++        rendezvous(window);
++    }
++}
++
++/* The native unlock completes before this barrier and registry completion. */
++static int observed_native_unlock(pthread_mutex_t *mutex)
++{
++    int result = pthread_mutex_unlock(mutex);
++
++    if (result == 0 && mutex == &tested.lock && expose_lock_windows) {
++        rendezvous(NATIVE_UNLOCKED);
++    }
++    return result;
++}
++
++#define pthread_mutex_unlock observed_native_unlock
++#define trace_qemu_mutex_unlock(...) ((void)0)
++#define trace_qemu_mutex_locked(...) ((void)0)
++"""
++
++
++CHECKS = r"""
++#undef pthread_mutex_unlock
++
++static CrucibleHotForkMutexEntry *tested_entry(void)
++{
++    return &crucible_hot_fork_mutexes[tested.crucible_hot_fork_slot];
++}
++
++static void lock_tested(void)
++{
++    qemu_mutex_lock_impl(&tested, __FILE__, __LINE__);
++}
++
++static void unlock_tested(void)
++{
++    qemu_mutex_unlock_impl(&tested, __FILE__, __LINE__);
++}
++
++static void snapshot(const char *label, unsigned depth, unsigned acquiring,
++                     unsigned waiting, bool unlocking, bool valid)
++{
++    QemuMutexHotForkInventory inventory;
++    QemuMutexHotForkInventoryEntry *found = NULL;
++
++    qemu_mutex_hot_fork_inventory(&inventory);
++    g_assert_false(inventory.overflowed);
++    for (size_t i = 0; i < inventory.entry_count; i++) {
++        if (inventory.entries[i].mutex_id ==
++            tested.crucible_hot_fork_registration_id) {
++            found = &inventory.entries[i];
++        }
++    }
++    g_assert_nonnull(found);
++    g_assert_cmpuint(found->recursion_depth, ==, depth);
++    g_assert_cmpuint(found->acquisition_waiters, ==, acquiring);
++    g_assert_cmpuint(found->condition_waiters, ==, waiting);
++    g_assert_cmpint(found->unlock_active, ==, unlocking);
++    g_assert_cmpint(found->ownership_valid, ==, valid);
++    g_assert_cmpint(found->owner_thread_id != 0, ==, depth != 0);
++    printf("%s generation=%" PRIu64 " depth=%u acquiring=%u condition=%u "
++           "unlock=%u valid=%u\n", label, inventory.generation, depth,
++           acquiring, waiting, unlocking, valid);
++    qemu_mutex_hot_fork_inventory_destroy(&inventory);
++}
++
++static void *one_lock_cycle(void *unused)
++{
++    expose_lock_windows = true;
++    lock_tested();
++    unlock_tested();
++    expose_lock_windows = false;
++    return NULL;
++}
++
++static void check_transaction_windows(void)
++{
++    pthread_t worker;
++
++    qemu_mutex_init(&tested);
++    assert(pthread_create(&worker, NULL, one_lock_cycle, NULL) == 0);
++    await_window(ADMITTED);
++    snapshot("admitted", 0, 1, 0, false, true);
++    release_window(ADMITTED);
++    await_window(NATIVE_ACQUIRED);
++    snapshot("native-acquired", 0, 1, 0, false, true);
++    release_window(NATIVE_ACQUIRED);
++    await_window(UNLOCK_BEGIN);
++    snapshot("unlock-begin", 0, 0, 0, true, true);
++    release_window(UNLOCK_BEGIN);
++    await_window(NATIVE_UNLOCKED);
++    snapshot("native-unlocked", 0, 0, 0, true, true);
++    release_window(NATIVE_UNLOCKED);
++    assert(pthread_join(worker, NULL) == 0);
++    snapshot("completed", 0, 0, 0, false, true);
++}
++
++static void *failed_trylock(void *unused)
++{
++    g_assert_cmpint(qemu_mutex_trylock_impl(&tested, __FILE__, __LINE__),
++                    ==, -EBUSY);
++    return NULL;
++}
++
++static void check_trylock(void)
++{
++    pthread_t worker;
++
++    lock_tested();
++    assert(pthread_create(&worker, NULL, failed_trylock, NULL) == 0);
++    assert(pthread_join(worker, NULL) == 0);
++    snapshot("failed-trylock", 1, 0, 0, false, true);
++    unlock_tested();
++    g_assert_cmpint(qemu_mutex_trylock_impl(&tested, __FILE__, __LINE__), ==, 0);
++    snapshot("successful-trylock", 1, 0, 0, false, true);
++    unlock_tested();
++}
++
++static void *condition_waiter(void *window)
++{
++    lock_tested();
++    expose_condition_window = (enum Window)(uintptr_t)window;
++    while (!condition_released) {
++        qemu_cond_wait_impl(&condition, &tested, __FILE__, __LINE__);
++    }
++    unlock_tested();
++    return NULL;
++}
++
++static void check_condition_waiters(void)
++{
++    pthread_t first, second;
++
++    qemu_cond_init(&condition);
++    assert(pthread_create(&first, NULL, condition_waiter,
++                          (void *)(uintptr_t)CONDITION_ONE) == 0);
++    await_window(CONDITION_ONE);
++    snapshot("condition-one", 0, 0, 1, false, true);
++    crucible_hot_fork_mutex_registry_lock();
++    g_assert_cmpint(tested_entry()->condition_waiter_thread_id, >, 0);
++    crucible_hot_fork_mutex_registry_unlock();
++    release_window(CONDITION_ONE);
++
++    assert(pthread_create(&second, NULL, condition_waiter,
++                          (void *)(uintptr_t)CONDITION_TWO) == 0);
++    await_window(CONDITION_TWO);
++    snapshot("condition-two", 0, 0, 2, false, true);
++    crucible_hot_fork_mutex_registry_lock();
++    g_assert_cmpint(tested_entry()->condition_waiter_thread_id, ==, -1);
++    crucible_hot_fork_mutex_registry_unlock();
++    release_window(CONDITION_TWO);
++
++    /* Native acquisition proves both workers reached their atomic waits. */
++    lock_tested();
++    condition_released = true;
++    assert(pthread_cond_broadcast(&condition.cond) == 0);
++    unlock_tested();
++    assert(pthread_join(first, NULL) == 0);
++    assert(pthread_join(second, NULL) == 0);
++    snapshot("condition-completed", 0, 0, 0, false, true);
++    crucible_hot_fork_mutex_registry_lock();
++    g_assert_cmpint(tested_entry()->condition_waiter_thread_id, ==, 0);
++    crucible_hot_fork_mutex_registry_unlock();
++    lock_tested();
++    g_assert_false(qemu_cond_timedwait_impl(&condition, &tested, 0,
++                                           __FILE__, __LINE__));
++    snapshot("condition-timeout", 1, 0, 0, false, true);
++    unlock_tested();
++    qemu_cond_destroy(&condition);
++}
++
++static void *contended_cycles(void *unused)
++{
++    for (unsigned i = 0; i < 2000; i++) {
++        lock_tested();
++        unlock_tested();
++    }
++    return NULL;
++}
++
++static void check_contended_cycles(void)
++{
++    pthread_t workers[8];
++
++    for (size_t i = 0; i < G_N_ELEMENTS(workers); i++) {
++        assert(pthread_create(&workers[i], NULL, contended_cycles, NULL) == 0);
++    }
++    for (size_t i = 0; i < G_N_ELEMENTS(workers); i++) {
++        assert(pthread_join(workers[i], NULL) == 0);
++    }
++    snapshot("contended-completed", 0, 0, 0, false, true);
++}
++
++static void check_error_and_wrap_semantics(void)
++{
++    CrucibleHotForkMutexEntry *entry;
++
++    crucible_hot_fork_mutex_wait_cancel(&tested);
++    snapshot("cancel-underflow", 0, 0, 0, false, false);
++    crucible_hot_fork_mutex_registry_lock();
++    entry = tested_entry();
++    entry->ownership_valid = true;
++    crucible_hot_fork_mutex_registry_unlock();
++    assert(pthread_mutex_lock(&tested.lock) == 0);
++    crucible_hot_fork_mutex_acquired(&tested);
++    snapshot("acquired-underflow", 1, 0, 0, false, false);
++    unlock_tested();
++    crucible_hot_fork_mutex_registry_lock();
++    entry->ownership_valid = true;
++    entry->acquisition_waiters = UINT32_MAX;
++    crucible_hot_fork_mutex_registry_unlock();
++    crucible_hot_fork_mutex_wait_begin(&tested);
++    snapshot("acquisition-wrap", 0, 0, 0, false, true);
++
++    /* Preserve existing unsigned wrap; this change adds no overflow policy. */
++    lock_tested();
++    crucible_hot_fork_mutex_registry_lock();
++    entry->condition_waiters = UINT32_MAX;
++    crucible_hot_fork_mutex_registry_unlock();
++    crucible_hot_fork_mutex_condition_wait_begin(&tested);
++    snapshot("condition-wrap", 0, 0, 0, false, true);
++    crucible_hot_fork_mutex_condition_wait_end(&tested);
++    snapshot("condition-underflow", 1, 0, 0, false, false);
++    crucible_hot_fork_mutex_registry_lock();
++    entry->ownership_valid = true;
++    entry->condition_waiter_thread_id = 0;
++    crucible_hot_fork_mutex_registry_unlock();
++    unlock_tested();
++}
++
++int main(void)
++{
++    check_transaction_windows();
++    check_trylock();
++    check_condition_waiters();
++    check_contended_cycles();
++    check_error_and_wrap_semantics();
++    qemu_mutex_destroy(&tested);
++    return 0;
++}
++"""
++
++
++SIGNATURES = [
++    "static void error_exit(",
++    "static void crucible_hot_fork_mutex_registry_lock(",
++    "static void crucible_hot_fork_mutex_registry_unlock(",
++    "static void crucible_hot_fork_mutex_latch_inconsistent(",
++    "static void crucible_hot_fork_mutex_changed(",
++    "static void crucible_hot_fork_mutex_slots_init(",
++    "static size_t crucible_hot_fork_mutex_address_hash(",
++    "static bool crucible_hot_fork_mutex_address_find(",
++    "static bool crucible_hot_fork_mutex_address_insert(",
++    "static bool crucible_hot_fork_mutex_address_remove(",
++    "static void crucible_hot_fork_mutex_address_rebuild(",
++    "static bool crucible_hot_fork_mutex_entry_quiescent(",
++    "static CrucibleHotForkMutexEntry *crucible_hot_fork_mutex_entry(",
++    "static void crucible_hot_fork_mutex_register(",
++    "static void crucible_hot_fork_mutex_wait_begin(",
++    "static void crucible_hot_fork_mutex_wait_cancel(",
++    "static void crucible_hot_fork_mutex_acquired(",
++    "static void crucible_hot_fork_mutex_unlock_begin(",
++    "static void crucible_hot_fork_mutex_unlock_end(",
++    "static void crucible_hot_fork_mutex_condition_wait_begin(",
++    "static void crucible_hot_fork_mutex_condition_wait_end(",
++    "static int crucible_hot_fork_mutex_inventory_entry_compare(",
++    "void qemu_mutex_hot_fork_inventory(",
++    "void qemu_mutex_hot_fork_inventory_destroy(",
++    "void qemu_mutex_init(", "void qemu_mutex_destroy(",
++    "void qemu_mutex_lock_impl(", "int qemu_mutex_trylock_impl(",
++    "void qemu_mutex_unlock_impl(", "void qemu_cond_init(",
++    "void qemu_cond_destroy(", "void qemu_cond_wait_impl(",
++    "static inline clockid_t qemu_timedwait_clockid(",
++    "static void compute_abs_deadline(",
++    "static bool TSA_NO_TSA\nqemu_cond_timedwait_ts(",
++    "bool qemu_cond_timedwait_impl(",
++]
++
++
++def generated_source(source, negative_control):
++    """Extract the real registry and native operation bodies."""
++    header = (ROOT / "include/qemu/thread.h").read_text()
++    types = header[header.index("typedef struct QemuMutexHotForkInventoryEntry {"):
++                   header.index("/*\n * Snapshot every active QemuMutex/")]
++    declaration_signatures = [
++        "void qemu_mutex_hot_fork_inventory(",
++        "void qemu_mutex_hot_fork_inventory_destroy(",
++        "void qemu_cond_init(",
++        "void qemu_cond_destroy(",
++        "void TSA_NO_TSA qemu_cond_wait_impl(",
++        "bool qemu_cond_timedwait_impl(",
++    ]
++    declarations = []
++    for signature in declaration_signatures:
++        start = header.index(signature)
++        declarations.append(header[start:header.index(";", start) + 1])
++    globals_source = source[
++        source.index("static pthread_mutex_t crucible_hot_fork_mutex_registry_guard"):
++        source.index("/*\n * This is not defined on Linux")]
++    globals_source += "\nstatic __thread bool crucible_hot_fork_mutex_registry_held;\n"
++    prelude = OWNER_FIXTURE["PRELUDE"]
++    for name in ("pre_lock", "post_lock", "pre_unlock"):
++        prelude = prelude.replace(definition(prelude,
++            f"static void qemu_mutex_{name}("), "")
++    bodies = "\n\n".join(definition(source, signature)
++                            for signature in SIGNATURES)
++
++    mutations = {
++        "admission": ("static void crucible_hot_fork_mutex_wait_begin(",
++                      "        entry->acquisition_waiters++;", ""),
++        "cancel": ("static void crucible_hot_fork_mutex_wait_cancel(",
++                   "            entry->acquisition_waiters--;", ""),
++        "acquired": ("static void crucible_hot_fork_mutex_acquired(",
++                     "        entry->acquisition_waiters--;", ""),
++        "condition-begin": (
++            "static void crucible_hot_fork_mutex_condition_wait_begin(",
++            "entry->condition_waiters++ == 0", "entry->condition_waiters == 0"),
++        "condition-end": (
++            "static void crucible_hot_fork_mutex_condition_wait_end(",
++            "entry->condition_waiters-- == 1", "entry->condition_waiters == 1"),
++    }
++    if negative_control:
++        signature, before, after = mutations[negative_control]
++        original = definition(bodies, signature)
++        assert original.count(before) == 1
++        bodies = bodies.replace(original, original.replace(before, after))
++    return (prelude + types + "\n".join(declarations) + "\n" +
++            globals_source + HOOKS + bodies + CHECKS)
++
++
++def run_fixture(source_path, output_dir, negative_control=None):
++    """Compile and run one production-source variant with a time bound."""
++    output_dir.mkdir(parents=True, exist_ok=True)
++    generated = output_dir / "mutex-waiter-counters.c"
++    generated.write_text(generated_source(source_path.read_text(),
++                                          negative_control))
++    binary = output_dir / "mutex-waiter-counters"
++    command = [os.environ.get("CC", "cc"),
++               *shlex.split(os.environ.get("CFLAGS", "")),
++               "-std=gnu11", "-Wall", "-Werror", "-Wmissing-prototypes",
++               "-Wredundant-decls", "-Wstrict-prototypes", "-UNDEBUG",
++               str(generated),
++               "-o", str(binary),
++               *shlex.split(os.environ.get("LDFLAGS", "")), "-pthread"]
++    (output_dir / "compile-command.json").write_text(
++        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n")
++    compilation = subprocess.run(command, capture_output=True, text=True)
++    (output_dir / "compile.stdout").write_text(compilation.stdout)
++    (output_dir / "compile.stderr").write_text(compilation.stderr)
++    compilation.check_returncode()
++    result = subprocess.run([str(binary)], capture_output=True,
++                            text=True, timeout=60, cwd=output_dir)
++    (output_dir / "trace.txt").write_text(result.stdout)
++    (output_dir / "run.stderr").write_text(result.stderr)
++    (output_dir / "run-status.json").write_text(
++        json.dumps({"returncode": result.returncode}, indent=2) + "\n")
++    result.check_returncode()
++    return result.stdout
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--reference-source", type=Path)
++    parser.add_argument("--negative-control",
++                        choices=["admission", "cancel", "acquired",
++                                 "condition-begin", "condition-end"])
++    arguments = parser.parse_args()
++    trace = run_fixture(ROOT / "util/qemu-thread-posix.c",
++                        arguments.output_dir, arguments.negative_control)
++    if arguments.reference_source:
++        reference_trace = run_fixture(arguments.reference_source,
++                                      arguments.output_dir / "reference")
++        if trace != reference_trace:
++            raise AssertionError("production and reference inventory traces differ")
++    print(trace, end="")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-net-output-stop.py b/tests/unit/test-crucible-net-output-stop.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efdffa3f177
@@ -181282,6 +182335,498 @@ index 0000000000000000000000000000000000000000..9ecf614260a8e6ed71e5e873d6e33bde
 +
 +if __name__ == "__main__":
 +    main()
+diff --git a/tests/unit/test-crucible-tcg-crossing-membership.py b/tests/unit/test-crucible-tcg-crossing-membership.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4cfe85bd0dffb73724aab8bc15eb6f83501c390a
+--- /dev/null
++++ b/tests/unit/test-crucible-tcg-crossing-membership.py
+@@ -0,0 +1,486 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Prove crossing-count bookkeeping with extracted native mutation bodies.
++
++The page-collection fixture supplies the real tagged iterator, collection,
++invalidation range and pthread page locks. This fixture additionally extracts
++tb_link_page, do_tb_phys_invalidate and the recursive full-list clear. QHT,
++jump unlinking and JIT transitions are explicit providers. Their results select
++native branches; they do not implement page-list bookkeeping.
++
++The proofs cover tagged memberships, aliases, mixed lists, duplicate rollback,
++hash-only invalidation and failed hash removal, finite and saturated counters,
++empty-list recovery, full flush, retry after a list mutation and retained fork
++copies. Fork proves ordinary process-private copying, not the full hot-fork
++lifecycle. Native precise-SMC cleanup runs through the original fixture too.
++These unit proofs do not qualify MTTCG, guest SMC, replay or performance.
++
++Use --emit-only to write the extracted fixture without compiling or running it.
++Compiler and linker settings are supplied through CC, CFLAGS and LDFLAGS just
++as for test-crucible-tcg-page-collection.py. Each causal --negative must fail
++a native assertion, rather than a source-text expectation.
++"""
++
++import argparse
++import importlib.util
++import json
++import os
++from pathlib import Path
++import shlex
++import subprocess
++import sys
++
++
++ROOT = Path(__file__).resolve().parents[2]
++NEGATIVES = (
++    "omit-increment", "premature-zero", "wrap-count", "miss-empty-reset",
++    "miss-flush-reset", "decrement-hash-only", "cache-across-retry",
++)
++
++
++PROVIDERS = r"""
++static struct {
++    int htable;
++    unsigned int tb_phys_invalidate_count;
++} tb_ctx;
++static TranslationBlock *fixture_duplicate;
++static bool fixture_hash_remove = true;
++static bool fixture_jump_lock;
++static TranslationBlock *fixture_retry_tb;
++
++void tb_unlock_pages(TranslationBlock *tb);
++TranslationBlock *tb_link_page(TranslationBlock *tb);
++
++#define V_L2_SIZE MAX_PAGES
++#define qatomic_set(ptr, value) (*(ptr) = (value))
++
++static void assert_memory_lock(void) { }
++static void qemu_thread_jit_write(void) { }
++static void qemu_thread_jit_execute(void) { }
++
++/* The separate jump-lock provider does not replace any page lock. */
++static void qemu_spin_lock(QemuSpin *lock)
++{
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        if (lock == &fixture_pages[i].lock) {
++            fixture_page_spin_lock(lock);
++            return;
++        }
++    }
++    assert(!fixture_jump_lock);
++    fixture_jump_lock = true;
++}
++
++static void qemu_spin_unlock(QemuSpin *lock)
++{
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        if (lock == &fixture_pages[i].lock) {
++            fixture_page_spin_unlock(lock);
++            return;
++        }
++    }
++    assert(fixture_jump_lock);
++    fixture_jump_lock = false;
++}
++
++static uint32_t tb_hash_func(tb_page_addr_t page, uint64_t pc, uint32_t flags,
++                             uint64_t base, uint32_t cflags)
++{
++    (void)page;
++    (void)pc;
++    (void)flags;
++    (void)base;
++    (void)cflags;
++    return 0;
++}
++
++static bool qht_remove(int *table, TranslationBlock *tb, uint32_t hash)
++{
++    assert(table == &tb_ctx.htable && hash == 0);
++    if (!fixture_hash_remove || !tb->fixture_in_hash) {
++        return false;
++    }
++    tb->fixture_in_hash = false;
++    return true;
++}
++
++static bool qht_insert(int *table, TranslationBlock *tb, uint32_t hash,
++                       void **existing)
++{
++    assert(table == &tb_ctx.htable && hash == 0);
++    *existing = fixture_duplicate;
++    tb->fixture_in_hash = !fixture_duplicate;
++    return !fixture_duplicate;
++}
++
++static void tb_jmp_cache_inval_tb(TranslationBlock *tb)
++{
++    assert(tb->cflags & CF_INVALID);
++    invalidated++;
++}
++
++static void tb_remove_from_jmp_list(TranslationBlock *tb, int slot)
++{
++    assert(tb->cflags & CF_INVALID);
++    assert(slot == 0 || slot == 1);
++}
++
++static void tb_jmp_unlink(TranslationBlock *tb)
++{
++    assert(tb->cflags & CF_INVALID);
++}
++
++"""
++
++
++EXERCISE = r"""
++static void lock_tb_pages(TranslationBlock *tb)
++{
++    tb_page_addr_t first = tb_page_addr0(tb) >> TARGET_PAGE_BITS;
++    tb_page_addr_t second = tb_page_addr1(tb) >> TARGET_PAGE_BITS;
++
++    /* Setup locks without adding collection trace events. */
++    assert(pthread_mutex_lock(&fixture_pages[first].lock) == 0);
++    assert(!held[first]);
++    held[first] = true;
++    if (tb_spans_distinct_pages(tb)) {
++        assert(pthread_mutex_lock(&fixture_pages[second].lock) == 0);
++        assert(!held[second]);
++        held[second] = true;
++    }
++}
++
++static void check_counts(unsigned int first, uint32_t first_count,
++                         unsigned int second, uint32_t second_count)
++{
++    assert_no_pages_locked();
++    /* Assertions also obey the lock ownership rule. */
++    assert(pthread_mutex_lock(&fixture_pages[first].lock) == 0);
++    assert(fixture_pages[first].crossing_tb_count == first_count);
++    assert(pthread_mutex_unlock(&fixture_pages[first].lock) == 0);
++    if (first != second) {
++        assert(pthread_mutex_lock(&fixture_pages[second].lock) == 0);
++        assert(fixture_pages[second].crossing_tb_count == second_count);
++        assert(pthread_mutex_unlock(&fixture_pages[second].lock) == 0);
++    }
++}
++
++static void remove_membership(TranslationBlock *tb)
++{
++    lock_tb_pages(tb);
++    tb_remove(tb);
++    tb_unlock_pages(tb);
++}
++
++static void set_count(unsigned int index, uint32_t count)
++{
++    assert_no_pages_locked();
++    assert(pthread_mutex_lock(&fixture_pages[index].lock) == 0);
++    fixture_pages[index].crossing_tb_count = count;
++    assert(pthread_mutex_unlock(&fixture_pages[index].lock) == 0);
++}
++
++static void fixture_insert_during_retry(void)
++{
++    /* A competing writer can record a crossing while retry dropped locks. */
++    assert_no_pages_locked();
++    fixture_mutate_on_unlock = false;
++    add_tb(fixture_retry_tb, 3, 6, 4090);
++}
++
++static void check_mutation_paths(void)
++{
++    TranslationBlock blocks[6];
++
++    reset_fixture();
++    add_tb(&blocks[0], 2, -1, 0);
++    add_tb(&blocks[1], 5, 5, 4090);
++    check_counts(2, 0, 5, 0);
++    add_tb(&blocks[2], 2, 5, 4090);
++    add_tb(&blocks[3], 5, 2, 4090);
++    check_counts(2, 2, 5, 2);
++    assert((fixture_pages[2].first_tb & 1) == 1);
++    assert((fixture_pages[5].first_tb & 1) == 0);
++
++    /* Remove an interior tag-zero, then the last crossing on mixed lists. */
++    remove_membership(&blocks[2]);
++    check_counts(2, 1, 5, 1);
++    check_collection("mixed-crossing", 2, 2, (1u << 2) | (1u << 5),
++                     "L2 L5 U2 U5 ");
++    remove_membership(&blocks[3]);
++    check_counts(2, 0, 5, 0);
++    tree_creations = entry_allocations = membership_visits = 0;
++    check_collection("last-crossing-removed", 2, 2, 1u << 2, "L2 U2 ");
++    assert(membership_visits == 0);
++    remove_membership(&blocks[0]);
++    remove_membership(&blocks[1]);
++    check_counts(2, 0, 5, 0);
++    puts("membership-tags-aliases-mixed: passed");
++
++    reset_fixture();
++    add_tb(&blocks[0], 2, 5, 4090);
++    blocks[1] = (TranslationBlock) { .page_addr = {2 * PAGE_SIZE, 5 * PAGE_SIZE} };
++    fixture_duplicate = &blocks[0];
++    lock_tb_pages(&blocks[1]);
++    assert(tb_link_page(&blocks[1]) == &blocks[0]);
++    fixture_duplicate = NULL;
++    check_counts(2, 1, 5, 1);
++    assert(fixture_pages[2].first_tb == (uintptr_t)&blocks[0]);
++    assert(fixture_pages[5].first_tb == ((uintptr_t)&blocks[0] | 1));
++    remove_membership(&blocks[0]);
++    lock_tb_pages(&blocks[1]);
++    assert(tb_link_page(&blocks[1]) == &blocks[1]);
++    check_counts(2, 1, 5, 1);
++    remove_membership(&blocks[1]);
++    check_counts(2, 0, 5, 0);
++    puts("membership-native-qht-rollback: passed");
++
++    reset_fixture();
++    add_tb(&blocks[0], 2, 5, 4090);
++    fixture_hash_remove = false;
++    lock_tb_pages(&blocks[0]);
++    do_tb_phys_invalidate(&blocks[0], true);
++    tb_unlock_pages(&blocks[0]);
++    assert(blocks[0].cflags & CF_INVALID);
++    check_counts(2, 1, 5, 1);
++    fixture_hash_remove = true;
++    do_tb_phys_invalidate(&blocks[0], false);
++    assert(!blocks[0].fixture_in_hash);
++    check_counts(2, 1, 5, 1);
++    check_collection("retained-invalid", 2, 2, (1u << 2) | (1u << 5),
++                     "L2 L5 U2 U5 ");
++    lock_tb_pages(&blocks[0]);
++    do_tb_phys_invalidate(&blocks[0], true);
++    tb_unlock_pages(&blocks[0]);
++    check_counts(2, 1, 5, 1);
++    remove_membership(&blocks[0]);
++    check_counts(2, 0, 5, 0);
++    puts("membership-native-retained-invalid: passed");
++}
++
++static void check_saturation_and_flush(void)
++{
++    TranslationBlock blocks[4];
++    void *leaves[MAX_PAGES] = { fixture_pages };
++    void *branches[MAX_PAGES] = { leaves };
++    void *root = branches;
++
++    reset_fixture();
++    add_tb(&blocks[0], 2, -1, 0);
++    add_tb(&blocks[1], 5, 5, 4090);
++    set_count(2, UINT32_MAX - 1);
++    set_count(5, UINT32_MAX - 1);
++    add_tb(&blocks[2], 2, 5, 4090);
++    check_counts(2, UINT32_MAX, 5, UINT32_MAX);
++    add_tb(&blocks[3], 5, 2, 4090);
++    check_counts(2, UINT32_MAX, 5, UINT32_MAX);
++    remove_membership(&blocks[2]);
++    check_counts(2, UINT32_MAX, 5, UINT32_MAX);
++    remove_membership(&blocks[3]);
++    check_counts(2, UINT32_MAX, 5, UINT32_MAX);
++    check_collection("sticky-unknown", 2, 2, 1u << 2, "L2 U2 ");
++    assert(membership_visits > 0);
++    remove_membership(&blocks[0]);
++    remove_membership(&blocks[1]);
++    check_counts(2, 0, 5, 0);
++
++    add_tb(&blocks[0], 2, 5, 4090);
++    set_count(2, UINT32_MAX);
++    tb_remove_all_1(2, &root);
++    check_counts(2, 0, 5, 0);
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        assert(!fixture_pages[i].first_tb);
++    }
++    add_tb(&blocks[0], 2, -1, 0);
++    tree_creations = entry_allocations = membership_visits = 0;
++    check_collection("after-flush", 2, 2, 1u << 2, "L2 U2 ");
++    assert(membership_visits == 0);
++    puts("membership-saturation-empty-flush: passed");
++}
++
++static void check_retry_mutation(void)
++{
++    TranslationBlock blocks[2];
++
++    reset_fixture();
++    add_tb(&blocks[0], 5, 2, 4090);
++    present[3] = true;
++    fixture_retry_tb = &blocks[1];
++    fixture_mutate_on_unlock = true;
++    transient_busy_index = 2;
++    check_collection("retry-list-mutated", 3, 5, 0x6c,
++                     "L3 L5 B2 U3 U5 L2 L3 L5 L6 U2 U3 U5 U6 ");
++    check_counts(3, 1, 6, 1);
++    puts("membership-retry-fresh-count: passed");
++}
++
++static void check_fork_copy(void)
++{
++    TranslationBlock blocks[2];
++    pid_t child;
++    int status;
++
++    reset_fixture();
++    add_tb(&blocks[0], 2, 5, 4090);
++    add_tb(&blocks[1], 2, -1, 0);
++    assert(fflush(NULL) == 0);
++    child = fork();
++    assert(child >= 0);
++    if (child == 0) {
++        check_counts(2, 1, 5, 1);
++        do_tb_phys_invalidate(&blocks[0], false);
++        check_counts(2, 1, 5, 1);
++        check_collection("fork-child-retained", 2, 2,
++                         (1u << 2) | (1u << 5), "L2 L5 U2 U5 ");
++        remove_membership(&blocks[0]);
++        check_counts(2, 0, 5, 0);
++        _exit(0);
++    }
++    assert(waitpid(child, &status, 0) == child);
++    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
++    check_counts(2, 1, 5, 1);
++    assert(blocks[0].fixture_in_hash && !(blocks[0].cflags & CF_INVALID));
++    remove_membership(&blocks[0]);
++    check_counts(2, 0, 5, 0);
++    puts("membership-retained-fork-copy: passed");
++}
++
++int main(void)
++{
++    assert(fixture_page_collection_main() == 0);
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        assert(pthread_mutex_init(&fixture_pages[i].lock, NULL) == 0);
++    }
++
++    check_mutation_paths();
++    check_saturation_and_flush();
++    check_retry_mutation();
++    check_fork_copy();
++    assert_no_pages_locked();
++
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        assert(pthread_mutex_destroy(&fixture_pages[i].lock) == 0);
++    }
++    puts("crossing-membership: passed");
++    return 0;
++}
++"""
++
++
++def fixture_source(source_root, negative=None):
++    """Compose exact native definitions with explicit lifecycle providers."""
++    path = Path(__file__).with_name("test-crucible-tcg-page-collection.py")
++    spec = importlib.util.spec_from_file_location("page_collection_fixture", path)
++    collection = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(collection)
++    source = collection.fixture_source(source_root)
++    maintenance = (source_root / "accel/tcg/tb-maint.c").read_text()
++    system = maintenance[maintenance.index("struct PageDesc {"):]
++    header = (source_root / "include/exec/translation-block.h").read_text()
++    flags = "\n".join(line for line in header.splitlines()
++                      if line.startswith(("#define CF_INVALID ",
++                                          "#define CF_PCREL ")))
++    source = source.replace("#include <setjmp.h>",
++                            "#include <setjmp.h>\n#include <unistd.h>\n"
++                            "#include <sys/wait.h>\n" + flags)
++    source = source.replace("    uint32_t cflags;", "    uint32_t cflags;\n"
++                            "    uint64_t pc, cs_base;\n    uint32_t flags;\n"
++                            "    QemuSpin jmp_lock;\n    bool fixture_in_hash;")
++    source = source.replace("static void qemu_spin_lock(",
++                            "static void fixture_page_spin_lock(")
++    source = source.replace("static void qemu_spin_unlock(",
++                            "static void fixture_page_spin_unlock(")
++    source = source.replace("    /* Native insertion checks lock ownership",
++                            "    tb->fixture_in_hash = true;\n"
++                            "    /* Native insertion checks lock ownership")
++    stub = collection.definition(source, "static void do_tb_phys_invalidate(")
++    native_invalidate = collection.definition(system,
++                                               "static void do_tb_phys_invalidate(")
++    source = source.replace(stub, PROVIDERS + "\n" + native_invalidate)
++    source = source.replace("int main(void)", "static int fixture_page_collection_main(void)")
++
++    # Retry injection runs only after the final collection lock was released.
++    unlock = collection.definition(source, "static void fixture_page_spin_unlock(")
++    changed_unlock = unlock.replace(
++        "    assert(pthread_mutex_unlock(lock) == 0);",
++        "    assert(pthread_mutex_unlock(lock) == 0);\n"
++        "    if (fixture_mutate_on_unlock && index == 5) {\n"
++        "        fixture_insert_during_retry();\n    }")
++    source = source.replace(unlock, changed_unlock)
++    # The injection state is declared before the lock provider it extends.
++    declarations = ("static bool fixture_mutate_on_unlock;\n"
++                    "static void fixture_insert_during_retry(void);\n")
++    source = source.replace("static void fixture_page_spin_unlock(",
++                            declarations + "\nstatic void fixture_page_spin_unlock(", 1)
++
++    extra = "\n".join(collection.definition(system, signature) for signature in (
++        "void tb_unlock_pages(", "TranslationBlock *tb_link_page(",
++        "static void tb_remove_all_1(",
++    ))
++    source += "\n" + extra + "\n" + EXERCISE
++    mutations = {
++        "omit-increment": ("static void tb_page_add(",
++                           "p->crossing_tb_count++;", "(void)p;"),
++        "premature-zero": ("static void tb_page_remove(",
++                           "pd->crossing_tb_count--;", "pd->crossing_tb_count = 0;"),
++        "wrap-count": ("static void tb_page_add(",
++                       " && p->crossing_tb_count != UINT32_MAX", ""),
++        "miss-empty-reset": ("static void tb_page_remove(",
++                             "pd->crossing_tb_count = 0;", "(void)pd;"),
++        "miss-flush-reset": ("static void tb_remove_all_1(",
++                             "pd[i].crossing_tb_count = 0;", "(void)pd;"),
++        "decrement-hash-only": ("static void do_tb_phys_invalidate(",
++                                "if (rm_from_page_list)", "if (true)"),
++    }
++    if negative == "cache-across-retry":
++        body = collection.definition(source, "static void page_collection_lock(")
++        changed = body.replace("    tb_page_addr_t index;",
++                               "    tb_page_addr_t index;\n"
++                               "    bool cached_zero[MAX_PAGES] = { false };")
++        changed = changed.replace("if (pd->crossing_tb_count == 0)",
++                                  "if (cached_zero[index] ||\n"
++                                  "            (cached_zero[index] = "
++                                  "pd->crossing_tb_count == 0))")
++        source = source.replace(body, changed, 1)
++    elif negative:
++        signature, before, after = mutations[negative]
++        body = collection.definition(source, signature)
++        if before not in body:
++            raise ValueError("Negative control requires its native operation")
++        source = source.replace(body, body.replace(before, after, 1), 1)
++    return source
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source-root", type=Path, default=ROOT)
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--emit-only", action="store_true")
++    parser.add_argument("--negative", choices=NEGATIVES)
++    args = parser.parse_args()
++    args.output_dir.mkdir(parents=True, exist_ok=True)
++    source = args.output_dir / "crossing-membership.c"
++    executable = args.output_dir / "crossing-membership"
++    source.write_text(fixture_source(args.source_root, args.negative))
++    command = shlex.split(os.environ.get("CC", "cc"))
++    command += shlex.split(os.environ.get("CFLAGS", ""))
++    command += ["-UNDEBUG", "-std=gnu11", "-Wall", "-Werror", "-pthread",
++                "-I" + str(args.source_root / "include"),
++                str(source), "-o", str(executable)]
++    command += shlex.split(os.environ.get("LDFLAGS", ""))
++    (args.output_dir / "compile-command.json").write_text(
++        json.dumps(command, indent=2) + "\n")
++    if args.emit_only:
++        return
++
++    subprocess.run(command, check=True)
++    result = subprocess.run([str(executable)], capture_output=True, text=True,
++                            timeout=15)
++    (args.output_dir / "stdout.txt").write_text(result.stdout)
++    (args.output_dir / "stderr.txt").write_text(result.stderr)
++    print(result.stdout, end="")
++    print(result.stderr, end="", file=sys.stderr)
++    result.check_returncode()
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-tcg-fast-paths.py b/tests/unit/test-crucible-tcg-fast-paths.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..13ca7573b80183e1f73489c4b268a2e07b767cb3
@@ -182085,6 +183630,803 @@ index 0000000000000000000000000000000000000000..13ca7573b80183e1f73489c4b268a2e0
 +
 +if __name__ == "__main__":
 +    main()
+diff --git a/tests/unit/test-crucible-tcg-page-collection.py b/tests/unit/test-crucible-tcg-page-collection.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..c2fa1f5d461002291d01e26a4432b93b53bd8569
+--- /dev/null
++++ b/tests/unit/test-crucible-tcg-page-collection.py
+@@ -0,0 +1,791 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise native system-mode TB page collection and tagged-list insertion.
++
++The production function bodies and list iterator are extracted unchanged.
++GLib owns the real tree; pthread mutexes provide page locks. A transient busy
++trylock is injected explicitly to exercise deterministic retry ordering. The
++PageDesc table and dirty-code notification are providers, not a guest MMU.
++The native fast invalidation, range body and page removal also execute for
++precise-SMC cleanup. CPU restoration, hash removal and jump unlinking are
++providers; a setjmp/longjmp boundary checks all locks are released before exit.
++This does not replace system-mode SMC, MTTCG, or replay integration tests.
++
++For a differential run, use --baseline-revision REF or --baseline-source-root
++ROOT. The same cases execute both native representations and require identical
++stdout: each case prints its exact L (lock), T (successful trylock),
++B (busy trylock), and U (unlock) page-index trace, followed by the success
++marker "page-collection: passed". Stderr reports explicit production lookup,
++tree-creation and heap-entry calls, not all GLib internal allocations; these
++intentionally differ. Membership visits count the preliminary lock-discovery
++walk only. Pages whose locked crossing count is zero must visit no memberships;
++invalidation still walks the native list. Inline collections must
++create no tree or heap entry until the fifth distinct existing page. Standalone
++baseline selection remains available through --revision and --source-root.
++The omission, spill-state, cleanup, ordered-iteration, empty-admission and
++eager-tree negatives must
++fail native ownership, trace or allocation assertions. --emit-only writes the
++selected source fixtures without compiling or executing them.
++"""
++
++import argparse
++import difflib
++import json
++import os
++from pathlib import Path
++import shlex
++import subprocess
++import sys
++
++
++ROOT = Path(__file__).resolve().parents[2]
++
++
++def definition(source, signature):
++    """Return a complete source definition beginning at its signature."""
++    start = source.index(signature)
++    brace = source.index("{", start)
++    depth = 1
++    end = brace + 1
++    while depth:
++        depth += (source[end] == "{") - (source[end] == "}")
++        end += 1
++    return source[start:end]
++
++
++PRELUDE = r"""
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#include <assert.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <pthread.h>
++#include <setjmp.h>
++#include <glib.h>
++#include "qemu/compiler.h"
++#include "qemu/qtree.h"
++
++#define TARGET_PAGE_BITS 12
++#define TARGET_PAGE_MASK (~(UINT64_C(4096) - 1))
++#define PAGE_SIZE UINT64_C(4096)
++#define MAX_PAGES 16
++typedef uint64_t tb_page_addr_t;
++typedef uint64_t ram_addr_t;
++typedef pthread_mutex_t QemuSpin;
++typedef struct PageDesc PageDesc;
++typedef int PageForEachNext;
++typedef struct TranslationBlock {
++    tb_page_addr_t page_addr[2];
++    uintptr_t page_next[2];
++    uint16_t size;
++    uint32_t cflags;
++} TranslationBlock;
++
++typedef struct TCGCPUOps { bool precise_smc; } TCGCPUOps;
++typedef struct CPUClass { TCGCPUOps *tcg_ops; } CPUClass;
++typedef struct CPUState {
++    CPUClass *cc;
++    uint32_t cflags_next_tb;
++} CPUState;
++
++#define tcg_debug_assert assert
++#define FIXTURE_CFLAGS UINT32_C(0x00020000)
++"""
++
++
++PROVIDERS = r"""
++static PageDesc fixture_pages[MAX_PAGES];
++static bool present[MAX_PAGES], held[MAX_PAGES];
++static int transient_busy_index = -1;
++static unsigned int tree_lookups, tree_creations, entry_allocations, trace_count;
++static unsigned int membership_visits;
++static bool count_membership_visits;
++static unsigned int restored, exits, invalidated, unprotected;
++static TCGCPUOps fixture_ops = { .precise_smc = true };
++static CPUClass fixture_class = { .tcg_ops = &fixture_ops };
++static CPUState fixture_cpu = { .cc = &fixture_class };
++static TranslationBlock *fixture_current_tb;
++static jmp_buf fixture_exit;
++static struct {
++    char operation;
++    unsigned int index;
++} trace[256];
++
++static unsigned int lock_index(QemuSpin *lock)
++{
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        if (lock == &fixture_pages[i].lock) {
++            return i;
++        }
++    }
++    assert(false);
++    return 0;
++}
++
++static void record_lock(char operation, unsigned int index)
++{
++    assert(trace_count < sizeof(trace) / sizeof(trace[0]));
++    trace[trace_count].operation = operation;
++    trace[trace_count++].index = index;
++}
++
++static void qemu_spin_lock(QemuSpin *lock)
++{
++    unsigned int index = lock_index(lock);
++
++    assert(!held[index]);
++    assert(pthread_mutex_lock(lock) == 0);
++    held[index] = true;
++    record_lock('L', index);
++}
++
++static bool qemu_spin_trylock(QemuSpin *lock)
++{
++    unsigned int index = lock_index(lock);
++
++    assert(!held[index]);
++    if ((int)index == transient_busy_index) {
++        transient_busy_index = -1;
++        record_lock('B', index);
++        return true;
++    }
++    assert(pthread_mutex_trylock(lock) == 0);
++    held[index] = true;
++    record_lock('T', index);
++    return false;
++}
++
++static void qemu_spin_unlock(QemuSpin *lock)
++{
++    unsigned int index = lock_index(lock);
++
++    assert(held[index]);
++    held[index] = false;
++    record_lock('U', index);
++    assert(pthread_mutex_unlock(lock) == 0);
++}
++
++static void assert_page_locked(const PageDesc *pd)
++{
++    assert(held[pd - fixture_pages]);
++}
++
++static void assert_no_pages_locked(void)
++{
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        assert(!held[i]);
++    }
++}
++
++static bool counted_membership_visit(const PageDesc *pd)
++{
++    assert_page_locked(pd);
++    membership_visits += count_membership_visits;
++    return true;
++}
++
++static void page_lock__debug(const PageDesc *pd) { }
++static void page_unlock__debug(const PageDesc *pd) { }
++
++static PageDesc *page_find(tb_page_addr_t index)
++{
++    assert(index < MAX_PAGES);
++    return present[index] ? &fixture_pages[index] : NULL;
++}
++
++static PageDesc *page_find_alloc(tb_page_addr_t index, bool alloc)
++{
++    assert(!alloc);
++    assert(page_find(index));
++    return page_find(index);
++}
++
++static void tlb_protect_code(tb_page_addr_t addr)
++{
++    assert_page_locked(page_find(addr >> TARGET_PAGE_BITS));
++}
++
++static void tlb_unprotect_code(tb_page_addr_t addr)
++{
++    assert_page_locked(page_find(addr >> TARGET_PAGE_BITS));
++    unprotected++;
++}
++
++static uint32_t tb_cflags(const TranslationBlock *tb)
++{
++    return tb->cflags;
++}
++
++static TranslationBlock *tcg_tb_lookup(uintptr_t pc)
++{
++    assert(pc == 0x1234);
++    return fixture_current_tb;
++}
++
++static void cpu_restore_state_from_tb(CPUState *cpu, TranslationBlock *tb,
++                                      uintptr_t pc)
++{
++    assert(cpu == &fixture_cpu && tb == fixture_current_tb && pc == 0x1234);
++    restored++;
++}
++
++static uint32_t curr_cflags(CPUState *cpu)
++{
++    assert(cpu == &fixture_cpu);
++    return FIXTURE_CFLAGS;
++}
++
++static void tb_remove(TranslationBlock *tb);
++
++static void do_tb_phys_invalidate(TranslationBlock *tb, bool remove_from_pages)
++{
++    /* Hash removal and jump unlinking are providers; page removal is native. */
++    assert(remove_from_pages);
++    tb_remove(tb);
++    invalidated++;
++}
++
++static G_NORETURN void cpu_loop_exit_noexc(CPUState *cpu)
++{
++    assert(cpu == &fixture_cpu);
++    assert(cpu->cflags_next_tb == (1 | CF_NOIRQ | FIXTURE_CFLAGS));
++    assert_no_pages_locked();
++    exits++;
++    longjmp(fixture_exit, 1);
++}
++
++static gpointer counted_tree_lookup(QTree *tree, gconstpointer key)
++{
++    tree_lookups++;
++    return q_tree_lookup(tree, key);
++}
++
++static QTree *counted_tree_new_full(GCompareDataFunc compare, gpointer data,
++                                   GDestroyNotify key_destroy,
++                                   GDestroyNotify value_destroy)
++{
++    tree_creations++;
++    return q_tree_new_full(compare, data, key_destroy, value_destroy);
++}
++
++static gpointer counted_malloc(gsize bytes)
++{
++    if (bytes == sizeof(struct page_entry)) {
++        entry_allocations++;
++    }
++    return g_malloc(bytes);
++}
++
++#ifdef FIXTURE_INLINE_COLLECTION
++static gpointer counted_malloc_n(gsize count, gsize bytes)
++{
++    if (count == 1 && bytes == sizeof(struct page_entry)) {
++        entry_allocations++;
++    }
++    return g_malloc_n(count, bytes);
++}
++#endif
++
++#define q_tree_lookup counted_tree_lookup
++#define q_tree_new_full counted_tree_new_full
++#define g_malloc counted_malloc
++#ifdef FIXTURE_INLINE_COLLECTION
++#define g_malloc_n counted_malloc_n
++#endif
++"""
++
++
++EXERCISE = r"""
++#undef q_tree_lookup
++#undef q_tree_new_full
++#undef g_malloc
++#undef g_malloc_n
++
++#ifdef FIXTURE_INLINE_COLLECTION
++_Static_assert(PAGE_COLLECTION_INLINE_CAPACITY == 4,
++               "The boundary cases require four inline entries");
++#endif
++
++static void reset_fixture(void)
++{
++    assert_no_pages_locked();
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        fixture_pages[i].first_tb = 0;
++#ifdef FIXTURE_CROSSING_COUNT
++        fixture_pages[i].crossing_tb_count = 0;
++#endif
++        present[i] = false;
++    }
++    transient_busy_index = -1;
++    tree_lookups = 0;
++    tree_creations = 0;
++    entry_allocations = 0;
++    restored = exits = invalidated = unprotected = 0;
++    fixture_current_tb = NULL;
++    fixture_cpu.cflags_next_tb = 0;
++    trace_count = 0;
++    membership_visits = 0;
++    count_membership_visits = false;
++}
++
++static void add_tb(TranslationBlock *tb, unsigned int first,
++                   int second, unsigned int offset)
++{
++    *tb = (TranslationBlock) {
++        .page_addr = { first * PAGE_SIZE + offset,
++                       second < 0 ? -1 : second * PAGE_SIZE },
++        .size = 32,
++    };
++    present[first] = true;
++    assert(pthread_mutex_lock(&fixture_pages[first].lock) == 0);
++    held[first] = true;
++    if (second >= 0 && (unsigned int)second != first) {
++        present[second] = true;
++        assert(pthread_mutex_lock(&fixture_pages[second].lock) == 0);
++        held[second] = true;
++    }
++    /* Native insertion checks lock ownership and creates both list tags. */
++    tb_record(tb);
++    held[first] = false;
++    assert(pthread_mutex_unlock(&fixture_pages[first].lock) == 0);
++    if (second >= 0 && (unsigned int)second != first) {
++        held[second] = false;
++        assert(pthread_mutex_unlock(&fixture_pages[second].lock) == 0);
++    }
++}
++
++static gboolean check_entry(gpointer key, gpointer value, gpointer data)
++{
++    struct page_entry *entry = value;
++    unsigned int *mask = data;
++
++    assert(entry->index < MAX_PAGES);
++    assert(*(tb_page_addr_t *)key == entry->index);
++    assert(!(*mask & (1u << entry->index)));
++    assert(entry->pd == &fixture_pages[entry->index]);
++    assert(entry->locked && held[entry->index]);
++    *mask |= 1u << entry->index;
++    return false;
++}
++
++static void check_trace(const char *name, const char *expected_trace)
++{
++    char actual_trace[1024];
++    size_t position = 0;
++
++    for (unsigned int i = 0; i < trace_count; i++) {
++        int written = snprintf(actual_trace + position,
++                               sizeof(actual_trace) - position,
++                               "%c%u ", trace[i].operation, trace[i].index);
++
++        assert(written > 0 && (size_t)written < sizeof(actual_trace) - position);
++        position += written;
++    }
++    actual_trace[position] = 0;
++    assert(strcmp(actual_trace, expected_trace) == 0);
++    printf("%s: %s\n", name, actual_trace);
++    fprintf(stderr, "%s: tree-lookups=%u trees=%u entries=%u memberships=%u\n",
++            name, tree_lookups, tree_creations, entry_allocations,
++            membership_visits);
++}
++
++static void check_collection(const char *name, unsigned int first,
++                             unsigned int last, unsigned int expected_mask,
++                             const char *expected_trace)
++{
++    struct page_collection *pages;
++#ifdef FIXTURE_INLINE_COLLECTION
++    struct page_collection storage;
++#endif
++    unsigned int found_mask = 0;
++    unsigned int expected_count = __builtin_popcount(expected_mask);
++
++    trace_count = 0;
++    count_membership_visits = true;
++#ifdef FIXTURE_INLINE_COLLECTION
++    pages = &storage;
++    page_collection_lock(pages, first * PAGE_SIZE, last * PAGE_SIZE + 7);
++    if (pages->tree) {
++        q_tree_foreach(pages->tree, check_entry, &found_mask);
++    } else {
++        for (unsigned int i = 0; i < pages->inline_count; i++) {
++            struct page_entry *entry = &pages->inline_entries[i];
++
++            if (i) {
++                assert(pages->inline_entries[i - 1].index < entry->index);
++            }
++            check_entry(&entry->index, entry, &found_mask);
++        }
++    }
++    assert(!!pages->tree == (expected_count > PAGE_COLLECTION_INLINE_CAPACITY));
++    assert(tree_creations == !!pages->tree);
++    assert(entry_allocations == (pages->tree ? expected_count : 0));
++#else
++    pages = page_collection_lock(first * PAGE_SIZE, last * PAGE_SIZE + 7);
++    q_tree_foreach(pages->tree, check_entry, &found_mask);
++    assert(tree_creations == 1);
++    assert(entry_allocations == expected_count);
++#endif
++    count_membership_visits = false;
++
++#ifdef FIXTURE_CROSSING_COUNT
++    if (!strcmp(name, "single-page") || !strcmp(name, "physical-alias")) {
++        assert(membership_visits == 0);
++    }
++#endif
++
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        assert(held[i] == !!(expected_mask & (1u << i)));
++    }
++    assert(found_mask == expected_mask);
++    page_collection_unlock(pages);
++    assert_no_pages_locked();
++
++    check_trace(name, expected_trace);
++}
++
++static void check_precise_exit(bool spill)
++{
++    static TranslationBlock blocks[5];
++
++    reset_fixture();
++    if (spill) {
++        add_tb(&blocks[0], 8, 7, 4090);
++        add_tb(&blocks[1], 8, 6, 4090);
++        add_tb(&blocks[2], 8, 4, 4090);
++        add_tb(&blocks[3], 8, 2, 4090);
++    }
++    add_tb(&blocks[4], 8, -1, 64);
++    fixture_current_tb = &blocks[4];
++
++    if (!setjmp(fixture_exit)) {
++        tb_invalidate_phys_range_fast(&fixture_cpu, 8 * PAGE_SIZE + 80, 1, 0x1234);
++        assert(false); /* A precise current-TB write must leave the caller. */
++    }
++    assert(restored == 1 && exits == 1 && invalidated == 1);
++    assert(unprotected == !spill);
++    assert_no_pages_locked();
++    check_trace(spill ? "precise-exit-spill" : "precise-exit-inline",
++                spill ? "L8 T2 T4 T6 T7 U2 U4 U6 U7 U8 " : "L8 U8 ");
++}
++
++int main(void)
++{
++    TranslationBlock blocks[64];
++
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        assert(pthread_mutex_init(&fixture_pages[i].lock, NULL) == 0);
++    }
++
++    reset_fixture();
++    check_collection("absent", 4, 4, 0, "");
++
++    reset_fixture();
++    present[0] = true;
++    check_collection("first-page-zero", 0, 0, 1, "L0 U0 ");
++
++    reset_fixture();
++    present[4] = true;
++    check_collection("empty", 4, 4, 1u << 4, "L4 U4 ");
++
++    reset_fixture();
++    for (unsigned int i = 0; i < 64; i++) {
++        add_tb(&blocks[i], 4, -1, i * 32);
++    }
++    check_collection("single-page", 4, 4, 1u << 4, "L4 U4 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 4, 4, 4090);
++    check_collection("physical-alias", 4, 4, 1u << 4, "L4 U4 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 2, 5, 4090);
++    check_collection("tag-zero", 2, 2, (1u << 2) | (1u << 5),
++                     "L2 L5 U2 U5 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 5, 2, 4090);
++    check_collection("tag-one", 2, 2, (1u << 2) | (1u << 5),
++                     "L2 L5 U2 U5 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 5, 2, 4090);
++    check_collection("reverse-order", 5, 5, (1u << 2) | (1u << 5),
++                     "L5 T2 U2 U5 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 5, 2, 4090);
++    transient_busy_index = 2;
++    check_collection("retry", 5, 5, (1u << 2) | (1u << 5),
++                     "L5 B2 U5 L2 L5 U2 U5 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 2, 5, 4090);
++    add_tb(&blocks[1], 2, 5, 4080);
++    check_collection("dedup-and-range", 2, 5, (1u << 2) | (1u << 5),
++                     "L2 L5 U2 U5 ");
++
++    reset_fixture();
++    present[2] = present[3] = present[4] = true;
++    check_collection("below-capacity", 2, 4, 0x1c,
++                     "L2 L3 L4 U2 U3 U4 ");
++
++    reset_fixture();
++    present[2] = present[3] = present[4] = present[5] = true;
++    check_collection("at-capacity", 2, 5, 0x3c,
++                     "L2 L3 L4 L5 U2 U3 U4 U5 ");
++
++    reset_fixture();
++    present[2] = present[3] = present[4] = present[5] = present[6] = true;
++    check_collection("spill", 2, 6, 0x7c,
++                     "L2 L3 L4 L5 L6 U2 U3 U4 U5 U6 ");
++
++    reset_fixture();
++    present[2] = present[4] = present[6] = present[8] = true;
++    check_collection("missing-at-capacity", 2, 8, 0x154,
++                     "L2 L4 L6 L8 U2 U4 U6 U8 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 8, 6, 4090);
++    add_tb(&blocks[1], 8, 6, 4080);
++    add_tb(&blocks[2], 8, 4, 4090);
++    add_tb(&blocks[3], 8, 2, 4090);
++    check_collection("duplicates-at-capacity", 8, 8, 0x154,
++                     "L8 T2 T4 T6 U2 U4 U6 U8 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 8, 7, 4090);
++    add_tb(&blocks[1], 8, 6, 4090);
++    add_tb(&blocks[2], 8, 4, 4090);
++    add_tb(&blocks[3], 8, 2, 4090);
++    check_collection("reverse-order-spill", 8, 8, 0x1d4,
++                     "L8 T2 T4 T6 T7 U2 U4 U6 U7 U8 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 8, 6, 4090);
++    add_tb(&blocks[1], 8, 4, 4090);
++    add_tb(&blocks[2], 8, 2, 4090);
++    transient_busy_index = 6;
++    check_collection("busy-before-spill", 8, 8, 0x154,
++                     "L8 T2 T4 B6 U2 U4 U8 L2 L4 L6 L8 U2 U4 U6 U8 ");
++
++    reset_fixture();
++    add_tb(&blocks[0], 8, 7, 4090);
++    add_tb(&blocks[1], 8, 6, 4090);
++    add_tb(&blocks[2], 8, 4, 4090);
++    add_tb(&blocks[3], 8, 2, 4090);
++    transient_busy_index = 7;
++    check_collection("busy-on-spill", 8, 8, 0x1d4,
++                     "L8 T2 T4 T6 B7 U2 U4 U6 U8 "
++                     "L2 L4 L6 L7 L8 U2 U4 U6 U7 U8 ");
++
++    reset_fixture();
++    for (int i = 5; i > 0; i--) {
++        add_tb(&blocks[5 - i], 9, i, 4090);
++    }
++    transient_busy_index = 5;
++    check_collection("busy-after-spill", 9, 9, 0x23e,
++                     "L9 T1 T2 T3 T4 B5 U1 U2 U3 U4 U9 "
++                     "L1 L2 L3 L4 L5 L9 U1 U2 U3 U4 U5 U9 ");
++
++    check_precise_exit(false);
++    check_precise_exit(true);
++
++    for (unsigned int i = 0; i < MAX_PAGES; i++) {
++        assert(pthread_mutex_destroy(&fixture_pages[i].lock) == 0);
++    }
++    puts("page-collection: passed");
++    return 0;
++}
++"""
++
++
++def fixture_source(source_root, revision=None, negative=None):
++    """Extract native definitions and add explicit providers and assertions."""
++    def read_source(path):
++        if revision:
++            return subprocess.check_output(
++                ["git", "-C", str(source_root), "show", "--no-ext-diff",
++                 "--end-of-options", revision + ":" + path], text=True)
++        return (source_root / path).read_text()
++
++    maintenance = read_source("accel/tcg/tb-maint.c")
++    system_maintenance = maintenance[maintenance.index("struct PageDesc {"):]
++    inline = "#define PAGE_COLLECTION_INLINE_CAPACITY " in system_maintenance
++    configuration = ""
++    if inline:
++        capacity = next(line for line in system_maintenance.splitlines()
++                        if line.startswith("#define PAGE_COLLECTION_INLINE_CAPACITY "))
++        configuration = capacity + "\n#define FIXTURE_INLINE_COLLECTION 1\n"
++    crossing_count = "uint32_t crossing_tb_count;" in system_maintenance
++    if crossing_count:
++        configuration += "#define FIXTURE_CROSSING_COUNT 1\n"
++    header = read_source("include/exec/translation-block.h")
++    flags = "\n".join(line for line in header.splitlines()
++                      if line.startswith(("#define CF_COUNT_MASK ",
++                                          "#define CF_NOIRQ ")))
++    internal_header = read_source("accel/tcg/tb-internal.h")
++    prototype_start = internal_header.index("void tb_invalidate_phys_range_fast(")
++    prototype_end = internal_header.index(";", prototype_start) + 1
++    configuration += flags + "\n" + internal_header[prototype_start:prototype_end]
++    iterator_start = maintenance.index("#define TB_FOR_EACH_TAGGED(")
++    iterator_end = maintenance.index("\n\n", iterator_start)
++    declarations = "\n".join(
++        definition(maintenance, name) + ";" for name in (
++            "struct PageDesc {", "struct page_entry {",
++            "struct page_collection {"))
++    accessors = "\n".join(definition(header, name) for name in (
++        "static inline tb_page_addr_t tb_page_addr0(",
++        "static inline tb_page_addr_t tb_page_addr1("))
++    signatures = [
++        "static void page_lock(PageDesc *pd)",
++        "static bool page_trylock(PageDesc *pd)",
++        "static void page_unlock(PageDesc *pd)",
++        "static inline struct page_entry *\npage_entry_new(",
++        "static void page_entry_destroy(",
++        "static bool page_entry_trylock(",
++        "static void do_page_entry_lock(",
++        "static gboolean page_entry_lock(",
++        "static gboolean page_entry_unlock(",
++        "static gint tb_page_addr_cmp(",
++    ]
++    if inline:
++        signatures += [
++            "static struct page_entry *page_collection_lookup(",
++            "static void page_collection_spill(",
++            "static struct page_entry *page_collection_insert(",
++            "static void page_collection_foreach(",
++        ]
++    signatures += [
++        "static bool page_trylock_add(",
++        "static void page_collection_lock(" if inline else
++        "static struct page_collection *page_collection_lock(",
++        "static void page_collection_unlock(",
++    ]
++    if crossing_count:
++        signatures += ["static bool tb_spans_distinct_pages("]
++    signatures += [
++        "static void tb_page_add(",
++        "static void tb_record(TranslationBlock *tb)",
++        "static void tb_page_remove(",
++        "static void tb_remove(TranslationBlock *tb)",
++        "static void\ntb_invalidate_phys_page_range__locked(",
++        "void tb_invalidate_phys_range_fast(",
++    ]
++    bodies = [definition(system_maintenance, signature)
++              for signature in signatures]
++    mutations = {
++        "omit-other-page": ("page_collection_lock",
++                            "page_trylock_add(set, other_addr)", "false"),
++        "drop-spill-state": ("page_collection_spill",
++                             "*pe = set->inline_entries[i];",
++                             "*pe = set->inline_entries[i]; pe->locked = false;"),
++        "skip-inline-unlock": ("page_collection_unlock",
++                               "page_unlock(pe->pd);", "(void)pe;"),
++        "reverse-inline-iteration": (
++            "page_collection_foreach",
++            "for (unsigned int i = 0; i < set->inline_count; i++)",
++            "for (unsigned int i = set->inline_count; i-- > 0;)"),
++        "omit-empty-admission": (
++            "page_trylock_add",
++            "(!set->tree && !set->inline_count) || index > set->max_index",
++            "index > set->max_index"),
++        "eager-tree": (
++            "page_collection_lock", "set->tree = NULL;",
++            "set->tree = q_tree_new_full(tb_page_addr_cmp, NULL, NULL, "
++            "page_entry_destroy);"),
++    }
++    if negative:
++        name, before, after = mutations[negative]
++        target = next((i for i, signature in enumerate(signatures)
++                       if name + "(" in signature), None)
++        if target is None or before not in bodies[target]:
++            raise ValueError("Negative control requires its native source operation")
++        bodies[target] = bodies[target].replace(before, after, 1)
++
++    return "\n".join((
++        PRELUDE, configuration, declarations, accessors,
++        maintenance[iterator_start:iterator_end],
++        "#define PAGE_FOR_EACH_TB(start, last, pd, tb, n) "
++        "TB_FOR_EACH_TAGGED((pd)->first_tb, tb, n, page_next) "
++        "if (counted_membership_visit(pd))",
++        PROVIDERS, "\n".join(bodies), EXERCISE))
++
++
++def prepare_fixture(output_dir, source_root, revision=None, negative=None):
++    """Write a source fixture and its configured compiler command."""
++    output_dir.mkdir(parents=True, exist_ok=True)
++    source = output_dir / "page-collection.c"
++    executable = output_dir / "page-collection"
++    source.write_text(fixture_source(source_root, revision, negative))
++
++    command = shlex.split(os.environ.get("CC", "cc"))
++    command += shlex.split(os.environ.get("CFLAGS", ""))
++    # Configured release flags may disable assertions; these are test actions.
++    command += ["-UNDEBUG", "-std=gnu11", "-Wall", "-Werror", "-pthread",
++                "-I" + str(source_root / "include"),
++                str(source), "-o", str(executable)]
++    command += shlex.split(os.environ.get("LDFLAGS", ""))
++    (output_dir / "compile-command.json").write_text(
++        json.dumps(command, indent=2) + "\n")
++    return command, executable
++
++
++def run_fixture(command, executable):
++    """Compile and run a fixture while preserving its complete diagnostics."""
++    subprocess.run(command, check=True)
++    result = subprocess.run([str(executable)], capture_output=True, text=True,
++                            timeout=15)
++    (executable.parent / "stdout.txt").write_text(result.stdout)
++    (executable.parent / "stderr.txt").write_text(result.stderr)
++    if result.returncode:
++        print(result.stderr, end="", file=sys.stderr)
++    result.check_returncode()
++    return result
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source-root", type=Path, default=ROOT)
++    parser.add_argument("--revision",
++                        help="Read native definitions from a Git revision")
++    baseline = parser.add_mutually_exclusive_group()
++    baseline.add_argument("--baseline-revision")
++    baseline.add_argument("--baseline-source-root", type=Path)
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--emit-only", action="store_true")
++    negative = parser.add_mutually_exclusive_group()
++    negative.add_argument("--omit-other-page", action="store_true")
++    negative.add_argument("--negative", choices=(
++        "omit-other-page", "drop-spill-state", "skip-inline-unlock",
++        "reverse-inline-iteration", "omit-empty-admission", "eager-tree"))
++    args = parser.parse_args()
++
++    mutation = "omit-other-page" if args.omit_other_page else args.negative
++    candidate = prepare_fixture(args.output_dir, args.source_root,
++                                args.revision, mutation)
++    reference = None
++    if args.baseline_revision or args.baseline_source_root:
++        reference = prepare_fixture(
++            args.output_dir / "baseline",
++            args.baseline_source_root or args.source_root,
++            args.baseline_revision)
++    if args.emit_only:
++        return
++
++    candidate_result = run_fixture(*candidate)
++    if reference:
++        baseline_result = run_fixture(*reference)
++        if candidate_result.stdout != baseline_result.stdout:
++            difference = "".join(difflib.unified_diff(
++                baseline_result.stdout.splitlines(keepends=True),
++                candidate_result.stdout.splitlines(keepends=True),
++                fromfile="baseline", tofile="candidate"))
++            (args.output_dir / "semantic-trace.diff").write_text(difference)
++            raise RuntimeError("Native baseline and candidate lock traces differ")
++    print(candidate_result.stdout, end="")
++    print(candidate_result.stderr, end="", file=sys.stderr)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-template-control-drain.py b/tests/unit/test-crucible-template-control-drain.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..7ad8b95b8a26a98d6dd2f9948f353df68951cf9a
@@ -182667,6 +185009,415 @@ index 0000000000000000000000000000000000000000..7ad8b95b8a26a98d6dd2f9948f353df6
 +               *shlex.split(os.environ.get("LDFLAGS", ""))]
 +    (arguments.output_dir / "compile-command.json").write_text(
 +        json.dumps(command, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(binary)], check=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/unit/test-crucible-tsc-source-index.py b/tests/unit/test-crucible-tsc-source-index.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0c4ec1c624a07fec159db0fa1473144d78f558d8
+--- /dev/null
++++ b/tests/unit/test-crucible-tsc-source-index.py
+@@ -0,0 +1,403 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise the production TSC search hint with real GLib arrays and threads.
++
++Lookup, manifest sorting/finalization, activation, projection and restore guards
++are extracted unchanged. Registration and backing-storage relocation are bounded,
++quiescent providers; decoded transforms, virtual time and error reporting are
++explicit providers. This does not prove concurrent registry mutation, translated
++execution, a migration stream, the complete retained fork, or performance.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++definition = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-net-output-stop.py")))["definition"]
++
++
++PRELUDE = r"""
++#include <glib.h>
++#include <pthread.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++/* CLOCK_SOURCE_KIND_DEFINITION */
++#define CRUCIBLE_CLOCK_HEALTHY 1
++#define ICOUNT_PRECISE 1
++#define QEMU_CLOCK_VIRTUAL 0
++
++typedef struct CrucibleClockSource {
++    struct { uint16_t source_kind, architecture; const char *id; } capability;
++    uint32_t instance;
++    GArray *rules;
++    void *source_rule;
++    int64_t additive_picos;
++    uint64_t drift_numerator, drift_denominator;
++    bool frozen, synchronizing;
++    unsigned source_state;
++    uint64_t provider_value;
++} CrucibleClockSource;
++
++static GArray *crucible_clock_sources;
++static bool crucible_clock_manifest_finalized, crucible_clock_bindings_sealed;
++static bool crucible_clock_terminal;
++static unsigned crucible_clock_vmstate_load_depth;
++static __thread unsigned row_reads;
++static bool sim_mode = true;
++static unsigned icount_mode = ICOUNT_PRECISE;
++static unsigned mode_reads, projections, failures;
++
++bool qemu_crucible_fault_clock_source_active(uint16_t kind, uint32_t instance);
++bool qemu_crucible_fault_clock_project_ps(uint16_t kind, uint32_t instance,
++    uint64_t raw, uint64_t *value, bool *read_error);
++
++static void *checked_row(GArray *array, size_t width, guint index)
++{
++    g_assert_cmpuint(index, <, array->len);
++    row_reads++;
++    return array->data + width * index;
++}
++
++#undef g_array_index
++#define g_array_index(array, type, index) \
++    (*(type *)checked_row((array), sizeof(type), (index)))
++
++static bool current_accel_is_sim(void)
++{
++    mode_reads++;
++    return sim_mode;
++}
++
++#define icount_enabled() icount_mode
++
++static uint64_t qemu_clock_get_ps(unsigned kind)
++{
++    g_assert_cmpuint(kind, ==, QEMU_CLOCK_VIRTUAL);
++    return 1000;
++}
++
++static bool crucible_clock_source_value(CrucibleClockSource *source,
++    uint64_t raw, uint64_t now, uint64_t opportunity, bool observing,
++    uint64_t *value, bool *read_error)
++{
++    g_assert_cmpuint(raw, ==, 7);
++    g_assert_cmpuint(now, ==, 1000);
++    g_assert_cmpuint(opportunity, ==, 0);
++    g_assert_false(observing);
++    projections++;
++    *value = source->provider_value;
++    *read_error = source->source_state == 4;
++    return true;
++}
++
++static void crucible_clock_report_read_failure(CrucibleClockSource *source,
++    uint16_t kind, uint32_t instance, uint64_t raw, const char *reason)
++{
++    (void)source;
++    (void)kind;
++    (void)instance;
++    (void)raw;
++    g_assert_nonnull(reason);
++    failures++;
++}
++"""
++
++
++CHECKS = r"""
++static CrucibleClockSource make_source(uint16_t kind, uint32_t instance,
++                                        const char *id, uint64_t value)
++{
++    return (CrucibleClockSource) {
++        .capability = { .source_kind = kind, .architecture = 1, .id = id },
++        .instance = instance, .drift_numerator = 1, .drift_denominator = 1,
++        .source_state = CRUCIBLE_CLOCK_HEALTHY, .provider_value = value,
++    };
++}
++
++/* Registration is quiescent and rejects duplicate kind/instance pairs. */
++static void append_source(CrucibleClockSource source)
++{
++    g_assert_null(crucible_clock_source_by_kind(
++        source.capability.source_kind, source.instance));
++    g_array_append_val(crucible_clock_sources, source);
++}
++
++static CrucibleClockSource *query(uint16_t kind, uint32_t instance,
++                                  uint64_t expected)
++{
++    CrucibleClockSource *source = crucible_clock_source_by_kind(kind, instance);
++
++    g_assert_nonnull(source);
++    g_assert_cmpuint(source->capability.source_kind, ==, kind);
++    g_assert_cmpuint(source->instance, ==, instance);
++    g_assert_cmpuint(source->provider_value, ==, expected);
++    return source;
++}
++
++static void check_unsealed_and_key(void)
++{
++    g_assert_null(crucible_clock_source_by_kind(1, 0));
++    crucible_clock_sources = g_array_new(false, true, sizeof(CrucibleClockSource));
++    g_assert_null(crucible_clock_source_by_kind(1, 0));
++    for (unsigned i = 0; i < 4; i++) {
++        append_source(make_source(9, i, "device", 10 + i));
++    }
++    append_source(make_source(1, 0, "z-tsc-0", 50));
++    row_reads = 0;
++    query(1, 0, 50);
++    g_assert_cmpuint(row_reads, ==, 5);
++    row_reads = 0;
++    query(1, 0, 50);
++    g_assert_cmpuint(row_reads, ==, HINT_ENABLED ? 1 : 5);
++    fprintf(stderr, "unsealed-second-lookup: row-reads=%u\n", row_reads);
++    g_assert_false(crucible_clock_manifest_finalized);
++    g_assert_false(crucible_clock_bindings_sealed);
++    g_assert_false(qemu_crucible_fault_clock_source_active(1, 0));
++
++    /* Missing keys must still scan; an absent lookup cannot poison a later hit. */
++    g_assert_null(crucible_clock_source_by_kind(1, 77));
++    append_source(make_source(1, 1, "a-tsc-1", 60));
++    query(1, 1, 60);
++    query(1, 0, 50);
++    query(9, 0, 10);
++    g_assert_null(crucible_clock_source_by_kind(1, 77));
++    append_source(make_source(1, 77, "b-tsc-77", 77));
++    query(1, 77, 77);
++    puts("unsealed applicability, exact keys and absent lookup: passed");
++}
++
++static void check_storage_and_sort(void)
++{
++    query(1, 0, 50);
++    GArray *old = crucible_clock_sources;
++    GArray *relocated = g_array_sized_new(false, true,
++        sizeof(CrucibleClockSource), old->len + 100);
++    g_array_append_vals(relocated, old->data, old->len);
++    crucible_clock_sources = relocated;
++    /* Keep old storage alive so pointer-reuse controls fail deterministically. */
++    ((CrucibleClockSource *)old->data)[4].provider_value = 999;
++    query(1, 0, 50);
++    g_array_unref(old);
++
++    /* A cached slot can now name a different kind after the real manifest sort. */
++    ((CrucibleClockSource *)relocated->data)[0].capability.id = "y-device-0";
++    ((CrucibleClockSource *)relocated->data)[1].capability.id = "x-device-1";
++    ((CrucibleClockSource *)relocated->data)[2].capability.id = "w-device-2";
++    ((CrucibleClockSource *)relocated->data)[3].capability.id = "v-device-3";
++    g_assert_true(crucible_clock_manifest_finalize());
++    query(1, 1, 60);
++    query(1, 0, 50);
++    query(1, 77, 77);
++    g_assert_true(crucible_clock_manifest_finalized);
++    g_assert_false(crucible_clock_bindings_sealed);
++    puts("live backing storage and production manifest sorting: passed");
++}
++
++static void check_live_predicates(void)
++{
++    CrucibleClockSource *source = query(1, 0, 50);
++
++    crucible_clock_bindings_sealed = true;
++    g_assert_false(qemu_crucible_fault_clock_source_active(1, 0));
++    source->additive_picos = 1;
++    g_assert_true(qemu_crucible_fault_clock_source_active(1, 0));
++    source->provider_value = 81;
++    uint64_t value;
++    bool read_error;
++    g_assert_true(qemu_crucible_fault_clock_project_ps(1, 0, 7,
++                                                     &value, &read_error));
++    g_assert_cmpuint(value, ==, 81);
++    g_assert_false(read_error);
++    g_assert_cmpuint(projections, ==, 1);
++
++    for (unsigned depth = 1; depth <= 2; depth++) {
++        crucible_clock_vmstate_load_depth = depth;
++        unsigned before = mode_reads;
++        g_assert_false(qemu_crucible_fault_clock_source_active(1, 0));
++        g_assert_cmpuint(mode_reads, ==, before);
++    }
++    crucible_clock_vmstate_load_depth = 0;
++    source->provider_value = 91;
++    source->source_state = 4;
++    g_assert_true(qemu_crucible_fault_clock_project_ps(1, 0, 7,
++                                                     &value, &read_error));
++    g_assert_cmpuint(value, ==, 91);
++    g_assert_true(read_error);
++
++    source->source_state = CRUCIBLE_CLOCK_HEALTHY;
++    source->additive_picos = 0;
++    g_assert_false(qemu_crucible_fault_clock_source_active(1, 0));
++    crucible_clock_terminal = true;
++    g_assert_true(qemu_crucible_fault_clock_source_active(1, 0));
++    g_assert_false(qemu_crucible_fault_clock_project_ps(1, 0, 7,
++                                                      &value, &read_error));
++    g_assert_cmpuint(failures, ==, 1);
++    crucible_clock_terminal = false;
++    puts("live activation, restore-depth guards, values and terminal failure: passed");
++}
++
++static void *cold_thread(void *opaque)
++{
++    (void)opaque;
++    row_reads = 0;
++    query(1, 0, 91);
++    g_assert_cmpuint(row_reads, ==, 7);
++    row_reads = 0;
++    query(1, 0, 91);
++    g_assert_cmpuint(row_reads, ==, HINT_ENABLED ? 1 : 7);
++    return NULL;
++}
++
++static void check_fork_and_thread(void)
++{
++    query(1, 0, 91);
++    pid_t child = fork();
++    g_assert_cmpint(child, >=, 0);
++    if (child == 0) {
++        row_reads = 0;
++        query(1, 0, 91);
++        g_assert_cmpuint(row_reads, ==, HINT_ENABLED ? 1 : 7);
++        CrucibleClockSource *source = query(1, 0, 91);
++        source->provider_value = 101;
++        query(1, 0, 101);
++        pthread_t worker;
++        /* New threads start with a cold TLS hint even in a forked process. */
++        source->provider_value = 91;
++        g_assert_cmpint(pthread_create(&worker, NULL, cold_thread, NULL), ==, 0);
++        g_assert_cmpint(pthread_join(worker, NULL), ==, 0);
++        _exit(0);
++    }
++    int status;
++    g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++    g_assert_true(WIFEXITED(status));
++    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    query(1, 0, 91);
++    puts("native fork private rows, inherited hint and cold replacement thread: passed");
++}
++
++static void check_empty_shrink(void)
++{
++    query(1, 0, 91);
++    /* Shrink is an adversarial provider, not a production registry operation. */
++    g_array_set_size(crucible_clock_sources, 0);
++    g_assert_null(crucible_clock_source_by_kind(1, 0));
++    CrucibleClockSource source = make_source(1, 0, "replacement", 123);
++    g_array_append_val(crucible_clock_sources, source);
++    query(1, 0, 123);
++    puts("empty and adversarial shrink bounds: passed");
++}
++
++int main(void)
++{
++    check_unsealed_and_key();
++    check_storage_and_sort();
++    check_live_predicates();
++    check_fork_and_thread();
++    check_empty_shrink();
++    g_array_unref(crucible_clock_sources);
++    return 0;
++}
++"""
++
++
++def fixture(root: Path, negative: str | None) -> str:
++    """Compose native definitions with bounded quiescent registry providers."""
++    clock = (root / "plugins/crucible-fault-clock.c").read_text()
++    signatures = [
++        "static CrucibleClockSource *crucible_clock_source_by_kind(",
++        "static gint crucible_clock_source_compare(",
++        "static bool crucible_clock_manifest_finalize(",
++        "static bool crucible_clock_mode(",
++        "static bool crucible_clock_source_has_effective_transform(",
++        "bool qemu_crucible_fault_clock_source_active(",
++        "bool qemu_crucible_fault_clock_project_ps(",
++    ]
++    bodies = "\n\n".join(definition(clock, item) for item in signatures)
++    optimized = "static __thread guint tsc_index" in bodies
++    replacements = {
++        "preseal-gate": ("if (kind == QEMU_CRUCIBLE_CLOCK_X86_TSC &&\n",
++                         "if (crucible_clock_bindings_sealed &&\n"
++                         "        kind == QEMU_CRUCIBLE_CLOCK_X86_TSC &&\n"),
++        "omit-bounds": ("tsc_index < crucible_clock_sources->len",
++                        "tsc_index != G_MAXUINT"),
++        "omit-instance": ("            source->instance == instance)",
++                          "            true)"),
++        "omit-kind": ("source->capability.source_kind == kind &&\n"
++                      "            source->instance == instance",
++                      "source->instance == instance"),
++        "stale-slot": ("if (source->capability.source_kind == kind &&\n"
++                       "            source->instance == instance)", "if (true)"),
++        "shared-hint": ("static __thread guint tsc_index", "static guint tsc_index"),
++        "activation-before-load": ("crucible_clock_vmstate_load_depth == 0 &&",
++                                   "true &&"),
++    }
++    if negative == "stale-pointer":
++        bodies = bodies.replace("static __thread guint tsc_index = G_MAXUINT;",
++            "static __thread guint tsc_index = G_MAXUINT;\n"
++            "    static __thread CrucibleClockSource *old_source;")
++        bodies = bodies.replace("CrucibleClockSource, tsc_index);",
++                                "CrucibleClockSource, tsc_index);\n"
++                                "        source = old_source;")
++        bodies = bodies.replace("tsc_index = i;", "tsc_index = i;\n"
++                                "                old_source = source;")
++    elif negative == "negative-cache":
++        bodies = bodies.replace("static __thread guint tsc_index = G_MAXUINT;",
++            "static __thread guint tsc_index = G_MAXUINT;\n"
++            "    static __thread bool absent;\n"
++            "    static __thread uint32_t absent_instance;\n"
++            "    if (absent && kind == 1 && instance == absent_instance) {\n"
++            "        return NULL;\n    }")
++        lookup_end = "    return NULL;\n}"
++        bodies = bodies.replace(lookup_end,
++            "    if (crucible_clock_sources && kind == 1) {\n"
++            "        absent = true;\n        absent_instance = instance;\n    }\n"
++            + lookup_end, 1)
++    elif negative:
++        old, new = replacements[negative]
++        if old not in bodies:
++            raise ValueError(f"Negative control anchor missing: {negative}")
++        bodies = bodies.replace(old, new, 1)
++    header = (root / "include/qemu/crucible-fault.h").read_text()
++    kinds = definition(header, "enum QemuCrucibleClockSourceKind {") + ";"
++    return (PRELUDE.replace("/* CLOCK_SOURCE_KIND_DEFINITION */", kinds)
++            + f"\n#define HINT_ENABLED {int(optimized)}\n" + bodies + CHECKS)
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source-root", type=Path, default=ROOT)
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative", choices=[
++        "preseal-gate", "omit-bounds", "omit-instance", "omit-kind",
++        "stale-slot", "shared-hint", "activation-before-load",
++        "stale-pointer", "negative-cache",
++    ])
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++    source = arguments.output_dir / "tsc-source-index.c"
++    binary = arguments.output_dir / "tsc-source-index"
++    source.write_text(fixture(arguments.source_root, arguments.negative))
++    command = shlex.split(os.environ.get("CC", "cc"))
++    command += shlex.split(os.environ.get("CFLAGS", ""))
++    command += ["-std=gnu11", "-Wall", "-Wextra", "-Werror", "-pthread",
++                str(source), "-o", str(binary)]
++    command += shlex.split(os.environ.get("LDFLAGS", ""))
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps({"argv": command}, indent=2) + "\n")
 +    subprocess.run(command, check=True)
 +    subprocess.run([str(binary)], check=True)
 +
@@ -188538,10 +191289,10 @@ index d17135f585aef5fd0adf7a6e0f889eeebfade754..a8a35db75afbf1a9aca85b47b4c0a740
  
  void qemu_coroutine_enter(Coroutine *co)
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
-index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0efe331855 100644
+index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..1b59d60925d365c2f3747dad8c06d5df41488ccf 100644
 --- a/util/qemu-thread-posix.c
 +++ b/util/qemu-thread-posix.c
-@@ -22,6 +22,123 @@
+@@ -22,6 +22,124 @@
  #include <pthread_np.h>
  #endif
  
@@ -188553,6 +191304,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
 +    uint64_t registration_id;
 +    int64_t owner_thread_id;
 +    uint32_t recursion_depth;
++    /* The registry guard serializes waiter updates and their readers. */
 +    uint32_t acquisition_waiters;
 +    uint32_t condition_waiters;
 +    int64_t condition_waiter_thread_id;
@@ -188665,7 +191417,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
  /*
   * This is not defined on Linux, but the man page indicates
   * the buffer must be at least 16 bytes, including the NUL
-@@ -59,6 +176,542 @@ static void error_exit(int err, const char *msg)
+@@ -59,6 +177,542 @@ static void error_exit(int err, const char *msg)
      abort();
  }
  
@@ -188980,7 +191732,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
 +    crucible_hot_fork_mutex_registry_lock();
 +    entry = crucible_hot_fork_mutex_entry(mutex);
 +    if (entry) {
-+        qatomic_inc(&entry->acquisition_waiters);
++        entry->acquisition_waiters++;
 +    }
 +    crucible_hot_fork_mutex_registry_unlock();
 +}
@@ -188995,7 +191747,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
 +        if (qatomic_read(&entry->acquisition_waiters) == 0) {
 +            qatomic_set(&entry->ownership_valid, false);
 +        } else {
-+            qatomic_dec(&entry->acquisition_waiters);
++            entry->acquisition_waiters--;
 +        }
 +    }
 +    crucible_hot_fork_mutex_registry_unlock();
@@ -189035,7 +191787,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
 +    if (qatomic_read(&entry->acquisition_waiters) == 0) {
 +        qatomic_set(&entry->ownership_valid, false);
 +    } else {
-+        qatomic_dec(&entry->acquisition_waiters);
++        entry->acquisition_waiters--;
 +    }
 +    crucible_hot_fork_mutex_registry_unlock();
 +}
@@ -189099,7 +191851,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
 +    owner = qatomic_read(&entry->owner_thread_id);
 +    depth = qatomic_read(&entry->recursion_depth);
 +
-+    if (qatomic_fetch_inc(&entry->condition_waiters) == 0) {
++    if (entry->condition_waiters++ == 0) {
 +        qatomic_set(&entry->condition_waiter_thread_id,
 +                    crucible_mutex_owner_thread_id());
 +    } else {
@@ -189138,7 +191890,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
 +    qatomic_set(&entry->recursion_depth, 1);
 +    if (qatomic_read(&entry->condition_waiters) == 0) {
 +        qatomic_set(&entry->ownership_valid, false);
-+    } else if (qatomic_fetch_dec(&entry->condition_waiters) == 1) {
++    } else if (entry->condition_waiters-- == 1) {
 +        qatomic_set(&entry->condition_waiter_thread_id, 0);
 +    }
 +    crucible_hot_fork_mutex_registry_unlock();
@@ -189208,7 +191960,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
  static inline clockid_t qemu_timedwait_clockid(void)
  {
  #ifdef CONFIG_PTHREAD_CONDATTR_SETCLOCK
-@@ -83,21 +736,48 @@ void qemu_mutex_init(QemuMutex *mutex)
+@@ -83,21 +737,48 @@ void qemu_mutex_init(QemuMutex *mutex)
  {
      int err;
  
@@ -189259,7 +192011,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
  }
  
  void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file, const int line)
-@@ -105,11 +785,13 @@ void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file, const int line)
+@@ -105,11 +786,13 @@ void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file, const int line)
      int err;
  
      assert(mutex->initialized);
@@ -189273,7 +192025,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
  }
  
  int qemu_mutex_trylock_impl(QemuMutex *mutex, const char *file, const int line)
-@@ -117,11 +799,14 @@ int qemu_mutex_trylock_impl(QemuMutex *mutex, const char *file, const int line)
+@@ -117,11 +800,14 @@ int qemu_mutex_trylock_impl(QemuMutex *mutex, const char *file, const int line)
      int err;
  
      assert(mutex->initialized);
@@ -189288,7 +192040,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
      if (err != EBUSY) {
          error_exit(err, __func__);
      }
-@@ -133,10 +818,12 @@ void qemu_mutex_unlock_impl(QemuMutex *mutex, const char *file, const int line)
+@@ -133,10 +819,12 @@ void qemu_mutex_unlock_impl(QemuMutex *mutex, const char *file, const int line)
      int err;
  
      assert(mutex->initialized);
@@ -189301,7 +192053,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
  }
  
  void qemu_rec_mutex_init(QemuRecMutex *mutex)
-@@ -144,6 +831,7 @@ void qemu_rec_mutex_init(QemuRecMutex *mutex)
+@@ -144,6 +832,7 @@ void qemu_rec_mutex_init(QemuRecMutex *mutex)
      int err;
      pthread_mutexattr_t attr;
  
@@ -189309,7 +192061,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
      pthread_mutexattr_init(&attr);
      pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
      err = pthread_mutex_init(&mutex->m.lock, &attr);
-@@ -152,6 +840,7 @@ void qemu_rec_mutex_init(QemuRecMutex *mutex)
+@@ -152,6 +841,7 @@ void qemu_rec_mutex_init(QemuRecMutex *mutex)
          error_exit(err, __func__);
      }
      mutex->m.initialized = true;
@@ -189317,7 +192069,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
  }
  
  void qemu_rec_mutex_destroy(QemuRecMutex *mutex)
-@@ -236,9 +925,11 @@ void qemu_cond_wait_impl(QemuCond *cond, QemuMutex *mutex, const char *file, con
+@@ -236,9 +926,11 @@ void qemu_cond_wait_impl(QemuCond *cond, QemuMutex *mutex, const char *file, con
      int err;
  
      assert(cond->initialized);
@@ -189329,7 +192081,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
      if (err)
          error_exit(err, __func__);
  }
-@@ -250,9 +941,11 @@ qemu_cond_timedwait_ts(QemuCond *cond, QemuMutex *mutex, struct timespec *ts,
+@@ -250,9 +942,11 @@ qemu_cond_timedwait_ts(QemuCond *cond, QemuMutex *mutex, struct timespec *ts,
      int err;
  
      assert(cond->initialized);
@@ -189341,7 +192093,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
      if (err && err != ETIMEDOUT) {
          error_exit(err, __func__);
      }
-@@ -379,19 +1072,901 @@ typedef struct {
+@@ -379,19 +1073,901 @@ typedef struct {
      void *(*start_routine)(void *);
      void *arg;
      char *name;
@@ -190243,7 +192995,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
      g_free(qemu_thread_args->name);
      g_free(qemu_thread_args);
  
-@@ -410,9 +1985,11 @@ static void *qemu_thread_start(void *args)
+@@ -410,9 +1986,11 @@ static void *qemu_thread_start(void *args)
  #pragma GCC diagnostic ignored "-Wstringop-overflow"
  #endif
  
@@ -190255,7 +193007,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0e
  
  #pragma GCC diagnostic pop
  
-@@ -450,12 +2027,16 @@ void qemu_thread_create(QemuThread *thread, const char *name,
+@@ -450,12 +2028,16 @@ void qemu_thread_create(QemuThread *thread, const char *name,
      qemu_thread_args->name = g_strdup(name);
      qemu_thread_args->start_routine = start_routine;
      qemu_thread_args->arg = arg;

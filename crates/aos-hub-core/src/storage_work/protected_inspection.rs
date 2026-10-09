@@ -10,7 +10,7 @@
 //!           closure: {guard_stamp, receipt_digest, sha256, bytes, etag?}}
 //! ```
 
-use anyhow::{Result, ensure};
+use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::storage_authority::{
@@ -19,8 +19,8 @@ use crate::storage_authority::{
 
 use super::{StorageObjectIdentity, StorageWorkPlan};
 
-/// Maximum encoded single-file documentation NAR admitted by the shared parser.
-pub const MAX_DOCUMENT_NAR_BYTES: usize = aos_doc_model::MAX_DOCUMENT_BYTES + 512;
+/// Maximum encoded Native documentation directory NAR admitted by the shared parser.
+pub const MAX_DOCUMENT_NAR_BYTES: usize = 32 * 1024 * 1024;
 
 /// Projects an existing closure on one exact physical key without granting access.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

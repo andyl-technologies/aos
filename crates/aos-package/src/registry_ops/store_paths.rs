@@ -5,7 +5,7 @@ use crate::registry::store;
 use crate::registry::store::{DepEdge, NarBytes, Realisation, UpsertOutcome};
 use crate::types::{package_name_bucket, validate_platform_name};
 use anyhow::{Context, Result, bail};
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::configure_aos_nix_store;
 use aos_core::output::Printer;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -13,11 +13,22 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-/// Build a `nix`/`nix-store` command with the AOS Nix environment applied.
-pub(in crate::registry_ops) fn nix_command(program: &str) -> Command {
+/// Builds a `nix`/`nix-store` command for the selected AOS store.
+pub(in crate::registry_ops) fn nix_command(program: &str) -> Result<Command> {
     let mut command = Command::new(program);
-    command.envs(aos_nix_env());
-    command
+    configure_aos_nix_store(&mut command)?;
+    #[cfg(test)]
+    for (source, target) in [
+        ("AOS_TEST_ABILITY_NIX_STORE_DIR", "NIX_STORE_DIR"),
+        ("AOS_TEST_ABILITY_NIX_STATE_DIR", "NIX_STATE_DIR"),
+        ("AOS_TEST_ABILITY_NIX_LOG_DIR", "NIX_LOG_DIR"),
+        ("AOS_TEST_ABILITY_NIX_REMOTE", "NIX_REMOTE"),
+    ] {
+        if let Some(value) = std::env::var_os(source) {
+            command.env(target, value);
+        }
+    }
+    Ok(command)
 }
 
 /// Parse a Nix store path into (name, version).
@@ -80,7 +91,7 @@ pub(in crate::registry_ops) fn first_letter(name: &str) -> String {
 
 /// Runs one stable `nix-store --query` operation for the supplied paths.
 fn nix_store_query(query: &str, store_paths: &[&str]) -> Result<Vec<String>> {
-    let output = nix_command("nix-store")
+    let output = nix_command("nix-store")?
         .args(["--query", query])
         .args(store_paths)
         .output()
@@ -101,19 +112,6 @@ fn nix_store_query(query: &str, store_paths: &[&str]) -> Result<Vec<String>> {
         .filter(|line| !line.is_empty())
         .map(str::to_string)
         .collect())
-}
-
-/// Runs a single-path `nix-store --query` operation that must return one value.
-fn single_nix_store_query(query: &str, store_path: &str) -> Result<String> {
-    let values = nix_store_query(query, &[store_path])?;
-    if let [value] = values.as_slice() {
-        return Ok(value.clone());
-    }
-
-    bail!(
-        "nix-store --query {query} returned {} values for {store_path}; expected one",
-        values.len()
-    )
 }
 
 /// Parses ordered NAR sizes returned for an ordered set of store paths.
@@ -139,75 +137,41 @@ fn parse_nar_sizes(store_paths: &[String]) -> Result<Vec<u64>> {
         .collect()
 }
 
-/// Introspects a store path using stable `nix-store --query` operations.
-pub(in crate::registry_ops) fn introspect_store_path(store_path: &str) -> Result<StorePathInfo> {
-    let nar_hash = single_nix_store_query("--hash", store_path)?;
-    let nar_size = single_nix_store_query("--size", store_path)?
-        .parse::<u64>()
-        .with_context(|| format!("parsing NAR size for {store_path}"))?;
-
-    let references = nix_store_query("--references", &[store_path])?
-        .into_iter()
-        .filter(|reference| reference != store_path)
-        .map(|reference| extract_hash(&reference).to_string())
-        .collect();
-
-    let closure_paths = nix_store_query("--requisites", &[store_path])?;
-    if closure_paths.is_empty() {
-        bail!("nix-store --query --requisites returned no paths for {store_path}");
-    }
-    let closure_size =
-        parse_nar_sizes(&closure_paths)?
-            .into_iter()
-            .try_fold(0_u64, |total, size| {
-                total
-                    .checked_add(size)
-                    .ok_or_else(|| anyhow::anyhow!("closure size overflow for {store_path}"))
-            })?;
-
-    Ok(StorePathInfo {
-        path: store_path.to_string(),
-        nar_hash,
-        nar_size,
-        references,
-        closure_size,
-    })
-}
-
 /// Return metadata for the derivation that produced `store_path`, if known.
 pub(in crate::registry_ops) fn introspect_deriver(
+    store: &StoreQueries,
     store_path: &str,
 ) -> Result<Option<StorePathInfo>> {
-    let output = nix_command("nix-store")
-        .args(["-q", "--deriver", store_path])
-        .output()
-        .with_context(|| format!("querying deriver for {store_path}"))?;
+    let Some(deriver) = local_deriver(store, store_path)? else {
+        return Ok(None);
+    };
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "nix-store --query --deriver failed for {store_path}: {}",
-            stderr.trim()
-        );
-    }
+    store
+        .introspect(&deriver)
+        .with_context(|| format!("introspecting source derivation {deriver}"))
+        .map(Some)
+}
 
-    let deriver = String::from_utf8_lossy(&output.stdout).trim().to_string();
+/// Returns the recorded deriver of `store_path` when it is present locally in
+/// the same store directory.
+pub(in crate::registry_ops) fn local_deriver(
+    store: &StoreQueries,
+    store_path: &str,
+) -> Result<Option<String>> {
+    let deriver = store
+        .record(store_path)
+        .with_context(|| format!("querying deriver for {store_path}"))?
+        .deriver;
     let Some(store_dir) = store_dir_from_store_path(store_path) else {
         return Ok(None);
     };
-    if deriver.is_empty()
-        || deriver == "unknown-deriver"
-        || store_dir_from_store_path(&deriver) != Some(store_dir)
-    {
+    let Some(deriver) = deriver else {
+        return Ok(None);
+    };
+    if store_dir_from_store_path(&deriver) != Some(store_dir) || !Path::new(&deriver).exists() {
         return Ok(None);
     }
-    if !Path::new(&deriver).exists() {
-        return Ok(None);
-    }
-
-    introspect_store_path(&deriver)
-        .with_context(|| format!("introspecting source derivation {deriver}"))
-        .map(Some)
+    Ok(Some(deriver))
 }
 
 /// Return the store directory portion of a Nix store path.
@@ -328,9 +292,10 @@ fn read_release_policy(store_path: &Path) -> Result<Option<BTreeMap<String, Stri
 }
 
 pub(in crate::registry_ops) fn validate_store_path_release_policy(
+    store: &StoreQueries,
     info: &StorePathInfo,
 ) -> Result<()> {
-    let closure_paths = runtime_closure_paths(&info.path)?;
+    let closure_paths = store.closure(&info.path)?;
     validate_store_path_release_policy_in_closure(info, &closure_paths)
 }
 
@@ -449,54 +414,6 @@ fn validate_store_path_release_policy_in_closure(
     Ok(())
 }
 
-fn runtime_closure_paths(store_path: &str) -> Result<Vec<String>> {
-    let output = nix_command("nix-store")
-        .args(["-qR", store_path])
-        .output()
-        .with_context(|| format!("running nix-store -qR {store_path}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("nix-store -qR failed for {store_path}: {}", stderr.trim());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
-        .collect())
-}
-
-/// Compute the full transitive closure of a store path.
-///
-/// Returns a list of `(store_hash, Vec<direct_dep_hashes>)` pairs in
-/// dependency order (leaves first, root last).  Uses `nix-store -qR` to
-/// enumerate the closure and `nix-store -q --references` for each member.
-fn compute_closure(store_path: &str) -> Result<Vec<(String, Vec<String>)>> {
-    let closure_paths = runtime_closure_paths(store_path)?;
-
-    // For each path in the closure, get its direct references.
-    let mut result = Vec::with_capacity(closure_paths.len());
-    for path in &closure_paths {
-        let ref_output = nix_command("nix-store")
-            .args(["-q", "--references", path])
-            .output()
-            .with_context(|| format!("running nix-store -q --references {path}"))?;
-
-        let refs: Vec<String> = if ref_output.status.success() {
-            String::from_utf8_lossy(&ref_output.stdout)
-                .lines()
-                .filter(|l| !l.is_empty() && *l != path)
-                .map(|l| extract_hash(l).to_string())
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        result.push((extract_hash(path).to_string(), refs));
-    }
-
-    Ok(result)
-}
-
 /// Extract the store path hash from a full store path.
 pub(in crate::registry_ops) fn extract_hash(store_path: &str) -> &str {
     let basename = store_path.rsplit('/').next().unwrap_or(store_path);
@@ -546,32 +463,45 @@ pub(in crate::registry_ops) fn introspect_closure_nars(
 }
 
 /// Run `nix store make-content-addressed --json` over a closure root and
-/// return the input-addressed → content-addressed store-path-hash map for
-/// every member it rewrites.
+/// return the input-addressed → content-addressed store-path-hash map it
+/// reports.
 ///
-/// This is how the producer learns each member's CA realisation and the
-/// dependency CA pins, consistently for the whole closure in one pass. It
-/// realises CA paths in the local store as a side effect.
+/// Nix rewrites the root's whole closure, realising CA paths in the local
+/// store as a side effect, but reports a rewrite only for the requested root.
+/// The root's own record therefore carries its CA realisation, while closure
+/// members and dependency pins stay input-addressed unless a member is
+/// published as a root itself.
 fn make_content_addressed(store_path: &str) -> Result<HashMap<String, String>> {
-    let output = nix_command("nix")
+    make_content_addressed_paths(&[store_path])
+}
+
+/// Runs `nix store make-content-addressed --json` once over several closure
+/// roots, rewriting their shared closure members once, and returns the
+/// rewrites Nix reports for the requested roots.
+fn make_content_addressed_paths(store_paths: &[&str]) -> Result<HashMap<String, String>> {
+    let described = match store_paths {
+        [store_path] => (*store_path).to_string(),
+        _ => format!("{} roots", store_paths.len()),
+    };
+    let output = nix_command("nix")?
         .args([
             "--extra-experimental-features",
             "nix-command ca-derivations",
             "store",
             "make-content-addressed",
             "--json",
-            store_path,
         ])
+        .args(store_paths)
         .output()
-        .with_context(|| format!("running nix store make-content-addressed on {store_path}"))?;
+        .with_context(|| format!("running nix store make-content-addressed on {described}"))?;
     if !output.status.success() {
         bail!(
-            "nix store make-content-addressed failed for {store_path}: {}",
+            "nix store make-content-addressed failed for {described}: {}",
             String::from_utf8_lossy(&output.stderr).trim(),
         );
     }
     let json: Value = serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
-        .with_context(|| format!("parsing make-content-addressed JSON for {store_path}"))?;
+        .with_context(|| format!("parsing make-content-addressed JSON for {described}"))?;
     let rewrites = json
         .get("rewrites")
         .and_then(Value::as_object)
@@ -639,19 +569,20 @@ impl StoreWriteReport {
 /// paths, the member records are still written input-addressed and a warning
 /// is printed (the graph stays valid for IA consumers).
 pub(in crate::registry_ops) fn write_store_files(
+    store: &StoreQueries,
     dir: &Path,
     store_path: &str,
     content_addressed: bool,
     bless: bool,
     printer: &Printer,
 ) -> Result<StoreWriteReport> {
-    let closure = compute_closure(store_path)?;
-    let nars = introspect_closure_nars(store_path)?;
+    let closure = store.closure_edges(store_path)?;
+    let nars = store.closure_nars(store_path)?;
     let nar_by_hash: HashMap<&str, &ClosureMemberNar> =
         nars.iter().map(|m| (extract_hash(&m.path), m)).collect();
 
     let ca_by_hash: HashMap<String, String> = if content_addressed {
-        match make_content_addressed(store_path) {
+        match store.content_addresses(store_path) {
             Ok(map) => map,
             Err(err) => {
                 printer.warning(&format!(
@@ -764,6 +695,10 @@ pub(in crate::registry_ops) fn collect_package_store_paths(dir: &Path) -> Result
 
     Ok(paths.into_iter().collect())
 }
+
+mod queries;
+
+pub(crate) use queries::StoreQueries;
 
 #[cfg(test)]
 mod tests;

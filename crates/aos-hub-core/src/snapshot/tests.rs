@@ -7,10 +7,10 @@ mod channels;
 mod direct;
 mod direct_oci;
 mod direct_receipts;
+mod inventory_progress;
 mod lifetimes;
 mod mirror;
 mod privacy;
-mod inventory_progress;
 
 #[test]
 fn historical_contract_keeps_exact_digests_and_refuses_mixed_generations() {
@@ -210,13 +210,13 @@ async fn contract_covers_the_actual_production_initializer() {
     let tables = sqlx::query("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .fetch_all(&pool).await.unwrap();
     let contracts = contract().unwrap();
-    assert_eq!(contracts.len(), 288);
+    assert_eq!(contracts.len(), 291);
     assert_eq!(
         contracts
             .values()
             .map(|table| table.columns.len())
             .sum::<usize>(),
-        2803
+        2836
     );
     assert_eq!(tables.len(), contracts.len());
 

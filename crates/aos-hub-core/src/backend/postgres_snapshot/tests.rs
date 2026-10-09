@@ -24,7 +24,7 @@ async fn current_catalogue_is_derived_from_actual_translated_serving_schema() {
         .await
         .unwrap();
     assert_eq!(identity, crate::db::SCHEMA_IDENTITY);
-    assert_eq!(generation, 13);
+    assert_eq!(generation, 16);
     let storage: String = sqlx::query_scalar("SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='oci_provider_inventory_generations' AND column_name='object_progress'")
         .fetch_one(&pool).await.unwrap();
     assert_eq!(storage, "bytea");
@@ -111,7 +111,7 @@ async fn held_snapshot_covers_original_rows_and_refuses_mutation_schema_and_over
     let mut source = PostgresSnapshotReader::open(url.trim(), PostgresSnapshotLimits::default())
         .await
         .unwrap();
-    assert_eq!(source.schema().version, 13);
+    assert_eq!(source.schema().version, 16);
     assert_eq!(
         source.audit().catalogue_sha256(),
         catalogue::expected_sha256()
@@ -225,12 +225,10 @@ async fn held_snapshot_covers_original_rows_and_refuses_mutation_schema_and_over
         .await
         .unwrap();
     let mut oversized_cursor = oversized.table("users").unwrap();
-    assert!(
-        oversized_cursor
-            .next_page(Default::default())
-            .await
-            .is_err()
-    );
+    assert!(oversized_cursor
+        .next_page(Default::default())
+        .await
+        .is_err());
     assert!(oversized_cursor.last_locator_for_test().is_none());
     drop(oversized_cursor);
     oversized.close().await.unwrap();
@@ -260,17 +258,15 @@ async fn held_snapshot_covers_original_rows_and_refuses_mutation_schema_and_over
         .execute(&mut *exclusive)
         .await
         .unwrap();
-    assert!(
-        PostgresSnapshotReader::open(
-            url.trim(),
-            PostgresSnapshotLimits {
-                lock_timeout: Duration::from_millis(100),
-                ..Default::default()
-            }
-        )
-        .await
-        .is_err()
-    );
+    assert!(PostgresSnapshotReader::open(
+        url.trim(),
+        PostgresSnapshotLimits {
+            lock_timeout: Duration::from_millis(100),
+            ..Default::default()
+        }
+    )
+    .await
+    .is_err());
     exclusive.rollback().await.unwrap();
 
     sqlx::query("ALTER TABLE sessions DISABLE TRIGGER ALL")
@@ -293,7 +289,7 @@ async fn held_snapshot_covers_original_rows_and_refuses_mutation_schema_and_over
             .await
             .unwrap();
     let original_view = original_view.trim().trim_end_matches(';');
-    let compiled = CompiledSqliteSnapshotCatalogue::load_generation(13)
+    let compiled = CompiledSqliteSnapshotCatalogue::load_generation(16)
         .await
         .unwrap();
     let compiled_view = compiled

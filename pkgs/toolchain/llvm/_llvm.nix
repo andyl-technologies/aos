@@ -14,6 +14,7 @@
 }: {
   version,
   srcHash,
+  platformSupport,
   # Projects (LLVM_ENABLE_PROJECTS)
   projects ? [
     "clang"
@@ -40,7 +41,15 @@
   needsGccIteratorCompat ? false,
   extraRuntimeDeps ? [],
   extraCmakeFlags ? [],
+  qualification ? null,
 }: let
+  mkLlvmDerivation = attrs:
+    mkDerivation (attrs
+      // (
+        if qualification == null
+        then {}
+        else {inherit qualification;}
+      ));
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   versionMatch = builtins.match "([0-9]+)\\..*" version;
   versionMajor = builtins.elemAt versionMatch 0;
@@ -58,9 +67,11 @@
   targetsStr = builtins.concatStringsSep ";" targets;
   extraFlagsStr = builtins.concatStringsSep " " extraCmakeFlags;
 in
-  mkDerivation {
+  mkLlvmDerivation {
     pname = "llvm";
-    inherit version;
+    inherit platformSupport;
+    # Pin the full toolchain: C API stability does not cover C++ APIs or IR.
+    version = "=${version}";
 
     src = fetchurl {
       urls = [

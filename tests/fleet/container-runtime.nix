@@ -18,24 +18,10 @@
     inherit pkgs;
     aosPkg = pkgs.aos;
   };
-  fixtureTool = pkgs.mkDerivation {
-    pname = "container-runtime-tool";
-    version = "1.0.0";
-    src = null;
-    buildDeps = [pkgs.bash pkgs.coreutils];
-    phases = [
-      {
-        name = "install";
-        script = ''
-          mkdir -p "$out/bin"
-          printf '%s\n' \
-            '#!${pkgs.bash}/bin/bash' \
-            'printf "container-runtime-tool 1.0.0\\n"' \
-            > "$out/bin/container-runtime-tool"
-          chmod 0555 "$out/bin/container-runtime-tool"
-        '';
-      }
-    ];
+  fixtureTool = import ./_container-runtime-tool.nix {inherit pkgs;};
+  publication = import ./_container-publication-project.nix {
+    inherit lib pkgs;
+    packages.container-runtime-tool = fixtureTool;
   };
 
   containerdPath = lib.concatStringsSep ":" [
@@ -46,8 +32,9 @@
     "${pkgs.kmod}/sbin"
   ];
 
-  # The transfer service must unpack into the snapshotter selected by nerdctl.
-  # Its default unpack configuration covers only overlayfs.
+  # Overlay snapshots retain shared image layers instead of copying the entire
+  # parent filesystem during every layer import and workload launch.
+  snapshotter = "overlayfs";
   containerPlatform =
     if pkgs.stdenv.hostPlatform.isAarch64
     then "linux/arm64"
@@ -59,7 +46,7 @@
       version = 3
       [[plugins."io.containerd.transfer.v1.local".unpack_config]]
         platform = "${containerPlatform}"
-        snapshotter = "native"
+        snapshotter = "${snapshotter}"
     '';
   };
 
@@ -97,7 +84,7 @@
     "${pkgs.nerdctl}/bin/nerdctl"
     + " --address ${address}"
     + " --namespace aos-container-test"
-    + " --snapshotter native";
+    + " --snapshotter ${snapshotter}";
   bash = "${pkgs.bash}/bin/bash";
   nixStore = "${pkgs.nix}/bin/nix-store";
   profileBin = "/var/lib/profiles/per-user/root/current/bin/container-runtime-tool";
@@ -121,6 +108,7 @@ in {
       ++ [
         dockerArchive
         fixtureTool
+        publication.project
         pkgs.aos.apr
         pkgs.curl
         pkgs.nerdctl
@@ -165,15 +153,10 @@ in {
         "$APR" create container-runtime-reg --trust-key "$trust" \
           --trust-key-id initial --key-id initial
         REG_DIR="$REG_STORAGE/container-runtime-reg"
+        cd ${publication.project}
         "$APR" publish ${fixtureTool} \
-          --name container-runtime-tool \
-          --version 1.0.0 \
-          --description 'Container runtime install fixture' \
-          --license MIT \
-          --maintainer container-test@example.invalid \
           --registry container-runtime-reg \
-          --key-id initial \
-          --no-commit
+          --key-id initial
 
         mkdir -p /var/lib/aos-container-fixtures
         NIX_CONFIG='experimental-features = nix-command' \
@@ -182,12 +165,14 @@ in {
           --output /var/lib/aos-container-fixtures/cache \
           --cache-url http://127.0.0.1:18120 \
           --priority 45 \
-          --no-commit
-        ${pkgs.git}/bin/git -C "$REG_DIR" add -A
-        ${pkgs.git}/bin/git -C "$REG_DIR" commit \
-          -m 'release: container-runtime-tool 1.0.0'
+          --registry-key-id initial
+        "$APR" release 1.0.0 \
+          --registry container-runtime-reg \
+          --key-id initial --channel stable --init-channel
 
         cp -a "$REG_DIR" /var/lib/aos-container-fixtures/registry
+        # Signed channel resolution requires the publisher's trust anchor.
+        printf '%s\n' "$trust" > /var/lib/aos-container-fixtures/trust-key
         PYTHONUNBUFFERED=1 ${pkgs.coreutils}/bin/nohup \
           ${pkgs.python3}/bin/python3 -m http.server 18120 \
           --bind 127.0.0.1 \
@@ -227,8 +212,8 @@ in {
     )
     assert literal_output.strip() == literal, literal_output
 
-    # Each invocation first copies the native snapshot, just like the workload
-    # launches above; the short default command timeout only suits exec calls.
+    # Each fresh container initializes its local Nix state before the workload
+    # starts; the short default command timeout only suits later exec calls.
     runtime.succeed(
         "${nerdctl} run --rm --net none aos:latest /usr/bin/aos --version",
         timeout=120,
@@ -243,6 +228,52 @@ in {
     )
 
     mounts = " --volume /var/lib/aos-container-fixtures/registry:/fixtures/registry:ro"
+    mounts += " --volume /var/lib/aos-container-fixtures/trust-key:/fixtures/trust-key:ro"
+
+    # Dockerfile RUN bypasses the image entrypoint. APM must initialize its
+    # embedded state itself before the first package mutation in that image.
+    runtime.succeed(
+        "${nerdctl} run --rm --net host --entrypoint ${bash}"
+        + mounts
+        + " aos:latest -c "
+        + shlex.quote(textwrap.dedent(r"""
+            set -eu
+            report_failure() {
+              status=$?
+              if [ "$status" -ne 0 ]; then
+                for log in /tmp/registry-add.log /tmp/install.log /tmp/install.json; do
+                  if [ -f "$log" ]; then
+                    printf '\n%s\n' "$log" >&2
+                    cat "$log" >&2
+                  fi
+                done
+              fi
+            }
+            trap report_failure EXIT
+
+            /usr/bin/apm registry add --trust-key "$(cat /fixtures/trust-key)" file:///fixtures/registry \
+              --name container-runtime-reg > /tmp/registry-add.log 2>&1
+            /usr/bin/apm --json install container-runtime-tool \
+              --registry container-runtime-reg --yes \
+              > /tmp/install.json 2> /tmp/install.log
+            test "$(${profileBin})" = 'container-runtime-tool 1.0.0'
+            test -s /var/lib/profiles/per-user/root/current/native-deployment.json
+            test -L /var/lib/profiles/per-user/root/current/evaluation.json
+            cat /tmp/install.json
+        """))
+        + " > /tmp/aos-container-entrypoint-bypass.json"
+        + " 2> /tmp/aos-container-entrypoint-bypass.log"
+        + " || { status=$?; cat /tmp/aos-container-entrypoint-bypass.log >&2; exit \"$status\"; }",
+        timeout=180,
+    )
+    bypass_install = json.loads(
+        runtime.succeed("${pkgs.coreutils}/bin/cat /tmp/aos-container-entrypoint-bypass.json")
+    )
+    assert bypass_install["status"] == "installed", bypass_install
+    assert bypass_install["startup_pending"] == [], bypass_install
+    assert bypass_install["generation"] > 0, bypass_install
+    assert bypass_install["downloads"]["imported"] > 0, bypass_install
+
     runtime.succeed(
         "${nerdctl} run --detach --name aos-runtime-state --net host"
         + mounts
@@ -256,6 +287,13 @@ in {
         )
     )
     assert isinstance(initial_installed, list), initial_installed
+    system_installed = json.loads(
+        runtime.succeed(
+            "${nerdctl} exec aos-runtime-state /usr/bin/apm --json list --installed --system",
+            timeout=60,
+        )
+    )
+    assert system_installed == initial_installed, system_installed
     runtime.succeed(
         "${nerdctl} exec aos-runtime-state ${bash} -c "
         + shlex.quote(
@@ -327,7 +365,7 @@ in {
         "if ${nerdctl} run --rm --read-only --net none aos:latest "
         "/usr/bin/apm install container-runtime-tool --yes "
         ">/tmp/aos-container-read-only.out 2>&1; then exit 1; fi; "
-        "grep -F 'this AOS container is read-only; user-scope package mutations are unavailable' "
+        "grep -F 'this AOS container is read-only; package mutations are unavailable' "
         "/tmp/aos-container-read-only.out",
         timeout=120,
     )
@@ -341,7 +379,7 @@ in {
         "if ${nerdctl} exec aos-runtime-read-only /usr/bin/apm install "
         "container-runtime-tool --yes "
         ">/tmp/aos-container-read-only-exec.out 2>&1; then exit 1; fi; "
-        "grep -F 'this AOS container is read-only; user-scope package mutations are unavailable' "
+        "grep -F 'this AOS container is read-only; package mutations are unavailable' "
         "/tmp/aos-container-read-only-exec.out"
     )
     runtime.succeed("${nerdctl} rm --force aos-runtime-read-only")
@@ -351,7 +389,8 @@ in {
     # removal. The container never sees the VM's Nix database or store path.
     runtime.succeed(
         "${nerdctl} exec aos-runtime-state /usr/bin/apm registry add "
-        "--no-verify file:///fixtures/registry --name container-runtime-reg"
+        "--trust-key \"$(cat /var/lib/aos-container-fixtures/trust-key)\" "
+        "file:///fixtures/registry --name container-runtime-reg"
     )
     apr_list = json.loads(
         runtime.succeed(
@@ -377,7 +416,7 @@ in {
         "--check-validity ${fixtureTool}"
     )
     runtime.succeed(
-        "${nerdctl} exec aos-runtime-state /usr/bin/apm install "
+        "${nerdctl} exec aos-runtime-state /usr/bin/apm install --system "
         "container-runtime-tool --registry container-runtime-reg --yes "
         "> /tmp/aos-container-install.out 2>&1",
         timeout=120,
@@ -396,6 +435,13 @@ in {
     )
     assert "container-runtime-tool 1.0.0" in runtime.succeed(
         "${nerdctl} exec aos-runtime-state ${profileBin}"
+    )
+    runtime.succeed(
+        "${nerdctl} exec aos-runtime-state ${bash} -c "
+        + shlex.quote(
+            "test -s /var/lib/profiles/per-user/root/current/native-deployment.json; "
+            "test -L /var/lib/profiles/per-user/root/current/evaluation.json"
+        )
     )
 
     runtime.succeed("${nerdctl} stop --time 10 aos-runtime-state", timeout=60)

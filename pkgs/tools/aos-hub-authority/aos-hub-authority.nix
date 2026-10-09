@@ -9,7 +9,7 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceVendor,
   openssl,
   perl,
   pkg-config,
@@ -55,12 +55,7 @@
         || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
       );
   };
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = "sha256-WGkOGTHCcEgqZb0Igesu7xXTnhmEifgKt1IS0ARGuCI=";
-  };
+  cargoDeps = aosWorkspaceVendor;
   cargoEnv = {
     OPENSSL_DIR = "${openssl}";
     OPENSSL_LIB_DIR = "${openssl}/lib";
@@ -94,6 +89,39 @@
   };
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      role = "public-package";
+    };
     pname = "aos-hub-authority";
     inherit version src;
 

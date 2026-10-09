@@ -1,0 +1,2548 @@
+"""Exercises native service reconciliation without changing host resources."""
+
+import importlib.util
+import fcntl
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import tempfile
+import tomllib
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+
+handler_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else Path(__file__).parents[2] / "pkgs/system/_systemd-abilities/service-handler.py"
+configuration_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else handler_path.parent / "aos_service_resources.py"
+configuration_wrapper = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
+systemd_analyze = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
+host_activation_input = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
+package_convergence_input = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
+projected_service_input = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
+projected_service_units = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
+storage_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else handler_path.parent / "aos_service_storage.py"
+configuration_spec = importlib.util.spec_from_file_location("aos_service_resources", configuration_path)
+configuration_module = importlib.util.module_from_spec(configuration_spec)
+sys.modules["aos_service_resources"] = configuration_module
+configuration_spec.loader.exec_module(configuration_module)
+
+storage_spec = importlib.util.spec_from_file_location("aos_service_storage", storage_path)
+storage_module = importlib.util.module_from_spec(storage_spec)
+sys.modules["aos_service_storage"] = storage_module
+storage_spec.loader.exec_module(storage_module)
+
+spec = importlib.util.spec_from_file_location("service_handler", handler_path)
+handler_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(handler_module)
+
+
+def service():
+    return {
+        "service": "example", "enabled": True, "auto_start": True,
+        "activation_owner": "ability",
+        "lifecycle": {
+            "description": "Example service", "execution_model": "foreground",
+            "environment_files": [], "condition": [], "pre_start": [],
+            "start": [{"executable": {"path": "/nix/store/example/bin/example", "arguments": ["a b", "$USER", "%i"]}, "ignore_failure": False}],
+            "post_start": [], "stop": [], "post_stop": [],
+            "restart": "on-failure", "restart_delay_millis": 1000,
+            "configuration_change_action": "reload", "remain_after_exit": False,
+            "start_timeout_millis": 90000, "stop_timeout_millis": 90000,
+        },
+    }
+
+
+def invocation(ability, operation, value, revision="first", previous=None):
+    return {"id": "example-effect", "effect": {"identity": ["test", ability, operation, "main"]}, "input": value, "revision": revision, "previous": previous}
+
+
+class ConfigurationProcess:
+    """Exercises the installed provider using test-only receipt fixtures."""
+
+    def __init__(self, document, state_directory):
+        self.invocation = document
+        self.state_directory = Path(state_directory)
+        self.receipt_path = self.state_directory / (handler_module.digest(document["id"].encode()) + ".json")
+
+    def save(self, receipt):
+        self.state_directory.mkdir(parents=True, exist_ok=True)
+        receipt = dict(receipt, id=self.invocation["id"], revision=self.invocation["revision"])
+        receipt["owned_paths"] = sorted({receipt["path"], *([receipt["previous_path"]] if receipt.get("previous_path") else [])})
+        self.receipt_path.write_text(json.dumps(receipt))
+
+    def file(self, action):
+        if configuration_wrapper is None:
+            raise unittest.SkipTest("requires the source-built configuration provider")
+        document = dict(self.invocation)
+        if action != "observe":
+            document["action"] = action
+        result = subprocess.run(
+            [str(configuration_wrapper), "--state-directory", str(self.state_directory), action],
+            input=json.dumps(document), capture_output=True, text=True, env={},
+        )
+        if result.returncode:
+            raise ValueError(result.stderr)
+        return json.loads(result.stdout)
+
+
+def configuration_handler(document, systemctl, unit_directory, state_directory):
+    return ConfigurationProcess(document, state_directory)
+
+
+def hardening_policy(profile="privileged"):
+    return {
+        "privilege_bounds": {"kind": "unrestricted", "privileges": []},
+        "ambient_privileges": [], "operation_allow": [], "operation_deny": [],
+        "resource_control_delegation": False, "resource_control_access": "host",
+        "device_access_scope": "shared", "host_clock_mutation": True,
+        "host_name_mutation": True, "operating_system_log_access": True,
+        "operating_system_extension_access": True, "operating_system_tunable_access": True,
+        "writable_executable_memory": True, "permit_realtime": True,
+        "permit_elevated_file_identity": True, "lock_execution_personality": False,
+        "isolation_domains": [], "network_families": [],
+        "isolation_domain_creation": "allowed", "memory_pressure_adjustment": 0,
+        "process_visibility": "all", "operation_architectures": [],
+        "operation_profile": profile, "denied_operation_action": "kill-process",
+        "allow_privilege_escalation": True,
+    }
+
+
+def bootstrap_bus():
+    value = dict(service(), service="dbus", bootstrap=True)
+    value["policy"] = {"hardening": hardening_policy()}
+    value["manager_identity"] = {"name": "dbus", "aliases": ["messagebus"]}
+    value["socket_activation"] = {"sockets": [{
+        "name": "system-bus", "manager_name": "dbus", "enabled": True,
+        "endpoints": [{"kind": "unix", "path": "/run/dbus/system_bus_socket"}],
+        "mode": "0666", "remove_on_stop": False,
+    }]}
+    return value
+
+
+def scalar_path_service():
+    value = service()
+    value["lifecycle"]["environment_files"] = [
+        {"source": "/etc/aos/runtime %literal.env", "optional": False},
+        {"source": "/etc/aos/optional %literal.env", "optional": True},
+    ]
+    value["lifecycle"]["working_directory"] = "/"
+    value["isolation"] = {
+        "privilege": "privileged", "filesystem": "host", "home_access": "host",
+        "network": "host", "process_visibility": "host", "termination_scope": "all-processes",
+        "temporary_directory": "shared", "root_directory": "/",
+        "temporary_filesystems": [], "devices": [], "host_paths": [], "permit_core_dumps": False,
+    }
+    value["terminal"] = {
+        "device": "/dev/tty %literal", "reset": False, "hangup": False,
+        "deallocate": False, "send_hangup_on_stop": False,
+    }
+    value["termination"] = {
+        "process_id_file": "/run/aos %literal.pid", "send_to_all_processes": True,
+    }
+    return value
+
+
+def active_bus_manager(calls):
+    def manager(*args, **kwargs):
+        calls.append(args)
+        output = "active\n" if "--value" in args else (
+            "ActiveState=active\nResult=success\n"
+            "ExecMainStartTimestampMonotonic=100\nExecMainExitTimestampMonotonic=0\n"
+        )
+        return subprocess.CompletedProcess(args, 0, output, "")
+    return manager
+
+
+class NativeHandlerTests(unittest.TestCase):
+    def test_host_activator_publishes_mounts_in_the_manager_namespace(self):
+        self.assertIsNotNone(host_activation_input, "requires the actual host activator projection")
+        value = json.loads(host_activation_input.read_text())
+
+        text = handler_module.realize_service(value)["units"]["aos-activate.service"]
+        directives = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+
+        self.assertEqual(directives["PrivateTmp"], "no")
+        self.assertEqual(directives["ProtectSystem"], "no")
+        self.assertEqual(directives["ProtectHome"], "no")
+        self.assertEqual(directives["NoNewPrivileges"], "no")
+        for directive in [
+            "PrivateMounts", "RootDirectory", "RootImage", "MountFlags",
+            "BindPaths", "BindReadOnlyPaths", "ReadOnlyPaths", "ReadWritePaths",
+            "InaccessiblePaths", "TemporaryFileSystem", "RuntimeDirectory",
+            "StateDirectory", "CacheDirectory", "LogsDirectory", "ConfigurationDirectory",
+        ]:
+            with self.subTest(directive=directive):
+                self.assertNotIn(directive, directives)
+
+    def test_package_convergence_retains_native_host_executor_authority(self):
+        self.assertIsNotNone(package_convergence_input, "requires the actual package convergence projection")
+        value = json.loads(package_convergence_input.read_text())
+
+        text = handler_module.realize_service(value)["units"]["package-profile-convergence.service"]
+        directives = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+
+        for directive in ["PrivateTmp", "ProtectSystem", "ProtectHome", "NoNewPrivileges"]:
+            with self.subTest(directive=directive):
+                self.assertEqual(directives[directive], "no")
+        for directive in [
+            "PrivateMounts", "PrivateDevices", "RootDirectory", "RootImage",
+            "BindPaths", "BindReadOnlyPaths", "ReadOnlyPaths", "ReadWritePaths",
+            "InaccessiblePaths", "TemporaryFileSystem", "CapabilityBoundingSet",
+            "RestrictNamespaces", "SystemCallFilter", "ProtectControlGroups",
+            "ProtectKernelTunables", "ProtectKernelModules",
+        ]:
+            with self.subTest(directive=directive):
+                self.assertNotIn(directive, directives)
+        self.assertIn('/bin/apm" "install" "--system" "--from" "/run/apm/package-profile-desired.toml" "--yes"', directives["ExecStart"])
+        self.assertIn("After=aos-activate.service", text)
+        self.assertIn("Requires=aos-registry-sync.service", text)
+        self.assertEqual(directives["TimeoutStartSec"], "120000ms")
+
+    def projected_service(self, root):
+        self.assertIsNotNone(projected_service_input, "requires the actual bootstrap operation projection")
+        self.assertIsNotNone(projected_service_units, "requires immutable units from the actual renderer")
+        value = json.loads(projected_service_input.read_text())
+        rendered = handler_module.realize_service(value)
+        units = Path(root) / "units"
+        units.mkdir()
+        originals = {}
+        for name, text in rendered["units"].items():
+            target = projected_service_units / name
+            self.assertEqual(target.read_bytes(), text.encode())
+            (units / name).symlink_to(target)
+            originals[name] = target.read_bytes()
+        for name, target in rendered["links"].items():
+            path = units / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.symlink_to(target)
+        instance = handler_module.Handler(
+            invocation("serviceManagement", "realize", value), "unused", units, Path(root) / "state",
+        )
+        calls = []
+        instance.manager = active_bus_manager(calls)
+        return value, rendered, instance, calls, originals
+
+    def test_image_projection_converts_exact_aliases_then_removes_only_namespace_entries(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, instance, calls, originals = self.projected_service(root)
+
+            instance.service("apply")
+
+            self.assertEqual(instance.service("observe")["status"], "current")
+            self.assertEqual(instance.receipt["image_units"], {})
+            for name in rendered["units"]:
+                self.assertFalse((instance.unit_directory / name).is_symlink())
+                self.assertEqual((instance.unit_directory / name).read_bytes(), originals[name])
+            self.assertEqual(instance.receipt["id"], instance.invocation["id"])
+            self.assertEqual(instance.receipt["revision"], "first")
+            self.assertTrue(instance.links_match(rendered["links"]))
+
+            instance.service("remove")
+
+            for name in rendered["units"] | rendered["links"]:
+                self.assertFalse((instance.unit_directory / name).exists())
+                self.assertFalse((instance.unit_directory / name).is_symlink())
+            self.assertEqual(originals, {name: (projected_service_units / name).read_bytes() for name in originals})
+            self.assertFalse(instance.receipt_path.exists())
+            instance.invocation["action"] = "remove"
+            self.assertEqual(instance.service("observe")["status"], "absent")
+
+    def test_image_projection_update_recovers_pending_replacement_without_mutating_source(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, initial, calls, originals = self.projected_service(root)
+            previous = initial.service("apply")
+            changed = dict(value, lifecycle=dict(value["lifecycle"], description="Changed authenticated service"))
+            document = invocation("serviceManagement", "realize", changed, "changed", previous)
+            updated = handler_module.Handler(document, "unused", initial.unit_directory, initial.state_directory)
+            updated.manager = active_bus_manager(calls)
+            original_write = handler_module.durable_write
+
+            def interrupted_write(path, contents, *args):
+                original_write(path, contents, *args)
+                if Path(path).parent == updated.unit_directory:
+                    raise RuntimeError("interrupted after durable unit replacement")
+
+            with patch.object(handler_module, "durable_write", interrupted_write):
+                with self.assertRaisesRegex(RuntimeError, "durable unit replacement"):
+                    updated.service("apply")
+
+            recovered = handler_module.Handler(document, "unused", initial.unit_directory, initial.state_directory)
+            recovered.manager = active_bus_manager(calls)
+            self.assertTrue(recovered.receipt["pending"])
+            self.assertEqual(recovered.service("observe")["status"], "retry-safe")
+            recovered.service("apply")
+
+            self.assertEqual(recovered.service("observe")["status"], "current")
+            self.assertFalse(recovered.receipt["pending"])
+            main = rendered["resource"]
+            self.assertFalse((recovered.unit_directory / main).is_symlink())
+            self.assertIn("Changed authenticated service", (recovered.unit_directory / main).read_text())
+            self.assertEqual(originals, {name: (projected_service_units / name).read_bytes() for name in originals})
+            recovered.service("remove")
+            self.assertFalse((recovered.unit_directory / main).exists())
+
+    def test_image_projection_interrupted_before_conversion_retains_exact_pending_custody(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, instance, calls, originals = self.projected_service(root)
+            original_write = handler_module.durable_write
+
+            def interrupted_write(path, contents, *args):
+                if Path(path).parent == instance.unit_directory:
+                    raise RuntimeError("interrupted before unit conversion")
+                return original_write(path, contents, *args)
+
+            with patch.object(handler_module, "durable_write", interrupted_write):
+                with self.assertRaisesRegex(RuntimeError, "before unit conversion"):
+                    instance.service("apply")
+
+            recovered = handler_module.Handler(instance.invocation, "unused", instance.unit_directory, instance.state_directory)
+            recovered.manager = active_bus_manager(calls)
+            self.assertTrue(recovered.receipt["pending"])
+            for name in rendered["units"]:
+                self.assertTrue((instance.unit_directory / name).is_symlink())
+                self.assertEqual(recovered.receipt["image_units"][name], {
+                    "target": str(projected_service_units / name),
+                    "digest": handler_module.digest(originals[name]),
+                })
+            with patch.object(handler_module, "image_unit_digest", side_effect=FileNotFoundError("pending source disappeared")):
+                self.assertEqual(recovered.service("observe")["status"], "indeterminate")
+                with self.assertRaises(FileNotFoundError):
+                    recovered.service("apply")
+            self.assertEqual(recovered.service("observe")["status"], "retry-safe")
+            recovered.service("apply")
+            self.assertEqual(recovered.service("observe")["status"], "current")
+            self.assertEqual(recovered.receipt["image_units"], {})
+
+    def test_owned_projection_no_longer_depends_on_original_store_target(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, instance, calls, originals = self.projected_service(root)
+            instance.service("apply")
+            changed = dict(value, lifecycle=dict(value["lifecycle"], description="Owned update"))
+            updated = handler_module.Handler(
+                invocation("serviceManagement", "realize", changed, "changed", instance.service("apply")),
+                "unused", instance.unit_directory, instance.state_directory,
+            )
+            updated.manager = active_bus_manager(calls)
+
+            # Simulate GC of the old immutable source without deleting the
+            # shared fixture. Completed ownership must never query it again.
+            with patch.object(handler_module, "image_unit_digest", side_effect=FileNotFoundError("old image source collected")):
+                self.assertEqual(instance.service("observe")["status"], "current")
+                updated.service("apply")
+                self.assertEqual(updated.service("observe")["status"], "current")
+                updated.service("remove")
+            self.assertEqual(originals, {name: (projected_service_units / name).read_bytes() for name in originals})
+
+    def test_completed_bootstrap_projection_is_readopted_after_coldboot(self):
+        for owner, bootstrap in [("ability", True), ("manager", False), ("image", False)]:
+            with self.subTest(owner=owner), tempfile.TemporaryDirectory() as root:
+                value, rendered, initial, calls, originals = self.projected_service(root)
+                value.update(activation_owner=owner, bootstrap=bootstrap)
+                initial.service("apply")
+                self.assertFalse(initial.receipt["pending"])
+                self.assertEqual(initial.receipt["image_units"], {})
+
+                for name in rendered["units"]:
+                    leaf = initial.unit_directory / name
+                    leaf.unlink()
+                    leaf.symlink_to(projected_service_units / name)
+                before = list(calls)
+                recovered = handler_module.Handler(
+                    initial.invocation, "unused", initial.unit_directory, initial.state_directory,
+                )
+                recovered.manager = active_bus_manager(calls)
+
+                self.assertEqual(recovered.service("observe")["status"], "current")
+                self.assertFalse(any(call[0] in {"start", "restart", "reload-or-restart"} for call in calls[len(before):]))
+                recovered.service("apply")
+
+                for name in rendered["units"]:
+                    self.assertFalse((recovered.unit_directory / name).is_symlink())
+                    self.assertEqual((recovered.unit_directory / name).read_bytes(), originals[name])
+                self.assertEqual(recovered.receipt["image_units"], {})
+                self.assertEqual(recovered.service("observe")["status"], "current")
+
+    def retained_service_with_new_image_projection(self, root, owner="image", bootstrap=False):
+        value, rendered, initial, calls, originals = self.projected_service(root)
+        value.update(activation_owner=owner, bootstrap=bootstrap)
+        value["lifecycle"]["description"] = "Retained predecessor service definition"
+        retained = handler_module.realize_service(value)
+        for name in rendered["units"]:
+            (initial.unit_directory / name).unlink()
+        initial.service("apply")
+
+        for name in rendered["units"]:
+            leaf = initial.unit_directory / name
+            self.assertEqual(leaf.read_bytes(), retained["units"][name].encode())
+            leaf.unlink()
+            leaf.symlink_to(projected_service_units / name)
+        return initial, retained, rendered, calls, originals
+
+    def test_selected_new_image_projection_restores_retained_service_bytes(self):
+        for owner, bootstrap in [("image", False), ("manager", False), ("ability", True)]:
+            with self.subTest(owner=owner), tempfile.TemporaryDirectory() as root:
+                initial, retained, rendered, calls, originals = self.retained_service_with_new_image_projection(
+                    root, owner, bootstrap,
+                )
+                before = list(calls)
+                recovered = handler_module.Handler(
+                    initial.invocation, "unused", initial.unit_directory, initial.state_directory,
+                    image_unit_directory=projected_service_units,
+                )
+                recovered.manager = active_bus_manager(calls)
+                name = rendered["resource"]
+                self.assertNotEqual(retained["units"][name].encode(), originals[name])
+
+                self.assertEqual(recovered.service("observe")["status"], "retry-safe")
+                recovered.service("apply")
+
+                self.assertEqual(recovered.service("observe")["status"], "current")
+                self.assertFalse(recovered.receipt["pending"])
+                self.assertEqual(recovered.receipt["image_units"], {})
+                for unit_name, text in retained["units"].items():
+                    leaf = recovered.unit_directory / unit_name
+                    self.assertFalse(leaf.is_symlink())
+                    self.assertEqual(leaf.read_bytes(), text.encode())
+                if owner != "ability":
+                    self.assertFalse(any(
+                        call[0] in {"start", "restart", "reload", "reload-or-restart"}
+                        for call in calls[len(before):]
+                    ))
+                self.assertEqual(originals, {
+                    unit_name: (projected_service_units / unit_name).read_bytes()
+                    for unit_name in originals
+                })
+
+    def test_new_image_projection_requires_selected_target_and_completed_receipt(self):
+        for change in ("missing-selection", "wrong-directory", "foreign-target", "pending", "removing", "dispatching", "receipt-kind", "receipt-hash", "ineligible"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as root:
+                initial, retained, rendered, calls, originals = self.retained_service_with_new_image_projection(root)
+                name = rendered["resource"]
+                leaf = initial.unit_directory / name
+                selected = projected_service_units
+                if change == "missing-selection":
+                    selected = None
+                elif change == "wrong-directory":
+                    selected = Path(root) / "unselected-units"
+                    selected.mkdir()
+                elif change == "foreign-target":
+                    # Another immutable fixture member is not the selected unit.
+                    leaf.unlink()
+                    leaf.symlink_to(projected_service_input)
+                elif change in {"pending", "removing", "dispatching"}:
+                    initial.save(dict(initial.receipt, **{change: True}))
+                elif change == "receipt-kind":
+                    initial.save(dict(initial.receipt, kind="not-service"))
+                elif change == "receipt-hash":
+                    initial.save(dict(initial.receipt, units=dict(initial.receipt["units"], **{name: "0" * 64})))
+                else:
+                    initial.value.update(activation_owner="ability", bootstrap=False)
+                saved_receipt = initial.receipt_path.read_bytes()
+                before = list(calls)
+                recovered = handler_module.Handler(
+                    initial.invocation, "unused", initial.unit_directory, initial.state_directory,
+                    image_unit_directory=selected,
+                )
+                recovered.manager = active_bus_manager(calls)
+
+                self.assertEqual(recovered.service("observe")["status"], "indeterminate")
+                with self.assertRaises((ValueError, OSError)):
+                    recovered.service("apply")
+
+                self.assertEqual(recovered.receipt_path.read_bytes(), saved_receipt)
+                self.assertTrue(leaf.is_symlink())
+                self.assertEqual(calls, before)
+                self.assertEqual(originals, {
+                    unit_name: (projected_service_units / unit_name).read_bytes()
+                    for unit_name in originals
+                })
+
+    def test_completed_projection_refuses_unproven_receipt_or_alias(self):
+        for change in ("pending", "pending-target", "removing", "dispatching", "receipt-kind", "receipt-hash", "ineligible", "foreign-target", "desired-hash"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as root:
+                value, rendered, initial, calls, originals = self.projected_service(root)
+                initial.service("apply")
+                name = rendered["resource"]
+                leaf = initial.unit_directory / name
+                leaf.unlink()
+                leaf.symlink_to(projected_service_units / name)
+
+                if change in {"pending", "removing", "dispatching"}:
+                    initial.save(dict(initial.receipt, **{change: True}))
+                elif change == "pending-target":
+                    initial.save(dict(initial.receipt, pending=True, image_units={name: {
+                        "target": str(projected_service_units / name),
+                        "digest": initial.receipt["units"][name],
+                    }}))
+                    leaf.unlink()
+                    leaf.symlink_to(projected_service_units / "different.service")
+                elif change == "receipt-kind":
+                    initial.save(dict(initial.receipt, kind="not-service"))
+                elif change == "receipt-hash":
+                    initial.save(dict(initial.receipt, units=dict(initial.receipt["units"], **{name: "0" * 64})))
+                elif change == "ineligible":
+                    value.update(bootstrap=False, activation_owner="ability")
+                elif change == "desired-hash":
+                    value["lifecycle"]["description"] = "Different desired definition"
+                else:
+                    foreign = Path(root) / "foreign.service"
+                    foreign.write_bytes(originals[name])
+                    leaf.unlink()
+                    leaf.symlink_to(foreign)
+                saved_receipt = initial.receipt_path.read_bytes()
+
+                self.assertEqual(initial.service("observe")["status"], "indeterminate")
+                with self.assertRaises((ValueError, OSError)):
+                    initial.service("apply")
+                self.assertEqual(initial.receipt_path.read_bytes(), saved_receipt)
+                self.assertTrue(leaf.is_symlink())
+
+    def test_image_projection_rejects_unselected_mutable_and_changed_aliases(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, initial, calls, originals = self.projected_service(root)
+            ordinary = dict(value, bootstrap=False)
+            unselected = handler_module.Handler(
+                invocation("serviceManagement", "realize", ordinary), "unused", initial.unit_directory, initial.state_directory,
+            )
+            with self.assertRaisesRegex(ValueError, "no authenticated image projection"):
+                unselected.service("apply")
+            self.assertIsNone(unselected.receipt)
+
+            mismatched = dict(value, lifecycle=dict(value["lifecycle"], description="Different authenticated content"))
+            mismatch = handler_module.Handler(
+                invocation("serviceManagement", "realize", mismatched), "unused", initial.unit_directory, initial.state_directory,
+            )
+            with self.assertRaisesRegex(ValueError, "conflicts with authenticated rendered content"):
+                mismatch.service("apply")
+            self.assertIsNone(mismatch.receipt)
+
+            main = rendered["resource"]
+            mutable = Path(root) / "mutable.service"
+            mutable.write_bytes(originals[main])
+            leaf = initial.unit_directory / main
+            leaf.unlink()
+            leaf.symlink_to(mutable)
+            with self.assertRaisesRegex(ValueError, "canonical immutable store member"):
+                initial.service("apply")
+            self.assertIsNone(initial.receipt)
+            self.assertEqual(calls, [])
+
+            leaf.unlink()
+            leaf.symlink_to(projected_service_units / main)
+            initial.service("apply")
+            saved_receipt = initial.receipt_path.read_bytes()
+            leaf.unlink()
+            leaf.symlink_to(projected_service_units / main)
+            # Ordinary services cannot adopt even a matching immutable alias
+            # over a definition already owned by their completed receipt.
+            initial.value = dict(initial.value, bootstrap=False, activation_owner="ability")
+            for action in ["apply", "remove"]:
+                with self.subTest(action=action), self.assertRaisesRegex(ValueError, "no authenticated image projection"):
+                    initial.service(action)
+            self.assertEqual(initial.service("observe")["status"], "indeterminate")
+            self.assertEqual(initial.receipt_path.read_bytes(), saved_receipt)
+            self.assertEqual(originals, {name: (projected_service_units / name).read_bytes() for name in originals})
+
+    def test_workload_profiles_preserve_master_syscall_filters(self):
+        for profile, expected in [
+            ("privileged", []),
+            ("restricted", ["SystemCallFilter=@system-service"]),
+            ("system-service", ["SystemCallFilter=@system-service"]),
+        ]:
+            with self.subTest(profile=profile):
+                value = service()
+                policy = hardening_policy(profile)
+                policy["denied_operation_action"] = "return-permission-denied"
+                value["policy"] = {"hardening": policy}
+
+                rendered = handler_module.realize_service(value)["units"]["example.service"]
+
+                filters = [line for line in rendered.splitlines() if line.startswith("SystemCallFilter=")]
+                self.assertEqual(filters, expected)
+                self.assertIn("SystemCallErrorNumber=EPERM", rendered)
+
+    def test_explicit_syscall_exceptions_follow_profile_and_exclusions(self):
+        value = service()
+        policy = hardening_policy("system-service")
+        policy["operation_deny"] = ["privileged", "mount"]
+        policy["operation_allow"] = ["clock", "change-file-ownership"]
+        value["policy"] = {"hardening": policy}
+
+        rendered = handler_module.realize_service(value)["units"]["example.service"]
+
+        filters = [line for line in rendered.splitlines() if line.startswith("SystemCallFilter=")]
+        self.assertEqual(filters, [
+            "SystemCallFilter=@system-service",
+            "SystemCallFilter=~@privileged @mount",
+            "SystemCallFilter=@clock @chown",
+        ])
+        self.assertNotIn("SystemCallErrorNumber=", rendered)
+
+    def test_manager_observer_projection_preserves_native_units_and_enablement_links(self):
+        services = {
+            key: dict(
+                service(), service=name, activation_owner="manager", auto_start=False,
+            )
+            for key, name in {
+                "ability-crucible.adapter": "aos-ability-crucible",
+                "boundary-observer.controller": "aos-ability-boundary-controller",
+            }.items()
+        }
+        expected_links = {
+            f"multi-user.target.wants/{name}.service": f"../{name}.service"
+            for name in ["aos-ability-crucible", "aos-ability-boundary-controller"]
+        }
+
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            handler_module.render_services(services, units)
+
+            native_links = {}
+            for value in services.values():
+                rendered = handler_module.realize_service(value)
+                native_links.update(rendered["links"])
+                for name, text in rendered["units"].items():
+                    self.assertEqual((units / name).read_bytes(), text.encode())
+            image_links = {
+                str(path.relative_to(units)): os.readlink(path)
+                for path in units.rglob("*") if path.is_symlink()
+            }
+
+            self.assertEqual(native_links, expected_links)
+            self.assertEqual(image_links, native_links)
+
+    def test_bootstrap_bus_adopts_exact_units_and_links_without_restart(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            value = bootstrap_bus()
+            handler_module.render_services({"dbus": value}, units)
+            rendered = handler_module.realize_service(value)
+            before = {name: (units / name).read_bytes() for name in rendered["units"]}
+            instance = handler_module.Handler(
+                invocation("serviceManagement", "realize", value), "unused", units, state,
+            )
+            calls = []
+            instance.manager = active_bus_manager(calls)
+
+            result = instance.service("apply")
+
+            self.assertEqual(result["resource"], "dbus.service")
+            self.assertEqual(instance.receipt["owner"], "ability")
+            self.assertFalse(instance.receipt["pending"])
+            self.assertEqual(before, {name: (units / name).read_bytes() for name in rendered["units"]})
+            self.assertTrue(instance.links_match(rendered["links"]))
+            self.assertFalse(any(call[0] in {"restart", "reload-or-restart", "stop"} for call in calls))
+            self.assertEqual(instance.service("observe")["status"], "current")
+
+    def test_adopted_bus_configuration_revision_reloads_without_changing_unit_bytes(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            value = dict(bootstrap_bus(), dependencyValues=["configuration:dbus:first"])
+            handler_module.render_services({"dbus": value}, units)
+            initial = handler_module.Handler(
+                invocation("serviceManagement", "realize", value), "unused", units, state,
+            )
+            calls = []
+            initial.manager = active_bus_manager(calls)
+            previous = initial.service("apply")
+            original_bytes = (units / "dbus.service").read_bytes()
+            updated_value = dict(value, dependencyValues=["configuration:dbus:changed"])
+            updated = handler_module.Handler(
+                invocation("serviceManagement", "realize", updated_value, "changed", previous),
+                "unused", units, state,
+            )
+            calls.clear()
+            updated.manager = active_bus_manager(calls)
+
+            updated.service("apply")
+
+            self.assertEqual(calls.count(("reload-or-restart", "dbus.service")), 1)
+            self.assertEqual((units / "dbus.service").read_bytes(), original_bytes)
+            self.assertEqual(updated.service("observe")["status"], "current")
+
+    def test_bootstrap_bus_rejects_external_unit_drift_before_adoption(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            value = bootstrap_bus()
+            handler_module.render_services({"dbus": value}, units)
+            (units / "dbus.service").write_text("[Service]\nExecStart=/external\n")
+            instance = handler_module.Handler(
+                invocation("serviceManagement", "realize", value), "unused", units, Path(root) / "state",
+            )
+            calls = []
+            instance.manager = active_bus_manager(calls)
+
+            with self.assertRaisesRegex(ValueError, "conflicts with external configuration"):
+                instance.service("apply")
+
+            self.assertEqual(calls, [])
+            self.assertIsNone(instance.receipt)
+            self.assertEqual(instance.service("observe")["status"], "indeterminate")
+
+    def test_bootstrap_bus_interrupted_dispatch_retains_uncertainty(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            value = bootstrap_bus()
+            document = invocation("serviceManagement", "realize", value)
+            handler_module.render_services({"dbus": value}, units)
+            instance = handler_module.Handler(document, "unused", units, state)
+            calls = []
+            delegate = active_bus_manager(calls)
+
+            def interrupted_manager(*args, **kwargs):
+                result = delegate(*args, **kwargs)
+                if args == ("start", "dbus.service"):
+                    raise RuntimeError("manager response interrupted after dispatch")
+                return result
+
+            instance.manager = interrupted_manager
+
+            with self.assertRaisesRegex(RuntimeError, "response interrupted"):
+                instance.service("apply")
+
+            recovered = handler_module.Handler(document, "unused", units, state)
+            self.assertTrue(recovered.receipt["pending"])
+            self.assertTrue(recovered.receipt["dispatching"])
+            calls.clear()
+            recovered.manager = active_bus_manager(calls)
+
+            self.assertEqual(recovered.service("observe")["status"], "indeterminate")
+            self.assertTrue(all(call[0] == "show" for call in calls))
+            self.assertTrue(recovered.receipt["pending"])
+
+    def test_required_character_device_is_present(self):
+        with tempfile.TemporaryDirectory() as root:
+            instance = handler_module.Handler(
+                invocation("device", "present", {"path": "/dev/null"}),
+                "unused", root, Path(root) / "state",
+            )
+
+            self.assertEqual(instance.device("apply"), {"resource": "/dev/null"})
+            self.assertEqual(instance.device("observe")["status"], "current")
+
+    def test_required_block_device_is_present(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = {"path": "/dev/fixture-block", "kind": "block"}
+            instance = handler_module.Handler(
+                invocation("device", "present", value),
+                "unused", root, Path(root) / "state",
+            )
+
+            # Unit coverage does not create privileged device nodes on the host.
+            block_stat = SimpleNamespace(st_mode=stat.S_IFBLK | 0o600)
+            with patch.object(handler_module.os, "stat", return_value=block_stat):
+                self.assertEqual(instance.device("apply"), {"resource": value["path"]})
+                self.assertEqual(instance.device("observe")["status"], "current")
+
+    def test_required_device_rejects_wrong_kind_and_regular_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            ordinary = Path(root) / "ordinary"
+            ordinary.write_text("not a device")
+            wrong_nodes = [
+                ("/dev/null", "block"),
+                (str(ordinary), "character"),
+                (str(ordinary), "block"),
+            ]
+
+            for path, kind in wrong_nodes:
+                with self.subTest(path=path, kind=kind):
+                    value = {"path": path, "kind": kind}
+                    instance = handler_module.Handler(
+                        invocation("device", "present", value),
+                        "unused", root, Path(root) / "state",
+                    )
+
+                    with self.assertRaisesRegex(ValueError, "wrong kind"):
+                        instance.device("apply")
+                    self.assertEqual(instance.device("observe")["status"], "retry-safe")
+
+    def test_required_device_rejects_absent_path(self):
+        with tempfile.TemporaryDirectory() as root:
+            for kind in ["character", "block"]:
+                with self.subTest(kind=kind):
+                    value = {"path": str(Path(root) / "missing"), "kind": kind}
+                    instance = handler_module.Handler(
+                        invocation("device", "present", value),
+                        "unused", root, Path(root) / "state",
+                    )
+
+                    with self.assertRaisesRegex(ValueError, "absent"):
+                        instance.device("apply")
+                    self.assertEqual(instance.device("observe")["status"], "retry-safe")
+
+    def test_command_arguments_remain_literal(self):
+        rendered = handler_module.realize_service(service())["units"]["example.service"]
+        self.assertIn('"a b" "$$USER" "%%i"', rendered)
+        self.assertIn("Restart=on-failure", rendered)
+
+    def test_temporary_parent_mask_preserves_explicit_child_bind(self):
+        value = service()
+        value["isolation"] = {
+            "privilege": "unprivileged", "network": "host", "temporary_directory": "shared",
+            "filesystem": "read-only-system", "home_access": "inaccessible",
+            "process_visibility": "host", "termination_scope": "all-processes",
+            "permit_core_dumps": False, "devices": [],
+            "host_paths": [{"source": "/var/lib/coordinator/fitness", "mode": "read-write"}],
+            "temporary_filesystems": [{"path": "/var/lib/coordinator", "read_only": True}],
+        }
+        rendered = handler_module.realize_service(value)["units"]["example.service"]
+        self.assertIn('TemporaryFileSystem="/var/lib/coordinator:ro"', rendered)
+        self.assertIn('BindPaths="/var/lib/coordinator/fitness"', rendered)
+
+    def test_daemon_scheduling_and_socket_directory_are_rendered(self):
+        value = service()
+        value["resources"] = {"resource_group": "aos-pkg-example-builds"}
+        value["scheduling"] = {"cpu_policy": "batch", "nice": 0, "io_class": "best-effort", "io_priority": 5}
+        value["socket_activation"] = {"sockets": [{
+            "name": "daemon", "enabled": True, "endpoints": [],
+            "mode": "0666", "directory_mode": "0755", "prerequisites": ["policy"], "remove_on_stop": True,
+        }]}
+        units = handler_module.realize_service(value)["units"]
+        self.assertIn("Slice=aos-pkg-example-builds.slice", units["example.service"])
+        self.assertIn("CPUSchedulingPolicy=batch", units["example.service"])
+        socket = next(text for name, text in units.items() if name.endswith(".socket"))
+        self.assertIn("DirectoryMode=0755", socket)
+        self.assertIn("Requires=policy.service", socket)
+
+    def test_resource_group_cannot_escape_owning_package(self):
+        for group in ["aos-pkg-foreign-builds", "aos-pkg-example2", "aos-pkg-example2-builds", "system"]:
+            with self.subTest(group=group), tempfile.TemporaryDirectory() as root:
+                value = dict(service(), resources={"resource_group": group})
+                request = invocation("serviceManagement", "realize", value)
+                request["effect"]["identity"] = ["test", "example", "serviceManagement", "realize", "main"]
+                instance = handler_module.Handler(request, "unused", root, Path(root) / "state")
+
+                with self.assertRaisesRegex(ValueError, "owning package"):
+                    instance.service("apply")
+
+                self.assertFalse((Path(root) / "example.service").exists())
+
+    @unittest.skipUnless(systemd_analyze, "pinned systemd-analyze executable not supplied")
+    def test_own_package_root_and_child_groups_reconcile_and_parse(self):
+        for group in ["aos-pkg-example", "aos-pkg-example-builds"]:
+            with self.subTest(group=group), tempfile.TemporaryDirectory() as root:
+                value = dict(service(), resources={"resource_group": group})
+                value["lifecycle"]["start"][0]["executable"] = {
+                    "path": str(systemd_analyze), "arguments": ["--version"],
+                }
+                request = invocation("serviceManagement", "realize", value)
+                request["effect"]["identity"] = ["test", "example", "serviceManagement", "realize", "main"]
+                units = Path(root) / "units"
+                instance = handler_module.Handler(request, "unused", units, Path(root) / "state")
+                instance.manager = active_bus_manager([])
+
+                result = instance.service("apply")
+                unit = units / "example.service"
+                vendor_units = systemd_analyze.parent.parent / "lib/systemd/system"
+                environment = dict(os.environ, SYSTEMD_UNIT_PATH=f"{units}:{vendor_units}",
+                                   SYSTEMD_LOG_COLOR="0", SYSTEMD_LOG_LEVEL="debug")
+                verified = subprocess.run(
+                    [str(systemd_analyze), "--man=no", "--generators=no", "verify", str(unit)],
+                    env=environment, capture_output=True, text=True, check=False,
+                )
+
+                self.assertEqual(result["resource"], "example.service")
+                self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+                self.assertIn("Slice: " + group + ".slice", verified.stdout)
+
+    @unittest.skipUnless(systemd_analyze, "pinned systemd-analyze executable not supplied")
+    def test_typed_resource_group_reference_authorizes_its_producer_namespace(self):
+        reference = {
+            "_type": "aos-effect-output",
+            "identity": ["test", "consumer", "serviceManagement", "resourceGroup", "root"],
+            "output": "name", "schema": {"kind": "string"},
+        }
+        for group in ["aos-pkg-consumer", "aos-pkg-consumer-builds"]:
+            with self.subTest(group=group), tempfile.TemporaryDirectory() as root:
+                value = dict(service(), resources={"resource_group": group})
+                value["lifecycle"]["start"][0]["executable"] = {
+                    "path": str(systemd_analyze), "arguments": ["--version"],
+                }
+                request = invocation("serviceManagement", "realize", value)
+                request["effect"] = {
+                    "identity": ["test", "service-management", "serviceManagement", "realize", "main"],
+                    "input": dict(value, resources={"resource_group": reference}),
+                }
+                units = Path(root) / "units"
+                instance = handler_module.Handler(request, "unused", units, Path(root) / "state")
+                instance.manager = active_bus_manager([])
+
+                result = instance.service("apply")
+                unit = units / "example.service"
+                vendor_units = systemd_analyze.parent.parent / "lib/systemd/system"
+                environment = dict(os.environ, SYSTEMD_UNIT_PATH=f"{units}:{vendor_units}",
+                                   SYSTEMD_LOG_COLOR="0", SYSTEMD_LOG_LEVEL="debug")
+                verified = subprocess.run(
+                    [str(systemd_analyze), "--man=no", "--generators=no", "verify", str(unit)],
+                    env=environment, capture_output=True, text=True, check=False,
+                )
+
+                self.assertEqual(result["resource"], "example.service")
+                self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+                self.assertIn("Slice: " + group + ".slice", verified.stdout)
+
+    def test_resource_group_reference_rejects_wrong_producer_or_resolved_name(self):
+        reference = {
+            "_type": "aos-effect-output",
+            "identity": ["test", "consumer", "serviceManagement", "resourceGroup", "root"],
+            "output": "name", "schema": {"kind": "string"},
+        }
+        invalid_references = [
+            dict(reference, _type="other"), dict(reference, output="resource"),
+            dict(reference, identity=["test", "consumer", "identity", "group", "root"]),
+            dict(reference, identity=["test", "consumer", "serviceManagement", "realize", "root"]),
+            dict(reference, identity="consumer/serviceManagement/resourceGroup/root"),
+            dict(reference, identity=["consumer", "resourceGroup", "root"]),
+            dict(reference, identity=["test", None, "serviceManagement", "resourceGroup", "root"]),
+            dict(reference, identity=["test", "../consumer", "serviceManagement", "resourceGroup", "root"]),
+            dict(reference, identity=["test", "consumer", "serviceManagement", "resourceGroup", ""]),
+        ]
+        cases = [(invalid, "aos-pkg-consumer") for invalid in invalid_references]
+        cases += [(reference, group) for group in ["aos-pkg-other", "aos-pkg-consumer2", "aos-pkg-service-management"]]
+        cases.append(("aos-pkg-consumer", "aos-pkg-consumer"))
+
+        for raw_group, group in cases:
+            with self.subTest(reference=raw_group, resolved_group=group), tempfile.TemporaryDirectory() as root:
+                value = dict(service(), resources={"resource_group": group})
+                request = invocation("serviceManagement", "realize", value)
+                request["effect"] = {
+                    "identity": ["test", "service-management", "serviceManagement", "realize", "main"],
+                    "input": dict(value, resources={"resource_group": raw_group}),
+                }
+                instance = handler_module.Handler(request, "unused", root, Path(root) / "state")
+
+                with self.assertRaises(ValueError):
+                    instance.service("apply")
+
+                self.assertFalse((Path(root) / "example.service").exists())
+
+    def test_removal_guard_refusal_preserves_service_and_receipt(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = service()
+            value["lifecycle"]["removal_guard"] = [{
+                "executable": {"path": "/nix/store/control/bin/control", "arguments": ["drained"]},
+                "ignore_failure": False,
+            }]
+            instance = handler_module.Handler(invocation("serviceManagement", "realize", value), "unused", root, Path(root) / "state")
+            calls = []
+            instance.manager = lambda *args, **kwargs: (calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""))
+            with patch.object(handler_module.subprocess, "run") as guard:
+                instance.service("apply")
+                guard.assert_not_called()
+                before = dict(instance.receipt)
+                calls.clear()
+                guard.return_value = subprocess.CompletedProcess([], 1, "", "workers remain")
+                with self.assertRaisesRegex(ValueError, "workers remain"):
+                    instance.service("remove")
+                self.assertEqual(instance.receipt, before)
+                self.assertTrue((Path(root) / "example.service").exists())
+                self.assertEqual(calls, [])
+
+    def test_disabling_service_stops_listener_without_removal_guard(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = service()
+            value["lifecycle"]["removal_guard"] = [{
+                "executable": {"path": "/nix/store/control/bin/control", "arguments": ["drained"]},
+                "ignore_failure": False,
+            }]
+            initial = handler_module.Handler(invocation("serviceManagement", "realize", value), "unused", root, Path(root) / "state")
+            initial.manager = lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", "")
+            initial.service("apply")
+            disabled = dict(value, enabled=False, auto_start=False)
+            updated = handler_module.Handler(invocation("serviceManagement", "realize", disabled, "disabled", {}), "unused", root, Path(root) / "state")
+            calls = []
+            updated.manager = lambda *args, **kwargs: (calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""))
+            with patch.object(handler_module.subprocess, "run") as guard:
+                updated.service("apply")
+                guard.assert_not_called()
+            self.assertTrue(any(call[0] == "stop" and "example.service" in call for call in calls))
+            self.assertTrue((Path(root) / "example.service").exists())
+
+    def test_structured_toml_roundtrips_nested_keys_and_arrays(self):
+        value = {"server": {"name": "a b", "enabled": True, "ports": [443, 8443]}, "plugins.io.example": {"path": "/run/example", "registries": [{"host": "registry.example", "tls": True}]}}
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "example.toml"
+            document = invocation("configuration", "file", {"path": str(path), "format": "toml", "value": value, "mode": "0600"})
+            ConfigurationProcess(document, Path(root) / "state").file("apply")
+            self.assertEqual(tomllib.loads(path.read_text()), value)
+
+    def test_configuration_update_observe_remove_and_external_edit_rejection(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "etc/example.conf"
+            state = Path(root) / "state"
+            value = {"path": str(path), "content": "first", "mode": "0600"}
+            initial = configuration_handler(invocation("configuration", "file", value), "unused", root, state)
+            first = initial.file("apply")
+            self.assertEqual(path.read_text(), "first")
+            self.assertEqual(initial.file("observe")["status"], "current")
+            value = dict(value, content="second")
+            updated = configuration_handler(invocation("configuration", "file", value, "second", {}), "unused", root, state)
+            self.assertEqual(updated.file("observe")["status"], "retry-safe")
+            second = updated.file("apply")
+            self.assertNotEqual(first["resource"], second["resource"])
+            path.write_text("external")
+            self.assertEqual(updated.file("observe")["status"], "indeterminate")
+            with self.assertRaises(ValueError):
+                updated.file("remove")
+            path.write_text("second")
+            updated.file("remove")
+            self.assertFalse(path.exists())
+
+    def test_service_update_reload_and_owned_removal(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            value = service()
+            first = handler_module.Handler(invocation("serviceManagement", "realize", value), "unused", units, state)
+            commands = []
+            manager = active_bus_manager(commands)
+            first.manager = manager
+            first.service("apply")
+            self.assertIn(("start", "example.service"), commands)
+            value["lifecycle"]["description"] = "Updated example service"
+            commands.clear()
+            second = handler_module.Handler(invocation("serviceManagement", "realize", value, "changed", {}), "unused", units, state)
+            second.manager = manager
+            second.service("apply")
+            self.assertEqual(commands.count(("reload-or-restart", "example.service")), 1)
+            self.assertEqual(second.service("observe")["status"], "current")
+            second.service("remove")
+            self.assertFalse((units / "example.service").exists())
+
+    def test_dependency_only_revision_keeps_identical_service_running(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            value = dict(service(), configurationGeneration="/var/lib/aos/configuration-lowers/first/etc.erofs")
+            calls = []
+            first = handler_module.Handler(
+                invocation("serviceManagement", "realize", value), "unused", units, state,
+            )
+            first.manager = active_bus_manager(calls)
+            first.service("apply")
+            original_unit = (units / "example.service").read_bytes()
+            original_links = dict(first.receipt["links"])
+
+            changed = dict(value, configurationGeneration="/var/lib/aos/configuration-lowers/second/etc.erofs")
+            second = handler_module.Handler(
+                invocation("serviceManagement", "realize", changed, "dependency-changed", {}),
+                "unused", units, state,
+            )
+            calls.clear()
+            second.manager = active_bus_manager(calls)
+            second.service("apply")
+
+            self.assertEqual((units / "example.service").read_bytes(), original_unit)
+            self.assertEqual(second.receipt["links"], original_links)
+            self.assertFalse(any(call[0] in {"start", "restart", "reload", "reload-or-restart"} for call in calls))
+            self.assertFalse(second.receipt["pending"])
+            self.assertEqual(second.receipt["revision"], "dependency-changed")
+            self.assertEqual(second.service("observe")["status"], "current")
+
+    def test_restart_token_requests_one_lifecycle_dispatch_without_unit_changes(self):
+        for change, operation in [("restart", "restart"), ("reload", "reload-or-restart")]:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as root:
+                units = Path(root) / "units"
+                state = Path(root) / "state"
+                value = service()
+                value["lifecycle"].update(configuration_change_action=change, restart_token="first")
+                calls = []
+                first = handler_module.Handler(
+                    invocation("serviceManagement", "realize", value), "unused", units, state,
+                )
+                first.manager = active_bus_manager(calls)
+                first.service("apply")
+                original_unit = (units / "example.service").read_bytes()
+
+                value["lifecycle"]["restart_token"] = "second"
+                changed = handler_module.Handler(
+                    invocation("serviceManagement", "realize", value, "token-changed", {}),
+                    "unused", units, state,
+                )
+                calls.clear()
+                changed.manager = active_bus_manager(calls)
+                changed.service("apply")
+
+                self.assertEqual((units / "example.service").read_bytes(), original_unit)
+                self.assertEqual([call for call in calls if call[0] in {"start", "restart", "reload", "reload-or-restart"}], [(operation, "example.service")])
+                self.assertEqual(changed.service("observe")["status"], "current")
+
+    def test_interrupted_unit_write_retains_the_required_configuration_dispatch(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            value = service()
+            calls = []
+            first = handler_module.Handler(
+                invocation("serviceManagement", "realize", value), "unused", units, state,
+            )
+            first.manager = active_bus_manager(calls)
+            first.service("apply")
+
+            value["lifecycle"]["description"] = "Changed service before interrupted publication"
+            changed_invocation = invocation("serviceManagement", "realize", value, "changed", {})
+            changed = handler_module.Handler(changed_invocation, "unused", units, state)
+            changed.manager = active_bus_manager(calls)
+            original_write = handler_module.durable_write
+            def interrupted_write(path, contents, *args, **kwargs):
+                original_write(path, contents, *args, **kwargs)
+                if Path(path) == units / "example.service":
+                    raise RuntimeError("unit publication reply unavailable")
+
+            calls.clear()
+            with patch.object(handler_module, "durable_write", side_effect=interrupted_write):
+                with self.assertRaisesRegex(RuntimeError, "publication reply unavailable"):
+                    changed.service("apply")
+            self.assertTrue(changed.receipt["pending"])
+            self.assertFalse(any(call[0] in {"start", "restart", "reload", "reload-or-restart"} for call in calls))
+
+            recovered = handler_module.Handler(changed_invocation, "unused", units, state)
+            recovered.manager = active_bus_manager(calls)
+            self.assertEqual(recovered.service("observe")["status"], "retry-safe")
+            recovered.service("apply")
+
+            self.assertEqual(calls.count(("reload-or-restart", "example.service")), 1)
+            self.assertFalse(recovered.receipt["pending"])
+            self.assertEqual(recovered.service("observe")["status"], "current")
+
+    def test_interrupted_configuration_only_update_retains_one_required_reload(self):
+        for mutation in ["restart_token", "dependencyValues"]:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as root:
+                units = Path(root) / "units"
+                state = Path(root) / "state"
+                value = service()
+                value["lifecycle"]["restart_token"] = "first"
+                value["dependencyValues"] = [{"digest": "first"}]
+                calls = []
+                first = handler_module.Handler(
+                    invocation("serviceManagement", "realize", value), "unused", units, state,
+                )
+                first.manager = active_bus_manager(calls)
+                first.service("apply")
+                original_unit = (units / "example.service").read_bytes()
+                original_configuration = dict(first.receipt["configuration"])
+
+                if mutation == "restart_token":
+                    value["lifecycle"]["restart_token"] = "second"
+                else:
+                    value["dependencyValues"] = [{"digest": "second"}]
+                changed_invocation = invocation("serviceManagement", "realize", value, "changed", {})
+                changed = handler_module.Handler(changed_invocation, "unused", units, state)
+                changed.manager = active_bus_manager(calls)
+                original_write = handler_module.durable_write
+
+                def interrupted_write(path, contents, *args, **kwargs):
+                    original_write(path, contents, *args, **kwargs)
+                    if Path(path) == units / "example.service":
+                        raise RuntimeError("configuration publication reply unavailable")
+
+                calls.clear()
+                with patch.object(handler_module, "durable_write", side_effect=interrupted_write):
+                    with self.assertRaisesRegex(RuntimeError, "publication reply unavailable"):
+                        changed.service("apply")
+
+                self.assertEqual((units / "example.service").read_bytes(), original_unit)
+                self.assertTrue(changed.receipt["pending"])
+                self.assertEqual(changed.receipt["previous_configuration"], original_configuration)
+                self.assertNotEqual(changed.receipt["configuration"], original_configuration)
+                self.assertFalse(any(call[0] in {"start", "restart", "reload", "reload-or-restart"} for call in calls))
+
+                recovered = handler_module.Handler(changed_invocation, "unused", units, state)
+                recovered.manager = active_bus_manager(calls)
+                self.assertEqual(recovered.receipt["previous_configuration"], original_configuration)
+                self.assertEqual(recovered.service("observe")["status"], "retry-safe")
+                recovered.service("apply")
+
+                self.assertEqual([call for call in calls if call[0] in {"start", "restart", "reload", "reload-or-restart"}], [("reload-or-restart", "example.service")])
+                self.assertFalse(recovered.receipt["pending"])
+                self.assertEqual(recovered.service("observe")["status"], "current")
+
+    def test_inactive_ordinary_service_restores_with_start_without_configuration_restart(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            value = service()
+            calls = []
+            first = handler_module.Handler(
+                invocation("serviceManagement", "realize", value), "unused", units, state,
+            )
+            first.manager = active_bus_manager(calls)
+            first.service("apply")
+
+            restored = handler_module.Handler(
+                invocation("serviceManagement", "realize", value, "first", {}),
+                "unused", units, state,
+            )
+            def inactive_manager(*args, **kwargs):
+                calls.append(args)
+                output = "inactive\n" if "--value" in args else (
+                    "ActiveState=inactive\nResult=success\n"
+                    "ExecMainStartTimestampMonotonic=100\nExecMainExitTimestampMonotonic=150\n"
+                )
+                return subprocess.CompletedProcess(args, 0, output, "")
+
+            calls.clear()
+            restored.manager = inactive_manager
+            self.assertEqual(restored.service("observe")["status"], "retry-safe")
+            calls.clear()
+            restored.service("apply")
+
+            self.assertEqual([call for call in calls if call[0] in {"start", "restart", "reload", "reload-or-restart"}], [("start", "example.service")])
+            restored.manager = active_bus_manager(calls)
+            self.assertEqual(restored.service("observe")["status"], "current")
+
+    def test_image_owned_service_is_never_started(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = dict(service(), activation_owner="image")
+            instance = handler_module.Handler(invocation("serviceManagement", "realize", value), "unused", root, Path(root) / "state")
+            calls = []
+            instance.manager = lambda *args, **kwargs: calls.append(args)
+            instance.service("apply")
+            self.assertEqual(calls, [("daemon-reload",)])
+
+    def test_enqueued_report_keeps_failed_unit_visible_without_repeating_dispatch(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = service()
+            value["lifecycle"].update(
+                execution_model="oneshot", start_mode="enqueue",
+                configuration_change_action="restart", remain_after_exit=True,
+            )
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            calls = []
+
+            def manager(*args, **kwargs):
+                calls.append(args)
+                return subprocess.CompletedProcess(args, 0, (
+                    "ActiveState=failed\nResult=exit-code\n"
+                    "ExecMainStartTimestampMonotonic=100\n"
+                    "ExecMainExitTimestampMonotonic=150\n"
+                ), "")
+
+            first = handler_module.Handler(
+                invocation("serviceManagement", "realize", value), "unused", units, state,
+            )
+            first.manager = manager
+            first.service("apply")
+
+            self.assertIn(("start", "--no-block", "example.service"), calls)
+            self.assertFalse(first.receipt["pending"])
+            before = list(calls)
+            self.assertEqual(first.service("observe")["status"], "current")
+            self.assertEqual(calls, before)
+
+            dependency_changed = dict(value, configurationGeneration="/var/lib/aos/configuration-lowers/next/etc.erofs")
+            unchanged = handler_module.Handler(
+                invocation("serviceManagement", "realize", dependency_changed, "dependency-changed", {}),
+                "unused", units, state,
+            )
+            unchanged.manager = manager
+            before_dispatches = [call for call in calls if call[0] in {"start", "restart", "reload", "reload-or-restart"}]
+            unchanged.service("apply")
+            self.assertEqual(
+                [call for call in calls if call[0] in {"start", "restart", "reload", "reload-or-restart"}],
+                before_dispatches,
+            )
+            self.assertEqual(unchanged.service("observe")["status"], "current")
+            self.assertFalse(unchanged.receipt["pending"])
+
+            value["lifecycle"]["description"] = "Updated advisory report"
+            changed = handler_module.Handler(
+                invocation("serviceManagement", "realize", value, "changed", {}),
+                "unused", units, state,
+            )
+            changed.manager = manager
+            changed.service("apply")
+
+            self.assertEqual(calls.count(("restart", "--no-block", "example.service")), 1)
+            self.assertIn("Updated advisory report", (units / "example.service").read_text())
+
+            (units / "example.service").write_text("foreign unit")
+            self.assertEqual(changed.service("observe")["status"], "indeterminate")
+
+    def test_reenabled_failed_enqueue_dispatches_once_for_each_startup_control(self):
+        for startup_control in ["enabled", "auto_start"]:
+            with self.subTest(startup_control=startup_control), tempfile.TemporaryDirectory() as root:
+                units = Path(root) / "units"
+                state = Path(root) / "state"
+                value = service()
+                value["lifecycle"].update(
+                    execution_model="oneshot", start_mode="enqueue",
+                    configuration_change_action="restart", remain_after_exit=True,
+                )
+                calls = []
+
+                def failed_manager(*args, **kwargs):
+                    calls.append(args)
+                    output = "failed\n" if "--value" in args else (
+                        "ActiveState=failed\nResult=exit-code\n"
+                        "ExecMainStartTimestampMonotonic=100\nExecMainExitTimestampMonotonic=150\n"
+                    )
+                    return subprocess.CompletedProcess(args, 0, output, "")
+
+                initial = handler_module.Handler(
+                    invocation("serviceManagement", "realize", value), "unused", units, state,
+                )
+                initial.manager = failed_manager
+                initial.service("apply")
+                self.assertEqual(initial.service("observe")["status"], "current")
+                original_unit = (units / "example.service").read_bytes()
+
+                disabled_value = dict(value, **{startup_control: False})
+                disabled = handler_module.Handler(
+                    invocation("serviceManagement", "realize", disabled_value, "disabled", {}),
+                    "unused", units, state,
+                )
+                disabled.manager = failed_manager
+                calls.clear()
+                disabled.service("apply")
+                self.assertFalse(any(call[0] in {"start", "restart", "reload", "reload-or-restart"} for call in calls))
+                self.assertEqual((units / "example.service").read_bytes(), original_unit)
+
+                enabled = handler_module.Handler(
+                    invocation("serviceManagement", "realize", value, "reenabled", {}),
+                    "unused", units, state,
+                )
+                enabled.manager = failed_manager
+                calls.clear()
+                enabled.service("apply")
+                self.assertEqual(
+                    [call for call in calls if call[0] in {"start", "restart", "reload", "reload-or-restart"}],
+                    [("restart", "--no-block", "example.service")],
+                )
+                self.assertEqual((units / "example.service").read_bytes(), original_unit)
+                self.assertEqual(enabled.service("observe")["status"], "current")
+
+                unchanged_value = dict(value, configurationGeneration="/var/lib/aos/configuration-lowers/next/etc.erofs")
+                unchanged = handler_module.Handler(
+                    invocation("serviceManagement", "realize", unchanged_value, "dependency-changed", {}),
+                    "unused", units, state,
+                )
+                unchanged.manager = failed_manager
+                calls.clear()
+                unchanged.service("apply")
+                self.assertFalse(any(call[0] in {"start", "restart", "reload", "reload-or-restart"} for call in calls))
+                self.assertEqual(unchanged.service("observe")["status"], "current")
+
+    def test_interrupted_enqueue_requires_actual_new_execution_evidence(self):
+        for start_mode in ("wait", "enqueue"):
+            with self.subTest(start_mode=start_mode), tempfile.TemporaryDirectory() as root:
+                value = service()
+                value["lifecycle"].update(execution_model="oneshot", start_mode=start_mode)
+                state = Path(root) / "state"
+                calls = []
+
+                def lost_reply(*args, **kwargs):
+                    calls.append(args)
+                    if args[0] == "start":
+                        raise RuntimeError("manager reply unavailable")
+                    return subprocess.CompletedProcess(args, 0, (
+                        "ActiveState=inactive\nResult=success\n"
+                        "ExecMainStartTimestampMonotonic=100\n"
+                        "ExecMainExitTimestampMonotonic=150\n"
+                    ), "")
+
+                instance = handler_module.Handler(
+                    invocation("serviceManagement", "realize", value), "unused", root, state,
+                )
+                instance.manager = lost_reply
+                with self.assertRaisesRegex(RuntimeError, "reply unavailable"):
+                    instance.service("apply")
+
+                recovered = handler_module.Handler(
+                    invocation("serviceManagement", "realize", value), "unused", root, state,
+                )
+                recovered.manager = lost_reply
+                self.assertEqual(recovered.service("observe")["status"], "indeterminate")
+                self.assertTrue(recovered.receipt["pending"])
+                self.assertEqual(sum(call[0] == "start" for call in calls), 1)
+
+                recovered.manager = lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, (
+                    "ActiveState=failed\nResult=exit-code\n"
+                    "ExecMainStartTimestampMonotonic=200\n"
+                    "ExecMainExitTimestampMonotonic=250\n"
+                ), "")
+                expected = "current" if start_mode == "enqueue" else "indeterminate"
+                self.assertEqual(recovered.service("observe")["status"], expected)
+                self.assertEqual(recovered.receipt["pending"], start_mode == "wait")
+
+    def test_invalid_service_start_mode_fails_before_manager_dispatch(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = service()
+            value["lifecycle"]["start_mode"] = "ignore-failure"
+            instance = handler_module.Handler(
+                invocation("serviceManagement", "realize", value),
+                "unused", root, Path(root) / "state",
+            )
+            instance.manager = lambda *args, **kwargs: self.fail("invalid mode reached manager")
+
+            with self.assertRaisesRegex(ValueError, "dispatch mode"):
+                instance.service("apply")
+
+    def test_socket_activation_and_install_links_are_rendered(self):
+        value = service()
+        value["socket_activation"] = {"sockets": [{"name": "bus", "manager_name": "dbus", "enabled": True, "endpoints": [{"kind": "unix", "path": "/run/dbus/system_bus_socket"}], "mode": "0666", "remove_on_stop": False}]}
+        realized = handler_module.realize_service(value)
+        self.assertIn('ListenStream=/run/dbus/system_bus_socket', realized["units"]["dbus.socket"])
+        self.assertEqual(realized["links"]["sockets.target.wants/dbus.socket"], "../dbus.socket")
+
+    @unittest.skipUnless(systemd_analyze, "pinned systemd-analyze executable not supplied")
+    def test_rendered_socket_units_pass_pinned_manager_parser(self):
+        value = bootstrap_bus()
+        value["lifecycle"]["start"] = [{
+            "executable": {"path": str(systemd_analyze), "arguments": ["--version"]},
+            "ignore_failure": False,
+        }]
+        value["directories"] = {"managed": [{
+            "path": "dbus", "purpose": purpose, "mode": "0755", "retention": "persistent",
+        } for purpose in ("runtime", "state")]}
+        value["socket_activation"]["sockets"][0]["endpoints"] += [
+            {"kind": "unix", "path": "/run/aos-test/socket %literal"},
+            {"kind": "network", "address": "127.0.0.1", "port": 45000, "transport": "tcp"},
+            {"kind": "network", "address": "::1", "port": 45001, "transport": "udp"},
+        ]
+
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            with patch.object(handler_module, "TRUE_EXECUTABLE", str(systemd_analyze)):
+                handler_module.render_services({"dbus": value}, units)
+            vendor_units = systemd_analyze.parent.parent / "lib/systemd/system"
+            environment = dict(os.environ, SYSTEMD_UNIT_PATH=f"{units}:{vendor_units}",
+                               SYSTEMD_LOG_COLOR="0", SYSTEMD_LOG_LEVEL="warning")
+            unit_paths = sorted(str(path) for path in units.iterdir() if path.suffix in {".service", ".socket"})
+
+            verified = subprocess.run(
+                [str(systemd_analyze), "--man=no", "--generators=no", "verify", *unit_paths],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+
+            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+            self.assertNotIn("Failed to parse", verified.stderr)
+            socket = (units / "dbus.socket").read_text()
+            self.assertIn("ListenStream=/run/dbus/system_bus_socket\n", socket)
+            self.assertIn("ListenStream=/run/aos-test/socket %%literal\n", socket)
+            self.assertIn("ListenStream=127.0.0.1:45000\n", socket)
+            self.assertIn("ListenDatagram=[::1]:45001\n", socket)
+
+            # Reproduce the old Exec-style quoting so this gate must catch it.
+            quoted_lines = []
+            for line in socket.splitlines():
+                if line.startswith(("ListenStream=", "ListenDatagram=")):
+                    key, address = line.split("=", 1)
+                    line = f'{key}="{address}"'
+                quoted_lines.append(line)
+            (units / "dbus.socket").write_text("\n".join(quoted_lines) + "\n")
+
+            rejected = subprocess.run(
+                [str(systemd_analyze), "--man=no", "--generators=no", "verify", *unit_paths],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("Failed to parse address value", rejected.stderr)
+
+    @unittest.skipUnless(systemd_analyze, "pinned systemd-analyze executable not supplied")
+    def test_scalar_paths_preserve_actual_pinned_manager_paths(self):
+        value = scalar_path_service()
+        value["lifecycle"]["start"][0]["executable"] = {
+            "path": str(systemd_analyze), "arguments": ["--version"],
+        }
+
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            handler_module.render_services({"example": value}, units)
+            unit = units / "example.service"
+            vendor_units = systemd_analyze.parent.parent / "lib/systemd/system"
+            environment = dict(os.environ, SYSTEMD_UNIT_PATH=f"{units}:{vendor_units}",
+                               SYSTEMD_LOG_COLOR="0", SYSTEMD_LOG_LEVEL="debug")
+
+            verified = subprocess.run(
+                [str(systemd_analyze), "--man=no", "--generators=no", "verify", str(unit)],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+
+            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+            self.assertNotIn("path is not absolute", verified.stderr)
+            for parsed in [
+                "EnvironmentFile: /etc/aos/runtime %literal.env",
+                "EnvironmentFile: -/etc/aos/optional %literal.env",
+                "RootDirectory: /", "WorkingDirectory: /", "TTYPath: /dev/tty %literal",
+                "PIDFile: /run/aos %literal.pid",
+            ]:
+                with self.subTest(parsed=parsed):
+                    self.assertIn(parsed, verified.stdout)
+            text = unit.read_text()
+            self.assertIn("EnvironmentFile=/etc/aos/runtime %%literal.env\n", text)
+            self.assertIn("EnvironmentFile=-/etc/aos/optional %%literal.env\n", text)
+
+            # EnvironmentFile is silently ignored, and PIDFile is silently
+            # prefixed with /run, when Exec-style quotes reach these parsers.
+            quoted = text.replace(
+                "EnvironmentFile=/etc/aos/runtime %%literal.env",
+                'EnvironmentFile="/etc/aos/runtime %%literal.env"',
+            ).replace("PIDFile=/run/aos %%literal.pid", 'PIDFile="/run/aos %%literal.pid"')
+            unit.write_text(quoted)
+            rejected_paths = subprocess.run(
+                [str(systemd_analyze), "--man=no", "--generators=no", "verify", str(unit)],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+
+            self.assertIn("EnvironmentFile= path is not absolute, ignoring", rejected_paths.stderr)
+            self.assertIn('PIDFile: /run/"/run/aos %literal.pid"', rejected_paths.stdout)
+
+    @unittest.skipUnless(systemd_analyze, "pinned systemd-analyze executable not supplied")
+    def test_scalar_descriptions_conditions_and_credential_tuples_use_pinned_grammar(self):
+        value = bootstrap_bus()
+        value["lifecycle"]["description"] = "Bus words %literal"
+        value["lifecycle"]["start"][0]["executable"] = {
+            "path": str(systemd_analyze), "arguments": ["--version"],
+        }
+        value["conditions"] = {"all": [
+            {"kind": "kernel-argument", "argument": "aos-test=%literal", "negated": False},
+            {"kind": "kernel-argument", "argument": "aos-test=a value %literal", "negated": True},
+        ]}
+        value["directories"] = {"managed": [{
+            "path": "dbus", "purpose": "state", "mode": "0755", "retention": "persistent",
+        }]}
+        value["credentials"] = {"views": [
+            {"name": "plain", "reference": "/run/plain %literal", "encrypted": False},
+            {"name": "encrypted", "reference": "/run/encrypted %literal", "encrypted": True},
+        ]}
+
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            with patch.object(handler_module, "TRUE_EXECUTABLE", str(systemd_analyze)):
+                handler_module.render_services({"dbus": value}, units)
+            vendor_units = systemd_analyze.parent.parent / "lib/systemd/system"
+            environment = dict(os.environ, SYSTEMD_UNIT_PATH=f"{units}:{vendor_units}",
+                               SYSTEMD_LOG_COLOR="0", SYSTEMD_LOG_LEVEL="debug")
+            unit_paths = sorted(str(path) for path in units.iterdir() if path.suffix in {".service", ".socket"})
+
+            verified = subprocess.run(
+                [str(systemd_analyze), "--man=no", "--generators=no", "verify", *unit_paths],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+
+            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+            for parsed in [
+                "Description: Bus words %literal\n",
+                "Description: Bus words %literal (system-bus)\n",
+                "Description: Managed state directory dbus\n",
+                "ConditionKernelCommandLine: aos-test=%literal untested",
+                "ConditionKernelCommandLine: !aos-test=a value %literal untested",
+            ]:
+                with self.subTest(parsed=parsed):
+                    self.assertIn(parsed, verified.stdout)
+            main = units / "dbus.service"
+            text = main.read_text()
+            # The credential parser splits ':' without unquoting either field;
+            # its debug dump does not expose credentials, so check exact tuples.
+            self.assertIn("LoadCredential=plain:/run/plain %%literal\n", text)
+            self.assertIn("LoadCredentialEncrypted=encrypted:/run/encrypted %%literal\n", text)
+
+            quoted_lines = []
+            for line in text.splitlines():
+                if line.startswith(("Description=", "ConditionKernelCommandLine=")):
+                    key, scalar = line.split("=", 1)
+                    prefix = "!" if scalar.startswith("!") else ""
+                    line = f'{key}={prefix}"{scalar[len(prefix):]}"'
+                quoted_lines.append(line)
+            main.write_text("\n".join(quoted_lines) + "\n")
+            old_rendering = subprocess.run(
+                [str(systemd_analyze), "--man=no", "--generators=no", "verify", *unit_paths],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+
+            self.assertIn('Description: "Bus words %literal"', old_rendering.stdout)
+            self.assertIn('ConditionKernelCommandLine: "aos-test=%literal" untested', old_rendering.stdout)
+            self.assertIn('ConditionKernelCommandLine: !"aos-test=a value %literal" untested', old_rendering.stdout)
+
+    def test_scalar_text_rejects_injection_and_kernel_condition_control_prefixes(self):
+        for invalid in ["text\nInjected=yes", "text\rInjected=yes", "text\0", " text", "text ", "text\\"]:
+            with self.subTest(description=invalid):
+                value = service()
+                value["lifecycle"]["description"] = invalid
+
+                with self.assertRaises(ValueError):
+                    handler_module.realize_service(value)
+
+        for invalid in ["!flag", "|flag", "arg\nInjected=yes", "arg\rInjected=yes", "arg\\"]:
+            for negated in [False, True]:
+                with self.subTest(argument=invalid, negated=negated):
+                    value = service()
+                    value["conditions"] = {"all": [{
+                        "kind": "kernel-argument", "argument": invalid, "negated": negated,
+                    }]}
+
+                    with self.assertRaises(ValueError):
+                        handler_module.realize_service(value)
+
+    def test_credential_identifiers_and_scalar_sources_are_validated(self):
+        for invalid in ["name:other", "name\\other", "name other", '"name', "", ".", "..", "a" * 129]:
+            with self.subTest(name=invalid):
+                value = service()
+                value["credentials"] = {"views": [{
+                    "name": invalid, "reference": "/run/credential", "encrypted": False,
+                }]}
+
+                with self.assertRaises(ValueError):
+                    handler_module.realize_service(value)
+
+        for invalid in ["relative/path", "/run/credential\nInjected=yes", "/run/credential\r", "/run/credential\\"]:
+            with self.subTest(reference=invalid):
+                value = service()
+                value["credentials"] = {"views": [{
+                    "name": "token", "reference": invalid, "encrypted": True,
+                }]}
+
+                with self.assertRaises(ValueError):
+                    handler_module.realize_service(value)
+
+    def test_scalar_paths_reject_control_characters_and_unrepresentable_paths(self):
+        fields = [
+            ("lifecycle", "environment_files", 0, "source"),
+            ("isolation", "root_directory"), ("terminal", "device"),
+            ("lifecycle", "working_directory"), ("termination", "process_id_file"),
+        ]
+        for field in fields:
+            for invalid in [
+                "/tmp/path\nInjected=yes", "/tmp/path\rInjected=yes", "/tmp/path\0",
+                "/tmp/path\\", "/tmp/path ", " /tmp/path", "relative/path",
+            ]:
+                with self.subTest(field=field, path=invalid):
+                    value = scalar_path_service()
+                    container = value
+                    for key in field[:-1]:
+                        container = container[key]
+                    container[field[-1]] = invalid
+
+                    with self.assertRaises(ValueError):
+                        handler_module.realize_service(value)
+
+    def test_socket_addresses_reject_scalar_injection_and_unrepresentable_suffixes(self):
+        for invalid in (
+            "/run/test\n[Service]", "/run/test\rInjected=yes", "/run/test\0socket",
+            "/run/test\\", "/run/test ",
+        ):
+            with self.subTest(path=invalid):
+                value = bootstrap_bus()
+                value["socket_activation"]["sockets"][0]["endpoints"][0]["path"] = invalid
+
+                with self.assertRaises(ValueError):
+                    handler_module.realize_service(value)
+
+        for invalid in ("127.0.0.1\n[Service]", "::1\rInjected=yes", "127.0.0.1\0"):
+            with self.subTest(address=invalid):
+                value = bootstrap_bus()
+                value["socket_activation"]["sockets"][0]["endpoints"] = [{
+                    "kind": "network", "address": invalid, "port": 45000, "transport": "tcp",
+                }]
+
+                with self.assertRaises(ValueError):
+                    handler_module.realize_service(value)
+
+    def test_pending_configuration_can_reconcile_after_crash(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "file"
+            path.write_text("prior")
+            value = {"path": str(path), "content": "next", "mode": "0644"}
+            instance = configuration_handler(invocation("configuration", "file", value), "unused", root, Path(root) / "state")
+            instance.save({"kind": "configuration", "path": str(path), "digest": handler_module.digest(b"next"), "previous_digest": handler_module.digest(b"prior"), "pending": True})
+            self.assertEqual(instance.file("observe")["status"], "retry-safe")
+
+    def test_pending_service_dispatch_is_not_blindly_repeated(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = service()
+            instance = handler_module.Handler(invocation("serviceManagement", "realize", value), "unused", root, Path(root) / "state")
+            rendered = handler_module.realize_service(value)
+            for name, contents in rendered["units"].items():
+                handler_module.durable_write(Path(root) / name, contents.encode())
+            instance.save({"kind": "service", "units": {name: handler_module.digest(contents.encode()) for name, contents in rendered["units"].items()}, "pending": True, "dispatching": True, "prior_start": "100"})
+            instance.manager = lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "ActiveState=inactive\nResult=success\nExecMainStartTimestampMonotonic=100\nExecMainExitTimestampMonotonic=150\n", "")
+            self.assertEqual(instance.service("observe")["status"], "indeterminate")
+            instance.manager = lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "ActiveState=inactive\nResult=success\nExecMainStartTimestampMonotonic=200\nExecMainExitTimestampMonotonic=250\n", "")
+            self.assertEqual(instance.service("observe")["status"], "current")
+
+    def test_directory_units_keep_independent_owners_and_modes(self):
+        handler_module.TRUE_EXECUTABLE = "/nix/store/example-coreutils/bin/true"
+        value = service()
+        value["directories"] = {"managed": [{"path": "example/state", "purpose": "state", "mode": "0750", "retention": "persistent", "owner": "state-owner", "group": "state-group"}]}
+        units = handler_module.realize_service(value)["units"]
+        directory = next(text for name, text in units.items() if name != "example.service")
+        self.assertIn("User=state-owner", directory)
+        self.assertIn("Group=state-group", directory)
+        self.assertIn("StateDirectoryMode=0750", directory)
+        self.assertIn('StateDirectory="example/state"', directory)
+
+    @unittest.skipUnless(systemd_analyze, "pinned systemd-analyze executable not supplied")
+    def test_process_limits_and_privacy_reach_actual_pinned_manager(self):
+        value = scalar_path_service()
+        value.pop("terminal")
+        value["lifecycle"]["environment_files"] = []
+        value["lifecycle"]["start"][0]["executable"] = {
+            "path": str(systemd_analyze), "arguments": ["--version"],
+        }
+        value["resources"] = {
+            "open_files": {"kind": "range", "soft": 1024, "hard": 4096},
+            "processes": {"kind": "range", "soft": 16, "hard": 64},
+            "locked_memory_bytes": {"kind": "range", "soft": 4096, "hard": 8192},
+        }
+        policy = hardening_policy()
+        policy["resource_control_access"] = "private"
+        policy["process_filesystem_scope"] = "processes"
+        value["policy"] = {"hardening": policy}
+
+        privacy_cases = [
+            ("same-user", "host", "ptraceable"),
+            ("self", "host", "invisible"),
+            ("all", "private", "invisible"),
+        ]
+        for visibility, isolation_visibility, parsed_visibility in privacy_cases:
+            with self.subTest(visibility=visibility, isolation=isolation_visibility), tempfile.TemporaryDirectory() as root:
+                policy["process_visibility"] = visibility
+                value["isolation"]["process_visibility"] = isolation_visibility
+                units = Path(root) / "units"
+                handler_module.render_services({"example": value}, units)
+                unit = units / "example.service"
+                vendor_units = systemd_analyze.parent.parent / "lib/systemd/system"
+                environment = dict(os.environ, SYSTEMD_UNIT_PATH=f"{units}:{vendor_units}",
+                                   SYSTEMD_LOG_COLOR="0", SYSTEMD_LOG_LEVEL="debug")
+
+                verified = subprocess.run(
+                    [str(systemd_analyze), "--man=no", "--generators=no", "verify", str(unit)],
+                    env=environment, capture_output=True, text=True, check=False,
+                )
+
+                self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+                for parsed in [
+                    "LimitNOFILE: 4096", "LimitNOFILESoft: 1024",
+                    "LimitNPROC: 64", "LimitNPROCSoft: 16",
+                    "LimitMEMLOCK: 8192", "LimitMEMLOCKSoft: 4096",
+                    "ProtectControlGroups: private", "ProcSubset: pid",
+                    "ProtectProc: " + parsed_visibility,
+                ]:
+                    with self.subTest(parsed=parsed):
+                        self.assertIn(parsed, verified.stdout)
+                self.assertEqual(unit.read_text().count("ProtectProc="), 1)
+
+                # The default full process filesystem remains visible unless
+                # a policy explicitly narrows it to process directories.
+                policy.pop("process_filesystem_scope", None)
+                handler_module.render_services({"example": value}, units)
+                unrestricted = subprocess.run(
+                    [str(systemd_analyze), "--man=no", "--generators=no", "verify", str(unit)],
+                    env=environment, capture_output=True, text=True, check=False,
+                )
+
+                self.assertEqual(unrestricted.returncode, 0, unrestricted.stdout + unrestricted.stderr)
+                self.assertIn("ProcSubset: all", unrestricted.stdout)
+                policy["process_filesystem_scope"] = "processes"
+
+    def test_process_resource_ranges_reject_invalid_bounds(self):
+        for field in ["open_files", "processes", "locked_memory_bytes"]:
+            for soft, hard in [(2, 1), (-1, 10), (1, 9007199254740992), (True, 10), (1, False), (1.0, 10)]:
+                with self.subTest(field=field, soft=soft, hard=hard):
+                    value = dict(service(), resources={field: {
+                        "kind": "range", "soft": soft, "hard": hard,
+                    }})
+
+                    with self.assertRaisesRegex(ValueError, "invalid process resource"):
+                        handler_module.realize_service(value)
+
+    def test_soft_and_hard_limits_cannot_be_applied_to_cgroup_resources(self):
+        for field in ["tasks", "memory_high_bytes", "memory_max_bytes", "memory_swap_max_bytes"]:
+            with self.subTest(field=field):
+                value = dict(service(), resources={field: {
+                    "kind": "range", "soft": 1, "hard": 10,
+                }})
+
+                with self.assertRaisesRegex(ValueError, "require a process resource"):
+                    handler_module.realize_service(value)
+
+    @unittest.skipUnless(systemd_analyze, "pinned systemd-analyze executable not supplied")
+    def test_service_owned_runtime_mode_reaches_actual_pinned_manager(self):
+        value = service()
+        value["lifecycle"]["start"][0]["executable"] = {
+            "path": str(systemd_analyze), "arguments": ["--version"],
+        }
+        value["storage"] = {"mounts": [{
+            "name": "runtime", "source": "/run/example", "access": "read-write",
+            "ownership": "service-identity", "directory_mode": "0750",
+        }]}
+
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            handler_module.render_services({"example": value}, units)
+            unit = units / "example.service"
+            vendor_units = systemd_analyze.parent.parent / "lib/systemd/system"
+            environment = dict(os.environ, SYSTEMD_UNIT_PATH=f"{units}:{vendor_units}",
+                               SYSTEMD_LOG_COLOR="0", SYSTEMD_LOG_LEVEL="debug")
+
+            verified = subprocess.run(
+                [str(systemd_analyze), "--man=no", "--generators=no", "verify", str(unit)],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+
+            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+            self.assertIn("RuntimeDirectoryMode=0750\n", unit.read_text())
+            self.assertIn("RuntimeDirectoryMode: 0750", verified.stdout)
+
+    def test_service_owned_directory_modes_remain_unspecified_by_default(self):
+        for directory_mode in [None, "absent"]:
+            with self.subTest(directory_mode=directory_mode):
+                mount = {
+                    "name": "runtime", "source": "/run/example", "access": "read-write",
+                    "ownership": "service-identity",
+                }
+                if directory_mode is None:
+                    mount["directory_mode"] = None
+                value = dict(service(), storage={"mounts": [mount]})
+
+                unit = handler_module.realize_service(value)["units"]["example.service"]
+
+                self.assertIn('RuntimeDirectory="example"', unit)
+                self.assertNotIn("RuntimeDirectoryMode=", unit)
+
+    def test_service_owned_directories_require_one_mode_per_kind(self):
+        mounts = [{
+            "name": name, "source": "/run/" + name, "access": "read-write",
+            "ownership": "service-identity", "directory_mode": directory_mode,
+        } for name, directory_mode in [("first", "0750"), ("second", "0700")]]
+        value = dict(service(), storage={"mounts": mounts})
+
+        with self.assertRaisesRegex(ValueError, "common mode for each kind"):
+            handler_module.realize_service(value)
+
+        mounts[1]["directory_mode"] = "0750"
+        unit = handler_module.realize_service(value)["units"]["example.service"]
+
+        self.assertEqual(unit.count("RuntimeDirectoryMode=0750\n"), 1)
+        self.assertIn('RuntimeDirectory="first"', unit)
+        self.assertIn('RuntimeDirectory="second"', unit)
+
+    def test_provider_owned_mount_cannot_set_manager_directory_mode(self):
+        value = dict(service(), storage={"mounts": [{
+            "name": "state", "source": "/var/lib/example", "access": "read-write",
+            "ownership": "provider", "directory_mode": "0750",
+        }]})
+
+        with self.assertRaisesRegex(ValueError, "requires service-identity ownership"):
+            handler_module.realize_service(value)
+
+    def test_storage_logs_mode_must_match_actual_logging_directories(self):
+        value = dict(service(), storage={"mounts": [{
+            "name": "log", "source": "/var/log/example", "access": "read-write",
+            "ownership": "service-identity", "directory_mode": "0750",
+        }]})
+        value["logging"] = {
+            "standard_output": "structured", "standard_error": "structured",
+            "directories": ["other-log"], "directory_mode": "0700",
+        }
+
+        with self.assertRaisesRegex(ValueError, "common mode for each kind"):
+            handler_module.realize_service(value)
+
+        value["logging"]["directory_mode"] = "0750"
+        unit = handler_module.realize_service(value)["units"]["example.service"]
+
+        self.assertEqual(unit.count("LogsDirectoryMode=0750\n"), 1)
+        self.assertIn('LogsDirectory="other-log"', unit)
+        self.assertIn('LogsDirectory="example"', unit)
+
+        value["logging"]["directories"] = []
+        value["logging"]["directory_mode"] = "0700"
+        unit = handler_module.realize_service(value)["units"]["example.service"]
+
+        self.assertIn("LogsDirectoryMode=0750\n", unit)
+
+    def test_managed_directories_remain_writable_in_service_namespace(self):
+        purposes = {
+            "runtime": ("RuntimeDirectory", "/run/"),
+            "state": ("StateDirectory", "/var/lib/"),
+            "cache": ("CacheDirectory", "/var/cache/"),
+            "logs": ("LogsDirectory", "/var/log/"),
+            "configuration": ("ConfigurationDirectory", "/etc/"),
+        }
+        for purpose, (directive, root) in purposes.items():
+            with self.subTest(purpose=purpose):
+                value = service()
+                value["directories"] = {"managed": [{
+                    "path": "example/state", "purpose": purpose, "mode": "0700",
+                    "retention": "persistent", "owner": "state-owner", "group": "state-group",
+                }]}
+                value["isolation"] = {
+                    "privilege": "privileged", "filesystem": "read-only-system",
+                    "home_access": "inaccessible", "network": "host", "process_visibility": "host",
+                    "termination_scope": "all-processes", "temporary_directory": "private",
+                    "root_directory": "/srv/service-root",
+                    "temporary_filesystems": [{"path": root.rstrip("/"), "read_only": True}],
+                    "devices": [], "host_paths": [], "permit_core_dumps": False,
+                }
+
+                with patch.object(handler_module, "TRUE_EXECUTABLE", "/nix/store/coreutils/bin/true"):
+                    rendered = handler_module.realize_service(value)
+                directory_name = next(name for name in rendered["units"] if name != "example.service")
+                directory = rendered["units"][directory_name]
+                main = rendered["units"]["example.service"]
+
+                self.assertIn(directive + '="example/state"', directory)
+                self.assertIn(directive + "Mode=0700", directory)
+                self.assertIn("User=state-owner", directory)
+                self.assertIn("Group=state-group", directory)
+                self.assertIn("Requires=" + directory_name, main)
+                self.assertIn("After=" + directory_name, main)
+                self.assertIn("ProtectSystem=strict", main)
+                self.assertIn("RootDirectory=/srv/service-root\n", main)
+                self.assertIn('TemporaryFileSystem="' + root.rstrip("/") + ':ro"', main)
+                self.assertIn('BindPaths="' + root + 'example/state"', main)
+                self.assertNotIn(directive + "=", main)
+
+    def test_managed_public_keys_are_created_before_a_readonly_daemon_view(self):
+        value = dict(service(), service="sshd")
+        value["directories"] = {"managed": [{
+            "path": "ssh/authorized_keys", "purpose": "configuration", "mode": "0755",
+            "retention": "persistent", "owner": "root", "group": "root",
+        }]}
+        value["configuration"] = {"views": [{
+            "name": "authorized-keys", "source": "/etc/ssh/authorized_keys", "optional": False,
+        }]}
+
+        with patch.object(handler_module, "TRUE_EXECUTABLE", "/nix/store/coreutils/bin/true"):
+            rendered = handler_module.realize_service(value)
+        main = rendered["units"]["sshd.service"]
+        directory_name = next(name for name in rendered["units"] if name != "sshd.service")
+        directory = rendered["units"][directory_name]
+
+        self.assertIn('ConfigurationDirectory="ssh/authorized_keys"', directory)
+        self.assertIn("ConfigurationDirectoryMode=0755", directory)
+        self.assertIn("User=root", directory)
+        self.assertIn("Group=root", directory)
+        self.assertIn("Before=sshd.service", directory)
+        self.assertIn("Requires=" + directory_name, main)
+        self.assertIn("After=" + directory_name, main)
+        self.assertIn('ReadOnlyPaths="/etc/ssh/authorized_keys"', main)
+        self.assertNotIn("ReadOnlyPaths=", directory)
+        self.assertNotIn("RuntimeDirectory=", directory)
+        self.assertNotIn("BindsTo=", directory)
+
+    def test_registry_state_directory_precedes_sandboxed_bootstrap_service(self):
+        value = dict(service(), service="aos-registry-sync", activation_owner="image", auto_start=False)
+        value["directories"] = {"managed": [{
+            "path": "apm", "purpose": "state", "mode": "0755",
+            "retention": "persistent", "owner": "root", "group": "root",
+        }]}
+        value["isolation"] = {
+            "privilege": "privileged", "filesystem": "read-only-system",
+            "home_access": "inaccessible", "network": "host", "process_visibility": "host",
+            "termination_scope": "all-processes", "temporary_directory": "private",
+            "devices": [], "host_paths": [{"source": "/var/lib/apm", "mode": "read-write"}],
+            "permit_core_dumps": False,
+        }
+
+        with patch.object(handler_module, "TRUE_EXECUTABLE", "/nix/store/coreutils/bin/true"):
+            rendered = handler_module.realize_service(value)
+        directory_name = next(name for name in rendered["units"] if name != "aos-registry-sync.service")
+        directory = rendered["units"][directory_name]
+        registry = rendered["units"]["aos-registry-sync.service"]
+
+        self.assertIn('StateDirectory="apm"', directory)
+        self.assertIn("StateDirectoryMode=0755", directory)
+        self.assertIn("User=root", directory)
+        self.assertIn("Group=root", directory)
+        self.assertIn("Before=aos-registry-sync.service", directory)
+        self.assertIn("Requires=" + directory_name, registry)
+        self.assertIn("After=" + directory_name, registry)
+        self.assertIn('BindPaths="/var/lib/apm"', registry)
+
+    def test_unnamed_services_use_distinct_domain_instance_keys(self):
+        first = dict(service(), service="", instance="first.main")
+        second = dict(service(), service="", instance="second.main")
+        self.assertNotEqual(handler_module.service_identity(first), handler_module.service_identity(second))
+
+    def test_configuration_receipts_reject_other_scope_ownership(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "file"
+            value = {"path": str(path), "content": "shared", "mode": "0644"}
+            first = configuration_handler(invocation("configuration", "file", value), "unused", root, Path(root) / "state")
+            first.file("apply")
+            other = dict(invocation("configuration", "file", value), id="other-scope")
+            second = configuration_handler(other, "unused", root, Path(root) / "state")
+            with self.assertRaisesRegex(ValueError, "another installation effect"):
+                second.file("apply")
+
+    def test_configuration_provider_rejects_service_owned_path(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            instance = handler_module.Handler(invocation("serviceManagement", "realize", service()), "unused", units, state)
+            instance.manager = lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr="")
+            instance.service("apply")
+            path = units / "example.service"
+            value = {"path": str(path), "content": path.read_text(), "mode": "0644"}
+            other = dict(invocation("configuration", "file", value), id="configuration-owner")
+            configuration = ConfigurationProcess(other, state)
+
+            with self.assertRaisesRegex(ValueError, "another installation effect"):
+                configuration.file("apply")
+
+    def test_service_rejects_configuration_owned_path(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            rendered = handler_module.realize_service(service())["units"]["example.service"]
+            value = {"path": str(units / "example.service"), "content": rendered, "mode": "0644"}
+            configuration = ConfigurationProcess(invocation("configuration", "file", value), state)
+            configuration.file("apply")
+            other = dict(invocation("serviceManagement", "realize", service()), id="service-owner")
+            instance = handler_module.Handler(other, "unused", units, state)
+
+            with self.assertRaisesRegex(ValueError, "another installation effect"):
+                instance.service("apply")
+
+    def test_standalone_configuration_process_needs_no_service_manager(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "configuration"
+            document = invocation("configuration", "file", {"path": str(path), "content": "portable", "mode": "0600"})
+            provider = ConfigurationProcess(document, Path(root) / "state")
+            self.assertEqual(provider.file("apply")["path"], str(path))
+            self.assertEqual(path.read_text(), "portable")
+            self.assertEqual(provider.file("observe")["status"], "current")
+            path.write_text("external edit")
+            self.assertEqual(provider.file("observe")["status"], "indeterminate")
+            path.write_text("portable")
+            self.assertEqual(provider.file("remove"), {})
+            self.assertFalse(path.exists())
+
+    @unittest.skipIf(configuration_wrapper is None, "requires the source-built provider")
+    def test_installed_provider_keeps_writable_payload_unchanged(self):
+        with tempfile.TemporaryDirectory() as root:
+            payload = Path(root) / "provider"
+            payload.write_bytes(configuration_wrapper.read_bytes())
+            payload.chmod(0o700)
+            before = payload.read_bytes()
+            document = invocation("configuration", "file", {"path": str(Path(root) / "configuration"), "content": "portable", "mode": "0600"})
+            subprocess.run([str(payload), "--state-directory", str(Path(root) / "state"), "apply"], input=json.dumps(document), capture_output=True, text=True, env={}, check=True)
+            self.assertEqual(payload.read_bytes(), before)
+
+    @unittest.skipIf(configuration_wrapper is None, "requires the source-built provider")
+    def test_configuration_provider_shares_python_service_lock(self):
+        with tempfile.TemporaryDirectory() as root:
+            state = Path(root) / "state"
+            state.mkdir()
+            document = invocation("configuration", "file", {"path": str(Path(root) / "configuration"), "content": "portable", "mode": "0600"})
+            with open(state / ".lock", "a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                process = subprocess.Popen([str(configuration_wrapper), "--state-directory", str(state), "apply"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                try:
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        process.communicate(json.dumps(document), timeout=0.1)
+                    self.assertFalse((Path(root) / "configuration").exists())
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+                    output, error = process.communicate(timeout=5)
+                    self.assertEqual(process.returncode, 0, error)
+                    self.assertEqual(json.loads(output)["path"], str(Path(root) / "configuration"))
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.communicate()
+
+    def test_configuration_views_are_not_interpreted_as_environment_files(self):
+        value = service()
+        value["configuration"] = {"views": [{"name": "settings", "source": "/etc/example.json", "optional": False}]}
+        text = handler_module.realize_service(value)["units"]["example.service"]
+        self.assertIn('ReadOnlyPaths="/etc/example.json"', text)
+        self.assertNotIn("EnvironmentFile=", text)
+
+    def test_configuration_path_move_retains_old_path_through_a_retry(self):
+        with tempfile.TemporaryDirectory() as root:
+            old_path = Path(root) / "old.conf"
+            new_path = Path(root) / "new.conf"
+            old_path.write_text("old")
+            new_path.write_text("new")
+            value = {"path": str(new_path), "content": "new", "mode": "0600"}
+            instance = configuration_handler(invocation("configuration", "file", value), "unused", root, Path(root) / "state")
+            instance.save({
+                "kind": "configuration", "path": str(new_path), "pending": True,
+                "digest": handler_module.digest(b"new"),
+                "previous_digest": None, "previous_path": str(old_path),
+                "previous_path_digest": handler_module.digest(b"old"),
+            })
+
+            instance.file("apply")
+
+            self.assertFalse(old_path.exists())
+            self.assertEqual(new_path.read_text(), "new")
+            self.assertEqual(instance.file("observe")["status"], "current")
+
+    def test_activation_link_drift_is_observed_and_safe_absence_is_repaired(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = dict(service(), activation_owner="manager")
+            instance = handler_module.Handler(invocation("serviceManagement", "realize", value), "unused", root, Path(root) / "state")
+            instance.manager = lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", "")
+            instance.service("apply")
+            link = Path(root) / "multi-user.target.wants/example.service"
+            link.unlink()
+
+            self.assertEqual(instance.service("observe")["status"], "retry-safe")
+            instance.service("apply")
+            self.assertTrue(link.is_symlink())
+
+            link.unlink()
+            link.symlink_to("../external.service")
+            self.assertEqual(instance.service("observe")["status"], "indeterminate")
+            with self.assertRaises(ValueError):
+                instance.service("remove")
+
+    def test_file_metadata_drift_requires_reconciliation(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "file"
+            value = {"path": str(path), "content": "data", "mode": "0600"}
+            instance = configuration_handler(invocation("configuration", "file", value), "unused", root, Path(root) / "state")
+            instance.file("apply")
+            path.chmod(0o644)
+
+            self.assertEqual(instance.file("observe")["status"], "retry-safe")
+            instance.file("apply")
+            self.assertEqual(instance.file("observe")["status"], "current")
+
+    def test_pending_path_move_removal_cleans_both_owned_destinations(self):
+        with tempfile.TemporaryDirectory() as root:
+            old_path = Path(root) / "old.conf"
+            new_path = Path(root) / "new.conf"
+            old_path.write_text("old")
+            new_path.write_text("new")
+            value = {"path": str(new_path), "content": "new", "mode": "0600"}
+            instance = configuration_handler(invocation("configuration", "file", value), "unused", root, Path(root) / "state")
+            instance.save({
+                "kind": "configuration", "path": str(new_path), "pending": True,
+                "digest": handler_module.digest(b"new"),
+                "previous_digest": None, "previous_path": str(old_path),
+                "previous_path_digest": handler_module.digest(b"old"),
+            })
+
+            instance.file("remove")
+
+            self.assertFalse(old_path.exists())
+            self.assertFalse(new_path.exists())
+            self.assertFalse(instance.receipt_path.exists())
+
+    def test_remove_observation_retries_owned_configuration_then_proves_absence(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "example.conf"
+            value = {"path": str(path), "content": "owned", "mode": "0600"}
+            state = Path(root) / "state"
+            instance = configuration_handler(invocation("configuration", "file", value), "unused", root, state)
+            instance.file("apply")
+            removal = invocation("configuration", "file", value)
+            removal["action"] = "remove"
+            recovered = configuration_handler(removal, "unused", root, state)
+
+            self.assertEqual(recovered.file("observe")["status"], "retry-safe")
+            recovered.file("remove")
+            settled = configuration_handler(removal, "unused", root, state)
+            self.assertEqual(settled.file("observe")["status"], "absent")
+
+    def test_remove_observation_never_repeats_an_uncertain_stop(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = dict(service(), auto_start=False)
+            state = Path(root) / "state"
+            instance = handler_module.Handler(invocation("serviceManagement", "realize", value), "unused", root, state)
+            instance.manager = lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", "")
+            instance.service("apply")
+            removal = invocation("serviceManagement", "realize", value)
+            removal["action"] = "remove"
+            recovered = handler_module.Handler(removal, "unused", root, state)
+
+            self.assertEqual(recovered.service("observe")["status"], "retry-safe")
+
+            def fail_stop(*args, **kwargs):
+                raise RuntimeError("unknown partial stop")
+
+            recovered.manager = fail_stop
+            with self.assertRaises(RuntimeError):
+                recovered.service("remove")
+            pending = handler_module.Handler(removal, "unused", root, state)
+            self.assertEqual(pending.service("observe")["status"], "indeterminate")
+            self.assertTrue((Path(root) / "example.service").exists())
+
+    def private_storage_case(self, root, sources=None):
+        root = Path(root)
+        roots = {prefix: root / prefix.strip("/") for prefix in storage_module.PRIVATE_DIRECTORY_ROOTS}
+        value = dict(service(), auto_start=False)
+        value["identity"] = {
+            "principal": "example", "primary_group": None,
+            "supplementary_groups": [], "ephemeral": True,
+            "file_creation_mask": "0027",
+        }
+        value["storage"] = {"mounts": [
+            {"source": source, "ownership": "service-identity", "access": "read-write"}
+            for source in (sources or ["/var/log/example"])
+        ]}
+        request = invocation("serviceManagement", "realize", value)
+        instance = handler_module.Handler(request, "unused", root / "units", root / "receipts")
+        calls = []
+        instance.manager = lambda *args, **kwargs: calls.append(args) or subprocess.CompletedProcess(args, 0, "", "")
+        instance.service("apply")
+        return SimpleNamespace(roots=roots, value=value, request=request, handler=instance, calls=calls)
+
+    def private_storage_alias(self, case, source="/var/log/example", relative=False):
+        public, backing = storage_module.storage_paths(source)
+        public.parent.mkdir(parents=True, exist_ok=True)
+        backing.mkdir(parents=True)
+        (backing / "retained-data").write_text("preserved service data")
+        public.symlink_to(os.path.relpath(backing, public.parent) if relative else backing)
+        return public, backing
+
+    def test_private_storage_retirement_preserves_data_and_directory_metadata(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case, relative=True)
+                backing.chmod(0o750)
+                original = backing.stat()
+
+                case.handler.service("remove")
+
+                self.assertFalse(public.is_symlink())
+                self.assertEqual((public / "retained-data").read_text(), "preserved service data")
+                self.assertEqual(public.stat().st_ino, original.st_ino)
+                self.assertEqual(stat.S_IMODE(public.stat().st_mode), 0o750)
+                self.assertFalse(backing.exists())
+                self.assertFalse(case.handler.receipt_path.exists())
+
+    def test_private_storage_retirement_moves_nested_mounts_once(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root, ["/var/lib/example", "/var/lib/example/www/site"])
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case, "/var/lib/example")
+                nested = backing / "www/site"
+                nested.mkdir(parents=True)
+                (nested / "index").write_text("site data")
+                self.assertEqual(case.handler.receipt["private_storage"], ["/var/lib/example"])
+
+                case.handler.service("remove")
+
+                self.assertEqual((public / "www/site/index").read_text(), "site data")
+                self.assertFalse(backing.exists())
+
+    def test_private_storage_retirement_rejects_foreign_alias(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case)
+                foreign = Path(root) / "foreign"
+                foreign.mkdir()
+                (foreign / "data").write_text("foreign data")
+                public.unlink()
+                public.symlink_to(foreign)
+
+                with self.assertRaisesRegex(ValueError, "alias changed"):
+                    case.handler.service("remove")
+
+                self.assertEqual(public.readlink(), foreign)
+                self.assertEqual((foreign / "data").read_text(), "foreign data")
+                self.assertEqual((backing / "retained-data").read_text(), "preserved service data")
+                self.assertTrue((Path(root) / "units/example.service").exists())
+                self.assertTrue(case.handler.receipt_path.exists())
+
+    def test_private_storage_retirement_recovers_before_rename_without_repeating_stop(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case)
+                with patch.object(storage_module, "rename_directory_noreplace", side_effect=RuntimeError("interrupted before rename")):
+                    with self.assertRaisesRegex(RuntimeError, "before rename"):
+                        case.handler.service("remove")
+                self.assertFalse(public.exists())
+                self.assertTrue(backing.exists())
+                self.assertTrue(case.handler.receipt["removal_stopped"])
+                self.assertEqual(len(case.handler.receipt["storage_handoffs"]), 1)
+
+                removal = dict(case.request, action="remove")
+                recovered = handler_module.Handler(removal, "unused", Path(root) / "units", Path(root) / "receipts")
+                recovered.manager = case.handler.manager
+                # Even absent units cannot acknowledge an incomplete handoff.
+                (Path(root) / "units/example.service").unlink()
+                self.assertEqual(recovered.service("observe")["status"], "retry-safe")
+                self.assertTrue(recovered.receipt_path.exists())
+                recovered.service("remove")
+
+                self.assertEqual((public / "retained-data").read_text(), "preserved service data")
+                self.assertEqual(sum(call[0] == "stop" for call in case.calls), 1)
+                self.assertFalse(recovered.receipt_path.exists())
+
+    def test_private_storage_retirement_recovers_after_rename(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case)
+                rename = storage_module.rename_directory_noreplace
+
+                def interrupted(*args):
+                    rename(*args)
+                    raise RuntimeError("interrupted after rename")
+
+                with patch.object(storage_module, "rename_directory_noreplace", side_effect=interrupted):
+                    with self.assertRaisesRegex(RuntimeError, "after rename"):
+                        case.handler.service("remove")
+                self.assertFalse(backing.exists())
+                self.assertEqual((public / "retained-data").read_text(), "preserved service data")
+
+                recovered = handler_module.Handler(dict(case.request, action="remove"), "unused", Path(root) / "units", Path(root) / "receipts")
+                recovered.manager = case.handler.manager
+                self.assertEqual(recovered.service("observe")["status"], "retry-safe")
+                recovered.service("remove")
+
+                self.assertFalse(recovered.receipt_path.exists())
+                self.assertEqual(sum(call[0] == "stop" for call in case.calls), 1)
+                self.assertEqual((public / "retained-data").read_text(), "preserved service data")
+
+    def test_private_storage_retirement_rejects_backing_identity_drift(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case)
+                with patch.object(storage_module, "rename_directory_noreplace", side_effect=RuntimeError("interrupted")):
+                    with self.assertRaises(RuntimeError):
+                        case.handler.service("remove")
+                original = backing.with_name("original")
+                backing.rename(original)
+                backing.mkdir()
+                (backing / "foreign").write_text("foreign")
+
+                recovered = handler_module.Handler(dict(case.request, action="remove"), "unused", Path(root) / "units", Path(root) / "receipts")
+                recovered.manager = case.handler.manager
+                self.assertEqual(recovered.service("observe")["status"], "indeterminate")
+                with self.assertRaisesRegex(ValueError, "backing identity changed"):
+                    recovered.service("remove")
+
+                self.assertFalse(public.exists())
+                self.assertEqual((backing / "foreign").read_text(), "foreign")
+                self.assertEqual((original / "retained-data").read_text(), "preserved service data")
+                self.assertTrue(recovered.receipt_path.exists())
+
+    def test_private_storage_retirement_rechecks_backing_after_alias_unlink_sync(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case)
+                parent_identity = storage_module.entry_identity(public.parent.stat())
+                original = backing.with_name("original")
+                fsync = os.fsync
+                replaced = False
+
+                def replace_after_sync(descriptor):
+                    nonlocal replaced
+                    fsync(descriptor)
+                    if (not replaced and storage_module.entry_identity(os.fstat(descriptor)) == parent_identity
+                            and not public.is_symlink()):
+                        replaced = True
+                        backing.rename(original)
+                        backing.mkdir()
+                        (backing / "foreign").write_text("foreign data")
+
+                with patch.object(storage_module.os, "fsync", side_effect=replace_after_sync):
+                    with self.assertRaisesRegex(ValueError, "backing identity changed"):
+                        case.handler.service("remove")
+
+                self.assertTrue(replaced)
+                self.assertFalse(public.exists())
+                self.assertEqual((backing / "foreign").read_text(), "foreign data")
+                self.assertEqual((original / "retained-data").read_text(), "preserved service data")
+                self.assertTrue((Path(root) / "units/example.service").exists())
+                self.assertTrue(case.handler.receipt_path.exists())
+
+    def test_private_storage_retirement_never_replaces_competing_public_directory(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case)
+                rename = storage_module.rename_directory_noreplace
+
+                def competing_directory(*args):
+                    public.mkdir()
+                    rename(*args)
+
+                with patch.object(storage_module, "rename_directory_noreplace", side_effect=competing_directory):
+                    with self.assertRaises(FileExistsError):
+                        case.handler.service("remove")
+
+                self.assertTrue(public.is_dir())
+                self.assertEqual(list(public.iterdir()), [])
+                self.assertEqual((backing / "retained-data").read_text(), "preserved service data")
+                self.assertTrue(case.handler.receipt_path.exists())
+
+    def test_private_storage_retirement_rejects_intermediate_symlink(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case)
+                private_root = backing.parent
+                renamed = private_root.with_name("external")
+                private_root.rename(renamed)
+                private_root.symlink_to(renamed)
+
+                with self.assertRaises(OSError):
+                    case.handler.service("remove")
+
+                self.assertTrue(public.is_symlink())
+                self.assertEqual((renamed / "example/retained-data").read_text(), "preserved service data")
+                self.assertTrue((Path(root) / "units/example.service").exists())
+
+    def test_private_storage_retirement_leaves_plain_public_directory_untouched(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, _ = storage_module.storage_paths("/var/log/example")
+                public.mkdir(parents=True)
+                (public / "data").write_text("standalone data")
+                identity = public.stat().st_ino
+
+                case.handler.service("remove")
+
+                self.assertEqual(public.stat().st_ino, identity)
+                self.assertEqual((public / "data").read_text(), "standalone data")
+
+    def test_private_storage_retirement_includes_cache_and_logging_only_directories(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root, ["/var/cache/example"])
+            case.value["logging"] = {
+                "standard_output": "structured", "standard_error": "inherit",
+                "namespace": None, "directories": ["example"], "directory_mode": "0750",
+            }
+            case.handler.invocation["previous"] = {"revision": "first"}
+            case.handler.service("apply")
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                cache, cache_backing = self.private_storage_alias(case, "/var/cache/example")
+                logs, log_backing = self.private_storage_alias(case)
+
+                case.handler.service("remove")
+
+                self.assertFalse(cache.is_symlink())
+                self.assertFalse(logs.is_symlink())
+                self.assertEqual((cache / "retained-data").read_text(), "preserved service data")
+                self.assertEqual((logs / "retained-data").read_text(), "preserved service data")
+                self.assertFalse(cache_backing.exists())
+                self.assertFalse(log_backing.exists())
+
+    def test_private_storage_retirement_selects_only_ephemeral_authored_custody(self):
+        value = service()
+        value["identity"] = {"ephemeral": False}
+        value["storage"] = {"mounts": [
+            {"source": "/var/log/foreign", "ownership": "provider"},
+            {"source": "/var/lib/example", "ownership": "service-identity"},
+            {"source": "/run/example", "ownership": "service-identity"},
+        ]}
+        self.assertEqual(storage_module.private_storage_sources(value), [])
+        value["identity"]["ephemeral"] = True
+        self.assertEqual(storage_module.private_storage_sources(value), ["/var/lib/example"])
+
+    def test_path_conditions_use_scalar_paths_and_literal_specifiers(self):
+        value = service()
+        value["conditions"] = {"all": [
+            {"kind": "path", "predicate": "exists", "path": "/tmp/a path%literal", "negated": True},
+            {"kind": "path", "predicate": "is-mount-point", "path": "/run/etc", "negated": False},
+        ]}
+
+        text = handler_module.realize_service(value)["units"]["example.service"]
+
+        self.assertIn("ConditionPathExists=!/tmp/a path%%literal\n", text)
+        self.assertIn("ConditionPathIsMountPoint=/run/etc\n", text)
+        self.assertIn('"a b" "$$USER" "%%i"', text)
+
+        value["conditions"]["all"][0]["path"] = "/tmp/path\nInjected=yes"
+        with self.assertRaises(ValueError):
+            handler_module.realize_service(value)
+
+    def test_mac_enforcement_uses_an_actual_state_condition(self):
+        handler_module.MAC_CONDITION_EXECUTABLE = "/nix/store/service/bin/aos-service-handler"
+        value = service()
+        value["conditions"] = {"all": [{"kind": "mandatory-access-control", "state": "enforcing", "negated": True}]}
+
+        text = handler_module.realize_service(value)["units"]["example.service"]
+
+        self.assertIn('ExecCondition="/nix/store/service/bin/aos-service-handler" "check-mac" "--negated"', text)
+        self.assertNotIn("selinux-enforcing", text)
+
+    def test_configuration_fingerprints_are_not_manager_unit_dependencies(self):
+        value = service()
+        value["dependencies"] = {"after": ["configuration:path-hash:content-hash", "dbus.service"]}
+        text = handler_module.realize_service(value)["units"]["example.service"]
+        self.assertIn("After=dbus.service", text)
+        self.assertNotIn("configuration:path-hash", text)
+
+    def test_service_identity_preserves_declared_name_before_domain_instance(self):
+        value = dict(service(), service="tailscaled", instance="tailscale")
+
+        self.assertEqual(handler_module.service_identity(value), "tailscaled.service")
+        value["manager_identity"] = {"name": "custom-vpn", "aliases": []}
+        self.assertEqual(handler_module.service_identity(value), "custom-vpn.service")
+        value.pop("manager_identity")
+        value.pop("service")
+        self.assertEqual(handler_module.service_identity(value), "tailscale.service")
+
+    def test_no_new_privileges_combines_policy_and_isolation_once(self):
+        for policy, isolation, expected in [
+            (False, "privileged", "yes"),
+            (True, "unprivileged", "yes"),
+            (True, "privileged", "no"),
+            (None, "unprivileged", "yes"),
+        ]:
+            with self.subTest(policy=policy, isolation=isolation):
+                value = {"isolation": {
+                    "privilege": isolation, "network": "host", "temporary_directory": "shared",
+                    "filesystem": "host", "home_access": "host", "process_visibility": "host",
+                    "termination_scope": "all-processes", "permit_core_dumps": False,
+                    "devices": [], "host_paths": [],
+                }}
+                if policy is not None:
+                    value["policy"] = {"hardening": {"allow_privilege_escalation": policy}}
+                unit = handler_module.Unit()
+                with patch.object(handler_module, "hardening"):
+                    handler_module.process_features(unit, value)
+
+                directives = [line for line in unit.sections["Service"] if line.startswith("NoNewPrivileges=")]
+                self.assertEqual(directives, ["NoNewPrivileges=" + expected])
+
+    def test_template_identity_uses_the_declared_template_name(self):
+        value = dict(service(), instantiation={"kind": "template", "template": "worker"})
+        self.assertEqual(handler_module.service_identity(value), "worker@.service")
+
+    def test_search_path_preserves_package_bin_and_sbin_tools(self):
+        value = service()
+        value["environment"] = {
+            "variables": {},
+            "search_path": ["/nix/store/bridge-utils", "/nix/store/iptables"],
+        }
+
+        text = handler_module.realize_service(value)["units"]["example.service"]
+
+        self.assertIn(
+            "ExecSearchPath=/nix/store/bridge-utils/bin:/nix/store/bridge-utils/sbin:"
+            "/nix/store/iptables/bin:/nix/store/iptables/sbin",
+            text,
+        )
+
+    def test_instance_identity_preserves_template_resource(self):
+        value = dict(service(), service="ignored", instance="domain.instance")
+        value["instantiation"] = {
+            "kind": "instance", "template_resource": "worker@.service", "instance": "member",
+        }
+
+        self.assertEqual(handler_module.service_identity(value), "worker@member.service")
+
+    def test_environment_preserves_literal_dollars_without_exec_expansion(self):
+        value = service()
+        value["environment"] = {"variables": {"PASSWORD": "$value%literal"}, "search_path": []}
+        text = handler_module.realize_service(value)["units"]["example.service"]
+        self.assertIn('Environment="PASSWORD=$value%%literal"', text)
+
+
+if __name__ == "__main__":
+    unittest.main()

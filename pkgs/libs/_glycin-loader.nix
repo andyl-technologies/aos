@@ -7,12 +7,33 @@
   libseccomp,
   loaderName,
   loaderDeps ? [],
+  qualification,
 }: let
   sources = callPackage ./_glycin-sources.nix {};
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = loaderName;
-    inherit (sources) version src cargoDeps;
+    inherit qualification;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${sources.version}";
+    inherit (sources) src cargoDeps;
     buildDeps = [buildPackages.pkg-config];
     runtimeDeps = [libseccomp] ++ loaderDeps;
     cargoFlags = "-p ${loaderName}";

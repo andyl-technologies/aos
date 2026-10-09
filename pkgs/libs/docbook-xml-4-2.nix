@@ -1,5 +1,6 @@
 ##! docbook-xml — DocBook XML 4.2 document type definition
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -7,7 +8,30 @@
   version = "4.2";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "docbook-xml";
+    qualification.packageProbe = import ./_docbook-xml-probe.nix {inherit lib version;};
     inherit version;
 
     src = fetchurl {

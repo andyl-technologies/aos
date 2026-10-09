@@ -178,8 +178,7 @@ def run_managed_pair_window(client, native, worker, database, tools, database_ho
         "cacheUrl": coordinates["workerOrigin"] + "/managed-" + run_id + "/private-docs",
         "hubPackage": tools["documentedPackage"]["storePath"],
         "hubVersion": tools["documentedPackage"]["version"]}
-    private_source = documents.prepare_direct_documented_surface(client, documented_tools,
-        tools["documentedPackage"]["baseLib"])
+    private_source = documents.prepare_direct_documented_surface(client, documented_tools)
     require_managed_pair(private_source["document"]["sha256"] == source["document"]["sha256"]
         and private_source["document"]["byteSize"] == source["document"]["byteSize"],
         "Public and independently signed private registries must retain the same canonical document")

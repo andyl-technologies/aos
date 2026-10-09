@@ -8,6 +8,7 @@ survive verbatim — see comments in start().
 import glob
 import logging
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -25,30 +26,19 @@ log: logging.Logger = logging.getLogger(__name__)
 
 
 def _mcast_endpoint() -> tuple[str, int]:
-    """Pick a per-driver-process multicast group + port for the fleet L2.
+    """Pick one randomly isolated multicast endpoint for the fleet L2.
 
-    Every machine in one ``aos-test-driver`` invocation joins the same
-    group (so they form one virtual L2 segment); two driver processes on
-    the same host cannot collide because their PIDs are distinct while
-    both are live. Mirrors the per-PID CID derivation in
-    ``firecracker.py`` — the codebase already does not rely on Nix
-    sandbox netns isolation for harness-internal addresses.
+    All machines in one driver invocation share this endpoint. Nix PID
+    namespaces can give concurrent drivers the same PID while their VMs share
+    the host network, so a PID cannot isolate their Ethernet traffic.
 
-    Even when the sandbox netns *does* isolate ``localaddr=127.0.0.1``
-    mcast traffic, this keeps the interactive launcher (which runs
-    outside the sandbox) and any future non-sandboxed call path correct
-    by construction.
-
-    239.0.0.0/8 is the IANA "organization-local scope" range (RFC 2365)
-    — the right pool for an ephemeral, harness-internal multicast group.
-    The last three octets carry 24 bits of PID; Linux's default
-    PID_MAX_LIMIT is 2^22, so within the live PID range the group is
-    unique. The port adds a second axis of separation in case the PID
-    happens to share its low 24 bits with another live driver.
+    Use 24 random group bits in the organization-local 239.0.0.0/8 range
+    and an independently selected port. The endpoint is chosen once on import
+    and retained across machine restarts within the same fleet.
     """
-    pid = os.getpid()
-    group = f"239.{(pid >> 16) & 0xff}.{(pid >> 8) & 0xff}.{pid & 0xff}"
-    port = 10000 + (pid % 50000)
+    group_id = secrets.randbits(24)
+    group = f"239.{(group_id >> 16) & 0xff}.{(group_id >> 8) & 0xff}.{group_id & 0xff}"
+    port = 10000 + secrets.randbelow(50000)
     return group, port
 
 
@@ -106,6 +96,7 @@ class QemuMachine(Machine):
     drain_proc: subprocess.Popen[bytes] | None
     swtpm_proc: subprocess.Popen[bytes] | None
     smbios_oem_strings: list[str]
+    kernel_params: list[str]
     _smbios_tpm_snapshot: Path
 
     def __init__(
@@ -131,6 +122,7 @@ class QemuMachine(Machine):
         host_store_mount: bool = False,
         tpm: bool = False,
         swtpm_bin: str | None = None,
+        kernel_params: list[str] | None = None,
     ) -> None:
         self.boot = boot
         self.kernel_pkg = kernel
@@ -162,6 +154,7 @@ class QemuMachine(Machine):
         self.vars_copy = str(self.tmpdir / f"{name}-OVMF_VARS.fd")
         self.tpm = tpm
         self.swtpm_bin = swtpm_bin
+        self.kernel_params = kernel_params or []
         self.tpm_socket = str(self.tmpdir / f"{name}-tpm.sock") if tpm else None
         self.tpm_state_dir = str(self.tmpdir / f"{name}-tpm-state") if tpm else None
         self.swtpm_log = str(self.tmpdir / f"{name}-swtpm.log")
@@ -288,7 +281,7 @@ class QemuMachine(Machine):
             # identity is baked into the image's /etc (via extendModules), so a
             # kernel-boot machine may carry no metadata channel at all. When
             # absent, no SCSI CD-ROM is attached (see the argv block below) and
-            # aos-metadata-detect falls through to the `metal` platform.
+            # the metadata provisioning provider detects the `metal` platform.
             # A repart-provisioned kernel disk ships no /var, so
             # grow the per-run copy by var_size_mib to open trailing free
             # space (sparse — os.truncate extends with holes) and relocate
@@ -332,10 +325,8 @@ class QemuMachine(Machine):
         # (no CAP_NET_ADMIN required). Cross-process delivery between
         # QEMU instances of the same fleet works as designed.
         #
-        # The mcast group + port are derived from the driver PID at
-        # import time (see _mcast_endpoint above), so two concurrent
-        # driver processes — sandboxed or not — get distinct L2 segments
-        # and cannot cross-talk even if a future change shares a netns.
+        # The endpoint is selected once per driver, independently of PID
+        # namespaces, and shared by this fleet's machines and their restarts.
         self._launch()
 
     # ------------------------------------------------------------------
@@ -463,12 +454,7 @@ class QemuMachine(Machine):
                 "-kernel", vmlinuz,
                 "-initrd", initrd,
                 "-append",
-                (
-                    "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro "
-                    "systemd.unified_cgroup_hierarchy=1 systemd.gpt-auto=0 "
-                    "systemd.journald.forward_to_console=1 enforcing=0 "
-                    "net.ifnames=0"
-                ),
+                " ".join(self.kernel_params),
                 "-drive", f"file={self.disk_copy},format=raw,if=virtio",
             ]
 
@@ -757,6 +743,60 @@ class QemuMachine(Machine):
         self._launch()
         log.info(
             "[%s] relaunched QEMU (pid %s); waiting for agent",
+            self.name,
+            self.qemu_proc.pid if self.qemu_proc else "?",
+        )
+        self.agent.wait_ready(deadline)
+
+    def power_cycle(self, timeout: float = 600.0) -> None:
+        """Cut power to QEMU and boot again from the same writable disks.
+
+        The method kills the owned QEMU process with ``SIGKILL`` without
+        asking the guest to stop, closes stale transport state, and relaunches
+        against the already prepared per-run artifacts. It is intended for
+        crash-consistency tests that must cross a real unclean power boundary.
+
+        Raises:
+            RuntimeError: If the machine is not running, uses a vTPM, QEMU
+                cannot be killed, or the guest agent does not return before
+                the deadline.
+        """
+        if self.tpm:
+            raise RuntimeError(
+                f"[{self.name}] hard power cycling a vTPM machine is unsupported"
+            )
+        if self.qemu_proc is None or self.qemu_proc.poll() is not None:
+            raise RuntimeError(f"[{self.name}] power cycle requires running QEMU")
+
+        deadline = time.monotonic() + timeout
+        previous_qemu = self.qemu_proc
+        previous_pid = previous_qemu.pid
+        log.info("==> Cutting power to machine: %s (QEMU pid %s)", self.name, previous_pid)
+
+        self.agent.close()
+        previous_qemu.kill()
+        try:
+            remaining = max(0.0, deadline - time.monotonic())
+            previous_qemu.wait(timeout=min(remaining, 30.0))
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"[{self.name}] QEMU pid {previous_pid} survived SIGKILL"
+            ) from None
+
+        self._stop_serial_bridge()
+        if self._qemu_log_fd is not None:
+            self._qemu_log_fd.close()
+            self._qemu_log_fd = None
+
+        log.info(
+            "[%s] unclean QEMU exit recorded (pid %s, code %s)",
+            self.name,
+            previous_pid,
+            previous_qemu.returncode,
+        )
+        self._launch()
+        log.info(
+            "[%s] relaunched QEMU after power loss (pid %s); waiting for agent",
             self.name,
             self.qemu_proc.pid if self.qemu_proc else "?",
         )

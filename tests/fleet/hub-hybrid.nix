@@ -77,12 +77,11 @@
   '';
   # The caller supplies the independently verified final committed capture.
   # Package outputs and module bytes are measured only after realization.
-  packMemorySourceDescriptor =
-    assert runtimeSource != null;
-    assert runtimeSourceIdentity != null;
-    assert builtins.attrNames runtimeSourceIdentity == ["sourceCommit" "sourceTree"];
-    assert builtins.match "[0-9a-f]{40}" runtimeSourceIdentity.sourceCommit != null;
-    assert builtins.match "[0-9a-f]{40}" runtimeSourceIdentity.sourceTree != null;
+  packMemorySourceDescriptor = assert runtimeSource != null;
+  assert runtimeSourceIdentity != null;
+  assert builtins.attrNames runtimeSourceIdentity == ["sourceCommit" "sourceTree"];
+  assert builtins.match "[0-9a-f]{40}" runtimeSourceIdentity.sourceCommit != null;
+  assert builtins.match "[0-9a-f]{40}" runtimeSourceIdentity.sourceTree != null;
     pkgs.runCommand "hub-pack-memory-source-descriptor" {buildDeps = [pkgs.python3];} ''
       mkdir -p "$out"
       ${pkgs.python3}/bin/python3 - "$out" <<'PACK_MEMORY_SOURCE_DESCRIPTOR'
@@ -404,11 +403,11 @@
           ++ lib.optional (externalDirect && !separateDatabase) 5432;
         aos.kernel.modules = ["9pnet_virtio" "9p"];
         environment.systemPackages = [pkgs.util-linux];
-        systemd.services.aos-hub.serviceConfig.Environment = [
-          "HUB_OCI_PULL_ENABLED=true"
-          "HUB_OCI_PUSH_ENABLED=true"
-          "HUB_OCI_GC_ENABLED=true"
-        ];
+        aos.services.hub.environment.variables = {
+          HUB_OCI_PULL_ENABLED = "true";
+          HUB_OCI_PUSH_ENABLED = "true";
+          HUB_OCI_GC_ENABLED = "true";
+        };
         environment.etc."tmpfiles.d/hub-hybrid-fleet-credentials.conf".text = ''
           d /run/credentials/@system 0700 root root -
           C /run/credentials/@system/hybrid-fleet-database-url 0600 root root - ${databaseUrl}/value
@@ -692,7 +691,6 @@
         fixture.helperV1
         fixture.helperV2
         containerPublicationInputs
-        containerFixture.config.aos.config.evalAtBoot.baseLib
         pkgs.aos-hub-console-dist
         databaseUrl
         ingressKey
@@ -1210,18 +1208,33 @@ in {
               "externalCopyPartialInstallation": copy_partial_hold,
               "externalWorkflowAccounting": "${managedFixtureModules}/_hub-external-workflow-accounting.py",
               "managedContainerProducer": "${managedFixtureModules}/_hub-managed-container.py",
-              "documentedPackage": {"storePath": "${pkgs.aos-hub}", "version": "${pkgs.aos-hub.version}",
-                  "baseLib": "${containerFixture.config.aos.config.evalAtBoot.baseLib}"},
+              "documentedPackage": {"storePath": "${pkgs.aos-hub}", "version": "${pkgs.aos-hub.version}"},
               "publicDocumentCacheObserver": "${managedFixtureModules}/_hub-worker-cache-observer.cjs",
               "readParityModule": "${managedFixtureModules}/_hub-direct-read-parity.py",
               "readIndexModule": "${managedFixtureModules}/_hub-index-parity.py",
               "readWindowModule": "${managedFixtureModules}/_hub-direct-read-window.py",
               "managedCleanupNativeHelper": "${managedCleanupNativeHelper}/bin/aos-hub-managed-cleanup-contract",
               "managedCleanupNativeHelperProvenance": "${managedCleanupHelperProvenance}/provenance.json",
-              "packMemoryModules": ${if packMemoryEnabled then builtins.toJSON (toString packMemoryModules) else "None"},
-              "packMemoryExporter": ${if packMemoryEnabled then builtins.toJSON "${packMemoryExporter}/bin/aos-pack-memory-fixture" else "None"},
-              "packMemorySourceDescriptor": ${if packMemoryEnabled then builtins.toJSON "${packMemorySourceDescriptor}/descriptor.json" else "None"},
-              "packMemoryCurrentTuple": ${if packMemoryEnabled then builtins.toJSON "${packMemorySourceDescriptor}/current-tuple.json" else "None"},
+              "packMemoryModules": ${
+            if packMemoryEnabled
+            then builtins.toJSON (toString packMemoryModules)
+            else "None"
+          },
+              "packMemoryExporter": ${
+            if packMemoryEnabled
+            then builtins.toJSON "${packMemoryExporter}/bin/aos-pack-memory-fixture"
+            else "None"
+          },
+              "packMemorySourceDescriptor": ${
+            if packMemoryEnabled
+            then builtins.toJSON "${packMemorySourceDescriptor}/descriptor.json"
+            else "None"
+          },
+              "packMemoryCurrentTuple": ${
+            if packMemoryEnabled
+            then builtins.toJSON "${packMemorySourceDescriptor}/current-tuple.json"
+            else "None"
+          },
               "verificationObservationHelper": "${verificationObservationHelper}/bin/aos-hub-worker-verification-observation",
               "verificationObservationHelperProvenance": "${verificationObservationHelperProvenance}/provenance.json",
               "consoleAssetInputs": [
@@ -1245,15 +1258,15 @@ in {
               "nativeBodyObservationTools": ${
             if nativeBodyObservationTools == null
             then "None"
-            else ''{
-                  "package": "${nativeBodyObservationTools}",
-                  "context": {"path": "${nativeBodyObservationTools}/libexec/aos-observation-tools/package-context.json",
-                      "sha256": hashlib.sha256(Path("${nativeBodyObservationTools}/libexec/aos-observation-tools/package-context.json").read_bytes()).hexdigest()},
-                  "provenance": {"path": "${nativeBodyObservationTools}/helper-build-provenance.json",
-                      "sha256": hashlib.sha256(Path("${nativeBodyObservationTools}/helper-build-provenance.json").read_bytes()).hexdigest()},
-                  "wrapper": {"path": "${nativeBodyObservationTools}/bin/aos-native-body-observer",
-                      "sha256": hashlib.sha256(Path("${nativeBodyObservationTools}/bin/aos-native-body-observer").read_bytes()).hexdigest()},
-              }''
+            else ''              {
+                                "package": "${nativeBodyObservationTools}",
+                                "context": {"path": "${nativeBodyObservationTools}/libexec/aos-observation-tools/package-context.json",
+                                    "sha256": hashlib.sha256(Path("${nativeBodyObservationTools}/libexec/aos-observation-tools/package-context.json").read_bytes()).hexdigest()},
+                                "provenance": {"path": "${nativeBodyObservationTools}/helper-build-provenance.json",
+                                    "sha256": hashlib.sha256(Path("${nativeBodyObservationTools}/helper-build-provenance.json").read_bytes()).hexdigest()},
+                                "wrapper": {"path": "${nativeBodyObservationTools}/bin/aos-native-body-observer",
+                                    "sha256": hashlib.sha256(Path("${nativeBodyObservationTools}/bin/aos-native-body-observer").read_bytes()).hexdigest()},
+                            }''
           },
               "storageCodecExecutable": {"path": "${storageBodyCodec}/bin/aos-storage-body-codec",
                   "sha256": hashlib.sha256(Path("${storageBodyCodec}/bin/aos-storage-body-codec").read_bytes()).hexdigest()},

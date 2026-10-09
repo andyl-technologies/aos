@@ -120,7 +120,7 @@ def select_direct_read_corpus(selection):
             raise ValueError("independent signed-corpus object bytes differ")
         if kind == "document":
             value = _json(body)
-            if value.get("schema") != "aos.package-documentation/v1" or not value.get("options"):
+            if value.get("schema") != "aos.module.documentation" or not value.get("options"):
                 raise ValueError("selected document lacks genuine package option content")
             if row["relativePath"].rsplit(":", 1)[-1] != row["sha256"]:
                 raise ValueError("documentation route differs from its canonical content hash")
@@ -521,7 +521,7 @@ def run_direct_full_read_window(selection, transport, control, bearer_header_fil
     return result
 
 
-def prepare_direct_documented_surface(client, tools, documentation_base_lib):
+def prepare_direct_documented_surface(client, tools):
     """Author genuine option documentation in a separate signed APR release."""
     # The extra release belongs to its own registry/root. The main three large
     # objects and 12,535 pointers keep their existing publisher and counters.
@@ -546,7 +546,7 @@ def prepare_direct_documented_surface(client, tools, documentation_base_lib):
             [selected['apr'], 'publish', selected['hubPackage'], '--registry', 'external-direct-docs',
                 '--name', 'aos-hub', '--version', selected['hubVersion'],
                 '--description', 'Native and Worker registry Hub service.', '--license', 'Apache-2.0',
-                '--maintainer', 'fleet-publisher@example.test', '--documentation-base-lib', selected['baseLib'],
+                '--maintainer', 'fleet-publisher@example.test',
                 '--key-id', 'initial'],
             [selected['apr'], 'release', '1.0.1', '--registry', 'external-direct-docs', '--key-id', 'initial',
                 '--channel', 'stable', '--cache-url', selected['cacheUrl'],
@@ -582,12 +582,12 @@ def prepare_direct_documented_surface(client, tools, documentation_base_lib):
             if completed.returncode:
                 raise ValueError('actual APR documentation preparation refused; source retained')
         catalog = tomllib.loads((registry / 'packages/a/aos-hub.toml').read_text())
-        matching = [entry['platforms'][selected['platform']]['documentation']
+        matching = [entry['platforms'][selected['platform']]['module_documentation']
             for entry in catalog['versions'] if entry['version'] == selected['hubVersion']]
         if len(matching) != 1:
             raise ValueError('actual signed package documentation identity is ambiguous')
         identity = matching[0]
-        descriptor = os.open(identity['store_path'], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        descriptor = os.open(Path(identity['store_path']) / 'options.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(descriptor, 'rb') as source:
             metadata = os.fstat(source.fileno())
             if not stat.S_ISREG(metadata.st_mode) or not 1 <= metadata.st_size <= 262144:
@@ -614,7 +614,7 @@ def prepare_direct_documented_surface(client, tools, documentation_base_lib):
             'documentationIdentity': identity}))
     """, {"publisherRoot": signed["publisherHome"], "surface": signed["surfaceRoot"],
         "apr": tools["apr"], "hubPackage": tools["hubPackage"], "hubVersion": tools["hubVersion"],
-        "baseLib": documentation_base_lib, "cacheUrl": tools["cacheUrl"], "git": tools["git"],
+        "cacheUrl": tools["cacheUrl"], "git": tools["git"],
         "platform": "x86_64-linux", "toolDirectories": [tools["git"].rsplit("/", 1)[0],
             tools["openssh"], tools["nix"]]}, timeout=1000))
     return {**signed, **result}

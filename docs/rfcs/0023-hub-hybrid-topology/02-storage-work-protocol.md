@@ -296,7 +296,8 @@ idempotency rule.
 | `inspect_registry` | Fetch and verify selected Git loose objects, bundle entries, channel partitions, or signed semantic files | Typed fields needed by the shared indexer, with source digest and parser evidence |
 | `inspect_metadata_objects` | Read up to 32 ordered, unique admitted metadata paths beside storage | An ordered page of exact bounded documents and provider identities, with explicit absent entries |
 | `inspect_oci` and `inspect_cache` | Parse admitted OCI descriptors, manifests, closure metadata, narinfo, or other versioned small semantic formats | Typed, bounded catalog or index projections |
-| `inspect_documentation_content` | Read and verify one signed single-file documentation NAR, then parse its canonical document once | Closed documentation model of at most 4 MiB plus a 1 KiB result envelope; Native rechecks signed content identity, with no NAR bytes or generic source fallback |
+| `inspect_documentation` | Read and verify the signed Native documentation directory NAR and derive deterministic search fields | Pages of search rows bound to the signed document digest; indexing transfers no source NAR or full document |
+| `inspect_documentation_content` | Read and verify one signed Native documentation directory NAR, then parse its `options.json` document | Exact signed document bytes, at most 12 MiB encoded as standard base64 plus a 1 KiB result envelope; Native rechecks size, digest, and package coordinates, with no NAR bytes or generic source fallback |
 | `filter_object` | Apply an admitted schema-specific predicate and field projection to one verified object | Matching records or an ordered page, not source bytes |
 | `verify_object` | Stream source bytes locally while hashing and checking expected identity | Digest, size, version, and placement evidence |
 | `copy_object` | Stream from a selected source placement to an authorized destination | Destination identity and verification receipt |

@@ -14,13 +14,27 @@
     };
   evaluateServer = module:
     evaluate "container-eval" [serverModule module];
-  definitionFor = module: let
-    evaluated = evaluateServer module;
+  definitionFor = evaluated: let
     checked = evaluated.config.system.build.defaultContainer.definition;
   in
-    builtins.deepSeq checked evaluated.config.aos.containers.definitions.aos;
-  tryDefinition = module:
-    builtins.tryEval (builtins.deepSeq (definitionFor module) true);
+    if builtins.all (check: check.assertion) evaluated.config.aos.containers.definitions.aos.assertions
+    then builtins.deepSeq checked evaluated.config.aos.containers.definitions.aos
+    else throw "the container definition violates its schema assertions";
+  trySchemaDefinition = changes: let
+    checked = lib.evalModules {
+      modules = [
+        ../../pkgs/containers/_aos-oci-backend/container/schema.nix
+        {config = builtins.removeAttrs aos ["assertions"];}
+        {config = changes;}
+      ];
+    };
+  in
+    builtins.tryEval (builtins.deepSeq (
+        if builtins.all (check: check.assertion) checked.config.assertions
+        then checked.config
+        else throw "the container definition violates its schema assertions"
+      )
+      true);
   trySystem = modules: let
     evaluated = evaluate "container-system-negative" modules;
   in
@@ -36,33 +50,59 @@
   server = evaluateServer {};
   hub = server.config.system.build.containers.aos-hub;
   bootstrap = server.config.system.build.containers.aos-hub-bootstrap;
+  registryOverrides = evaluateServer {
+    environment.etc."apm/registries.d/andyl.toml" = {
+      target = "apm/registries.d/local.toml";
+      mode = "0400";
+    };
+    environment.etc."apm/trusted-keys.d/andyl.pub".enable = false;
+  };
+  registryOverrideFiles = (definitionFor registryOverrides).filesystem.files;
+  registryFile = evaluated: path:
+    builtins.head (builtins.filter (file: file.path == path) evaluated.config.aos.containers.definitions.aos.filesystem.files);
+  userland = evaluate "userland-eval" [
+    serverModule
+    {aos.boot.initrd.abilityHandoff.enable = lib.mkForce false;}
+  ];
   experimental = evaluate "aos-experimental-eval" [experimentalModule];
-  aos = definitionFor {};
+  aos = definitionFor server;
   experimentalAos = experimental.config.aos.containers.definitions.aos;
-  testingChannels = builtins.map (channel: let
-    evaluated = evaluate "experimental-channel-eval" [experimentalModule {aos.release.channel = channel;}];
+  experimentalChannels = builtins.map (channel: let
+    evaluated =
+      if channel == "edge"
+      then experimental
+      else evaluate "experimental-channel-eval" [experimentalModule {aos.release.channel = channel;}];
   in {
     inherit channel;
     profile = evaluated.config.aos.release;
     container = evaluated.config.aos.containers.definitions.aos;
   }) ["edge" "candidate" "stable"];
-  goldenRoots = server.config.environment.systemPackages;
+  systemPackageSlice = server.config.aos.containers.systemPackageSlice;
+  systemProfilePaths = map builtins.toString server.config.environment.systemPackages;
+  slicePaths = map builtins.toString systemPackageSlice;
 
-  fixture = evaluateServer {
+  fixture = evaluateServer ({config, ...}: let
+    targetPlatform = pkgs.stdenv.hostPlatform.constraints;
+    backend = config.aos.artifacts.backend;
+  in {
     aos.image.allowTestArtifacts = true;
     aos.image.testArtifactRoots = [pkgs.python3];
     aos.containers.definitions.custom =
-      (import ../../modules/image/_container-definition.nix {
-        inherit lib pkgs goldenRoots aosSystem;
+      (backend.defaultDefinition {
+        inherit lib pkgs targetPlatform;
+        systemPackageSlice = config.aos.containers.systemPackageSlice;
       })
-      .config;
-  };
+      .config
+      // {
+        name = "custom";
+      };
+  });
   fixturePolicy = fixture.config.aos.containers.definitions.aos.runtimePolicy;
   customPolicy = fixture.config.aos.containers.definitions.custom.runtimePolicy;
   fixtureAudit = fixture.config.system.build.containers.aos.checks.runtimeAudit;
   customAudit = fixture.config.system.build.containers.custom.checks.runtimeAudit;
-  unmarkedTestRoots = tryDefinition {
-    aos.containers.definitions.aos.runtimePolicy.testArtifactRoots = [pkgs.python3];
+  unmarkedTestRoots = trySchemaDefinition {
+    runtimePolicy.testArtifactRoots = [pkgs.python3];
   };
 
   mismatchedSystem =
@@ -70,11 +110,11 @@
     then "aarch64-linux"
     else "x86_64-linux";
 
-  mismatchedPlatform = tryDefinition {
-    aos.containers.definitions.aos.platform.aosSystem = lib.mkForce mismatchedSystem;
+  mismatchedPlatform = trySchemaDefinition {
+    platform.aosSystem = lib.mkForce mismatchedSystem;
   };
-  duplicateLayer = tryDefinition {
-    aos.containers.definitions.aos.layers = lib.mkForce [
+  duplicateLayer = trySchemaDefinition {
+    layers = lib.mkForce [
       {
         name = "same";
         roots = [pkgs.aos];
@@ -85,51 +125,54 @@
       }
     ];
   };
-  emptyEntrypoint = tryDefinition {
-    aos.containers.definitions.aos.runtime.entrypoint = lib.mkForce [];
+  emptyEntrypoint = trySchemaDefinition {
+    runtime.entrypoint = lib.mkForce [];
   };
-  duplicateRoot = tryDefinition {
-    aos.containers.definitions.aos.packageRoots = lib.mkForce [pkgs.aos pkgs.aos];
+  duplicateRoot = trySchemaDefinition {
+    packageRoots = lib.mkForce [pkgs.aos pkgs.aos];
   };
-  emptyRoots = tryDefinition {
-    aos.containers.definitions.aos.packageRoots = lib.mkForce [];
+  emptyRoots = trySchemaDefinition {
+    packageRoots = lib.mkForce [];
   };
-  duplicateFacadeCollision = tryDefinition {
-    aos.containers.definitions.aos.filesystem.allowedFacadeCollisions = lib.mkForce ["kill" "kill"];
+  duplicateFacadeCollision = trySchemaDefinition {
+    filesystem.allowedFacadeCollisions = lib.mkForce ["kill" "kill"];
   };
-  hostFacade = tryDefinition {
-    aos.containers.definitions.aos.filesystem.facade = lib.mkForce [
+  hostFacade = trySchemaDefinition {
+    filesystem.facade = lib.mkForce [
       {
         name = "bad";
         target = "/usr/local/bin/bad";
       }
     ];
   };
-  baseImage = tryDefinition {
-    aos.containers.definitions.aos.baseImage = "docker.io/library/debian:latest";
+  baseImage = trySchemaDefinition {
+    baseImage = "docker.io/library/debian:latest";
   };
-  relativeDirectory = tryDefinition {
-    aos.containers.definitions.aos.filesystem.directories = lib.mkForce [
+  relativeDirectory = trySchemaDefinition {
+    filesystem.directories = lib.mkForce [
       {path = "../escape";}
     ];
   };
-  traversalDirectory = tryDefinition {
-    aos.containers.definitions.aos.filesystem.directories = lib.mkForce [
+  traversalDirectory = trySchemaDefinition {
+    filesystem.directories = lib.mkForce [
       {path = "/root/../escape";}
     ];
   };
-  unsafeRepository = tryDefinition {
-    aos.containers.definitions.aos.publication.repository = lib.mkForce "Team/../aos%2flatest";
+  unsafeRepository = trySchemaDefinition {
+    publication.repository = lib.mkForce "Team/../aos%2flatest";
   };
-  shellEntrypoint = tryDefinition {
-    aos.containers.definitions.aos.runtime.entrypoint = lib.mkForce ["aos --help"];
+  shellEntrypoint = trySchemaDefinition {
+    runtime.entrypoint = lib.mkForce ["aos --help"];
+  };
+  imageDefaultRuntimeGrant = trySchemaDefinition {
+    abilities.runtimeGrants = ["host-manager"];
   };
   overrideSource = pkgs.writeTextFile {
     name = "container-evidence-override-test-source";
     text = "source\n";
   };
-  mismatchedEvidenceOverrideOutput = tryDefinition {
-    aos.containers.definitions.aos.publication.evidenceOverrides = [
+  mismatchedEvidenceOverrideOutput = trySchemaDefinition {
+    publication.evidenceOverrides = [
       {
         output = pkgs.aos;
         outputName = "bin";
@@ -140,26 +183,65 @@
       }
     ];
   };
-  invalidTestingRegistry = trySystem [
+  invalidExperimentalRegistry = trySystem [
     experimentalModule
     {aos.release.registry = lib.mkForce "andyl/main";}
   ];
-  invalidTestingChannel = trySystem [
+  invalidExperimentalChannel = trySystem [
     experimentalModule
     {aos.release.channel = lib.mkForce "unknown";}
   ];
-  invalidTestingAlias = trySystem [
+  invalidExperimentalAlias = trySystem [
     experimentalModule
     {aos.release.clientName = lib.mkForce "experimental";}
   ];
-  invalidTestingUrl = trySystem [
+  invalidExperimentalUrl = trySystem [
     experimentalModule
     {aos.release.url = lib.mkForce "https://aos.andyl.org/andyl/main/";}
   ];
+  invalidCases = {
+    inherit
+      mismatchedPlatform
+      duplicateLayer
+      duplicateRoot
+      emptyRoots
+      duplicateFacadeCollision
+      emptyEntrypoint
+      hostFacade
+      baseImage
+      relativeDirectory
+      traversalDirectory
+      unsafeRepository
+      shellEntrypoint
+      imageDefaultRuntimeGrant
+      mismatchedEvidenceOverrideOutput
+      invalidExperimentalRegistry
+      invalidExperimentalChannel
+      invalidExperimentalAlias
+      invalidExperimentalUrl
+      invalidSystemName
+      ;
+  };
+  acceptedInvalidCases = builtins.attrNames (lib.filterAttrs (_: result: result.success) invalidCases);
   experimentalFilePaths = map (file: file.path) experimentalAos.filesystem.files;
   experimentalFileText = lib.concatMapStringsSep "\n" (file: file.text) experimentalAos.filesystem.files;
+  containerFilePaths = map (file: file.path) aos.filesystem.files;
+  containerTransaction = (builtins.head server.config.system.build.containers.aos.deploymentArtifact.platforms).transaction;
+  containerNodes = builtins.attrValues containerTransaction.graph.nodes;
+  containerAbilities = lib.sort builtins.lessThan (lib.unique (map (node: builtins.elemAt node.identity 3) containerNodes));
+  containerInitNodes = builtins.filter (node: builtins.elemAt node.identity 3 == "initSystem") containerNodes;
 in
   assert aos.name == "aos";
+  assert (registryFile server "/etc/apm/registries.d/andyl.toml").text
+  == server.config.environment.etc."apm/registries.d/andyl.toml".text;
+  assert (registryFile server "/etc/apm/trusted-keys.d/andyl.pub").text
+  == server.config.environment.etc."apm/trusted-keys.d/andyl.pub".text;
+  assert (registryFile experimental "/etc/apm/registries.d/andyl-experimental.toml").text
+  == experimental.config.environment.etc."apm/registries.d/andyl-experimental.toml".text;
+  assert (registryFile registryOverrides "/etc/apm/registries.d/local.toml").mode == "0400";
+  assert !builtins.any (file: file.path == "/etc/apm/trusted-keys.d/andyl.pub") registryOverrideFiles;
+  assert builtins.length experimentalAos.filesystem.files
+  == builtins.length (lib.unique (map (file: file.path) experimentalAos.filesystem.files));
   assert !aos.runtimePolicy.allowTestArtifacts;
   assert aos.runtimePolicy.testArtifactRoots == [];
   assert fixturePolicy.allowTestArtifacts;
@@ -185,42 +267,75 @@ in
   assert server.config.system.build.defaultContainer.coordination.definitionAttribute
   == "systems.container-eval.build.containers.aos";
   assert map builtins.toString aos.packageRoots
-  == map builtins.toString (lib.unique (
-    [
-      pkgs.glibc
-      pkgs.glibc-tools
-      pkgs.glibc-locales
-      pkgs.gcc-libs
-      pkgs.ca-certificates
-      pkgs.bash
-      pkgs.coreutils
-      pkgs.findutils
-      pkgs.grep
-      pkgs.sed
-      pkgs.gawk
-    ]
-    ++ goldenRoots
-    ++ [pkgs.aos pkgs.aos.apm pkgs.aos.apr]
-  ));
+  == map builtins.toString (lib.uniqueBy builtins.toString (builtins.concatMap (layer: layer.roots) aos.layers));
+  assert builtins.elem (builtins.toString pkgs.aos-filesystem-provider) (map builtins.toString aos.packageModules);
+  assert !(builtins.elem (builtins.toString pkgs.aos-filesystem-provider) (map builtins.toString aos.packageRoots));
+  assert builtins.elem (builtins.toString pkgs.aos-configuration-provider) (map builtins.toString aos.packageModules);
+  assert !(builtins.elem (builtins.toString pkgs.aos-configuration-provider) (map builtins.toString aos.packageRoots));
+  assert !(builtins.elem (builtins.toString pkgs.systemd) (map builtins.toString aos.packageModules));
+  assert aos.runtime.entrypoint == ["/usr/bin/aos-container-init"];
+  assert aos.runtime.command == [];
+  assert containerTransaction.scope == ["profile" "/var/lib/profiles/per-user/root"];
+  # The minimal baked profile has no filesystem effects; its filesystem
+  # handler becomes active when an installed package declares one.
+  assert containerAbilities == ["configuration" "initSystem"];
+  assert builtins.all (node: node.phase == "installation") containerNodes;
+  assert builtins.length containerInitNodes == 1;
+  assert (builtins.head containerInitNodes).input
+  == {
+    executable = "${pkgs.bash}/bin/bash";
+    arguments = [];
+  };
+  assert builtins.all (layer: let
+    paths = map builtins.toString layer.subtractRoots;
+  in
+    builtins.length paths == builtins.length (lib.unique paths))
+  aos.layers;
+  assert map builtins.toString (builtins.elemAt aos.layers 1).roots
+  == slicePaths;
+  assert builtins.all (path: builtins.elem path systemProfilePaths) slicePaths;
+  assert builtins.length slicePaths < builtins.length systemProfilePaths;
+  assert !(builtins.elem (builtins.toString pkgs.qemu) (map builtins.toString aos.packageRoots));
+  assert !(builtins.elem (builtins.toString pkgs.linux) (map builtins.toString aos.packageRoots));
   assert aos.packageManagement
   == {
     enable = true;
     bakedGcRoots = true;
   };
-  assert aos.filesystem.allowedFacadeCollisions == ["kill"];
-  assert map (entry: entry.name) aos.filesystem.facade == ["aos" "apm" "apr"];
+  assert aos.filesystem.allowedFacadeCollisions == [];
+  assert map (entry: entry.name) aos.filesystem.facade == ["apm"];
   assert map (entry: entry.target) aos.filesystem.facade
-  == ["${pkgs.aos}/bin/aos" "${pkgs.aos.apm}/bin/apm" "${pkgs.aos.apr}/bin/apr"];
+  == ["${pkgs.apm}/bin/apm"];
+  assert builtins.elem (builtins.toString pkgs.apm) (map builtins.toString aos.packageRoots);
+  assert builtins.elem (builtins.toString pkgs.aos-package-runtime) (map builtins.toString aos.packageRoots);
+  assert builtins.all (package: !builtins.elem (builtins.toString package) (map builtins.toString aos.packageRoots))
+  [pkgs.aos pkgs.apr pkgs.glibc-tools pkgs.glibc-locales];
+  assert builtins.all (path: builtins.elem path (map (file: file.path) aos.filesystem.files))
+  ["/etc/bashrc" "/etc/profile" "/etc/inputrc" "/root/.bashrc" "/root/.bash_profile"];
+  assert builtins.all (path: builtins.elem path (map (file: file.path) experimentalAos.filesystem.files))
+  ["/etc/bashrc" "/etc/profile" "/etc/inputrc" "/root/.bashrc" "/root/.bash_profile"];
   assert aos.runtime.environment.PATH == "/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin";
   assert aos.runtime.environment.NIX_REMOTE == "local";
+  assert !userland.config.aos.boot.initrd.abilityHandoff.enable;
+  assert !(userland.config.boot.initrd.systemd.services ? aos-ability-initrd-controller);
+  assert !(userland.config.systemd.services ? aos-ability-host-receiver);
+  assert builtins.all
+  (service: !builtins.elem "aos-ability-host-receiver.service" (service.requires or []))
+  (builtins.attrValues userland.config.systemd.services);
+  assert !builtins.elem
+  "/etc/systemd/system/aos-ability-initrd-controller.service"
+  containerFilePaths;
+  assert !builtins.elem
+  "/etc/systemd/system/aos-ability-host-receiver.service"
+  containerFilePaths;
   assert aos.runtime.environment.LANG == "C.UTF-8";
-  assert aos.runtime.environment.LOCPATH == "${pkgs.glibc-locales}/lib/locale";
+  assert !(aos.runtime.environment ? LOCPATH);
   assert builtins.any (directory: directory.path == "/var/tmp" && directory.mode == "1777") aos.filesystem.directories;
   assert aos.runtime.environment.XDG_DATA_HOME == "/root/.local/share";
   assert aos.runtime.workingDirectory == "/work";
   assert (builtins.head aos.filesystem.directories).path == "/root";
   assert (builtins.head aos.filesystem.directories).mode == "0700";
-  assert builtins.length aos.layers == 4;
+  assert builtins.length aos.layers == 3;
   assert aos.platform.architecture
   == (
     if pkgs.stdenv.hostPlatform.system == "x86_64-linux"
@@ -241,7 +356,7 @@ in
     && entry.profile.channel == entry.channel
     && entry.container.publication.referenceTag == entry.channel
     && entry.container.runtime.environment.AOS_REGISTRY == "andyl/experimental")
-  testingChannels;
+  experimentalChannels;
   assert experimental.config.aos.release.url == "https://cdn.aos.andyl.org/andyl/experimental/";
   assert experimental.config.aos.apm.registries.andyl-experimental.url == "https://cdn.aos.andyl.org/andyl/experimental/";
   assert lib.hasInfix "https://cdn.aos.andyl.org/andyl/experimental/" experimentalFileText;
@@ -278,24 +393,7 @@ in
   ];
   assert lib.hasInfix "ANDYL OS EXPERIMENTAL" experimental.config.environment.etc.issue.text;
   assert !lib.hasInfix "andyl/main" experimentalFileText;
-  assert !mismatchedPlatform.success;
-  assert !duplicateLayer.success;
-  assert !duplicateRoot.success;
-  assert !emptyRoots.success;
-  assert !duplicateFacadeCollision.success;
-  assert !emptyEntrypoint.success;
-  assert !hostFacade.success;
-  assert !baseImage.success;
-  assert !relativeDirectory.success;
-  assert !traversalDirectory.success;
-  assert !unsafeRepository.success;
-  assert !shellEntrypoint.success;
-  assert !mismatchedEvidenceOverrideOutput.success;
-  assert !invalidTestingRegistry.success;
-  assert !invalidTestingChannel.success;
-  assert !invalidTestingAlias.success;
-  assert !invalidTestingUrl.success;
-  assert !invalidSystemName.success;
+  assert acceptedInvalidCases == [] || throw "invalid container fixtures accepted: ${lib.concatStringsSep ", " acceptedInvalidCases}";
     pkgs.mkDerivation {
       pname = "aos-container-evaluator-check";
       version = "1";

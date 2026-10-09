@@ -109,7 +109,7 @@ class ManagedReadTests(unittest.TestCase):
         index_sha = hashlib.sha256(index).hexdigest()
         (layout / index_sha).write_bytes(index)
         document = root / "document"
-        body = b'{"schema":"aos.package-documentation/v1","options":[{"name":"actual-option"}]}'
+        body = b'{"schema":"aos.module.documentation","options":[{"name":"actual-option"}]}'
         document.write_bytes(body)
         document_sha = hashlib.sha256(body).hexdigest()
         return {"surfaceRoot": str(surface), "document": {"file": str(document), "sha256": document_sha,

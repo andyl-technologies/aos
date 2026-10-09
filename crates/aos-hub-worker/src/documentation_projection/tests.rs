@@ -3,15 +3,15 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
     },
 };
 
 use anyhow::Result;
-use aos_doc_model::*;
 use aos_hub_core::{fetch::SurfaceFetch, storage_work::*};
-use aos_registry_surface::manifest::DocumentationArtifactMeta;
+use aos_registry_surface::manifest::NativeArtifactMeta;
+use base64::Engine as _;
 use sha2::{Digest as _, Sha256};
 
 use super::inspect_content;
@@ -62,15 +62,15 @@ impl SurfaceFetch for NativeDetail {
         _: &str,
         _: &str,
         _: &str,
-        _: &DocumentationArtifactMeta,
-    ) -> Result<PackageDocumentation> {
+        _: &NativeArtifactMeta,
+    ) -> Result<Vec<u8>> {
         anyhow::ensure!(self.body.len() <= self.plan.operation.maximum_result_bytes());
         let result: StorageWorkResult = serde_json::from_slice(&self.body)?;
         aos_hub::storage_work::validate_result_for_test(&self.plan, &result)?;
-        let StorageWorkOutcome::DocumentationContent { document } = result.outcome else {
+        let StorageWorkOutcome::DocumentationContent { document_base64 } = result.outcome else {
             anyhow::bail!("unexpected documentation outcome");
         };
-        Ok(document)
+        Ok(base64::engine::general_purpose::STANDARD.decode(document_base64)?)
     }
 
     fn describe(&self) -> String {
@@ -78,52 +78,46 @@ impl SurfaceFetch for NativeDetail {
     }
 }
 
-fn document(blocks: usize) -> PackageDocumentation {
-    let mut document = PackageDocumentation {
-        schema: DOCUMENT_SCHEMA.into(),
-        package: DocumentedPackage {
-            name: "fixture-package".into(),
-            version: "1.0".into(),
-            platform: "x86_64-linux".into(),
-            summary: "Documented fixture".into(),
-            homepage: None,
-            license: "MIT".into(),
-        },
-        identity: DocumentationIdentity {
-            semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
-            runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
-            config_module_nar_hash: None,
-            system_module_nar_hash: None,
-            expose_artifact_nar_hash: None,
-            source_nar_hash: format!("sha256:{}", "2".repeat(64)),
-        },
-        sections: (0..blocks)
-            .map(|index| Section {
-                id: format!("section-{index}"),
-                title: format!("Section {index}"),
-                blocks: vec![ProseBlock::Code {
-                    language: "text".into(),
-                    text: "x".repeat(255 * 1024),
-                }],
-            })
-            .collect(),
-        options: Vec::new(),
-        runtime: RuntimeSurface::default(),
-    };
-    document.identity.semantic_schema_sha256 = document.computed_semantic_schema_sha256().unwrap();
-    document
+fn document(blocks: usize) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "schema": "aos.module.documentation",
+        "scope": ["package", "fixture-package"],
+        "system": "x86_64-linux",
+        "packages": [{"name": "fixture-package", "version": "1.0"}],
+        "options": (0..blocks).map(|index| serde_json::json!({
+            "path": ["fixture", format!("option-{index}")],
+            "owner": "fixture-package",
+            "description": "x".repeat(255 * 1024),
+            "type": {"kind": "bool"},
+            "visibility": "public",
+            "readOnly": false,
+            "extensible": false
+        })).collect::<Vec<_>>(),
+        "abilities": {}
+    }))
+    .unwrap()
 }
 
-fn objects(document: &PackageDocumentation) -> (Objects, DocumentationArtifactMeta) {
-    let bytes = document.canonical_json().unwrap();
+fn objects(document: &[u8]) -> (Objects, NativeArtifactMeta) {
+    let bytes = document;
     let mut nar = Vec::new();
     for value in [
         b"nix-archive-1".as_slice(),
         b"(",
         b"type",
+        b"directory",
+        b"entry",
+        b"(",
+        b"name",
+        b"options.json",
+        b"node",
+        b"(",
+        b"type",
         b"regular",
         b"contents",
-        &bytes,
+        bytes,
+        b")",
+        b")",
         b")",
     ] {
         nar.extend_from_slice(&(value.len() as u64).to_le_bytes());
@@ -133,15 +127,12 @@ fn objects(document: &PackageDocumentation) -> (Objects, DocumentationArtifactMe
     let nar_hash = format!("sha256:{}", hex::encode(Sha256::digest(&nar)));
     let store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-fixture-doc.json";
     let narinfo = format!("StorePath: {store_path}\nURL: nar/document.nar\nCompression: none\nFileHash: {nar_hash}\nFileSize: {}\nNarHash: {nar_hash}\nNarSize: {}\nReferences: \n", nar.len(), nar.len()).into_bytes();
-    let artifact = DocumentationArtifactMeta {
-        format: DOCUMENT_FORMAT.into(),
+    let artifact = NativeArtifactMeta {
         store_path: store_path.into(),
         nar_hash,
         nar_size: nar.len() as u64,
         document_sha256: format!("sha256:{}", hex::encode(Sha256::digest(&bytes))),
         document_size: bytes.len() as u64,
-        semantic_schema_sha256: document.identity.semantic_schema_sha256.clone(),
-        system_module_nar_hash: None,
         references: Vec::new(),
     };
     (
@@ -156,7 +147,7 @@ fn objects(document: &PackageDocumentation) -> (Objects, DocumentationArtifactMe
     )
 }
 
-fn plan(artifact: DocumentationArtifactMeta) -> StorageWorkPlan {
+fn plan(artifact: NativeArtifactMeta) -> StorageWorkPlan {
     StorageWorkPlan {
         version: 1,
         plan_id: "a".repeat(32),
@@ -224,18 +215,14 @@ async fn worker_parses_once_and_native_detail_receives_only_canonical_content() 
     let input_bytes = reads.iter().map(|(_, bytes)| *bytes as u64).sum::<u64>();
     assert_eq!(input_bytes, result.source_bytes);
     assert!(request.len() < 64 * 1024);
-    assert!(
-        !request
-            .windows(b"nix-archive-1".len())
-            .any(|bytes| bytes == b"nix-archive-1")
-    );
+    assert!(!request
+        .windows(b"nix-archive-1".len())
+        .any(|bytes| bytes == b"nix-archive-1"));
     assert!(body.len() > MAX_RESULT_BYTES);
     assert!(body.len() <= plan.operation.maximum_result_bytes());
-    assert!(
-        !body
-            .windows(b"nix-archive-1".len())
-            .any(|bytes| bytes == b"nix-archive-1")
-    );
+    assert!(!body
+        .windows(b"nix-archive-1".len())
+        .any(|bytes| bytes == b"nix-archive-1"));
     drop(reads);
 
     let fetches = Arc::new(AtomicUsize::new(0));
@@ -247,7 +234,7 @@ async fn worker_parses_once_and_native_detail_receives_only_canonical_content() 
     let StorageWorkOperation::InspectDocumentationContent { artifact, .. } = &plan.operation else {
         panic!("content plan")
     };
-    let loaded = aos_hub_core::indexer::fetch_package_documentation(
+    let loaded = aos_hub_core::indexer::native_documentation::fetch_native_documentation_content(
         &native,
         "fixture-package",
         "1.0",
@@ -256,7 +243,7 @@ async fn worker_parses_once_and_native_detail_receives_only_canonical_content() 
     )
     .await
     .unwrap();
-    assert_eq!(loaded, document(2));
+    assert_eq!(loaded.0, document(2));
     assert_eq!(fetches.load(Ordering::SeqCst), 0);
     eprintln!(
         "documentation content request_bytes={} input_bytes={input_bytes} output_bytes={} nar_reads=1 Native_fetches=0",
@@ -276,8 +263,8 @@ async fn native_rejects_changed_content_fences_selection_and_cost() {
     changed.source_bytes = u64::MAX;
     assert!(aos_hub::storage_work::validate_result_for_test(&plan, &changed).is_err());
     changed = result.clone();
-    if let StorageWorkOutcome::DocumentationContent { document } = &mut changed.outcome {
-        document.package.summary = "substituted content".into();
+    if let StorageWorkOutcome::DocumentationContent { document_base64 } = &mut changed.outcome {
+        *document_base64 = base64::engine::general_purpose::STANDARD.encode(document(0));
     }
     assert!(aos_hub::storage_work::validate_result_for_test(&plan, &changed).is_err());
     let mut changed_plan = plan.clone();
@@ -290,27 +277,25 @@ async fn native_rejects_changed_content_fences_selection_and_cost() {
 
     let (mut objects, artifact) = objects(&document(1));
     objects.objects.get_mut("nar/document.nar").unwrap()[100] ^= 1;
-    assert!(
-        inspect_content(
-            &objects,
-            "fixture-package",
-            "1.0",
-            "x86_64-linux",
-            &artifact
-        )
-        .await
-        .is_err()
-    );
+    assert!(inspect_content(
+        &objects,
+        "fixture-package",
+        "1.0",
+        "x86_64-linux",
+        &artifact
+    )
+    .await
+    .is_err());
 }
 
 #[tokio::test]
-async fn documentation_has_an_explicit_four_mib_content_bound() {
-    let (objects, plan, result) = project(16).await;
+async fn documentation_has_an_explicit_content_bound() {
+    let (source_objects, plan, result) = project(16).await;
     let body = serde_json::to_vec(&result).unwrap();
     aos_hub::storage_work::validate_result_for_test(&plan, &result).unwrap();
     assert!(body.len() < MAX_DOCUMENTATION_CONTENT_RESULT_BYTES);
     assert!(body.len() > 4_000_000);
-    assert_eq!(objects.reads.lock().unwrap().len(), 2);
+    assert_eq!(source_objects.reads.lock().unwrap().len(), 2);
     let ordinary = match plan.operation.clone() {
         StorageWorkOperation::InspectDocumentationContent {
             package_name,
@@ -334,11 +319,18 @@ async fn documentation_has_an_explicit_four_mib_content_bound() {
         .maximum_result_bytes(),
         MAX_RESULT_BYTES
     );
-    let mut oversized = document(16);
-    let mut extra = oversized.sections[0].clone();
-    extra.id = "overflow-section".into();
-    oversized.sections.push(extra);
-    assert!(oversized.canonical_json().is_err());
+    let oversized = document(64);
+    let (_, artifact) = objects(&oversized);
+    assert!(
+        aos_hub_core::indexer::native_documentation::validate_native_documentation_content(
+            &oversized,
+            "fixture-package",
+            "1.0",
+            "x86_64-linux",
+            &artifact
+        )
+        .is_err()
+    );
     eprintln!(
         "documentation maximum query input_bytes={} output_bytes={} limit={MAX_DOCUMENTATION_CONTENT_RESULT_BYTES}",
         result.source_bytes,
