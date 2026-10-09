@@ -98,10 +98,7 @@ pub(super) fn emit_node_slot(out: &mut String) {
             ("pad3", "PAD3"),
             ("timer_witness_generation", "TIMER_WITNESS_GENERATION"),
             ("timer_witness_deadline_ps", "TIMER_WITNESS_DEADLINE_PS"),
-            (
-                "timer_witness_deadline_tick",
-                "TIMER_WITNESS_DEADLINE_TICK",
-            ),
+            ("timer_witness_deadline_tick", "TIMER_WITNESS_DEADLINE_TICK"),
             (
                 "timer_witness_armed_raw_icount",
                 "TIMER_WITNESS_ARMED_RAW_ICOUNT",

@@ -22,7 +22,8 @@ fn gate_findings_emit_same_artifact_for_interactive_and_search_paths() -> Result
     let world = single_node_world("finding-artifact")?;
     let scenario = scenario_form(&world)?;
     let root = Configuration::genesis(scenario.scenario_def());
-    let decision = crucible_engine::test_support::typed_search_decision_for_test("finding-path-branch")?;
+    let decision =
+        crucible_engine::test_support::typed_search_decision_for_test("finding-path-branch")?;
     let branch = try_step(&root, decision.clone())?;
     let baked = bake_with_search_frontier_choices(&world, vec![decision.clone()])?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&root.def, baked)?;

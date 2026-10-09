@@ -101,9 +101,7 @@
 
   runtimePackages = map (spec: spec.package) runtimeSpecs;
   expectedPackages = lib.sort builtins.lessThan (runtimePackages ++ [harnessPackage]);
-  foundPackages = lib.sort builtins.lessThan (
-    cruciblePackages
-  );
+  foundPackages = lib.sort builtins.lessThan cruciblePackages;
 
   specByPackage = builtins.listToAttrs (
     map (spec: {

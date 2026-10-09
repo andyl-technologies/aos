@@ -2120,7 +2120,10 @@ fn availability_max(
     }
 }
 
-fn operation_selected(operations: &[crucible_engine::model::FaultOperation], operation: BlockOp) -> bool {
+fn operation_selected(
+    operations: &[crucible_engine::model::FaultOperation],
+    operation: BlockOp,
+) -> bool {
     let operation = block_fault_operation(operation);
     operations.binary_search(&operation).is_ok()
 }
@@ -2537,10 +2540,14 @@ fn block_failure_from_result(
         crucible_engine::model::StoragePolicyResult::Success => None,
         crucible_engine::model::StoragePolicyResult::Offline => Some(BlockFaultResult::Offline),
         crucible_engine::model::StoragePolicyResult::ReadOnly => Some(BlockFaultResult::ReadOnly),
-        crucible_engine::model::StoragePolicyResult::InvalidRange => Some(BlockFaultResult::InvalidRange),
+        crucible_engine::model::StoragePolicyResult::InvalidRange => {
+            Some(BlockFaultResult::InvalidRange)
+        }
         crucible_engine::model::StoragePolicyResult::Busy => Some(BlockFaultResult::Busy),
         crucible_engine::model::StoragePolicyResult::Timeout => Some(BlockFaultResult::Timeout),
-        crucible_engine::model::StoragePolicyResult::MediumError => Some(BlockFaultResult::MediumError),
+        crucible_engine::model::StoragePolicyResult::MediumError => {
+            Some(BlockFaultResult::MediumError)
+        }
         crucible_engine::model::StoragePolicyResult::IntegrityError => {
             Some(BlockFaultResult::IntegrityError)
         }
@@ -2879,7 +2886,10 @@ fn target_storage_device<'a>(
 fn storage_device_by_id<'a>(
     world: &'a World,
     device_id: &FaultObjectId,
-) -> Option<(&'a crucible_engine::model::WorldStorageFaultDevice, ContentHash)> {
+) -> Option<(
+    &'a crucible_engine::model::WorldStorageFaultDevice,
+    ContentHash,
+)> {
     let device = world
         .fault_topology()
         .storage_devices
@@ -2889,8 +2899,10 @@ fn storage_device_by_id<'a>(
                 && device.device.as_str() == device_id.as_str()
         })?;
     let node = world.io_nodes().find(|node| {
-        matches!(node.kind, crucible_engine::model::WorldIoNodeKind::Block { .. })
-            && node.id.name == device_id.as_str()
+        matches!(
+            node.kind,
+            crucible_engine::model::WorldIoNodeKind::Block { .. }
+        ) && node.id.name == device_id.as_str()
     })?;
     Some((device, node.fault_target_hash()))
 }

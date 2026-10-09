@@ -13,7 +13,9 @@ use crucible_qemu_protocol::{
     HostMsg, PluginHandshakeConfig, SETUP_ACK_STATUS_READY, SETUP_ACK_STATUS_SETUP_FAILED,
     SetupDescriptorFds, control_encode_host_msg, read_control_frame,
 };
-use crucible_qemu_shmem::{KIND_VM, NodeSlot, RegionConfig, RegionHeader, RegionLayout, STATUS_DONE};
+use crucible_qemu_shmem::{
+    KIND_VM, NodeSlot, RegionConfig, RegionHeader, RegionLayout, STATUS_DONE,
+};
 
 mod support;
 use support::*;

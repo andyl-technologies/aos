@@ -254,7 +254,11 @@ fn guest_static_build_contract_is_declared_for_aos_package() {
     let cargo_toml = manifest_file("Cargo.toml");
     assert!(cargo_toml.contains("name = \"crucible-guest\""));
     assert!(cargo_toml.contains("path = \"src/main.rs\""));
-    assert!(cargo_toml.contains("crucible-qemu-protocol = { path = \"../../protocol/crucible-qemu-protocol\" }"));
+    assert!(
+        cargo_toml.contains(
+            "crucible-qemu-protocol = { path = \"../../protocol/crucible-qemu-protocol\" }"
+        )
+    );
     assert!(!cargo_toml.contains("clap"));
 
     let package = repo_file("pkgs/tools/crucible-guest.nix");

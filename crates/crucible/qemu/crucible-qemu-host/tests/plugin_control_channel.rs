@@ -16,13 +16,13 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 
 #[cfg(unix)]
+use crucible_qemu_host::QemuPluginIpcControlChannel;
+#[cfg(unix)]
 use crucible_qemu_protocol::{
     ControlLifecycleState, ControlLifecycleStream, HostHandshakeConfig, HostMsg, PluginMsg,
     SETUP_ACK_STATUS_READY, SetupDescriptorFds, control_decode_host_msg, control_encode_plugin_msg,
     read_control_frame,
 };
-#[cfg(unix)]
-use crucible_qemu_host::QemuPluginIpcControlChannel;
 
 #[cfg(unix)]
 #[test]

@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
-use aos_module_format::graph::{CheckedModuleGraph, Effect, identity_key};
 use aos_core::Sha256Digest;
+use aos_module_format::graph::{CheckedModuleGraph, Effect, identity_key};
 use serde_json::{Value, json};
 
 use super::*;

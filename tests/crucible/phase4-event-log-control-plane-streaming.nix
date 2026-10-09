@@ -12,8 +12,14 @@
     inherit lib;
     entry = ../../crates/crucible/control/crucible-session/tests/gate_control_responsive.rs;
   };
-  apiLib = import ./_crucible-control-source.nix { inherit lib; component = "exports"; };
-  apiStream = import ./_crucible-control-source.nix { inherit lib; component = "event_log_stream"; };
+  apiLib = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "exports";
+  };
+  apiStream = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "event_log_stream";
+  };
   apiGate = builtins.readFile ../../crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;

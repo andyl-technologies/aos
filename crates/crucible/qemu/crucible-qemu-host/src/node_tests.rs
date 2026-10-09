@@ -1853,13 +1853,14 @@ fn selectable_reply_and_ceiling_are_published_before_qemu_resumes() -> Result<()
         None,
         128,
     )?;
-    let pending = crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest::new(
-        request,
-        41,
-        (41) * 50,
-        0,
-        0x1000,
-    );
+    let pending =
+        crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest::new(
+            request,
+            41,
+            (41) * 50,
+            0,
+            0x1000,
+        );
     let reply = crucible_qemu_protocol::SelectionReply::rejected(
         7,
         crucible_qemu_protocol::SelectionReplyStatus::Unavailable,
@@ -1909,13 +1910,14 @@ fn selectable_reply_is_not_published_before_qemu_confirms_pause() -> Result<(), 
         None,
         128,
     )?;
-    let pending = crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest::new(
-        request,
-        41,
-        (41) * 50,
-        0,
-        0x1000,
-    );
+    let pending =
+        crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest::new(
+            request,
+            41,
+            (41) * 50,
+            0,
+            0x1000,
+        );
     let reply = crucible_qemu_protocol::SelectionReply::rejected(
         7,
         crucible_qemu_protocol::SelectionReplyStatus::Unavailable,

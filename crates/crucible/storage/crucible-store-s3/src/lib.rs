@@ -1863,7 +1863,11 @@ mod tests {
 
     #[test]
     fn canonical_content_key_recovers_the_logical_id() {
-        let id = ContentId::for_bytes(crucible_store::content_store::ObjectKind::Trace, 1, b"S3 key");
+        let id = ContentId::for_bytes(
+            crucible_store::content_store::ObjectKind::Trace,
+            1,
+            b"S3 key",
+        );
         assert_eq!(key_content_id(&format!("prefix/objects/{id}")), Some(id));
         assert_eq!(key_content_id("prefix/objects/not-an-id"), None);
         assert!(request_location("", "objects/key").is_err());

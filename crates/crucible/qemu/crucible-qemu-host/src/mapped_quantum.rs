@@ -17,7 +17,8 @@ use crucible_qemu_protocol::selectable_catalog_plan::{
     SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SELECTABLE_NATIVE_HANDOFF_TICKS_PS,
     SelectableCatalogPlan, SelectablePlanPendingRequest,
 };
-const _: () = assert!(SELECTABLE_NATIVE_HANDOFF_TICKS_PS == crucible_qemu_shmem::TICKS_PER_INSTRUCTION);
+const _: () =
+    assert!(SELECTABLE_NATIVE_HANDOFF_TICKS_PS == crucible_qemu_shmem::TICKS_PER_INSTRUCTION);
 use crucible_qemu_protocol::selectable_transport::{
     SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
     WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING, WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED,

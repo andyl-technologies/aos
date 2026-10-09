@@ -16,9 +16,9 @@ use connectrpc::{
 };
 use futures_util::{Stream, StreamExt};
 
+use aos_build_api::aos::cache::v1::*;
 use aos_nar::info as core_narinfo;
 use aos_nix::aos_nix_env;
-use aos_build_api::aos::cache::v1::*;
 
 use crate::access;
 use crate::compress::{self, Compression};

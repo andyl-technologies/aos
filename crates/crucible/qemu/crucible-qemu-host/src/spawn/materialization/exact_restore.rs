@@ -169,7 +169,8 @@ impl QemuPreparedRunDirectory {
             || root_overlay_bytes == 0
             || device_state_bytes == 0
             || ram_layer_bytes.is_empty()
-            || ram_layer_bytes.len() > crucible_engine::exact_checkpoint::MAX_EXACT_CHECKPOINT_RAM_LAYERS
+            || ram_layer_bytes.len()
+                > crucible_engine::exact_checkpoint::MAX_EXACT_CHECKPOINT_RAM_LAYERS
             || ram_layer_bytes.contains(&0)
         {
             return Err(invalid_input(

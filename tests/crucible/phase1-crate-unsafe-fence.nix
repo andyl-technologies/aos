@@ -435,9 +435,7 @@
   ];
 
   expectedPackages = lib.sort builtins.lessThan (map (spec: spec.package) specs);
-  foundPackages = lib.sort builtins.lessThan (
-    cruciblePackages
-  );
+  foundPackages = lib.sort builtins.lessThan cruciblePackages;
 
   packageSetFailures =
     if foundPackages == expectedPackages

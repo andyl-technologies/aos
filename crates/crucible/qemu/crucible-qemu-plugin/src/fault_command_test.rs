@@ -517,7 +517,8 @@ fn register_evidence_binds_vcpu_and_terminal_cursor_phase() {
     raw[88..120].fill(3);
     raw[120..152].fill(4);
     raw[152..156].copy_from_slice(&1_u32.to_le_bytes());
-    raw[160..168].copy_from_slice(&(256_u64 * crucible_qemu_shmem::TICKS_PER_INSTRUCTION).to_le_bytes());
+    raw[160..168]
+        .copy_from_slice(&(256_u64 * crucible_qemu_shmem::TICKS_PER_INSTRUCTION).to_le_bytes());
     raw[HEADER..HEADER + before.len()].copy_from_slice(&before);
     raw[HEADER + before.len()..HEADER + before.len() + after.len()].copy_from_slice(&after);
     raw[HEADER + before.len() + after.len()] = 1;

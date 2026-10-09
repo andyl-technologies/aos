@@ -9,13 +9,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_module_format::graph::{CheckedModuleGraph, Effect, identity_key};
 use aos_activation::activation::{
     Activation, ActivationAdapter, Boundary, BoundaryEvent, Invocation, Observation, inspect,
 };
 use aos_activation::adapter::CancellationToken;
 use aos_activation::journal::JournalLimits;
 use aos_core::{Sha256Digest, json};
+use aos_module_format::graph::{CheckedModuleGraph, Effect, identity_key};
 use serde_json::{Value, json};
 
 /// Selects the native framework invariants tested by a qualification helper.

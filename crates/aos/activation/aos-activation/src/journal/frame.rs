@@ -210,8 +210,7 @@ where
             source: source.into(),
         },
     })?;
-    let body =
-        json::to_vec(body).map_err(|source| JournalError::Encode { sequence, source })?;
+    let body = json::to_vec(body).map_err(|source| JournalError::Encode { sequence, source })?;
     if body.len() > limits.max_body_bytes {
         return Err(JournalError::Limit(format!(
             "record body has {} bytes, limit is {}",

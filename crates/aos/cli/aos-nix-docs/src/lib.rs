@@ -39,8 +39,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use aos_nix::NixRunner;
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_nix::NixRunner;
 
 use model::DocIndex;
 

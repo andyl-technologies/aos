@@ -4,9 +4,9 @@ use anyhow::{Result, bail};
 use aos_cli_ui::output::Printer;
 use aos_hub_client::hub_types::{ImageInfo, SystemImage};
 use aos_package_manager::images::{ImageSelection, VerifiedRegistryImage};
-use aos_registry_format::consumer::{ImageCompression, ImageTarget};
-use aos_registry_client::types::{ProfileScope};
 use aos_registry_client::config::ApmConfig;
+use aos_registry_client::types::ProfileScope;
+use aos_registry_format::consumer::{ImageCompression, ImageTarget};
 
 use crate::cli::ImageSelectionArgs;
 

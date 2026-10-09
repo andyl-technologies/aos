@@ -7,6 +7,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 
+use crucible_campaign::{
+    BooleanDomain, CampaignHash, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
+    ChoiceOpportunity, ChoiceSource, ChoiceValue, ConfigurationId, ScenarioDefId,
+    SelectableDeclaration, Selection,
+};
 use crucible_engine::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, DeliveryOrderDecision,
     EngineError, EventKey, FrontierReductionPolicy, GenesisCheckpoint, Icount,
@@ -14,11 +19,6 @@ use crucible_engine::{
     PendingFrame, ReadyPoint, RngDecision, RngStreamId, Schedule, SchedulerNodeId, SchedulerState,
     SchedulingNodeKind, SearchFrontierChoices, SelectionDecision, TemporalGraph, VirtualTime,
     WhiteBoxPolicy, World, WorldNode, bake, instantiate, try_step,
-};
-use crucible_campaign::{
-    BooleanDomain, CampaignHash, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
-    ChoiceOpportunity, ChoiceSource, ChoiceValue, ConfigurationId, ScenarioDefId,
-    SelectableDeclaration, Selection,
 };
 
 #[test]

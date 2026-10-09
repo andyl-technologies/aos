@@ -55,7 +55,9 @@
         })
       );
   selectedCrates = map (name: members.${name}.path) selectedPackages;
-  includesTests = includeIntegrationInputs || cargoTestFlags != ""
+  includesTests =
+    includeIntegrationInputs
+    || cargoTestFlags != ""
     || builtins.any (command: lib.hasInfix " test " " ${command} " || lib.hasInfix "--tests" command || lib.hasInfix "--all-targets" command) cargoBuildCommands;
   extraPaths = lib.unique (builtins.concatLists (
     map (name: let

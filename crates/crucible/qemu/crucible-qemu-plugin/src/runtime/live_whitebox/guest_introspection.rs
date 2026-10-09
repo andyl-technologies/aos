@@ -180,10 +180,11 @@ fn route_exchange(
                     entry.sequence()
                 )));
             }
-            let record = crucible_qemu_protocol::guest_introspection::GuestIntrospectionRecord::decode(
-                entry.record().map_err(PluginIoError::fatal)?,
-            )
-            .map_err(PluginIoError::fatal)?;
+            let record =
+                crucible_qemu_protocol::guest_introspection::GuestIntrospectionRecord::decode(
+                    entry.record().map_err(PluginIoError::fatal)?,
+                )
+                .map_err(PluginIoError::fatal)?;
             record
                 .validate_host_request()
                 .map_err(PluginIoError::fatal)?;

@@ -28,7 +28,8 @@ pub(super) fn ensure(
     requested_worktree: Option<&Path>,
 ) -> Result<PackageUpdateRunV1> {
     plan.validate()?;
-    let plan_digest = Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_PLAN_V1, plan)?;
+    let plan_digest =
+        Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_PLAN_V1, plan)?;
     let run_id = RunId::parse(format!("run-{}", &plan_digest.hex()[..24]))?;
     if let Some(run) = store.read_run(run_id.as_str())? {
         if run.plan_digest != plan_digest {

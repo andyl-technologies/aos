@@ -6,7 +6,9 @@
 //! no process-private object crosses the mapping.
 
 use super::*;
-use crucible_qemu_protocol::guest_introspection::{GuestIntrospectionError, GuestIntrospectionRecord};
+use crucible_qemu_protocol::guest_introspection::{
+    GuestIntrospectionError, GuestIntrospectionRecord,
+};
 
 /// Maximum complete guest-introspection record bytes in one entry.
 pub const GUEST_INTROSPECTION_ENTRY_DATA_BYTES: usize = MAX_FRAME_DATA;

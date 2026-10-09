@@ -16,7 +16,8 @@
     (crate: let
       selectedPath = "${cratesRoot}/${crate}";
     in
-      pathString == selectedPath
+      pathString
+      == selectedPath
       || lib.hasPrefix "${selectedPath}/" pathString
       # Nested workspace members need every ancestor retained for traversal.
       || lib.hasPrefix "${pathString}/" selectedPath)

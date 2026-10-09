@@ -1315,7 +1315,9 @@ pub(crate) mod tests {
         )?
         .ok_or("system-manifest query was not published before descriptor handoff")?;
         let (header, query_payload) = match command {
-            crucible_qemu_shmem::DequeuedFaultCommand::Valid { header, payload } => (header, payload),
+            crucible_qemu_shmem::DequeuedFaultCommand::Valid { header, payload } => {
+                (header, payload)
+            }
             crucible_qemu_shmem::DequeuedFaultCommand::Rejected { error, .. } => {
                 return Err(format!("system-manifest query was invalid: {error}").into());
             }

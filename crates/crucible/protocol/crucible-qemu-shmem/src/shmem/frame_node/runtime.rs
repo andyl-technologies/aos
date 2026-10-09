@@ -643,8 +643,7 @@ impl NodeSlot {
     /// no device completion is pending for this slot.
     #[must_use]
     pub fn device_completion_deadline_tick(&self) -> u64 {
-        self.device_completion_deadline_tick
-            .load(Ordering::Acquire)
+        self.device_completion_deadline_tick.load(Ordering::Acquire)
     }
 
     fn publish_state(
@@ -787,7 +786,10 @@ impl Default for NodeSlot {
     }
 }
 
-fn validate_raw_retirement_at_tick(raw_icount: u64, logical_tick: u64) -> Result<(), NodeSlotError> {
+fn validate_raw_retirement_at_tick(
+    raw_icount: u64,
+    logical_tick: u64,
+) -> Result<(), NodeSlotError> {
     let retired_ticks = raw_icount.checked_mul(crate::TICKS_PER_INSTRUCTION);
     if retired_ticks.is_none_or(|ticks| ticks > logical_tick) {
         return Err(NodeSlotError::RawRetirementAhead {

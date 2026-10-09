@@ -293,8 +293,8 @@ mod tests {
     use std::fs::{self, OpenOptions};
     use std::io::Write as _;
 
-    use aos_module_format::graph::CheckedModuleGraph;
     use aos_core::Sha256Digest;
+    use aos_module_format::graph::CheckedModuleGraph;
     use serde_json::json;
 
     use super::super::tests::{Host, graph};

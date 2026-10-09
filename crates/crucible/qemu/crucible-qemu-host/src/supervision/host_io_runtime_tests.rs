@@ -16,8 +16,9 @@ fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
     use std::os::fd::AsFd;
     use std::os::unix::net::UnixStream;
 
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 2))?;
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 2),
+    )?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
     let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
@@ -78,14 +79,16 @@ pub(crate) fn staged_fault_event_runtime(
     use std::io::Write;
     use std::os::fd::AsFd;
 
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 4))?;
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 4),
+    )?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
     let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
     shmem.write_all(&bytes)?;
     {
-        let mut producer = crucible_qemu_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+        let mut producer =
+            crucible_qemu_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
         let transport = producer.fault_event_transport_mut(0)?;
         crucible_qemu_shmem::enqueue_fault_event(
             transport.ring,
@@ -173,8 +176,9 @@ fn advance_completion_poll_respects_elapsed_host_deadline() -> Result<(), Box<dy
     use std::os::fd::AsFd;
     use std::time::Instant;
 
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 2))?;
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 2),
+    )?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
     let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
@@ -218,8 +222,9 @@ fn expired_fault_event_deadline_distinguishes_empty_and_pending_rings()
     use std::io::Write;
     use std::os::fd::AsFd;
 
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 2))?;
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 2),
+    )?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
     let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
@@ -527,8 +532,9 @@ fn priming_handoff_waits_for_an_acknowledged_post_device_boundary()
     use std::os::fd::AsFd;
     use std::os::unix::net::UnixStream;
 
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 2))?;
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 2),
+    )?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
     let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
@@ -763,8 +769,9 @@ fn private_region_pair() -> Result<(std::fs::File, std::fs::File, u64), Box<dyn 
 {
     use std::io::Write;
 
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 4))?;
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 4),
+    )?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
     let mut source = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);

@@ -23,6 +23,11 @@ use crucible_engine::{
     SchedulerSendAuthorizer, event_log_coverage_projection,
 };
 #[cfg(unix)]
+use crucible_qemu_host::{
+    QemuMappedQuantumShmemHotPath, QemuQuantumOperation, QemuQuantumOperationPlane,
+    QemuQuantumShmemConfig, QemuShmemHotPathChannel,
+};
+#[cfg(unix)]
 use crucible_qemu_protocol::selectable_catalog_plan::{
     SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectablePlanPendingRequest,
 };
@@ -31,11 +36,6 @@ use crucible_qemu_protocol::{
     SelectionReply, SelectionRequest, WhiteboxCoverageMarkerBody, WhiteboxMarkerPayload,
     WhiteboxMeasurementValue, WhiteboxMetricSampleBody, WhiteboxRandomRequestBody,
     encode_whitebox_marker_payload_body,
-};
-#[cfg(unix)]
-use crucible_qemu_host::{
-    QemuMappedQuantumShmemHotPath, QemuQuantumOperation, QemuQuantumOperationPlane,
-    QemuQuantumShmemConfig, QemuShmemHotPathChannel,
 };
 #[cfg(unix)]
 use crucible_qemu_shmem::{
@@ -408,7 +408,10 @@ fn mapped_region_with_markers(
     {
         let slot = allocation.node_slot(0).ok_or("VM slot 0 should exist")?;
         let ceiling = authorize_advance_ceiling(0, current_icount, None)?;
-        slot.publish_scheduler_advance(ceiling, crucible_qemu_shmem::AdvanceStopCondition::Ceiling)?;
+        slot.publish_scheduler_advance(
+            ceiling,
+            crucible_qemu_shmem::AdvanceStopCondition::Ceiling,
+        )?;
         slot.publish_reached_icount(current_icount)?;
     }
     if let Some(frame) = outbound {

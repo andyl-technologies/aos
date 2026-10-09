@@ -72,11 +72,15 @@ fn live_debugger_fixtures_are_canonical() -> Result<(), Box<dyn Error>> {
     let cases = [
         (
             VmArchitecture::X86_64,
-            include_str!("../../../../../tests/crucible/fixtures/debugger-live-x86_64.scenario.toml"),
+            include_str!(
+                "../../../../../tests/crucible/fixtures/debugger-live-x86_64.scenario.toml"
+            ),
         ),
         (
             VmArchitecture::Aarch64,
-            include_str!("../../../../../tests/crucible/fixtures/debugger-live-aarch64.scenario.toml"),
+            include_str!(
+                "../../../../../tests/crucible/fixtures/debugger-live-aarch64.scenario.toml"
+            ),
         ),
     ];
 

@@ -54,8 +54,10 @@ pub(super) async fn scan(
         bail!("Repology fallback request limit exceeds {MAX_REPOLOGY_FALLBACK_REQUESTS}");
     }
     let evaluated_at = super::state::now_unix()?;
-    let envelope_digest =
-        Sha256Digest::of_canonical(aos_package_maintenance::MAINTENANCE_INVENTORY_ENVELOPE_V1, envelope)?;
+    let envelope_digest = Sha256Digest::of_canonical(
+        aos_package_maintenance::MAINTENANCE_INVENTORY_ENVELOPE_V1,
+        envelope,
+    )?;
     let cached = store.read_discovery()?;
     let cached_matches = cached
         .as_ref()

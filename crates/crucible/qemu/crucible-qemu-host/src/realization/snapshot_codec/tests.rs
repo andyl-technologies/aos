@@ -73,8 +73,10 @@ fn production_envelope_round_trips_full_network_frame_capacity() {
 }
 
 fn snapshot_fixture(label: &str) -> QemuVmSnapshot {
-    let definition =
-        crucible_engine::ScenarioDef::from_canonical_material("crucible.test.qemu.snapshot-codec", label);
+    let definition = crucible_engine::ScenarioDef::from_canonical_material(
+        "crucible.test.qemu.snapshot-codec",
+        label,
+    );
     let configuration = crucible_engine::Configuration::genesis(definition);
     let checkpoint = Checkpoint::from_recorded_configuration(
         &configuration,

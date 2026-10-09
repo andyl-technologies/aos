@@ -14,10 +14,19 @@
     (builtins.readFile ../../crates/crucible/control/crucible-control-client/Cargo.toml)
     (builtins.readFile ../../crates/crucible/control/crucible-control-server/Cargo.toml)
   ];
-  apiLib = import ./_crucible-control-source.nix { inherit lib; component = "exports"; };
-  apiClient = import ./_crucible-control-source.nix { inherit lib; component = "client"; };
+  apiLib = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "exports";
+  };
+  apiClient = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "client";
+  };
   model = import ./_crucible-model-source.nix {inherit lib;};
-  lifecycle = import ./_crucible-control-source.nix { inherit lib; component = "lifecycle"; };
+  lifecycle = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "lifecycle";
+  };
   lifecycleTest = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible/control/crucible-control-server/tests/gate_lifecycle_unary.rs;

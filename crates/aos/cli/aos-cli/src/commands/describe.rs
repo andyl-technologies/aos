@@ -8,8 +8,8 @@
 
 use anyhow::Result;
 
-use aos_nix::NixRunner;
 use aos_cli_ui::output::Printer;
+use aos_nix::NixRunner;
 
 /// `aos describe` — show repository information.
 ///

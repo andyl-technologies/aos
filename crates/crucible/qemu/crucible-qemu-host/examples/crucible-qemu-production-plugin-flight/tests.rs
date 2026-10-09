@@ -1,8 +1,8 @@
 //! Focused contracts for production-flight evidence and comparison.
 
 use super::*;
-use crucible_engine::{ContentHash, MarkerId};
 use crucible_device::block::BlockTransportRequestIds;
+use crucible_engine::{ContentHash, MarkerId};
 
 #[test]
 fn preemption_after_adjacent_sample_uses_the_next_retirement() {

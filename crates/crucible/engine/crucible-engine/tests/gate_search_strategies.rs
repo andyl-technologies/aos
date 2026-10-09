@@ -1844,14 +1844,19 @@ fn retained_observable_events_log(
     let mut segment = Vec::new();
     for (index, event) in events.iter().enumerate() {
         segment.push(
-            crucible_engine::test_support::condition_observation_entry_for_test(index as u64, event),
+            crucible_engine::test_support::condition_observation_entry_for_test(
+                index as u64,
+                event,
+            ),
         );
     }
-    segment.push(crucible_engine::test_support::condition_boundary_entry_for_test(
-        segment.len() as u64,
-        boundary_at,
-        SchedulerEvaluationBoundaryKind::Quantum,
-    ));
+    segment.push(
+        crucible_engine::test_support::condition_boundary_entry_for_test(
+            segment.len() as u64,
+            boundary_at,
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    );
     RecordedAssertionLog::from_segments(vec![segment]).map_err(|source| {
         EngineError::ScenarioSerialization {
             reason: format!("search retained assertion log failed: {source}"),
@@ -1860,11 +1865,13 @@ fn retained_observable_events_log(
 }
 
 fn retained_boundary_log(at: VirtualTime) -> Result<RecordedAssertionLog, EngineError> {
-    let segment = vec![crucible_engine::test_support::condition_boundary_entry_for_test(
-        0,
-        at,
-        SchedulerEvaluationBoundaryKind::Quantum,
-    )];
+    let segment = vec![
+        crucible_engine::test_support::condition_boundary_entry_for_test(
+            0,
+            at,
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ];
     RecordedAssertionLog::from_segments(vec![segment]).map_err(|source| {
         EngineError::ScenarioSerialization {
             reason: format!("search retained boundary assertion log failed: {source}"),

@@ -29,12 +29,12 @@
 //! inventory and authorized placement lifecycle calls.
 
 use anyhow::{Context, Result};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::fmt;
 use std::str::FromStr;
 
-use aos_hub_api::{SurfaceRef, CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER};
+use aos_hub_api::{CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER, SurfaceRef};
 
 use crate::validate_base_url;
 
@@ -2405,10 +2405,10 @@ fn ensure_trailing_slash(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_optional_response, HubClient, HubSurfaceRef, HubTopologyMethod};
+    use super::{HubClient, HubSurfaceRef, HubTopologyMethod, decode_optional_response};
     use aos_hub_api::surface_ref::Target;
     use aos_hub_api::{
-        PlanCreatePlacementRequest, PlanUpdatePlacementRequest, CONNECT_PROTOCOL_VERSION_HEADER,
+        CONNECT_PROTOCOL_VERSION_HEADER, PlanCreatePlacementRequest, PlanUpdatePlacementRequest,
     };
     use std::str::FromStr as _;
 

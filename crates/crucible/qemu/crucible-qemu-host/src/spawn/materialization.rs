@@ -241,11 +241,15 @@ macro_rules! guarded_ram_input_accessors {
 guarded_ram_input_accessors!(SealedAtomicExactRestoreInputs);
 
 impl SealedAtomicExactRestoreInputs {
-    pub(crate) const fn target(&self) -> &crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode {
+    pub(crate) const fn target(
+        &self,
+    ) -> &crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode {
         &self.target
     }
 
-    pub(crate) fn into_target(self) -> crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode {
+    pub(crate) fn into_target(
+        self,
+    ) -> crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode {
         self.target
     }
 }

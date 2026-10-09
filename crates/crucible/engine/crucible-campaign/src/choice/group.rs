@@ -616,7 +616,9 @@ impl ChoiceGroup {
         ChoiceGroupId::from_content_id(envelope.content_id())
     }
 
-    pub(crate) fn content_children(&self) -> Vec<(String, crucible_store::content_store::ContentId)> {
+    pub(crate) fn content_children(
+        &self,
+    ) -> Vec<(String, crucible_store::content_store::ContentId)> {
         self.members
             .iter()
             .map(|member| ("member".to_owned(), member.content_id()))

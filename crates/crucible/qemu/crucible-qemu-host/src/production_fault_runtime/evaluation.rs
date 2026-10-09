@@ -420,7 +420,9 @@ impl ProductionFaultRuntime {
                 };
                 observations.push(FaultObservation {
                     semantic_version: crucible_engine::model::FAULT_RUNTIME_STATE_VERSION,
-                    kind: if event.header.outcome == crucible_qemu_shmem::FaultEventOutcomeV1::Passed {
+                    kind: if event.header.outcome
+                        == crucible_qemu_shmem::FaultEventOutcomeV1::Passed
+                    {
                         FaultObservationKind::FaultOpportunity
                     } else {
                         FaultObservationKind::EffectApplied

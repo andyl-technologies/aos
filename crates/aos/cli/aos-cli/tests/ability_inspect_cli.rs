@@ -215,9 +215,9 @@ fn journal_inspection_is_checked_and_read_only() {
 
 #[test]
 fn journal_inspection_accepts_large_native_frames_and_rejects_corruption() {
-    use aos_module_format::graph::{CheckedModuleGraph, Effect, identity_key};
     use aos_activation::activation::{Activation, ActivationAdapter, Invocation, Observation};
     use aos_activation::adapter::CancellationToken;
+    use aos_module_format::graph::{CheckedModuleGraph, Effect, identity_key};
 
     struct InterruptedHandler;
 
@@ -286,11 +286,8 @@ fn journal_inspection_accepts_large_native_frames_and_rejects_corruption() {
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("activation.journal");
-    let mut activation = Activation::open(
-        &path,
-        aos_deployment::transaction::journal_limits(),
-    )
-    .unwrap();
+    let mut activation =
+        Activation::open(&path, aos_deployment::transaction::journal_limits()).unwrap();
     let failure = activation
         .activate_once(
             "large-native-transaction",
@@ -312,19 +309,10 @@ fn journal_inspection_accepts_large_native_frames_and_rejects_corruption() {
         .is_err()
     );
     assert!(
-        aos_activation::activation::inspect(
-            &path,
-            aos_deployment::transaction::journal_limits(),
-        )
-        .is_err()
+        aos_activation::activation::inspect(&path, aos_deployment::transaction::journal_limits(),)
+            .is_err()
     );
-    assert!(
-        Activation::open(
-            &path,
-            aos_deployment::transaction::journal_limits(),
-        )
-        .is_err()
-    );
+    assert!(Activation::open(&path, aos_deployment::transaction::journal_limits(),).is_err());
     let arguments = [
         "ability",
         "journal",

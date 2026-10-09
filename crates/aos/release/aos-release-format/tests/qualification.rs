@@ -40,7 +40,9 @@ fn gate_ids(
 fn scope(image_affecting: bool, container_affecting: bool) -> ChangeScope {
     ChangeScope {
         schema_version: CHANGE_SCOPE.into(),
-        predecessor_manifest_digest: Some(aos_release_format::Sha256Digest::of_bytes("predecessor")),
+        predecessor_manifest_digest: Some(aos_release_format::Sha256Digest::of_bytes(
+            "predecessor",
+        )),
         image_affecting,
         container_affecting,
         changed_package_cells: Vec::new(),
@@ -422,7 +424,9 @@ fn release_class_and_channel_kind_derive_from_names() {
 #[test]
 fn arm64_container_evidence_requires_the_complete_tcg_topology() {
     use aos_release_format::platform::Platform;
-    use aos_release_format::qualification::environment::{Accelerator, Backend, EnvironmentInventory};
+    use aos_release_format::qualification::environment::{
+        Accelerator, Backend, EnvironmentInventory,
+    };
 
     let policy = contract();
     let target = policy

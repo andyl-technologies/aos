@@ -6,10 +6,10 @@ use crate::commands::hub::mutation::topology_read;
 use crate::commands::hub::output::print_topology_message;
 use anyhow::Result;
 use aos_cli_ui::output::Printer;
+use aos_hub_client::{hub_rpc as HubTopologyMethod, hub_types};
 use aos_registry_authoring::registry::hub_publication::{
     self, PublicationAccess, begin_registry_publication_chunked,
 };
-use aos_hub_client::{hub_rpc as HubTopologyMethod, hub_types};
 use inventory::publication_manifest_request;
 
 /// Handles the hub publish command family through the public API.

@@ -106,9 +106,10 @@ fn qemu_quantum_caps_horizon_at_retained_fifo_head_retry() {
 #[test]
 fn qemu_quantum_accepts_canonical_retained_frame_behind_current_icount() {
     let slot = NodeSlot::default();
-    if let Err(error) =
-        slot.publish_scheduler_advance(ceiling(0, 5), crucible_qemu_shmem::AdvanceStopCondition::Ceiling)
-    {
+    if let Err(error) = slot.publish_scheduler_advance(
+        ceiling(0, 5),
+        crucible_qemu_shmem::AdvanceStopCondition::Ceiling,
+    ) {
         panic!("test ceiling should publish: {error}");
     }
     if let Err(error) = slot.publish_reached_icount(5) {

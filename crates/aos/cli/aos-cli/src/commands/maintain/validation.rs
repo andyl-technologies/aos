@@ -239,7 +239,11 @@ fn execute_gate(
     scratch: &Path,
     backend: &Backend,
     gate: &GateSpec,
-) -> Result<(GateResult, Vec<u8>, aos_package_maintenance::run::ConfinementEvidence)> {
+) -> Result<(
+    GateResult,
+    Vec<u8>,
+    aos_package_maintenance::run::ConfinementEvidence,
+)> {
     let executable = std::env::current_exe().context("resolving frozen controller executable")?;
     let started = Instant::now();
     let limits = ResourceLimits::gates();

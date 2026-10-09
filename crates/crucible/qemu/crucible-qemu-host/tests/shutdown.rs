@@ -10,13 +10,13 @@ use std::io::{self, Write};
 use std::process::Command;
 use std::time::Duration;
 
-use crucible_qemu_protocol::{HostMsg, control_encode_host_msg};
 use crucible_qemu_host::{
     QEMU_SHUTDOWN_ESCALATION_ORDER, QMP_QUIT_COMMAND, QemuChildWait, QemuReap, QemuShutdownError,
     QemuShutdownPolicy, QemuShutdownRung, QemuShutdownTarget, QemuShutdownTargetError,
     UnixQemuChildShutdownTarget, send_control_quit_frame, send_qmp_quit_command,
     shutdown_qemu_child,
 };
+use crucible_qemu_protocol::{HostMsg, control_encode_host_msg};
 
 #[test]
 fn shutdown_escalates_to_sigkill_and_reaps_unresponsive_child() -> Result<(), Box<dyn Error>> {

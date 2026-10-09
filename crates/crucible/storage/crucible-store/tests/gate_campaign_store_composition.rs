@@ -84,7 +84,8 @@ fn sqlite_leaf_preserves_authenticated_objects_and_physical_gc_after_restart() {
         )]),
     };
     let bytes = b"durable campaign fact";
-    let id = crucible_store::content_store::ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
+    let id =
+        crucible_store::content_store::ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
 
     let (graph, admin) = StoreGraph::build_with_admin(config.clone()).expect("SQLite graph");
     let sqlite_configuration = graph.configuration_id();
@@ -160,8 +161,11 @@ fn assert_composition(root: std::path::PathBuf, order: [TransparentLayer; 3]) {
     let config = graph_config(&root, order);
     let (graph, admin) = StoreGraph::build_with_admin(config.clone()).expect("admitted graph");
     let fact_bytes = b"campaign-store composition fact";
-    let fact =
-        crucible_store::content_store::ContentId::for_bytes(ObjectKind::CampaignFact, 1, fact_bytes);
+    let fact = crucible_store::content_store::ContentId::for_bytes(
+        ObjectKind::CampaignFact,
+        1,
+        fact_bytes,
+    );
     let ram_bytes = b"campaign-store composition RAM extent";
     let ram =
         crucible_store::content_store::ContentId::for_bytes(ObjectKind::RamExtent, 1, ram_bytes);

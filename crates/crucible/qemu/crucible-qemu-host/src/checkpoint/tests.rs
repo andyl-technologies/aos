@@ -1,10 +1,10 @@
 //! Canonical checkpoint codec and network-continuation tests.
 
 use super::*;
-use crucible_engine::{Icount, IrqVector, PreemptionKind, VcpuId};
 use crucible_device::{
     BaseImage, BlockDevice, BlockLatency, FsTree, IoCore, NinepDevice, NinepLatency, Node,
 };
+use crucible_engine::{Icount, IrqVector, PreemptionKind, VcpuId};
 use crucible_qemu_shmem::{RegionConfig, RegionHeader, RegionLayout};
 
 #[test]
@@ -358,8 +358,8 @@ fn network_transport_rejects_noncanonical_retained_state() {
 
 #[test]
 fn network_transport_authenticates_inbound_producer_provenance() {
-    let transport =
-        |frames: Vec<crucible_qemu_shmem::FrameEntry>, next_sequence| QemuNetworkTransportCheckpoint {
+    let transport = |frames: Vec<crucible_qemu_shmem::FrameEntry>, next_sequence| {
+        QemuNetworkTransportCheckpoint {
             inbound: ring_snapshot(frames),
             outbound: SpscRingSnapshot { frames: Vec::new() },
             queue_capacity: 64,
@@ -367,7 +367,8 @@ fn network_transport_authenticates_inbound_producer_provenance() {
             next_router_inbound_sequence: next_sequence,
             next_host_outbound_sequence: 0,
             next_plugin_outbound_sequence: 0,
-        };
+        }
+    };
     let frame = |src_node, sequence| {
         crucible_qemu_shmem::FrameEntry::new(72 + u64::from(sequence), src_node, sequence, &[1])
             .unwrap_or_else(|error| panic!("inbound frame should encode: {error}"))
@@ -417,7 +418,12 @@ fn network_transport_rejects_impossible_retained_attempt_state() {
         };
         assert_eq!(
             SpscRingSnapshot::from_live_frames(&[frame]),
-            Err(crucible_qemu_shmem::SpscRingError::InvalidFrameDeliveryAttempts { state, attempts })
+            Err(
+                crucible_qemu_shmem::SpscRingError::InvalidFrameDeliveryAttempts {
+                    state,
+                    attempts
+                }
+            )
         );
     }
 }

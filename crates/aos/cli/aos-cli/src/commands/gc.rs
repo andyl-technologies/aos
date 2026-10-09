@@ -15,9 +15,9 @@
 
 use anyhow::{Context, Result, bail};
 
-use aos_nix::NixRunner;
-use aos_cli_ui::output::Printer;
 use aos_build_client::AosClient;
+use aos_cli_ui::output::Printer;
+use aos_nix::NixRunner;
 
 /// Default retention period for local garbage collection.
 const DEFAULT_GC_RETENTION: &str = "7d";

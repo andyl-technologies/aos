@@ -147,15 +147,17 @@ fn formal_trace_export_includes_typed_diagnostic_details() {
         String::from("severity"),
         EventAttributeValue::Level(EventLevel::Error),
     );
-    let log = vec![crucible_engine::test_support::condition_payload_entry_for_test(
-        0,
-        time(3),
-        SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
-            "diag\nname",
-            EventLevel::Warn,
-            details,
-        )),
-    )];
+    let log = vec![
+        crucible_engine::test_support::condition_payload_entry_for_test(
+            0,
+            time(3),
+            SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
+                "diag\nname",
+                EventLevel::Warn,
+                details,
+            )),
+        ),
+    ];
 
     let export =
         ExternalFormalTraceExporter::export_event_log(&log).expect("diagnostic log should export");
@@ -248,7 +250,10 @@ fn formal_trace_export_does_not_add_runtime_formal_evaluator() {
         );
     }
     for (path, source) in [
-        ("crates/crucible/engine/crucible-engine/Cargo.toml", include_str!("../Cargo.toml")),
+        (
+            "crates/crucible/engine/crucible-engine/Cargo.toml",
+            include_str!("../Cargo.toml"),
+        ),
         ("src/backend.rs", include_str!("../src/backend.rs")),
         (
             "src/device_subnode.rs",

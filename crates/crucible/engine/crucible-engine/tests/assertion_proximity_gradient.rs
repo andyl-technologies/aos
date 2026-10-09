@@ -96,18 +96,21 @@ fn online_report(
     let mut oracle = BlackBoxHostOracle;
     if !log.is_empty() {
         for index in 0..log.len() - 1 {
-            let prefix = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
-                log[..=index].to_vec(),
-            )
-            .expect("online proximity prefix should validate");
+            let prefix =
+                crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+                    log[..=index].to_vec(),
+                )
+                .expect("online proximity prefix should validate");
             evaluator.observe_prefix(&prefix, &mut oracle);
         }
     }
     let terminal = if log.is_empty() {
         ConditionEventLogPrefix::genesis()
     } else {
-        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(log.to_vec())
-            .expect("terminal proximity prefix should validate")
+        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+            log.to_vec(),
+        )
+        .expect("terminal proximity prefix should validate")
     };
     evaluator.finalize_prefix(&terminal, &mut oracle)
 }

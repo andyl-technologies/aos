@@ -46,8 +46,9 @@ fn read_wake(stream: &mut UnixStream) -> Result<(), NetworkOutputTestError> {
 #[test]
 fn network_output_witness_waits_for_the_matching_producer_publication()
 -> Result<(), NetworkOutputTestError> {
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 4))?;
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 4),
+    )?;
     let layout = allocation.layout();
     let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
     shmem.write_all(&allocation.setup_region_bytes()?)?;
@@ -105,8 +106,9 @@ fn network_output_witness_waits_for_the_matching_producer_publication()
 #[test]
 fn network_output_at_unchanged_tick_requires_a_fresh_ring_frontier_and_control_ack()
 -> Result<(), NetworkOutputTestError> {
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 4))?;
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 4),
+    )?;
     let layout = allocation.layout();
     let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
     shmem.write_all(&allocation.setup_region_bytes()?)?;

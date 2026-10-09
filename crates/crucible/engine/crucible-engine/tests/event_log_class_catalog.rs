@@ -95,8 +95,10 @@ fn assertion_and_guest_marker_kinds_follow_rfc_catalog_classes() {
         "catalog assertion evaluated",
         vec![GuestAssertionDetail::new("case", "catalog")],
     );
-    let evaluated_entry =
-        crucible_engine::test_support::condition_observation_entry_for_test(1, &assertion_evaluated);
+    let evaluated_entry = crucible_engine::test_support::condition_observation_entry_for_test(
+        1,
+        &assertion_evaluated,
+    );
     assert_eq!(
         evaluated_entry.event_payload().kind(),
         "assertion_evaluated"

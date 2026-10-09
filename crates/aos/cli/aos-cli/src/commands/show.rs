@@ -6,11 +6,11 @@
 //! evaluation does not authenticate a publication or inspect live execution.
 
 use anyhow::{Context, Result};
-use aos_module_docs::runtime::RuntimeDocument;
 use aos_deployment_format::model::Envelope;
+use aos_module_docs::runtime::RuntimeDocument;
 
-use aos_nix::NixRunner;
 use aos_cli_ui::output::Printer;
+use aos_nix::NixRunner;
 
 /// `aos show <package>` — display package metadata.
 ///

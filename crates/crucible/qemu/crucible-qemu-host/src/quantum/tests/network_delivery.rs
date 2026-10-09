@@ -181,8 +181,11 @@ fn qemu_quantum_accepts_exact_delivery_horizon_in_total_order() {
 #[test]
 fn qemu_quantum_accepts_frame_published_at_current_boundary() {
     let slot = NodeSlot::default();
-    slot.publish_scheduler_advance(ceiling(5, 5), crucible_qemu_shmem::AdvanceStopCondition::Ceiling)
-        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    slot.publish_scheduler_advance(
+        ceiling(5, 5),
+        crucible_qemu_shmem::AdvanceStopCondition::Ceiling,
+    )
+    .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     slot.publish_reached_icount(5)
         .unwrap_or_else(|error| panic!("test current icount should publish: {error}"));
     let inbound_ring = RingHeader::new();

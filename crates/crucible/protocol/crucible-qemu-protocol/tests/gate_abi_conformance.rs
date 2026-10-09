@@ -262,7 +262,8 @@ fn assert_selectable_v1_golden_vectors() {
 
 #[test]
 fn guest_selectable_current_schemas_are_registered_exactly() {
-    let registry = include_str!("../../../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
+    let registry =
+        include_str!("../../../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
     for schema in [
         "crucible.guest-selectable.register",
         "crucible.guest-selectable.request",

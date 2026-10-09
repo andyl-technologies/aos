@@ -507,7 +507,9 @@ fn canonical_plan_round_trip_restores_exact_state_with_fresh_token()
     let final_plan = restored.to_plan()?;
     let final_bytes = final_plan.encode()?;
     assert_eq!(
-        crucible_qemu_protocol::selectable_catalog_plan::SelectableCatalogPlan::decode(&final_bytes),
+        crucible_qemu_protocol::selectable_catalog_plan::SelectableCatalogPlan::decode(
+            &final_bytes
+        ),
         Ok(final_plan)
     );
     Ok(())

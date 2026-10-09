@@ -735,7 +735,9 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::Arc;
 
-    use crucible_store::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
+    use crucible_store::content_store::{
+        ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind,
+    };
 
     use super::*;
     use crate::CampaignRoots;

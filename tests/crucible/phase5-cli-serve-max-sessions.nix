@@ -11,8 +11,14 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  lifecycle = import ./_crucible-control-source.nix { inherit lib; component = "lifecycle"; };
-  apiServer = import ./_crucible-control-source.nix { inherit lib; component = "server"; };
+  lifecycle = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "lifecycle";
+  };
+  apiServer = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "server";
+  };
   cliMain = import ./_cli-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 

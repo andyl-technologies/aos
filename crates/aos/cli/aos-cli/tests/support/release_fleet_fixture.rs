@@ -48,7 +48,9 @@ use aos_release_format::evidence::{
     EvidenceRecord, GateResult, QUALIFICATION_EXECUTOR_RESPONSE, QualificationExecutorRequest,
     QualificationExecutorResponse,
 };
-use aos_release_format::fitness::{FITNESS_REPORT, FitnessReport, LiveBindings, signer_roster_digest};
+use aos_release_format::fitness::{
+    FITNESS_REPORT, FitnessReport, LiveBindings, signer_roster_digest,
+};
 use aos_release_format::inventory::PackageInventoryV1;
 use aos_release_format::inventory::PackagePublicationMetadata;
 use aos_release_format::manifest::{
@@ -1642,14 +1644,15 @@ mod tests {
                 phase,
             )
         };
-        let requirements = |cases: &[aos_release_format::qualification_evidence::QualificationCase]| {
-            let mut ids: Vec<String> = cases
-                .iter()
-                .map(|case| case.requirement_id.clone())
-                .collect();
-            ids.sort();
-            ids
-        };
+        let requirements =
+            |cases: &[aos_release_format::qualification_evidence::QualificationCase]| {
+                let mut ids: Vec<String> = cases
+                    .iter()
+                    .map(|case| case.requirement_id.clone())
+                    .collect();
+                ids.sort();
+                ids
+            };
 
         // Staging retains five native obligations, delivery, four package
         // cells, and four Linux disk/container claims. The native matrix and

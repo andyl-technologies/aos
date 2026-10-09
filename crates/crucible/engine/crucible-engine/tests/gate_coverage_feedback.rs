@@ -239,7 +239,9 @@ fn feedback_world(label: &str) -> Result<World, EngineError> {
 }
 
 fn feedback_decision(index: u64) -> Result<Decision, EngineError> {
-    crucible_engine::test_support::typed_search_decision_for_test(&format!("coverage-feedback-{index}"))
+    crucible_engine::test_support::typed_search_decision_for_test(&format!(
+        "coverage-feedback-{index}"
+    ))
 }
 
 fn node(name: &str) -> NodeId {

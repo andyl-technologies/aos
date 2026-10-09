@@ -445,7 +445,10 @@ fn inactive_topology_activation_waits_for_its_global_time() -> TestResult {
     assert!(scheduler.rendezvous_records()[0].nodes.is_empty());
     let report = crucible_engine::check_scheduler_liveness(scenario)?;
     assert_eq!(report.frontier, VirtualTime { ticks: 7 });
-    assert_eq!(report.terminal, crucible_engine::SchedulerTerminal::Quiescent);
+    assert_eq!(
+        report.terminal,
+        crucible_engine::SchedulerTerminal::Quiescent
+    );
     assert!(report.advanced_nodes.is_empty());
     Ok(())
 }

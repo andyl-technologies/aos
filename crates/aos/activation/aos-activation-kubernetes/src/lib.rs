@@ -403,8 +403,7 @@ fn validate_desired(desired: &AggregateRequest) -> Result<(), KubernetesProvider
                 return Err(invalid("Kubernetes API object identities are not unique"));
             }
             let value: Value = serde_json::from_str(&object.content)?;
-            if aos_core::json::to_vec(&value)
-                .map_err(|error| invalid(error.to_string()))?
+            if aos_core::json::to_vec(&value).map_err(|error| invalid(error.to_string()))?
                 != object.content.as_bytes()
             {
                 return Err(invalid("Kubernetes object content is not canonical JSON"));

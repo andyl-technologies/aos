@@ -81,7 +81,8 @@ impl QemuLaunchAppRandomConfig {
             branch_reseeds: Vec::new(),
             draw_offset: 0,
             stream_positions: BTreeMap::new(),
-            branch_plan: crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan::default(),
+            branch_plan:
+                crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan::default(),
         }
     }
 

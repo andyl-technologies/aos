@@ -1276,7 +1276,7 @@ fn require_not_expired(value: &str, now: std::time::SystemTime) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::{MAIN_REGISTRY, EXPERIMENTAL_REGISTRY};
+    use crate::registry::{EXPERIMENTAL_REGISTRY, MAIN_REGISTRY};
 
     fn key(id: &str, byte: u8) -> TufKeyV1 {
         TufKeyV1 {

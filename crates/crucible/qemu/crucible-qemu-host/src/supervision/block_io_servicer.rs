@@ -60,7 +60,6 @@ use std::os::fd::BorrowedFd;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crucible_engine::ContentHash;
 use crucible_device::block::BlockFaultWriteDisposition;
 use crucible_device::block::{
     BlockArrayDirtyRange, BlockDeliveryOpportunity, BlockDurabilityConfig,
@@ -76,6 +75,7 @@ use crucible_device::{
     BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockRequestIdentity, DeviceError, IoCore,
     Request,
 };
+use crucible_engine::ContentHash;
 use crucible_qemu_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
     RegionHeaderSnapshot, SLOT_BLK_IO, STATUS_IDLE, STATUS_RUNNING, SetupRegionMapError,

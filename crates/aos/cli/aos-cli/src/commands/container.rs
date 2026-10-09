@@ -12,8 +12,9 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
-use aos_nix::NixRunner;
 use aos_cli_ui::output::{OutputMode, Printer, ProgressMode, TransferProgress};
+use aos_hub_client::{HubClient, hub_rpc, hub_types};
+use aos_nix::NixRunner;
 use aos_oci::{
     ArtifactFormat, PlatformSelector, PullOptions, PushOptions, RegistryClient, RegistryReference,
     TransferEvent, VerifiedPublicationCommit, VerifiedPublicationHook, VerifiedPublicationRequest,
@@ -24,7 +25,6 @@ use aos_oci_types::{
     ContainerRelease, ContainerSignatureInput, ManifestReference, RepositoryName, Sha256Digest,
     definition_attribute_matches_image, to_canonical_json,
 };
-use aos_hub_client::{HubClient, hub_rpc, hub_types};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -663,11 +663,12 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
                         && record.revision.release_id == release.identity.release,
                     "registry stage identity differs from this signed release"
                 );
-                let graph = aos_registry_authoring::registry::container_stage::prepare_container_stage(
-                    release_layout,
-                    hub_repository.as_str(),
-                    &release,
-                )?;
+                let graph =
+                    aos_registry_authoring::registry::container_stage::prepare_container_stage(
+                        release_layout,
+                        hub_repository.as_str(),
+                        &release,
+                    )?;
                 ensure!(
                     record.revision.container.as_ref() == Some(&graph),
                     "registry stage does not retain this exact complete OCI graph and repository"

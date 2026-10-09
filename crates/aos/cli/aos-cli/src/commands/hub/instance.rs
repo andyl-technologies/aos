@@ -2,17 +2,16 @@
 
 use crate::cli::{
     HubInstanceCmd, HubInstanceMaintenanceCmd, HubInstanceOciRouteCmd,
-    HubInstanceSettingsMutationCmd, HubInstanceSettingsSectionCmd,
-    HubInstanceTopologyDefaultsCmd, HubMutationArgs, HubOrgTopologyDefaultsCmd,
+    HubInstanceSettingsMutationCmd, HubInstanceSettingsSectionCmd, HubInstanceTopologyDefaultsCmd,
+    HubMutationArgs, HubOrgTopologyDefaultsCmd,
 };
 use crate::commands::hub::access_policy::{access_policy_args_present, build_access_policy};
 use crate::commands::hub::client::hub_client;
 use crate::commands::hub::input::parse_generation_ref;
 use crate::commands::hub::mutation::apply_topology_plan;
 use crate::commands::hub::mutation::{
-    delete_topology_resource, new_idempotency_key, required_plan_version,
-    retained_apply_mutation, retained_plan_mutation, topology_mutation, topology_read,
-    topology_stable_id,
+    delete_topology_resource, new_idempotency_key, required_plan_version, retained_apply_mutation,
+    retained_plan_mutation, topology_mutation, topology_read, topology_stable_id,
 };
 use crate::commands::hub::output::print_topology_message;
 use anyhow::{Context as _, Result};
@@ -215,11 +214,8 @@ async fn instance_oci_route(printer: &Printer, command: &HubInstanceOciRouteCmd)
             } else {
                 hub_types::PlanConvertRouteToInstanceOciRouteRequest {
                     route_id: route.clone(),
-                    expected_resource_version: required_plan_version(
-                        mutation,
-                        "route conversion",
-                    )?
-                    .to_string(),
+                    expected_resource_version: required_plan_version(mutation, "route conversion")?
+                        .to_string(),
                     stable_id: stable_id.clone().unwrap_or_default(),
                     idempotency_key: new_idempotency_key(),
                 }
@@ -285,9 +281,7 @@ async fn current_endpoint_generation(client: &HubClient, endpoint: &str) -> Resu
             },
         )
         .await?;
-    let endpoint = response
-        .endpoint
-        .context("the Hub returned no endpoint")?;
+    let endpoint = response.endpoint.context("the Hub returned no endpoint")?;
     anyhow::ensure!(
         endpoint.desired_generation > 0,
         "the endpoint has no desired generation; pass --endpoint-generation"

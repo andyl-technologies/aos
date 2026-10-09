@@ -15,10 +15,10 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 
-use aos_nix::NixRunner;
 use aos_cli_ui::output::Printer;
 use aos_closure_analysis::target::{Target, resolve};
 use aos_closure_analysis::{ClosureGraph, report, scan};
+use aos_nix::NixRunner;
 
 use crate::cli::ProfileCmd;
 

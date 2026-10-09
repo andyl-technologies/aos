@@ -498,8 +498,7 @@ pub fn run_live_plugin_install_gate(
                 .ok_or(LivePluginInstallGateError::MissingRawMarkerStamp)?
                 .retired;
             whitebox_marker_count += 1;
-            first_whitebox_marker
-                .get_or_insert_with(|| (retired, marker.name.clone()));
+            first_whitebox_marker.get_or_insert_with(|| (retired, marker.name.clone()));
             whitebox_last_marker_icount = Some(retired);
         }
     }

@@ -225,7 +225,12 @@ async fn success(home: &Path, arguments: &[&str]) -> Result<serde_json::Value> {
 
 async fn full_pack(fixture: &RegistryFixture, version: &str) -> Result<()> {
     let temp = tempfile::tempdir()?;
-    let source = aos_registry_authoring::registry::pack::full_pack(fixture.source_path(), version, temp.path()).await?;
+    let source = aos_registry_authoring::registry::pack::full_pack(
+        fixture.source_path(),
+        version,
+        temp.path(),
+    )
+    .await?;
     let name = source.file_name().context("pack filename")?;
     let root = fixture
         .origin_path()

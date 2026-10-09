@@ -10,9 +10,18 @@
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiLib = import ./_crucible-control-source.nix { inherit lib; component = "exports"; };
-  apiClient = import ./_crucible-control-source.nix { inherit lib; component = "client"; };
-  streaming = import ./_crucible-control-source.nix { inherit lib; component = "streaming"; };
+  apiLib = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "exports";
+  };
+  apiClient = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "client";
+  };
+  streaming = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "streaming";
+  };
   streamingTest = builtins.readFile ../../crates/crucible/control/crucible-control-server/tests/gate_streaming_equivalence.rs;
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;

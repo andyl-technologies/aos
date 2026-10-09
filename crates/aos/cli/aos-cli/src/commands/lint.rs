@@ -7,8 +7,8 @@
 
 use anyhow::{Context, Result};
 
-use aos_nix::NixRunner;
 use aos_cli_ui::output::Printer;
+use aos_nix::NixRunner;
 
 /// `aos lint [package]` — validate package definitions.
 ///

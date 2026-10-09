@@ -550,12 +550,19 @@ impl SigningContext {
                 }
             }
             (
-                Self::CatalogTuf { catalog_registry, metadata_role, metadata_version },
+                Self::CatalogTuf {
+                    catalog_registry,
+                    metadata_role,
+                    metadata_version,
+                },
                 SigningOperation::SignPayload,
             ) => {
                 require_identifier(catalog_registry, "catalog registry alias")?;
                 if role != SignerRole::Registry
-                    || !matches!(metadata_role.as_str(), "root" | "targets" | "snapshot" | "timestamp")
+                    || !matches!(
+                        metadata_role.as_str(),
+                        "root" | "targets" | "snapshot" | "timestamp"
+                    )
                     || *metadata_version == 0
                 {
                     bail!("catalog metadata requires a versioned registry-root role");

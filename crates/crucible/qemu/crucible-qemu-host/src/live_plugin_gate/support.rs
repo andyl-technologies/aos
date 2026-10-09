@@ -113,7 +113,10 @@ pub(super) fn vm_launch_config(config: &LivePluginInstallGateConfig) -> QemuVmLa
 fn launch_artifact(kind: &str, path: &Path) -> QemuLaunchArtifact {
     let path = path_text(path);
     QemuLaunchArtifact::new(
-        crucible_engine::ContentHash::from_canonical_material(GATE_DOMAIN, &format!("{kind}={path}")),
+        crucible_engine::ContentHash::from_canonical_material(
+            GATE_DOMAIN,
+            &format!("{kind}={path}"),
+        ),
         path,
     )
 }

@@ -4,8 +4,13 @@
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proto_root = "../../../../api/proto";
-    let files = ["cache/v1/cache.proto", "build/v1/build.proto", "gc/v1/gc.proto", "auth/v1/auth.proto"]
-        .map(|path| format!("{proto_root}/aos/{path}"));
+    let files = [
+        "cache/v1/cache.proto",
+        "build/v1/build.proto",
+        "gc/v1/gc.proto",
+        "auth/v1/auth.proto",
+    ]
+    .map(|path| format!("{proto_root}/aos/{path}"));
 
     connectrpc_build::Config::new()
         .files(&files)

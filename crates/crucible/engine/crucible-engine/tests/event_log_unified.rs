@@ -123,10 +123,10 @@ fn incremental_append_preserves_observations_and_cross_batch_timer_cancellation(
         SchedulerEvaluationBoundaryKind::Quantum,
     )
     .expect("initial boundary should validate");
-    let mut initial_pass =
-        ConditionEvaluationPass::from_log_prefix(initial, |_leaf: crucible_engine::ConditionLeaf<'_>| {
-            false
-        });
+    let mut initial_pass = ConditionEvaluationPass::from_log_prefix(
+        initial,
+        |_leaf: crucible_engine::ConditionLeaf<'_>| false,
+    );
     let firings = initial_pass.evaluate_event_graph(&graph, &mut EventGraphState::new());
     assert_eq!(firings.len(), 1);
     let firing = crucible_engine::test_support::condition_payload_entry_for_test(

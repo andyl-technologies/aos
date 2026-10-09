@@ -138,7 +138,9 @@ pub(in crate::fault_command) fn instruction_command_expectation(
         let row = identity
             .rows
             .iter()
-            .find(|row| crucible_qemu_shmem::fault_object_id_hash_v1(&row.name) == register_identity)
+            .find(|row| {
+                crucible_qemu_shmem::fault_object_id_hash_v1(&row.name) == register_identity
+            })
             .ok_or(FaultCommandBridgeError::InstructionEvidence)?;
         let mutation = policy_json(&field(node_fault_field::P4)?.value, false)?;
         Some(result_register_expectation(vcpu_index, row, &mutation)?)

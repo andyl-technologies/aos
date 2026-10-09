@@ -16,9 +16,7 @@
     rootForPackage.${package} or "src/lib.rs";
 
   expectedPackages = lib.sort builtins.lessThan (builtins.filter (lib.hasPrefix "crucible-") packages);
-  foundPackages = lib.sort builtins.lessThan (
-    cruciblePackages
-  );
+  foundPackages = lib.sort builtins.lessThan cruciblePackages;
 
   packageSetFailures =
     if foundPackages == expectedPackages

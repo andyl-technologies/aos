@@ -25,64 +25,67 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
             payload: b"frame".to_vec(),
         }),
     };
-    let prefix = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
-        observation_entry(0, &console),
-        payload_entry(
-            1,
-            time(6),
-            SchedulerEventLogPayload::ResolvedHappening(delivery),
-        ),
-        payload_entry(
-            2,
-            time(6),
-            SchedulerEventLogPayload::Decision(Decision::DeliveryOrder(DeliveryOrderDecision {
-                at: time(6),
-                order: vec![delivery_key.clone()],
-            })),
-        ),
-        payload_entry(
-            3,
-            time(6),
-            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("ignored-rng"),
-                value: 0xfeed_beef,
-            })),
-        ),
-        payload_entry(
-            4,
-            time(6),
-            SchedulerEventLogPayload::Decision(Decision::Override(OverrideDecision {
-                point: crucible_engine::SchedulingPoint {
-                    key: String::from("ignored-override"),
-                },
-                choice: crucible_engine::ChoiceTag {
-                    name: String::from("ignored-choice"),
-                },
-            })),
-        ),
-        payload_entry(
-            5,
-            time(6),
-            SchedulerEventLogPayload::Decision(Decision::Preemption(PreemptionDecision {
-                node: node("db-0"),
-                at: crucible_engine::SimInstant { ticks: 6 },
-                kind: PreemptionKind::InterruptAt {
-                    target_vcpu: VcpuId { index: 0 },
-                    irq: IrqVector { vector: 33 },
-                },
-            })),
-        ),
-        payload_entry(
-            6,
-            time(6),
-            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("ignored-app-random"),
-                value: 0x1234_5678,
-            })),
-        ),
-        boundary_entry(7, time(6)),
-    ])
-    .expect("checked prefix should materialize observed state");
+    let prefix =
+        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
+            observation_entry(0, &console),
+            payload_entry(
+                1,
+                time(6),
+                SchedulerEventLogPayload::ResolvedHappening(delivery),
+            ),
+            payload_entry(
+                2,
+                time(6),
+                SchedulerEventLogPayload::Decision(Decision::DeliveryOrder(
+                    DeliveryOrderDecision {
+                        at: time(6),
+                        order: vec![delivery_key.clone()],
+                    },
+                )),
+            ),
+            payload_entry(
+                3,
+                time(6),
+                SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+                    stream: RngStreamId::from_name("ignored-rng"),
+                    value: 0xfeed_beef,
+                })),
+            ),
+            payload_entry(
+                4,
+                time(6),
+                SchedulerEventLogPayload::Decision(Decision::Override(OverrideDecision {
+                    point: crucible_engine::SchedulingPoint {
+                        key: String::from("ignored-override"),
+                    },
+                    choice: crucible_engine::ChoiceTag {
+                        name: String::from("ignored-choice"),
+                    },
+                })),
+            ),
+            payload_entry(
+                5,
+                time(6),
+                SchedulerEventLogPayload::Decision(Decision::Preemption(PreemptionDecision {
+                    node: node("db-0"),
+                    at: crucible_engine::SimInstant { ticks: 6 },
+                    kind: PreemptionKind::InterruptAt {
+                        target_vcpu: VcpuId { index: 0 },
+                        irq: IrqVector { vector: 33 },
+                    },
+                })),
+            ),
+            payload_entry(
+                6,
+                time(6),
+                SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+                    stream: RngStreamId::from_name("ignored-app-random"),
+                    value: 0x1234_5678,
+                })),
+            ),
+            boundary_entry(7, time(6)),
+        ])
+        .expect("checked prefix should materialize observed state");
     let state = prefix.observed_state();
 
     assert_eq!(state.at(), time(6));
@@ -147,22 +150,23 @@ fn borrowed_projection_preserves_event_timer_and_once_histories() {
     let mut initial_pass = ConditionEvaluationPass::from_log_prefix(initial_prefix, NoLeaves);
     let initial_firings = initial_pass.evaluate_event_graph(&initial, &mut EventGraphState::new());
     let firing = initial_firings.as_slice()[0].clone();
-    let prefix = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
-        payload_entry(0, time(3), SchedulerEventLogPayload::TriggerFired(firing)),
-        payload_entry(
-            1,
-            time(3),
-            SchedulerEventLogPayload::TriggerActionApplied(TriggerActionApplication {
-                sequence: 0,
-                event: anchor.clone(),
-                at: time(3),
-                path: Vec::new(),
-                action: Action::arm_timer(timer.clone(), SimDuration { ticks: 10 }),
-            }),
-        ),
-        boundary_entry(2, time(13)),
-    ])
-    .expect("runtime facts should form a checked prefix");
+    let prefix =
+        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
+            payload_entry(0, time(3), SchedulerEventLogPayload::TriggerFired(firing)),
+            payload_entry(
+                1,
+                time(3),
+                SchedulerEventLogPayload::TriggerActionApplied(TriggerActionApplication {
+                    sequence: 0,
+                    event: anchor.clone(),
+                    at: time(3),
+                    path: Vec::new(),
+                    action: Action::arm_timer(timer.clone(), SimDuration { ticks: 10 }),
+                }),
+            ),
+            boundary_entry(2, time(13)),
+        ])
+        .expect("runtime facts should form a checked prefix");
     let once = Condition::Once {
         predicate: Box::new(Condition::at(time(13))),
     };
@@ -244,8 +248,10 @@ fn fault_evidence_does_not_expose_internal_state_to_assertion_predicates() {
         SchedulerEventLogPayload::FaultObservation(observation),
     );
     let prefix =
-        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(vec![entry])
-            .expect("typed fault evidence should form a checked prefix");
+        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
+            entry,
+        ])
+        .expect("typed fault evidence should form a checked prefix");
 
     let state = prefix.observed_state();
     assert!(state.observable_events().is_empty());
@@ -330,7 +336,10 @@ impl ConditionLeafOracle for NoLeaves {
     }
 }
 
-fn observation_entry(sequence: u64, event: &ObservableEvent) -> crucible_engine::SchedulerEventLogEntry {
+fn observation_entry(
+    sequence: u64,
+    event: &ObservableEvent,
+) -> crucible_engine::SchedulerEventLogEntry {
     crucible_engine::test_support::condition_observation_entry_for_test(sequence, event)
 }
 

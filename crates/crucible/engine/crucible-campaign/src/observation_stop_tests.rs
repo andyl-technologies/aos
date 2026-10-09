@@ -40,16 +40,20 @@ fn observation_v14_binds_one_resolved_effect_trace_as_a_retained_child() {
 
     assert_eq!(observation.resolved_effect_trace(), Some(trace));
     assert_eq!(observation.schema_version(), 14);
-    assert!(observation
-        .content_children()
-        .contains(&("resolved-effect-trace".to_owned(), trace)));
+    assert!(
+        observation
+            .content_children()
+            .contains(&("resolved-effect-trace".to_owned(), trace))
+    );
     assert_eq!(
         Observation::from_canonical_bytes(&observation.canonical_bytes()).expect("round trip"),
         observation
     );
-    assert!(observation
-        .with_resolved_effect_trace(ContentId::for_bytes(ObjectKind::Trace, 1, b"other"))
-        .is_err());
+    assert!(
+        observation
+            .with_resolved_effect_trace(ContentId::for_bytes(ObjectKind::Trace, 1, b"other"))
+            .is_err()
+    );
 }
 
 macro_rules! stored_id {

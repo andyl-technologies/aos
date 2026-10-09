@@ -132,7 +132,10 @@ fn gate_coverage_guided_corpus_is_seeded_and_deduplicated() -> Result<(), Box<dy
             .count(),
         2
     );
-    assert_ne!(first.corpus.fingerprint(), crucible_engine::ContentHash::default());
+    assert_ne!(
+        first.corpus.fingerprint(),
+        crucible_engine::ContentHash::default()
+    );
 
     Ok(())
 }

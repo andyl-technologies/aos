@@ -269,7 +269,8 @@ pub(super) async fn run(args: &ReleaseNewArgs, nix: &NixRunner, printer: &Printe
     }
 
     let plan_bytes = capture::control_file(&work.plan(), "release plan")?;
-    let plan: aos_release_format::plan::ReleasePlan = canonical::from_slice(&plan_bytes, "release plan")?;
+    let plan: aos_release_format::plan::ReleasePlan =
+        canonical::from_slice(&plan_bytes, "release plan")?;
     printer.kv("Plan digest", &digest_string(&plan_bytes));
     if let Some(scope) = &plan.change_scope {
         printer.kv("Change scope", &scope.reason);

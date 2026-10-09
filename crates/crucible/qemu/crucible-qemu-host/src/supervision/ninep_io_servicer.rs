@@ -19,13 +19,13 @@ use std::os::fd::BorrowedFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use crucible_engine::model::ContentHash;
 use crucible_device::{
     DeviceError, FsTree, IoCore, NinepDevice, NinepLatency, NinepObjectVersion,
     NinepRequestIdentity, NinepRequestOpportunity, NinepSnapshot, NinepVisibilityPolicy,
     NinepVisibilityRelease, NinepVisibilityState, Node, Request, ResolvedNinepRequestDirective,
     ResponseStatus,
 };
+use crucible_engine::model::ContentHash;
 use crucible_qemu_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
     RegionHeaderSnapshot, SLOT_9P_IO, STATUS_IDLE, STATUS_RUNNING, SetupRegionMapError,

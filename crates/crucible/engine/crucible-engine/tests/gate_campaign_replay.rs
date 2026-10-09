@@ -16,6 +16,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crucible_campaign::{
+    AttemptAdmissionId, CampaignHash, CampaignPolicyId, CampaignSnapshotId,
+    ConfigurationArtifactId, ConfigurationId, FindingCandidateBundle, FindingCandidateCore,
+    FindingExactPins, FindingExactRetention, FindingExactRetentionDisposition, FindingKind,
+    FindingMinimizationAttempt, FindingMinimizationEvidence, FindingReplaySignature,
+    FindingSignature, FindingSignatureMinimizationEvidence, FindingTarget,
+    FindingTriageEvidenceSet, FindingTriageReplayEvidence, ObservationId,
+    ReproductionArtifact as CampaignReproductionArtifact, ScenarioArtifactId, ScenarioDefId,
+};
 use crucible_engine::test_support::{
     condition_observation_entry_for_test, condition_payload_entry_for_test,
 };
@@ -28,15 +37,6 @@ use crucible_engine::{
     Property, ReadyPoint, ScenarioDefForm, Schedule, SchedulerEventLogEntry,
     SchedulerEventLogPayload, SchedulingPoint, Seed, SignaturePolicy, VirtualTime, WhiteBoxPolicy,
     World, WorldNode,
-};
-use crucible_campaign::{
-    AttemptAdmissionId, CampaignHash, CampaignPolicyId, CampaignSnapshotId,
-    ConfigurationArtifactId, ConfigurationId, FindingCandidateBundle, FindingCandidateCore,
-    FindingExactPins, FindingExactRetention, FindingExactRetentionDisposition, FindingKind,
-    FindingMinimizationAttempt, FindingMinimizationEvidence, FindingReplaySignature,
-    FindingSignature, FindingSignatureMinimizationEvidence, FindingTarget,
-    FindingTriageEvidenceSet, FindingTriageReplayEvidence, ObservationId,
-    ReproductionArtifact as CampaignReproductionArtifact, ScenarioArtifactId, ScenarioDefId,
 };
 use crucible_store::content_store::{ContentId, ObjectKind};
 
@@ -400,7 +400,8 @@ fn signature_at(
 fn campaign_reproduction_to_native(
     reproduction: &CampaignReproductionArtifact,
 ) -> Result<FindingReproductionArtifact, Box<dyn Error>> {
-    let artifact = crucible_engine::ReproductionArtifact::from_compact_binary(reproduction.payload())?;
+    let artifact =
+        crucible_engine::ReproductionArtifact::from_compact_binary(reproduction.payload())?;
     let replay = artifact.replay()?;
     let configuration = Configuration {
         def: artifact.scenario_def(),

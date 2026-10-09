@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use crucible_determinism::StableHasher;
 use crucible_qemu_protocol::{
     CONTROL_PROTOCOL_VERSION, ControlLifecycle, ControlLifecycleError, ControlLifecycleEvent,
     FrameDecodeError, HandshakeError, HostMsg, PluginHandshakeConfig, PluginMsg,
@@ -14,7 +15,6 @@ use crucible_qemu_shmem::{
     RegionHeaderSnapshot, RegionLayout, RegionLayoutError, RegionSetupValidationError,
     authorize_advance_ceiling, validate_setup_region_header,
 };
-use crucible_determinism::StableHasher;
 use thiserror::Error;
 
 use crate::{
@@ -619,7 +619,10 @@ impl SimDouble {
         reached_icount: u64,
     ) -> Result<(), SimDoubleError> {
         let slot = self.shmem.node_slot(self.slot_index)?;
-        slot.publish_scheduler_advance(ceiling, crucible_qemu_shmem::AdvanceStopCondition::Ceiling)?;
+        slot.publish_scheduler_advance(
+            ceiling,
+            crucible_qemu_shmem::AdvanceStopCondition::Ceiling,
+        )?;
         slot.publish_reached_icount(reached_icount)?;
         Ok(())
     }
@@ -1172,11 +1175,11 @@ mod tests {
             Ok(double) => double,
             Err(error) => panic!("sim double should construct: {error}"),
         };
-        let hello = match crucible_qemu_protocol::control_decode_plugin_msg(&double.plugin_hello_frame())
-        {
-            Ok(hello) => hello,
-            Err(error) => panic!("sim double hello should decode: {error}"),
-        };
+        let hello =
+            match crucible_qemu_protocol::control_decode_plugin_msg(&double.plugin_hello_frame()) {
+                Ok(hello) => hello,
+                Err(error) => panic!("sim double hello should decode: {error}"),
+            };
 
         assert_eq!(
             hello,
@@ -1202,7 +1205,8 @@ mod tests {
             Ok(None) => panic!("setup should produce a SetupAck frame"),
             Err(error) => panic!("setup should succeed: {error}"),
         };
-        let decoded_setup_ack = match crucible_qemu_protocol::control_decode_plugin_msg(&setup_ack) {
+        let decoded_setup_ack = match crucible_qemu_protocol::control_decode_plugin_msg(&setup_ack)
+        {
             Ok(message) => message,
             Err(error) => panic!("setup ack should decode: {error}"),
         };
@@ -1422,7 +1426,10 @@ mod tests {
         complete_sim_double_setup(&mut double);
 
         for (src_slot, payload) in [
-            (crucible_qemu_shmem::SLOT_NET_ROUTER as u32, b"net".as_slice()),
+            (
+                crucible_qemu_shmem::SLOT_NET_ROUTER as u32,
+                b"net".as_slice(),
+            ),
             (crucible_qemu_shmem::SLOT_BLK_IO as u32, b"blk".as_slice()),
             (crucible_qemu_shmem::SLOT_9P_IO as u32, b"ninep".as_slice()),
         ] {

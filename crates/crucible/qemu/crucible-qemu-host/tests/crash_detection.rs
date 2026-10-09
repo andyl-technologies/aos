@@ -10,11 +10,11 @@ use std::io::{self, ErrorKind};
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 
-use crucible_qemu_protocol::FrameIoError;
 use crucible_qemu_host::{
     QemuChannelFailure, QemuChildExitProbe, QemuChildStatusProbeError, QemuCrashCause,
     QemuCrashDetector, QemuCrashHandling, QemuNodeRunStatus,
 };
+use crucible_qemu_protocol::FrameIoError;
 
 #[test]
 fn unexpected_child_exit_surfaces_typed_crashed_node_status() {
@@ -198,7 +198,9 @@ fn intended_crash_fault_is_distinct_from_infrastructure_crash() {
     }
 }
 
-fn assert_infrastructure_crash(status: QemuNodeRunStatus) -> crucible_qemu_host::QemuCrashedNodeStatus {
+fn assert_infrastructure_crash(
+    status: QemuNodeRunStatus,
+) -> crucible_qemu_host::QemuCrashedNodeStatus {
     match status {
         QemuNodeRunStatus::Crashed(crashed) => crashed,
         other => panic!("expected infrastructure crash status, got {other:?}"),

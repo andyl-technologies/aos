@@ -155,18 +155,21 @@ where
 {
     if !event_log.is_empty() {
         for index in 0..event_log.len() - 1 {
-            let prefix = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
-                event_log[..=index].to_vec(),
-            )
-            .expect("online intermediate assertion prefix should be checked");
+            let prefix =
+                crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+                    event_log[..=index].to_vec(),
+                )
+                .expect("online intermediate assertion prefix should be checked");
             evaluator.observe_prefix(&prefix, oracle);
         }
     }
     let terminal_prefix = if event_log.is_empty() {
         crucible_engine::ConditionEventLogPrefix::genesis()
     } else {
-        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(event_log.to_vec())
-            .expect("online assertion prefix should be checked")
+        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+            event_log.to_vec(),
+        )
+        .expect("online assertion prefix should be checked")
     };
 
     evaluator.finalize_prefix(&terminal_prefix, oracle)
@@ -237,15 +240,18 @@ fn online_and_offline_fold_read_assertion_evaluated_entries_from_one_event_log()
         vec![event_log[1].clone()],
     ])
     .expect("recorded assertion evaluation log should retain prefix offsets");
-    let mut online_oracle =
-        crucible_engine::test_support::unchecked_host_assertion_oracle_for_test(AssertionEvaluatedOracle);
+    let mut online_oracle = crucible_engine::test_support::unchecked_host_assertion_oracle_for_test(
+        AssertionEvaluatedOracle,
+    );
     let online = online_report_with_oracle(
         HostAssertionEvaluator::new(&properties),
         &event_log,
         &mut online_oracle,
     );
     let mut offline_oracle =
-        crucible_engine::test_support::unchecked_host_assertion_oracle_for_test(AssertionEvaluatedOracle);
+        crucible_engine::test_support::unchecked_host_assertion_oracle_for_test(
+            AssertionEvaluatedOracle,
+        );
     let offline = OfflineAssertionChecker::new()
         .check_run_with_oracle(&properties, &recorded_log, &mut offline_oracle)
         .expect("offline assertion checker should grade retained assertion_evaluated log");

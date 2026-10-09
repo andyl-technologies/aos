@@ -4,11 +4,11 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use crucible_qemu_protocol::{ALL_CONTROL_TAGS, RuntimeDataPlane, RuntimeDataPlaneContract};
 use crucible_qemu_host::{
     DeterministicLaunchProfile, QemuControlPlaneInertnessError, QemuControlPlaneObservation,
     QemuSimulationMode, SIM_ON_CONTROL_FRAME_CLASSES, assert_qemu_control_plane_inert,
 };
+use crucible_qemu_protocol::{ALL_CONTROL_TAGS, RuntimeDataPlane, RuntimeDataPlaneContract};
 
 fn default_profile() -> DeterministicLaunchProfile {
     match DeterministicLaunchProfile::conservative_default() {

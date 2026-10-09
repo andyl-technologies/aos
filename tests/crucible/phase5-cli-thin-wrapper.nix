@@ -20,7 +20,10 @@
   nullOperationRecorder = builtins.readFile ../../crates/crucible/control/crucible-cli/src/null_operation_recorder.rs;
   session = import ./_crucible-session-source.nix {inherit lib;};
   sessionValidation = builtins.readFile ../../crates/crucible/control/crucible-session/src/validation.rs;
-  apiClient = import ./_crucible-control-source.nix { inherit lib; component = "client"; };
+  apiClient = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "client";
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;

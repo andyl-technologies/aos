@@ -45,15 +45,18 @@ fn world(with_queue: bool) -> crucible_engine::model::World {
             WorldBlockLatency::new(0, 0, 0, 0, 0),
         )));
     }
-    crucible_engine::model::World::from_node_defs_and_links(nodes, Vec::new()).expect("fixture World")
+    crucible_engine::model::World::from_node_defs_and_links(nodes, Vec::new())
+        .expect("fixture World")
 }
 
 #[test]
 fn unbound_and_foreign_scripted_inventory_refuses() {
     let mut runtime = ScriptedHostIoRuntime::default();
     assert!(matches!(
-        runtime
-            .observe_scripted_io_inventory_for_test(&node("a"), crucible_engine::NodeCounter { ticks: 0 }),
+        runtime.observe_scripted_io_inventory_for_test(
+            &node("a"),
+            crucible_engine::NodeCounter { ticks: 0 }
+        ),
         Err(BackendError::Unsupported { .. })
     ));
     assert!(
@@ -67,7 +70,10 @@ fn unbound_and_foreign_scripted_inventory_refuses() {
         .expect("bound owner");
     assert!(
         runtime
-            .observe_scripted_io_inventory_for_test(&node("b"), crucible_engine::NodeCounter { ticks: 0 })
+            .observe_scripted_io_inventory_for_test(
+                &node("b"),
+                crucible_engine::NodeCounter { ticks: 0 }
+            )
             .is_err()
     );
     assert!(
@@ -88,7 +94,10 @@ fn configured_physical_queue_is_never_manufactured_absent() {
     assert!(runtime.io_world.is_none());
     assert!(
         runtime
-            .observe_scripted_io_inventory_for_test(&node("a"), crucible_engine::NodeCounter { ticks: 0 })
+            .observe_scripted_io_inventory_for_test(
+                &node("a"),
+                crucible_engine::NodeCounter { ticks: 0 }
+            )
             .is_err()
     );
 }

@@ -310,9 +310,7 @@ fn gate_replay_oracle_temporal_graph_user_operations_share_instantiate_path()
     let genesis = Configuration::genesis(scenario.clone());
     let baked = baked_with_search_frontier_choices(
         &world,
-        vec![crucible_engine::test_support::typed_search_decision_for_test(
-            "operation/search",
-        )?],
+        vec![crucible_engine::test_support::typed_search_decision_for_test("operation/search")?],
     )?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let store = MemoryDagStore::new();
@@ -628,7 +626,8 @@ fn gate_replay_oracle_search_sampling_mismatch_requests_bisection() -> Result<()
     }])?;
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let decision = crucible_engine::test_support::typed_search_decision_for_test("search-oracle/corrupt")?;
+    let decision =
+        crucible_engine::test_support::typed_search_decision_for_test("search-oracle/corrupt")?;
     let baked = baked_with_search_frontier_choices(&world, vec![decision.clone()])?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let child = accepted_step!(&genesis, decision.clone());
@@ -1264,7 +1263,8 @@ fn replay_oracle_artifact_fingerprint(
 
 fn assert_replay_oracle_in_search_sampling(
     corpus: &[ReplayOracleMaterializedCase],
-) -> Result<crucible_test_support::replay_oracle::ReplayOracleSearchSamplingReport, Box<dyn Error>> {
+) -> Result<crucible_test_support::replay_oracle::ReplayOracleSearchSamplingReport, Box<dyn Error>>
+{
     let config = ReplayOracleSamplingConfig::new(1, 1, "gate-replay-oracle-search")?;
     let materializations = search_materializations(corpus);
     let report = check_sampled_search_replay_oracle(&materializations, &config)?;

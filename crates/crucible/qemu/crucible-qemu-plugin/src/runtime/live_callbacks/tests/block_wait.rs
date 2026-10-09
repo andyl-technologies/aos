@@ -366,8 +366,11 @@ fn busy_boundary_retains_backpressured_inbound_until_guest_acceptance() {
     let retry_icount = 350 + crate::NETWORK_RX_RETRY_INTERVAL_ICOUNT;
     let retry_ceiling = authorize_advance_ceiling(350, retry_icount, None)
         .unwrap_or_else(|error| panic!("retry ceiling should authorize: {error}"));
-    slot.publish_scheduler_advance(retry_ceiling, crucible_qemu_shmem::AdvanceStopCondition::Ceiling)
-        .unwrap_or_else(|error| panic!("retry ceiling should publish: {error}"));
+    slot.publish_scheduler_advance(
+        retry_ceiling,
+        crucible_qemu_shmem::AdvanceStopCondition::Ceiling,
+    )
+    .unwrap_or_else(|error| panic!("retry ceiling should publish: {error}"));
     TEST_ICOUNT_RAW.set(retry_icount / 50);
     state
         .publish_current_icount(retry_icount / 50)

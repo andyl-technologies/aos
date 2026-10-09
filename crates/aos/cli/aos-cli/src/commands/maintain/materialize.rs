@@ -10,8 +10,8 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
-use aos_core::Sha256Digest;
 use aos_cli_ui::output::Printer;
+use aos_core::Sha256Digest;
 use aos_package_maintenance::PACKAGE_UPDATE_MATERIALIZATION_V1;
 use aos_package_maintenance::identity::ArtifactSlotId;
 use aos_package_maintenance::plan::{
@@ -500,7 +500,10 @@ fn confined_nix_json(
     scratch: &Path,
     backend: &Backend,
     arguments: impl IntoIterator<Item = impl AsRef<OsStr>>,
-) -> Result<(serde_json::Value, aos_package_maintenance::run::ConfinementEvidence)> {
+) -> Result<(
+    serde_json::Value,
+    aos_package_maintenance::run::ConfinementEvidence,
+)> {
     let executable = resolve_executable("nix")?;
     let (mut command, confinement) = backend.command(
         &executable,

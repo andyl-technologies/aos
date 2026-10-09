@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crucible_device::block::{BlockErrorCode, ResolvedBlockDuplicateCompletion};
 use crucible_engine::model::{
     BindingActionCause, BoundedCount, ByteRange, ContentAddressedBlobRef, ContentHash, CountLimit,
     EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest, FaultCoordinate, FaultOperation,
@@ -13,7 +14,6 @@ use crucible_engine::model::{
     WorldNodeDef, WorldStorageFaultDevice, WorldStorageKind, WorldStorageMedia,
     WorldStoragePersistence, WorldStoragePolicyArtifact,
 };
-use crucible_device::block::{BlockErrorCode, ResolvedBlockDuplicateCompletion};
 
 use super::*;
 

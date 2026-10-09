@@ -9,14 +9,19 @@ use std::path::PathBuf;
 #[test]
 fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Error>> {
     let root = workspace_root()?;
-    let plugin_lib = fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs"))?;
-    let io_wire_fuzz =
-        fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/io_wire_fuzz.rs"))?;
-    let block_wire =
-        fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/block_io/wire.rs"))?;
-    let block_errors =
-        fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/block_io/errors.rs"))?;
-    let ninep_io = fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs"))?;
+    let plugin_lib =
+        fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs"))?;
+    let io_wire_fuzz = fs::read_to_string(
+        root.join("crates/crucible/qemu/crucible-qemu-plugin/src/io_wire_fuzz.rs"),
+    )?;
+    let block_wire = fs::read_to_string(
+        root.join("crates/crucible/qemu/crucible-qemu-plugin/src/block_io/wire.rs"),
+    )?;
+    let block_errors = fs::read_to_string(
+        root.join("crates/crucible/qemu/crucible-qemu-plugin/src/block_io/errors.rs"),
+    )?;
+    let ninep_io =
+        fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs"))?;
     let phase_check =
         fs::read_to_string(root.join("tests/crucible/phase2-protocol-codec-fuzz.nix"))?;
     let canonical_gate =
@@ -67,13 +72,19 @@ fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Er
 #[test]
 fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(), Box<dyn Error>> {
     let root = workspace_root()?;
-    let protocol_lib = fs::read_to_string(root.join("crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs"))?;
-    let protocol_doorbell =
-        fs::read_to_string(root.join("crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs"))?;
-    let plugin_lib = fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs"))?;
-    let plugin_whitebox =
-        fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs"))?;
-    let guest_lib = fs::read_to_string(root.join("crates/crucible/guest/crucible-guest/src/lib.rs"))?;
+    let protocol_lib = fs::read_to_string(
+        root.join("crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs"),
+    )?;
+    let protocol_doorbell = fs::read_to_string(
+        root.join("crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs"),
+    )?;
+    let plugin_lib =
+        fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs"))?;
+    let plugin_whitebox = fs::read_to_string(
+        root.join("crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs"),
+    )?;
+    let guest_lib =
+        fs::read_to_string(root.join("crates/crucible/guest/crucible-guest/src/lib.rs"))?;
     let phase_check =
         fs::read_to_string(root.join("tests/crucible/phase4-guest-host-doorbell-abi.nix"))?;
     let canonical_gate =

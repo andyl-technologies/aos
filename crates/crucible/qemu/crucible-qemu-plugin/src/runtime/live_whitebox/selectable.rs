@@ -26,7 +26,8 @@ use crate::{
     WhiteboxGuestInputWriter, handle_whitebox_selectable_callback,
 };
 
-const _: () = assert!(SELECTABLE_NATIVE_HANDOFF_TICKS_PS == crucible_qemu_shmem::TICKS_PER_INSTRUCTION);
+const _: () =
+    assert!(SELECTABLE_NATIVE_HANDOFF_TICKS_PS == crucible_qemu_shmem::TICKS_PER_INSTRUCTION);
 
 /// Returns whether bytes claim the standalone selectable-v1 namespace.
 pub(super) fn is_message(payload: &[u8]) -> bool {

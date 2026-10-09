@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use crucible_device::{BaseImage, FsTree, FsTreeDecodeError, Node};
 use crucible_engine::{
     ContentAddressedBlobRef, ContentHash, DagStore, DeviceSchedulingSubNode,
     DeviceSubNodeBindingError, EngineError, Icount, LinkDef, MemoryDagStore, NodeId, NodeTemplate,
@@ -15,7 +16,6 @@ use crucible_engine::{
     WorldIoLayoutError, WorldIoLayoutPolicy, WorldIoNode, WorldIoNodeKind, WorldNinePLatency,
     WorldNode, WorldNodeDef, instantiate_world_io_sub_nodes,
 };
-use crucible_device::{BaseImage, FsTree, FsTreeDecodeError, Node};
 
 #[test]
 fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {

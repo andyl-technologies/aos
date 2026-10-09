@@ -189,10 +189,11 @@ fn online_report(
     let mut evaluator =
         HostAssertionEvaluator::new(properties).with_world_white_box_policies(world);
     let mut oracle = BlackBoxHostOracle;
-    let first_boundary = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
-        event_log[..2].to_vec(),
-    )
-    .expect("first online prefix should be checked");
+    let first_boundary =
+        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+            event_log[..2].to_vec(),
+        )
+        .expect("first online prefix should be checked");
     let terminal = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
         event_log.to_vec(),
     )
@@ -442,9 +443,10 @@ fn offline_assertion_checker_defers_incomplete_atomic_observation_segment() {
         event_log[..1].to_vec(),
     )
     .expect("first online boundary should be valid");
-    let terminal =
-        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(event_log.clone())
-            .expect("atomic online boundary should be valid");
+    let terminal = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+        event_log.clone(),
+    )
+    .expect("atomic online boundary should be valid");
     let mut online_evaluator =
         HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
     let mut oracle = BlackBoxHostOracle;
@@ -737,13 +739,15 @@ fn offline_assertion_checker_evaluates_valid_observation_after_deferred_prefix()
         entries[..1].to_vec(),
     )
     .expect("first online boundary should be valid");
-    let observations = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
-        entries[..3].to_vec(),
+    let observations =
+        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+            entries[..3].to_vec(),
+        )
+        .expect("current observation should make the online prefix valid");
+    let terminal = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+        entries.clone(),
     )
-    .expect("current observation should make the online prefix valid");
-    let terminal =
-        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(entries.clone())
-            .expect("terminal online boundary should be valid");
+    .expect("terminal online boundary should be valid");
     let mut online_evaluator =
         HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
     let mut online_oracle = linted_host_oracle(oracle);
@@ -810,9 +814,10 @@ fn offline_atomic_batch_matches_online_and_preserves_earlier_always_failure() {
         entries[..1].to_vec(),
     )
     .expect("first online boundary should be valid");
-    let terminal =
-        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(entries.clone())
-            .expect("atomic online boundary should be valid");
+    let terminal = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+        entries.clone(),
+    )
+    .expect("atomic online boundary should be valid");
     let mut online_evaluator =
         HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
     let mut online_oracle = linted_host_oracle(

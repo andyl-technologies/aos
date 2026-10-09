@@ -3,7 +3,9 @@
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
 
-use crucible_engine::{NodeId, SchedulerError, SchedulerSendAuthorization, SchedulerSendAuthorizer};
+use crucible_engine::{
+    NodeId, SchedulerError, SchedulerSendAuthorization, SchedulerSendAuthorizer,
+};
 use crucible_qemu_shmem::{RegionAllocation, RegionConfig, mmap_setup_region};
 
 use super::*;

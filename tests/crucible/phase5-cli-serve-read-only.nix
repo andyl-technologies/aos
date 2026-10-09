@@ -11,8 +11,14 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiLib = import ./_crucible-control-source.nix { inherit lib; component = "exports"; };
-  apiServer = import ./_crucible-control-source.nix { inherit lib; component = "server"; };
+  apiLib = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "exports";
+  };
+  apiServer = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "server";
+  };
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliVerifyServe = import ./_rust-module-source.nix {
     inherit lib;

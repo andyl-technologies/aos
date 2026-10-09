@@ -324,9 +324,10 @@ fn qemu_quantum_hot_path_rejects_qmp_or_plugin_ipc_operations() {
 #[test]
 fn qemu_quantum_implements_existing_shmem_hot_path_trait() {
     let slot = NodeSlot::default();
-    if let Err(error) =
-        slot.publish_scheduler_advance(ceiling(0, 6), crucible_qemu_shmem::AdvanceStopCondition::Ceiling)
-    {
+    if let Err(error) = slot.publish_scheduler_advance(
+        ceiling(0, 6),
+        crucible_qemu_shmem::AdvanceStopCondition::Ceiling,
+    ) {
         panic!("initial ceiling should publish: {error}");
     }
     if let Err(error) = slot.publish_reached_icount(6) {

@@ -36,7 +36,10 @@
   pluginGateTest = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/tests/gate_abi_conformance.rs;
   guestGateTest = builtins.readFile ../../crates/crucible/guest/crucible-guest/tests/gate_abi_conformance.rs;
   engineGateTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_abi_conformance.rs;
-  apiLib = import ./_crucible-control-source.nix { inherit lib; component = "exports"; };
+  apiLib = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "exports";
+  };
   apiRpcAbi = builtins.readFile ../../crates/crucible/control/crucible-control-api/src/rpc_abi.rs;
   apiRpcGolden = builtins.readFile ../../crates/crucible/control/crucible-control-api/src/rpc_abi/golden.rs;
   apiGateTest = builtins.readFile ../../crates/crucible/control/crucible-control-api/tests/gate_abi_conformance.rs;

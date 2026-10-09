@@ -120,8 +120,7 @@ impl EbpfLsmProvider {
     /// Returns an error for invalid inputs, immutable artifacts, ownership
     /// conflicts, or failed loader execution.
     pub fn handle(&self, purpose: &str, input: &[u8]) -> Result<Vec<u8>> {
-        let invocation: Invocation =
-            aos_core::json::from_slice(input, "BPF-LSM invocation")?;
+        let invocation: Invocation = aos_core::json::from_slice(input, "BPF-LSM invocation")?;
         ensure!(
             matches!(purpose, "apply" | "remove" | "observe"),
             "unsupported native purpose"
@@ -340,8 +339,7 @@ impl EbpfLsmProvider {
             u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_MARKER_BYTES,
             "BPF-LSM ownership marker exceeds its document bound"
         );
-        let marker: StateMarker =
-            aos_core::json::from_slice(&bytes, "BPF-LSM ownership marker")?;
+        let marker: StateMarker = aos_core::json::from_slice(&bytes, "BPF-LSM ownership marker")?;
         validate_marker(&marker)?;
         Ok(Some(marker))
     }

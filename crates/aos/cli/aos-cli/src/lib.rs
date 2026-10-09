@@ -11,6 +11,6 @@
 
 mod cli;
 mod commands;
-mod error;
 pub mod entry;
+mod error;
 mod logging;

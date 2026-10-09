@@ -22,7 +22,10 @@
     inherit lib;
     entry = ../../crates/crucible/control/crucible-daemon/src/qemu_campaign_lifecycle.rs;
   };
-  apiVmLifecycle = import ./_crucible-control-source.nix { inherit lib; component = "vm_lifecycle"; };
+  apiVmLifecycle = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "vm_lifecycle";
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack:

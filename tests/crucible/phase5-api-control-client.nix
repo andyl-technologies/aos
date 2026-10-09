@@ -11,8 +11,14 @@
     (builtins.readFile ../../crates/crucible/control/crucible-control-client/Cargo.toml)
     (builtins.readFile ../../crates/crucible/control/crucible-control-server/Cargo.toml)
   ];
-  apiLib = import ./_crucible-control-source.nix { inherit lib; component = "exports"; };
-  apiClient = import ./_crucible-control-source.nix { inherit lib; component = "client"; };
+  apiLib = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "exports";
+  };
+  apiClient = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "client";
+  };
   rpcAbi = builtins.readFile ../../crates/crucible/control/crucible-control-api/src/rpc_abi.rs;
   apiGateTest = import ./_rust-module-source.nix {
     inherit lib;

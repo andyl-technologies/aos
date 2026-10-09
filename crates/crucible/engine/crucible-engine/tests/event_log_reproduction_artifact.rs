@@ -157,8 +157,8 @@ fn reproduction_artifact_replay_rejects_causal_log_drift_without_original_full_l
     let artifact = ReproductionArtifact::capture(&scenario, &schedule)
         .expect("reproduction artifact should reduce");
     let original_log = recorded_log_from_artifact(&artifact);
-    let debug_artifact =
-        artifact.event_log_debug_artifact(crucible_engine::EventLogOffset::default(), &original_log);
+    let debug_artifact = artifact
+        .event_log_debug_artifact(crucible_engine::EventLogOffset::default(), &original_log);
 
     let replay = artifact
         .verify_event_log_replay_with(&debug_artifact, corrupted_replay_log_from_artifact)

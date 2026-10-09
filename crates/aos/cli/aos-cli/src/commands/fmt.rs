@@ -9,8 +9,8 @@
 use anyhow::{Result, bail};
 use ignore::WalkBuilder;
 
-use aos_nix::NixRunner;
 use aos_cli_ui::output::Printer;
+use aos_nix::NixRunner;
 
 /// `aos fmt [--check] [files...]` — format (or verify) Nix files.
 ///

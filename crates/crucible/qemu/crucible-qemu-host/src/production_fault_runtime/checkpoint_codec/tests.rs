@@ -690,13 +690,15 @@ fn production_network_children_share_one_construction_budget() {
 #[test]
 fn pending_network_output_resource_coordinates_cross_production_envelope() {
     assert_eq!(
-        map_backend_network_output_error(crucible_engine::BackendNetworkOutputCodecError::ResourceLimit {
-            field: "frame payload",
-            current: 0,
-            requested: 16_777_217,
-            configured: 16_777_216,
-            hard: 16_777_216,
-        },),
+        map_backend_network_output_error(
+            crucible_engine::BackendNetworkOutputCodecError::ResourceLimit {
+                field: "frame payload",
+                current: 0,
+                requested: 16_777_217,
+                configured: 16_777_216,
+                hard: 16_777_216,
+            },
+        ),
         ProductionFaultRuntimeCheckpointCodecError::ResourceLimit {
             field: "frame payload",
             current: 0,

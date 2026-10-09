@@ -731,7 +731,8 @@ impl SchedulerRunCeilingPublication {
         region: &mut crucible_qemu_shmem::RegionAllocation,
         dst_slot: u32,
         pending_inputs: &[crucible_qemu_shmem::PendingInputPublication],
-    ) -> Result<crucible_qemu_shmem::SchedulerWakePublication, SchedulerRunCeilingHandoffError> {
+    ) -> Result<crucible_qemu_shmem::SchedulerWakePublication, SchedulerRunCeilingHandoffError>
+    {
         let ceiling = self.to_shmem_ceiling()?;
         Ok(region.publish_scheduler_inputs_and_advance(
             dst_slot,

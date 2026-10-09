@@ -10,7 +10,9 @@ use aos_package_maintenance::PACKAGE_UPDATE_PR_OBSERVATION_V1;
 use aos_package_maintenance::PACKAGE_UPDATE_PR_PUBLICATION_V1;
 use aos_package_maintenance::envelope::GitObjectId;
 use aos_package_maintenance::presentation::PullRequestDraft;
-use aos_package_maintenance::remote::{PullRequestObservationV1, PullRequestPublicationV1, RemoteCheck};
+use aos_package_maintenance::remote::{
+    PullRequestObservationV1, PullRequestPublicationV1, RemoteCheck,
+};
 use aos_package_maintenance::run::PackageUpdateRunV1;
 use base64::Engine as _;
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};

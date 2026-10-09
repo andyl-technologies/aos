@@ -115,8 +115,10 @@ fn black_box_surface_events_have_exact_ticks_and_optional_raw_retirement() {
     {
         assert_eq!(event.black_box_observation_kind(), Some(kind));
 
-        let entry =
-            crucible_engine::test_support::condition_observation_entry_for_test(sequence as u64, &event);
+        let entry = crucible_engine::test_support::condition_observation_entry_for_test(
+            sequence as u64,
+            &event,
+        );
         assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
         let expected_retired = matches!(
             kind,
@@ -131,9 +133,10 @@ fn black_box_surface_events_have_exact_ticks_and_optional_raw_retirement() {
         entries.push(entry);
     }
 
-    let prefix =
-        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(entries.clone())
-            .expect("black-box observation entries should form a checked condition prefix");
+    let prefix = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+        entries.clone(),
+    )
+    .expect("black-box observation entries should form a checked condition prefix");
     assert_eq!(prefix.black_box_observation_kinds(), &expected_surface);
 
     let append = EventLog::new()
@@ -172,7 +175,9 @@ fn condition_prefix_enforces_black_box_surface_stamps() {
     );
 
     assert_eq!(
-        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(vec![corrupt]),
+        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
+            corrupt
+        ]),
         Err(ConditionEvaluationError::InvalidBlackBoxObservationStamp {
             sequence: 0,
             kind: BlackBoxObservationKind::ArchitecturalStateSample,

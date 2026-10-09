@@ -835,12 +835,10 @@ fn validate_replay_transition(
             message: String::from("runtime differs from the active replay generation"),
         });
     }
-    let canonical_target =
-        crucible_engine::try_step(request.from(), request.decision().clone()).map_err(|source| {
-            QemuVmRealizationError::InvalidCheckpoint {
-                role: "replay transition target",
-                message: format!("decision violates the scenario model: {source}"),
-            }
+    let canonical_target = crucible_engine::try_step(request.from(), request.decision().clone())
+        .map_err(|source| QemuVmRealizationError::InvalidCheckpoint {
+            role: "replay transition target",
+            message: format!("decision violates the scenario model: {source}"),
         })?;
     if canonical_target != *request.to() {
         return Err(QemuVmRealizationError::InvalidCheckpoint {
@@ -939,7 +937,9 @@ fn node_backend_error(operation: &'static str, source: BackendError) -> QemuVmRe
 mod tests {
     use std::collections::BTreeMap;
 
-    use crucible_engine::{Decision, EventLogOffset, RngDecision, RngStreamId, Schedule, SchedulerState};
+    use crucible_engine::{
+        Decision, EventLogOffset, RngDecision, RngStreamId, Schedule, SchedulerState,
+    };
 
     use super::*;
 
@@ -971,10 +971,11 @@ mod tests {
     #[test]
     fn replay_transition_rejects_mismatched_source_and_stale_runtime() {
         let (configuration, mut runtime, request) = replay_fixture();
-        let unrelated = Configuration::genesis(crucible_engine::ScenarioDef::from_canonical_material(
-            "crucible.test.qemu.replay-authority",
-            "unrelated",
-        ));
+        let unrelated =
+            Configuration::genesis(crucible_engine::ScenarioDef::from_canonical_material(
+                "crucible.test.qemu.replay-authority",
+                "unrelated",
+            ));
 
         assert!(matches!(
             validate_replay_transition(Some(&unrelated), Some(runtime.id), &runtime, &request,),
@@ -1078,10 +1079,11 @@ mod tests {
             "crucible.test.qemu.replay-authority",
             "baked-source",
         ));
-        let unrelated = Configuration::genesis(crucible_engine::ScenarioDef::from_canonical_material(
-            "crucible.test.qemu.replay-authority",
-            "baked-unrelated",
-        ));
+        let unrelated =
+            Configuration::genesis(crucible_engine::ScenarioDef::from_canonical_material(
+                "crucible.test.qemu.replay-authority",
+                "baked-unrelated",
+            ));
         let checkpoint = Checkpoint::from_recorded_configuration(
             &source,
             None,

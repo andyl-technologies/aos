@@ -7,12 +7,10 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, ensure};
-use aos_module_format::graph::{CheckedModuleGraph, Effect};
-use aos_activation::activation::{
-    Action, Activation, ActivationAdapter, Invocation, Observation,
-};
+use aos_activation::activation::{Action, Activation, ActivationAdapter, Invocation, Observation};
 use aos_activation::adapter::CancellationToken;
 use aos_activation::journal::JournalLimits;
+use aos_module_format::graph::{CheckedModuleGraph, Effect};
 use serde_json::Value;
 
 struct Echo;

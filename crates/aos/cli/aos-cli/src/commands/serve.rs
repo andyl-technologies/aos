@@ -20,9 +20,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use aos_nix::aos_nix_env;
+use aos_build_server::{
+    self, bootstrap, build, config, drain, routes, sign, store, tls, tokens, views,
+};
 use aos_cli_ui::output::Printer;
-use aos_build_server::{self, bootstrap, build, config, drain, routes, sign, store, tls, tokens, views};
+use aos_nix::aos_nix_env;
 
 /// `aos serve` — start the HTTP binary cache server.
 ///

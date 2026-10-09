@@ -1506,7 +1506,8 @@ impl WhiteboxMarkerSink for EngineEventLogMarkerSink {
             .event_log
             .next_sequence(0)
             .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
-        let entry = crucible_engine::test_support::condition_observation_entry_for_test(sequence, &event);
+        let entry =
+            crucible_engine::test_support::condition_observation_entry_for_test(sequence, &event);
         let append = self
             .event_log
             .append_entries(vec![entry])
@@ -1533,7 +1534,8 @@ impl WhiteboxMarkerSink for EngineEventLogMarkerSink {
             .event_log
             .next_sequence(0)
             .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
-        let entry = crucible_engine::test_support::condition_observation_entry_for_test(sequence, &event);
+        let entry =
+            crucible_engine::test_support::condition_observation_entry_for_test(sequence, &event);
         let append = self
             .event_log
             .append_entries(vec![entry])

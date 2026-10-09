@@ -291,8 +291,8 @@ fn qemu_quantum_rejects_an_unacknowledged_or_device_active_clamp() {
             Ok(clamp) => clamp,
             Err(error) => panic!("completed coordinate should authorize a clamp: {error}"),
         };
-        if let Err(error) =
-            slot.publish_scheduler_advance(clamp, crucible_qemu_shmem::AdvanceStopCondition::Ceiling)
+        if let Err(error) = slot
+            .publish_scheduler_advance(clamp, crucible_qemu_shmem::AdvanceStopCondition::Ceiling)
         {
             panic!("completed quantum clamp should publish: {error}");
         }

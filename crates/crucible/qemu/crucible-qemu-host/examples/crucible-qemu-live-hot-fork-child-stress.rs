@@ -31,7 +31,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use std::path::Path;
     use std::time::Duration;
 
-    use crucible_qemu_host::{QemuLiveNodeStepGateConfig, run_qemu_live_hot_fork_child_stress_gate};
+    use crucible_qemu_host::{
+        QemuLiveNodeStepGateConfig, run_qemu_live_hot_fork_child_stress_gate,
+    };
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let (required, ram_mib) = match args.as_slice() {
         [

@@ -212,8 +212,11 @@ fn typed_lifecycle_evidence_rejects_policy_and_marker_mismatch() {
         NodeLifecycleTransition::Reset,
         NodeBootPolicy::RequireReady {
             ready_marker: object_id("guest-ready"),
-            maximum_attempts: crucible_engine::model::BoundedCount::new(CountLimit::LargeStateEntries, 2)
-                .unwrap_or_else(|error| panic!("test attempt count should be valid: {error}")),
+            maximum_attempts: crucible_engine::model::BoundedCount::new(
+                CountLimit::LargeStateEntries,
+                2,
+            )
+            .unwrap_or_else(|error| panic!("test attempt count should be valid: {error}")),
             retry_delay_nanos: 4096,
             exhausted: NodeLifecycleTransition::PermanentFailure,
         },
@@ -344,8 +347,11 @@ fn boot_ready_exhaustion_preserves_requested_intent_and_effective_terminal_decis
         NodeLifecycleTransition::Boot,
         NodeBootPolicy::RequireReady {
             ready_marker: object_id("guest-ready"),
-            maximum_attempts: crucible_engine::model::BoundedCount::new(CountLimit::LargeStateEntries, 2)
-                .unwrap_or_else(|error| panic!("test attempt count should be valid: {error}")),
+            maximum_attempts: crucible_engine::model::BoundedCount::new(
+                CountLimit::LargeStateEntries,
+                2,
+            )
+            .unwrap_or_else(|error| panic!("test attempt count should be valid: {error}")),
             retry_delay_nanos: 4096,
             exhausted: NodeLifecycleTransition::PowerOff,
         },

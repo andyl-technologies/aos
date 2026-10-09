@@ -443,8 +443,13 @@ fn complete_black_box_scenario_runs_deterministically_without_guest_marker() {
             .iter()
             .all(|node| node.white_box == WhiteBoxPolicy::Disabled)
     );
-    crucible_engine::ScenarioDefForm::from_components(&world, &plan, &properties, Seed::from_u64(0x19))
-        .expect("complete black-box scenario form should validate");
+    crucible_engine::ScenarioDefForm::from_components(
+        &world,
+        &plan,
+        &properties,
+        Seed::from_u64(0x19),
+    )
+    .expect("complete black-box scenario form should validate");
 
     let left = run_complete_black_box_scenario("black-box-first", &world, graph);
     let right = run_complete_black_box_scenario("black-box-first", &world, graph);

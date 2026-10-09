@@ -21,7 +21,10 @@
     trigger
     libSource
     (import ./_crucible-scheduler-source.nix {inherit lib;})
-    (import ./_crucible-control-source.nix { inherit lib; component = "exports"; })
+    (import ./_crucible-control-source.nix {
+      inherit lib;
+      component = "exports";
+    })
     (import ./_cli-source.nix {inherit lib;})
     (builtins.readFile ../../crates/crucible/control/crucible-daemon/src/lib.rs)
     (import ./_crucible-session-source.nix {inherit lib;})

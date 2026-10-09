@@ -32,13 +32,13 @@
     if package == "crucible-cli"
     then import ./_cli-production-source.nix {inherit lib;}
     else let
-    srcDir = packageDir package + "/src";
-    paths =
-      if builtins.pathExists srcDir
-      then rustFilesUnder srcDir
-      else [];
-  in
-    builtins.concatStringsSep "\n" (map builtins.readFile paths);
+      srcDir = packageDir package + "/src";
+      paths =
+        if builtins.pathExists srcDir
+        then rustFilesUnder srcDir
+        else [];
+    in
+      builtins.concatStringsSep "\n" (map builtins.readFile paths);
 
   lowerPackages = [
     "crucible-determinism"

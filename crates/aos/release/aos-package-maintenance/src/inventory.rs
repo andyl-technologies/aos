@@ -1167,9 +1167,7 @@ mod tests {
 
         let mut incompatible = canary();
         incompatible["schema"] = json!("aos.maintenance-inventory/v2");
-        assert!(
-            MaintenanceInventoryV1::from_slice(&json::canonical_json(&incompatible)?).is_err()
-        );
+        assert!(MaintenanceInventoryV1::from_slice(&json::canonical_json(&incompatible)?).is_err());
         Ok(())
     }
 
@@ -1183,18 +1181,14 @@ mod tests {
             .as_array_mut()
             .ok_or_else(|| anyhow::anyhow!("units fixture"))?
             .push(second.clone());
-        assert!(
-            MaintenanceInventoryV1::from_slice(&json::canonical_json(&inventory)?).is_ok()
-        );
+        assert!(MaintenanceInventoryV1::from_slice(&json::canonical_json(&inventory)?).is_ok());
 
         second["unitId"] = json!("zlib-3");
         second["stream"] = json!("1");
         inventory["units"]
             .as_array_mut()
             .ok_or_else(|| anyhow::anyhow!("units fixture"))?[1] = second;
-        assert!(
-            MaintenanceInventoryV1::from_slice(&json::canonical_json(&inventory)?).is_err()
-        );
+        assert!(MaintenanceInventoryV1::from_slice(&json::canonical_json(&inventory)?).is_err());
         Ok(())
     }
 
@@ -1202,9 +1196,7 @@ mod tests {
     fn cohorts_are_explicit_multi_unit_platform_compatible_sets() -> Result<()> {
         let mut singleton = canary();
         singleton["units"][0]["cohort"] = json!("zlib-suite");
-        assert!(
-            MaintenanceInventoryV1::from_slice(&json::canonical_json(&singleton)?).is_err()
-        );
+        assert!(MaintenanceInventoryV1::from_slice(&json::canonical_json(&singleton)?).is_err());
 
         let mut campaign = singleton;
         let mut second = campaign["units"][0].clone();
@@ -1217,9 +1209,7 @@ mod tests {
         assert!(MaintenanceInventoryV1::from_slice(&json::canonical_json(&campaign)?).is_ok());
 
         campaign["units"][1]["platforms"] = json!(["x86_64-linux"]);
-        assert!(
-            MaintenanceInventoryV1::from_slice(&json::canonical_json(&campaign)?).is_err()
-        );
+        assert!(MaintenanceInventoryV1::from_slice(&json::canonical_json(&campaign)?).is_err());
         Ok(())
     }
 
@@ -1248,9 +1238,7 @@ mod tests {
             .remove("seriesMajor");
         policy["seriesMinor"] = json!(27);
 
-        assert!(
-            MaintenanceInventoryV1::from_slice(&json::canonical_json(&inventory)?).is_err()
-        );
+        assert!(MaintenanceInventoryV1::from_slice(&json::canonical_json(&inventory)?).is_err());
         Ok(())
     }
 
@@ -1285,23 +1273,17 @@ mod tests {
                 "outputs": []
             }
         });
-        assert!(
-            MaintenanceInventoryV1::from_slice(&json::canonical_json(&inventory)?).is_ok()
-        );
+        assert!(MaintenanceInventoryV1::from_slice(&json::canonical_json(&inventory)?).is_ok());
 
         inventory["units"][0]["artifacts"]["goModules"]["inputs"] =
             json!([{"kind": "artifact", "artifact": "npmModules"}]);
-        assert!(
-            MaintenanceInventoryV1::from_slice(&json::canonical_json(&inventory)?).is_err()
-        );
+        assert!(MaintenanceInventoryV1::from_slice(&json::canonical_json(&inventory)?).is_err());
 
         inventory["units"][0]["artifacts"]["goModules"]["inputs"] =
             json!([{"kind": "source", "component": "main", "slot": "source"}]);
         inventory["units"][0]["artifacts"]["npmModules"]["materializer"]["lifecycleScripts"] =
             json!(true);
-        assert!(
-            MaintenanceInventoryV1::from_slice(&json::canonical_json(&inventory)?).is_err()
-        );
+        assert!(MaintenanceInventoryV1::from_slice(&json::canonical_json(&inventory)?).is_err());
         Ok(())
     }
 
@@ -1341,8 +1323,7 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("units fixture"))?
             .push(alias);
         assert!(
-            MaintenanceInventoryV1::from_slice(&json::canonical_json(&alias_inventory)?)
-                .is_ok()
+            MaintenanceInventoryV1::from_slice(&json::canonical_json(&alias_inventory)?).is_ok()
         );
         Ok(())
     }

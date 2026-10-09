@@ -5,8 +5,8 @@
 //! single execution binding joins the two halves so neither can be restored
 //! with state from another checkpoint.
 
-use crucible_engine::{ContentHash, NodeId, PreemptionDecision, VirtualTime};
 use crucible_device::{BlockSnapshot, NinepRequestOpportunity, NinepSnapshot};
+use crucible_engine::{ContentHash, NodeId, PreemptionDecision, VirtualTime};
 use crucible_qemu_shmem::{RegionHeaderSnapshot, SpscRingSnapshot};
 
 pub(crate) mod bounded_cbor;
@@ -199,7 +199,8 @@ impl QemuNodeContinuationCheckpoint {
     /// state is malformed or appears away from the unique ring head.
     pub fn retained_network_inbound_head(
         &self,
-    ) -> Result<Option<(crucible_qemu_shmem::FrameDeliveryKey, u32)>, QemuNodeCheckpointCodecError> {
+    ) -> Result<Option<(crucible_qemu_shmem::FrameDeliveryKey, u32)>, QemuNodeCheckpointCodecError>
+    {
         let Some(key) = self.network_transport.retained_inbound_head()? else {
             return Ok(None);
         };

@@ -10,9 +10,18 @@
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  lifecycle = import ./_crucible-control-source.nix { inherit lib; component = "lifecycle"; };
-  streaming = import ./_crucible-control-source.nix { inherit lib; component = "streaming"; };
-  client = import ./_crucible-control-source.nix { inherit lib; component = "client"; };
+  lifecycle = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "lifecycle";
+  };
+  streaming = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "streaming";
+  };
+  client = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "client";
+  };
   epochGuardTest = builtins.readFile ../../crates/crucible/control/crucible-control-server/tests/gate_epoch_guards.rs;
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;

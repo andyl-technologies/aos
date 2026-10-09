@@ -49,4 +49,9 @@
       inherit lib entry;
     };
 in
-  builtins.concatStringsSep "\n" (map (if component == "exports" then builtins.readFile else readModule) entries.${component})
+  builtins.concatStringsSep "\n" (map (
+      if component == "exports"
+      then builtins.readFile
+      else readModule
+    )
+    entries.${component})

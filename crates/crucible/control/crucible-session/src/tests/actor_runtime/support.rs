@@ -71,7 +71,9 @@ impl QuantumLoop for BackendCrashLoop {
     }
 }
 
-pub(in crate::tests) fn coverage_scheduler(scenario: &ScenarioDef) -> crucible_engine::SingleScheduler {
+pub(in crate::tests) fn coverage_scheduler(
+    scenario: &ScenarioDef,
+) -> crucible_engine::SingleScheduler {
     let runtime = crucible_engine::SchedulerLivenessScenario::from_canonical_material(
         "session canonical coverage",
         1,
@@ -114,7 +116,10 @@ impl crucible_engine::SimulationBackend for CoverageBackend {
         crucible_engine::BackendIoInventoryAuthority::SchedulerOwnedModel
     }
 
-    fn step_to(&mut self, ceiling: VirtualTime) -> Result<crucible_engine::StepObservation, BackendError> {
+    fn step_to(
+        &mut self,
+        ceiling: VirtualTime,
+    ) -> Result<crucible_engine::StepObservation, BackendError> {
         self.now = ceiling;
         Ok(crucible_engine::StepObservation::from_advance_outcome(
             ceiling,
@@ -122,7 +127,9 @@ impl crucible_engine::SimulationBackend for CoverageBackend {
         ))
     }
 
-    fn drain_observable_events(&mut self) -> Result<Vec<crucible_engine::ObservableEvent>, BackendError> {
+    fn drain_observable_events(
+        &mut self,
+    ) -> Result<Vec<crucible_engine::ObservableEvent>, BackendError> {
         Ok(std::mem::take(&mut self.events))
     }
 
@@ -140,7 +147,10 @@ impl crucible_engine::SimulationBackend for CoverageBackend {
         })
     }
 
-    fn restore(&mut self, _snapshot: &crucible_engine::BackendSnapshot) -> Result<(), BackendError> {
+    fn restore(
+        &mut self,
+        _snapshot: &crucible_engine::BackendSnapshot,
+    ) -> Result<(), BackendError> {
         Err(BackendError::Unsupported {
             capability: "coverage test restore",
         })
@@ -176,7 +186,8 @@ impl crucible_engine::ConcurrentSimulationBackend for CoverageBackend {
         runs.into_iter()
             .map(|run| {
                 let step = crucible_engine::SimulationBackend::step_to(self, run.ceiling())?;
-                let observations = crucible_engine::SimulationBackend::drain_observable_events(self)?;
+                let observations =
+                    crucible_engine::SimulationBackend::drain_observable_events(self)?;
                 Ok(crucible_engine::ConcurrentBackendRunResult::Completed(
                     crucible_engine::ConcurrentBackendRunOutcome {
                         node: run.node().clone(),
@@ -300,7 +311,11 @@ impl QuantumLoop for RecordingLoop {
             event_log_segment_bytes: vec![b'x'],
             event_log_segment_text: String::from("x"),
             event_log_segment_hash: Some(crucible_engine::ContentHash::from_bytes(b"x")),
-            event_log_offset: crucible_engine::EventLogOffset::new(Default::default(), 0, self.quanta),
+            event_log_offset: crucible_engine::EventLogOffset::new(
+                Default::default(),
+                0,
+                self.quanta,
+            ),
             scheduler_quiescence: None,
         })
     }
@@ -368,7 +383,11 @@ impl QuantumLoop for ControlSensitiveLoop {
             event_log_segment_bytes: vec![b'x'],
             event_log_segment_text: String::from("x"),
             event_log_segment_hash: Some(crucible_engine::ContentHash::from_bytes(b"x")),
-            event_log_offset: crucible_engine::EventLogOffset::new(Default::default(), 0, self.quanta),
+            event_log_offset: crucible_engine::EventLogOffset::new(
+                Default::default(),
+                0,
+                self.quanta,
+            ),
             scheduler_quiescence: None,
         })
     }
@@ -473,11 +492,13 @@ impl QuantumLoop for ScriptedStepLoop {
                 })
                 .collect::<Vec<_>>()
         } else {
-            vec![crucible_engine::test_support::condition_boundary_entry_for_test(
-                self.event_log_entries,
-                at,
-                crucible_engine::SchedulerEvaluationBoundaryKind::Quantum,
-            )]
+            vec![
+                crucible_engine::test_support::condition_boundary_entry_for_test(
+                    self.event_log_entries,
+                    at,
+                    crucible_engine::SchedulerEvaluationBoundaryKind::Quantum,
+                ),
+            ]
         };
         self.event_log_entries = self
             .event_log_entries
@@ -538,11 +559,13 @@ impl QuantumLoop for PriorEventThenNoEventQuiescenceLoop {
         self.quanta = self.quanta.saturating_add(1);
         let at = VirtualTime { ticks: self.quanta };
         let entries = if self.quanta == 1 {
-            vec![crucible_engine::test_support::condition_boundary_entry_for_test(
-                0,
-                at,
-                crucible_engine::SchedulerEvaluationBoundaryKind::Quantum,
-            )]
+            vec![
+                crucible_engine::test_support::condition_boundary_entry_for_test(
+                    0,
+                    at,
+                    crucible_engine::SchedulerEvaluationBoundaryKind::Quantum,
+                ),
+            ]
         } else {
             Vec::new()
         };
@@ -652,7 +675,11 @@ impl QuantumLoop for AppendingLoop {
             event_log_segment_bytes: vec![b'x'],
             event_log_segment_text: String::from("x"),
             event_log_segment_hash: Some(crucible_engine::ContentHash::from_bytes(b"x")),
-            event_log_offset: crucible_engine::EventLogOffset::new(Default::default(), 0, self.quanta),
+            event_log_offset: crucible_engine::EventLogOffset::new(
+                Default::default(),
+                0,
+                self.quanta,
+            ),
             scheduler_quiescence: None,
         })
     }
@@ -762,7 +789,9 @@ pub(in crate::tests) fn generated_scenario(seed: u64) -> ScenarioDef {
     )
 }
 
-pub(in crate::tests) fn test_event_log_entry(sequence: u64) -> crucible_engine::SchedulerEventLogEntry {
+pub(in crate::tests) fn test_event_log_entry(
+    sequence: u64,
+) -> crucible_engine::SchedulerEventLogEntry {
     crucible_engine::test_support::condition_boundary_entry_for_test(
         sequence,
         VirtualTime {

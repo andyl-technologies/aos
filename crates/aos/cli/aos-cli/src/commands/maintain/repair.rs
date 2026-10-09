@@ -158,8 +158,10 @@ pub(super) fn accept(
 
     let cumulative = cumulative_patch(root)?;
     let changed_paths = changed_paths(root)?;
-    let task_digest =
-        Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_AGENT_TASK_V1, &proposal.task)?;
+    let task_digest = Sha256Digest::of_canonical(
+        aos_package_maintenance::PACKAGE_UPDATE_AGENT_TASK_V1,
+        &proposal.task,
+    )?;
     let result_digest = Sha256Digest::of_canonical(
         aos_package_maintenance::PACKAGE_UPDATE_AGENT_RESULT_V1,
         &proposal.result,

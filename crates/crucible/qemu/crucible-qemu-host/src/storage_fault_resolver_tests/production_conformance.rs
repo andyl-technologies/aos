@@ -355,29 +355,44 @@ fn production_resolver_mutates_flash_state_directive() {
         ),
         storage_policy_artifact(
             "read-disturb",
-            StoragePolicyArtifactKind::ReadDisturb(crucible_engine::model::StoragePolicyReadDisturb {
-                read_threshold: PositiveU64::new("read_threshold", 8)
-                    .unwrap_or_else(|error| panic!("test read threshold should be valid: {error}")),
-                neighbor_pages: BoundedCount::new(CountLimit::LargeStateEntries, 2)
-                    .unwrap_or_else(|error| panic!("test neighbor count should be valid: {error}")),
-                bit_probability: crucible_engine::model::ProbabilityMillionths::new(500_000)
-                    .unwrap_or_else(|error| panic!("test probability should be valid: {error}")),
-                maximum_changed_bits: BoundedCount::new(CountLimit::LargeStateEntries, 3)
-                    .unwrap_or_else(|error| panic!("test bit count should be valid: {error}")),
-            }),
+            StoragePolicyArtifactKind::ReadDisturb(
+                crucible_engine::model::StoragePolicyReadDisturb {
+                    read_threshold: PositiveU64::new("read_threshold", 8).unwrap_or_else(|error| {
+                        panic!("test read threshold should be valid: {error}")
+                    }),
+                    neighbor_pages: BoundedCount::new(CountLimit::LargeStateEntries, 2)
+                        .unwrap_or_else(|error| {
+                            panic!("test neighbor count should be valid: {error}")
+                        }),
+                    bit_probability: crucible_engine::model::ProbabilityMillionths::new(500_000)
+                        .unwrap_or_else(|error| {
+                            panic!("test probability should be valid: {error}")
+                        }),
+                    maximum_changed_bits: BoundedCount::new(CountLimit::LargeStateEntries, 3)
+                        .unwrap_or_else(|error| panic!("test bit count should be valid: {error}")),
+                },
+            ),
         ),
         storage_policy_artifact(
             "program-erase",
-            StoragePolicyArtifactKind::ProgramErase(crucible_engine::model::StoragePolicyProgramErase {
-                program_probability: crucible_engine::model::ProbabilityMillionths::new(100_000)
+            StoragePolicyArtifactKind::ProgramErase(
+                crucible_engine::model::StoragePolicyProgramErase {
+                    program_probability: crucible_engine::model::ProbabilityMillionths::new(
+                        100_000,
+                    )
                     .unwrap_or_else(|error| panic!("test probability should be valid: {error}")),
-                erase_probability: crucible_engine::model::ProbabilityMillionths::new(200_000)
-                    .unwrap_or_else(|error| panic!("test probability should be valid: {error}")),
-                worn_probability: crucible_engine::model::ProbabilityMillionths::new(900_000)
-                    .unwrap_or_else(|error| panic!("test probability should be valid: {error}")),
-                partial_program: true,
-                partial_erase: false,
-            }),
+                    erase_probability: crucible_engine::model::ProbabilityMillionths::new(200_000)
+                        .unwrap_or_else(|error| {
+                            panic!("test probability should be valid: {error}")
+                        }),
+                    worn_probability: crucible_engine::model::ProbabilityMillionths::new(900_000)
+                        .unwrap_or_else(|error| {
+                            panic!("test probability should be valid: {error}")
+                        }),
+                    partial_program: true,
+                    partial_erase: false,
+                },
+            ),
         ),
     ]);
     let write = BlockRequest::write(143, 0, vec![0x5a; 4096]);

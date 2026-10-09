@@ -257,11 +257,9 @@ pub fn validate_authorized_provisioning_input(input: &AuthorizedProvisioningInpu
 ///
 /// Returns an error when the facts value cannot be encoded in canonical AOS JSON.
 pub fn observed_instance_facts(value: serde_json::Value) -> Result<ObservedInstanceFacts> {
-    let sha256 = aos_core::Sha256Digest::of_canonical(
-        "aos.metadata.observed-instance-facts/v1",
-        &value,
-    )?
-    .to_string();
+    let sha256 =
+        aos_core::Sha256Digest::of_canonical("aos.metadata.observed-instance-facts/v1", &value)?
+            .to_string();
     Ok(ObservedInstanceFacts {
         schema: "aos.metadata.observed-instance-facts/v1".into(),
         trust: InstanceFactsTrust::UnauthenticatedObservational,

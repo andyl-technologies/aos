@@ -107,7 +107,8 @@ struct NoGuestSoftwareLeaves;
 impl crucible_engine::ConditionLeafOracle for NoGuestSoftwareLeaves {
     fn leaf_is_true(&mut self, leaf: crucible_engine::ConditionLeaf<'_>) -> bool {
         match leaf {
-            crucible_engine::ConditionLeaf::Named { .. } | crucible_engine::ConditionLeaf::GuestMarker { .. } => {
+            crucible_engine::ConditionLeaf::Named { .. }
+            | crucible_engine::ConditionLeaf::GuestMarker { .. } => {
                 panic!("OS-agnostic black-box checks must not need guest software leaves")
             }
         }

@@ -147,14 +147,17 @@ fn offline_checker_observes_relevant_events_before_later_terminal_boundary() {
     ];
     let mut evaluator = HostAssertionEvaluator::new(&properties);
     let mut oracle = BlackBoxHostOracle;
-    let ack_prefix = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
-        event_log[..1].to_vec(),
-    )
-    .expect("ack prefix should be checked");
+    let ack_prefix =
+        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+            event_log[..1].to_vec(),
+        )
+        .expect("ack prefix should be checked");
     evaluator.observe_prefix(&ack_prefix, &mut oracle);
     let terminal_prefix =
-        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(event_log.clone())
-            .expect("terminal prefix should be checked");
+        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+            event_log.clone(),
+        )
+        .expect("terminal prefix should be checked");
     let online = evaluator.finalize_prefix(&terminal_prefix, &mut oracle);
     let offline = OfflineAssertionChecker::new()
         .check_run(&properties, &event_log)

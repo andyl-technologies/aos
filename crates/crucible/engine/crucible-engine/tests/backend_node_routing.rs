@@ -98,7 +98,8 @@ struct NodeRecordingBackend {
     rng_evidence: Vec<BackendRngEvidence>,
     shutdown_count: usize,
     concurrent_run_sizes: Vec<usize>,
-    retained_dispatch: std::collections::BTreeMap<NodeId, crucible_engine::BackendRunDispatchBoundary>,
+    retained_dispatch:
+        std::collections::BTreeMap<NodeId, crucible_engine::BackendRunDispatchBoundary>,
 }
 
 impl SimulationBackend for NodeRecordingBackend {
@@ -1135,9 +1136,11 @@ fn choice_free_parallel_boot_poisons_early_and_last_route_choices() {
             output.source = NodeId {
                 name: String::from("vm-c"),
             };
-            output.payload[..6].copy_from_slice(&crucible_engine::deterministic_node_mac(&NodeId {
-                name: String::from("vm-a"),
-            }));
+            output.payload[..6].copy_from_slice(&crucible_engine::deterministic_node_mac(
+                &NodeId {
+                    name: String::from("vm-a"),
+                },
+            ));
         }
         let mut adapter = BackendQuantumLoop::new(scheduler, backend);
         adapter.set_live_network_choice_pause(true);

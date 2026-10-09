@@ -12,8 +12,8 @@ use connectrpc::{
 };
 use tokio::process::Command;
 
-use aos_nix::aos_nix_env;
 use aos_build_api::aos::gc::v1::*;
+use aos_nix::aos_nix_env;
 
 use crate::evict;
 use crate::routes::AppState;

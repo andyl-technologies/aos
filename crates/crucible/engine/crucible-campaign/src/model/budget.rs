@@ -97,7 +97,9 @@ impl CampaignBudgetLedger {
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] if `root` is not a Merkle-node identity.
-    pub fn empty(root: crucible_store::content_store::ContentId) -> Result<Self, CampaignCodecError> {
+    pub fn empty(
+        root: crucible_store::content_store::ContentId,
+    ) -> Result<Self, CampaignCodecError> {
         super::validate_merkle_roots(&[root])?;
         Ok(Self {
             granted_proposals: 0,

@@ -209,7 +209,8 @@ pub use node_time::NodeTimeMapping;
 #[cfg(feature = "test-double")]
 pub use scheduler::SchedulerRunCeilingHandoffError;
 /// Shared-memory ABI version used by Crucible backends and artifacts.
-pub const SHMEM_ABI_VERSION: u32 = include!("../../../protocol/crucible-qemu-shmem/src/abi_version.in");
+pub const SHMEM_ABI_VERSION: u32 =
+    include!("../../../protocol/crucible-qemu-shmem/src/abi_version.in");
 pub use scheduler::{
     AssertionRunVerdict, AssertionVerdictFailure, BackendDeviceGroupObservation,
     BackendDeviceGroupOwner, BackendFixedInputResult, BackendFixedInputState,

@@ -54,8 +54,10 @@ pub(super) fn bind_evaluated(
 ) -> Result<InventoryEnvelopeV1> {
     let bytes = json::canonical_json(&value)?;
     let inventory = MaintenanceInventoryV1::from_slice(&bytes)?;
-    let inventory_digest =
-        Sha256Digest::of_canonical(aos_package_maintenance::MAINTENANCE_INVENTORY_V1, &inventory)?;
+    let inventory_digest = Sha256Digest::of_canonical(
+        aos_package_maintenance::MAINTENANCE_INVENTORY_V1,
+        &inventory,
+    )?;
 
     let coordinates = repository_coordinates(root)?;
     let repository_root = coordinates.root;

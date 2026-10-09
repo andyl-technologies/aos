@@ -130,8 +130,7 @@ impl Clone for NodeSlot {
             publish_gen: AtomicU32::new(self.publish_gen.load(Ordering::Acquire)),
             control_boundary_ack: AtomicU32::new(self.control_boundary_ack.load(Ordering::Acquire)),
             device_completion_deadline_tick: AtomicU64::new(
-                self.device_completion_deadline_tick
-                    .load(Ordering::Acquire),
+                self.device_completion_deadline_tick.load(Ordering::Acquire),
             ),
             preemption_at_tick: AtomicU64::new(self.preemption_at_tick.load(Ordering::Acquire)),
             preemption_deadline_tick: AtomicU64::new(

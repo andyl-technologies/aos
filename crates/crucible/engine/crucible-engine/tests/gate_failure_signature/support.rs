@@ -12,7 +12,9 @@ pub(super) fn schedule_contains_override(schedule: &Schedule, point: &str, choic
     })
 }
 
-pub(super) fn recorded_event_log(decision: Decision) -> Vec<crucible_engine::SchedulerEventLogEntry> {
+pub(super) fn recorded_event_log(
+    decision: Decision,
+) -> Vec<crucible_engine::SchedulerEventLogEntry> {
     recorded_event_log_with_assertion_time(decision, 8)
 }
 

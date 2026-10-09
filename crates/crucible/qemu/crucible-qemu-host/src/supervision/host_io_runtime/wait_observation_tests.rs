@@ -87,9 +87,10 @@ fn real_advance_wait_keeps_timeout_and_owned_state_with_diagnostics_enabled_or_d
         let (mut runtime, plugin) = mapped_runtime()?;
         runtime.wait_observation = WaitObservation::with_budget(maximum);
         let ceiling = crucible_qemu_shmem::authorize_advance_ceiling(0, 1000, None)?;
-        plugin
-            .node_slot(0)?
-            .publish_scheduler_advance(ceiling, crucible_qemu_shmem::AdvanceStopCondition::Ceiling)?;
+        plugin.node_slot(0)?.publish_scheduler_advance(
+            ceiling,
+            crucible_qemu_shmem::AdvanceStopCondition::Ceiling,
+        )?;
         plugin.node_slot(0)?.publish_reached_icount(0)?;
         let original = plugin.node_slot(0)?.snapshot();
         let indices = runtime.wait_ring_indices();
@@ -178,9 +179,10 @@ fn real_short_successes_preserve_the_lifetime_record_budget()
         let (mut runtime, plugin) = mapped_runtime()?;
         runtime.wait_observation = WaitObservation::with_budget(maximum);
         let ceiling = crucible_qemu_shmem::authorize_advance_ceiling(0, 1000, None)?;
-        plugin
-            .node_slot(0)?
-            .publish_scheduler_advance(ceiling, crucible_qemu_shmem::AdvanceStopCondition::Ceiling)?;
+        plugin.node_slot(0)?.publish_scheduler_advance(
+            ceiling,
+            crucible_qemu_shmem::AdvanceStopCondition::Ceiling,
+        )?;
         plugin.node_slot(0)?.mark_done();
         let original = plugin.node_slot(0)?.snapshot();
 
@@ -197,10 +199,16 @@ fn real_short_successes_preserve_the_lifetime_record_budget()
     Ok(())
 }
 
-fn mapped_runtime()
--> Result<(QemuLiveHostIoRuntime, crucible_qemu_shmem::MappedSetupRegion), Box<dyn std::error::Error>> {
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 4))?;
+fn mapped_runtime() -> Result<
+    (
+        QemuLiveHostIoRuntime,
+        crucible_qemu_shmem::MappedSetupRegion,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 4),
+    )?;
     let layout = allocation.layout();
     let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
     shmem.write_all(&allocation.setup_region_bytes()?)?;

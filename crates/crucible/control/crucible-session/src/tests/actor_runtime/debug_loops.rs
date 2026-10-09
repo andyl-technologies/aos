@@ -100,7 +100,8 @@ impl QuantumLoop for MismatchingDebugRepositionLoop {
     ) -> Result<crucible_engine::DebugRuntimeRepositionReport, SchedulerError> {
         let endpoint = DebugGdbEndpoint::new("qemu_gdbstub", "tcp:127.0.0.1:9002")
             .unwrap_or_else(|error| panic!("replacement endpoint should be valid: {error}"));
-        let mut report = crucible_engine::DebugRuntimeRepositionReport::completed(&request, endpoint, 1);
+        let mut report =
+            crucible_engine::DebugRuntimeRepositionReport::completed(&request, endpoint, 1);
         report.gateway_generation = 0;
         Ok(report)
     }

@@ -16,7 +16,10 @@ pub(super) use crucible_engine::model::{
 };
 
 pub(crate) fn test_host_manifests() -> HostFaultAdapterManifests {
-    fn manifest(adapter: crucible_engine::model::FaultAdapter, backend: &str) -> FaultCapabilityManifest {
+    fn manifest(
+        adapter: crucible_engine::model::FaultAdapter,
+        backend: &str,
+    ) -> FaultCapabilityManifest {
         FaultCapabilityManifest {
             backend: FaultObjectId::parse(backend)
                 .unwrap_or_else(|error| panic!("test backend ID must be valid: {error}")),
@@ -31,8 +34,14 @@ pub(crate) fn test_host_manifests() -> HostFaultAdapterManifests {
     }
 
     HostFaultAdapterManifests {
-        network: manifest(crucible_engine::model::FaultAdapter::Network, "network-test-host"),
-        storage: manifest(crucible_engine::model::FaultAdapter::Storage, "storage-test-host"),
+        network: manifest(
+            crucible_engine::model::FaultAdapter::Network,
+            "network-test-host",
+        ),
+        storage: manifest(
+            crucible_engine::model::FaultAdapter::Storage,
+            "storage-test-host",
+        ),
     }
 }
 
@@ -176,7 +185,8 @@ pub(crate) fn lifecycle_event(action: &ResolvedBindingAction) -> DequeuedFaultEv
             payload[200..204].copy_from_slice(&maximum_attempts.get().to_le_bytes());
             payload[204..208].copy_from_slice(&u32::from(lifecycle_tag(*exhausted)).to_le_bytes());
             payload[208..216].copy_from_slice(&retry_delay_nanos.to_le_bytes());
-            let ready_deadline = virtual_after + retry_delay_nanos * crucible_qemu_shmem::TICKS_PER_NS;
+            let ready_deadline =
+                virtual_after + retry_delay_nanos * crucible_qemu_shmem::TICKS_PER_NS;
             payload[216..224].copy_from_slice(&ready_deadline.to_le_bytes());
             let marker_hash: [u8; 32] = Sha256::digest(ready_marker.as_str().as_bytes()).into();
             payload[224..256].copy_from_slice(&marker_hash);

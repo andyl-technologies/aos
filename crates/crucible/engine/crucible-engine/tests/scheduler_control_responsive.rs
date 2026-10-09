@@ -284,7 +284,9 @@ fn control(sequence: u64, kind: ControlOperationKind) -> ControlOperation {
     ControlOperation { sequence, kind }
 }
 
-fn control_event_keys(events: &[crucible_engine::ScheduledEvent]) -> Vec<crucible_engine::ScheduledEventKey> {
+fn control_event_keys(
+    events: &[crucible_engine::ScheduledEvent],
+) -> Vec<crucible_engine::ScheduledEventKey> {
     events
         .iter()
         .filter_map(|event| match &event.payload {

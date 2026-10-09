@@ -2,8 +2,8 @@
 
 use std::{env, fs, process::ExitCode};
 
-use crucible_qemu_protocol::WHITEBOX_DOORBELL_X86_64_RESERVED_PORT;
 use crucible_qemu_host::validate_x86_whitebox_hmp_mtree;
+use crucible_qemu_protocol::WHITEBOX_DOORBELL_X86_64_RESERVED_PORT;
 
 fn main() -> ExitCode {
     match run() {

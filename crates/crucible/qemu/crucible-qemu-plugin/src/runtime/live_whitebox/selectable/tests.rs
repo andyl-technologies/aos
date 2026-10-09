@@ -183,7 +183,10 @@ impl ReplyRing {
         }
     }
 
-    fn publish(&mut self, entry: WhiteboxMarkerEntry) -> Result<(), crucible_qemu_shmem::SpscRingError> {
+    fn publish(
+        &mut self,
+        entry: WhiteboxMarkerEntry,
+    ) -> Result<(), crucible_qemu_shmem::SpscRingError> {
         self.header
             .enqueue_whitebox_marker(&mut self.entries, entry)
     }

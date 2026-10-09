@@ -4,13 +4,13 @@ use std::error::Error;
 use std::path::Path;
 use std::time::Duration;
 
-use crucible_engine::{AdvanceOutcome, ObservableEventPayload, SimulationBackend, VirtualTime};
 use crucible_device::block::{
     BaseImage, BlockDurabilityConfig, BlockFaultResult, BlockTransitionPending,
     BlockTransitionResolved, BlockTransitionState, BlockTransitionTopology,
     BlockTransitionUnadmitted, BlockTransitionUndelivered, BlockTransportRequestIds,
     ResolvedBlockControllerTransition,
 };
+use crucible_engine::{AdvanceOutcome, ObservableEventPayload, SimulationBackend, VirtualTime};
 use crucible_qemu_host::{
     LinuxQemuAttemptHostFactory, QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig,
     QemuProductionFreshLaunchAdmission, launch_qemu_production_fresh_node,
@@ -163,7 +163,9 @@ pub(super) fn run(
     })
 }
 
-fn await_recovery_readiness(node: &mut crucible_qemu_host::QemuNode) -> Result<u64, Box<dyn Error>> {
+fn await_recovery_readiness(
+    node: &mut crucible_qemu_host::QemuNode,
+) -> Result<u64, Box<dyn Error>> {
     let readiness_slice_ticks = virtual_nanos_to_ticks(READINESS_SLICE_NANOS)?;
     let mut console = Vec::new();
     let mut last_reached = node.now().ticks;

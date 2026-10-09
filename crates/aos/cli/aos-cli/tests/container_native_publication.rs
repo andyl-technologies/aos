@@ -15,6 +15,7 @@ use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result, bail};
+use aos_hub_db::db::oci_blob_object_key;
 use aos_hub_native::auth::extract::AuthState;
 use aos_hub_native::auth::jwt::JwtKeys;
 use aos_hub_native::db::{
@@ -24,7 +25,6 @@ use aos_hub_native::db::{
 use aos_hub_native::domain::{Permission, Principal, iam};
 use aos_hub_native::fetch::LocalFsFetch;
 use aos_hub_native::server::{AppState, router};
-use aos_hub_db::db::oci_blob_object_key;
 use aos_oci::{PullOptions, RegistryClient, RegistryReference};
 use aos_oci_types::{
     CONTAINER_DSSE_SIGNATURE_NAMESPACE, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
@@ -184,8 +184,9 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
         !preparation.status.success(),
         "the second required OCI placement is still absent"
     );
-    let store =
-        aos_registry_authoring::registry::staging::LocalStageStore::open_read_only(&authoring_registry)?;
+    let store = aos_registry_authoring::registry::staging::LocalStageStore::open_read_only(
+        &authoring_registry,
+    )?;
     let prepared = store.show("native-container").with_context(|| {
         format!(
             "APR did not retain the prepared candidate:\nstdout:\n{}\nstderr:\n{}",
@@ -334,10 +335,7 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
         ],
     )?;
     let ready = store.show("native-container")?;
-    assert_eq!(
-        ready.state,
-        aos_registry_format::staging::StageState::Ready
-    );
+    assert_eq!(ready.state, aos_registry_format::staging::StageState::Ready);
     assert!(hub.db.oci_tags(repository.id, 10, None).await?.is_empty());
     run_apr(
         &home,
@@ -785,7 +783,8 @@ version = "0.1.0"
 }
 
 async fn assert_hub_stage_target(hub: &RunningHub, upload_url: &str) -> Result<()> {
-    let discovery = aos_registry_authoring::registry::staging::hub::target(upload_url, APR_REGISTRY).await;
+    let discovery =
+        aos_registry_authoring::registry::staging::hub::target(upload_url, APR_REGISTRY).await;
     if let Ok(Some(target)) = &discovery {
         assert_eq!(target.origin, hub.origin.trim_end_matches('/'));
         assert_eq!(target.registry, hub.registry.slug);
@@ -834,9 +833,9 @@ fn publish_signed_registry_surface(
         Err(error) => return Err(error).context("reading published registry HEAD"),
     };
     fs::create_dir_all(surface)?;
-    for file in
-        aos_registry_authoring::registry::static_upload::collect_static_origin_files(authoring_registry)?
-    {
+    for file in aos_registry_authoring::registry::static_upload::collect_static_origin_files(
+        authoring_registry,
+    )? {
         let destination = surface.join(file.relative_path);
         fs::create_dir_all(destination.parent().context("publication object parent")?)?;
         fs::copy(file.source, destination)?;

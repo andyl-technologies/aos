@@ -20,9 +20,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
-use crucible_engine::{AdvanceOutcome, ObservableEventPayload, SimulationBackend, VirtualTime};
-#[cfg(target_os = "linux")]
 use crucible_device::block::{BaseImage, BlockDurabilityConfig};
+#[cfg(target_os = "linux")]
+use crucible_engine::{AdvanceOutcome, ObservableEventPayload, SimulationBackend, VirtualTime};
 #[cfg(target_os = "linux")]
 use crucible_qemu_host::{
     LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory, QemuLiveNodeIdentity,

@@ -9,7 +9,9 @@
 use anyhow::{Context as _, Result, bail};
 use aos_release_format::canonical;
 use aos_release_format::digest::Sha256Digest;
-use aos_release_format::receipt::{RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedReceiptEnvelope};
+use aos_release_format::receipt::{
+    RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedReceiptEnvelope,
+};
 use base64::Engine as _;
 use ed25519_dalek::Signer as _;
 

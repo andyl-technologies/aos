@@ -77,8 +77,13 @@ pub(super) async fn delete_registry(
         .context("the Hub returned a deletion response without an operation")?
         .operation_id
         .clone();
-    wait_for_registry_deletion(printer, &client, &operation_id, operation.timeout.as_deref())
-        .await
+    wait_for_registry_deletion(
+        printer,
+        &client,
+        &operation_id,
+        operation.timeout.as_deref(),
+    )
+    .await
 }
 
 async fn plan_registry_deletion(

@@ -30,8 +30,11 @@ fn properties(assertions: Vec<AssertionDef>) -> Properties {
 }
 
 fn prefix(ticks: u64) -> ConditionEventLogPrefix {
-    crucible_engine::test_support::condition_prefix_from_observable_events_for_test(ticks, Vec::new())
-        .expect("lifecycle test prefix should be checked")
+    crucible_engine::test_support::condition_prefix_from_observable_events_for_test(
+        ticks,
+        Vec::new(),
+    )
+    .expect("lifecycle test prefix should be checked")
 }
 
 fn outcome<'a>(outcomes: &'a [HostAssertionOutcome], assertion: &str) -> &'a HostAssertionOutcome {
@@ -200,8 +203,9 @@ fn assertion_checkpoint_round_trip_preserves_temporal_continuation() {
         .checkpoint()
         .canonical_bytes()
         .expect("encode assertion continuation");
-    let checkpoint = crucible_engine::HostAssertionEvaluatorCheckpoint::from_canonical_bytes(&encoded)
-        .expect("decode assertion continuation");
+    let checkpoint =
+        crucible_engine::HostAssertionEvaluatorCheckpoint::from_canonical_bytes(&encoded)
+            .expect("decode assertion continuation");
     assert_eq!(
         checkpoint
             .canonical_bytes()

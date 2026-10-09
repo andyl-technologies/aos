@@ -269,7 +269,8 @@ pub(super) fn completed_quantum_clamp_is_settled(
 
     let dispatch_is_fenced = snapshot.max_advance_icount == expected_current_icount;
     let status_is_settled = snapshot.status == STATUS_IDLE
-        || (snapshot.status == crucible_qemu_shmem::STATUS_RUNNING && boundary_exactly_acknowledged);
+        || (snapshot.status == crucible_qemu_shmem::STATUS_RUNNING
+            && boundary_exactly_acknowledged);
 
     boundary_acknowledged
         && !device_progress

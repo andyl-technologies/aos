@@ -9,8 +9,9 @@ use std::path::PathBuf;
 #[test]
 fn gate_qemu_inert_plugin_half_is_backed_by_phase_check() -> Result<(), Box<dyn Error>> {
     let root = workspace_root()?;
-    let plugin_inertness =
-        fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/inertness.rs"))?;
+    let plugin_inertness = fs::read_to_string(
+        root.join("crates/crucible/qemu/crucible-qemu-plugin/src/inertness.rs"),
+    )?;
     let phase_check = fs::read_to_string(root.join("tests/crucible/phase2-plugin-qemu-inert.nix"))?;
     let spec = fs::read_to_string(root.join("docs/rfcs/0010-crucible/12-qemu-plugin.md"))?;
 

@@ -440,7 +440,10 @@ fn consumed_input_without_retiring(
     inbound_frames_consumed: usize,
 ) -> bool {
     observation.reached == previous
-        && matches!(observation.outcome, crucible_engine::AdvanceOutcome::Paused { .. })
+        && matches!(
+            observation.outcome,
+            crucible_engine::AdvanceOutcome::Paused { .. }
+        )
         && inbound_frames_consumed > 0
 }
 
@@ -450,7 +453,10 @@ fn stagnant_pause_boundary(
     final_state: Option<QemuNodeIdleState>,
 ) -> Option<(VirtualTime, Option<Icount>)> {
     (observation.reached == previous
-        && matches!(observation.outcome, crucible_engine::AdvanceOutcome::Paused { .. }))
+        && matches!(
+            observation.outcome,
+            crucible_engine::AdvanceOutcome::Paused { .. }
+        ))
     .then(|| {
         (
             observation.reached,
@@ -1399,7 +1405,8 @@ impl QemuNodeSet {
     #[must_use]
     pub fn selectable_catalog_plans(
         &self,
-    ) -> BTreeMap<NodeId, crucible_qemu_protocol::selectable_catalog_plan::SelectableCatalogPlan> {
+    ) -> BTreeMap<NodeId, crucible_qemu_protocol::selectable_catalog_plan::SelectableCatalogPlan>
+    {
         self.nodes
             .iter()
             .filter_map(|(node, backend)| {
@@ -2187,7 +2194,10 @@ impl SimulationBackend for QemuNodeSet {
                 observation.physical_stop = BackendPhysicalStop::Idle;
                 return Ok(observation);
             }
-            if matches!(observation.outcome, crucible_engine::AdvanceOutcome::Paused { .. }) {
+            if matches!(
+                observation.outcome,
+                crucible_engine::AdvanceOutcome::Paused { .. }
+            ) {
                 // A delivery-capped quantum can stop exactly where an idle
                 // timer is also due. Both causes are within the original
                 // scheduler horizon, so resume through a fresh quantum.

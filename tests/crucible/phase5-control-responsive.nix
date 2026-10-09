@@ -8,8 +8,14 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  apiLib = import ./_crucible-control-source.nix { inherit lib; component = "exports"; };
-  apiControl = import ./_crucible-control-source.nix { inherit lib; component = "control_responsive"; };
+  apiLib = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "exports";
+  };
+  apiControl = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "control_responsive";
+  };
   apiGateTest = builtins.readFile ../../crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs;
   daemonManifest = builtins.readFile ../../crates/crucible/control/crucible-daemon/Cargo.toml;
   daemonLib = builtins.readFile ../../crates/crucible/control/crucible-daemon/src/lib.rs;

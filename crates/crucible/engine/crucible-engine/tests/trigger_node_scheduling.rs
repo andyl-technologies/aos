@@ -69,7 +69,10 @@ impl ConditionLeafOracle for NoLeaves {
     }
 }
 
-fn evaluate_genesis(graph: &EventGraph, scheduler: &SingleScheduler) -> crucible_engine::EventFirings {
+fn evaluate_genesis(
+    graph: &EventGraph,
+    scheduler: &SingleScheduler,
+) -> crucible_engine::EventFirings {
     let mut state = EventGraphState::new();
     let mut pass = ConditionEvaluationPass::from_log_prefix(
         scheduler.condition_event_log_prefix().clone(),

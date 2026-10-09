@@ -737,7 +737,9 @@ fn immutable_store_file(path: &Path, mode: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use aos_release_format::signing::{SignatureAlgorithm, SignerRole, SigningContext, SigningOperation};
+    use aos_release_format::signing::{
+        SignatureAlgorithm, SignerRole, SigningContext, SigningOperation,
+    };
 
     use super::*;
 

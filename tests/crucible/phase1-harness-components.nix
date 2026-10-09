@@ -67,12 +67,14 @@
     ]
     else [];
 
-  workspacePackages = builtins.filter (
-    name:
-      name
-      != harnessPackage
-      && builtins.pathExists (packageDir name + "/Cargo.toml")
-  ) packageNames;
+  workspacePackages =
+    builtins.filter (
+      name:
+        name
+        != harnessPackage
+        && builtins.pathExists (packageDir name + "/Cargo.toml")
+    )
+    packageNames;
 
   dependencyPackageName = workspaceDeps: name: value:
     if builtins.isAttrs value && value ? workspace && value.workspace == true

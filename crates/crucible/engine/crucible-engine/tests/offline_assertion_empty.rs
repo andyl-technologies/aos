@@ -114,7 +114,10 @@ fn enabled_empty_checker_matches_published_atomic_batches() -> TestResult {
     for count in [512_u64, 1024, 2048, 10958] {
         let mut entries = vec![boundary(0, 10)];
         entries.extend((1..count - 1).map(|sequence| {
-            crucible_engine::test_support::condition_observation_entry_for_test(sequence, &observation)
+            crucible_engine::test_support::condition_observation_entry_for_test(
+                sequence,
+                &observation,
+            )
         }));
         entries.push(boundary(count - 1, 10));
         let canonical_bytes: usize = entries
@@ -148,7 +151,10 @@ fn enabled_empty_checker_matches_a_late_published_atomic_batch() -> TestResult {
             .map(|sequence| boundary(sequence, sequence + 1))
             .collect();
         entries.extend((count - 3..count - 1).map(|sequence| {
-            crucible_engine::test_support::condition_observation_entry_for_test(sequence, &observation)
+            crucible_engine::test_support::condition_observation_entry_for_test(
+                sequence,
+                &observation,
+            )
         }));
         entries.push(boundary(count - 1, count));
         let canonical_bytes: usize = entries
@@ -206,8 +212,11 @@ fn payload_entry(
     payload: SchedulerEventLogPayload,
 ) -> SchedulerEventLogEntry {
     let resolved = matches!(payload, SchedulerEventLogPayload::ResolvedHappening(_));
-    let entry =
-        crucible_engine::test_support::condition_payload_entry_for_test(sequence, time(ticks), payload);
+    let entry = crucible_engine::test_support::condition_payload_entry_for_test(
+        sequence,
+        time(ticks),
+        payload,
+    );
     if resolved {
         crucible_engine::test_support::condition_entry_with_retirement_witness_for_test(
             entry,
@@ -472,7 +481,9 @@ fn guest_catalog_declared_properties_and_whitebox_markers_keep_outcomes() -> Tes
             id: AssertionId::from_name("required"),
             message: "declared marker".into(),
             property: Property::Sometimes {
-                predicate: Predicate::guest_marker(crucible_engine::MarkerId::from_name("required")),
+                predicate: Predicate::guest_marker(crucible_engine::MarkerId::from_name(
+                    "required",
+                )),
             },
         }],
     )?;
@@ -770,9 +781,10 @@ fn sparse_marker_reports_match_at_flight_scale_without_implicit_observations() -
             crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
                 entries[..33].to_vec(),
             )?;
-        let terminal = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
-            entries.clone(),
-        )?;
+        let terminal =
+            crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+                entries.clone(),
+            )?;
         let mut original_evaluator =
             HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
         original_evaluator.observe_prefix(&marker_prefix, &mut BlackBoxHostOracle);

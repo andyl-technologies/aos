@@ -6,8 +6,8 @@
 
 use anyhow::Result;
 
-use aos_nix::NixRunner;
 use aos_cli_ui::output::Printer;
+use aos_nix::NixRunner;
 
 /// `aos repl` — start an interactive Nix REPL with `default.nix` loaded.
 ///

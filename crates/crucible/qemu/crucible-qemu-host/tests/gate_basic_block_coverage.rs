@@ -8,8 +8,8 @@ use crucible_engine::{
     BasicBlockCoverageConfig, BasicBlockCoverageMode, BlackBoxObservationKind, NodeId,
     basic_block_coverage_map_index,
 };
-use crucible_qemu_protocol::PluginBasicBlockCoverageObservation;
 use crucible_qemu_host::{QemuBasicBlockCoverageBridge, QemuCoverageError};
+use crucible_qemu_protocol::PluginBasicBlockCoverageObservation;
 
 #[test]
 fn gate_basic_block_coverage_consumes_plugin_protocol_observation() {

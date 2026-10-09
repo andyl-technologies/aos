@@ -432,11 +432,13 @@ fn retained_event_log(schedule: &Schedule) -> Result<RecordedAssertionLog, Engin
         );
         sequence += 1;
     }
-    entries.push(crucible_engine::test_support::condition_boundary_entry_for_test(
-        sequence,
-        time(7),
-        SchedulerEvaluationBoundaryKind::Quantum,
-    ));
+    entries.push(
+        crucible_engine::test_support::condition_boundary_entry_for_test(
+            sequence,
+            time(7),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    );
     RecordedAssertionLog::from_segments(vec![entries]).map_err(|source| {
         EngineError::ScenarioSerialization {
             reason: format!("retained minimization assertion log failed: {source}"),
@@ -469,7 +471,9 @@ fn schedule_emits_forbidden_marker(schedule: &Schedule) -> bool {
     has_critical && guards != 1
 }
 
-fn assertion_fold_failure_fingerprint(violation: &crucible_engine::HostAssertionViolation) -> ContentHash {
+fn assertion_fold_failure_fingerprint(
+    violation: &crucible_engine::HostAssertionViolation,
+) -> ContentHash {
     let icount = violation
         .at_icount
         .map(|value| value.retired.to_string())

@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_module_format::AbilityValue;
 use aos_activation::activation::{Action, Invocation};
 use aos_core::Sha256Digest;
+use aos_module_format::AbilityValue;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -55,8 +55,7 @@ impl NixStoreProvider {
             matches!(purpose, "apply" | "remove" | "observe"),
             "unknown native Nix store purpose"
         );
-        let invocation: Invocation =
-            aos_core::json::from_slice(input, "Nix store invocation")?;
+        let invocation: Invocation = aos_core::json::from_slice(input, "Nix store invocation")?;
         ensure!(
             purpose == "observe" || (purpose == "apply") == (invocation.action == Action::Apply),
             "action differs from argv"

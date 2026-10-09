@@ -19,9 +19,9 @@ use std::collections::BTreeMap;
 use std::io::Write as _;
 
 use anyhow::{Context as _, Result};
+use aos_cli_ui::output::Printer;
 use aos_core::Sha256Digest;
 use aos_nix::NixRunner;
-use aos_cli_ui::output::Printer;
 use aos_package_maintenance::identity::OperationId;
 use aos_package_maintenance::inventory::Classification;
 use aos_package_maintenance::presentation::{
@@ -486,8 +486,7 @@ fn adopt_worktree(
             )),
         );
     }
-    let candidate_digest =
-        aos_core::Sha256Digest::separated("aos.package-update-patch/v1", &patch);
+    let candidate_digest = aos_core::Sha256Digest::separated("aos.package-update-patch/v1", &patch);
     let candidate_digest_text = candidate_digest.to_string();
     if confirmation != Some(candidate_digest_text.as_str()) {
         let mut completion = run_view_completion(
@@ -626,7 +625,10 @@ fn commit_command(
                 commit.value.as_bytes(),
             )),
         ),
-        Err(_) => (aos_package_maintenance::workflow::GateOutcome::Failure, None),
+        Err(_) => (
+            aos_package_maintenance::workflow::GateOutcome::Failure,
+            None,
+        ),
     };
     store.effect_result(
         &run,
@@ -671,7 +673,8 @@ fn execute_gates_with_journal(
     } else {
         "execute-quick-gates"
     };
-    let request = Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_PLAN_V1, plan)?;
+    let request =
+        Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_PLAN_V1, plan)?;
     let intent = store.effect_intent(run, operation, ActorClass::Controller, request)?;
     let result = if final_phase {
         validation::final_gates(store, plan, run, printer)
@@ -690,7 +693,10 @@ fn execute_gates_with_journal(
                 record,
             )?),
         ),
-        Err(_) => (aos_package_maintenance::workflow::GateOutcome::Failure, None),
+        Err(_) => (
+            aos_package_maintenance::workflow::GateOutcome::Failure,
+            None,
+        ),
     };
     store.effect_result(
         run,
@@ -792,7 +798,10 @@ async fn repair_command(
                     attempt,
                 )?),
             ),
-            Err(_) => (aos_package_maintenance::workflow::GateOutcome::Failure, None),
+            Err(_) => (
+                aos_package_maintenance::workflow::GateOutcome::Failure,
+                None,
+            ),
         };
         store.effect_result(
             &run,
@@ -878,7 +887,8 @@ async fn repair_command(
             .adapter
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("--agent local requires --adapter PATH"))?;
-        let request = Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_PLAN_V1, &plan)?;
+        let request =
+            Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_PLAN_V1, &plan)?;
         let intent = store.effect_intent(
             &run,
             "invoke-repair-adapter",
@@ -894,7 +904,10 @@ async fn repair_command(
                     &proposal.result,
                 )?),
             ),
-            Err(_) => (aos_package_maintenance::workflow::GateOutcome::Failure, None),
+            Err(_) => (
+                aos_package_maintenance::workflow::GateOutcome::Failure,
+                None,
+            ),
         };
         store.effect_result(
             &run,
@@ -1235,7 +1248,10 @@ async fn publish_pr_command(
                 publication,
             )?),
         ),
-        Err(_) => (aos_package_maintenance::workflow::GateOutcome::Failure, None),
+        Err(_) => (
+            aos_package_maintenance::workflow::GateOutcome::Failure,
+            None,
+        ),
     };
     store.effect_result(
         &run,
@@ -1361,7 +1377,9 @@ async fn observe_pr_command(
             state::now_unix()?,
         )?;
     }
-    if run.state == aos_package_maintenance::workflow::RunState::MergeEligibleObserved && observation.merged {
+    if run.state == aos_package_maintenance::workflow::RunState::MergeEligibleObserved
+        && observation.merged
+    {
         store.transition(
             &mut run,
             aos_package_maintenance::workflow::RunState::MergedObserved,
@@ -1637,10 +1655,9 @@ fn inspect_command(
     };
     if command.failure {
         gate_results.retain(|results| {
-            results
-                .results
-                .iter()
-                .any(|result| result.outcome != aos_package_maintenance::workflow::GateOutcome::Success)
+            results.results.iter().any(|result| {
+                result.outcome != aos_package_maintenance::workflow::GateOutcome::Success
+            })
         });
     }
     let mut completion = run_view_completion("inspect", &store, run, None)?;
@@ -1907,11 +1924,13 @@ fn cached_completion(
                 Some(selection) if selection.unknown => unit.decision == DiscoveryDecision::Unknown,
                 Some(selection) if selection.advisory => !unit.advisories.is_empty(),
                 Some(selection) if selection.vulnerable => unit.advisories.iter().any(|finding| {
-                    finding.kind == aos_package_maintenance::discovery::AdvisoryKind::VulnerableCurrent
+                    finding.kind
+                        == aos_package_maintenance::discovery::AdvisoryKind::VulnerableCurrent
                 }),
                 Some(selection) if selection.license_change => {
                     unit.advisories.iter().any(|finding| {
-                        finding.kind == aos_package_maintenance::discovery::AdvisoryKind::LicenseChange
+                        finding.kind
+                            == aos_package_maintenance::discovery::AdvisoryKind::LicenseChange
                     })
                 }
                 Some(_) => true,
@@ -2380,7 +2399,10 @@ fn plan_command(
         if plan != existing {
             anyhow::bail!("existing immutable plan disagrees with its deterministic identity");
         }
-        aos_core::Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_PLAN_V1, &existing)?
+        aos_core::Sha256Digest::of_canonical(
+            aos_package_maintenance::PACKAGE_UPDATE_PLAN_V1,
+            &existing,
+        )?
     } else {
         store.write_plan(&plan)?
     };
@@ -2472,7 +2494,8 @@ async fn run_command(
         .list_runs()?
         .iter()
         .any(|run| run.plan_id == plan.plan_id);
-    let plan_digest = Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_PLAN_V1, &plan)?;
+    let plan_digest =
+        Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_PLAN_V1, &plan)?;
     let plan_digest_text = plan_digest.to_string();
     if !plan_has_run && command.confirm_plan.as_deref() != Some(plan_digest_text.as_str()) {
         return completion(
@@ -2543,8 +2566,10 @@ async fn run_command(
     let Some(envelope) = store.read_inventory()? else {
         return missing_plan_input("inventory", CommandDisposition::Stale);
     };
-    let envelope_digest =
-        Sha256Digest::of_canonical(aos_package_maintenance::MAINTENANCE_INVENTORY_ENVELOPE_V1, &envelope)?;
+    let envelope_digest = Sha256Digest::of_canonical(
+        aos_package_maintenance::MAINTENANCE_INVENTORY_ENVELOPE_V1,
+        &envelope,
+    )?;
     if envelope_digest != plan.inventory_envelope_digest
         || envelope.controller != plan.controller
         || inventory::controller_identity()? != plan.controller
@@ -2591,7 +2616,8 @@ async fn run_command(
         ("repositoryState".to_string(), "clean".to_string()),
     ]);
     if command.until != crate::cli::MaintainRunUntil::WorktreeReady {
-        let request = Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_PLAN_V1, &plan)?;
+        let request =
+            Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_PLAN_V1, &plan)?;
         let intent = store.effect_intent(
             &run,
             "materialize-candidate",
@@ -2608,7 +2634,10 @@ async fn run_command(
                     record,
                 )?),
             ),
-            Err(_) => (aos_package_maintenance::workflow::GateOutcome::Failure, None),
+            Err(_) => (
+                aos_package_maintenance::workflow::GateOutcome::Failure,
+                None,
+            ),
         };
         store.effect_result(
             &run,
@@ -2664,7 +2693,9 @@ async fn run_command(
         let passed = gates
             .results
             .iter()
-            .filter(|result| result.outcome == aos_package_maintenance::workflow::GateOutcome::Success)
+            .filter(|result| {
+                result.outcome == aos_package_maintenance::workflow::GateOutcome::Success
+            })
             .count();
         values.insert("gatesPassed".to_string(), passed.to_string());
         values.insert("gatesTotal".to_string(), gates.results.len().to_string());
@@ -2681,7 +2712,8 @@ async fn run_command(
         }
     }
 
-    let plan_digest = Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_PLAN_V1, &plan)?;
+    let plan_digest =
+        Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_PLAN_V1, &plan)?;
     let result = MaintainCommandResult {
         schema_version: MAINTENANCE_CLI_V1.to_string(),
         command: "run".to_string(),
@@ -2795,7 +2827,9 @@ fn current_store(
     Ok((store, coordinates))
 }
 
-fn require_frozen_controller(plan: &aos_package_maintenance::plan::PackageUpdatePlanV1) -> Result<()> {
+fn require_frozen_controller(
+    plan: &aos_package_maintenance::plan::PackageUpdatePlanV1,
+) -> Result<()> {
     if inventory::controller_identity()? != plan.controller {
         anyhow::bail!(
             "the running AOS executable does not match the immutable plan's frozen controller"
@@ -2849,7 +2883,9 @@ fn run_view_completion(
             gates
                 .results
                 .iter()
-                .filter(|result| result.outcome == aos_package_maintenance::workflow::GateOutcome::Success)
+                .filter(|result| {
+                    result.outcome == aos_package_maintenance::workflow::GateOutcome::Success
+                })
                 .count()
                 .to_string(),
         );
@@ -3114,8 +3150,12 @@ fn select_explicit_components(
             .retain(|candidate| candidate.raw_id == matched.raw_id);
         observations.insert(component.clone(), exact);
     }
-    let selected =
-        aos_package_maintenance::discovery::select_unit(unit, &observations, now_unix, 24 * 60 * 60)?;
+    let selected = aos_package_maintenance::discovery::select_unit(
+        unit,
+        &observations,
+        now_unix,
+        24 * 60 * 60,
+    )?;
     if selected.decision != DiscoveryDecision::UpdateAvailable {
         anyhow::bail!("explicit target is not selectable under current unit policy");
     }
@@ -3585,18 +3625,18 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
             let passed = gates
                 .results
                 .iter()
-                .filter(|gate| gate.outcome == aos_package_maintenance::workflow::GateOutcome::Success)
+                .filter(|gate| {
+                    gate.outcome == aos_package_maintenance::workflow::GateOutcome::Success
+                })
                 .count();
             printer.plain(&format!(
                 "{}  {passed}/{} passed",
                 gates.phase,
                 gates.results.len()
             ));
-            for gate in gates
-                .results
-                .iter()
-                .filter(|gate| gate.outcome != aos_package_maintenance::workflow::GateOutcome::Success)
-            {
+            for gate in gates.results.iter().filter(|gate| {
+                gate.outcome != aos_package_maintenance::workflow::GateOutcome::Success
+            }) {
                 printer.plain(&format!(
                     "  {}  outcome={}  exit={}",
                     escape_terminal(&gate.gate_id, 256),

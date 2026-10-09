@@ -21,11 +21,11 @@ fn evaluate(
         VirtualTime { ticks: at },
         SchedulerEvaluationBoundaryKind::Quantum,
     )?;
-    let mut pass =
-        ConditionEvaluationPass::from_log_prefix(prefix, |_leaf: crucible_engine::ConditionLeaf<'_>| {
-            false
-        })
-        .with_timer_fires(timers.clone());
+    let mut pass = ConditionEvaluationPass::from_log_prefix(
+        prefix,
+        |_leaf: crucible_engine::ConditionLeaf<'_>| false,
+    )
+    .with_timer_fires(timers.clone());
     Ok(pass.evaluate_event_graph(graph, state))
 }
 
@@ -225,10 +225,10 @@ fn leading_node_prefix_cannot_consume_a_global_time_trigger() -> TestResult {
         VirtualTime { ticks: 7 },
         SchedulerEvaluationBoundaryKind::Quantum,
     )?;
-    let mut pass =
-        ConditionEvaluationPass::from_log_prefix(prefix, |_leaf: crucible_engine::ConditionLeaf<'_>| {
-            false
-        });
+    let mut pass = ConditionEvaluationPass::from_log_prefix(
+        prefix,
+        |_leaf: crucible_engine::ConditionLeaf<'_>| false,
+    );
     let mut state = EventGraphState::new();
     let before = state.to_compact_binary();
     assert!(

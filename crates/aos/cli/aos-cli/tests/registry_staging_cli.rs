@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use anyhow::{Context, Result, ensure};
+use aos_registry_authoring::registry::staging::LocalStageStore;
 use aos_registry_client::registry::{keys, state};
-use aos_registry_authoring::registry::{staging::LocalStageStore};
 use aos_registry_client::sshkey::Ed25519Keypair;
 use aos_release_format::RELEASE_JOURNAL_ENTRY;
 use aos_release_format::canonical;
@@ -521,18 +521,17 @@ fn sequential_staged_releases_preserve_history_and_promote_partitions_separately
 
     let first_tag = advertised_release(&fixture.origin, VERSION)?
         .context("first signed release was not advertised")?;
-    let first_partitions: Vec<Vec<u8>> = (0..=255_u8)
-        .map(|bucket| {
-            fs::read(
-                fixture
-                    .origin
-                    .join(aos_registry_client::registry::channel::partition_path(
+    let first_partitions: Vec<Vec<u8>> =
+        (0..=255_u8)
+            .map(|bucket| {
+                fs::read(fixture.origin.join(
+                    aos_registry_client::registry::channel::partition_path(
                         "defaultchannel",
                         bucket,
-                    )),
-            )
-        })
-        .collect::<std::io::Result<_>>()?;
+                    ),
+                ))
+            })
+            .collect::<std::io::Result<_>>()?;
 
     fixture.commit_note("second retained release\n")?;
     let second = fixture.release_stage_named("1.1.0", "candidate-two", None, false)?;

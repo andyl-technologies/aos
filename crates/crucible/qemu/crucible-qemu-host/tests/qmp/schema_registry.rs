@@ -97,7 +97,8 @@ fn hot_fork_qmp_schemas_have_current_registry_owners() {
 
 #[test]
 fn cold_stop_qapi_contract_matches_its_patch_owned_schema() {
-    let patch = include_str!("../../../../../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch");
+    let patch =
+        include_str!("../../../../../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch");
     let registry =
         include_str!("../../../../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
     let version = 1;
@@ -145,7 +146,8 @@ fn cold_stop_qapi_contract_matches_its_patch_owned_schema() {
 fn patched_qapi_commands_have_schema_owners_or_qapi_only_contracts() {
     use std::collections::BTreeSet;
 
-    let patch = include_str!("../../../../../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch");
+    let patch =
+        include_str!("../../../../../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch");
     let registry =
         include_str!("../../../../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
 

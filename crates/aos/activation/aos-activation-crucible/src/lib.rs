@@ -249,11 +249,16 @@ where
         let transition = event.boundary.transition();
         let key = event.monitor_key()?;
         let prior = self.monitors.get(&key).copied();
-        let observed = self.monitors.get(&MonitorKey {observation: true, ..key.clone()}) == Some(&MonitorState::Terminal);
+        let observed = self.monitors.get(&MonitorKey {
+            observation: true,
+            ..key.clone()
+        }) == Some(&MonitorState::Terminal);
         // Recovery announces the same durable intent again. A current observed
         // result may become durable without another handler dispatch.
         let ordered = event.boundary == BoundaryName::IntentDurable
-            || (event.boundary == BoundaryName::OutcomeDurable && observed && prior == Some(MonitorState::Intent))
+            || (event.boundary == BoundaryName::OutcomeDurable
+                && observed
+                && prior == Some(MonitorState::Intent))
             || prior == transition.expected
             || prior == Some(transition.next)
             || (key.observation && transition.expected.is_none());

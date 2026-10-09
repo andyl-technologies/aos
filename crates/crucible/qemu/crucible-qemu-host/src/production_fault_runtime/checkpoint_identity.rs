@@ -195,12 +195,10 @@ pub(super) fn extend_pending_qemu_event_usage(
                 }
             })?;
             resource_limits.reserve("event_inline_payload_bytes", 0, payload_bytes)?;
-            let header_bytes =
-                u64::try_from(crucible_qemu_shmem::FAULT_EVENT_HEADER_V1_BYTES).map_err(|_| {
-                    FaultResourceLimitError::Representation {
-                        field: "event_log_bytes",
-                        value: u64::MAX,
-                    }
+            let header_bytes = u64::try_from(crucible_qemu_shmem::FAULT_EVENT_HEADER_V1_BYTES)
+                .map_err(|_| FaultResourceLimitError::Representation {
+                    field: "event_log_bytes",
+                    value: u64::MAX,
                 })?;
             let record_bytes = payload_bytes.checked_add(header_bytes).ok_or(
                 FaultResourceLimitError::Representation {

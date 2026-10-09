@@ -10,13 +10,13 @@ use crucible_engine::{
     GuestAssertionDetail, GuestAssertionKind, Icount, MarkerId, NodeId, ObservableEventPayload,
     observable_event_from_whitebox_marker_payload,
 };
-use crucible_test_support::abi::{GoldenVectorCase, run_golden_vectors};
-use crucible_test_support::gate_targets::gate_targets;
 use crucible_qemu_protocol::{
     WhiteboxAssertionMarkerBody, WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody,
     WhiteboxEventMarkerBody, WhiteboxLifecycleMarkerEvent, WhiteboxMarkerDetail,
     WhiteboxMarkerPayload, WhiteboxRandomRequestBody,
 };
+use crucible_test_support::abi::{GoldenVectorCase, run_golden_vectors};
+use crucible_test_support::gate_targets::gate_targets;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.

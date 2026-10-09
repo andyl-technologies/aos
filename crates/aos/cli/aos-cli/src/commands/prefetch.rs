@@ -23,8 +23,8 @@ use regex::Regex;
 use serde::Deserialize;
 use tokio::sync::Semaphore;
 
-use aos_nix::NixRunner;
 use aos_cli_ui::output::{OutputMode, Printer, TransferProgress};
+use aos_nix::NixRunner;
 use aos_transfer::{
     HashAlgorithm, HashDownloadRequest, TransferEngineConfig, TransferEvent, TransferManager,
     TransferObserver,

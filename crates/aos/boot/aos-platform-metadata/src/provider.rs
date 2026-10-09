@@ -7,9 +7,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::network::{BootstrapLinkSelector, BootstrapNetwork};
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_module_format::AbilityValue;
-use crate::network::{BootstrapLinkSelector, BootstrapNetwork};
 use serde::Deserialize;
 use tempfile::Builder;
 

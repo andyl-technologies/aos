@@ -1022,7 +1022,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         builtins.filter (field:
           !(builtins.hasAttr field inheritedContract)
           || !(builtins.hasAttr field cargoArtifactContract)
-          || inheritedContract.${field} != cargoArtifactContract.${field}) fields;
+          || inheritedContract.${field} != cargoArtifactContract.${field})
+        fields;
     # Extract cargo-specific attrs for the phase generator
     cargoArgs =
       builtins.intersectAttrs (builtins.listToAttrs (

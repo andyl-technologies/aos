@@ -6,9 +6,9 @@
 
 use anyhow::Result;
 
+use aos_cli_ui::output::Printer;
 use aos_nar::info as narinfo;
 use aos_nix::NixCli;
-use aos_cli_ui::output::Printer;
 
 use crate::backend::CacheBackend;
 use crate::resolve::resolve_installables;

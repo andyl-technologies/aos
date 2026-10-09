@@ -8,8 +8,8 @@
 
 use anyhow::{Context, Result};
 
-use aos_nix::NixRunner;
 use aos_cli_ui::output::Printer;
+use aos_nix::NixRunner;
 
 /// `aos why-depends <package> <dependency>` — trace why a package depends on
 /// another.

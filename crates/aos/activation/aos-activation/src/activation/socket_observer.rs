@@ -97,10 +97,8 @@ impl SocketBoundaryObserver {
         );
         let mut acknowledgement = vec![0; length];
         read_controlled(&mut stream, &mut acknowledgement, &budget)?;
-        let response: Acknowledgement = aos_core::json::from_slice(
-            &acknowledgement,
-            "native boundary acknowledgement",
-        )?;
+        let response: Acknowledgement =
+            aos_core::json::from_slice(&acknowledgement, "native boundary acknowledgement")?;
         ensure!(
             aos_core::json::to_vec(&response)? == acknowledgement,
             "observer acknowledgement is not canonical"
@@ -347,7 +345,12 @@ mod tests {
         let observer = SocketBoundaryObserver::new(socket, Duration::from_millis(20))?;
         assert!(
             observer
-                .send(&event(), &CancellationToken::default(), owner, fs::metadata("/")?.uid())
+                .send(
+                    &event(),
+                    &CancellationToken::default(),
+                    owner,
+                    fs::metadata("/")?.uid()
+                )
                 .is_err()
         );
         drop(listener);

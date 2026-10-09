@@ -53,7 +53,8 @@ impl ConditionLeafOracle for NoNamedLeaves {
 #[test]
 fn evaluation_points_name_deterministic_boundary_sources() {
     let observed = ObservableEvent::node_state(time(3), node("db-0"), NodeLifecycle::Started);
-    let event_entry = crucible_engine::test_support::condition_observation_entry_for_test(0, &observed);
+    let event_entry =
+        crucible_engine::test_support::condition_observation_entry_for_test(0, &observed);
     let quantum_entry = crucible_engine::test_support::condition_boundary_entry_for_test(
         0,
         time(5),
@@ -143,10 +144,11 @@ fn log_prefix_rejects_invalid_scheduler_prefixes() {
 #[test]
 fn shared_pass_evaluates_assertions_and_triggers_over_one_prefix() {
     let event = ObservableEvent::node_state(time(44), node("db-0"), NodeLifecycle::Started);
-    let prefix = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
-        crucible_engine::test_support::condition_observation_entry_for_test(0, &event),
-    ])
-    .expect("observable scheduler entry should form a checked prefix");
+    let prefix =
+        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
+            crucible_engine::test_support::condition_observation_entry_for_test(0, &event),
+        ])
+        .expect("observable scheduler entry should form a checked prefix");
     let point = prefix.point();
     let condition = Predicate::node_state(node("db-0"), NodeLifecycle::Started);
     let world =
@@ -176,11 +178,12 @@ fn shared_pass_evaluates_assertions_and_triggers_over_one_prefix() {
 fn condition_evaluation_uses_checked_prefix_events_only() {
     let previous = ObservableEvent::node_state(time(49), node("db-0"), NodeLifecycle::Started);
     let current = ObservableEvent::node_state(time(50), node("db-1"), NodeLifecycle::Started);
-    let prefix = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
-        crucible_engine::test_support::condition_observation_entry_for_test(0, &previous),
-        crucible_engine::test_support::condition_observation_entry_for_test(1, &current),
-    ])
-    .expect("past and current entries are part of the prefix");
+    let prefix =
+        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
+            crucible_engine::test_support::condition_observation_entry_for_test(0, &previous),
+            crucible_engine::test_support::condition_observation_entry_for_test(1, &current),
+        ])
+        .expect("past and current entries are part of the prefix");
     let mut evaluation = ConditionEvaluationPass::from_log_prefix(prefix, NoNamedLeaves);
 
     assert!(

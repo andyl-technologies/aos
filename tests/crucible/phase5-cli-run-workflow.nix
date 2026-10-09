@@ -29,10 +29,22 @@
     })
   ];
   sessionCore = import ./_crucible-session-source.nix {inherit lib;};
-  apiLifecycle = import ./_crucible-control-source.nix { inherit lib; component = "lifecycle"; };
-  apiClient = import ./_crucible-control-source.nix { inherit lib; component = "client"; };
-  apiServer = import ./_crucible-control-source.nix { inherit lib; component = "server"; };
-  apiStreaming = import ./_crucible-control-source.nix { inherit lib; component = "streaming"; };
+  apiLifecycle = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "lifecycle";
+  };
+  apiClient = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "client";
+  };
+  apiServer = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "server";
+  };
+  apiStreaming = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "streaming";
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;

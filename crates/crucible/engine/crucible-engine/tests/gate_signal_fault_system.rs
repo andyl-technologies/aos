@@ -121,11 +121,13 @@ fn signal_fault_search_decisions_round_trip_with_parent_identity() {
         id: SearchChoiceId::from_content_hash(ContentHash::from_bytes(b"choice")),
         candidates_digest: ContentHash::from_bytes(b"candidates"),
         candidate_count: 3,
-        candidate_semantics: crucible_engine::model::BindingSearchCandidateSemantics::Transition(vec![
-            ContentHash::from_bytes(b"transition-a"),
-            ContentHash::from_bytes(b"transition-b"),
-            ContentHash::from_bytes(b"transition-c"),
-        ]),
+        candidate_semantics: crucible_engine::model::BindingSearchCandidateSemantics::Transition(
+            vec![
+                ContentHash::from_bytes(b"transition-a"),
+                ContentHash::from_bytes(b"transition-b"),
+                ContentHash::from_bytes(b"transition-c"),
+            ],
+        ),
         selected_index: None,
         overridden: false,
     };

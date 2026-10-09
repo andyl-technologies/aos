@@ -490,7 +490,9 @@ fn failure_fingerprint_for_schedule(
     Ok(fingerprint)
 }
 
-fn retained_event_log(schedule: &crucible_engine::Schedule) -> Result<RecordedAssertionLog, EngineError> {
+fn retained_event_log(
+    schedule: &crucible_engine::Schedule,
+) -> Result<RecordedAssertionLog, EngineError> {
     let mut entries = schedule
         .decisions()
         .iter()
@@ -519,11 +521,13 @@ fn retained_event_log(schedule: &crucible_engine::Schedule) -> Result<RecordedAs
         );
         sequence += 1;
     }
-    entries.push(crucible_engine::test_support::condition_boundary_entry_for_test(
-        sequence,
-        time(7),
-        crucible_engine::SchedulerEvaluationBoundaryKind::Quantum,
-    ));
+    entries.push(
+        crucible_engine::test_support::condition_boundary_entry_for_test(
+            sequence,
+            time(7),
+            crucible_engine::SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    );
     RecordedAssertionLog::from_segments(vec![entries]).map_err(|source| {
         EngineError::ScenarioSerialization {
             reason: format!("unifying minimization retained log failed: {source}"),
@@ -542,7 +546,9 @@ fn schedule_emits_forbidden_marker(schedule: &crucible_engine::Schedule) -> bool
     })
 }
 
-fn assertion_fold_failure_fingerprint(violation: &crucible_engine::HostAssertionViolation) -> ContentHash {
+fn assertion_fold_failure_fingerprint(
+    violation: &crucible_engine::HostAssertionViolation,
+) -> ContentHash {
     let icount = violation
         .at_icount
         .map(|value| value.retired.to_string())

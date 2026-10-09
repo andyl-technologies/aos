@@ -55,9 +55,15 @@ pub(crate) fn validate_node_event_evidence(
             {
                 validate_lifecycle_evidence(event, effect)
             }
-            crucible_qemu_shmem::FaultCommandKind::NodeHang => validate_hang_evidence(event, effect),
-            crucible_qemu_shmem::FaultCommandKind::CpuService => validate_cpu_service_evidence(event),
-            crucible_qemu_shmem::FaultCommandKind::CpuVcpuState => validate_vcpu_state_evidence(event),
+            crucible_qemu_shmem::FaultCommandKind::NodeHang => {
+                validate_hang_evidence(event, effect)
+            }
+            crucible_qemu_shmem::FaultCommandKind::CpuService => {
+                validate_cpu_service_evidence(event)
+            }
+            crucible_qemu_shmem::FaultCommandKind::CpuVcpuState => {
+                validate_vcpu_state_evidence(event)
+            }
             crucible_qemu_shmem::FaultCommandKind::CpuRegisterTransform => {
                 FaultRegisterMutationEvidenceV1::decode(&event.payload).is_ok_and(|evidence| {
                     evidence.model_phase == event.header.model_phase
@@ -96,7 +102,9 @@ pub(crate) fn validate_node_event_evidence(
             | crucible_qemu_shmem::FaultCommandKind::MemoryRegionState => {
                 validate_memory_access_evidence(event)
             }
-            crucible_qemu_shmem::FaultCommandKind::MemoryEccEvent => validate_memory_ecc_evidence(event),
+            crucible_qemu_shmem::FaultCommandKind::MemoryEccEvent => {
+                validate_memory_ecc_evidence(event)
+            }
             crucible_qemu_shmem::FaultCommandKind::MemoryService => {
                 validate_memory_service_evidence(event)
             }
@@ -132,7 +140,9 @@ pub(crate) fn validate_node_event_evidence(
     }
 }
 
-fn node_effect_command_kind(effect: &NodeEffectSpecification) -> crucible_qemu_shmem::FaultCommandKind {
+fn node_effect_command_kind(
+    effect: &NodeEffectSpecification,
+) -> crucible_qemu_shmem::FaultCommandKind {
     use crucible_qemu_shmem::FaultCommandKind;
     match effect {
         NodeEffectSpecification::Lifecycle { .. } => FaultCommandKind::NodeLifecycle,

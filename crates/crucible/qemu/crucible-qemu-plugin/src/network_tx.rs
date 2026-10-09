@@ -168,9 +168,10 @@ impl PluginNetworkTx {
 
         let seq = self.next_seq.get();
         let frame = FrameEntry::new(emit_icount, self.src_slot, seq, payload).map_err(
-            |crucible_qemu_shmem::FrameEntryError::PayloadLengthExceedsCapacity { len, capacity }| {
-                NetworkTxError::PayloadTooLarge { len, capacity }
-            },
+            |crucible_qemu_shmem::FrameEntryError::PayloadLengthExceedsCapacity {
+                 len,
+                 capacity,
+             }| { NetworkTxError::PayloadTooLarge { len, capacity } },
         )?;
         let next_seq = seq.checked_add(1).ok_or(NetworkTxError::SequenceOverflow {
             ring_index: self.ring_index,

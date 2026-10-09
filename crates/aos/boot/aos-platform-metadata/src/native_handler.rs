@@ -21,8 +21,7 @@ pub(crate) fn read_invocation() -> Result<(String, Invocation)> {
         u64::try_from(input.len()).unwrap_or(u64::MAX) <= MAX_DOCUMENT_BYTES,
         "metadata invocation exceeds bound"
     );
-    let invocation: Invocation =
-        aos_core::json::from_slice(&input, "metadata invocation")?;
+    let invocation: Invocation = aos_core::json::from_slice(&input, "metadata invocation")?;
     let purpose = &arguments[0];
     ensure!(
         purpose == "observe" || (purpose == "apply") == (invocation.action == Action::Apply),

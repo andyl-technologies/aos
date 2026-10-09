@@ -3,8 +3,8 @@
 use std::io::{self, Read as _, Write as _};
 
 use anyhow::{Context as _, Result, bail};
-use aos_module_format::ABILITY_LIMITS_V1;
 use aos_activation_storage::native_provisioning_marker;
+use aos_module_format::ABILITY_LIMITS_V1;
 const MAX_HANDLER_RESULT_BYTES: usize = 1024 * 1024;
 
 fn main() {

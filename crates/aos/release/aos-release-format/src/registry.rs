@@ -261,10 +261,20 @@ mod tests {
 
     #[test]
     fn testing_root_resets_advance_the_registry_identity() {
-        assert_eq!(registry_policy(EXPERIMENTAL_REGISTRY).unwrap().root_epoch(), 1);
-        assert_eq!(registry_policy("andyl/experimental-v2").unwrap().root_epoch(), 2);
         assert_eq!(
-            registry_policy("andyl/experimental-v19").unwrap().root_epoch(),
+            registry_policy(EXPERIMENTAL_REGISTRY).unwrap().root_epoch(),
+            1
+        );
+        assert_eq!(
+            registry_policy("andyl/experimental-v2")
+                .unwrap()
+                .root_epoch(),
+            2
+        );
+        assert_eq!(
+            registry_policy("andyl/experimental-v19")
+                .unwrap()
+                .root_epoch(),
             19
         );
         assert!(registry_policy("andyl/experimental-v1").is_err());

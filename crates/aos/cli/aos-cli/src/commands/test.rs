@@ -25,8 +25,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 use crate::cli::TestCmd;
-use aos_nix::NixRunner;
 use aos_cli_ui::output::Printer;
+use aos_nix::NixRunner;
 
 const EVAL_SUITE_LIMIT: Duration = Duration::from_secs(120);
 

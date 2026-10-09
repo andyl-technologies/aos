@@ -37,6 +37,7 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
 use crucible_engine::{
     AssertionDef, AssertionId, AssertionQuantifierKind, AssertionRunVerdict, BackendInput,
     ComposedRunVerdict, ConcurrentQuantumLoop, ConditionEventLogPrefix, ConditionLeaf, ContentHash,
@@ -51,7 +52,6 @@ use crucible_engine::{
     SchedulerScenarioNode, SchedulingNodeKind, Seed, SimDuration, SimInstant, SingleScheduler,
     TriggerActionState, VirtualTime, World, compare_event_log_determinism,
 };
-use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
 
 /// The determinism-relevant fingerprint of one full run, independent of the
 /// concurrency degree and the host RUN dispatch order.
@@ -445,17 +445,20 @@ fn assertion_gate_online_report(
     let mut oracle = scheduler_fact_oracle();
 
     for prefix_len in 1..event_log.len() {
-        let prefix = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
-            event_log[..prefix_len].to_vec(),
-        )
-        .expect("online assertion prefix should be checkable");
+        let prefix =
+            crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+                event_log[..prefix_len].to_vec(),
+            )
+            .expect("online assertion prefix should be checkable");
         evaluator.observe_prefix(&prefix, &mut oracle);
     }
     let terminal_prefix = if event_log.is_empty() {
         ConditionEventLogPrefix::genesis()
     } else {
-        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(event_log.to_vec())
-            .expect("terminal assertion prefix should be checkable")
+        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+            event_log.to_vec(),
+        )
+        .expect("terminal assertion prefix should be checkable")
     };
     evaluator.finalize_prefix(&terminal_prefix, &mut oracle)
 }

@@ -244,8 +244,7 @@ impl KernelTunableProvider {
             u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_MARKER_BYTES,
             "kernel-tunable state marker exceeds its document bound"
         );
-        let marker: StateMarker =
-            aos_core::json::from_slice(&bytes, "kernel-tunable marker")?;
+        let marker: StateMarker = aos_core::json::from_slice(&bytes, "kernel-tunable marker")?;
         validate_marker(&marker)?;
         Ok(Some(marker))
     }

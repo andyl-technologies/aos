@@ -278,8 +278,8 @@ fn read_evaluation_library(descriptor: &str) -> Result<BaseLibraryIdentity> {
     fs::File::open(descriptor)?
         .take((aos_module_format::graph::GRAPH_LIMITS.max_bytes as u64) + 1)
         .read_to_end(&mut bytes)?;
-    let context: EvaluationLibrary = aos_module_format::graph::GRAPH_LIMITS
-        .decode(&bytes, "native evaluation descriptor")?;
+    let context: EvaluationLibrary =
+        aos_module_format::graph::GRAPH_LIMITS.decode(&bytes, "native evaluation descriptor")?;
     ensure!(
         context.schema == "aos.package.evaluation-input",
         "unsupported native evaluation descriptor"
@@ -324,10 +324,8 @@ fn verify_base_library(identity: &BaseLibraryIdentity, timeout_ms: u64) -> Resul
         &tool,
         library.to_str().context("library path is not UTF-8")?,
     )?;
-    let (actual, _) = aos_nix::identity::hash_nar_command(
-        command,
-        std::time::Duration::from_millis(timeout_ms),
-    )?;
+    let (actual, _) =
+        aos_nix::identity::hash_nar_command(command, std::time::Duration::from_millis(timeout_ms))?;
     ensure!(
         actual.to_string() == identity.nar_hash,
         "native module library NAR differs from its admitted identity"

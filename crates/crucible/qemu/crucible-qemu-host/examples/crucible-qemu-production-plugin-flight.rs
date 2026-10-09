@@ -30,17 +30,17 @@ use crucible_engine::{
     ObservableEvent, ObservableEventPayload, PreemptionDecision, PreemptionKind, SimulationBackend,
     VcpuId, VirtualTime,
 };
-use crucible_qemu_protocol::selectable_catalog_plan::{
-    SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectableCatalogPlan, SelectablePlanContinuation,
-    SelectablePlanDeclaration, SelectablePlanLimits, SelectablePlanPresence,
-};
-use crucible_qemu_protocol::{SelectionReply, SelectionReplyStatus};
 use crucible_qemu_host::{
     BoundedSchedulerPreemptionEvidence, LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory,
     QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig, QemuLogicalTimeCalibration, QemuNode,
     QemuNodeIdleState, QemuProductionFreshLaunchAdmission, QemuShutdownReport,
     QemuVirtualTimerFireWitness, QmpHotForkTemplateOutcome, launch_qemu_production_fresh_node,
 };
+use crucible_qemu_protocol::selectable_catalog_plan::{
+    SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectableCatalogPlan, SelectablePlanContinuation,
+    SelectablePlanDeclaration, SelectablePlanLimits, SelectablePlanPresence,
+};
+use crucible_qemu_protocol::{SelectionReply, SelectionReplyStatus};
 use crucible_qemu_shmem::FingerprintSample;
 
 #[path = "crucible-qemu-production-plugin-flight/block_recovery_hot_fork.rs"]

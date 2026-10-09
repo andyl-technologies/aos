@@ -10,10 +10,19 @@
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  client = import ./_crucible-control-source.nix { inherit lib; component = "client"; };
-  lifecycle = import ./_crucible-control-source.nix { inherit lib; component = "lifecycle_values"; };
+  client = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "client";
+  };
+  lifecycle = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "lifecycle_values";
+  };
   sessionMapping = builtins.readFile ../../crates/crucible/control/crucible-control-api/src/session_mapping.rs;
-  streaming = import ./_crucible-control-source.nix { inherit lib; component = "streaming_values"; };
+  streaming = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "streaming_values";
+  };
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible/control/crucible-control-client/tests/gate_control_client.rs;

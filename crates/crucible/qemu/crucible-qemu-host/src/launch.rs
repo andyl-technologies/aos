@@ -28,8 +28,8 @@ use std::fmt;
 
 use canonical::canonical_node_tick_scale_lines;
 pub use control_channels::{QemuGdbstubChannelConfig, QemuQmpChannelConfig};
-use crucible_engine::{ContentHash, SIM_TICKS_PER_INSTRUCTION, SIM_TICKS_PER_NS, Seed};
 pub use crucible_accelerator::{CrucibleAcceleratorDevice, DEFAULT_CRUCIBLE_ACCELERATOR_DEVICE_ID};
+use crucible_engine::{ContentHash, SIM_TICKS_PER_INSTRUCTION, SIM_TICKS_PER_NS, Seed};
 pub use crucible_shmem_9p::{
     CrucibleShmem9pDevice, DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID,
     DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG,

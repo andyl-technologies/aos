@@ -87,7 +87,8 @@ async fn namespace_mutation(
     let request = if mutation.plan_id.is_some() {
         hub_types::PlanSetContainerNamespaceRequest::default()
     } else {
-        let registry = registry.context("namespace changes require REGISTRY when creating a plan")?;
+        let registry =
+            registry.context("namespace changes require REGISTRY when creating a plan")?;
         let expected_resource_version = match mutation.if_version.clone() {
             Some(version) => version,
             None => {

@@ -34,7 +34,10 @@
   ];
   smpGuestSource = builtins.readFile ./phase2-qemu-live-plugin-quantum-smp-guest.nix;
   productionLoop = builtins.readFile ../../crates/crucible/control/crucible-daemon/src/vm_lifecycle/quantum_loop.rs;
-  productionRuntime = import ./_crucible-control-source.nix { inherit lib; component = "vm_lifecycle"; };
+  productionRuntime = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "vm_lifecycle";
+  };
   productionConstruction = builtins.readFile ../../crates/crucible/control/crucible-daemon/src/vm_lifecycle/construction.rs;
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;

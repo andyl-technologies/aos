@@ -104,10 +104,11 @@ fn restored_deadline_crossing_preserves_equal_and_earlier_points() -> TestResult
     checkpoint.restore_into(&mut restored, &first)?;
 
     for ticks in [3, 1, 10] {
-        let prefix = crucible_engine::test_support::condition_prefix_from_observable_events_for_test(
-            ticks,
-            Vec::new(),
-        )?;
+        let prefix =
+            crucible_engine::test_support::condition_prefix_from_observable_events_for_test(
+                ticks,
+                Vec::new(),
+            )?;
         assert_eq!(
             restored.observe_prefix(&prefix, &mut oracle),
             evaluator.observe_prefix(&prefix, &mut oracle)
@@ -117,8 +118,10 @@ fn restored_deadline_crossing_preserves_equal_and_earlier_points() -> TestResult
             evaluator.checkpoint().canonical_bytes()?
         );
     }
-    let terminal =
-        crucible_engine::test_support::condition_prefix_from_observable_events_for_test(10, Vec::new())?;
+    let terminal = crucible_engine::test_support::condition_prefix_from_observable_events_for_test(
+        10,
+        Vec::new(),
+    )?;
     let report = evaluator.finalize_prefix(&terminal, &mut oracle);
 
     assert_eq!(report, restored.finalize_prefix(&terminal, &mut oracle));

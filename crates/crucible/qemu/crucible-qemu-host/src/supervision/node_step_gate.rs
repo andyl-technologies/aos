@@ -55,14 +55,14 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
+use crucible_device::block::{BaseImage, BlockDurabilityConfig, BlockLatency};
+use crucible_device::{FsTree, NinepLatency};
 use crucible_engine::model::FaultResourceLimits;
 use crucible_engine::{
     BackendInput, BasicBlockCoverageConfig, Checkpoint, CheckpointKind, ContentHash, Icount,
     NodeId, SchedulerError, SchedulerNodeId, SchedulerSendAuthorization, SchedulerSendAuthorizer,
     VirtualTime,
 };
-use crucible_device::block::{BaseImage, BlockDurabilityConfig, BlockLatency};
-use crucible_device::{FsTree, NinepLatency};
 use crucible_qemu_shmem::{
     FrameDeliveryState, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region,
 };

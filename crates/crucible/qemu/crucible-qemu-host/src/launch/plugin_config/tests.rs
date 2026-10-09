@@ -143,7 +143,8 @@ fn app_random_branch_plan_must_name_the_launched_node() -> Result<(), Box<dyn st
     let entry = crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlanEntry::new(
         0, 7, 9, [0x5a; 32], stream,
     )?;
-    let plan = crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan::new(vec![entry])?;
+    let plan =
+        crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan::new(vec![entry])?;
     let config = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0)
         .with_whitebox(QemuLaunchPluginSwitch::On)
         .with_whitebox_setup(

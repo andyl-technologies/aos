@@ -97,10 +97,8 @@ pub(super) fn layout_from_setup_region_geometry(
 
     let vm_node_count = snapshot.ring_count / rings_per_vm;
     let layout = RegionLayout::for_config(
-        RegionConfig::new(
-            vm_node_count,
-            snapshot.queue_capacity)
-        .with_fault_payload_arena_bytes(snapshot.fault_payload_arena_bytes),
+        RegionConfig::new(vm_node_count, snapshot.queue_capacity)
+            .with_fault_payload_arena_bytes(snapshot.fault_payload_arena_bytes),
     )
     .map_err(|source| RegionSetupValidationError::InvalidLayout { source })?;
 

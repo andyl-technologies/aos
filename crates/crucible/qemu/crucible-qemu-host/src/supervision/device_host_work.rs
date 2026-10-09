@@ -21,12 +21,12 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crucible_engine::model::ContentHash;
 use crucible_device::block::{
     BaseImage, BlockDurabilityConfig, BlockFaultState, BlockRequestIdentity, BlockRetainedRelease,
     ResolvedBlockExecutionDirective, ResolvedBlockFaultDirective,
     ResolvedBlockPersistenceMediaDirective,
 };
+use crucible_engine::model::ContentHash;
 
 use super::block_io_servicer::{
     QemuLiveBlockIoHostWorkPin, QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer,

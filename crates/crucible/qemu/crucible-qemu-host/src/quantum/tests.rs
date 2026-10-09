@@ -293,9 +293,10 @@ fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
 #[test]
 fn qemu_quantum_rejects_unproven_frame_behind_current_icount() {
     let slot = NodeSlot::default();
-    if let Err(error) =
-        slot.publish_scheduler_advance(ceiling(0, 5), crucible_qemu_shmem::AdvanceStopCondition::Ceiling)
-    {
+    if let Err(error) = slot.publish_scheduler_advance(
+        ceiling(0, 5),
+        crucible_qemu_shmem::AdvanceStopCondition::Ceiling,
+    ) {
         panic!("test ceiling should publish: {error}");
     }
     if let Err(error) = slot.publish_reached_icount(5) {
@@ -476,7 +477,8 @@ fn pending_topology_scheduler() -> crucible_engine::SingleScheduler {
         router.clone(),
         crucible_engine::SimDuration { ticks: 20 },
     )]);
-    let mut scheduler = crucible_engine::SingleScheduler::new(scenario).expect("scenario should build");
+    let mut scheduler =
+        crucible_engine::SingleScheduler::new(scenario).expect("scenario should build");
     scheduler
         .schedule_topology_change(crucible_engine::SchedulerTopologyChange::new(
             1,
@@ -530,7 +532,10 @@ fn plugin_mark_inbound_retained(hot_path: &QemuQuantumShmemHotPath<'_>, current_
         & (hot_path.view.inbound_entries.len() as u64 - 1)) as usize;
     let entry = &hot_path.view.inbound_entries[slot];
     entry
-        .record_delivery_attempt(current_icount, crucible_qemu_shmem::MAX_FRAME_DELIVERY_ATTEMPTS)
+        .record_delivery_attempt(
+            current_icount,
+            crucible_qemu_shmem::MAX_FRAME_DELIVERY_ATTEMPTS,
+        )
         .unwrap_or_else(|error| panic!("shared delivery attempt should succeed: {error}"));
     entry
         .mark_delivery_retained()

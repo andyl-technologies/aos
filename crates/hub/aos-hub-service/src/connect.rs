@@ -4523,8 +4523,7 @@ mod tests {
 
     #[test]
     fn public_schema_has_no_legacy_storage_binding_or_placement_contracts() {
-        let schema =
-            include_str!("../../../../api/proto/aos/hub/v1/hub.proto");
+        let schema = include_str!("../../../../api/proto/aos/hub/v1/hub.proto");
         for forbidden in [
             "message StorageBinding {",
             "message CreateStorageBindingRequest {",

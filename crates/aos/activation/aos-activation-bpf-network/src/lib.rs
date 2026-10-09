@@ -120,8 +120,7 @@ impl EbpfNetPolicyProvider {
     /// Returns an error for invalid inputs, immutable artifacts, ownership
     /// conflicts, or failed loader execution.
     pub fn handle(&self, purpose: &str, input: &[u8]) -> Result<Vec<u8>> {
-        let invocation: Invocation =
-            aos_core::json::from_slice(input, "BPF network invocation")?;
+        let invocation: Invocation = aos_core::json::from_slice(input, "BPF network invocation")?;
         ensure!(
             matches!(purpose, "apply" | "remove" | "observe"),
             "unsupported native purpose"

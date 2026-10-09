@@ -8,12 +8,12 @@ use crate::commands::hub::mutation::topology_read;
 use crate::commands::hub::output::print_hub_json;
 use crate::commands::input::read_bounded_file;
 use anyhow::{Context as _, Result};
-use aos_core::Sha256Digest;
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_core::Sha256Digest;
+use aos_hub_client::{hub_rpc as HubTopologyMethod, hub_types};
 use aos_module_docs::runtime::deployment::{
     NativeDeploymentReport, NativePackageIdentity, NativeReleaseGraph, ReleasedReference,
 };
-use aos_hub_client::{hub_rpc as HubTopologyMethod, hub_types};
 #[cfg(test)]
 use sha2::{Digest as _, Sha256};
 

@@ -85,9 +85,7 @@
   ];
 
   expectedPackages = lib.sort builtins.lessThan (map (spec: spec.package) specs);
-  foundPackages = lib.sort builtins.lessThan (
-    cruciblePackages
-  );
+  foundPackages = lib.sort builtins.lessThan cruciblePackages;
 
   packageSetFailures =
     if foundPackages == expectedPackages
@@ -205,7 +203,15 @@
         ++ lib.optionals (binCount != 1) [
           "${spec.package}: ${artifactLabel} must declare exactly one [[bin]] target, found ${builtins.toString binCount}"
         ]
-        ++ lib.optionals (binCount == 1 && (!(bin ? name) || bin.name != (if spec.expected == "guest-emitter" then spec.package else "crucible-debug-gateway"))) [
+        ++ lib.optionals (binCount
+          == 1
+          && (!(bin ? name)
+            || bin.name
+            != (
+              if spec.expected == "guest-emitter"
+              then spec.package
+              else "crucible-debug-gateway"
+            ))) [
           "${spec.package}: ${artifactLabel} [[bin]] name must be `${spec.package}`"
         ]
         ++ lib.optionals (binCount == 1 && (!(bin ? path) || bin.path != "src/main.rs")) [

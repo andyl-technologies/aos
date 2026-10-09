@@ -2,13 +2,15 @@
 {lib}: let
   cratesDir = ../../crates;
   workspace = builtins.fromTOML (builtins.readFile (cratesDir + "/Cargo.toml"));
-  entries = map (member: let
-    directory = cratesDir + "/${member}";
-    manifest = builtins.fromTOML (builtins.readFile (directory + "/Cargo.toml"));
-  in {
-    name = manifest.package.name;
-    value = directory;
-  }) workspace.workspace.members;
+  entries =
+    map (member: let
+      directory = cratesDir + "/${member}";
+      manifest = builtins.fromTOML (builtins.readFile (directory + "/Cargo.toml"));
+    in {
+      name = manifest.package.name;
+      value = directory;
+    })
+    workspace.workspace.members;
   directories = builtins.listToAttrs entries;
 in {
   inherit directories;

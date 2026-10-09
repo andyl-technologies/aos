@@ -23,7 +23,7 @@ use aws_sdk_s3::operation::head_object::HeadObjectError;
 use bytes::Bytes;
 use tokio::io::AsyncReadExt;
 
-use super::conditional::{ETAG, WritePrecondition, precondition_failed_result};
+use super::conditional::{precondition_failed_result, WritePrecondition, ETAG};
 use super::{ByteStream, Protocol};
 use crate::auth::Credential;
 use crate::multipart::{

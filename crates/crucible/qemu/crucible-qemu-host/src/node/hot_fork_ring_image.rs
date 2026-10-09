@@ -9,7 +9,9 @@ use std::os::fd::{AsFd, OwnedFd};
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::FileExt;
 
-use crucible_qemu_shmem::{HotForkRingImage, MappedRingIoBarrierSnapshot, SetupRegionBackingIdentity};
+use crucible_qemu_shmem::{
+    HotForkRingImage, MappedRingIoBarrierSnapshot, SetupRegionBackingIdentity,
+};
 #[cfg(target_os = "linux")]
 use crucible_qemu_shmem::{
     HotForkRingImageError, MappedSetupRegion, RegionAllocation, RegionLayoutError,

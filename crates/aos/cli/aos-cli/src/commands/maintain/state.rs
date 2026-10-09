@@ -123,7 +123,8 @@ impl StateStore {
     /// Writes an immutable content-addressed discovery snapshot and latest pointer.
     pub(super) fn write_discovery(&self, snapshot: &DiscoverySnapshotV1) -> Result<Sha256Digest> {
         snapshot.validate()?;
-        let digest = Sha256Digest::of_canonical(aos_package_maintenance::DISCOVERY_SNAPSHOT_V1, snapshot)?;
+        let digest =
+            Sha256Digest::of_canonical(aos_package_maintenance::DISCOVERY_SNAPSHOT_V1, snapshot)?;
         let snapshots = self.repository.join("discovery");
         secure_directory(&snapshots)?;
         let name = format!("{}.json", digest.hex());
@@ -498,8 +499,10 @@ impl StateStore {
             .join("attempts")
             .join(record.attempt.to_string());
         secure_directory(&attempt)?;
-        let digest =
-            Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_GATE_RESULTS_V1, record)?;
+        let digest = Sha256Digest::of_canonical(
+            aos_package_maintenance::PACKAGE_UPDATE_GATE_RESULTS_V1,
+            record,
+        )?;
         let phase_directory = attempt.join("gates").join(&record.phase);
         secure_directory(&phase_directory)?;
         let execution = phase_directory.join(digest.hex());
@@ -577,8 +580,10 @@ impl StateStore {
         {
             bail!("gate results do not match their state path");
         }
-        let actual =
-            Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_GATE_RESULTS_V1, &record)?;
+        let actual = Sha256Digest::of_canonical(
+            aos_package_maintenance::PACKAGE_UPDATE_GATE_RESULTS_V1,
+            &record,
+        )?;
         if actual != head.digest {
             bail!("gate result content digest disagrees with its state path");
         }
@@ -638,8 +643,10 @@ impl StateStore {
         {
             bail!("gate is absent from the retained execution");
         }
-        let digest =
-            Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_GATE_RESULTS_V1, &results)?;
+        let digest = Sha256Digest::of_canonical(
+            aos_package_maintenance::PACKAGE_UPDATE_GATE_RESULTS_V1,
+            &results,
+        )?;
         let path = self
             .run_directory(run_id)?
             .join("attempts")
@@ -775,7 +782,10 @@ impl StateStore {
         evidence.validate()?;
         let directory = self.run_directory(evidence.run_id.as_str())?;
         write_immutable(&directory, "final-evidence.json", evidence)?;
-        Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_EVIDENCE_V1, evidence)
+        Sha256Digest::of_canonical(
+            aos_package_maintenance::PACKAGE_UPDATE_EVIDENCE_V1,
+            evidence,
+        )
     }
 
     /// Reads and validates a retained final local evidence dossier.

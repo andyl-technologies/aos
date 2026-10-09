@@ -38,6 +38,7 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
 use crucible_engine::{
     BackendInput, ConcurrentQuantumLoop, ContentHash, Decision, DeviceId, DeviceSchedulingSubNode,
     NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest, SIM_TICKS_PER_NS,
@@ -45,7 +46,6 @@ use crucible_engine::{
     SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
     SchedulingNodeKind, Seed, SimDuration, SimInstant, SingleScheduler,
 };
-use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
 use crucible_test_support::adversarial::{canonical_host_adversary_matrix, run_profiled_tasks};
 
 /// The determinism-relevant fingerprint of one full run.

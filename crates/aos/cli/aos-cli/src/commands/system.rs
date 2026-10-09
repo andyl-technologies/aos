@@ -12,8 +12,8 @@
 use anyhow::{Context, Result};
 
 use crate::cli::SystemCmd;
-use aos_nix::NixRunner;
 use aos_cli_ui::output::Printer;
+use aos_nix::NixRunner;
 
 /// `aos system <build|image|eval>` — dispatch to the system operation.
 ///

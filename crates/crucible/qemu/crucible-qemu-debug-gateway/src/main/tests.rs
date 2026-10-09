@@ -2,11 +2,11 @@
 
 use std::thread;
 
-use super::*;
 use super::operator_relay::{
     handle_operator_rsp_unit, record_semantic_response, restore_backend_after_operator_disconnect,
     write_active_backend,
 };
+use super::*;
 
 #[path = "tests/scheduler_ownership.rs"]
 mod scheduler_ownership_tests;

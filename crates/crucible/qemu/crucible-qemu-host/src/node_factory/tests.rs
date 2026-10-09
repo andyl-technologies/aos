@@ -13,7 +13,9 @@ use crucible_engine::{
     Backend, Checkpoint, CheckpointKind, ContentHash, NodeId, SchedulerError, SchedulerNodeId,
     SchedulerSendAuthorization, SchedulerSendAuthorizer,
 };
-use crucible_qemu_protocol::{CONTROL_PROTOCOL_VERSION, ControlLifecycleStream, PluginHandshakeConfig};
+use crucible_qemu_protocol::{
+    CONTROL_PROTOCOL_VERSION, ControlLifecycleStream, PluginHandshakeConfig,
+};
 use crucible_qemu_shmem::{ABI_VERSION, RegionConfig, RegionLayout, SLOT_NET_ROUTER};
 use serde_json::Value;
 
@@ -374,9 +376,11 @@ fn plugin_peer_complete_setup(
     let setup = plugin
         .plugin_recv_setup_with_descriptors()
         .map_err(|error| error.to_string())?;
-    let mut mapped =
-        crucible_qemu_shmem::mmap_setup_region(setup.descriptors.shmem_fd.as_fd(), setup.region_len)
-            .map_err(|error| error.to_string())?;
+    let mut mapped = crucible_qemu_shmem::mmap_setup_region(
+        setup.descriptors.shmem_fd.as_fd(),
+        setup.region_len,
+    )
+    .map_err(|error| error.to_string())?;
     let validated = mapped
         .validate_header()
         .map_err(|error| error.to_string())?;

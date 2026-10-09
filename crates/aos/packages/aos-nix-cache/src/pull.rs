@@ -12,9 +12,9 @@ use anyhow::{Context, Result};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use indicatif::HumanBytes;
 
+use aos_cli_ui::output::Printer;
 use aos_nar::info as narinfo;
 use aos_nix::NixCli;
-use aos_cli_ui::output::Printer;
 
 use crate::backend::CacheBackend;
 use crate::bandwidth;

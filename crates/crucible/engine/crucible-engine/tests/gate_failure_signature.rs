@@ -978,11 +978,13 @@ fn property_signature_excludes_report_only_icount_but_binds_guest_witness()
     );
 
     let mut trailing_causal_entries = base_entries.clone();
-    trailing_causal_entries.push(crucible_engine::test_support::condition_boundary_entry_for_test(
-        3,
-        VirtualTime { ticks: 99 },
-        SchedulerEvaluationBoundaryKind::Quantum,
-    ));
+    trailing_causal_entries.push(
+        crucible_engine::test_support::condition_boundary_entry_for_test(
+            3,
+            VirtualTime { ticks: 99 },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    );
     let trailing_log = recorded_event_log_for_finding(&finding, &trailing_causal_entries)?;
     let trailing_record =
         property_violation_record_for_entries(finding.artifact.id(), &trailing_causal_entries);

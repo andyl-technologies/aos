@@ -17,7 +17,10 @@ pub(in crate::supervision::node_step_gate) fn launch_artifact(
 ) -> QemuLaunchArtifact {
     let path = path_text(path);
     QemuLaunchArtifact::new(
-        crucible_engine::ContentHash::from_canonical_material(GATE_DOMAIN, &format!("{kind}={path}")),
+        crucible_engine::ContentHash::from_canonical_material(
+            GATE_DOMAIN,
+            &format!("{kind}={path}"),
+        ),
         path,
     )
 }

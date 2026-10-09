@@ -580,20 +580,24 @@ impl SimDoubleQuantumLoop {
                 operation,
             ));
         }
-        entries.push(crucible_engine::test_support::condition_payload_entry_for_test(
-            base + entries.len() as u64,
-            VirtualTime { ticks: self.quanta },
-            SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
-                "session.event-log.stream",
-                EventLevel::Debug,
-                BTreeMap::new(),
-            )),
-        ));
-        entries.push(crucible_engine::test_support::condition_boundary_entry_for_test(
-            base + entries.len() as u64,
-            VirtualTime { ticks: self.quanta },
-            crucible_engine::SchedulerEvaluationBoundaryKind::Quantum,
-        ));
+        entries.push(
+            crucible_engine::test_support::condition_payload_entry_for_test(
+                base + entries.len() as u64,
+                VirtualTime { ticks: self.quanta },
+                SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
+                    "session.event-log.stream",
+                    EventLevel::Debug,
+                    BTreeMap::new(),
+                )),
+            ),
+        );
+        entries.push(
+            crucible_engine::test_support::condition_boundary_entry_for_test(
+                base + entries.len() as u64,
+                VirtualTime { ticks: self.quanta },
+                crucible_engine::SchedulerEvaluationBoundaryKind::Quantum,
+            ),
+        );
         self.event_log_events = self
             .event_log_events
             .saturating_add(u64::try_from(entries.len()).unwrap_or(u64::MAX));

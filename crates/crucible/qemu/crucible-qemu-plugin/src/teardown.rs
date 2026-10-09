@@ -10,7 +10,9 @@ use std::io::Read;
 
 use thiserror::Error;
 
-use crucible_qemu_protocol::{ControlLifecycleIoError, ControlLifecycleState, ControlLifecycleStream};
+use crucible_qemu_protocol::{
+    ControlLifecycleIoError, ControlLifecycleState, ControlLifecycleStream,
+};
 use crucible_qemu_shmem::{NodeSlot, RegionHeader};
 
 use crate::shmem_ordering::PluginShmemOrdering;

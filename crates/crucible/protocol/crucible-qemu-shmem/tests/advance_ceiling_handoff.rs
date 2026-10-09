@@ -414,8 +414,11 @@ fn control_boundary_request_release_acknowledges_publication() {
     assert_eq!(published.status, STATUS_IDLE);
     assert_eq!(published.idle_wake_icount, before.idle_wake_icount);
 
-    slot.publish_scheduler_advance(ceiling(0, 1), crucible_qemu_shmem::AdvanceStopCondition::Ceiling)
-        .unwrap_or_else(|error| panic!("running ceiling should publish: {error}"));
+    slot.publish_scheduler_advance(
+        ceiling(0, 1),
+        crucible_qemu_shmem::AdvanceStopCondition::Ceiling,
+    )
+    .unwrap_or_else(|error| panic!("running ceiling should publish: {error}"));
     slot.mark_running();
     let running_before = slot.snapshot();
     let running_request = slot
@@ -426,8 +429,11 @@ fn control_boundary_request_release_acknowledges_publication() {
     assert_eq!(slot.acknowledge_control_boundary(), running_request + 1);
     assert_eq!(slot.snapshot().status, running_before.status);
 
-    slot.publish_scheduler_advance(ceiling(0, 0), crucible_qemu_shmem::AdvanceStopCondition::Ceiling)
-        .unwrap_or_else(|error| panic!("fenced ceiling should publish: {error}"));
+    slot.publish_scheduler_advance(
+        ceiling(0, 0),
+        crucible_qemu_shmem::AdvanceStopCondition::Ceiling,
+    )
+    .unwrap_or_else(|error| panic!("fenced ceiling should publish: {error}"));
     slot.mark_running();
     let fenced_request = slot
         .request_control_boundary(0, None)
@@ -625,7 +631,10 @@ fn linux_non_private_futex_syscalls_are_available() {
 #[cfg(target_os = "linux")]
 fn linux_scheduler_trigger_wakes_parked_waiter() {
     assert_linux_trigger_wakes_parked_waiter(|slot| {
-        slot.publish_scheduler_advance(ceiling(0, 1), crucible_qemu_shmem::AdvanceStopCondition::Ceiling)
+        slot.publish_scheduler_advance(
+            ceiling(0, 1),
+            crucible_qemu_shmem::AdvanceStopCondition::Ceiling,
+        )
     });
 }
 

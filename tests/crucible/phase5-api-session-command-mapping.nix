@@ -10,7 +10,10 @@
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiLib = import ./_crucible-control-source.nix { inherit lib; component = "exports"; };
+  apiLib = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "exports";
+  };
   sessionMapping = builtins.readFile ../../crates/crucible/control/crucible-control-api/src/session_mapping.rs;
   sessionMappingTest = builtins.readFile ../../crates/crucible/control/crucible-control-api/tests/gate_session_mapping.rs;
   defaultChecks = builtins.readFile ./default.nix;

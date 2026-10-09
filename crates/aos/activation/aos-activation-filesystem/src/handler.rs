@@ -10,8 +10,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_module_format::{ABILITY_LIMITS_V1, MAX_SAFE_INTEGER};
 use aos_core::Sha256Digest;
+use aos_module_format::{ABILITY_LIMITS_V1, MAX_SAFE_INTEGER};
 use rustix::fs::{FlockOperation, Mode, OFlags, fchmod, fchown, flock, fstat, mkdirat, openat};
 use rustix::process::{Gid, Uid};
 use serde::{Deserialize, Serialize};

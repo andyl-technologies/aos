@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 use super::{
     QemuHostIoCheckpoint, QemuLive9pIoServicerCheckpoint, QemuLiveBlockIoServicerCheckpoint,
 };
-use crucible_engine::ContentHash;
 use crucible_device::{
     BlockSnapshot, BlockSnapshotCodecError, NinepRequestOpportunity, NinepSnapshot,
     NinepSnapshotCodecError,
 };
+use crucible_engine::ContentHash;
 use crucible_qemu_shmem::{
     RegionHeaderSnapshot, SpscRingError, SpscRingSnapshot, validate_setup_region_header,
 };
