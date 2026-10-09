@@ -299,12 +299,16 @@ fn preflight(encoded: &[u8]) -> Result<(), EnvironmentModelError> {
     {
         return Err(EnvironmentModelError::CorruptEncoding);
     }
-    let mut bytes = BoundedReader::new(&encoded[..encoded.len() - DIGEST_BYTES], |_| EnvironmentModelError::CorruptEncoding);
+    let mut bytes = BoundedReader::new(&encoded[..encoded.len() - DIGEST_BYTES], |_| {
+        EnvironmentModelError::CorruptEncoding
+    });
     bytes.bytes(112 + SELECTOR_BYTES + OPTIONAL_SELECTOR_BYTES * 2)?;
     let leases = read_count(&mut bytes)?;
-    bytes.bytes(leases
+    bytes.bytes(
+        leases
             .checked_mul(LEASE_BYTES)
-            .ok_or(EnvironmentModelError::CorruptEncoding)?)?;
+            .ok_or(EnvironmentModelError::CorruptEncoding)?,
+    )?;
     let roots = read_count(&mut bytes)?;
     for _ in 0..roots {
         bytes.bytes(8)?;
@@ -312,9 +316,11 @@ fn preflight(encoded: &[u8]) -> Result<(), EnvironmentModelError> {
         bytes.bytes(56)?;
     }
     let retained = read_count(&mut bytes)?;
-    bytes.bytes(retained
+    bytes.bytes(
+        retained
             .checked_mul(SELECTOR_BYTES)
-            .ok_or(EnvironmentModelError::CorruptEncoding)?)?;
+            .ok_or(EnvironmentModelError::CorruptEncoding)?,
+    )?;
     if bytes.is_empty() {
         Ok(())
     } else {
@@ -333,7 +339,8 @@ fn decode_selector(
     sandbox: SandboxId,
 ) -> Result<EnvironmentSelectorV1, EnvironmentModelError> {
     let generation = Revision::new(u64::from_be_bytes(bytes.array()?));
-    let digest = EnvironmentManifestDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
+    let digest =
+        EnvironmentManifestDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
     manifests
         .selector_exact(sandbox, generation, digest)
         .map_err(|_| EnvironmentModelError::CorruptEncoding)?
@@ -404,7 +411,9 @@ fn encode_descriptor(
     Ok(())
 }
 
-fn decode_descriptor(bytes: &mut BoundedReader<'_, EnvironmentModelError>) -> Result<ObjectDescriptor, EnvironmentModelError> {
+fn decode_descriptor(
+    bytes: &mut BoundedReader<'_, EnvironmentModelError>,
+) -> Result<ObjectDescriptor, EnvironmentModelError> {
     let length = usize::from(u16::from_be_bytes(bytes.array()?));
     if length == 0 || length > 255 {
         return Err(EnvironmentModelError::CorruptEncoding);
@@ -420,18 +429,24 @@ fn decode_descriptor(bytes: &mut BoundedReader<'_, EnvironmentModelError>) -> Re
     ))
 }
 
-fn preflight_descriptor(bytes: &mut BoundedReader<'_, EnvironmentModelError>) -> Result<(), EnvironmentModelError> {
+fn preflight_descriptor(
+    bytes: &mut BoundedReader<'_, EnvironmentModelError>,
+) -> Result<(), EnvironmentModelError> {
     let length = usize::from(u16::from_be_bytes(bytes.array()?));
     if length == 0 || length > 255 {
         return Err(EnvironmentModelError::CorruptEncoding);
     }
-    bytes.bytes(length
+    bytes.bytes(
+        length
             .checked_add(40)
-            .ok_or(EnvironmentModelError::CorruptEncoding)?)?;
+            .ok_or(EnvironmentModelError::CorruptEncoding)?,
+    )?;
     Ok(())
 }
 
-fn read_count(bytes: &mut BoundedReader<'_, EnvironmentModelError>) -> Result<usize, EnvironmentModelError> {
+fn read_count(
+    bytes: &mut BoundedReader<'_, EnvironmentModelError>,
+) -> Result<usize, EnvironmentModelError> {
     let count = usize::try_from(u32::from_be_bytes(bytes.array()?))
         .map_err(|_| EnvironmentModelError::CorruptEncoding)?;
     if count > MAXIMUM_ENVIRONMENT_INPUTS {

@@ -319,9 +319,11 @@ fn decode_checkpoint<'a>(
         return Err(EnvironmentModelError::CorruptEncoding);
     }
     let expected = ObjectDigest::from_bytes(preflight.array()?);
-    preflight.bytes(floor_count
+    preflight.bytes(
+        floor_count
             .checked_mul(24)
-            .ok_or(EnvironmentModelError::CorruptEncoding)?)?;
+            .ok_or(EnvironmentModelError::CorruptEncoding)?,
+    )?;
     for _ in 0..record_count {
         let length = usize::try_from(u32::from_be_bytes(preflight.array()?))
             .map_err(|_| EnvironmentModelError::CorruptEncoding)?;
@@ -333,7 +335,9 @@ fn decode_checkpoint<'a>(
     if !preflight.is_empty() {
         return Err(EnvironmentModelError::CorruptEncoding);
     }
-    let mut bytes = BoundedReader::new(&body[HEADER_BYTES..], |_| EnvironmentModelError::CorruptEncoding);
+    let mut bytes = BoundedReader::new(&body[HEADER_BYTES..], |_| {
+        EnvironmentModelError::CorruptEncoding
+    });
     let mut floors = BTreeMap::new();
     for _ in 0..floor_count {
         let sandbox = SandboxId::from_bytes(bytes.array()?);
