@@ -193,7 +193,7 @@ checks and current public authorization remain Domain-owned. Historical DATA
 construction and projection grant no authority and do not complete the
 Controller ledger or protected Journal dependency cut.
 
-Its bounded native extent accounting and duplicate-key index share the lower
+Protocol transaction DATA extent accounting and its duplicate-key index share the lower
 journal's `NativeRecordValidation` owner with native suffix measurement. Keys
 borrow the actual records; domain Idempotency checks remain between the extent
 and key-registration stages. The shared fold adds no admission, configuration
