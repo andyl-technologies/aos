@@ -214,7 +214,8 @@ static FAKE: Mutex<FakeNative> = Mutex::new(FakeNative {
     fail_commit: false,
 });
 
-extern "C" fn begin(full: u32, header: *mut CaptureHeader) -> c_int {
+extern "C" fn begin(full: u32, owner_token: u64, header: *mut CaptureHeader) -> c_int {
+    assert_eq!(owner_token, 0);
     FAKE.lock().unwrap().full_requests.push(full);
     // SAFETY: the observer lends writable storage for this synchronous call.
     unsafe {
@@ -246,11 +247,13 @@ extern "C" fn region(_generation: u64, index: u32, output: *mut CaptureRegion) -
 
 extern "C" fn next(
     _generation: u64,
+    owner_token: u64,
     cursor: *mut u64,
     output: *mut CapturePage,
     bytes: *mut u8,
     capacity: usize,
 ) -> c_int {
+    assert_eq!(owner_token, 0);
     let native = FAKE.lock().unwrap();
     // SAFETY: cursor points to the observer's live scalar for this call.
     let index = unsafe { cursor.read() } as usize;
@@ -273,7 +276,8 @@ extern "C" fn next(
     0
 }
 
-extern "C" fn finish(_generation: u64, commit: u32) -> c_int {
+extern "C" fn finish(_generation: u64, owner_token: u64, commit: u32) -> c_int {
+    assert_eq!(owner_token, 0);
     let mut native = FAKE.lock().unwrap();
     if commit == 1 {
         if native.fail_commit {
@@ -300,10 +304,20 @@ extern "C" fn register_admission(_observer: Option<AdmissionObserver>) -> c_int 
     0
 }
 
-fn apis() -> NativeApis {
+extern "C" fn capture_region(
+    generation: u64,
+    owner_token: u64,
+    index: u32,
+    output: *mut CaptureRegion,
+) -> c_int {
+    assert_eq!(owner_token, 0);
+    region(generation, index, output)
+}
+
+pub(super) fn apis() -> NativeApis {
     NativeApis {
         begin,
-        region,
+        region: capture_region,
         next,
         finish,
         register,

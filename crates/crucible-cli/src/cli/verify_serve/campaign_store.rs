@@ -427,8 +427,22 @@ fn verify_loaded_campaign_store_inventory(
     })
 }
 
+pub(crate) fn load_campaign_repository_store_with_heap(
+    deployment_path: &Path,
+    process_heap: Option<&crucible_daemon::campaign_store_composition::SqliteProcessHeap>,
+) -> Result<crucible_daemon::CampaignLocalRepositoryStore, CliError> {
+    load_campaign_repository_graph_with_heap(deployment_path, process_heap)?.into_store()
+}
+
 fn load_campaign_repository_graph(
     deployment_path: &Path,
+) -> Result<LoadedCampaignRepositoryStore, CliError> {
+    load_campaign_repository_graph_with_heap(deployment_path, None)
+}
+
+fn load_campaign_repository_graph_with_heap(
+    deployment_path: &Path,
+    process_heap: Option<&crucible_daemon::campaign_store_composition::SqliteProcessHeap>,
 ) -> Result<LoadedCampaignRepositoryStore, CliError> {
     let bytes = read_secure_file(
         deployment_path,
@@ -716,7 +730,10 @@ fn load_campaign_repository_graph(
         &profilers,
         &physical_quotas,
         &s3_capabilities.graph,
-        memory_namespaces.as_ref(),
+        crucible_daemon::campaign_store_composition::StoreGraphOriginalResources {
+            memory_namespaces: memory_namespaces.as_ref(),
+            sqlite_heap: process_heap,
+        },
     )
     .map_err(|error| campaign_store_error(format!("graph admission failed: {error}")))?;
     let refs = match ref_backend {
@@ -1252,7 +1269,10 @@ root = {:?}
         fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600))
             .expect("secure deployment mode");
 
-        let loaded = load_campaign_repository_graph(&deployment).expect("strict SQLite graph");
+        let process_heap = crucible_cas::content_store::fixture_sqlite_heap()
+            .expect("original SQLite fixture process");
+        let loaded = load_campaign_repository_graph_with_heap(&deployment, Some(&process_heap))
+            .expect("strict SQLite graph");
         assert_eq!(loaded.graph.describe()[0].kind, StoreNodeKind::Sqlite);
         assert_eq!(loaded.maintenance.physical().len(), 1);
         let bytes = b"authored SQLite campaign object";
@@ -1263,7 +1283,8 @@ root = {:?}
             .expect("durable authored store put");
         drop(loaded);
 
-        let reopened = load_campaign_repository_graph(&deployment).expect("reopened SQLite graph");
+        let reopened = load_campaign_repository_graph_with_heap(&deployment, Some(&process_heap))
+            .expect("reopened SQLite graph");
         assert!(
             reopened
                 .graph

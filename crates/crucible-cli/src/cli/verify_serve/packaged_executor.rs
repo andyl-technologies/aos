@@ -367,7 +367,7 @@ pub(super) fn prepare_cli_packaged_executor(
     executor_socket: &Path,
     deployment_path: &Path,
     lifecycle: crucible_api::ProductionVmLifecycleConfig,
-    process_heap: &crucible_cas::content_store::SqliteProcessHeap,
+    process_heap: &crucible_daemon::campaign_store_composition::SqliteProcessHeap,
 ) -> Result<PreparedCliPackagedExecutor, CliError> {
     let deployment = load_validated_deployment(deployment_path)?;
     let operations = deployment_operations(&deployment)?;

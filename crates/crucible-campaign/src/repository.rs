@@ -566,6 +566,17 @@ fn ram_executor_rejection(error: &crucible_cas::ram::RamStoreError) -> ExecutorR
 fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
     match error.original_failure() {
         StoreError::RamValidation { source } => ram_executor_rejection(source.storage_failure()),
+        StoreError::RamReadBoundary { source } => ram_executor_rejection(
+            source
+                .first_boundary()
+                .unwrap_or_else(|| source.storage_failure()),
+        ),
+        StoreError::RamReadValidation { source } => {
+            ram_executor_rejection(source.first_validation())
+        }
+        StoreError::RamReadContinuation { source } => {
+            ram_executor_rejection(source.first_failure())
+        }
         StoreError::RamBoundary { .. } | StoreError::CompositeBoundary { .. } => {
             ExecutorRejection::Incompatible
         }

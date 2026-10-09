@@ -7,6 +7,7 @@ publish = false
 
 [features]
 default = []
+kernel-swap-measurement = []
 test-support = ["crucible/test-double", "crucible-ram/test-support"]
 
 [lints]

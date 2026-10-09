@@ -185,9 +185,9 @@ pub fn known_ram_launch_requirements(
         .ok_or(RamError::Overflow)?;
 
     // The native observer accounts both sealed and temporary region catalogs:
-    // 288-byte region + 32-byte allocation charge + 16-byte pointer slack.
+    // 328-byte region + 32-byte allocation charge + 16-byte pointer slack.
     let capture_metadata = 4096_u64
-        .checked_mul(672)
+        .checked_mul(752)
         .and_then(|bytes| bytes.checked_add(128))
         .ok_or(RamError::Overflow)?;
     let dirty_span_bytes = 8_u64 * 1024 * 1024 * 1024;
@@ -254,10 +254,79 @@ mod tests {
     }
 
     #[test]
+    fn corrected_capture_floor_refuses_an_unchanged_narrow_entitlement() {
+        use crucible_linux_resource::ram_policy::{HostRamTarget, HostResourceLedger};
+
+        let current = known_ram_launch_requirements(512 * 1024 * 1024, 1)
+            .unwrap_or_else(|error| panic!("RAM admission fixture: {error}"));
+
+        // The historical region was eight bytes smaller and had no 32-byte
+        // independent observation workspace. Keep that original capacity.
+        let previous = HostResourceVector {
+            resident_peak_bytes: current.resident_peak_bytes - 327_680,
+            metadata_bytes: current.metadata_bytes - 327_680,
+            ..current
+        };
+        let target = HostRamTarget {
+            daemon_epoch: [1; 32],
+            owner_id: [2; 32],
+            node_id: [3; 32],
+            owner_generation: 1,
+            arena_generation: 1,
+            retained_template: false,
+        };
+        let mut ledger = HostResourceLedger::new(previous);
+        ledger
+            .admit(target, previous)
+            .unwrap_or_else(|error| panic!("previous launch entitlement fixture: {error}"));
+        ledger
+            .release_after_cleanup(target)
+            .unwrap_or_else(|error| panic!("completed launch entitlement fixture: {error}"));
+
+        assert!(ledger.admit(target, current).is_err());
+        assert_eq!(ledger.capacity(), previous);
+        assert_eq!(ledger.reserved(), HostResourceVector::default());
+        assert_eq!(ledger.owner_reservation(target), None);
+    }
+
+    #[test]
     fn invalid_and_overflowing_shapes_refuse_before_reservation() {
         assert!(known_ram_launch_requirements(0, 1).is_err());
         assert!(known_ram_launch_requirements(4096, 0).is_err());
         assert!(known_ram_launch_requirements(u64::MAX, u32::MAX).is_err());
+    }
+
+    #[test]
+    fn independent_observation_workspace_refuses_previous_capture_entitlement() {
+        use crucible_linux_resource::ram_policy::{HostRamTarget, HostResourceLedger};
+
+        let current = known_ram_launch_requirements(512 * 1024 * 1024, 1)
+            .unwrap_or_else(|error| panic!("RAM admission fixture: {error}"));
+        let previous = HostResourceVector {
+            resident_peak_bytes: current.resident_peak_bytes - 262_144,
+            metadata_bytes: current.metadata_bytes - 262_144,
+            ..current
+        };
+        let target = HostRamTarget {
+            daemon_epoch: [1; 32],
+            owner_id: [2; 32],
+            node_id: [3; 32],
+            owner_generation: 1,
+            arena_generation: 1,
+            retained_template: false,
+        };
+        let mut ledger = HostResourceLedger::new(previous);
+        ledger
+            .admit(target, previous)
+            .unwrap_or_else(|error| panic!("previous capture entitlement fixture: {error}"));
+        ledger
+            .release_after_cleanup(target)
+            .unwrap_or_else(|error| panic!("completed capture entitlement fixture: {error}"));
+
+        assert!(ledger.admit(target, current).is_err());
+        assert_eq!(ledger.capacity(), previous);
+        assert_eq!(ledger.reserved(), HostResourceVector::default());
+        assert_eq!(ledger.owner_reservation(target), None);
     }
 
     #[test]

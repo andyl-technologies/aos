@@ -51,6 +51,43 @@ impl<S> QemuQmpMachineControlChannel for QemuQmpExactSnapshotControlChannel<S>
 where
     S: QmpTimeoutStream,
 {
+    #[cfg(feature = "kernel-swap-measurement")]
+    fn discover_kernel_swap_admission(
+        &mut self,
+        cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        generation: u64,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpKernelSwapAdmission, crate::qmp::QmpError> {
+        self.vmstate
+            .discover_kernel_swap_admission(cancellation, generation, original)
+    }
+
+    #[cfg(feature = "kernel-swap-measurement")]
+    fn observe_kernel_swap_residency(
+        &mut self,
+        cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        generation: u64,
+        topology_generation: u64,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpKernelSwapResidency, crate::qmp::QmpError> {
+        self.vmstate.observe_kernel_swap_residency(
+            cancellation,
+            generation,
+            topology_generation,
+            original,
+        )
+    }
+
+    #[cfg(feature = "kernel-swap-measurement")]
+    fn close_kernel_swap_cancellation(
+        &mut self,
+        cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        cleanup: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpCommandComplete, crate::qmp::QmpError> {
+        self.vmstate
+            .close_kernel_swap_cancellation(cancellation, cleanup)
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     fn performance_observation(
         &mut self,

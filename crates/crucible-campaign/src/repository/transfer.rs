@@ -493,7 +493,7 @@ impl CampaignRepository {
         let mut report = CampaignArchiveTransferReport::new();
         // Root inventories authorize transitive RAM retention. The ordinary
         // object loop intentionally has no page catalog and cannot replace this
-        // independently authenticated, descendant-first transfer.
+        // independently authenticated, complete-closure transfer.
         use crucible_cas::ram::{RamRetention, RamStore, RamStoreLimits};
         let map_ram_error = CampaignRepositoryError::Ram;
         // Ordinary campaign archives may use an ephemeral source backend.

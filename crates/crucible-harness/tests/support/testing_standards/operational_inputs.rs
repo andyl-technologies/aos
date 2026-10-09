@@ -5,11 +5,17 @@
 
 use super::{compact_code, mask_expression};
 
+#[path = "operational_catalog_gc.rs"]
+mod operational_catalog_gc;
+
 #[path = "operational_packed.rs"]
 mod operational_packed;
 
 #[path = "operational_sqlite.rs"]
 mod operational_sqlite;
+
+#[path = "operational_ram_read.rs"]
+mod operational_ram_read;
 
 struct Companion {
     path: &'static str,
@@ -122,9 +128,13 @@ const CONTRACTS: &[Contract] = &[
 ];
 
 pub(super) fn mask(package: &str, target: &str, code: &str) -> String {
+    if let Some(masked) = operational_catalog_gc::mask(package, target, code) {
+        return masked;
+    }
     let Some(contract) = CONTRACTS
         .iter()
         .chain(operational_sqlite::CONTRACTS)
+        .chain(operational_ram_read::CONTRACTS)
         .chain(operational_packed::CONTRACTS)
         .find(|contract| contract.package == package && contract.target == target)
     else {

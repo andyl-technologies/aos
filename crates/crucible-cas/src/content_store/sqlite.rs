@@ -29,6 +29,8 @@ use super::*;
 
 mod admin_batch;
 mod batch;
+mod bounded_read;
+pub(crate) use bounded_read::SqliteRamReadSession;
 mod checked_reader;
 mod process_heap;
 pub(super) use batch::busy::Accepted;
@@ -573,6 +575,13 @@ fn reject_wal_database_header(path: &Path) -> Result<(), StoreError> {
 }
 
 impl ImmutableBlobBackend for SqliteBlobBackend {
+    fn read_bounded_with_boundary(
+        &self,
+        request: &mut crate::ram::BoundedReadRequest<'_, '_>,
+    ) -> Result<(), StoreError> {
+        request.execute_sqlite(self)
+    }
+
     fn checked_publication_metadata(
         &self,
         _kind: ObjectKind,

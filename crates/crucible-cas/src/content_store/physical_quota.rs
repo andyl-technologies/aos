@@ -340,6 +340,17 @@ impl PhysicalQuotaStore {
 }
 
 impl ImmutableBlobBackend for PhysicalQuotaStore {
+    fn read_bounded_with_boundary(
+        &self,
+        request: &mut crate::ram::BoundedReadRequest<'_, '_>,
+    ) -> Result<(), StoreError> {
+        // Selection is effect-free. SQL checks these exact physical owners at
+        // its I/O edges; a generic leaf reads through this checked facade once.
+        request.with_physical(self.guard.as_ref(), self, |request| {
+            self.child.read_bounded_with_boundary(request)
+        })
+    }
+
     fn checked_publication_metadata(
         &self,
         kind: ObjectKind,

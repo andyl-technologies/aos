@@ -5,7 +5,7 @@
 
 use super::{Companion, Contract};
 
-const LOCK_CHECK: &str = r#"pub(super) fn check(
+const LOCK_CHECK: &str = r#"pub(crate) fn check(
     original: &DecodeBudget,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {

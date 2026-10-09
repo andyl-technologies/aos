@@ -19,7 +19,9 @@ use crucible_ram::{
 };
 
 mod admission;
+mod candidate;
 pub(crate) use admission::admitted_inventory;
+pub(crate) use candidate::CaptureClose;
 mod mutation;
 use mutation::observe_transaction;
 mod restore;
@@ -76,24 +78,25 @@ struct CapturePage {
     page_version: u64,
 }
 
-type RootObserver = extern "C" fn(u32, *mut u8, *mut u64) -> c_int;
+type RootObserver = extern "C" fn(u32, u64, *mut u8, *mut u64, *mut CaptureClose) -> c_int;
 type RegisterObserver = extern "C" fn(Option<RootObserver>) -> c_int;
 type RecordObserver = extern "C" fn(u32, *mut u8, usize, *mut usize, *mut u8, *mut u64) -> c_int;
 type RegisterRecordObserver = extern "C" fn(Option<RecordObserver>) -> c_int;
 type TransactionObserver =
     extern "C" fn(u32, u64, u64, *const PreparedPage, usize, *mut u8, *mut u64) -> c_int;
 type RegisterTransactionObserver = extern "C" fn(Option<TransactionObserver>) -> c_int;
-type BeginCapture = extern "C" fn(u32, *mut CaptureHeader) -> c_int;
+type BeginCapture = extern "C" fn(u32, u64, *mut CaptureHeader) -> c_int;
 type ReadRegion = extern "C" fn(u64, u32, *mut CaptureRegion) -> c_int;
-type NextPage = extern "C" fn(u64, *mut u64, *mut CapturePage, *mut u8, usize) -> c_int;
-type FinishCapture = extern "C" fn(u64, u32) -> c_int;
+type CaptureReadRegion = extern "C" fn(u64, u64, u32, *mut CaptureRegion) -> c_int;
+type NextPage = extern "C" fn(u64, u64, *mut u64, *mut CapturePage, *mut u8, usize) -> c_int;
+type FinishCapture = extern "C" fn(u64, u64, u32) -> c_int;
 type AdmissionObserver = extern "C" fn(*const admission::AdmissionHeader, u64) -> c_int;
 type RegisterAdmissionObserver = extern "C" fn(Option<AdmissionObserver>) -> c_int;
 
 #[derive(Clone, Copy)]
 struct NativeApis {
     begin: BeginCapture,
-    region: ReadRegion,
+    region: CaptureReadRegion,
     next: NextPage,
     finish: FinishCapture,
     register: RegisterObserver,
@@ -111,19 +114,19 @@ impl NativeApis {
         unsafe {
             Ok(Self {
                 begin: std::mem::transmute::<*mut c_void, BeginCapture>(symbol(
-                    b"qemu_plugin_crucible_ram_capture_begin_v1\0",
+                    b"qemu_plugin_crucible_ram_capture_begin_v2\0",
                 )?),
-                region: std::mem::transmute::<*mut c_void, ReadRegion>(symbol(
-                    b"qemu_plugin_crucible_ram_capture_region_v1\0",
+                region: std::mem::transmute::<*mut c_void, CaptureReadRegion>(symbol(
+                    b"qemu_plugin_crucible_ram_capture_region_v2\0",
                 )?),
                 next: std::mem::transmute::<*mut c_void, NextPage>(symbol(
-                    b"qemu_plugin_crucible_ram_capture_next_page_v1\0",
+                    b"qemu_plugin_crucible_ram_capture_next_page_v2\0",
                 )?),
                 finish: std::mem::transmute::<*mut c_void, FinishCapture>(symbol(
-                    b"qemu_plugin_crucible_ram_capture_finish_v1\0",
+                    b"qemu_plugin_crucible_ram_capture_finish_v2\0",
                 )?),
                 register: std::mem::transmute::<*mut c_void, RegisterObserver>(symbol(
-                    b"qemu_plugin_crucible_register_ram_root_observer_v1\0",
+                    b"qemu_plugin_crucible_register_ram_root_observer_v2\0",
                 )?),
                 register_record: std::mem::transmute::<*mut c_void, RegisterRecordObserver>(
                     symbol(b"qemu_plugin_crucible_register_ram_root_record_observer_v1\0")?,
@@ -285,8 +288,18 @@ fn root_callback() -> RootObserver {
     }
 }
 
-pub(crate) extern "C" fn observe_root(scope: u32, root: *mut u8, logical_bytes: *mut u64) -> c_int {
-    if root.is_null() || logical_bytes.is_null() || scope >= SCOPES.len() as u32 {
+pub(crate) extern "C" fn observe_root(
+    scope: u32,
+    owner_token: u64,
+    root: *mut u8,
+    logical_bytes: *mut u64,
+    cleanup: *mut CaptureClose,
+) -> c_int {
+    if root.is_null()
+        || logical_bytes.is_null()
+        || scope >= SCOPES.len() as u32
+        || (owner_token != 0 && cleanup.is_null())
+    {
         return -libc::EINVAL;
     }
     // SAFETY: the native caller lends writable outputs of 32 and 8 bytes for
@@ -295,28 +308,49 @@ pub(crate) extern "C" fn observe_root(scope: u32, root: *mut u8, logical_bytes: 
         std::ptr::write_bytes(root, 0, 32);
         logical_bytes.write(0);
     }
+    let mut capture_close = CaptureClose::default();
 
-    let result = std::panic::catch_unwind(|| -> Result<([u8; 32], u64), RamError> {
-        let observer = OBSERVER.get().ok_or("RAM observer is not installed")?;
-        let mut cache = observer
-            .cache
-            .try_lock()
-            .map_err(|_| "RAM observer is busy or poisoned")?;
-        if cache.frozen {
-            return Err(RamError::Invariant(
-                "RAM observer admission is frozen for fork",
-            ));
-        }
-        cache.refresh(observer.apis)?;
-        let view = cache
-            .view
-            .as_ref()
-            .ok_or("RAM observer has no committed snapshot")?;
-        Ok((
-            *view.roots[scope as usize].as_bytes(),
-            view.logical_bytes[scope as usize],
-        ))
-    });
+    // Close evidence contains only initialized scalars. The candidate retains
+    // its claim outside its own unwind boundary and closes it before returning.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || -> Result<([u8; 32], u64), RamError> {
+            let observer = OBSERVER.get().ok_or("RAM observer is not installed")?;
+            let mut cache = observer
+                .cache
+                .try_lock()
+                .map_err(|_| "RAM observer is busy or poisoned")?;
+            if cache.frozen {
+                return Err(RamError::Invariant(
+                    "RAM observer admission is frozen for fork",
+                ));
+            }
+            if owner_token != 0 {
+                return cache
+                    .observe_candidate(
+                        observer.apis,
+                        SCOPES[scope as usize],
+                        owner_token,
+                        &mut capture_close,
+                    )
+                    .map(|(digest, bytes)| (*digest.as_bytes(), bytes));
+            }
+            cache.refresh(observer.apis)?;
+            let view = cache
+                .view
+                .as_ref()
+                .ok_or("RAM observer has no committed snapshot")?;
+            Ok((
+                *view.roots[scope as usize].as_bytes(),
+                view.logical_bytes[scope as usize],
+            ))
+        },
+    ));
+
+    if owner_token != 0 {
+        // SAFETY: the diagnostic lends initialized close-evidence storage for
+        // the same synchronous callback. It remains independent of root output.
+        unsafe { cleanup.write(capture_close) };
+    }
 
     match result {
         Ok(Ok((digest, bytes))) => {
@@ -327,6 +361,7 @@ pub(crate) extern "C" fn observe_root(scope: u32, root: *mut u8, logical_bytes: 
             }
             0
         }
+        Ok(Err(RamError::Native { status, .. })) if owner_token != 0 => status,
         Ok(Err(_)) | Err(_) => -libc::EIO,
     }
 }
@@ -335,47 +370,73 @@ pub(crate) extern "C" fn observe_root(scope: u32, root: *mut u8, logical_bytes: 
 struct CaptureClaim {
     apis: NativeApis,
     header: CaptureHeader,
+    owner_token: u64,
     finished: bool,
 }
 
 impl CaptureClaim {
-    fn begin(apis: NativeApis, full: bool) -> Result<Self, RamError> {
+    fn begin(apis: NativeApis, full: bool, owner_token: u64) -> Result<Self, RamError> {
+        let claim = Self::open(apis, full, owner_token)?;
+        claim.validate_header()?;
+        Ok(claim)
+    }
+
+    fn open(apis: NativeApis, full: bool, owner_token: u64) -> Result<Self, RamError> {
         let mut header = CaptureHeader::default();
         status(
-            (apis.begin)(u32::from(full), &mut header),
+            (apis.begin)(u32::from(full), owner_token, &mut header),
             "begin RAM capture",
         )?;
-        let claim = Self {
+        Ok(Self {
             apis,
             header,
+            owner_token,
             finished: false,
-        };
-        if claim.header.schema != CAPTURE_SCHEMA
-            || claim.header.region_count == 0
-            || claim.header.region_count as usize > MAX_REGIONS
-            || claim.header.topology_generation == 0
-            || claim.header.capture_generation == 0
-            || claim.header.metadata_budget_bytes == 0
+        })
+    }
+
+    fn validate_header(&self) -> Result<(), RamError> {
+        if self.header.schema != CAPTURE_SCHEMA
+            || self.header.region_count == 0
+            || self.header.region_count as usize > MAX_REGIONS
+            || self.header.topology_generation == 0
+            || self.header.capture_generation == 0
+            || self.header.metadata_budget_bytes == 0
         {
             return Err(RamError::Invariant("invalid native RAM capture header"));
         }
-        Ok(claim)
+        Ok(())
     }
 
     fn commit(mut self) -> Result<(), RamError> {
         status(
-            (self.apis.finish)(self.header.capture_generation, 1),
+            (self.apis.finish)(self.header.capture_generation, self.owner_token, 1),
             "commit RAM capture",
         )?;
         self.finished = true;
         Ok(())
+    }
+
+    /// Attempts cleanup once without acknowledging dirty pages or rearming RAM.
+    ///
+    /// The returned status belongs to the sole cleanup attempt, so a prior
+    /// failure can be retained separately from cleanup refusal. `None` means
+    /// the claim was already committed or cleanup was attempted; it does not
+    /// prove cleanup succeeded. A refusal leaves native custody intact.
+    fn close_without_ack(&mut self) -> Option<c_int> {
+        if self.finished {
+            return None;
+        }
+        let result = (self.apis.finish)(self.header.capture_generation, self.owner_token, 0);
+        self.finished = true;
+        Some(result)
     }
 }
 
 impl Drop for CaptureClaim {
     fn drop(&mut self) {
         if !self.finished {
-            (self.apis.finish)(self.header.capture_generation, 0);
+            let _ = self.close_without_ack();
         }
     }
 }
@@ -388,7 +449,7 @@ impl RootCache {
             ));
         }
         let mut full = self.view.is_none();
-        let mut claim = CaptureClaim::begin(apis, full)?;
+        let mut claim = CaptureClaim::begin(apis, full, 0)?;
         if self
             .view
             .as_ref()
@@ -396,7 +457,7 @@ impl RootCache {
         {
             drop(claim);
             full = true;
-            claim = CaptureClaim::begin(apis, true)?;
+            claim = CaptureClaim::begin(apis, true, 0)?;
         }
 
         let admitted = self.metadata_budget(claim.header.metadata_budget_bytes)?;
@@ -500,14 +561,16 @@ fn read_regions(claim: &CaptureClaim) -> Result<Vec<RegionDescriptor>, RamError>
     read_region_inventory(
         claim.header.region_count,
         claim.header.capture_generation,
-        claim.apis.region,
+        |generation, index, output| {
+            (claim.apis.region)(generation, claim.owner_token, index, output)
+        },
     )
 }
 
 fn read_region_inventory(
     count: u32,
     generation: u64,
-    read: ReadRegion,
+    read: impl Fn(u64, u32, *mut CaptureRegion) -> c_int,
 ) -> Result<Vec<RegionDescriptor>, RamError> {
     let mut regions = Vec::new();
     regions
@@ -564,6 +627,7 @@ fn consume_pages(
         let mut page = CapturePage::default();
         let result = (claim.apis.next)(
             claim.header.capture_generation,
+            claim.owner_token,
             &mut cursor,
             &mut page,
             bytes.as_mut_ptr(),
@@ -875,3 +939,11 @@ pub(crate) fn abort_fork() -> Result<(), RamError> {
 #[cfg(test)]
 #[path = "ram_fingerprint/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "ram_fingerprint/capture_claim_tests.rs"]
+mod capture_claim_tests;
+
+#[cfg(test)]
+#[path = "ram_fingerprint/candidate_tests.rs"]
+mod candidate_tests;

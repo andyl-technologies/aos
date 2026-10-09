@@ -35,6 +35,15 @@ pub const CRATE_SPEC_INDEX: &[CrateSpecIndexEntry] = &[
         section_6_row: true,
     },
     CrateSpecIndexEntry {
+        package: "crucible-sqlite-heap",
+        descriptive_contract: "Integer-only native SQLite allocator limits and usage controls",
+        additional_spec_paths: &[],
+        root: "src/lib.rs",
+        spec_files: &[],
+        supplemental_spec: None,
+        section_6_row: false,
+    },
+    CrateSpecIndexEntry {
         package: "crucible-sim",
         descriptive_contract: "Deterministic randomness, counters, and virtual-time primitives",
         additional_spec_paths: &[],

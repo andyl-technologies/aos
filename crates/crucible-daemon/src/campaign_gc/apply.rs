@@ -26,7 +26,9 @@ use super::CampaignGcHotCheckpointRoots;
 #[cfg(test)]
 use super::CampaignGcRawPhysicalStore;
 use super::planner::CampaignGcInventoryTarget;
-use super::roots::{CampaignGcRootInventoryError, RootAccumulator, inventory_authoritative_refs};
+use super::roots::{
+    CampaignGcRootInventoryError, RootAccumulator, RootInsertionError, inventory_authoritative_refs,
+};
 use super::{
     CampaignGcBlobInventoryBasis, CampaignGcCandidateManifest, CampaignGcCandidateReason,
     CampaignGcJournalError, CampaignGcJournalPhase, CampaignGcMaintenance, CampaignGcManifestError,
@@ -488,10 +490,7 @@ where
         .transpose()
         .map_err(CampaignGcApplyError::Transfer)?;
 
-    let _root_resources = operation
-        .reserve_root_accumulator()
-        .map_err(CampaignGcApplyError::Reachability)?;
-    let mut roots = RootAccumulator::default();
+    let mut roots = RootAccumulator::new(operation.original());
     let ref_summary = inventory_authoritative_refs(
         repository,
         ref_fence.as_mut(),
@@ -508,6 +507,9 @@ where
 
     let mut ledger_operation_failure = None;
     let ledger_result = ledger_fence.visit_roots(&mut |root| {
+        if ledger_operation_failure.is_some() {
+            return Err(AssignmentRetentionVisitorError::LimitExceeded);
+        }
         if let Err(source) = operation.check() {
             ledger_operation_failure = Some(source);
             return Err(AssignmentRetentionVisitorError::LimitExceeded);
@@ -517,9 +519,12 @@ where
             AssignmentRetentionRoot::ExactCheckpoint(checkpoint) => checkpoint.content_id(),
             AssignmentRetentionRoot::FindingCandidate(candidate) => candidate.content_id(),
         };
-        roots
-            .insert(id)
-            .map_err(|()| AssignmentRetentionVisitorError::LimitExceeded)
+        roots.insert(id).map_err(|error| {
+            if let RootInsertionError::Admission(source) = error {
+                ledger_operation_failure = Some(source);
+            }
+            AssignmentRetentionVisitorError::LimitExceeded
+        })
     });
     if let Some(source) = ledger_operation_failure {
         return Err(CampaignGcApplyError::Reachability(source));
@@ -539,13 +544,19 @@ where
     if let Some(fence) = hot_fallback_fence.as_mut() {
         let mut operation_failure = None;
         let result = fence.visit_roots(&mut |root| {
+            if operation_failure.is_some() {
+                return Err(HotCheckpointFallbackRetentionError::Visitor);
+            }
             if let Err(source) = operation.check() {
                 operation_failure = Some(source);
                 return Err(HotCheckpointFallbackRetentionError::Visitor);
             }
-            roots
-                .insert(root)
-                .map_err(|()| HotCheckpointFallbackRetentionError::Visitor)
+            roots.insert(root).map_err(|error| {
+                if let RootInsertionError::Admission(source) = error {
+                    operation_failure = Some(source);
+                }
+                HotCheckpointFallbackRetentionError::Visitor
+            })
         });
         if let Some(source) = operation_failure {
             return Err(CampaignGcApplyError::Reachability(source));
@@ -558,7 +569,7 @@ where
                 operation.check()?;
                 roots
                     .insert_pending_write_back(root.id())
-                    .map_err(|()| StoreError::Quota)
+                    .map_err(RootInsertionError::into_store_error)
             })
             .map_err(CampaignGcApplyError::WriteBack)?;
     }
@@ -568,7 +579,7 @@ where
                 operation.check()?;
                 roots
                     .insert_direct(root.id())
-                    .map_err(|()| StoreError::Quota)
+                    .map_err(RootInsertionError::into_store_error)
             })
             .map_err(CampaignGcApplyError::Transfer)?;
     }
@@ -1356,6 +1367,9 @@ where
 {
     match source {
         CampaignGcRootInventoryError::Ref(source) => CampaignGcApplyError::Ref(source),
+        CampaignGcRootInventoryError::Admission(source) => {
+            CampaignGcApplyError::Reachability(source)
+        }
         CampaignGcRootInventoryError::Campaign(source) => CampaignGcApplyError::Campaign(source),
         CampaignGcRootInventoryError::ExactPin(source) => CampaignGcApplyError::ExactPin(source),
         CampaignGcRootInventoryError::InvalidCampaignRef { name } => {

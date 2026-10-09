@@ -47,6 +47,7 @@ mod quota;
 mod s3;
 mod s3_ref;
 mod sqlite;
+pub(crate) use sqlite::SqliteRamReadSession;
 mod write_back;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1200,6 +1201,24 @@ pub enum StoreError {
         /// Complete RAM failure retained by its prepaid original loan.
         source: crate::ram::RamFailureCause<std::convert::Infallible>,
     },
+    /// A bounded read retains an adapter-evidenced first boundary refusal.
+    #[error(transparent)]
+    RamReadBoundary {
+        /// Complete original boundary and storage cause under prepaid custody.
+        source: crate::ram::RamFailureCause<crate::ram::RamStoreError>,
+    },
+    /// A validation failure retains the complete provider cleanup outcome.
+    #[error(transparent)]
+    RamReadValidation {
+        /// Original validation and provider failures under existing custody.
+        source: crate::ram::RamReadValidation,
+    },
+    /// A provider returned a distinct failure after a retained RAM refusal.
+    #[error(transparent)]
+    RamReadContinuation {
+        /// Linear owner retaining the first cause and complete later outcome.
+        source: crate::ram::RamReadContinuation,
+    },
     /// The requested logical object does not exist in this store.
     #[error("content object {id} was not found")]
     NotFound {
@@ -1371,11 +1390,18 @@ pub enum StoreError {
 impl StoreError {
     pub(crate) fn confirmed_absence(&self, id: ContentId) -> bool {
         match self {
+            Self::RamValidation { source } => match source.storage_failure() {
+                crate::ram::RamStoreError::Store(original) => original.confirmed_absence(id),
+                _ => false,
+            },
             Self::NotFound { id: missing } => *missing == id,
             Self::SqliteDiagnostic { source } => source.failure().confirmed_absence(id),
             Self::SqliteScope { source }
                 if source.outcome() == SqliteCommitOutcome::NotCommitted
                     && source.rollback_failure().is_none()
+                    && source.blob_close_failure().is_none()
+                    && source.metadata_completion_failure().is_none()
+                    && source.metadata_finalization_failure().is_none()
                     && source.restoration_failure().is_none() =>
             {
                 source
@@ -1406,6 +1432,25 @@ impl StoreError {
         let mut failure = self;
         loop {
             failure = match failure {
+                Self::RamValidation { source } => match source.storage_failure() {
+                    crate::ram::RamStoreError::Store(original) => original,
+                    _ => return failure,
+                },
+                Self::RamReadContinuation { source } => match source.first_failure() {
+                    crate::ram::RamStoreError::Store(original) => original,
+                    _ => return failure,
+                },
+                Self::RamReadValidation { source } => match source.first_validation() {
+                    crate::ram::RamStoreError::Store(original) => original,
+                    _ => return failure,
+                },
+                Self::RamReadBoundary { source } => match source
+                    .first_boundary()
+                    .unwrap_or_else(|| source.storage_failure())
+                {
+                    crate::ram::RamStoreError::Store(original) => original,
+                    _ => return failure,
+                },
                 Self::MemoryScope { source } => source.work_failure(),
                 Self::CompositeScope { source } => {
                     match source.first_boundary().or_else(|| source.work_failure()) {
@@ -1652,6 +1697,22 @@ pub trait ImmutableBlobBackend: Send + Sync {
         Err(StoreError::Unsupported {
             capability: "checked-blob-metadata",
         })
+    }
+
+    /// Executes one opaque bounded read under its existing RAM operation.
+    ///
+    /// Forwarding preserves the same request and account. The default executes
+    /// this backend's checked metadata and body path once; it does not retry a
+    /// route, substitute an unchecked reader, or create a new operation.
+    ///
+    /// # Errors
+    /// Returns the original checked read, boundary, validation or cleanup
+    /// failure. A consumed or incomplete request cannot produce a result.
+    fn read_bounded_with_boundary(
+        &self,
+        request: &mut crate::ram::BoundedReadRequest<'_, '_>,
+    ) -> Result<(), StoreError> {
+        request.execute_existing_checked(self)
     }
 
     /// Idempotently places canonical bytes under their expected logical ID.

@@ -40,3 +40,37 @@ fn invalid_native_output_contract_refuses_before_owner_or_memory_access() {
     );
     assert_eq!(output, [0xa5; PAGE_BYTES]);
 }
+
+#[test]
+fn failed_root_scratch_read_returns_the_original_failure_without_public_output() {
+    let mut scratch = NativeRootScratch {
+        bytes: [0xa5; PAGE_BYTES],
+    };
+    let status = complete_root_scratch_read(&mut scratch, PAGE_BYTES as u32, |bytes| {
+        bytes.fill(0x3c);
+        Err(RamError::Invariant("injected late authentication refusal"))
+    });
+
+    assert_eq!(status, -libc::EIO);
+    assert_eq!(scratch.bytes, [0x3c; PAGE_BYTES]);
+}
+
+#[test]
+fn invalid_root_scratch_refuses_before_the_underlying_read() {
+    let mut scratch = NativeRootScratch {
+        bytes: [0xa5; PAGE_BYTES],
+    };
+    for valid in [0, PAGE_BYTES as u32 + 1] {
+        let status = complete_root_scratch_read(&mut scratch, valid, |_| {
+            panic!("invalid scratch must not enter its reader")
+        });
+        assert_eq!(status, -libc::EINVAL);
+    }
+    assert_eq!(scratch.bytes, [0xa5; PAGE_BYTES]);
+    assert_eq!(
+        complete_root_scratch_read(std::ptr::null_mut(), 1, |_| {
+            panic!("missing scratch must not enter its reader")
+        }),
+        -libc::EINVAL
+    );
+}

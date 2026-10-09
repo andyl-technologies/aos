@@ -404,12 +404,17 @@ fn committed_batch_late_readback_refusal_retains_full_original_cause_and_outcome
             let RamStoreError::Store(StoreError::DirectoryScope { source }) = &error else {
                 panic!("late readback refusal retains its outcome: {error:?}")
             };
-            let Some(StoreError::RamValidation { source: original }) = source.work_failure() else {
-                panic!("the first RAM refusal remains typed: {error:?}")
+            let Some(StoreError::RamReadBoundary { source: original }) = source.work_failure()
+            else {
+                panic!("the first RAM boundary refusal remains typed: {error:?}")
             };
             assert!(matches!(
+                original.first_boundary(),
+                Some(RamStoreError::Canceled)
+            ));
+            assert!(matches!(
                 original.storage_failure(),
-                RamStoreError::Canceled
+                RamStoreError::Store(StoreError::RamBoundary { .. })
             ));
             assert_eq!(source.outcome().published_objects, 2);
             assert_eq!(source.outcome().durable_objects, 2);
@@ -655,7 +660,7 @@ fn receiver_refuses_an_oversized_page_before_assembly_allocation() {
             &mut || Ok(()),
         )
         .unwrap();
-    let mut sender = RamTransferSender::new(
+    let mut sender = archive_sender(
         source,
         root.clone(),
         [11; 32],
@@ -663,29 +668,27 @@ fn receiver_refuses_an_oversized_page_before_assembly_allocation() {
     )
     .unwrap();
     let mut receiver =
-        RamTransferReceiver::new(destination.clone(), &retention, sender.offer()).unwrap();
+        RamTransferReceiver::new(destination.clone(), &retention, sender.offer().unwrap()).unwrap();
     let mut altered = false;
     let mut exchange = |message: RamTransferMessage| {
-        let mut response = sender.respond(
-            message,
-            &sender.original_for_test().unwrap(),
-            &mut || Ok(()),
-        )?;
-        if let RamTransferControl::ObjectChunk {
-            object,
-            length,
-            last,
-            ..
-        } = &mut response.control
-            && object.starts_with("ram-extent.1.")
-        {
-            *length = 8193;
-            *last = false;
-            altered = true;
-            // The generic portable chunk remains valid; only the bounded
-            // physical page contract refuses the declared assembly length.
-            response.encode().unwrap();
-        }
+        let mut response = sender.respond(message, &mut || Ok(()))?;
+        response.alter_for_test(|message| {
+            if let RamTransferControl::ObjectChunk {
+                object,
+                length,
+                last,
+                ..
+            } = &mut message.control
+                && object.starts_with("ram-extent.1.")
+            {
+                *length = 8193;
+                *last = false;
+                altered = true;
+                // The generic portable chunk remains valid; only the bounded
+                // physical page contract refuses the declared assembly length.
+                message.encode().unwrap();
+            }
+        });
         Ok(response)
     };
 
@@ -728,7 +731,7 @@ fn receiver_multichunk_scratch_reuses_the_original_bank_after_refusal() {
         .unwrap();
 
     for refuse in [true, false] {
-        let mut sender = RamTransferSender::new(
+        let mut sender = archive_sender(
             source.clone(),
             root.clone(),
             [12; 32],
@@ -736,7 +739,8 @@ fn receiver_multichunk_scratch_reuses_the_original_bank_after_refusal() {
         )
         .unwrap();
         let mut receiver =
-            RamTransferReceiver::new(destination.clone(), &retention, sender.offer()).unwrap();
+            RamTransferReceiver::new(destination.clone(), &retention, sender.offer().unwrap())
+                .unwrap();
         let budget = DecodeBudget::for_store(quota.clone()).unwrap();
         let scope = budget.enter();
         let operation = budget.child().unwrap();
@@ -745,8 +749,11 @@ fn receiver_multichunk_scratch_reuses_the_original_bank_after_refusal() {
         let mut chunk_original = None;
         let mut chunks = 0;
         let mut exchange = |message: RamTransferMessage| {
-            let response = sender.respond(message, &source_original, &mut || Ok(()))?;
-            if matches!(response.control, RamTransferControl::ObjectChunk { .. }) {
+            let response = sender.respond(message, &mut || Ok(()))?;
+            if matches!(
+                response.message().control,
+                RamTransferControl::ObjectChunk { .. }
+            ) {
                 chunks += 1;
                 if refuse && competing.is_none() {
                     // Observe the already-entered receiver object child. This

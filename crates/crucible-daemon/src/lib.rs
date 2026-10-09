@@ -34,6 +34,8 @@
 //! store graph without introducing a storage dependency into the kernel layer;
 //! [`campaign_store_composition`] exposes the bounded concrete store
 //! capabilities accepted by local operator tooling;
+//! [`campaign_process`] authenticates the immutable prebirth policy and retains
+//! its original process account and one nominal heap for service composition;
 //! [`control_responsiveness`] forwards
 //! daemon-routed acknowledgement evidence to the API's quantum-counted
 //! control-responsive contract; [`executor_loopback`] provides the strict
@@ -122,6 +124,7 @@ pub mod campaign_gc;
 pub mod campaign_loopback;
 pub mod campaign_objective_driver;
 pub mod campaign_policy;
+pub mod campaign_process;
 pub mod campaign_retention;
 pub mod campaign_runtime;
 pub mod campaign_runtime_control;

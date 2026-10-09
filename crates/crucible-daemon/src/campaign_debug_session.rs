@@ -766,6 +766,17 @@ fn checkpoint_store_selection_failure(
         StoreError::RamValidation { source } => {
             checkpoint_ram_selection_failure(source.storage_failure())
         }
+        StoreError::RamReadBoundary { source } => checkpoint_ram_selection_failure(
+            source
+                .first_boundary()
+                .unwrap_or_else(|| source.storage_failure()),
+        ),
+        StoreError::RamReadValidation { source } => {
+            checkpoint_ram_selection_failure(source.first_validation())
+        }
+        StoreError::RamReadContinuation { source } => {
+            checkpoint_ram_selection_failure(source.first_failure())
+        }
         StoreError::RamBoundary { .. } | StoreError::CompositeBoundary { .. } => {
             CampaignServiceFailure::IntegrityFailure
         }

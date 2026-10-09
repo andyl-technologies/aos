@@ -56,6 +56,11 @@ pub(crate) struct ProcessPolicy {
 }
 
 impl ProcessPolicy {
+    /// Validates the immutable process identity and finite resource partitions.
+    ///
+    /// # Errors
+    /// Refuses incompatible identity, zero or unrepresentable purposes,
+    /// overflowing totals, or partitions exceeding their original ceilings.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema != "crucible.campaign-process.v1"
             || self.unit != "crucible-campaign.service"

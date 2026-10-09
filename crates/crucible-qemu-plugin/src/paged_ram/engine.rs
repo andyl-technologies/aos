@@ -32,13 +32,15 @@ mod strict_placement;
 use mixed::{ArenaPlacement, validate_arena};
 mod service;
 pub(crate) use fork::{ChildArenaConfiguration, ChildPagingCustody, PreparedChildArenas};
-use service::{FaultService, operational_read, operational_rearm};
+use service::{FaultService, operational_read, operational_rearm, root_scratch_read};
 
 use super::restore::{
     PreparedRestoreMapping, PreparedRestoreSource, RestoreMappingOwner, RestorePageSource,
     ValidatedRestoreSource,
 };
-use super::source::{SourceOperation, SourceOperationClass, SourceOperationFactory};
+use super::source::{
+    NativePageHasher, SourceOperation, SourceOperationClass, SourceOperationFactory,
+};
 use super::{FaultEvent, PAGE_BYTES, Registration};
 use crate::args::PluginRamResources;
 
@@ -65,10 +67,19 @@ type MarkWrite = extern "C" fn(u64, u32, u64) -> c_int;
 type ReadWriteGeneration = extern "C" fn(u64, u64, *mut u64) -> c_int;
 type AcknowledgeSource = extern "C" fn(u64) -> c_int;
 type OperationalRead = extern "C" fn(u64, *mut u8, u32) -> c_int;
+
+/// Contains a synchronous full-root reader's private page scratch.
+#[repr(C)]
+struct NativeRootScratch {
+    bytes: [u8; PAGE_BYTES],
+}
+
+type RootScratchRead =
+    extern "C" fn(u64, *mut NativeRootScratch, u32, *const NativePageHasher) -> c_int;
 type Rearm = extern "C" fn(u64) -> c_int;
 type RegisterRearm = extern "C" fn(Option<Rearm>) -> c_int;
 type RegisterPlacement = extern "C" fn(extern "C" fn() -> c_int) -> c_int;
-type RegisterReader = extern "C" fn(Option<OperationalRead>) -> c_int;
+type RegisterReaders = extern "C" fn(Option<OperationalRead>, Option<RootScratchRead>) -> c_int;
 type ServiceWorker = extern "C" fn(u32, u64, u64, u32) -> c_int;
 
 pub(crate) const PAGER_STACK_BYTES: usize = 2 * 1024 * 1024;
@@ -561,8 +572,8 @@ impl PausedPagingOwner {
     pub(crate) fn install_reader(self: &Arc<Self>) -> Result<(), RamError> {
         // SAFETY: the resolved registrar has the matching native-private ABI.
         let register = unsafe {
-            std::mem::transmute::<*mut c_void, RegisterReader>(symbol(
-                b"qemu_plugin_crucible_register_ram_operational_reader_v1\0",
+            std::mem::transmute::<*mut c_void, RegisterReaders>(symbol(
+                b"qemu_plugin_crucible_register_ram_readers_v3\0",
             )?)
         };
         // SAFETY: the registrar matches this process-private scalar callback.
@@ -588,7 +599,7 @@ impl PausedPagingOwner {
         }
         *current = Some(self.clone());
         drop(current);
-        let status = register(Some(operational_read));
+        let status = register(Some(operational_read), Some(root_scratch_read));
         if status != 0 {
             return Err(RamError::Native {
                 operation: "operational RAM reader registration refused",

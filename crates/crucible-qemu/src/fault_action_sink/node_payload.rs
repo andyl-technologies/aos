@@ -48,6 +48,15 @@ pub(super) fn encode_node_action(
         &mut target_fields,
     )?;
     materialize_memory_latency(action, operation, &mut fields)?;
+    if operation != NodeFaultOperationV1::Remove {
+        validate_memory_target(action)?;
+    }
+    if command_kind == FaultCommandKind::MemoryService && operation != NodeFaultOperationV1::Remove
+    {
+        let actor = memory_service_actor(action)?;
+        // The six service parameters precede the strictly ordered target fields.
+        fields.insert(6, json_field(node_fault_field::P7, &actor)?);
+    }
     let payload = NodeFaultPayloadV1 {
         command_kind,
         operation,
@@ -69,6 +78,100 @@ pub(super) fn encode_node_action(
         command_kind,
         payload,
     })
+}
+
+/// Checks coordinates represented by the existing native memory target fields.
+fn validate_memory_target(action: &ResolvedBindingAction) -> Result<(), NodeFaultPayloadError> {
+    let ResolvedFaultTarget::MemoryRange {
+        address_space,
+        guest_address,
+        vcpu,
+        length_bytes,
+        ..
+    } = &action.target
+    else {
+        return Ok(());
+    };
+    let physical = address_space.as_str() == "gpa" && vcpu.is_none();
+    let virtual_address = address_space.as_str() == "gva" && vcpu.is_some();
+    // Hardware ECC consumes a physical P2 address and independently authored P8 CPU.
+    let coordinate_supported = if action.effect.kind() == EffectKind::MemoryEccEvent {
+        physical
+    } else {
+        physical || virtual_address
+    };
+    if !coordinate_supported
+        || *length_bytes == 0
+        || guest_address.checked_add(*length_bytes).is_none()
+    {
+        return Err(NodeFaultPayloadError::TargetValue);
+    }
+    Ok(())
+}
+
+/// Encodes only the actor already selected by the authenticated phase and target.
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
+enum MemoryServiceActor {
+    CpuSingleAccess { access: &'static str },
+    FwCfgPayload { direction: &'static str },
+}
+
+fn memory_service_actor(
+    action: &ResolvedBindingAction,
+) -> Result<MemoryServiceActor, NodeFaultPayloadError> {
+    let ResolvedFaultTarget::MemoryRange {
+        address_space,
+        vcpu,
+        length_bytes,
+        ..
+    } = &action.target
+    else {
+        return Err(NodeFaultPayloadError::TargetValue);
+    };
+    let EffectSpecification::Node(NodeEffectSpecification::MemoryService {
+        bandwidth_bytes_per_second,
+        operations_per_second,
+        sharing_scope,
+        ..
+    }) = action.effect.specification()
+    else {
+        return Err(NodeFaultPayloadError::TargetValue);
+    };
+
+    match action.phase {
+        FaultPhase::Load | FaultPhase::Store
+            if vcpu.is_some() && *length_bytes == 1 && address_space.as_str() == "gva" =>
+        {
+            // Shared execution supports a serialized byte ticket, not a broad
+            // CPU actor that could escape its admitted instruction boundary.
+            Ok(MemoryServiceActor::CpuSingleAccess {
+                access: if action.phase == FaultPhase::Load {
+                    "load"
+                } else {
+                    "store"
+                },
+            })
+        }
+        FaultPhase::DmaRead | FaultPhase::DmaWrite
+            if vcpu.is_none()
+                && address_space.as_str() == "gpa"
+                && *length_bytes > 0
+                && matches!(sharing_scope, crucible::model::MemoryServiceScope::Range)
+                && bandwidth_bytes_per_second.is_none()
+                && operations_per_second.is_none()
+                && materialized_memory_service_latency(action)? > 0 =>
+        {
+            Ok(MemoryServiceActor::FwCfgPayload {
+                direction: if action.phase == FaultPhase::DmaRead {
+                    "read"
+                } else {
+                    "write"
+                },
+            })
+        }
+        _ => Err(NodeFaultPayloadError::TargetValue),
+    }
 }
 
 /// Applies an authored nanosecond mapping to the native picosecond contract.

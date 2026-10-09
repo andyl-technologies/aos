@@ -769,7 +769,7 @@ impl StorePhysicalQuotaGuard for BoundLinuxProjectQuota {
         let directory = self
             .authority
             .root
-            .join(".gc-marks")
+            .join(crucible_cas::content_store::DirectoryBlobBackend::GC_MARK_DIRECTORY)
             .join(digest.finalize().to_hex().as_str());
         {
             // Descendant creation borrows the same bounded audit descriptor

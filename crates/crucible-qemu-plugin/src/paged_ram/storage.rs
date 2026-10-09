@@ -234,6 +234,25 @@ impl PreservedPages {
         )
     }
 
+    /// Verifies private observation bytes with the borrowed native page hasher.
+    ///
+    /// # Errors
+    /// Returns invalid custody, truncation, I/O, hashing, or digest errors.
+    pub(super) fn read_with_borrowed_hasher(
+        &self,
+        record: &PageRecord,
+        bytes: &mut [u8; PAGE_BYTES],
+        hasher: Option<&super::source::NativePageHasher>,
+    ) -> io::Result<()> {
+        self.read_with_hasher::<true>(
+            record,
+            bytes,
+            self.performance.as_deref(),
+            RamControlIoClass::PageRead,
+            hasher,
+        )
+    }
+
     /// Reads parent backing as actual fork-copy I/O, including canonical tails.
     pub(crate) fn read_for_fork(
         &self,
@@ -254,6 +273,17 @@ impl PreservedPages {
         bytes: &mut [u8; PAGE_BYTES],
         bank: Option<&PerformanceBank>,
         class: RamControlIoClass,
+    ) -> io::Result<()> {
+        self.read_with_hasher::<false>(record, bytes, bank, class, None)
+    }
+
+    fn read_with_hasher<const BORROWED: bool>(
+        &self,
+        record: &PageRecord,
+        bytes: &mut [u8; PAGE_BYTES],
+        bank: Option<&PerformanceBank>,
+        class: RamControlIoClass,
+        hasher: Option<&super::source::NativePageHasher>,
     ) -> io::Result<()> {
         let valid = checked_valid_length(record.0.valid_length)?;
         let end = record
@@ -294,9 +324,13 @@ impl PreservedPages {
             file.read_exact_at(&mut bytes[..valid], record.0.offset)?;
         }
         self.release_cache(record.0.offset)?;
-        let digest = *PageDigest::hash(&bytes[..valid])
-            .map_err(io::Error::other)?
-            .as_bytes();
+        let digest = if BORROWED && let Some(hasher) = hasher {
+            *hasher.hash(&bytes[..valid])?.as_bytes()
+        } else {
+            *PageDigest::hash(&bytes[..valid])
+                .map_err(io::Error::other)?
+                .as_bytes()
+        };
         if digest != record.0.digest {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

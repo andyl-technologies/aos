@@ -9,7 +9,7 @@ pub(in super::super) enum CliError {
     Artifact(String),
     Usage(String),
     Serve(String),
-    SqliteStartup(crucible_cas::content_store::StoreError),
+    SqliteStartup(crucible_daemon::campaign_store_composition::StoreError),
     Backend(String),
     Identity(String),
     EventEvidence {

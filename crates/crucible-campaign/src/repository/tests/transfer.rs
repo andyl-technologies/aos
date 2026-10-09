@@ -649,16 +649,33 @@ fn archive_ram_graphs_have_compact_inventories_and_real_transitive_possession() 
             Ok(())
         }
     });
+    let Err(CampaignRepositoryError::Ram(crucible_cas::ram::RamStoreError::Store(
+        crucible_cas::content_store::StoreError::RamReadBoundary { source: cause },
+    ))) = &canceled
+    else {
+        panic!("the observed callback refusal retains its complete direct boundary carrier");
+    };
     assert!(matches!(
-        canceled,
-        Err(CampaignRepositoryError::Ram(
-            crucible_cas::ram::RamStoreError::Canceled
-        ))
+        cause.first_boundary(),
+        Some(crucible_cas::ram::RamStoreError::Canceled)
     ));
+    assert!(matches!(
+        cause.storage_failure(),
+        crucible_cas::ram::RamStoreError::Store(
+            crucible_cas::content_store::StoreError::RamBoundary { .. }
+        )
+    ));
+    let alias = cause.clone();
+    assert_eq!(
+        &alias, cause,
+        "the first cause and storage marker share original custody"
+    );
+    drop(alias);
     assert_eq!(
         ram_boundaries, 4,
         "the actual RAM tree polls its operation owner"
     );
+    drop(canceled);
     let refused_plan = source.plan_campaign_archive_with_boundary(
         head.snapshot_id(),
         CampaignArchivePolicy::Mirror,
@@ -686,13 +703,30 @@ fn archive_ram_graphs_have_compact_inventories_and_real_transitive_possession() 
                 Ok(())
             }
         });
+    let Err(CampaignRepositoryError::Ram(crucible_cas::ram::RamStoreError::Store(
+        crucible_cas::content_store::StoreError::RamReadBoundary { source: cause },
+    ))) = &refused_inspection
+    else {
+        panic!("the observed callback refusal retains its complete direct boundary carrier");
+    };
     assert!(matches!(
-        refused_inspection,
-        Err(CampaignRepositoryError::Ram(
-            crucible_cas::ram::RamStoreError::Canceled
-        ))
+        cause.first_boundary(),
+        Some(crucible_cas::ram::RamStoreError::Canceled)
     ));
+    assert!(matches!(
+        cause.storage_failure(),
+        crucible_cas::ram::RamStoreError::Store(
+            crucible_cas::content_store::StoreError::RamBoundary { .. }
+        )
+    ));
+    let alias = cause.clone();
+    assert_eq!(
+        &alias, cause,
+        "the first cause and storage marker share original custody"
+    );
+    drop(alias);
     assert_eq!(inspection_boundaries, 8);
+    drop(refused_inspection);
 
     let temporary = tempfile::tempdir().expect("destination directory");
     let (blobs, blob_admin) = DirectoryBlobBackend::new_with_physical_quota_and_admin(

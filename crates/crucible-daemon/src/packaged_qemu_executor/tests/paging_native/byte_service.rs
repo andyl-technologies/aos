@@ -317,9 +317,9 @@ fn service_plan(target_address: u64, active_ticks: u64) -> Plan {
         ResolvedTargetSet::new(
             vec![ResolvedFaultTarget::MemoryRange {
                 node: FaultObjectId::parse("memory").expect("actual node"),
-                address_space: FaultObjectId::parse("gpa").expect("GPA"),
+                address_space: FaultObjectId::parse("gva").expect("GVA"),
                 guest_address: target_address,
-                vcpu: None,
+                vcpu: Some(0),
                 length_bytes: 1,
             }],
             false,

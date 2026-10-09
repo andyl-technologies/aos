@@ -80,6 +80,13 @@ pub struct DirectoryBlobBackend {
 }
 
 impl DirectoryBlobBackend {
+    /// Names the isolated GC scratch subtree below inventory administration.
+    ///
+    /// Mark producers join this fixed relative component below their original
+    /// physical namespace. Object inventory excludes administration descendants
+    /// while physical quota still accounts for their durable bytes.
+    pub const GC_MARK_DIRECTORY: &str = ".inventory-admin/gc-marks";
+
     /// Creates a loose-object facade with retained host-resource and quota custody.
     ///
     /// Deferred handles pin descriptor credits, and readers retain separately

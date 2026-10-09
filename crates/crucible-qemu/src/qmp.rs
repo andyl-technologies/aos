@@ -35,7 +35,14 @@ use crate::QemuNodeChannelError;
 mod block_completion_observation;
 mod checkpoint;
 mod command;
+#[cfg(feature = "kernel-swap-measurement")]
+mod kernel_swap_residency;
 mod paused_cpu;
+#[cfg(feature = "kernel-swap-measurement")]
+pub use kernel_swap_residency::{
+    QMP_QUERY_KERNEL_SWAP_ADMISSION_COMMAND, QMP_QUERY_KERNEL_SWAP_RESIDENCY_COMMAND,
+    QmpKernelSwapAdmission, QmpKernelSwapCancellation, QmpKernelSwapResidency,
+};
 #[cfg(any(test, feature = "test-support"))]
 mod performance_observation;
 pub use paused_cpu::{QMP_PAUSED_CPU_SCHEMA_VERSION, QMP_QUERY_PAUSED_CPU_COMMAND, QmpPausedCpu};
@@ -960,6 +967,35 @@ where
         Ok(response)
     }
 
+    #[cfg(any(test, feature = "test-support", feature = "kernel-swap-measurement"))]
+    fn exchange_under(
+        &mut self,
+        command: QmpCommand<'_>,
+        guard: &HostOperationGuard,
+    ) -> Result<QmpCommandReturn, QmpError> {
+        self.ensure_usable()?;
+        let kind = command.kind();
+        let mut deadline = QmpOperationDeadline::new(self.io_timeout_policy.command_timeout);
+        deadline.borrowed = Some(guard);
+        deadline.remaining(kind.wire_name())?;
+        if let Err(error) = self.write_json_line(kind.wire_name(), command.request(), &deadline) {
+            self.poisoned = true;
+            self.stream.get_mut().poison_qmp_stream();
+            return Err(error);
+        }
+        let result = self.read_command_response(kind, &deadline);
+        if result
+            .as_ref()
+            .is_err_and(|error| !matches!(error, QmpError::Command { .. }))
+        {
+            self.poisoned = true;
+            self.stream.get_mut().poison_qmp_stream();
+        }
+        let response = result?;
+        deadline.complete(kind.wire_name())?;
+        Ok(response)
+    }
+
     fn operation_deadline(
         &self,
         command: QmpCommandKind,
@@ -1281,7 +1317,7 @@ struct QmpOperationDeadline<'a> {
     supervision: HostSupervisionDeadline,
     timeout: Duration,
     shared: Option<HostOperationGuard>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-support", feature = "kernel-swap-measurement"))]
     borrowed: Option<&'a HostOperationGuard>,
     _lifetime: std::marker::PhantomData<&'a ()>,
 }
@@ -1294,14 +1330,14 @@ impl QmpOperationDeadline<'_> {
             supervision: HostSupervisionDeadline::start(timeout),
             timeout,
             shared: None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-support", feature = "kernel-swap-measurement"))]
             borrowed: None,
             _lifetime: std::marker::PhantomData,
         }
     }
 
     fn remaining(&self, operation: &'static str) -> Result<Duration, QmpError> {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-support", feature = "kernel-swap-measurement"))]
         if let Some(guard) = self.borrowed {
             return guard
                 .wait_slice()
@@ -1338,7 +1374,7 @@ impl QmpOperationDeadline<'_> {
 
     fn retry_slice(&self, error: &io::Error) -> bool {
         let supervised = self.shared.is_some();
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-support", feature = "kernel-swap-measurement"))]
         let supervised = supervised || self.borrowed.is_some();
         supervised
             && matches!(
@@ -1348,7 +1384,7 @@ impl QmpOperationDeadline<'_> {
     }
 
     fn complete(&self, operation: &'static str) -> Result<(), QmpError> {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-support", feature = "kernel-swap-measurement"))]
         if let Some(guard) = self.borrowed {
             return guard
                 .progress(1)
@@ -1574,8 +1610,14 @@ pub enum QmpCommandKind {
     QueryCheckpointEpoch,
     /// Read-only architectural PC at a paused SIM boundary.
     QueryPausedCpu,
+    /// Sealed main-RAM identity at an admitted paused experiment boundary.
+    #[cfg(feature = "kernel-swap-measurement")]
+    QueryKernelSwapAdmission,
+    /// Interval residency samples for the controlled host-swap experiment.
+    #[cfg(feature = "kernel-swap-measurement")]
+    QueryKernelSwapResidency,
     /// Fixed read-only observations for admitted performance fixtures.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-support", feature = "kernel-swap-measurement"))]
     PerformanceObservation,
     /// Exact realized fingerprint projection manifest query.
     QueryFingerprintProjectionManifest,
@@ -1659,7 +1701,11 @@ impl QmpCommandKind {
                 QMP_QUERY_FINGERPRINT_PROJECTION_MANIFEST_COMMAND
             }
             Self::QueryPausedCpu => QMP_QUERY_PAUSED_CPU_COMMAND,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(feature = "kernel-swap-measurement")]
+            Self::QueryKernelSwapResidency => QMP_QUERY_KERNEL_SWAP_RESIDENCY_COMMAND,
+            #[cfg(feature = "kernel-swap-measurement")]
+            Self::QueryKernelSwapAdmission => QMP_QUERY_KERNEL_SWAP_ADMISSION_COMMAND,
+            #[cfg(any(test, feature = "test-support", feature = "kernel-swap-measurement"))]
             Self::PerformanceObservation => "human-monitor-command",
             Self::QueryJobs => QMP_QUERY_JOBS_COMMAND,
             Self::JobDismiss => QMP_JOB_DISMISS_COMMAND,

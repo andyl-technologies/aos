@@ -94,14 +94,15 @@ fn initialize_tag(hasher: &mut blake3::Hasher, name: &str) {
 
 /// Wraps a page content commitment in the canonical leaf domain.
 pub fn leaf_digest(page: PageDigest) -> NodeDigest {
-    let mut hasher = tagged("leaf");
-    hasher.update(page.as_bytes());
-    NodeDigest(*hasher.finalize().as_bytes())
+    let mut preimage = [0; 53];
+    preimage[..21].copy_from_slice(b"crucible.ram.leaf.v1\0");
+    preimage[21..].copy_from_slice(page.as_bytes());
+    NodeDigest(*blake3::hash(&preimage).as_bytes())
 }
 
 /// Returns the padding sentinel, which is distinct from every real zero page.
 pub fn empty_leaf_digest() -> NodeDigest {
-    NodeDigest(*tagged("empty").finalize().as_bytes())
+    NodeDigest(*blake3::hash(b"crucible.ram.empty.v1\0").as_bytes())
 }
 
 /// Hashes two ordered children at the declared parent height.
@@ -117,16 +118,20 @@ pub fn inner_digest(
     if !(1..=52).contains(&height) {
         return Err(RamError::OutOfRange);
     }
-    let mut hasher = tagged("node");
-    hasher.update(&height.to_be_bytes());
-    hasher.update(left.as_bytes());
-    hasher.update(right.as_bytes());
-    Ok(NodeDigest(*hasher.finalize().as_bytes()))
+    // The fixed preimage avoids retaining a streaming hasher while reducing
+    // an authenticated proof path.
+    let mut preimage = [0; 89];
+    preimage[..21].copy_from_slice(b"crucible.ram.node.v1\0");
+    preimage[21..25].copy_from_slice(&height.to_be_bytes());
+    preimage[25..57].copy_from_slice(left.as_bytes());
+    preimage[57..].copy_from_slice(right.as_bytes());
+    Ok(NodeDigest(*blake3::hash(&preimage).as_bytes()))
 }
 
 /// Binds a reduced tree node to the region's checked length, count, and height.
 pub fn region_tree_digest(geometry: Geometry, root: NodeDigest) -> RegionTreeDigest {
-    let mut hasher = tagged("region-tree");
+    let mut hasher = blake3::Hasher::new();
+    initialize_tag(&mut hasher, "region-tree");
     hasher.update(&geometry.logical_length().to_be_bytes());
     hasher.update(&geometry.page_count().to_be_bytes());
     hasher.update(&geometry.height().to_be_bytes());

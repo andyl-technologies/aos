@@ -1603,6 +1603,10 @@ in
                 block-backend-tests.raw.tap > block-backend-tests.tap
               build/tests/unit/test-crucible-hot-fork-child --tap
               build/tests/unit/test-crucible-hot-fork-coordinator --tap
+              timeout -k 2 10 build/tests/unit/test-crucible-replay-owner --tap \
+                --seed=R02S00000000000000000000000000000000 \
+                > replay-owner-tests.tap
+              cat replay-owner-tests.tap
               # Compile the actual monitor refusal bodies with their configured
               # headers and real Error implementation; lower-layer plans are modeled.
               ${python3}/bin/python3 - <<'PYTHON' > child-file-refusal.result
@@ -2051,7 +2055,8 @@ in
               for resident_owner_call in \
                 qemu_plugin_crucible_ram_set_metadata_budget_v1 \
                 qemu_plugin_crucible_register_ram_admission_v1 \
-                qemu_plugin_crucible_register_ram_root_observer_v1; do
+                qemu_plugin_crucible_register_ram_readers_v3 \
+                qemu_plugin_crucible_register_ram_root_observer_v2; do
                 test "$(grep -F -c "$resident_owner_call(" \
                   tests/tcg/plugins/crucible-resident-ram.h)" -eq 1
               done
@@ -2062,7 +2067,7 @@ in
               rr = Path("accel/tcg/tcg-accel-ops-rr.c").read_text()
               rr_header = Path("accel/tcg/tcg-accel-ops-rr.h").read_text()
               replay = Path("replay/replay.c").read_text()
-              replay_internal = Path("replay/replay-internal.c").read_text()
+              replay_mutex = Path("replay/replay-mutex.c").read_text()
               tcg_all = Path("accel/tcg/tcg-all.c").read_text()
               main_loop = Path("util/main-loop.c").read_text()
               block_shmem = Path("block/crucible-shmem.c").read_text()
@@ -3907,7 +3912,7 @@ in
                    r"tlg == &main_loop_tlg && type == QEMU_CLOCK_VIRTUAL.*?"
                    r"if \(owner && !owner\(\)\) \{\s*continue;", 1),
                   ("dispatch mutex is active without replay log",
-                   replay_internal,
+                   replay_mutex,
                    r"if \(mutex_enabled\) \{", 2),
                   ("icount accepts an already-held replay token", icount,
                    r"if \(!replay_already_locked\) \{\s*"
@@ -4491,6 +4496,8 @@ in
                 "$out/share/aos/crucible/block-backend-tests.tap"
               install -m 644 aio-hot-fork-tests.tap \
                 "$out/share/aos/crucible/aio-hot-fork-tests.tap"
+              install -m 644 replay-owner-tests.tap \
+                "$out/share/aos/crucible/replay-owner-tests.tap"
               install -m 644 child-file-refusal.result \
                 "$out/share/aos/crucible/child-file-refusal.result"
               install -m 644 child-file-refusal-proof/compile-command.json \

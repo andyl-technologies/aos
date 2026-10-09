@@ -214,6 +214,17 @@ pub(super) enum QmpCommand<'a> {
         vcpu: u32,
         generation: Option<u64>,
     },
+    #[cfg(feature = "kernel-swap-measurement")]
+    QueryKernelSwapAdmission {
+        generation: u64,
+        cancellation: &'a QmpDescriptorName,
+    },
+    #[cfg(feature = "kernel-swap-measurement")]
+    QueryKernelSwapResidency {
+        generation: u64,
+        topology_generation: u64,
+        cancellation: &'a QmpDescriptorName,
+    },
     #[cfg(any(test, feature = "test-support"))]
     PerformanceObservation {
         command: &'static str,
@@ -340,6 +351,10 @@ impl QmpCommand<'_> {
                 QmpCommandKind::QueryFingerprintProjectionManifest
             }
             Self::QueryPausedCpu { .. } => QmpCommandKind::QueryPausedCpu,
+            #[cfg(feature = "kernel-swap-measurement")]
+            Self::QueryKernelSwapResidency { .. } => QmpCommandKind::QueryKernelSwapResidency,
+            #[cfg(feature = "kernel-swap-measurement")]
+            Self::QueryKernelSwapAdmission { .. } => QmpCommandKind::QueryKernelSwapAdmission,
             #[cfg(any(test, feature = "test-support"))]
             Self::PerformanceObservation { .. } => QmpCommandKind::PerformanceObservation,
             Self::QueryJobs => QmpCommandKind::QueryJobs,
@@ -463,6 +478,30 @@ impl QmpCommand<'_> {
                 }
                 json!({"execute":QMP_QUERY_PAUSED_CPU_COMMAND,"arguments":arguments})
             }
+            #[cfg(feature = "kernel-swap-measurement")]
+            Self::QueryKernelSwapAdmission {
+                generation,
+                cancellation,
+            } => json!({
+                "execute": super::QMP_QUERY_KERNEL_SWAP_ADMISSION_COMMAND,
+                "arguments": {
+                    "expected-generation": generation,
+                    "cancellation-fdname": cancellation.as_str(),
+                },
+            }),
+            #[cfg(feature = "kernel-swap-measurement")]
+            Self::QueryKernelSwapResidency {
+                generation,
+                topology_generation,
+                cancellation,
+            } => json!({
+                "execute": super::QMP_QUERY_KERNEL_SWAP_RESIDENCY_COMMAND,
+                "arguments": {
+                    "expected-generation": generation,
+                    "expected-topology-generation": topology_generation,
+                    "cancellation-fdname": cancellation.as_str(),
+                },
+            }),
             Self::QueryJobs => json!({
                 "execute": QMP_QUERY_JOBS_COMMAND,
             }),

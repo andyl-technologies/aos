@@ -809,9 +809,20 @@ fn optimized_scalar_refusal_preserves_original_cancellation_and_partial_counts()
                 }
                 .err()
                 .unwrap();
-                let refusal = match error {
+                let refusal = match &error {
                     RamStoreError::Canceled => "canceled",
-                    RamStoreError::Limit(limit) => limit,
+                    RamStoreError::Limit(limit) => *limit,
+                    RamStoreError::Store(StoreError::RamReadBoundary { source }) => {
+                        assert!(matches!(
+                            source.first_boundary(),
+                            Some(RamStoreError::Canceled)
+                        ));
+                        assert!(matches!(
+                            source.storage_failure(),
+                            RamStoreError::Store(StoreError::RamBoundary { .. })
+                        ));
+                        "canceled"
+                    }
                     _ => panic!("unexpected scalar refusal: {error:?}"),
                 };
                 let observed = (
@@ -827,6 +838,7 @@ fn optimized_scalar_refusal_preserves_original_cancellation_and_partial_counts()
                     "guaranteed refusal performs no metadata lookup or stream callback"
                 );
                 assert_eq!(observed.4, 0, "already-prepared Work acquires no new loan");
+                drop(error);
                 drop(work);
                 assert_eq!(quota.used(), baseline);
                 observed

@@ -61,10 +61,11 @@ pub(crate) fn admitted_inventory() -> Result<
         .and_then(|bytes| bytes.checked_mul(2))
         .ok_or("sealed RAM inventory metadata overflow")?;
     let reservation = budget.reserve_bytes(inventory_bytes)?;
+    let read = observer()?.apis.admission_region;
     let regions = read_region_inventory(
         header.region_count,
         header.topology_generation,
-        observer()?.apis.admission_region,
+        |generation, index, output| read(generation, index, output),
     )?;
     let topology = Topology::new(regions.clone(), Limits::default())?;
     if topology.total_logical_bytes() != header.logical_bytes {
@@ -108,7 +109,9 @@ pub(super) extern "C" fn observe_admission(
                 read_region_inventory(
                     header.region_count,
                     header.topology_generation,
-                    observer.apis.admission_region,
+                    |generation, index, output| {
+                        (observer.apis.admission_region)(generation, index, output)
+                    },
                 )
             },
         )?
@@ -136,7 +139,7 @@ pub(super) extern "C" fn observe_admission(
         let regions = read_region_inventory(
             header.region_count,
             header.topology_generation,
-            observer.apis.admission_region,
+            |generation, index, output| (observer.apis.admission_region)(generation, index, output),
         )?;
         let topology = Topology::new(regions, Limits::default()).map_err(display_error)?;
         if topology.total_logical_bytes() != header.logical_bytes {

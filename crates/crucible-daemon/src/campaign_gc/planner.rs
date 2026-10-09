@@ -1,5 +1,8 @@
 //! Generation-bound non-destructive GC planning for one single-host store graph.
 
+#[cfg(test)]
+mod admission_tests;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error as StdError;
 
@@ -25,7 +28,9 @@ use crate::{HotCheckpointFallbackRetentionAdmin, HotCheckpointFallbackRetentionE
 #[cfg(target_os = "linux")]
 use super::CampaignGcHotCheckpointRoots;
 use super::reachability::Reachability;
-use super::roots::{CampaignGcRootInventoryError, RootAccumulator, inventory_authoritative_refs};
+use super::roots::{
+    CampaignGcRootInventoryError, RootAccumulator, RootInsertionError, inventory_authoritative_refs,
+};
 use super::{
     CampaignGcBlobInventoryBasis, CampaignGcCandidate, CampaignGcCandidateManifest,
     CampaignGcCandidateReason, CampaignGcMaintenance, CampaignGcManifestError,
@@ -545,10 +550,7 @@ where
     );
     let exact_pins = root_sources.exact_pins;
 
-    let _root_resources = operation
-        .reserve_root_accumulator()
-        .map_err(CampaignGcPlanningError::Reachability)?;
-    let mut roots = RootAccumulator::default();
+    let mut roots = RootAccumulator::new(operation.original());
     let mut ref_fence = refs
         .acquire_ref_inventory_fence()
         .map_err(CampaignGcPlanningError::Ref)?;
@@ -1045,7 +1047,7 @@ where
 #[cfg(target_os = "linux")]
 fn inventory_hot_fallbacks<E>(
     hot_fallbacks: Option<&dyn HotCheckpointFallbackRetentionAdmin>,
-    roots: &mut RootAccumulator,
+    roots: &mut RootAccumulator<'_>,
     operation: &CampaignGcOperationContext<'_>,
 ) -> Result<(), CampaignGcPlanningError<E>>
 where
@@ -1060,13 +1062,19 @@ where
     let mut operational_failure = None;
     let result = fence
         .visit_roots(&mut |root| {
+            if operational_failure.is_some() {
+                return Err(HotCheckpointFallbackRetentionError::Visitor);
+            }
             if let Err(source) = operation.check() {
                 operational_failure = Some(source);
                 return Err(HotCheckpointFallbackRetentionError::Visitor);
             }
-            roots
-                .insert(root)
-                .map_err(|()| HotCheckpointFallbackRetentionError::Visitor)
+            roots.insert(root).map_err(|error| {
+                if let RootInsertionError::Admission(source) = error {
+                    operational_failure = Some(source);
+                }
+                HotCheckpointFallbackRetentionError::Visitor
+            })
         })
         .map_err(CampaignGcPlanningError::HotFallback);
     if let Some(source) = operational_failure {
@@ -1082,6 +1090,9 @@ where
 {
     match source {
         CampaignGcRootInventoryError::Ref(source) => CampaignGcPlanningError::Ref(source),
+        CampaignGcRootInventoryError::Admission(source) => {
+            CampaignGcPlanningError::Reachability(source)
+        }
         CampaignGcRootInventoryError::Campaign(source) => CampaignGcPlanningError::Campaign(source),
         CampaignGcRootInventoryError::ExactPin(source) => CampaignGcPlanningError::ExactPin(source),
         CampaignGcRootInventoryError::InvalidCampaignRef { name } => {
@@ -1107,7 +1118,7 @@ where
 
 fn inventory_ledger<L>(
     ledger: &mut L,
-    roots: &mut RootAccumulator,
+    roots: &mut RootAccumulator<'_>,
     operation: &CampaignGcOperationContext<'_>,
 ) -> Result<AssignmentRetentionSummary, CampaignGcPlanningError<L::Error>>
 where
@@ -1120,6 +1131,9 @@ where
     let mut operational_failure = None;
     let result = fence
         .visit_roots(&mut |root| {
+            if operational_failure.is_some() {
+                return Err(AssignmentRetentionVisitorError::LimitExceeded);
+            }
             if let Err(source) = operation.check() {
                 operational_failure = Some(source);
                 return Err(AssignmentRetentionVisitorError::LimitExceeded);
@@ -1129,9 +1143,12 @@ where
                 AssignmentRetentionRoot::ExactCheckpoint(checkpoint) => checkpoint.content_id(),
                 AssignmentRetentionRoot::FindingCandidate(candidate) => candidate.content_id(),
             };
-            roots
-                .insert(id)
-                .map_err(|()| AssignmentRetentionVisitorError::LimitExceeded)
+            roots.insert(id).map_err(|error| {
+                if let RootInsertionError::Admission(source) = error {
+                    operational_failure = Some(source);
+                }
+                AssignmentRetentionVisitorError::LimitExceeded
+            })
         })
         .map_err(|source| match source {
             AssignmentRetentionInventoryError::Backend(source) => {
@@ -1147,7 +1164,7 @@ where
 
 fn inventory_write_back<E>(
     write_back: Option<&dyn WriteBackRetentionAdmin>,
-    roots: &mut RootAccumulator,
+    roots: &mut RootAccumulator<'_>,
     operation: &CampaignGcOperationContext<'_>,
 ) -> Result<(), CampaignGcPlanningError<E>>
 where
@@ -1167,7 +1184,7 @@ where
             // root-relative depth, is intentionally absent here.
             roots
                 .insert_pending_write_back(root.id())
-                .map_err(|()| StoreError::Quota)
+                .map_err(RootInsertionError::into_store_error)
         })
         .map_err(CampaignGcPlanningError::WriteBack)?;
     Ok(())
@@ -1175,7 +1192,7 @@ where
 
 fn inventory_transfers<E>(
     transfers: Option<&dyn CampaignTransferRetentionAdmin>,
-    roots: &mut RootAccumulator,
+    roots: &mut RootAccumulator<'_>,
     operation: &CampaignGcOperationContext<'_>,
 ) -> Result<(), CampaignGcPlanningError<E>>
 where
@@ -1192,7 +1209,7 @@ where
             operation.check()?;
             roots
                 .insert_direct(root.id())
-                .map_err(|()| StoreError::Quota)
+                .map_err(RootInsertionError::into_store_error)
         })
         .map_err(CampaignGcPlanningError::Transfer)?;
     Ok(())

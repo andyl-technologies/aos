@@ -7,7 +7,6 @@
 use super::packaged_executor::prepare_cli_packaged_executor;
 use super::*;
 use crate::cli_campaign_import::apply_campaign_import_manifests;
-use crate::cli_campaign_store::load_campaign_repository_store;
 
 const DEFAULT_CAMPAIGN_MAINTENANCE_WRITE_BACK_TRANSFERS: u32 = 64;
 const DEFAULT_CAMPAIGN_MAINTENANCE_S3_NODES: u16 = 8;
@@ -20,11 +19,24 @@ pub(crate) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), Cl
         ));
     }
     validate_serve_invocation(args)?;
-    let process = process_bootstrap::CampaignProcessOwner::admit()?;
+    let process =
+        crucible_daemon::campaign_process::CampaignProcessOwner::admit().map_err(|error| {
+            match error {
+                crucible_daemon::campaign_process::CampaignProcessAdmissionError::Policy(
+                    message,
+                ) => serve_error(message),
+                crucible_daemon::campaign_process::CampaignProcessAdmissionError::Io(source) => {
+                    CliError::Io(source)
+                }
+                crucible_daemon::campaign_process::CampaignProcessAdmissionError::Store(source) => {
+                    CliError::SqliteStartup(source)
+                }
+            }
+        })?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(process.policy.worker_threads)
-        .max_blocking_threads(process.policy.blocking_threads)
-        .thread_stack_size(process.policy.thread_stack_bytes)
+        .worker_threads(process.worker_threads())
+        .max_blocking_threads(process.blocking_threads())
+        .thread_stack_size(process.thread_stack_bytes())
         .enable_all()
         .build()
         .map_err(|error| serve_error(format!("serve runtime error: {error}")))?;
@@ -38,12 +50,12 @@ pub(crate) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), Cl
             cli,
             args,
             shutdown,
-            &process.heap,
+            process.heap(),
         ))
     } else {
         let decoding = crate::cli_input_resources::original_budget()?;
         let admitted = crucible_api::admit_future(
-            run_serve_with_process_heap_until_shutdown(cli, args, shutdown, &process.heap),
+            run_serve_with_process_heap_until_shutdown(cli, args, shutdown, process.heap()),
             decoding,
         )
         .map_err(|source| CliError::LifecycleAdmission(Box::new(source)))?;
@@ -55,7 +67,7 @@ async fn run_serve_with_process_heap_until_shutdown<S>(
     cli: &Cli,
     args: &ServeArgs,
     shutdown: S,
-    process_heap: &crucible_cas::content_store::SqliteProcessHeap,
+    process_heap: &crucible_daemon::campaign_store_composition::SqliteProcessHeap,
 ) -> Result<(), CliError>
 where
     S: Future<Output = Result<(), CliError>> + Send + 'static,
@@ -306,7 +318,7 @@ fn open_local_campaign_service_with_heap(
     production_qemu: Option<crucible_api::ProductionVmLifecycleConfig>,
     campaign_debug_lifecycle: Option<Arc<dyn crucible_daemon::CampaignDebugLifecycleAdmission>>,
     private_target_attempt: Option<crucible_campaign::AttemptId>,
-    process_heap: Option<&crucible_cas::content_store::SqliteProcessHeap>,
+    process_heap: Option<&crucible_daemon::campaign_store_composition::SqliteProcessHeap>,
 ) -> Result<Option<PreparedLocalCampaignService>, CliError> {
     validate_campaign_runtime_attachments(args)?;
     let (Some(socket), Some(state), Some(policy)) = (
@@ -343,7 +355,12 @@ fn open_local_campaign_service_with_heap(
             })?;
     }
     let mut prepared = match args.campaign_store.as_deref() {
-        Some(path) => config.prepare_with_store(load_campaign_repository_store(path)?),
+        Some(path) => config.prepare_with_store(
+            crate::cli_campaign_store::load_campaign_repository_store_with_heap(
+                path,
+                process_heap,
+            )?,
+        ),
         None => config.prepare(process_heap.ok_or_else(|| {
             serve_error("builtin campaign storage requires the original process heap")
         })?),
@@ -828,6 +845,18 @@ pub(crate) fn serve_shutdown_signal() -> Result<impl Future<Output = Result<(), 
     })
 }
 
+fn validate_listen_endpoint(listen: &str) -> Result<(), CliError> {
+    let invalid = || serve_error("serve bind error: invalid listen host or port");
+    let (host, port) = listen.rsplit_once(':').ok_or_else(invalid)?;
+    port.parse::<u16>().map_err(|_| invalid())?;
+    if host.is_empty() {
+        return Err(invalid());
+    }
+    // Tokio retains its original host interpretation, including numeric IPv6
+    // and scoped forms. This check performs no resolution, DNS or IO.
+    Ok(())
+}
+
 pub(crate) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError> {
     if args.max_sessions == Some(0) {
         return Err(usage_error("--max-sessions must be greater than zero"));
@@ -926,7 +955,8 @@ pub(crate) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError
             }
         }
     }
-    Ok(())
+    // Preserve the original usage-error priority before checking bind syntax.
+    validate_listen_endpoint(&args.listen)
 }
 
 fn campaign_store_maintenance_config(
@@ -1101,4 +1131,40 @@ pub(crate) fn open_local_campaign_service(
         private_target_attempt,
         Some(&heap),
     )
+}
+
+#[cfg(test)]
+mod listen_endpoint_tests {
+    use super::validate_listen_endpoint;
+
+    #[test]
+    fn host_interpretation_remains_with_the_original_resolver() {
+        for endpoint in [
+            "localhost:0",
+            "service.example:8443",
+            "127.0.0.1:80",
+            "[::1]:65535",
+            "::1:80",
+            "[fe80::1%2]:80",
+            "fe80::1%2:80",
+            "[invalid]:80",
+        ] {
+            assert!(validate_listen_endpoint(endpoint).is_ok(), "{endpoint}");
+        }
+    }
+
+    #[test]
+    fn malformed_port_and_host_fail_without_bootstrap() {
+        for endpoint in [
+            "127.0.0.1:70000",
+            "localhost:abc",
+            ":80",
+            "localhost:",
+            "localhost",
+        ] {
+            let error = validate_listen_endpoint(endpoint).expect_err("invalid bind input");
+            assert_eq!(error.exit_code(), 3);
+            assert!(error.to_string().contains("serve bind error"));
+        }
+    }
 }

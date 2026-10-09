@@ -1,9 +1,10 @@
 //! Receives a complete archive RAM closure with bounded discovery and credits.
 //!
-//! Discovery authenticates one object at a time. A recursive binary path holds
-//! unpublished parent metadata while each child is validated and persisted, so
-//! the complete root is published last. A missing-content request is always
-//! derived from authenticated parent metadata and a logical coordinate.
+//! Discovery authenticates one object at a time. Each validated catalog is
+//! persisted before its child walk; the complete root is published last.
+//! Incomplete closure progress has no root lease or readiness claim. Unnamed
+//! catalogs remain collectable after operation retention closes. Missing-content
+//! requests follow authenticated parent metadata and a logical coordinate.
 
 use crucible_protocol::ram_transfer::{
     MAX_TRANSFER_OBJECT_BYTES, RamTransferControl, RamTransferMessage, RamTransferNodeCoordinate,
@@ -20,7 +21,7 @@ use super::codec::{TreeNode, TreeRef, decode_root_envelope, object_limits, valid
 use super::codec_ownership::admission;
 use super::{
     LeasedRamRoot, RamClosureStored, RamRetention, RamStore, RamStoreError, RamTransferReport,
-    Work, logical, valid_length,
+    RamTransferResponse, Work, logical, valid_length,
 };
 
 /// Terminal outcome after active buffers have been disposed.
@@ -49,6 +50,7 @@ pub struct RamTransferReceiver<'a> {
     received: u64,
     terminal: bool,
     metadata_resources: Arc<super::metadata::RootMetadataResources>,
+    _offer_credit: Option<crate::owned_decode::DecodeScratch>,
 }
 
 impl<'a> RamTransferReceiver<'a> {
@@ -76,13 +78,25 @@ impl<'a> RamTransferReceiver<'a> {
         original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<RamTransferStep, RamStoreError> {
+        let maximum = self.offer.limits.chunk_bytes as usize + 256;
+        let boundary = std::cell::RefCell::new(boundary);
         self.receive(
             &mut |message| {
+                let _credit = original
+                    .reserve_scratch_bytes(super::response::message_peak(&message.control)?)
+                    .map_err(admission)?;
+                super::response::check(original, &mut || (boundary.borrow_mut())())?;
                 message.write(transport)?;
-                Ok(RamTransferMessage::read(transport)?)
+                RamTransferResponse::read_bounded(
+                    transport,
+                    original,
+                    &mut || (boundary.borrow_mut())(),
+                    maximum,
+                    false,
+                )
             },
             original,
-            boundary,
+            &mut || (boundary.borrow_mut())(),
         )
     }
 
@@ -95,11 +109,13 @@ impl<'a> RamTransferReceiver<'a> {
     pub fn new(
         store: RamStore,
         retention: &'a dyn RamRetention,
-        message: RamTransferMessage,
+        response: RamTransferResponse,
     ) -> Result<Self, RamStoreError> {
-        // Offer metadata overlaps the independently authenticated root catalog.
-        let metadata_resources = store.reserve_root_metadata(2)?;
-        message.encode()?;
+        // The owning Offer frame retains separate credit for self.record's
+        // decoder. This loan covers the independently authenticated stored root
+        // and catalog references that outlive the receiver in its returned lease.
+        let metadata_resources = store.reserve_root_metadata(1)?;
+        let (message, offer_credit) = response.into_parts();
         let RamTransferControl::Offer(offer) = message.control else {
             return Err(RamStoreError::Invalid("transfer admission requires offer"));
         };
@@ -123,6 +139,7 @@ impl<'a> RamTransferReceiver<'a> {
             received: 0,
             terminal: false,
             metadata_resources,
+            _offer_credit: offer_credit,
         })
     }
 
@@ -139,7 +156,7 @@ impl<'a> RamTransferReceiver<'a> {
     /// insufficient durability, retention loss, cancellation, or resource caps.
     pub fn receive(
         &mut self,
-        exchange: &mut dyn FnMut(RamTransferMessage) -> Result<RamTransferMessage, RamStoreError>,
+        exchange: &mut dyn FnMut(RamTransferMessage) -> Result<RamTransferResponse, RamStoreError>,
         original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<RamTransferStep, RamStoreError> {
@@ -160,7 +177,7 @@ impl<'a> RamTransferReceiver<'a> {
 
     fn receive_inner(
         &mut self,
-        exchange: &mut dyn FnMut(RamTransferMessage) -> Result<RamTransferMessage, RamStoreError>,
+        exchange: &mut dyn FnMut(RamTransferMessage) -> Result<RamTransferResponse, RamStoreError>,
         work: &mut Work<'_>,
     ) -> Result<RamTransferStep, RamStoreError> {
         let request = RamTransferControl::WantNode {
@@ -194,7 +211,7 @@ impl<'a> RamTransferReceiver<'a> {
             ram_root: self.root.to_string(),
         });
         let response = exchange(acknowledgment.clone())?;
-        if response != acknowledgment {
+        if response.message() != &acknowledgment {
             return Err(RamStoreError::Invalid("transfer stored acknowledgment"));
         }
         self.report.object_visits = work.visits;
@@ -214,7 +231,7 @@ impl<'a> RamTransferReceiver<'a> {
         region: &RegionDescriptor,
         reference: TreeRef,
         first: u64,
-        exchange: &mut dyn FnMut(RamTransferMessage) -> Result<RamTransferMessage, RamStoreError>,
+        exchange: &mut dyn FnMut(RamTransferMessage) -> Result<RamTransferResponse, RamStoreError>,
         work: &mut Work<'_>,
     ) -> Result<(), RamStoreError> {
         let request = RamTransferControl::WantNode {
@@ -226,7 +243,11 @@ impl<'a> RamTransferReceiver<'a> {
             object: reference.id.to_string(),
         };
         let (envelope, existing) = self.object(reference.id, request, exchange, work)?;
-        match validate_tree(&envelope, reference)? {
+        let node = validate_tree(&envelope, reference)?;
+        // This receipt establishes only the complete catalog's durable bytes.
+        // Descendant possession and root ownership still require the full walk.
+        self.publish(reference.id, &envelope, existing, work)?;
+        match node {
             TreeNode::Padding => {}
             TreeNode::Leaf { page, digest } => {
                 let request = RamTransferControl::WantObject {
@@ -249,14 +270,14 @@ impl<'a> RamTransferReceiver<'a> {
                 )?;
             }
         }
-        self.publish(reference.id, &envelope, existing, work)
+        Ok(())
     }
 
     fn object(
         &mut self,
         id: ContentId,
         request: RamTransferControl,
-        exchange: &mut dyn FnMut(RamTransferMessage) -> Result<RamTransferMessage, RamStoreError>,
+        exchange: &mut dyn FnMut(RamTransferMessage) -> Result<RamTransferResponse, RamStoreError>,
         work: &mut Work<'_>,
     ) -> Result<(super::codec_ownership::OwnedEnvelope, bool), RamStoreError> {
         let account = work
@@ -266,10 +287,11 @@ impl<'a> RamTransferReceiver<'a> {
         let _scope = account.enter();
         let (maximum_bytes, maximum_children) = object_limits(id)?;
         self.retention.retain_object(id)?;
-        match self.store.read_envelope(id, work) {
-            Ok(envelope) => return Ok((envelope, true)),
-            Err(error) if super::store_boundary::confirmed_absence(&error, id) => {}
-            Err(error) => return Err(error),
+        if let Some(bytes) =
+            super::bounded_read::read_canonical(self.store.backend.as_ref(), id, &account, work)?
+        {
+            let envelope = super::codec::decode_envelope(id, &bytes, maximum_children, &account)?;
+            return Ok((envelope, true));
         }
         self.requested = self
             .requested
@@ -278,13 +300,15 @@ impl<'a> RamTransferReceiver<'a> {
         if self.requested > self.offer.limits.objects {
             return Err(RamStoreError::Limit("transfer object requests"));
         }
+        let _assembly_credit = account
+            .reserve_scratch_bytes(maximum_bytes)
+            .map_err(admission)?;
         (work.boundary)()?;
         let mut response = exchange(self.message(request))?;
-        let mut _assembly_credit = None;
         let mut object = Vec::new();
         let mut declared = None;
         loop {
-            let chunk_bytes = match &response.control {
+            let _chunk_bytes = match &response.message().control {
                 RamTransferControl::ObjectChunk { bytes, .. }
                     if bytes.len() <= self.offer.limits.chunk_bytes as usize =>
                 {
@@ -296,19 +320,9 @@ impl<'a> RamTransferReceiver<'a> {
                     ));
                 }
             };
-            // A chunk frame contains bounded identity/header bytes and its
-            // payload. Four complete frames cover encoder body growth overlap
-            // plus the final length-prefixed copy, before either Vec allocates.
-            let encode_peak = chunk_bytes
-                .checked_add(256)
-                .and_then(|bytes| bytes.checked_mul(4))
-                .and_then(|bytes| bytes.checked_add(8))
-                .ok_or(RamStoreError::Limit("transfer frame allocation"))?;
-            let _wire_credit = account
-                .reserve_scratch_bytes(encode_peak as u64)
-                .map_err(admission)?;
-            response.encode()?;
-            if response.operation != self.operation {
+            response.with_encoded(&account, |_| Ok(()))?;
+            let message = response.message();
+            if message.operation != self.operation {
                 return Err(RamStoreError::Invalid("transfer response operation"));
             }
             let RamTransferControl::ObjectChunk {
@@ -317,13 +331,14 @@ impl<'a> RamTransferReceiver<'a> {
                 offset,
                 bytes,
                 last,
-            } = response.control
+            } = &message.control
             else {
                 return Err(RamStoreError::Invalid(
                     "transfer response requires object chunk",
                 ));
             };
-            if identity != id.to_string()
+            let (length, offset, last) = (*length, *offset, *last);
+            if !id.with_encoded_text(|id| id == identity.as_bytes())
                 || offset != object.len() as u64
                 || bytes.len() > self.offer.limits.chunk_bytes as usize
                 || declared.is_some_and(|expected| expected != length)
@@ -342,11 +357,6 @@ impl<'a> RamTransferReceiver<'a> {
                 }
                 let length = usize::try_from(length)
                     .map_err(|_| RamStoreError::Limit("transfer object allocation"))?;
-                _assembly_credit = Some(
-                    account
-                        .reserve_scratch_bytes(length as u64)
-                        .map_err(admission)?,
-                );
                 object
                     .try_reserve_exact(length)
                     .map_err(|source| StoreError::Supervision {
@@ -355,7 +365,7 @@ impl<'a> RamTransferReceiver<'a> {
                 declared = Some(length as u64);
             }
             work.visit(bytes.len() as u64)?;
-            object.extend_from_slice(&bytes);
+            object.extend_from_slice(bytes);
             if last {
                 break;
             }

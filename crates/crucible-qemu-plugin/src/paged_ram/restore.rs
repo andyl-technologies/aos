@@ -22,7 +22,9 @@ use crucible_ram::{
 };
 
 use super::PAGE_BYTES;
-use super::source::{LazyPageSource, SourceOperationClass, SourceOperationFactory};
+use super::source::{
+    LazyPageSource, NativePageHasher, SourceOperationClass, SourceOperationFactory,
+};
 use crate::ram_fingerprint::{PreparedRestoreCache, RamProofSource};
 
 mod native;
@@ -97,6 +99,33 @@ impl RestorePageSource {
             output,
             SourceOperationClass::FingerprintUpdate,
         )
+    }
+
+    /// Authenticates an observation inside its original source operation.
+    ///
+    /// # Errors
+    /// Returns unavailable source custody, transport, proof, or hashing errors.
+    pub(super) fn fetch_with_borrowed_hasher(
+        &self,
+        region_ordinal: u32,
+        page_index: u64,
+        output: &mut [u8; PAGE_BYTES],
+        hasher: Option<&NativePageHasher>,
+    ) -> io::Result<(u32, PageDigest)> {
+        let operation = self
+            .operations
+            .begin(SourceOperationClass::FingerprintUpdate)?;
+        self.connection
+            .try_lock()
+            .map_err(|_| io::Error::other("restore source ownership uncertain"))?
+            .fetch_with_borrowed_hasher(
+                region_ordinal,
+                page_index,
+                operation.as_ref(),
+                output,
+                hasher,
+            )
+            .map(|(length, digest, _)| (length, digest))
     }
 
     fn fetch_with_class(

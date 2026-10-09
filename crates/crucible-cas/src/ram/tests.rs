@@ -16,8 +16,14 @@ use crate::content_store::{
 
 use super::*;
 
+mod bounded_read;
+mod bounded_tree_parser;
+mod catalog_progress;
 mod checked_graph_adapters;
+mod comparison_identity;
 mod metadata_lifecycle;
+mod transfer_object;
+mod wire_state;
 
 fn archive_offer(
     root: &LeasedRamRoot,
@@ -524,7 +530,7 @@ fn absolute_wire_credits_are_idempotent_and_coordinates_do_not_authorize_other_o
         )
         .unwrap();
     let mut sender =
-        RamTransferSender::new(source, root.clone(), [3; 32], archive_offer(&root, 13)).unwrap();
+        archive_sender(source, root.clone(), [3; 32], archive_offer(&root, 13)).unwrap();
     let request = RamTransferMessage {
         operation: [3; 32],
         control: RamTransferControl::WantNode {
@@ -532,25 +538,19 @@ fn absolute_wire_credits_are_idempotent_and_coordinates_do_not_authorize_other_o
             object: root.object_id().encode(),
         },
     };
-    let first = sender
-        .respond(
-            request,
-            &sender.original_for_test().unwrap(),
-            &mut || Ok(()),
-        )
-        .unwrap();
+    let first = sender.respond(request, &mut || Ok(())).unwrap();
     let RamTransferControl::ObjectChunk {
         bytes,
         offset,
         last,
         ..
-    } = first.control
+    } = &first.message().control
     else {
         panic!("expected first chunk")
     };
-    assert_eq!(offset, 0);
+    assert_eq!(*offset, 0);
     assert_eq!(bytes.len(), 13);
-    assert!(!last);
+    assert!(!*last);
     let credit = RamTransferMessage {
         operation: [3; 32],
         control: RamTransferControl::Credit {
@@ -561,29 +561,16 @@ fn absolute_wire_credits_are_idempotent_and_coordinates_do_not_authorize_other_o
     };
     assert_eq!(
         sender
-            .respond(
-                credit.clone(),
-                &sender.original_for_test().unwrap(),
-                &mut || Ok(())
-            )
-            .unwrap(),
-        sender
-            .respond(credit, &sender.original_for_test().unwrap(), &mut || Ok(()))
+            .respond(credit.clone(), &mut || Ok(()))
             .unwrap()
+            .message(),
+        sender.respond(credit, &mut || Ok(())).unwrap().message()
     );
     let foreign = RamTransferMessage {
         operation: [4; 32],
         control: RamTransferControl::Cancel,
     };
-    assert!(
-        sender
-            .respond(
-                foreign,
-                &sender.original_for_test().unwrap(),
-                &mut || Ok(())
-            )
-            .is_err()
-    );
+    assert!(sender.respond(foreign, &mut || Ok(())).is_err());
     let forged = RamTransferMessage {
         operation: [3; 32],
         control: RamTransferControl::WantObject {
@@ -593,22 +580,20 @@ fn absolute_wire_credits_are_idempotent_and_coordinates_do_not_authorize_other_o
                 .encode(),
         },
     };
-    assert!(
-        sender
-            .respond(forged, &sender.original_for_test().unwrap(), &mut || Ok(()))
-            .is_err()
-    );
+    assert!(sender.respond(forged, &mut || Ok(())).is_err());
     let acknowledgment = sender
         .respond(
             RamTransferMessage {
                 operation: [3; 32],
                 control: RamTransferControl::Cancel,
             },
-            &sender.original_for_test().unwrap(),
             &mut || Ok(()),
         )
         .unwrap();
-    assert_eq!(acknowledgment.control, RamTransferControl::Canceled);
+    assert_eq!(
+        acknowledgment.message().control,
+        RamTransferControl::Canceled
+    );
 }
 
 #[test]
@@ -630,7 +615,7 @@ fn corrupt_or_foreign_wire_chunk_never_publishes_a_destination_root() {
     for foreign in [false, true] {
         let destination_directory = tempfile::tempdir().unwrap();
         let destination = store(destination_directory.path(), RamStoreLimits::default());
-        let mut sender = RamTransferSender::new(
+        let mut sender = archive_sender(
             source.clone(),
             root.clone(),
             [5; 32],
@@ -638,20 +623,19 @@ fn corrupt_or_foreign_wire_chunk_never_publishes_a_destination_root() {
         )
         .unwrap();
         let mut receiver =
-            RamTransferReceiver::new(destination.clone(), &retention, sender.offer()).unwrap();
+            RamTransferReceiver::new(destination.clone(), &retention, sender.offer().unwrap())
+                .unwrap();
         let mut exchange = |message: RamTransferMessage| {
-            let mut response = sender.respond(
-                message,
-                &sender.original_for_test().unwrap(),
-                &mut || Ok(()),
-            )?;
-            if let RamTransferControl::ObjectChunk { bytes, .. } = &mut response.control {
-                if foreign {
-                    response.operation = [6; 32];
-                } else {
-                    bytes[0] ^= 1;
+            let mut response = sender.respond(message, &mut || Ok(()))?;
+            response.alter_for_test(|message| {
+                if let RamTransferControl::ObjectChunk { bytes, .. } = &mut message.control {
+                    if foreign {
+                        message.operation = [6; 32];
+                    } else {
+                        bytes[0] ^= 1;
+                    }
                 }
-            }
+            });
             Ok(response)
         };
         assert!(
@@ -669,7 +653,6 @@ fn corrupt_or_foreign_wire_chunk_never_publishes_a_destination_root() {
 
 #[test]
 fn framed_transfer_operates_between_independent_socket_instances() {
-    use crucible_protocol::ram_transfer::RamTransferMessage;
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
 
@@ -690,7 +673,7 @@ fn framed_transfer_operates_between_independent_socket_instances() {
         )
         .unwrap();
     let mut sender =
-        RamTransferSender::new(source, root.clone(), [8; 32], archive_offer(&root, 17)).unwrap();
+        archive_sender(source, root.clone(), [8; 32], archive_offer(&root, 17)).unwrap();
     let (mut source_socket, mut destination_socket) = UnixStream::pair().unwrap();
     for socket in [&source_socket, &destination_socket] {
         socket
@@ -700,14 +683,14 @@ fn framed_transfer_operates_between_independent_socket_instances() {
             .set_write_timeout(Some(Duration::from_secs(5)))
             .unwrap();
     }
-    let sending = std::thread::spawn(move || {
-        sender.serve_transport(
-            &mut source_socket,
-            &sender.original_for_test().unwrap(),
-            &mut || Ok(()),
-        )
-    });
-    let offer = RamTransferMessage::read(&mut destination_socket).unwrap();
+    let sending =
+        std::thread::spawn(move || sender.serve_transport(&mut source_socket, &mut || Ok(())));
+    let offer = RamTransferResponse::read_offer(
+        &mut destination_socket,
+        &fixture_original(&destination),
+        &mut || Ok(()),
+    )
+    .unwrap();
     let mut receiver =
         RamTransferReceiver::new(destination.clone(), &destination_retention, offer).unwrap();
     let RamTransferStep::ClosureStored(stored) = receiver
@@ -852,7 +835,38 @@ fn canceled_wire_transfer_leaves_root_unpublished_and_retries_from_actual_conten
             }
         },
     );
-    assert!(matches!(result, Err(RamStoreError::Canceled)));
+    // This fixture cancels at the first catalog's actual committed readback.
+    // It must retain that commit beside the unchanged callback's first cause.
+    let Err(RamStoreError::Store(StoreError::SqliteScope { source: scope })) = &result else {
+        panic!("the current transfer stage retains its actual commit: {result:?}");
+    };
+    let Some(StoreError::RamReadBoundary {
+        source: first_cause,
+    }) = scope.work_failure()
+    else {
+        panic!("committed publication retains its original refusal: {scope:?}");
+    };
+    assert!(matches!(
+        first_cause.first_boundary(),
+        Some(RamStoreError::Canceled)
+    ));
+    assert!(
+        matches!(
+            first_cause.storage_failure(),
+            RamStoreError::Store(StoreError::RamBoundary { .. })
+        ),
+        "the unused native scratch must not wrap the direct sealed marker"
+    );
+    assert_eq!(
+        scope.outcome(),
+        crate::content_store::SqliteCommitOutcome::Committed
+    );
+    assert!(scope.rollback_failure().is_none());
+    assert!(scope.restoration_failure().is_none());
+    assert!(scope.blob_close_failure().is_none());
+    assert!(scope.metadata_completion_failure().is_none());
+    assert!(scope.metadata_finalization_failure().is_none());
+    assert_eq!(boundaries, 121);
     assert!(!destination.backend.contains(root.object_id()).unwrap());
     let retry = source
         .transfer_archive_to(
@@ -1556,4 +1570,23 @@ fn shared_transfer_metadata_retains_its_origin_until_destination_reader_closes()
         origin.upgrade().is_none(),
         "final physical metadata borrower releases the origin"
     );
+}
+
+fn archive_sender(
+    source: RamStore,
+    root: LeasedRamRoot,
+    operation: [u8; 32],
+    offer: crucible_protocol::ram_transfer::RamTransferOffer,
+) -> Result<RamTransferSender, RamStoreError> {
+    let original = fixture_original(&source);
+    RamTransferSender::new(
+        source,
+        root,
+        operation,
+        ContentId::parse(&offer.whole_world_root)?,
+        &offer.destination,
+        offer.durable_placements,
+        offer.limits,
+        &original,
+    )
 }

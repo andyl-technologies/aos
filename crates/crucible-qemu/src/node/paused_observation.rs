@@ -3,6 +3,72 @@
 use super::*;
 
 impl QemuNode {
+    /// Discovers the sealed RAM identity through this node's QMP connection.
+    ///
+    /// The caller supplies this machine's actual paused VM-stop generation,
+    /// retains the owned VM row and original funding, and lends its published
+    /// cancellation owner. Fixed-name exclusivity and uncertain descriptor
+    /// retirement remain caller obligations, as for residency observations.
+    /// This method grants no memory, swap or placement authority.
+    ///
+    /// # Errors
+    /// Returns the original QMP error for unavailable channel support, refused
+    /// supervision, import, dispatch or sealed response validation.
+    #[cfg(feature = "kernel-swap-measurement")]
+    pub fn discover_kernel_swap_admission(
+        &mut self,
+        cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        generation: u64,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpKernelSwapAdmission, crate::qmp::QmpError> {
+        self.channels
+            .qmp_machine_control
+            .discover_kernel_swap_admission(cancellation, generation, original)
+    }
+
+    /// Observes experimental RAM residency through this node's QMP connection.
+    ///
+    /// The caller retains the actual VM row and its original funding, lends its
+    /// published cancellation owner, and owns exclusive use of the fixed name
+    /// on this exact connection and generation. This method grants no swap or
+    /// paging capability; admission and physical retirement remain caller duties.
+    ///
+    /// # Errors
+    /// Returns the original QMP error for unavailable channel support, refused
+    /// supervision, descriptor transfer, dispatch or interval response validation.
+    #[cfg(feature = "kernel-swap-measurement")]
+    pub fn observe_kernel_swap_residency(
+        &mut self,
+        cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        generation: u64,
+        topology_generation: u64,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpKernelSwapResidency, crate::qmp::QmpError> {
+        self.channels
+            .qmp_machine_control
+            .observe_kernel_swap_residency(cancellation, generation, topology_generation, original)
+    }
+
+    /// Attempts one experimental descriptor closure on this node's connection.
+    ///
+    /// The caller preserves its primary failure separately and supplies Cleanup
+    /// from the same original supervisor. Uncertain closure retains the actual
+    /// VM row through physical retirement; this method cannot certify retirement.
+    ///
+    /// # Errors
+    /// Returns the original QMP error for unavailable channel support, reused
+    /// custody, refused Cleanup, dispatch failure or uncertain transport.
+    #[cfg(feature = "kernel-swap-measurement")]
+    pub fn close_kernel_swap_cancellation(
+        &mut self,
+        cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        cleanup: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpCommandComplete, crate::qmp::QmpError> {
+        self.channels
+            .qmp_machine_control
+            .close_kernel_swap_cancellation(cancellation, cleanup)
+    }
+
     /// Controls opt-in spill measurements through the original admitted registrar.
     ///
     /// # Errors

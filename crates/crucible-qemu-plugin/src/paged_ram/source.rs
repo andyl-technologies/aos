@@ -20,6 +20,46 @@ use crucible_ram::{Limits, PageDigest, PageProof, RamRootDigest, RootRecord, Sco
 
 use super::PAGE_BYTES;
 
+/// Borrows a native observer's finalized page hasher for one synchronous read.
+///
+/// Only the GPL-private root reader supplies this stack context. Neither the
+/// function nor its context may escape the callback that lends them.
+#[repr(C)]
+pub(super) struct NativePageHasher {
+    hash: Option<extern "C" fn(*mut std::ffi::c_void, *const u8, u32, *mut u8) -> libc::c_int>,
+    context: *mut std::ffi::c_void,
+}
+
+impl NativePageHasher {
+    /// Checks the complete borrowed callback before starting a source operation.
+    ///
+    /// # Errors
+    /// Refuses an absent callback or context with `EINVAL`.
+    pub(super) fn validate(&self) -> io::Result<()> {
+        if self.hash.is_none() || self.context.is_null() {
+            return Err(io::Error::from_raw_os_error(libc::EINVAL));
+        }
+        Ok(())
+    }
+
+    /// Hashes actual bytes while the original native context remains borrowed.
+    ///
+    /// # Errors
+    /// Returns invalid callback, length, or native hashing refusal errors.
+    pub(super) fn hash(&self, bytes: &[u8]) -> io::Result<PageDigest> {
+        let hash = self
+            .hash
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
+        let length = u32::try_from(bytes.len()).map_err(invalid)?;
+        let mut digest = [0_u8; 32];
+        let status = hash(self.context, bytes.as_ptr(), length, digest.as_mut_ptr());
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(status.saturating_neg()));
+        }
+        Ok(PageDigest::from_bytes(digest))
+    }
+}
+
 /// Live supervision token for one original-start authenticated page exchange.
 ///
 /// Socket bytes, polling, retries and proof CPU work do not renew progress.
@@ -256,6 +296,32 @@ impl LazyPageSource {
         operation: &dyn SourceOperation,
         output: &mut [u8; PAGE_BYTES],
     ) -> io::Result<(u32, PageDigest, PageProof)> {
+        self.fetch_with_page_hasher::<false>(region_ordinal, page_index, operation, output, None)
+    }
+
+    /// Authenticates a private observation using the caller's borrowed hasher.
+    ///
+    /// # Errors
+    /// Returns source, proof, borrowed hashing, cancellation, or deadline errors.
+    pub(super) fn fetch_with_borrowed_hasher(
+        &mut self,
+        region_ordinal: u32,
+        page_index: u64,
+        operation: &dyn SourceOperation,
+        output: &mut [u8; PAGE_BYTES],
+        hasher: Option<&NativePageHasher>,
+    ) -> io::Result<(u32, PageDigest, PageProof)> {
+        self.fetch_with_page_hasher::<true>(region_ordinal, page_index, operation, output, hasher)
+    }
+
+    fn fetch_with_page_hasher<const BORROWED: bool>(
+        &mut self,
+        region_ordinal: u32,
+        page_index: u64,
+        operation: &dyn SourceOperation,
+        output: &mut [u8; PAGE_BYTES],
+        hasher: Option<&NativePageHasher>,
+    ) -> io::Result<(u32, PageDigest, PageProof)> {
         if self.poisoned {
             return Err(invalid("source authority is unavailable"));
         }
@@ -314,13 +380,26 @@ impl LazyPageSource {
         if proof.region_id() != region.id() || proof.page_index() != page_index {
             return Err(invalid("source proof coordinate differs from request"));
         }
-        let digest = proof
-            .verify(
-                response.page,
-                &self.root,
-                RamRootDigest::from_bytes(self.binding.root_digest),
-            )
-            .map_err(invalid)?;
+        let expected = RamRootDigest::from_bytes(self.binding.root_digest);
+        let digest = if BORROWED && let Some(hasher) = hasher {
+            // Authentication stays inside the poisoned source operation. The
+            // native caller hashes these actual response bytes synchronously;
+            // successful readiness and endpoint reuse remain later effects.
+            proof
+                .verify_identity(&self.root, expected)
+                .map_err(invalid)?;
+            if response.page.len() != proof.valid_length() as usize {
+                return Err(invalid(crucible_ram::RamError::InvalidLength));
+            }
+            if hasher.hash(response.page)? != proof.page_digest() {
+                return Err(invalid(crucible_ram::RamError::DigestMismatch));
+            }
+            proof.page_digest()
+        } else {
+            proof
+                .verify(response.page, &self.root, expected)
+                .map_err(invalid)?
+        };
 
         transport.ready(libc::POLLOUT)?;
         operation.complete()?;
@@ -474,6 +553,152 @@ mod tests {
             root_digest: *root.digest().as_bytes(),
         };
         (root, tree, binding)
+    }
+
+    struct BorrowedHashState<'a> {
+        operation: &'a LiveOperation,
+        calls: std::sync::atomic::AtomicUsize,
+        before_completion: std::sync::atomic::AtomicBool,
+        refusal: libc::c_int,
+    }
+
+    extern "C" fn borrowed_test_hash(
+        context: *mut std::ffi::c_void,
+        bytes: *const u8,
+        valid: u32,
+        output: *mut u8,
+    ) -> libc::c_int {
+        // SAFETY: this test lends one initialized stack state synchronously.
+        // The source lends its valid response slice and writable 32-byte output.
+        let state = unsafe { &*context.cast::<BorrowedHashState<'_>>() };
+        state
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        state.before_completion.store(
+            !state
+                .operation
+                .completed
+                .load(std::sync::atomic::Ordering::Acquire),
+            std::sync::atomic::Ordering::Release,
+        );
+        if state.refusal != 0 {
+            return state.refusal;
+        }
+        // SAFETY: the synchronous callback's input length was checked above the
+        // borrowed verifier, and its output remains owned by the calling source.
+        let bytes = unsafe { std::slice::from_raw_parts(bytes, valid as usize) };
+        match PageDigest::hash(bytes) {
+            Ok(digest) => {
+                // SAFETY: the borrowed source output has exactly 32 bytes and
+                // never aliases this independently computed digest.
+                unsafe { std::ptr::copy_nonoverlapping(digest.as_bytes().as_ptr(), output, 32) };
+                0
+            }
+            Err(_) => -libc::EINVAL,
+        }
+    }
+
+    #[test]
+    // crucible-lint: allow clippy-disallowed-method -- This test retains one finite host source deadline while checking that authentication precedes completion and reuse.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test-only original source deadline"
+    )]
+    fn borrowed_hash_authenticates_before_source_completion_or_reuse() {
+        for (page, wrong_identity, refusal) in [
+            (b"content".as_slice(), false, 0),
+            (b"changed".as_slice(), false, 0),
+            (b"content".as_slice(), true, 0),
+            (b"content".as_slice(), false, -libc::EPIPE),
+        ] {
+            let (root, tree, binding) = fixture();
+            let (client, mut server) = UnixStream::pair().unwrap();
+            let (cancel_read, _cancel_write) = UnixStream::pair().unwrap();
+            let mut source = LazyPageSource::bind(
+                client,
+                cancel_read.into(),
+                binding,
+                &root.encode(),
+                *root.topology().digest().as_bytes(),
+                Limits::default(),
+            )
+            .unwrap();
+            let worker = std::thread::spawn(move || {
+                let request = read_ram_page_request(&mut server).unwrap();
+                let tree = if wrong_identity {
+                    RegionTree::from_page_digests(
+                        7,
+                        &[PageDigest::hash(b"changed").unwrap()],
+                        &MetadataBudget::new(64 * 1024),
+                    )
+                    .unwrap()
+                } else {
+                    tree
+                };
+                let proof = tree.proof("machine.main", 0).unwrap().encode();
+                write_ram_page_response(
+                    &mut server,
+                    RamPageResponse {
+                        binding,
+                        sequence: request.sequence,
+                        status: RamPageStatus::Page,
+                        page,
+                        proof: &proof,
+                    },
+                )
+                .unwrap();
+            });
+            let operation = LiveOperation {
+                started: Instant::now(),
+                total_ms: std::sync::atomic::AtomicU64::new(1000),
+                completed: std::sync::atomic::AtomicBool::new(false),
+            };
+            let mut state = BorrowedHashState {
+                operation: &operation,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                before_completion: std::sync::atomic::AtomicBool::new(false),
+                refusal,
+            };
+            let hasher = NativePageHasher {
+                hash: Some(borrowed_test_hash),
+                context: std::ptr::from_mut(&mut state).cast(),
+            };
+            let mut scratch = [0xa5; PAGE_BYTES];
+
+            let result =
+                source.fetch_with_borrowed_hasher(0, 0, &operation, &mut scratch, Some(&hasher));
+
+            assert_eq!(
+                state.calls.load(std::sync::atomic::Ordering::Acquire),
+                usize::from(!wrong_identity)
+            );
+            if !wrong_identity {
+                assert!(
+                    state
+                        .before_completion
+                        .load(std::sync::atomic::Ordering::Acquire)
+                );
+            }
+            let success = page == b"content" && !wrong_identity && refusal == 0;
+            assert_eq!(result.is_ok(), success);
+            assert_eq!(
+                operation
+                    .completed
+                    .load(std::sync::atomic::Ordering::Acquire),
+                success
+            );
+            assert_eq!(source.poisoned, !success);
+            if success {
+                assert_eq!(&scratch[..7], b"content");
+                assert!(scratch[7..].iter().all(|byte| *byte == 0));
+            } else {
+                assert_eq!(scratch, [0xa5; PAGE_BYTES]);
+                if refusal != 0 {
+                    assert_eq!(result.err().unwrap().raw_os_error(), Some(libc::EPIPE));
+                }
+            }
+            worker.join().unwrap();
+        }
     }
 
     #[test]

@@ -70,6 +70,7 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
         "crucible-qemu",
         &[
             ("default", &[][..]),
+            ("kernel-swap-measurement", &[][..]),
             (
                 "test-support",
                 &["crucible/test-double", "crucible-ram/test-support"][..],

@@ -141,11 +141,8 @@ impl fmt::Display for SqliteHeapError {
 
 impl Error for SqliteHeapError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.owner
-            .as_ref()?
-            .failure
-            .get()
-            .map(|error| error as &dyn Error)
+        let failure = self.owner.as_ref()?.failure.get()?;
+        Some(failure)
     }
 }
 

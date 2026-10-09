@@ -29,6 +29,14 @@ use crate::content_store::{
 };
 
 mod backing;
+mod bounded_read;
+mod canonical_tree;
+mod difference;
+pub use bounded_read::BoundedReadRequest;
+#[cfg(test)]
+pub(crate) use bounded_read::{
+    read_tree_for_test, with_failed_work_for_test, with_pending_validation_for_test,
+};
 mod codec;
 mod codec_ownership;
 mod record_account;
@@ -45,7 +53,10 @@ pub use retention::{FencedRamRetention, RamRetentionAuthority};
 mod object_source;
 mod page_read;
 pub use page_read::{RamPageBytes, RamPageRead};
+mod read_failure;
 mod receive;
+pub use read_failure::{RamReadContinuation, RamReadValidation};
+mod response;
 mod send;
 mod store_boundary;
 mod transfer;
@@ -58,6 +69,7 @@ mod tests;
 pub use crucible_protocol::ram_transfer::RamTransferCodecError;
 pub use object_source::{RamObjectCoordinate, RamObjectRecord};
 pub use receive::{RamTransferReceiver, RamTransferStep};
+pub use response::RamTransferResponse;
 pub use send::RamTransferSender;
 pub use transfer::{RamClosureStored, RamTransferReport};
 pub use tree::{RamPageChange, RamPageReader, RamVerificationReport};
@@ -180,8 +192,11 @@ pub trait RamRootLease: Send + Sync {
 /// Journal and GC owner for immutable RAM publication and discovery.
 ///
 /// A publication session must keep GC exclusion or equivalent retention active
-/// while new children are persisted and until `retain_root` installs successor
-/// ownership. Implementations cannot substitute advisory TTLs for live claims.
+/// while new immutable objects are persisted and until `retain_root` installs
+/// successor ownership. A validated catalog can precede its descendants; only
+/// the complete closure permits root ownership. Unnamed partial progress may
+/// become collectable after the operation closes. Implementations cannot
+/// substitute advisory TTLs for live claims.
 pub trait RamRetention: Send + Sync {
     /// Retains an object discovered or persisted within this operation.
     ///
@@ -349,6 +364,25 @@ impl<'a> Work<'a> {
             account,
             destination: None,
         })
+    }
+
+    fn from_retained(
+        limits: RamStoreLimits,
+        original: &'a crate::owned_decode::DecodeBudget,
+        boundary: &'a mut dyn FnMut() -> Result<(), RamStoreError>,
+        state: store_boundary::RetainedReadState,
+        visits: u64,
+        io_bytes: u64,
+    ) -> Self {
+        Self {
+            pending: None,
+            limits,
+            visits,
+            io_bytes,
+            boundary,
+            account: store_boundary::WorkAccount::from_retained(original, state),
+            destination: None,
+        }
     }
 
     fn destination(

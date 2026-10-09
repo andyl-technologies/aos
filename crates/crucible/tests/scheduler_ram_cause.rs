@@ -372,8 +372,7 @@ fn actual_sql_outcome(committed: bool) {
                     committed,
                     &mut || ram_boundary().map_err(|_| StoreError::Unavailable),
                     &mut || started.set(true),
-                    &crucible_cas::content_store::fixture_sqlite_heap()
-                        .expect("authored SQLite fixture process"),
+                    &crucible_cas::content_store::fixture_sqlite_heap().unwrap(),
                 )?;
                 observation = Some((
                     observed.generation,

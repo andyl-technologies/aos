@@ -44,6 +44,36 @@ impl<S> QemuQmpVmStateControlChannel<S>
 where
     S: QmpTimeoutStream,
 {
+    #[cfg(feature = "kernel-swap-measurement")]
+    pub(crate) fn discover_kernel_swap_admission(
+        &mut self,
+        cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        generation: u64,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpKernelSwapAdmission, QmpError> {
+        cancellation.discover_admission(&mut self.client, generation, original)
+    }
+
+    #[cfg(feature = "kernel-swap-measurement")]
+    pub(crate) fn observe_kernel_swap_residency(
+        &mut self,
+        cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        generation: u64,
+        topology_generation: u64,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpKernelSwapResidency, QmpError> {
+        cancellation.observe(&mut self.client, generation, topology_generation, original)
+    }
+
+    #[cfg(feature = "kernel-swap-measurement")]
+    pub(crate) fn close_kernel_swap_cancellation(
+        &mut self,
+        cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        cleanup: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        cancellation.close_after_failure(&mut self.client, cleanup)
+    }
+
     /// Attaches the independently owned target execution's live class budgets.
     pub fn set_host_operation_supervisor(
         &mut self,

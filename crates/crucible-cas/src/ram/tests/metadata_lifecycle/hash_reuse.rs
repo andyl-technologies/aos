@@ -13,6 +13,13 @@ fn original_ram_failure(error: &RamStoreError) -> &RamStoreError {
         ),
         RamStoreError::Store(storage) => match storage.original_failure() {
             StoreError::RamValidation { source } => original_ram_failure(source.storage_failure()),
+            StoreError::RamReadBoundary { source } => {
+                assert!(matches!(
+                    source.storage_failure(),
+                    RamStoreError::Store(StoreError::RamBoundary { .. })
+                ));
+                original_ram_failure(source.first_boundary().unwrap())
+            }
             _ => error,
         },
         error => error,

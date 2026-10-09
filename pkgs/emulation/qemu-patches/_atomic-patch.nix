@@ -6,26 +6,26 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "f2528b7caee5479b864b0cc7bf0e129c1b23f229cd069765db6f6339937571c7";
-  subject = "Integrate paged RAM and native execution fast paths";
-  body = "Retain authenticated paged RAM, independent writer epochs, scoped RAM\nidentities, transactional simulated memory faults, checkpoint source\nprotocols, staged restore ownership and native worker quiescence.\n\nCarry guarded native mutex waiter updates, sorted inline TCG page-lock\ncollections with stable spill ownership, derived crossing memberships,\nand validated thread-private TSC search positions. Preserve every guest\naccess, invalidation range, clock value, replay observation, virtual\ncoordinate, callback order and public process protocol.\n\nRetain RAM pause registration and native thread identity accessors while\ncombining the original fast-path source changes. Preserve per-file\nlicenses and all existing source, causal-control and guest SMC fixtures.\nKeep the separate selected-dirty-client iterator candidate unapplied.";
-  commit = "792413f18873f0a6a68a275d600f2cb60ad29973";
-  tree = "1161c6f38ca64c2a8c8e0a6985fdb0fbf2063236";
+  sha256 = "2e85a031aab8ddc0f684db8b8b21bb7c9ac24e89cc02222d806a38487248113c";
+  subject = "Retain guarded RAM observations and bounded residency queries";
+  body = "Preserve sealed native RAM authority and matching plugin readers.\nCompose independent root observation, admission-gated public roots,\nlive admitted-inventory validation and range-local discard refusal.\n\nAdd versioned paused admission and residency queries with bounded\ninterval observations and accepted-handler descriptor consumption.\nKeep original capture, replay, writer and process-protocol semantics,\nall file licenses and source-level experimental readiness holds.";
+  commit = "312db98148ea267d6c89bdc7fb7e31bb67f267e4";
+  tree = "c6386c7c4f2b446660a5667346121a980ce46ea0";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/native-ram-fast-path-integration";
+  branchRef = "dplecki/native-current188-artifact-union";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "bb782b56b266a21b7bcdc90f896daa98f215f4ca6407f19bc70c4478609a0339";
+  bundleSha256 = "2312615b06d45cb2027f8b144329d9c294f9fb9cec4a2d6fb6c513c405b95850";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
-  deterministicPatchDate = "2026-10-07T21:11:57+00:00";
+  deterministicPatchDate = "2026-10-09T01:38:47+00:00";
 
   additionalCapabilities = [
     {

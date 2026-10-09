@@ -150,7 +150,7 @@ impl CheckedReader {
     }
 }
 
-pub(super) fn check(
+pub(crate) fn check(
     original: &DecodeBudget,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {

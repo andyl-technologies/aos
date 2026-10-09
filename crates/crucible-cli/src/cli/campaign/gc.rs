@@ -26,6 +26,10 @@ use crate::cli_campaign_store::{
 };
 
 #[cfg(test)]
+#[path = "../../../tests/support/gc_component.rs"]
+mod gc_component;
+
+#[cfg(test)]
 #[path = "../../../tests/support/gc_quota_setup.rs"]
 mod gc_quota;
 
@@ -278,6 +282,17 @@ pub(super) fn run_campaign_store_gc(
     args: &CampaignStoreGcArgs,
     format: OutputFormat,
 ) -> Result<String, CliError> {
+    run_campaign_store_gc_with_loader(args, format, load_campaign_repository_store)
+}
+
+fn run_campaign_store_gc_with_loader<L>(
+    args: &CampaignStoreGcArgs,
+    format: OutputFormat,
+    load: L,
+) -> Result<String, CliError>
+where
+    L: FnOnce(&Path) -> Result<crucible_daemon::CampaignLocalRepositoryStore, CliError>,
+{
     validate_gc_paths(args)?;
     let maintenance =
         crucible_daemon::campaign_store_composition::CampaignArchiveHostOperation::start(
@@ -301,7 +316,7 @@ pub(super) fn run_campaign_store_gc(
         CampaignLoopbackServerConfig::default(),
     )
     .map_err(|error| maintenance_error(format!("invalid campaign owner profile: {error}")))?;
-    let store = load_campaign_repository_store(&args.store)?;
+    let store = load(&args.store)?;
     let prepared = config.prepare_with_store(store).map_err(|error| {
         maintenance_error(format!("campaign owner acquisition failed: {error}"))
     })?;
@@ -1001,10 +1016,9 @@ root = {:?}
 
     #[test]
     fn offline_gc_plans_reopens_and_applies_one_exact_empty_store() {
-        let fixture = GcFixture::new();
+        let fixture = GcFixture::for_gc();
         let mut args = fixture.args(CampaignStoreGcCommand::Plan);
-        let planned =
-            run_campaign_store_gc(&args, OutputFormat::Jsonl).expect("plan empty repository GC");
+        let planned = fixture.run_gc(&args).expect("plan empty repository GC");
         let planned: serde_json::Value =
             serde_json::from_str(&planned).expect("decode planning report");
         assert_eq!(planned["operation"], "plan");
@@ -1018,7 +1032,8 @@ root = {:?}
                 .is_dir()
         );
 
-        let replay = run_campaign_store_gc(&args, OutputFormat::Jsonl)
+        let replay = fixture
+            .run_gc(&args)
             .expect("reopen exact planning journal");
         let replay: serde_json::Value =
             serde_json::from_str(&replay).expect("decode replay report");
@@ -1026,16 +1041,14 @@ root = {:?}
         assert_eq!(replay["journal_disposition"], "existing");
 
         args.operation = CampaignStoreGcCommand::Apply;
-        let applied =
-            run_campaign_store_gc(&args, OutputFormat::Jsonl).expect("apply empty repository GC");
+        let applied = fixture.run_gc(&args).expect("apply empty repository GC");
         let applied: serde_json::Value =
             serde_json::from_str(&applied).expect("decode apply report");
         assert_eq!(applied["plan"], planned["plan"]);
         assert_eq!(applied["phase"], "complete");
         assert_eq!(applied["apply_status"], "applied");
 
-        let replayed =
-            run_campaign_store_gc(&args, OutputFormat::Jsonl).expect("replay completed GC apply");
+        let replayed = fixture.run_gc(&args).expect("replay completed GC apply");
         let replayed: serde_json::Value =
             serde_json::from_str(&replayed).expect("decode apply replay report");
         assert_eq!(replayed["apply_status"], "already-complete");
@@ -1043,16 +1056,14 @@ root = {:?}
 
     #[test]
     fn offline_gc_cancellation_is_durable_and_apply_refuses_it() {
-        let fixture = GcFixture::new();
+        let fixture = GcFixture::for_gc();
         let mut args = fixture.args(CampaignStoreGcCommand::Plan);
-        let planned =
-            run_campaign_store_gc(&args, OutputFormat::Jsonl).expect("plan empty repository GC");
+        let planned = fixture.run_gc(&args).expect("plan empty repository GC");
         let planned: serde_json::Value =
             serde_json::from_str(&planned).expect("decode planning report");
 
         args.operation = CampaignStoreGcCommand::Cancel;
-        let cancelled = run_campaign_store_gc(&args, OutputFormat::Jsonl)
-            .expect("cancel planned repository GC");
+        let cancelled = fixture.run_gc(&args).expect("cancel planned repository GC");
         let cancelled: serde_json::Value =
             serde_json::from_str(&cancelled).expect("decode cancellation report");
         assert_eq!(cancelled["plan"], planned["plan"]);
@@ -1060,16 +1071,40 @@ root = {:?}
         assert_eq!(cancelled["phase"], "cancelled");
         assert_eq!(cancelled["journal_disposition"], "cancelled");
 
-        let replayed = run_campaign_store_gc(&args, OutputFormat::Jsonl)
+        let replayed = fixture
+            .run_gc(&args)
             .expect("replay repository GC cancellation");
         let replayed: serde_json::Value =
             serde_json::from_str(&replayed).expect("decode cancellation replay report");
         assert_eq!(replayed["journal_disposition"], "already-cancelled");
 
         args.operation = CampaignStoreGcCommand::Apply;
-        let error = run_campaign_store_gc(&args, OutputFormat::Jsonl)
+        let error = fixture
+            .run_gc(&args)
             .expect_err("cancelled repository GC must not apply");
         assert!(error.to_string().contains("records a cancelled plan"));
+    }
+
+    #[test]
+    fn offline_gc_closed_component_origin_refuses_before_journal_publication() {
+        let mut fixture = GcFixture::new();
+        let component =
+            gc_component::ComponentGcStore::new(&fixture.objects, &fixture.root.join("refs"))
+                .expect("finite component GC store");
+        component.close();
+        fixture.component = Some(component);
+
+        let error = fixture
+            .run_gc(&fixture.args(CampaignStoreGcCommand::Plan))
+            .expect_err("closed original component authority refuses planning");
+
+        assert!(
+            error
+                .to_string()
+                .contains("component GC store admission failed")
+        );
+        assert!(error.to_string().contains("quota"));
+        assert!(!fixture.journal.exists());
     }
 
     #[test]
@@ -1161,6 +1196,8 @@ root = {:?}
         policy: PathBuf,
         store: PathBuf,
         journal: PathBuf,
+        native_projected: bool,
+        component: Option<gc_component::ComponentGcStore>,
     }
 
     impl GcFixture {
@@ -1216,7 +1253,9 @@ root = {objects:?}
             .expect("write GC store deployment");
             fs::set_permissions(&store, Permissions::from_mode(0o600))
                 .expect("secure GC store deployment");
-            gc_quota::prepare(&store).expect("project native GC store quota");
+            let native_projected = gc_quota::prepare(&store)
+                .expect("project native GC store quota")
+                .is_some();
             Self {
                 journal: root.join("journal"),
                 _directory: directory,
@@ -1225,6 +1264,43 @@ root = {objects:?}
                 objects,
                 policy,
                 store,
+                native_projected,
+                component: None,
+            }
+        }
+
+        fn for_gc() -> Self {
+            let mut fixture = Self::new();
+            if !fixture.native_projected {
+                fixture.component = Some(
+                    gc_component::ComponentGcStore::new(
+                        &fixture.objects,
+                        &fixture.root.join("refs"),
+                    )
+                    .expect("finite component GC store"),
+                );
+            }
+            fixture
+        }
+
+        fn run_gc(&self, args: &CampaignStoreGcArgs) -> Result<String, CliError> {
+            match &self.component {
+                Some(component) => {
+                    let result =
+                        run_campaign_store_gc_with_loader(args, OutputFormat::Jsonl, |path| {
+                            if path != self.store {
+                                return Err(maintenance_error("component GC store path mismatch"));
+                            }
+                            component.store().map_err(|error| {
+                                maintenance_error(format!(
+                                    "component GC store admission failed: {error}"
+                                ))
+                            })
+                        });
+                    component.assert_idle();
+                    result
+                }
+                None => run_campaign_store_gc(args, OutputFormat::Jsonl),
             }
         }
 

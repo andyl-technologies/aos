@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use crucible_protocol::ram_transfer::{
-    MAX_TRANSFER_CHUNK_BYTES, RamTransferLimits, RamTransferMessage, RamTransferOffer,
+    MAX_TRANSFER_CHUNK_BYTES, RamTransferLimits, RamTransferMessage,
 };
 use crucible_ram::RegionDescriptor;
 
@@ -83,40 +83,38 @@ impl RamStore {
         destination_original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<RamClosureStored, RamStoreError> {
-        let offer = RamTransferOffer {
-            whole_world_root: whole_world_root.to_string(),
-            ram_root: source.object_id().to_string(),
-            root_record: source.record().encode(),
-            destination: destination_identity.to_owned(),
-            durable_placements: destination.durability.minimum_durable_placements(),
-            limits: RamTransferLimits {
-                objects: self
-                    .limits
-                    .maximum_object_visits
-                    .min(destination.limits.maximum_object_visits),
-                bytes: self
-                    .limits
-                    .maximum_io_bytes
-                    .min(destination.limits.maximum_io_bytes),
-                chunk_bytes: MAX_TRANSFER_CHUNK_BYTES,
-            },
+        let limits = RamTransferLimits {
+            objects: self
+                .limits
+                .maximum_object_visits
+                .min(destination.limits.maximum_object_visits),
+            bytes: self
+                .limits
+                .maximum_io_bytes
+                .min(destination.limits.maximum_io_bytes),
+            chunk_bytes: MAX_TRANSFER_CHUNK_BYTES,
         };
-        let mut sender = RamTransferSender::new(self.clone(), source.clone(), operation, offer)?;
-        let encoded_offer = sender.offer().encode()?;
-        let mut receiver = RamTransferReceiver::new(
-            destination.clone(),
-            retention,
-            RamTransferMessage::decode(&encoded_offer)?,
+        let mut sender = RamTransferSender::new(
+            self.clone(),
+            source.clone(),
+            operation,
+            whole_world_root,
+            destination_identity,
+            destination.durability.minimum_durable_placements(),
+            limits,
+            source_original,
         )?;
+        let offer = sender.offer()?;
+        let offered = super::response::decode_local(&offer, source_original, destination_original)?;
+        let mut receiver = RamTransferReceiver::new(destination.clone(), retention, offered)?;
         // Storage and transport service share the same operational boundary.
         // A RefCell only sequences mutable callback access; no endpoint may hold
         // that borrow across its call into the peer.
         let boundary = std::cell::RefCell::new(boundary);
         let mut exchange = |request: RamTransferMessage| {
             let request = RamTransferMessage::decode(&request.encode()?)?;
-            let response =
-                sender.respond(request, source_original, &mut || (boundary.borrow_mut())())?;
-            Ok(RamTransferMessage::decode(&response.encode()?)?)
+            let response = sender.respond(request, &mut || (boundary.borrow_mut())())?;
+            super::response::decode_local(&response, source_original, destination_original)
         };
         match receiver.receive(&mut exchange, destination_original, &mut || {
             (boundary.borrow_mut())()
@@ -240,27 +238,13 @@ impl RamStore {
         self.validate_root_catalogs(&before.record, &before.regions)?;
         self.validate_root_catalogs(&after.record, &after.regions)?;
         let mut work = Work::new(self.limits, original, boundary)?;
-        let mut changed = 0_u64;
-        for ((region, before), after) in before
-            .record
-            .topology()
-            .regions()
-            .iter()
-            .filter(|region| before.record.scope().includes(region.class()))
-            .zip(before.regions.iter())
-            .zip(after.regions.iter())
-        {
-            self.diff_region(
-                region.id(),
-                *before,
-                *after,
-                0,
-                visitor,
-                &mut changed,
-                &mut work,
-            )?;
-        }
-        Ok(changed)
+        super::bounded_read::read_difference(
+            self.backend.as_ref(),
+            before,
+            after,
+            visitor,
+            &mut work,
+        )
     }
 
     // crucible-lint: allow rust-allow -- recursive transfer keeps page geometry, destination retention, receipt counters, and the original work budget explicit.
@@ -340,54 +324,5 @@ impl RamStore {
             Ok(())
         })?;
         Ok(())
-    }
-
-    // crucible-lint: allow rust-allow -- comparison keeps both authenticated references, logical position, visitor, counter, and original work budget explicit.
-    #[allow(clippy::too_many_arguments)]
-    fn diff_region(
-        &self,
-        region: &str,
-        before: TreeRef,
-        after: TreeRef,
-        first: u64,
-        visitor: &mut dyn FnMut(&str, u64) -> Result<(), RamStoreError>,
-        changed: &mut u64,
-        work: &mut Work<'_>,
-    ) -> Result<(), RamStoreError> {
-        // Metadata is fetched even for equal roots: opaque root digests grant
-        // identity, not proof that a supplied storage realization is authentic.
-        let old = self.read_tree(before, work)?;
-        let new = self.read_tree(after, work)?;
-        if before.digest == after.digest {
-            return Ok(());
-        }
-        match (old, new) {
-            (TreeNode::Leaf { .. }, TreeNode::Leaf { .. }) => {
-                visitor(region, first)?;
-                *changed = changed
-                    .checked_add(1)
-                    .ok_or(RamStoreError::Limit("different pages"))?;
-                Ok(())
-            }
-            (
-                TreeNode::Branch {
-                    left: old_left,
-                    right: old_right,
-                },
-                TreeNode::Branch { left, right },
-            ) => {
-                self.diff_region(region, old_left, left, first, visitor, changed, work)?;
-                self.diff_region(
-                    region,
-                    old_right,
-                    right,
-                    first + (1_u64 << (after.height - 1)),
-                    visitor,
-                    changed,
-                    work,
-                )
-            }
-            _ => Err(RamStoreError::Invalid("RAM difference tree shape")),
-        }
     }
 }

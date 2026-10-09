@@ -345,6 +345,9 @@ fn every_typed_node_effect_translates_to_its_closed_wire_schema() {
                 },
             };
         }
+        if kind == crucible::model::EffectKind::MemoryService {
+            action.phase = FaultPhase::Load;
+        }
         if kind == crucible::model::EffectKind::MemoryMutation {
             let prepared = super::super::prepare_memory_action_payload(
                 &action,
@@ -453,6 +456,392 @@ fn mapped_memory_service_action(value: SignalValue) -> ResolvedBindingAction {
         cause: BindingActionCause::Signal,
         expected_precondition: None,
     }
+}
+
+fn shared_memory_action(kind: EffectKind, space: &str, vcpu: Option<u32>) -> ResolvedBindingAction {
+    let value = match kind {
+        EffectKind::MemoryAccessTransform => json!({"kind":"memory_access_transform","parameters":{
+            "range":{"start":4096,"length":64},
+            "accesses":{"fetch":false,"cpu_load":true,"cpu_store":false,
+                        "dma_read":false,"dma_write":false,"page_table_walk":false},
+            "violate_atomicity":false,
+            "mutation":{"kind":"read_corrupt","parameters":{"mask":"01"}},
+            "occurrence":{"kind":"every"}
+        }}),
+        EffectKind::MemoryRegionState => json!({"kind":"memory_region_state","parameters":{
+            "range":{"start":4096,"length":64},"kind":"retention",
+            "process":{"kind":"retention","parameters":{"interval_nanos":100,"decay_mask":"01"}}
+        }}),
+        EffectKind::MemoryEccEvent => json!({"kind":"memory_ecc_event","parameters":{
+            "target_vcpu":2,"kind":"corrected","address":4096,"syndrome":1,
+            "bank":"bank-0","channel":"channel-0","rank":"rank-0",
+            "guest_visibility":{"kind":"telemetry_only"}
+        }}),
+        _ => panic!("shared memory fixture kind"),
+    };
+    let specification = EffectSpecification::Node(serde_json::from_value(value).expect("effect"));
+    let descriptor = specification.kind().descriptor();
+    let lifetime = descriptor.lifetimes[0];
+    let mut action = mapped_memory_service_action(SignalValue::DurationNanos(4));
+    action.kind = if lifetime == EffectLifetime::Persistent {
+        BindingActionKind::UpsertPersistent
+    } else {
+        BindingActionKind::Apply
+    };
+    action.phase = descriptor.phases[0];
+    action.effect = Arc::new(
+        EffectRequest::new(descriptor.semantic_version, lifetime, specification)
+            .expect("shared effect request"),
+    );
+    action.target = ResolvedFaultTarget::MemoryRange {
+        node: object_id("node-a"),
+        address_space: object_id(space),
+        guest_address: 4096,
+        vcpu,
+        length_bytes: 64,
+    };
+    action.mapping_output = Arc::new(ResolvedMappingOutput::Activation { active: true });
+    action
+}
+
+#[test]
+fn shared_memory_target_matches_the_production_node_header()
+-> Result<(), Box<dyn std::error::Error>> {
+    let output = std::env::var_os("AOS_SHARED_MEMORY_TARGET_OUTPUT").map(std::path::PathBuf::from);
+    if let Some(directory) = &output {
+        std::fs::create_dir_all(directory)?;
+    }
+    for (name, kind, space, vcpu) in [
+        ("access-gpa", EffectKind::MemoryAccessTransform, "gpa", None),
+        (
+            "access-gva",
+            EffectKind::MemoryAccessTransform,
+            "gva",
+            Some(0),
+        ),
+        ("region-gpa", EffectKind::MemoryRegionState, "gpa", None),
+        ("region-gva", EffectKind::MemoryRegionState, "gva", Some(0)),
+        ("ecc-gpa", EffectKind::MemoryEccEvent, "gpa", None),
+    ] {
+        let action = shared_memory_action(kind, space, vcpu);
+        let encoded = encode_node_action(&action, [3; 32])?;
+        let bytes = encoded.payload.encode()?;
+        let prepared = super::super::PreparedTypedNodeAction {
+            action: action.clone(),
+            action_id: action.id(),
+            node: crucible::model::NodeId {
+                name: encoded.node.clone(),
+            },
+            coordinate: 1,
+            command_kind: encoded.command_kind,
+            payload: bytes.clone(),
+        };
+        let header = super::super::evidence::typed_command_header(&prepared, 1, 1, 0, [0; 32])?;
+        for expected in [
+            NodeFaultFieldV1::hash(node_fault_field::T1, header.target_node_hash),
+            NodeFaultFieldV1::boolean(node_fault_field::T3, vcpu.is_some()),
+            NodeFaultFieldV1::u32(node_fault_field::T4, vcpu.unwrap_or(0)),
+        ] {
+            assert!(encoded.payload.fields.contains(&expected));
+        }
+        assert_eq!(encoded.payload.action_hash, action.id().bytes);
+        assert_eq!(NodeFaultPayloadV1::decode(&bytes)?, encoded.payload);
+        if kind == EffectKind::MemoryEccEvent {
+            // The ECC receiver is independent of physical target coordinates.
+            assert!(
+                encoded
+                    .payload
+                    .fields
+                    .contains(&NodeFaultFieldV1::u32(node_fault_field::P8, 2))
+            );
+        }
+        if let Some(directory) = &output {
+            std::fs::write(directory.join(format!("{name}.bin")), &bytes)?;
+            std::fs::write(directory.join(format!("{name}.header")), header.encode())?;
+            let mut old_target = encoded.payload;
+            *old_target
+                .fields
+                .iter_mut()
+                .find(|field| field.tag == node_fault_field::T1)
+                .expect("memory target") = id_field(node_fault_field::T1, &object_id(space));
+            std::fs::write(
+                directory.join(format!("{name}-old-t1.bin")),
+                old_target.encode()?,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn shared_memory_target_refuses_ambiguous_coordinates_and_preserves_removal() {
+    for kind in [
+        EffectKind::MemoryAccessTransform,
+        EffectKind::MemoryRegionState,
+        EffectKind::MemoryEccEvent,
+    ] {
+        for (space, vcpu) in [("gpa", Some(0)), ("gva", None), ("unknown", None)] {
+            let mut action = shared_memory_action(kind, space, vcpu);
+            assert!(matches!(
+                encode_node_action(&action, [3; 32]),
+                Err(NodeFaultPayloadError::TargetValue)
+            ));
+            if kind != EffectKind::MemoryEccEvent {
+                action.kind = BindingActionKind::RemovePersistent;
+                assert!(
+                    encode_node_action(&action, [3; 32])
+                        .expect("removal")
+                        .payload
+                        .fields
+                        .is_empty()
+                );
+            }
+        }
+    }
+    assert!(matches!(
+        encode_node_action(
+            &shared_memory_action(EffectKind::MemoryEccEvent, "gva", Some(0)),
+            [3; 32]
+        ),
+        Err(NodeFaultPayloadError::TargetValue)
+    ));
+}
+
+#[test]
+fn shared_memory_coordinate_refusal_follows_existing_materialization_errors() {
+    let mut action = mapped_memory_service_action(SignalValue::I64(1));
+    let ResolvedFaultTarget::MemoryRange {
+        address_space,
+        vcpu,
+        ..
+    } = &mut action.target
+    else {
+        panic!("memory target")
+    };
+    *address_space = object_id("gpa");
+    *vcpu = Some(0);
+    assert!(matches!(
+        encode_node_action(&action, [3; 32]),
+        Err(NodeFaultPayloadError::FieldValue { tag: 1 })
+    ));
+}
+
+#[test]
+fn memory_service_actor_follows_the_authenticated_phase_and_target()
+-> Result<(), Box<dyn std::error::Error>> {
+    let output = std::env::var_os("AOS_MEMORY_SERVICE_ACTOR_OUTPUT").map(std::path::PathBuf::from);
+    if let Some(directory) = &output {
+        std::fs::create_dir_all(directory)?;
+    }
+    for (name, phase, vcpu, space, actor) in [
+        (
+            "cpu-load-gva",
+            FaultPhase::Load,
+            Some(0),
+            "gva",
+            json!({"kind":"cpu_single_access","parameters":{"access":"load"}}),
+        ),
+        (
+            "cpu-store-gva",
+            FaultPhase::Store,
+            Some(0),
+            "gva",
+            json!({"kind":"cpu_single_access","parameters":{"access":"store"}}),
+        ),
+        (
+            "fwcfg-read",
+            FaultPhase::DmaRead,
+            None,
+            "gpa",
+            json!({"kind":"fw_cfg_payload","parameters":{"direction":"read"}}),
+        ),
+        (
+            "fwcfg-write",
+            FaultPhase::DmaWrite,
+            None,
+            "gpa",
+            json!({"kind":"fw_cfg_payload","parameters":{"direction":"write"}}),
+        ),
+    ] {
+        let mut action = mapped_memory_service_action(SignalValue::DurationNanos(4));
+        action.phase = phase;
+        let ResolvedFaultTarget::MemoryRange {
+            address_space,
+            vcpu: target_vcpu,
+            ..
+        } = &mut action.target
+        else {
+            panic!("memory target")
+        };
+        *address_space = object_id(space);
+        *target_vcpu = vcpu;
+
+        let encoded = encode_node_action(&action, [3; 32])?;
+        assert_eq!(encoded.payload.action_hash, action.id().bytes);
+        assert_eq!(
+            encoded
+                .payload
+                .fields
+                .iter()
+                .find(|field| field.tag == node_fault_field::P7),
+            Some(&json_field(node_fault_field::P7, &actor)?),
+        );
+        let bytes = encoded.payload.encode()?;
+        assert_eq!(NodeFaultPayloadV1::decode(&bytes)?, encoded.payload);
+        let prepared = super::super::PreparedTypedNodeAction {
+            action: action.clone(),
+            action_id: action.id(),
+            node: crucible::model::NodeId {
+                name: encoded.node.clone(),
+            },
+            coordinate: 1,
+            command_kind: encoded.command_kind,
+            payload: bytes.clone(),
+        };
+        let header = super::super::evidence::typed_command_header(&prepared, 1, 1, 0, [0; 32])?;
+        assert_eq!(
+            encoded
+                .payload
+                .fields
+                .iter()
+                .find(|field| field.tag == node_fault_field::T1),
+            Some(&NodeFaultFieldV1::hash(
+                node_fault_field::T1,
+                header.target_node_hash
+            )),
+        );
+        let mut without_actor = encoded.payload.clone();
+        without_actor
+            .fields
+            .retain(|field| field.tag != node_fault_field::P7);
+        assert!(
+            without_actor.encode().is_err(),
+            "actor is a required wire field"
+        );
+
+        if let Some(directory) = &output {
+            std::fs::write(directory.join(format!("{name}.bin")), &bytes)?;
+            std::fs::write(directory.join(format!("{name}.header")), header.encode())?;
+            let mut old_target = encoded.payload;
+            *old_target
+                .fields
+                .iter_mut()
+                .find(|field| field.tag == node_fault_field::T1)
+                .expect("memory target") = id_field(node_fault_field::T1, &object_id(space));
+            std::fs::write(
+                directory.join(format!("{name}-old-t1.bin")),
+                old_target.encode()?,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn memory_service_actor_refuses_ambiguous_or_unsupported_targets() {
+    for (phase, vcpu, space, length) in [
+        (FaultPhase::Load, None, "gpa", 1),
+        (FaultPhase::Store, None, "gpa", 1),
+        (FaultPhase::Load, Some(0), "gpa", 1),
+        (FaultPhase::Store, Some(0), "gpa", 1),
+        (FaultPhase::Load, Some(0), "gva", 2),
+        (FaultPhase::Load, Some(0), "unknown", 1),
+        (FaultPhase::Fetch, Some(0), "gpa", 1),
+        (FaultPhase::PageTableWalk, Some(0), "gpa", 1),
+        (FaultPhase::Queue, Some(0), "gpa", 1),
+        (FaultPhase::DmaRead, Some(0), "gpa", 1),
+        (FaultPhase::DmaWrite, None, "gva", 1),
+        (FaultPhase::DmaRead, None, "gpa", 0),
+    ] {
+        let mut action = mapped_memory_service_action(SignalValue::DurationNanos(4));
+        action.phase = phase;
+        let ResolvedFaultTarget::MemoryRange {
+            address_space,
+            vcpu: target_vcpu,
+            length_bytes,
+            ..
+        } = &mut action.target
+        else {
+            panic!("memory target")
+        };
+        *address_space = object_id(space);
+        *target_vcpu = vcpu;
+        *length_bytes = length;
+        assert!(matches!(
+            encode_node_action(&action, [3; 32]),
+            Err(NodeFaultPayloadError::TargetValue)
+        ));
+    }
+    for (scope, byte_rate, operation_rate, latency) in [
+        (crucible::model::MemoryServiceScope::Node, None, None, 1),
+        (crucible::model::MemoryServiceScope::Range, Some(1), None, 1),
+        (crucible::model::MemoryServiceScope::Range, None, Some(1), 1),
+        (crucible::model::MemoryServiceScope::Range, Some(1), None, 0),
+    ] {
+        let mut action = mapped_memory_service_action(SignalValue::DurationNanos(4));
+        action.phase = FaultPhase::DmaRead;
+        let ResolvedFaultTarget::MemoryRange {
+            address_space,
+            vcpu,
+            ..
+        } = &mut action.target
+        else {
+            panic!("memory target")
+        };
+        *address_space = object_id("gpa");
+        *vcpu = None;
+        action.mapping_output = Arc::new(ResolvedMappingOutput::Activation { active: true });
+        action.effect = Arc::new(
+            EffectRequest::new(
+                crucible::model::EFFECT_SEMANTIC_VERSION,
+                EffectLifetime::Persistent,
+                EffectSpecification::Node(NodeEffectSpecification::MemoryService {
+                    latency_picoseconds: latency,
+                    bandwidth_bytes_per_second: byte_rate.map(|rate| {
+                        crucible::model::PositiveU64::new("byte rate", rate)
+                            .expect("positive byte rate")
+                    }),
+                    operations_per_second: operation_rate.map(|rate| {
+                        crucible::model::PositiveU64::new("operation rate", rate)
+                            .expect("positive operation rate")
+                    }),
+                    sharing_scope: scope,
+                }),
+            )
+            .expect("valid effect; unsupported native actor"),
+        );
+        assert!(matches!(
+            encode_node_action(&action, [3; 32]),
+            Err(NodeFaultPayloadError::TargetValue)
+        ));
+    }
+
+    let mut zero = mapped_memory_service_action(SignalValue::DurationNanos(0));
+    zero.phase = FaultPhase::DmaRead;
+    let ResolvedFaultTarget::MemoryRange {
+        address_space,
+        vcpu,
+        ..
+    } = &mut zero.target
+    else {
+        panic!("memory target")
+    };
+    *address_space = object_id("gpa");
+    *vcpu = None;
+    assert!(matches!(
+        encode_node_action(&zero, [3; 32]),
+        Err(NodeFaultPayloadError::FieldValue { tag: 1 })
+    ));
+
+    zero.kind = BindingActionKind::RemovePersistent;
+    zero.phase = FaultPhase::Fetch;
+    assert!(
+        encode_node_action(&zero, [3; 32])
+            .expect("removal has no actor")
+            .payload
+            .fields
+            .is_empty()
+    );
 }
 
 #[test]
@@ -598,13 +987,19 @@ fn test_target(kind: crucible::model::EffectKind) -> ResolvedFaultTarget {
         },
         EffectKind::MemoryAccessTransform
         | EffectKind::MemoryEccEvent
-        | EffectKind::MemoryRegionState
-        | EffectKind::MemoryService => ResolvedFaultTarget::MemoryRange {
+        | EffectKind::MemoryRegionState => ResolvedFaultTarget::MemoryRange {
             node: node(),
             address_space: object_id("gpa"),
             guest_address: 4096,
             vcpu: None,
             length_bytes: 64,
+        },
+        EffectKind::MemoryService => ResolvedFaultTarget::MemoryRange {
+            node: node(),
+            address_space: object_id("gva"),
+            guest_address: 4096,
+            vcpu: Some(0),
+            length_bytes: 1,
         },
         EffectKind::ClockTransform | EffectKind::ClockSourceState => {
             ResolvedFaultTarget::ClockSource {

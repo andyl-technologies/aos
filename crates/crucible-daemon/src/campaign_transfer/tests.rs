@@ -28,6 +28,8 @@ use crucible_cas::content_store::{
     ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend,
 };
 
+mod catalog_gc;
+
 fn archive_plan() -> CampaignArchivePlan {
     let repository = CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("transfer-test", 64 * 1024 * 1024)),

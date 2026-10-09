@@ -4,6 +4,7 @@ use super::*;
 use crate::content_store::fixture_sqlite_connection;
 
 mod ram_cause;
+mod single_record;
 use crate::content_store::StorePhysicalQuotaGuard;
 use crate::owned_decode::DecodeBudget;
 

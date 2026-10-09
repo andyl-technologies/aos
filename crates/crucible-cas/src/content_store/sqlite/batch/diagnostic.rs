@@ -72,31 +72,85 @@ pub(in super::super) fn admit(
     native_heap: Option<u64>,
     root: Option<&Path>,
 ) -> Result<DecodeScratch, StoreError> {
+    admit_for_query(original, native_heap, root, 0)
+}
+
+pub(in crate::content_store::sqlite) fn admit_for_query(
+    original: &crate::owned_decode::DecodeBudget,
+    native_heap: Option<u64>,
+    root: Option<&Path>,
+    query_width: usize,
+) -> Result<DecodeScratch, StoreError> {
+    let heap = reviewed_heap(native_heap, rusqlite::version_number())?;
+    original
+        .reserve_scratch_bytes(peak_bytes_for_query(heap, root, query_width)?)
+        .map_err(|error| admission_under(original, error))
+}
+
+// This closed reader retains work, blob-close and metadata completion errors.
+// Rows' failing step can additionally allocate a discarded reset diagnostic.
+// Three retained 4m capacities plus that transient 6m conversion need 18m;
+// finalization after the pinned reset/rewind can add only a static OOM message.
+// Arbitrary callback errors retain their separate original allocation custody.
+pub(in crate::content_store::sqlite) fn admit_for_single_record_query(
+    original: &crate::owned_decode::DecodeBudget,
+    native_heap: Option<u64>,
+    query_width: usize,
+) -> Result<DecodeScratch, StoreError> {
+    let heap = reviewed_heap(native_heap, rusqlite::version_number())?;
+    original
+        .reserve_scratch_bytes(single_record_peak_bytes(heap, query_width)?)
+        .map_err(|error| admission_under(original, error))
+}
+
+fn reviewed_heap(native_heap: Option<u64>, version: i32) -> Result<u64, StoreError> {
     let heap = native_heap.ok_or(StoreError::Unsupported {
         capability: "sqlite-diagnostic-native-heap-bound",
     })?;
-    if rusqlite::version_number() != AUDITED_SQLITE_VERSION {
+    if version != AUDITED_SQLITE_VERSION {
         return Err(StoreError::Unsupported {
             capability: "sqlite-diagnostic-reviewed-version",
         });
     }
-    original
-        .reserve_scratch_bytes(peak_bytes(heap, root)?)
-        .map_err(|error| admission_under(original, error))
+    Ok(heap)
 }
 
-fn peak_bytes(native_heap: u64, root: Option<&Path>) -> Result<u64, StoreError> {
+fn message_peak(native_heap: u64) -> Result<u64, StoreError> {
+    native_heap
+        .max(STATIC_SQLITE_ERROR_BYTES)
+        .max(MINIMUM_STRING_CAPACITY)
+        .checked_mul(6)
+        .ok_or(StoreError::Quota)
+}
+
+fn single_record_peak_bytes(native_heap: u64, query_width: usize) -> Result<u64, StoreError> {
+    let message = message_peak(native_heap)?;
+    let fixed = peak_bytes_for_query(native_heap, None, query_width)?
+        .checked_sub(message)
+        .ok_or(StoreError::Quota)?;
+    message
+        .checked_mul(3)
+        .and_then(|bytes| {
+            fixed
+                .checked_mul(4)
+                .and_then(|fixed| bytes.checked_add(fixed))
+        })
+        .and_then(|bytes| bytes.checked_add(6 * STATIC_SQLITE_ERROR_BYTES))
+        .ok_or(StoreError::Quota)
+}
+
+fn peak_bytes_for_query(
+    native_heap: u64,
+    root: Option<&Path>,
+    query_width: usize,
+) -> Result<u64, StoreError> {
     // Rust 1.98.1's from_utf8_lossy starts at m bytes, produces at most 3m,
     // and doubles to at most 4m. Its largest reallocation keeps 2m + 4m
     // live. The minimum byte-vector growth is covered when m is below 8.
     // SQLite 3.53.4's dynamic errmsg is native-allocator-backed; its static
     // fallback census is at most 36 bytes. This is a copy geometry bound,
     // rather than an assumption that corrupt-schema messages are short.
-    let message = native_heap
-        .max(STATIC_SQLITE_ERROR_BYTES)
-        .max(MINIMUM_STRING_CAPACITY)
-        .checked_mul(6)
-        .ok_or(StoreError::Quota)?;
+    let message = message_peak(native_heap)?;
 
     // io::Error::other owns both the rusqlite error Box and Rust's private
     // Custom Box. Custom has ErrorKind, one fat error pointer, two function
@@ -130,7 +184,8 @@ fn peak_bytes(native_heap: u64, root: Option<&Path>) -> Result<u64, StoreError> 
     .into_iter()
     .map(str::len)
     .max()
-    .ok_or(StoreError::Quota)?;
+    .ok_or(StoreError::Quota)?
+    .max(query_width);
     // A typed column error and modern SQLite's SQL-input error each have one
     // additional fixed-text allocation; banking both also covers coexistence.
     let names = sql_bytes.checked_mul(2).ok_or(StoreError::Quota)?;
@@ -198,10 +253,63 @@ pub(in super::super) fn retain_failure<T>(
 }
 
 pub(in super::super) fn retain_error(credit: DecodeScratch, error: StoreError) -> StoreError {
+    // The sealed direct marker owns no diagnostic allocation. Nested scopes
+    // and all native or arbitrary errors keep their complete prepaid custody.
+    if matches!(&error, StoreError::RamBoundary { .. }) {
+        drop(credit);
+        return error;
+    }
+
     StoreError::SqliteDiagnostic {
         source: SqliteDiagnosticError {
             error: Box::new(error),
             _credit: credit,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_record_peak_covers_retained_and_transient_conversion_capacity() {
+        for heap in [0, 1, 36, 8 * 1024 * 1024] {
+            let width = super::super::busy::single_record::METADATA.len();
+            let message = message_peak(heap).unwrap();
+            let fixed = peak_bytes_for_query(heap, None, width).unwrap() - message;
+            assert_eq!(
+                single_record_peak_bytes(heap, width).unwrap(),
+                3 * message + 4 * fixed + 6 * STATIC_SQLITE_ERROR_BYTES,
+            );
+        }
+        assert!(matches!(
+            single_record_peak_bytes(u64::MAX, 0),
+            Err(StoreError::Quota)
+        ));
+        assert!(matches!(
+            single_record_peak_bytes(u64::MAX / 18, usize::MAX),
+            Err(StoreError::Quota)
+        ));
+    }
+
+    #[test]
+    fn single_record_route_requires_the_actual_reviewed_native_heap() {
+        assert!(matches!(
+            reviewed_heap(None, AUDITED_SQLITE_VERSION),
+            Err(StoreError::Unsupported {
+                capability: "sqlite-diagnostic-native-heap-bound"
+            })
+        ));
+        assert!(matches!(
+            reviewed_heap(Some(8 << 20), AUDITED_SQLITE_VERSION - 1),
+            Err(StoreError::Unsupported {
+                capability: "sqlite-diagnostic-reviewed-version"
+            })
+        ));
+        assert_eq!(
+            reviewed_heap(Some(8 << 20), AUDITED_SQLITE_VERSION).unwrap(),
+            8 << 20
+        );
     }
 }

@@ -924,7 +924,7 @@ impl StorePhysicalQuotaGuard for NamespaceGuard {
             .directory
             .as_os_str()
             .len()
-            .checked_add(80)
+            .checked_add(96)
             .ok_or(StoreError::Quota)?;
         let _paths = self.reserve_resources(
             0,
@@ -932,7 +932,10 @@ impl StorePhysicalQuotaGuard for NamespaceGuard {
                 .map_err(|_| StoreError::Quota)?,
         )?;
         let digest = blake3::hash(scope.as_bytes()).to_hex();
-        let directory = self.directory.join(".gc-marks").join(digest.as_str());
+        let directory = self
+            .directory
+            .join(DirectoryBlobBackend::GC_MARK_DIRECTORY)
+            .join(digest.as_str());
         self.authority.prepare(&directory)?;
         DirectoryBlobBackend::new_with_physical_quota("campaign-gc-marks", directory, self)
     }

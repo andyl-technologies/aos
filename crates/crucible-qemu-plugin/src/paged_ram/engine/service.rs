@@ -235,6 +235,25 @@ impl FaultService {
         observation: bool,
         scratch: &mut [u8; PAGE_BYTES],
     ) -> Result<u32, RamError> {
+        self.read_cold_with_hasher::<false>(
+            arena,
+            page_index,
+            coordinate,
+            observation,
+            scratch,
+            None,
+        )
+    }
+
+    fn read_cold_with_hasher<const BORROWED: bool>(
+        &self,
+        arena: &Arena,
+        page_index: u64,
+        coordinate: usize,
+        observation: bool,
+        scratch: &mut [u8; PAGE_BYTES],
+        hasher: Option<&NativePageHasher>,
+    ) -> Result<u32, RamError> {
         let record = self
             .states
             .try_lock()
@@ -250,10 +269,16 @@ impl FaultService {
                 SourceOperationClass::PageIn
             };
             let operation = self.operations.begin(class)?;
-            self.spill
+            let spill = self
+                .spill
                 .try_lock()
-                .map_err(|_| "spill ownership unavailable")?
-                .read(&record, scratch)?;
+                .map_err(|_| "spill ownership unavailable")?;
+            if BORROWED {
+                spill.read_with_borrowed_hasher(&record, scratch, hasher)?;
+            } else {
+                spill.read(&record, scratch)?;
+            }
+            drop(spill);
             operation.complete()?;
             count_completed(&self.counters.preserved_reads)?;
             return Ok(record.valid_length());
@@ -262,7 +287,14 @@ impl FaultService {
             .source
             .as_ref()
             .ok_or("cold page has no authenticated preservation")?;
-        let (valid, _) = if observation {
+        let (valid, _) = if BORROWED {
+            source.fetch_with_borrowed_hasher(
+                arena.native.region_index,
+                page_index,
+                scratch,
+                hasher,
+            )?
+        } else if observation {
             source.fetch_for_observation(arena.native.region_index, page_index, scratch)?
         } else {
             source.fetch(arena.native.region_index, page_index, scratch)?
@@ -478,9 +510,51 @@ pub(super) extern "C" fn operational_read(address: u64, output: *mut u8, valid: 
     if output.is_null() || valid == 0 || valid as usize > PAGE_BYTES {
         return -libc::EINVAL;
     }
-    complete_operational_read(output, valid as usize, |bytes| {
-        read_operational_page(address, valid as usize, bytes)
-    })
+    read_operational_page::<false>(address, output, valid as usize, None)
+}
+
+/// Reads into the full-root caller's existing private page scratch.
+///
+/// Native full-root traversal exclusively owns this buffer until return. It
+/// discards any partial bytes on failure before hashing or publishing a root.
+pub(super) extern "C" fn root_scratch_read(
+    address: u64,
+    scratch: *mut NativeRootScratch,
+    valid: u32,
+    hasher: *const NativePageHasher,
+) -> c_int {
+    let hasher = if hasher.is_null() {
+        None
+    } else {
+        // SAFETY: only the matching native root reader lends this initialized
+        // stack record. Its hasher context remains exclusively borrowed until
+        // this synchronous callback returns; neither pointer escapes here.
+        let hasher = unsafe { &*hasher };
+        if hasher.validate().is_err() {
+            return -libc::EINVAL;
+        }
+        Some(hasher)
+    };
+    read_operational_page::<true>(address, scratch.cast(), valid as usize, hasher)
+}
+
+fn complete_root_scratch_read(
+    scratch: *mut NativeRootScratch,
+    valid: u32,
+    read: impl FnOnce(&mut [u8; PAGE_BYTES]) -> Result<(), RamError>,
+) -> c_int {
+    if scratch.is_null() || valid == 0 || valid as usize > PAGE_BYTES {
+        return -libc::EINVAL;
+    }
+    // SAFETY: the matching native registrar installs this nominal callback for
+    // full-root-owned scratch alone. That traversal lends one initialized,
+    // exclusively writable page for this synchronous call and neither hashes
+    // nor publishes its contents until success. The loan does not escape here.
+    let bytes = unsafe { &mut (*scratch).bytes };
+    match read(bytes) {
+        Ok(()) => 0,
+        Err(_) => -libc::EIO,
+    }
 }
 
 fn complete_operational_read(
@@ -502,66 +576,84 @@ fn complete_operational_read(
     }
 }
 
-fn read_operational_page(
+// Buffer ownership specializes at compile time; authentication and refusal
+// order remain shared. Ordinary callers stage, while full-root traversal lends
+// its existing nominal page and discards any partial result on failure.
+fn read_operational_page<const ROOT_SCRATCH: bool>(
     address: u64,
+    output: *mut u8,
     valid: usize,
-    bytes: &mut [u8; PAGE_BYTES],
-) -> Result<(), RamError> {
-    let owner = OPERATIONAL_OWNER
-        .get()
-        .ok_or(RamError::Invariant("operational RAM owner absent"))?
-        .try_lock()
-        .map_err(|_| RamError::Invariant("operational RAM owner unavailable"))?
-        .clone()
-        .ok_or(RamError::Invariant("operational RAM owner absent"))?;
-    let service = owner
-        .active
-        .lock()
-        .map_err(|_| "paging authority owner poisoned")?
-        .clone();
-    if let Some(service) = service {
-        if service.failed.load(Ordering::Acquire) {
-            return Err(RamError::Invariant("paging authority failed"));
-        }
-        if service.destructive.load(Ordering::Acquire) {
-            if !service.activated.load(Ordering::Acquire) {
-                return Err(RamError::Invariant(
-                    "cold source publication remains incomplete",
-                ));
+    hasher: Option<&NativePageHasher>,
+) -> c_int {
+    let read = |bytes: &mut [u8; PAGE_BYTES]| -> Result<(), RamError> {
+        let owner = OPERATIONAL_OWNER
+            .get()
+            .ok_or(RamError::Invariant("operational RAM owner absent"))?
+            .try_lock()
+            .map_err(|_| RamError::Invariant("operational RAM owner unavailable"))?
+            .clone()
+            .ok_or(RamError::Invariant("operational RAM owner absent"))?;
+        let service = owner
+            .active
+            .lock()
+            .map_err(|_| "paging authority owner poisoned")?
+            .clone();
+        if let Some(service) = service {
+            if service.failed.load(Ordering::Acquire) {
+                return Err(RamError::Invariant("paging authority failed"));
             }
-            let arena = service
-                .arenas
-                .iter()
-                .find(|arena| {
-                    address >= arena.native.host_address
-                        && address < arena.native.host_address + arena.native.mapping_length
-                })
-                .ok_or("operational page is outside retained arena")?;
-            let page_index = (address - arena.native.host_address) / PAGE_BYTES as u64;
-            let coordinate = arena.page_start
-                + usize::try_from(page_index).map_err(|_| "page index overflow")?;
-            let resident = service
-                .states
-                .lock()
-                .map_err(|_| "paging state ownership uncertain")?
-                .get(coordinate)
-                .ok_or("operational page coordinate absent")?
-                .resident;
-            if !resident {
-                let length = service.read_cold(arena, page_index, coordinate, true, bytes)?;
-                if length as usize != valid {
+            if service.destructive.load(Ordering::Acquire) {
+                if !service.activated.load(Ordering::Acquire) {
                     return Err(RamError::Invariant(
-                        "operational source page length differs",
+                        "cold source publication remains incomplete",
                     ));
                 }
-                return Ok(());
+                let arena = service
+                    .arenas
+                    .iter()
+                    .find(|arena| {
+                        address >= arena.native.host_address
+                            && address < arena.native.host_address + arena.native.mapping_length
+                    })
+                    .ok_or("operational page is outside retained arena")?;
+                let page_index = (address - arena.native.host_address) / PAGE_BYTES as u64;
+                let coordinate = arena.page_start
+                    + usize::try_from(page_index).map_err(|_| "page index overflow")?;
+                let resident = service
+                    .states
+                    .lock()
+                    .map_err(|_| "paging state ownership uncertain")?
+                    .get(coordinate)
+                    .ok_or("operational page coordinate absent")?
+                    .resident;
+                if !resident {
+                    let length = if ROOT_SCRATCH {
+                        service.read_cold_with_hasher::<true>(
+                            arena, page_index, coordinate, true, bytes, hasher,
+                        )?
+                    } else {
+                        service.read_cold(arena, page_index, coordinate, true, bytes)?
+                    };
+                    if length as usize != valid {
+                        return Err(RamError::Invariant(
+                            "operational source page length differs",
+                        ));
+                    }
+                    return Ok(());
+                }
             }
         }
+        // SAFETY: native capture retains a coherent writer/physical-access fence and
+        // lends this valid RAM range. Cold pages returned above never dereference it.
+        unsafe { std::ptr::copy_nonoverlapping(address as *const u8, bytes.as_mut_ptr(), valid) };
+        Ok(())
+    };
+
+    if ROOT_SCRATCH {
+        complete_root_scratch_read(output.cast(), valid as u32, read)
+    } else {
+        complete_operational_read(output, valid, read)
     }
-    // SAFETY: native capture retains a coherent writer/physical-access fence and
-    // lends this valid RAM range. Cold pages returned above never dereference it.
-    unsafe { std::ptr::copy_nonoverlapping(address as *const u8, bytes.as_mut_ptr(), valid) };
-    Ok(())
 }
 
 #[cfg(test)]

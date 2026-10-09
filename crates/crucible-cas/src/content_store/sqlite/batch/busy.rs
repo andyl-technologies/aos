@@ -41,6 +41,7 @@ struct ScopeFailure {
     work: Option<StoreError>,
     rollback: Option<rusqlite::Error>,
     restore: Option<rusqlite::Error>,
+    read_cleanup: [Option<rusqlite::Error>; 3],
     outcome: SqliteCommitOutcome,
     _diagnostic: Option<crate::owned_decode::DecodeScratch>,
 }
@@ -64,6 +65,27 @@ impl SqliteScopeError {
         self.body.restore.as_ref()
     }
 
+    /// Returns the observed incremental blob close failure, if any.
+    #[must_use]
+    pub fn blob_close_failure(&self) -> Option<&rusqlite::Error> {
+        self.body.read_cleanup[0].as_ref()
+    }
+
+    /// Returns the metadata cursor's observed step or DONE-reset failure.
+    ///
+    /// The pinned binding suppresses reset errors after a failed step and in
+    /// Drop. This accessor does not claim a separately observed reset result.
+    #[must_use]
+    pub fn metadata_completion_failure(&self) -> Option<&rusqlite::Error> {
+        self.body.read_cleanup[1].as_ref()
+    }
+
+    /// Returns the observed explicit metadata statement finalization failure.
+    #[must_use]
+    pub fn metadata_finalization_failure(&self) -> Option<&rusqlite::Error> {
+        self.body.read_cleanup[2].as_ref()
+    }
+
     /// Returns the observed durable outcome without detaching its causes.
     #[must_use]
     pub fn outcome(&self) -> SqliteCommitOutcome {
@@ -78,6 +100,7 @@ impl fmt::Debug for SqliteScopeError {
             .field("work", &self.body.work)
             .field("rollback", &self.body.rollback)
             .field("restore", &self.body.restore)
+            .field("read_cleanup", &self.body.read_cleanup)
             .field("outcome", &self.body.outcome)
             .finish()
     }
@@ -100,7 +123,13 @@ impl std::error::Error for SqliteScopeError {
         } else if let Some(error) = self.rollback_failure() {
             Some(error)
         } else {
-            self.restoration_failure().map(|error| error as _)
+            self.body
+                .read_cleanup
+                .iter()
+                .flatten()
+                .next()
+                .or_else(|| self.restoration_failure())
+                .map(|error| error as _)
         }
     }
 }
@@ -217,12 +246,33 @@ fn scope_error(
     credit: crate::owned_decode::DecodeScratch,
     diagnostic: Option<crate::owned_decode::DecodeScratch>,
 ) -> StoreError {
+    read_scope_error(
+        work,
+        rollback,
+        restore,
+        [None, None, None],
+        outcome,
+        credit,
+        diagnostic,
+    )
+}
+
+fn read_scope_error(
+    work: Option<StoreError>,
+    rollback: Option<rusqlite::Error>,
+    restore: Option<rusqlite::Error>,
+    read_cleanup: [Option<rusqlite::Error>; 3],
+    outcome: SqliteCommitOutcome,
+    credit: crate::owned_decode::DecodeScratch,
+    diagnostic: Option<crate::owned_decode::DecodeScratch>,
+) -> StoreError {
     StoreError::SqliteScope {
         source: SqliteScopeError {
             body: Box::new(ScopeFailure {
                 work,
                 rollback,
                 restore,
+                read_cleanup,
                 outcome,
                 _diagnostic: diagnostic,
             }),
@@ -455,3 +505,7 @@ fn with_cleanup<T>(
 
 #[cfg(test)]
 mod tests;
+
+pub(in crate::content_store::sqlite) mod snapshot;
+
+pub(in crate::content_store::sqlite) mod single_record;

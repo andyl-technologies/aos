@@ -82,6 +82,10 @@
       expected = "library";
     }
     {
+      package = "crucible-sqlite-heap";
+      expected = "library";
+    }
+    {
       package = "crucible-s3-store";
       expected = "library";
     }

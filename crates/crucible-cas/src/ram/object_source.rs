@@ -4,11 +4,13 @@
 //! Every response is authenticated through the leased root's catalog path before
 //! its canonical bytes are exposed to an object-chunk sender.
 
-use crate::content_store::ContentId;
+use crate::content_store::{ContentId, ObjectKind};
 use crate::owned_decode::DecodeCustody;
 use std::sync::Arc;
 
-use super::codec::{TreeNode, TreeRef};
+use super::codec::{
+    TreeNode, TreeRef, decode_root_envelope, validate_page_envelope, validate_tree,
+};
 use super::{LeasedRamRoot, RamStore, RamStoreError, Work, valid_length};
 
 /// One object selected through an admitted immutable RAM root.
@@ -41,7 +43,7 @@ pub enum RamObjectCoordinate {
 #[derive(Clone, Debug)]
 pub struct RamObjectRecord {
     id: ContentId,
-    canonical: Arc<CanonicalObject>,
+    canonical: CanonicalOwner,
 }
 
 #[derive(Debug)]
@@ -50,19 +52,123 @@ struct CanonicalObject {
     _custody: DecodeCustody,
 }
 
+// No raw strong or weak alias escapes this owner. The final Arc allocation
+// closes before the moved value drops its bytes and original child custody.
+#[derive(Debug)]
+struct CanonicalOwner(Option<Arc<CanonicalObject>>);
+
+impl CanonicalOwner {
+    fn allocation_bytes() -> Result<u64, RamStoreError> {
+        let (layout, _) = std::alloc::Layout::new::<[std::sync::atomic::AtomicUsize; 2]>()
+            .extend(std::alloc::Layout::new::<CanonicalObject>())
+            .map_err(|_| RamStoreError::Limit("transfer canonical owner layout"))?;
+        u64::try_from(layout.pad_to_align().size())
+            .map_err(|_| RamStoreError::Limit("transfer canonical owner layout"))
+    }
+
+    fn value(&self) -> &CanonicalObject {
+        match &self.0 {
+            Some(value) => value,
+            None => unreachable!("only the terminal owner destructor consumes its value"),
+        }
+    }
+}
+
+impl Clone for CanonicalOwner {
+    fn clone(&self) -> Self {
+        match &self.0 {
+            Some(value) => Self(Some(Arc::clone(value))),
+            None => unreachable!("a live canonical owner retains its strong reference"),
+        }
+    }
+}
+
+impl Drop for CanonicalOwner {
+    fn drop(&mut self) {
+        if let Some(value) = self.0.take() {
+            drop(Arc::into_inner(value));
+        }
+    }
+}
+
 impl RamObjectRecord {
     /// Returns the independently authenticated storage identity.
     pub const fn id(&self) -> ContentId {
         self.id
     }
 
+    /// Returns a scalar field address for original allocation-custody tests.
+    ///
+    /// The address grants no ownership, dereferenceable alias, or execution
+    /// authority. The retained immutable owner keeps the field alive.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn canonical_field_address_for_test(&self) -> usize {
+        std::ptr::from_ref(self.canonical.value()).addr()
+    }
+
     /// Returns the bounded canonical plaintext object bytes.
     pub fn canonical_bytes(&self) -> &[u8] {
-        &self.canonical.bytes
+        &self.canonical.value().bytes
     }
 }
 
 impl RamStore {
+    pub(super) fn read_canonical_record(
+        &self,
+        id: ContentId,
+        work: &mut Work<'_>,
+    ) -> Result<(RamObjectRecord, super::codec_ownership::OwnedEnvelope), RamStoreError> {
+        self.read_canonical_record_expected(id, None, work)
+    }
+
+    pub(super) fn read_canonical_tree_record(
+        &self,
+        expected: TreeRef,
+        work: &mut Work<'_>,
+    ) -> Result<(RamObjectRecord, super::codec_ownership::OwnedEnvelope), RamStoreError> {
+        self.read_canonical_record_expected(expected.id, Some(expected), work)
+    }
+
+    fn read_canonical_record_expected(
+        &self,
+        id: ContentId,
+        expected: Option<TreeRef>,
+        work: &mut Work<'_>,
+    ) -> Result<(RamObjectRecord, super::codec_ownership::OwnedEnvelope), RamStoreError> {
+        let account = work
+            .original()
+            .child()
+            .map_err(super::codec_ownership::admission)?;
+        let _scope = account.enter();
+        let bytes = match expected {
+            Some(expected) => super::bounded_read::read_canonical_tree(
+                self.backend.as_ref(),
+                expected,
+                &account,
+                work,
+            ),
+            None => super::bounded_read::read_canonical(self.backend.as_ref(), id, &account, work),
+        }?
+        .ok_or(crate::content_store::StoreError::NotFound { id })?;
+        let (_, maximum_children) = super::codec::object_limits(id)?;
+        let envelope = super::codec::decode_envelope(id, &bytes, maximum_children, &account)?;
+        account
+            .charge_bytes(CanonicalOwner::allocation_bytes()?)
+            .map_err(super::codec_ownership::admission)?;
+        account
+            .verify_live()
+            .map_err(super::codec_ownership::admission)?;
+        let record = RamObjectRecord {
+            id,
+            canonical: CanonicalOwner(Some(Arc::new(CanonicalObject {
+                bytes,
+                _custody: account.custody(),
+            }))),
+        };
+        Ok((record, envelope))
+    }
+
     /// Resolves one transfer request through a live immutable root capability.
     ///
     /// Catalog requests must name aligned canonical subtrees. Conceptual nodes
@@ -92,106 +198,145 @@ impl RamStore {
         coordinate: &RamObjectCoordinate,
         work: &mut Work<'_>,
     ) -> Result<RamObjectRecord, RamStoreError> {
-        let account = work
-            .original()
-            .child()
-            .map_err(super::codec_ownership::admission)?;
-        let _scope = account.enter();
-        let id = match coordinate {
+        let result = self.read_coordinate(root, coordinate, work);
+        match result {
+            Err(error) if work.account.read_failure().is_none() => {
+                Err(work.account.fail_read(error).into())
+            }
+            result => result,
+        }
+    }
+
+    fn read_coordinate(
+        &self,
+        root: &LeasedRamRoot,
+        coordinate: &RamObjectCoordinate,
+        work: &mut Work<'_>,
+    ) -> Result<RamObjectRecord, RamStoreError> {
+        match coordinate {
             RamObjectCoordinate::Root => {
-                let (record, catalogs) = self.read_root(root.object_id(), work)?;
-                if &record != root.record.as_ref() || catalogs.as_slice() != root.regions.as_ref() {
-                    return Err(RamStoreError::Invalid(
-                        "transfer source root metadata changed",
-                    ));
+                if root.object_id().kind() != ObjectKind::ExactManifest {
+                    return Err(RamStoreError::Invalid("root object kind"));
                 }
-                root.object_id()
+                let (record, envelope) = self.read_canonical_record(root.object_id(), work)?;
+                validate_root(&envelope, root)?;
+                Ok(record)
             }
             RamObjectCoordinate::Catalog {
                 region_id,
                 first_page,
                 height,
-            } => {
-                let reference =
-                    self.transfer_catalog(root, region_id, *first_page, *height, work)?;
-                self.read_tree(reference, work)?;
-                reference.id
-            }
+            } => self
+                .read_catalog_record(root, region_id, *first_page, *height, work)
+                .map(|(_, _, record)| record),
             RamObjectCoordinate::Page {
                 region_id,
                 page_index,
             } => {
-                let region = root
-                    .record
-                    .topology()
-                    .region(region_id)
-                    .ok_or(RamStoreError::Invalid("transfer page region"))?;
-                let length = valid_length(region, *page_index)?;
-                let reference = self.transfer_catalog(root, region_id, *page_index, 0, work)?;
-                let TreeNode::Leaf { page, digest } = self.read_tree(reference, work)? else {
+                let length = page_length(root, region_id, *page_index)?;
+                let (_, node, _) =
+                    self.read_catalog_record(root, region_id, *page_index, 0, work)?;
+                let TreeNode::Leaf { page, digest } = node else {
                     return Err(RamStoreError::Invalid("transfer page resolves to padding"));
                 };
-                if self.read_page_object(page, digest, work)?.len() != length {
+                if page.kind() != ObjectKind::RamExtent {
+                    return Err(RamStoreError::Invalid("page object kind"));
+                }
+                let (record, envelope) = self.read_canonical_record(page, work)?;
+                if validate_page_envelope(&envelope, digest)? != length {
                     return Err(RamStoreError::Invalid("transfer page valid length"));
                 }
-                page
+                Ok(record)
             }
-        };
-        let canonical = self.read_envelope(id, work)?.canonical_bytes();
-        account.check().map_err(super::codec_ownership::admission)?;
-        crate::owned_decode::charge_bytes(
-            (std::mem::size_of::<CanonicalObject>() + 2 * std::mem::size_of::<usize>()) as u64,
-        )
-        .map_err(super::codec_ownership::admission)?;
-        Ok(RamObjectRecord {
-            id,
-            canonical: Arc::new(CanonicalObject {
-                bytes: canonical,
-                _custody: account.custody(),
-            }),
-        })
+        }
     }
 
-    fn transfer_catalog(
+    fn read_catalog_record(
         &self,
         root: &LeasedRamRoot,
         region_id: &str,
         first_page: u64,
         height: u32,
         work: &mut Work<'_>,
-    ) -> Result<TreeRef, RamStoreError> {
-        let (index, region) = root
-            .record
-            .topology()
-            .regions()
-            .iter()
-            .filter(|region| root.record.scope().includes(region.class()))
-            .enumerate()
-            .find(|(_, region)| region.id() == region_id)
-            .ok_or(RamStoreError::Invalid("transfer catalog region"))?;
-        let geometry = region.geometry();
-        if height > geometry.height()
-            || first_page >= geometry.padded_leaf_count()
-            || !first_page.is_multiple_of(1_u64 << height)
-        {
-            return Err(RamStoreError::Invalid("transfer catalog coordinate"));
-        }
-        let mut reference = root.regions[index];
-        let mut position = first_page;
-        while reference.height > height {
-            let TreeNode::Branch { left, right } = self.read_tree(reference, work)? else {
-                return Err(RamStoreError::Invalid(
-                    "coordinate below canonical padding subtree",
-                ));
-            };
-            let width = 1_u64 << (reference.height - 1);
-            if position < width {
-                reference = left;
-            } else {
-                position -= width;
-                reference = right;
+    ) -> Result<(TreeRef, TreeNode, RamObjectRecord), RamStoreError> {
+        let (mut reference, mut position) = catalog_start(root, region_id, first_page, height)?;
+        loop {
+            let (record, envelope) = self.read_canonical_tree_record(reference, work)?;
+            let node = validate_tree(&envelope, reference)?;
+            if reference.height == height {
+                return Ok((reference, node, record));
             }
+            reference = next_catalog(reference, node, &mut position)?;
         }
-        Ok(reference)
+    }
+}
+
+pub(super) fn validate_root(
+    envelope: &crate::content_envelope::ContentEnvelope,
+    root: &LeasedRamRoot,
+) -> Result<(), RamStoreError> {
+    let (record, catalogs) = decode_root_envelope(envelope)?;
+    if &record != root.record.as_ref() || catalogs.as_slice() != root.regions.as_ref() {
+        return Err(RamStoreError::Invalid(
+            "transfer source root metadata changed",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn page_length(
+    root: &LeasedRamRoot,
+    region_id: &str,
+    page_index: u64,
+) -> Result<usize, RamStoreError> {
+    let region = root
+        .record
+        .topology()
+        .region(region_id)
+        .ok_or(RamStoreError::Invalid("transfer page region"))?;
+    valid_length(region, page_index)
+}
+
+pub(super) fn catalog_start(
+    root: &LeasedRamRoot,
+    region_id: &str,
+    first_page: u64,
+    height: u32,
+) -> Result<(TreeRef, u64), RamStoreError> {
+    let (index, region) = root
+        .record
+        .topology()
+        .regions()
+        .iter()
+        .filter(|region| root.record.scope().includes(region.class()))
+        .enumerate()
+        .find(|(_, region)| region.id() == region_id)
+        .ok_or(RamStoreError::Invalid("transfer catalog region"))?;
+    let geometry = region.geometry();
+    if height > geometry.height()
+        || first_page >= geometry.padded_leaf_count()
+        || !first_page.is_multiple_of(1_u64 << height)
+    {
+        return Err(RamStoreError::Invalid("transfer catalog coordinate"));
+    }
+    Ok((root.regions[index], first_page))
+}
+
+fn next_catalog(
+    reference: TreeRef,
+    node: TreeNode,
+    position: &mut u64,
+) -> Result<TreeRef, RamStoreError> {
+    let TreeNode::Branch { left, right } = node else {
+        return Err(RamStoreError::Invalid(
+            "coordinate below canonical padding subtree",
+        ));
+    };
+    let width = 1_u64 << (reference.height - 1);
+    if *position < width {
+        Ok(left)
+    } else {
+        *position -= width;
+        Ok(right)
     }
 }

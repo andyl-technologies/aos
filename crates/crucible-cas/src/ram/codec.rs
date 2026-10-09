@@ -52,6 +52,7 @@ pub(super) struct TreeRef {
     pub pages: u64,
 }
 
+#[derive(Clone, Copy)]
 pub(super) enum TreeNode {
     Padding,
     Leaf { page: ContentId, digest: PageDigest },
@@ -295,78 +296,13 @@ impl RamStore {
         self.read_envelope_with_partition(id, work, false)
     }
 
-    fn read_envelope_with_partition(
+    pub(super) fn read_envelope_with_partition(
         &self,
         id: ContentId,
         work: &mut Work<'_>,
         prepaid: bool,
     ) -> Result<OwnedEnvelope, RamStoreError> {
-        if id.schema_version() == SCHEMA_VERSION
-            && matches!(
-                id.kind(),
-                ObjectKind::RamExtent | ObjectKind::RamTree | ObjectKind::ExactManifest
-            )
-        {
-            work.reject_exhausted_nonempty_visit()?;
-        }
-        let account = work.original().child().map_err(admission)?;
-        let _scope = account.enter();
-        if id.schema_version() != SCHEMA_VERSION {
-            return Err(RamStoreError::Invalid("RAM storage schema"));
-        }
-        // Page and binary-tree lookups run under bounded page-in scratch. A
-        // malformed small-object identity must not borrow the root decoder's
-        // larger catalog allocation merely by declaring a large body/table.
-        let (maximum_bytes, maximum_children) = object_limits(id)?;
-        (work.boundary)()?;
-        let source = work.checked(|original, boundary| {
-            self.backend
-                .read_with_boundary(original, id, None, boundary)
-        })?;
-        if source.logical_length() > maximum_bytes {
-            return Err(RamStoreError::Limit("single canonical object"));
-        }
-        if prepaid && matches!(id.kind(), ObjectKind::RamTree | ObjectKind::RamExtent) {
-            let previous_counts = (work.visits, work.io_bytes);
-            if let Err(error) = work.visit_accounting(source.logical_length()) {
-                let refused_counts = (work.visits, work.io_bytes);
-                (work.visits, work.io_bytes) = previous_counts;
-                // Preserve the original second-poll cancellation precedence and
-                // partial scalar state. No codec allocation follows refusal.
-                (work.boundary)()?;
-                (work.visits, work.io_bytes) = refused_counts;
-                return Err(error);
-            }
-            let length = usize::try_from(source.logical_length())
-                .map_err(|_| RamStoreError::Limit("single canonical object"))?;
-            let record = RecordAccount::new(
-                &account,
-                RecordAllocationPlan::read(length, maximum_children)?,
-            )?;
-            let bytes = work.checked(|original, boundary| {
-                source.read_all_with_boundary(original, maximum_bytes, boundary)
-            })?;
-            let envelope = {
-                let _codec_scope = record.codec.enter();
-                decode_envelope(id, &bytes, maximum_children, &record.codec)?
-            };
-            // Local partition charges validate monotone accounting, not host
-            // liveness. Recheck the SAME original operation after decoding and
-            // before accepting an owning result; EOF may have expired it.
-            {
-                let _terminal_scope = record.original.enter();
-                if let Err(error) = (work.boundary)() {
-                    (work.visits, work.io_bytes) = previous_counts;
-                    return Err(error);
-                }
-            }
-            return Ok(envelope);
-        }
-        work.visit(source.logical_length())?;
-        let bytes = work.checked(|original, boundary| {
-            source.read_all_with_boundary(original, maximum_bytes, boundary)
-        })?;
-        decode_envelope(id, &bytes, maximum_children, &account)
+        read_envelope_from(self.backend.as_ref(), id, work, prepaid)
     }
 
     pub(super) fn put_page(
@@ -428,19 +364,7 @@ impl RamStore {
             return Err(RamStoreError::Invalid("page object kind"));
         }
         let envelope = self.read_envelope_with_partition(id, work, false)?;
-        if envelope.schema_name() != PAGE_SCHEMA || !envelope.children().is_empty() {
-            return Err(RamStoreError::Invalid("page envelope"));
-        }
-        let mut decoder = Decoder::new(envelope.body());
-        let recorded = PageDigest::from_bytes(decoder.digest()?);
-        let length = decoder.u32()? as usize;
-        if length == 0 || length > 4096 || length != decoder.remaining().len() {
-            return Err(RamStoreError::Invalid("page object length"));
-        }
-        let bytes = decoder.remaining();
-        if recorded != expected || PageDigest::hash(bytes).map_err(logical)? != expected {
-            return Err(RamStoreError::Invalid("logical page digest"));
-        }
+        validate_page_envelope(&envelope, expected)?;
         Ok(super::RamPageBytes::new(envelope))
     }
 
@@ -551,8 +475,7 @@ impl RamStore {
         if reference.id.kind() != ObjectKind::RamTree {
             return Err(RamStoreError::Invalid("tree object kind"));
         }
-        let envelope = self.read_envelope(reference.id, work)?;
-        validate_tree(&envelope, reference)
+        super::bounded_read::read_tree(self.backend.as_ref(), reference, work)
     }
 
     pub(super) fn put_root(
@@ -593,7 +516,94 @@ impl RamStore {
     }
 }
 
-fn decode_envelope(
+// Emits only the closed canonical binary-node format from an actual validated
+// record. The full storage ID check seals framing and child-role correspondence
+// before the response can expose any generated bytes.
+#[cfg(test)]
+pub(super) fn encode_validated_tree(
+    reference: TreeRef,
+    node: &TreeNode,
+    original: &DecodeBudget,
+) -> Result<Vec<u8>, RamStoreError> {
+    let (kind, children, body_length, child_length) = match node {
+        TreeNode::Padding => (0_u8, 0_u32, 45, 0),
+        TreeNode::Leaf { page, .. } => (1, 1, 77, 4 + "page".len() + page.encoded_len()),
+        TreeNode::Branch { left, right } => (
+            2,
+            2,
+            133,
+            8 + "left".len() + "right".len() + left.id.encoded_len() + right.id.encoded_len(),
+        ),
+    };
+    let length = 30 + TREE_SCHEMA.len() + child_length + body_length;
+    original.charge_array::<u8>(length).map_err(admission)?;
+    let mut bytes = Vec::with_capacity(length);
+    bytes.extend_from_slice(b"CRUCOBJE");
+    bytes.extend_from_slice(&1_u32.to_be_bytes());
+    bytes.extend_from_slice(&(TREE_SCHEMA.len() as u16).to_be_bytes());
+    bytes.extend_from_slice(TREE_SCHEMA.as_bytes());
+    bytes.extend_from_slice(&SCHEMA_VERSION.to_be_bytes());
+    bytes.extend_from_slice(&children.to_be_bytes());
+    {
+        let mut child = |role: &str, id: ContentId| {
+            bytes.extend_from_slice(&(role.len() as u16).to_be_bytes());
+            bytes.extend_from_slice(role.as_bytes());
+            id.with_encoded_text(|id| {
+                bytes.extend_from_slice(&(id.len() as u16).to_be_bytes());
+                bytes.extend_from_slice(id);
+            });
+        };
+        match node {
+            TreeNode::Padding => {}
+            TreeNode::Leaf { page, .. } => child("page", *page),
+            TreeNode::Branch { left, right } => {
+                child("left", left.id);
+                child("right", right.id);
+            }
+        }
+    }
+    bytes.extend_from_slice(&(body_length as u64).to_be_bytes());
+    bytes.push(kind);
+    bytes.extend_from_slice(reference.digest.as_bytes());
+    bytes.extend_from_slice(&reference.height.to_be_bytes());
+    bytes.extend_from_slice(&reference.pages.to_be_bytes());
+    match node {
+        TreeNode::Padding => {}
+        TreeNode::Leaf { digest, .. } => bytes.extend_from_slice(digest.as_bytes()),
+        TreeNode::Branch { left, right } => {
+            encode_ref(&mut bytes, *left);
+            encode_ref(&mut bytes, *right);
+        }
+    }
+    if bytes.len() != length
+        || ContentId::for_bytes(ObjectKind::RamTree, SCHEMA_VERSION, &bytes) != reference.id
+    {
+        return Err(StoreError::Corrupt { id: reference.id }.into());
+    }
+    Ok(bytes)
+}
+
+pub(super) fn validate_page_envelope(
+    envelope: &ContentEnvelope,
+    expected: PageDigest,
+) -> Result<usize, RamStoreError> {
+    if envelope.schema_name() != PAGE_SCHEMA || !envelope.children().is_empty() {
+        return Err(RamStoreError::Invalid("page envelope"));
+    }
+    let mut decoder = Decoder::new(envelope.body());
+    let recorded = PageDigest::from_bytes(decoder.digest()?);
+    let length = decoder.u32()? as usize;
+    if length == 0 || length > 4096 || length != decoder.remaining().len() {
+        return Err(RamStoreError::Invalid("page object length"));
+    }
+    let bytes = decoder.remaining();
+    if recorded != expected || PageDigest::hash(bytes).map_err(logical)? != expected {
+        return Err(RamStoreError::Invalid("logical page digest"));
+    }
+    Ok(length)
+}
+
+pub(super) fn decode_envelope(
     id: ContentId,
     bytes: &[u8],
     maximum_children: usize,
@@ -634,14 +644,42 @@ pub(super) fn decode_root_envelope(
     Ok((record, regions))
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct TreeChild<'a> {
+    pub(super) role: &'a str,
+    pub(super) id: ContentId,
+}
+
 pub(super) fn validate_tree(
     envelope: &ContentEnvelope,
     expected: TreeRef,
 ) -> Result<TreeNode, RamStoreError> {
-    if envelope.schema_name() != TREE_SCHEMA || expected.height > 52 {
+    let mut children = envelope.children().iter();
+    validate_tree_parts(
+        envelope.schema_name(),
+        envelope.body(),
+        envelope.children().len(),
+        |_| {
+            children.next().map(|child| TreeChild {
+                role: child.role(),
+                id: child.id(),
+            })
+        },
+        expected,
+    )
+}
+
+pub(super) fn validate_tree_parts<'a>(
+    schema: &str,
+    body: &[u8],
+    child_count: usize,
+    mut child_at: impl FnMut(usize) -> Option<TreeChild<'a>>,
+    expected: TreeRef,
+) -> Result<TreeNode, RamStoreError> {
+    if schema != TREE_SCHEMA || expected.height > 52 {
         return Err(RamStoreError::Invalid("tree schema or height"));
     }
-    let mut decoder = Decoder::new(envelope.body());
+    let mut decoder = Decoder::new(body);
     let kind = decoder.byte()?;
     let digest = NodeDigest::from_bytes(decoder.digest()?);
     let height = decoder.u32()?;
@@ -651,20 +689,16 @@ pub(super) fn validate_tree(
     {
         return Err(RamStoreError::Invalid("tree reference geometry"));
     }
-    let children = envelope.children();
     let node = match kind {
-        0 if pages == 0 && children.is_empty() => {
+        0 if pages == 0 && child_count == 0 => {
             if digest != empty_node(height)? {
                 return Err(RamStoreError::Invalid("padding digest"));
             }
             TreeNode::Padding
         }
-        1 if height == 0 && pages == 1 && children.len() == 1 => {
-            let child = children
-                .iter()
-                .next()
-                .ok_or(RamStoreError::Invalid("leaf child"))?;
-            if child.role() != "page" || child.id().kind() != ObjectKind::RamExtent {
+        1 if height == 0 && pages == 1 && child_count == 1 => {
+            let child = child_at(0).ok_or(RamStoreError::Invalid("leaf child"))?;
+            if child.role != "page" || child.id.kind() != ObjectKind::RamExtent {
                 return Err(RamStoreError::Invalid("leaf child role"));
             }
             let page_digest = PageDigest::from_bytes(decoder.digest()?);
@@ -672,23 +706,18 @@ pub(super) fn validate_tree(
                 return Err(RamStoreError::Invalid("leaf digest"));
             }
             TreeNode::Leaf {
-                page: child.id(),
+                page: child.id,
                 digest: page_digest,
             }
         }
-        2 if height != 0 && pages != 0 && children.len() == 2 => {
-            let mut children = children.iter();
-            let left_child = children
-                .next()
-                .ok_or(RamStoreError::Invalid("left child"))?;
-            let right_child = children
-                .next()
-                .ok_or(RamStoreError::Invalid("right child"))?;
-            if left_child.role() != "left" || right_child.role() != "right" {
+        2 if height != 0 && pages != 0 && child_count == 2 => {
+            let left_child = child_at(0).ok_or(RamStoreError::Invalid("left child"))?;
+            let right_child = child_at(1).ok_or(RamStoreError::Invalid("right child"))?;
+            if left_child.role != "left" || right_child.role != "right" {
                 return Err(RamStoreError::Invalid("branch child roles"));
             }
-            let left = decode_ref(&mut decoder, left_child.id())?;
-            let right = decode_ref(&mut decoder, right_child.id())?;
+            let left = decode_ref(&mut decoder, left_child.id)?;
+            let right = decode_ref(&mut decoder, right_child.id)?;
             let width = 1_u64 << (height - 1);
             if left.height != height - 1
                 || right.height != height - 1
@@ -785,4 +814,79 @@ impl<'a> Decoder<'a> {
         }
         Ok(())
     }
+}
+
+/// Executes the single existing checked envelope route under its owning Work.
+pub(super) fn read_envelope_from<B: crate::content_store::ImmutableBlobBackend + ?Sized>(
+    backend: &B,
+    id: ContentId,
+    work: &mut Work<'_>,
+    prepaid: bool,
+) -> Result<OwnedEnvelope, RamStoreError> {
+    if id.schema_version() == SCHEMA_VERSION
+        && matches!(
+            id.kind(),
+            ObjectKind::RamExtent | ObjectKind::RamTree | ObjectKind::ExactManifest
+        )
+    {
+        work.reject_exhausted_nonempty_visit()?;
+    }
+    let account = work.original().child().map_err(admission)?;
+    let _scope = account.enter();
+    if id.schema_version() != SCHEMA_VERSION {
+        return Err(RamStoreError::Invalid("RAM storage schema"));
+    }
+    // Page and binary-tree lookups run under bounded page-in scratch. A
+    // malformed small-object identity must not borrow the root decoder's
+    // larger catalog allocation merely by declaring a large body/table.
+    let (maximum_bytes, maximum_children) = object_limits(id)?;
+    (work.boundary)()?;
+    let source = work
+        .checked(|original, boundary| backend.read_with_boundary(original, id, None, boundary))?;
+    if source.logical_length() > maximum_bytes {
+        return Err(RamStoreError::Limit("single canonical object"));
+    }
+    if prepaid && matches!(id.kind(), ObjectKind::RamTree | ObjectKind::RamExtent) {
+        let previous_counts = (work.visits, work.io_bytes);
+        if let Err(error) = work.visit_accounting(source.logical_length()) {
+            let refused_counts = (work.visits, work.io_bytes);
+            (work.visits, work.io_bytes) = previous_counts;
+            // Preserve the original second-poll cancellation precedence and
+            // partial scalar state. No codec allocation follows refusal.
+            (work.boundary)()?;
+            (work.visits, work.io_bytes) = refused_counts;
+            return Err(error);
+        }
+        let length = usize::try_from(source.logical_length())
+            .map_err(|_| RamStoreError::Limit("single canonical object"))?;
+        let record = RecordAccount::new(
+            &account,
+            RecordAllocationPlan::read(length, maximum_children)?,
+        )?;
+        let bytes = work.checked(|original, boundary| {
+            source.read_all_with_boundary(original, maximum_bytes, boundary)
+        })?;
+        let envelope = {
+            let _codec_scope = record.codec.enter();
+            decode_envelope(id, &bytes, maximum_children, &record.codec)?
+        };
+        // Local partition charges validate monotone accounting, not host
+        // liveness. Recheck the SAME original operation after decoding and
+        // before accepting an owning result; EOF may have expired it.
+        {
+            let _terminal_scope = record.original.enter();
+            if let Err(error) = work.checked(|original, boundary| {
+                crate::content_store::checked_reader::check(original, boundary)
+            }) {
+                (work.visits, work.io_bytes) = previous_counts;
+                return Err(error);
+            }
+        }
+        return Ok(envelope);
+    }
+    work.visit(source.logical_length())?;
+    let bytes = work.checked(|original, boundary| {
+        source.read_all_with_boundary(original, maximum_bytes, boundary)
+    })?;
+    decode_envelope(id, &bytes, maximum_children, &account)
 }

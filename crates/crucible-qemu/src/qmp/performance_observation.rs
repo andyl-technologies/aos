@@ -88,34 +88,6 @@ impl<S: QmpTimeoutStream> QmpClient<S> {
             }),
         }
     }
-
-    pub(super) fn exchange_under(
-        &mut self,
-        command: QmpCommand<'_>,
-        guard: &HostOperationGuard,
-    ) -> Result<QmpCommandReturn, QmpError> {
-        self.ensure_usable()?;
-        let kind = command.kind();
-        let mut deadline = QmpOperationDeadline::new(self.io_timeout_policy.command_timeout);
-        deadline.borrowed = Some(guard);
-        deadline.remaining(kind.wire_name())?;
-        if let Err(error) = self.write_json_line(kind.wire_name(), command.request(), &deadline) {
-            self.poisoned = true;
-            self.stream.get_mut().poison_qmp_stream();
-            return Err(error);
-        }
-        let result = self.read_command_response(kind, &deadline);
-        if result
-            .as_ref()
-            .is_err_and(|error| !matches!(error, QmpError::Command { .. }))
-        {
-            self.poisoned = true;
-            self.stream.get_mut().poison_qmp_stream();
-        }
-        let response = result?;
-        deadline.complete(kind.wire_name())?;
-        Ok(response)
-    }
 }
 
 fn parse_window<const N: usize>(text: &str, base: u64) -> Result<[u8; N], QmpError> {

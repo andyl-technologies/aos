@@ -138,6 +138,13 @@ mod typed_validation_tests {
 pub(super) fn store_service_failure(error: &StoreError) -> CampaignServiceFailure {
     match error.original_failure() {
         StoreError::RamValidation { source } => ram_service_failure(source.storage_failure()),
+        StoreError::RamReadBoundary { source } => ram_service_failure(
+            source
+                .first_boundary()
+                .unwrap_or_else(|| source.storage_failure()),
+        ),
+        StoreError::RamReadValidation { source } => ram_service_failure(source.first_validation()),
+        StoreError::RamReadContinuation { source } => ram_service_failure(source.first_failure()),
         StoreError::RamBoundary { .. } | StoreError::CompositeBoundary { .. } => {
             CampaignServiceFailure::IntegrityFailure
         }

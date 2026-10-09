@@ -532,6 +532,42 @@ impl QemuNodePendingQuantum {
 
 /// QMP machine-control channel for snapshot and quit commands.
 pub(crate) trait QemuQmpMachineControlChannel: Send {
+    #[cfg(feature = "kernel-swap-measurement")]
+    fn discover_kernel_swap_admission(
+        &mut self,
+        _cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        _generation: u64,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpKernelSwapAdmission, crate::qmp::QmpError> {
+        Err(crate::qmp::QmpError::InvalidBound {
+            operation: "kernel-swap admission channel unavailable",
+        })
+    }
+
+    #[cfg(feature = "kernel-swap-measurement")]
+    fn observe_kernel_swap_residency(
+        &mut self,
+        _cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        _generation: u64,
+        _topology_generation: u64,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpKernelSwapResidency, crate::qmp::QmpError> {
+        Err(crate::qmp::QmpError::InvalidBound {
+            operation: "kernel-swap residency channel unavailable",
+        })
+    }
+
+    #[cfg(feature = "kernel-swap-measurement")]
+    fn close_kernel_swap_cancellation(
+        &mut self,
+        _cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        _cleanup: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpCommandComplete, crate::qmp::QmpError> {
+        Err(crate::qmp::QmpError::InvalidBound {
+            operation: "kernel-swap cancellation channel unavailable",
+        })
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     fn performance_observation(
         &mut self,

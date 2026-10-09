@@ -15,7 +15,7 @@ use crate::ram_error::RamError;
 use crate::{QemuPluginId, QemuPluginInfo};
 
 type SetBudget = extern "C" fn(u64) -> c_int;
-type FullRoot = extern "C" fn(u32, *mut u8, *mut u64) -> c_int;
+type FullRoot = extern "C" fn(u32, u64, *mut u8, *mut u64) -> c_int;
 
 static ORACLE: OnceLock<FullRoot> = OnceLock::new();
 
@@ -47,7 +47,7 @@ pub(crate) unsafe extern "C" fn install(
                     b"qemu_plugin_crucible_ram_set_metadata_budget_v1\0",
                 )?),
                 std::mem::transmute::<*mut c_void, FullRoot>(symbol(
-                    b"qemu_plugin_crucible_ram_full_root_v1\0",
+                    b"qemu_plugin_crucible_ram_full_root_v2\0",
                 )?),
             )
         };
@@ -88,11 +88,14 @@ fn parse_budget(argument: &str) -> Result<u64, RamError> {
 
 pub(crate) extern "C" fn observe_root(
     scope: u32,
+    owner_token: u64,
     output: *mut u8,
     logical_bytes: *mut u64,
+    cleanup: *mut crate::ram_fingerprint::CaptureClose,
 ) -> c_int {
-    let status = crate::ram_fingerprint::observe_root(scope, output, logical_bytes);
-    if status != 0 {
+    let status =
+        crate::ram_fingerprint::observe_root(scope, owner_token, output, logical_bytes, cleanup);
+    if status != 0 || owner_token != 0 {
         return status;
     }
     let result = std::panic::catch_unwind(|| verify_root(scope, output, logical_bytes));
@@ -114,7 +117,7 @@ fn verify_root(scope: u32, output: *mut u8, logical_bytes: *mut u64) -> c_int {
     };
     let mut expected = [0_u8; 32];
     let mut expected_bytes = 0_u64;
-    let status = oracle(scope, expected.as_mut_ptr(), &mut expected_bytes);
+    let status = oracle(scope, 0, expected.as_mut_ptr(), &mut expected_bytes);
     if status != 0 {
         return status;
     }

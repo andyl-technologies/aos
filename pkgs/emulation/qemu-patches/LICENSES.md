@@ -10,6 +10,12 @@ The atomic integration patch creates these QEMU source files:
 
 | Created file | License | Basis |
 | --- | --- | --- |
+| `include/system/crucible-kernel-swap-observation.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-kernel-swap-observation.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-ram-owner-diagnostic.c` | GPL-2.0-or-later | Explicit SPDX identifier; original native report implementation retained |
+| `plugins/crucible-ram-owner-diagnostic.h` | GPL-2.0-or-later | Explicit SPDX identifier; private native report contract |
+| `replay/replay-mutex.c` | GPL-2.0-or-later | Preserved GNU GPL version 2 or later notice from the extracted replay implementation |
+| `tests/unit/test-crucible-replay-owner.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `accel/tcg/tcg-accel-ops-sim.c` | GPL-2.0-or-later | QEMU default |
 | `include/system/crucible-plugin-wake.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `block/crucible-shmem.c` | GPL-2.0-or-later | Explicit file notice |

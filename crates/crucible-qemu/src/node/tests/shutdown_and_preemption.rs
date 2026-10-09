@@ -2,6 +2,39 @@
 
 use super::*;
 
+#[cfg(feature = "kernel-swap-measurement")]
+#[test]
+fn kernel_swap_admission_unsupported_node_preserves_owner_and_zero_channel_effects()
+-> Result<(), Box<dyn Error>> {
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+
+    let log = shared_log();
+    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+    let contract = unvalidated_hot_fork_process_contract()?;
+    let mut cancellation = crate::QmpKernelSwapCancellation::new(&contract)?;
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(2)),
+    )?;
+    let original = supervisor.begin(HostOperationClass::CheckpointCapture)?;
+    let before = recorded(&log);
+
+    let result = node.discover_kernel_swap_admission(&mut cancellation, 17, &original);
+
+    assert!(matches!(
+        result,
+        Err(crate::QmpError::InvalidBound {
+            operation: "kernel-swap admission channel unavailable",
+        })
+    ));
+    assert!(!cancellation.requires_native_retirement());
+    assert!(original.wait_slice().is_ok());
+    assert_eq!(recorded(&log), before);
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn orphan_quarantine_ignores_a_reused_process_identity() -> Result<(), Box<dyn Error>> {

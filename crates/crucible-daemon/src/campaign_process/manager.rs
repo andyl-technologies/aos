@@ -5,6 +5,7 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
+use super::CampaignProcessAdmissionError;
 use super::policy::ProcessPolicy;
 
 pub(super) struct BirthProof {
@@ -13,7 +14,9 @@ pub(super) struct BirthProof {
     pub cgroup: File,
 }
 
-pub(super) async fn verify(policy: &ProcessPolicy) -> Result<BirthProof, String> {
+pub(super) async fn verify(
+    policy: &ProcessPolicy,
+) -> Result<BirthProof, CampaignProcessAdmissionError> {
     // A fixed endpoint avoids accepting a caller-selected bus through an
     // environment variable. Its manager owner must be the real root PID1.
     let connection = zbus::connection::Builder::address("unix:path=/run/dbus/system_bus_socket")
@@ -42,7 +45,9 @@ pub(super) async fn verify(policy: &ProcessPolicy) -> Result<BirthProof, String>
             .map_err(message)?
             != 0
     {
-        return Err("campaign process manager is not root PID1".into());
+        return Err(CampaignProcessAdmissionError::policy(
+            "campaign process manager is not root PID1",
+        ));
     }
     let manager = zbus::Proxy::new(
         &connection,
@@ -61,7 +66,9 @@ pub(super) async fn verify(policy: &ProcessPolicy) -> Result<BirthProof, String>
         .await
         .map_err(message)?;
     if path != own_path {
-        return Err("campaign process is outside its authored service unit".into());
+        return Err(CampaignProcessAdmissionError::policy(
+            "campaign process is outside its authored service unit",
+        ));
     }
     let unit = zbus::Proxy::new(
         &connection,
@@ -80,9 +87,9 @@ pub(super) async fn verify(policy: &ProcessPolicy) -> Result<BirthProof, String>
     .await
     .map_err(message)?;
     let invocation: Vec<u8> = unit.get_property("InvocationID").await.map_err(message)?;
-    let invocation: [u8; 16] = invocation
-        .try_into()
-        .map_err(|_| "campaign invocation identity has the wrong extent".to_string())?;
+    let invocation: [u8; 16] = invocation.try_into().map_err(|_| {
+        CampaignProcessAdmissionError::policy("campaign invocation identity has the wrong extent")
+    })?;
     let main: u32 = service.get_property("MainPID").await.map_err(message)?;
     let start: u64 = service
         .get_property("ExecMainStartTimestampMonotonic")
@@ -97,7 +104,9 @@ pub(super) async fn verify(policy: &ProcessPolicy) -> Result<BirthProof, String>
         || start == 0
         || runtime != policy.runtime_seconds * 1_000_000
     {
-        return Err("campaign process is not the original finite main invocation".into());
+        return Err(CampaignProcessAdmissionError::policy(
+            "campaign process is not the original finite main invocation",
+        ));
     }
     for (property, expected) in [
         ("MemoryMax", policy.memory_max_bytes),
@@ -115,13 +124,15 @@ pub(super) async fn verify(policy: &ProcessPolicy) -> Result<BirthProof, String>
     ] {
         let actual: u64 = service.get_property(property).await.map_err(message)?;
         if actual != expected {
-            return Err(format!(
+            return Err(CampaignProcessAdmissionError::policy(format!(
                 "campaign preexec {property} differs from its authored policy"
-            ));
+            )));
         }
     }
     if std::fs::read_link("/proc/self/exe").map_err(message)? != Path::new(&policy.executable) {
-        return Err("campaign executable differs from its immutable policy".into());
+        return Err(CampaignProcessAdmissionError::policy(
+            "campaign executable differs from its immutable policy",
+        ));
     }
     let group: String = service
         .get_property("ControlGroup")
@@ -135,14 +146,18 @@ pub(super) async fn verify(policy: &ProcessPolicy) -> Result<BirthProof, String>
             .skip(1)
             .any(|part| part.is_empty() || part == "." || part == "..")
     {
-        return Err("campaign manager returned an invalid cgroup identity".into());
+        return Err(CampaignProcessAdmissionError::policy(
+            "campaign manager returned an invalid cgroup identity",
+        ));
     }
     let own_group = bounded_read(Path::new("/proc/self/cgroup"), 4096)?;
     if !own_group
         .lines()
         .any(|line| line.strip_prefix("0::") == Some(group.as_str()))
     {
-        return Err("campaign process is not contained in the original unified cgroup".into());
+        return Err(CampaignProcessAdmissionError::policy(
+            "campaign process is not contained in the original unified cgroup",
+        ));
     }
     let cgroup_path = Path::new("/sys/fs/cgroup").join(group.trim_start_matches('/'));
     for (file, expected) in [
@@ -151,7 +166,9 @@ pub(super) async fn verify(policy: &ProcessPolicy) -> Result<BirthProof, String>
     ] {
         let actual = bounded_read(&cgroup_path.join(file), 64)?;
         if actual.trim().parse::<u64>().ok() != Some(expected) {
-            return Err(format!("campaign installed {file} differs from its policy"));
+            return Err(CampaignProcessAdmissionError::policy(format!(
+                "campaign installed {file} differs from its policy"
+            )));
         }
     }
     let cpu = bounded_read(&cgroup_path.join("cpu.max"), 128)?;
@@ -161,20 +178,28 @@ pub(super) async fn verify(policy: &ProcessPolicy) -> Result<BirthProof, String>
         || cpu.next().and_then(|value| value.parse::<u64>().ok()) != Some(100_000)
         || cpu.next().is_some()
     {
-        return Err("campaign installed CPU quota differs from its policy".into());
+        return Err(CampaignProcessAdmissionError::policy(
+            "campaign installed CPU quota differs from its policy",
+        ));
     }
-    let now = monotonic_microseconds().ok_or("campaign monotonic clock is unrepresentable")?;
+    let now = monotonic_microseconds().ok_or_else(|| {
+        CampaignProcessAdmissionError::policy("campaign monotonic clock is unrepresentable")
+    })?;
     let deadline = start
         .checked_add(runtime)
         .filter(|end| *end > now)
-        .ok_or("campaign original runtime deadline has expired")?;
+        .ok_or_else(|| {
+            CampaignProcessAdmissionError::policy("campaign original runtime deadline has expired")
+        })?;
     let cgroup = File::open(&cgroup_path).map_err(message)?;
     // Recheck the main invocation after reading its complete containment. A
     // helper or a concurrently replaced incarnation cannot publish this proof.
     let final_main: u32 = service.get_property("MainPID").await.map_err(message)?;
     let final_invocation: Vec<u8> = unit.get_property("InvocationID").await.map_err(message)?;
     if final_main != main || final_invocation.as_slice() != invocation {
-        return Err("campaign main invocation changed during admission".into());
+        return Err(CampaignProcessAdmissionError::policy(
+            "campaign main invocation changed during admission",
+        ));
     }
     Ok(BirthProof {
         deadline,
@@ -183,20 +208,22 @@ pub(super) async fn verify(policy: &ProcessPolicy) -> Result<BirthProof, String>
     })
 }
 
-fn bounded_read(path: &Path, maximum: usize) -> Result<String, String> {
+fn bounded_read(path: &Path, maximum: usize) -> Result<String, CampaignProcessAdmissionError> {
     let file = File::open(path).map_err(message)?;
     let mut bytes = Vec::with_capacity(maximum + 1);
     file.take((maximum + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(message)?;
     if bytes.len() > maximum {
-        return Err("campaign containment read exceeds its fixed bound".into());
+        return Err(CampaignProcessAdmissionError::policy(
+            "campaign containment read exceeds its fixed bound",
+        ));
     }
     String::from_utf8(bytes).map_err(message)
 }
 
-fn message(error: impl std::fmt::Display) -> String {
-    error.to_string()
+fn message(error: impl std::fmt::Display) -> CampaignProcessAdmissionError {
+    CampaignProcessAdmissionError::policy(error.to_string())
 }
 
 pub(super) fn monotonic_microseconds() -> Option<u64> {
@@ -207,4 +234,61 @@ pub(super) fn monotonic_microseconds() -> Option<u64> {
         .ok()?
         .checked_mul(1_000_000)?
         .checked_add(u64::try_from(clock.tv_nsec).ok()? / 1000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manager_diagnostics_retain_policy_classification_and_original_text() {
+        let original = std::io::Error::other("original manager refusal");
+        let expected = original.to_string();
+        let classified = message(original);
+
+        assert!(matches!(
+            &classified,
+            CampaignProcessAdmissionError::Policy(_)
+        ));
+        assert_eq!(classified.to_string(), expected);
+    }
+
+    #[test]
+    fn bounded_containment_reads_keep_their_typed_refusal_and_extent() -> std::io::Result<()> {
+        let file = tempfile::NamedTempFile::new()?;
+        std::fs::write(file.path(), b"1234")?;
+        let complete = match bounded_read(file.path(), 4) {
+            Ok(value) => value,
+            Err(error) => panic!("exact bounded containment read: {error}"),
+        };
+        assert_eq!(complete, "1234");
+
+        let oversized = match bounded_read(file.path(), 3) {
+            Ok(_) => panic!("oversized containment must refuse"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            &oversized,
+            CampaignProcessAdmissionError::Policy(_)
+        ));
+        assert_eq!(
+            oversized.to_string(),
+            "campaign containment read exceeds its fixed bound"
+        );
+
+        std::fs::write(file.path(), [0xff])?;
+        let expected = String::from_utf8(vec![0xff])
+            .expect_err("invalid UTF-8")
+            .to_string();
+        let invalid_text = match bounded_read(file.path(), 1) {
+            Ok(_) => panic!("invalid containment text must refuse"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            &invalid_text,
+            CampaignProcessAdmissionError::Policy(_)
+        ));
+        assert_eq!(invalid_text.to_string(), expected);
+        Ok(())
+    }
 }

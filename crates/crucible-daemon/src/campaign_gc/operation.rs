@@ -98,23 +98,6 @@ impl<'a> CampaignGcOperationContext<'a> {
             .reserve_resources(descriptors, bytes)
     }
 
-    pub(super) fn reserve_root_accumulator(
-        &self,
-    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
-        // Every root can occupy each of four sets. Three complete key/link
-        // slots per entry conservatively cover the standard B-tree's partially
-        // occupied leaf/internal nodes and allocation headers. Manifest-owned
-        // output storage has an independent retained loan.
-        let slot = std::mem::size_of::<crucible_cas::content_store::ContentId>()
-            + 4 * std::mem::size_of::<usize>();
-        let bytes = super::MAX_CAMPAIGN_GC_MANIFEST_ENTRIES
-            .checked_mul(4)
-            .and_then(|entries| entries.checked_mul(3))
-            .and_then(|entries| entries.checked_mul(slot))
-            .ok_or(StoreError::Quota)?;
-        self.reserve_bytes(u64::try_from(bytes).map_err(|_| StoreError::Quota)?)
-    }
-
     pub(super) fn original(&self) -> &DecodeBudget {
         self.original
     }

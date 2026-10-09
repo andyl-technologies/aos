@@ -259,6 +259,14 @@ fn patched_qapi_commands_have_schema_owners_or_qapi_only_contracts() {
             "crucible.qemu.hot-fork.child-ram",
         ),
         ("query-crucible-paused-cpu", "crucible.qemu.paused-cpu"),
+        (
+            "query-crucible-kernel-swap-admission-v1",
+            "crucible.qemu.kernel-swap.admission",
+        ),
+        (
+            "query-crucible-kernel-swap-residency-v1",
+            "crucible.qemu.kernel-swap.residency",
+        ),
     ];
 
     // These additions have no independent schema-version field. QAPI owns

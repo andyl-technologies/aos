@@ -4,6 +4,8 @@
 //! model does not install project quotas or fund its allocator, graph maps,
 //! test infrastructure, incoming errors, or enclosing authority controls.
 
+#![cfg(test)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};

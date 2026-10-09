@@ -61,6 +61,11 @@ pub struct PreparedRamFailure<E> {
 }
 
 impl<E> PreparedRamFailure<E> {
+    /// Transfers an unused prepayment without allocating a carrier or renewing it.
+    pub(super) fn into_credit(self) -> DecodeScratch {
+        self.credit
+    }
+
     /// Returns the exact pinned shared allocation extent for this boundary type.
     ///
     /// # Errors
@@ -171,6 +176,11 @@ pub struct RamFailureCause<E> {
 }
 
 impl<E> RamFailureCause<E> {
+    /// Borrows the privately tagged first cause without imposing its category.
+    pub(super) fn first_error(&self) -> Option<&E> {
+        self.body().first.as_ref()
+    }
+
     fn body(&self) -> &FailureBody<E> {
         // A live wrapper always owns its body. Only Drop takes the reference,
         // and neither the taken wrapper nor its private Arc can escape.

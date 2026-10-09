@@ -326,6 +326,11 @@ pub use qmp::{
     QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState, QmpIoTimeoutPolicy,
     QmpJobPollPolicy, QmpPausedCpu, QmpRunState, QmpRunStateKind, QmpTimeoutStream,
 };
+#[cfg(feature = "kernel-swap-measurement")]
+pub use qmp::{
+    QMP_QUERY_KERNEL_SWAP_ADMISSION_COMMAND, QMP_QUERY_KERNEL_SWAP_RESIDENCY_COMMAND,
+    QmpKernelSwapAdmission, QmpKernelSwapCancellation, QmpKernelSwapResidency,
+};
 pub(crate) use qmp::{QmpCheckpointCapture, QmpCheckpointCaptureRequest, QmpCheckpointTopology};
 pub use quantum::{
     QemuDeviceIoFreezeObservation, QemuDeviceIoFreezeReport, QemuInboundFrame, QemuOutboundFrame,

@@ -144,7 +144,7 @@ pub(crate) fn capture_restore_inventory() -> Result<
             "RAM observer admission is owned by another transaction",
         ));
     }
-    let claim = CaptureClaim::begin(observer.apis, false)?;
+    let claim = CaptureClaim::begin(observer.apis, false, 0)?;
     let budget = cache.metadata_budget(claim.header.metadata_budget_bytes)?;
     let inventory_bytes = (claim.header.region_count as u64)
         .checked_mul((std::mem::size_of::<RegionDescriptor>() + 255 + 32) as u64)

@@ -46,6 +46,10 @@ const ARTIFACT_SPECS: &[ArtifactSpec] = &[
         expected: ExpectedArtifact::FleetStoreBinary,
     },
     ArtifactSpec {
+        package: "crucible-sqlite-heap",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
         package: "crucible-linux-resource",
         expected: ExpectedArtifact::Library,
     },

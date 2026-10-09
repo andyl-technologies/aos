@@ -1,5 +1,10 @@
 //! Integer-only controls for the process-wide native SQLite allocator.
 //!
+//! Implementation contract: Integer-only native SQLite allocator limits and usage controls.
+//!
+//! Module map: `lib.rs` defines [`NativeHeapError`] and the safe limit,
+//! usage, high-water and memory-release operations.
+//!
 //! This boundary initializes the existing linked SQLite library, installs a
 //! positive hard limit and reads allocator usage. It owns no connection,
 //! resource authority, callback or shutdown operation. Its caller retains the

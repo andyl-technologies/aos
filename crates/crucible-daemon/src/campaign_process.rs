@@ -5,7 +5,6 @@
 //! finite entitlement. Permanent SQLite credit retains this actor for the
 //! entire process lifetime, including uncertain managed connection cleanup.
 
-use super::{CliError, serve_error};
 use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -22,9 +21,9 @@ use crucible_linux_resource::host_services::{
     HostServiceAllocator, HostServiceBootstrap, HostServiceLease, HostServiceLeasePair,
 };
 
-#[path = "process_bootstrap/manager.rs"]
+#[path = "campaign_process/manager.rs"]
 mod manager;
-#[path = "process_bootstrap/policy.rs"]
+#[path = "campaign_process/policy.rs"]
 mod policy;
 
 use policy::ProcessPolicy;
@@ -156,24 +155,83 @@ impl SqliteProcessBootstrapAuthority for &'static ProcessActor {
     }
 }
 
-pub(super) struct CampaignProcessOwner {
+/// Retains the admitted campaign process policy and its one nominal SQLite heap.
+///
+/// The actor and permanent native credit retain the original process account.
+/// Runtime and graph callers borrow this owner rather than constructing issuers.
+pub struct CampaignProcessOwner {
     // Runtime settings and immutable policy remain available until runtime drop.
-    pub policy: ProcessPolicy,
-    pub heap: SqliteProcessHeap,
+    policy: ProcessPolicy,
+    heap: SqliteProcessHeap,
+}
+
+/// Classifies process-policy diagnostics, runtime IO and original heap admission failures.
+#[derive(Debug, thiserror::Error)]
+pub enum CampaignProcessAdmissionError {
+    /// The immutable policy or authenticated service invocation was refused.
+    ///
+    /// Policy-loading and manager errors retain their original diagnostic text
+    /// and serve-error classification. Runtime IO and heap failures retain their
+    /// concrete causes in the other variants.
+    #[error("{0}")]
+    Policy(String),
+    /// A required startup runtime could not be constructed.
+    #[error(transparent)]
+    Io(std::io::Error),
+    /// The same original process heap or credit could not be admitted.
+    #[error(transparent)]
+    Store(StoreError),
+}
+
+impl CampaignProcessAdmissionError {
+    fn policy(message: impl Into<String>) -> Self {
+        Self::Policy(message.into())
+    }
 }
 
 impl CampaignProcessOwner {
-    pub fn admit() -> Result<Self, CliError> {
+    /// Returns the operator-authored ordinary runtime worker count.
+    #[must_use]
+    pub fn worker_threads(&self) -> usize {
+        self.policy.worker_threads
+    }
+
+    /// Returns the operator-authored maximum blocking worker count.
+    #[must_use]
+    pub fn blocking_threads(&self) -> usize {
+        self.policy.blocking_threads
+    }
+
+    /// Returns the operator-authored stack extent for every runtime worker.
+    #[must_use]
+    pub fn thread_stack_bytes(&self) -> usize {
+        self.policy.thread_stack_bytes
+    }
+
+    /// Borrows the one admitted original heap for all campaign SQLite leaves.
+    #[must_use]
+    pub fn heap(&self) -> &SqliteProcessHeap {
+        &self.heap
+    }
+
+    /// Admits the process once under its authenticated prebirth policy.
+    ///
+    /// # Errors
+    /// Refuses repeated entry, unavailable or invalid policy, startup runtime
+    /// failure, manager authentication failure, or original SQLite admission.
+    pub fn admit() -> Result<Self, CampaignProcessAdmissionError> {
         if ENTRY
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            return Err(serve_error(
+            return Err(CampaignProcessAdmissionError::policy(
                 "campaign process admission has already been attempted",
             ));
         }
-        let (policy, policy_file) = load_policy().map_err(serve_error)?;
-        policy.validate().map_err(serve_error)?;
+        let (policy, policy_file) = load_policy()?;
+        policy
+            .validate()
+            .map_err(CampaignProcessAdmissionError::policy)?;
         // This bounded single-thread startup runtime is part of the original
         // baseline. It closes before the authored service thread pool exists.
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -181,19 +239,23 @@ impl CampaignProcessOwner {
             .max_blocking_threads(1)
             .thread_stack_size(policy.thread_stack_bytes)
             .build()
-            .map_err(CliError::Io)?;
-        let proof = runtime
-            .block_on(manager::verify(&policy))
-            .map_err(serve_error)?;
+            .map_err(CampaignProcessAdmissionError::Io)?;
+        let proof = runtime.block_on(manager::verify(&policy))?;
         drop(runtime);
         let resources = policy
             .memory_max_bytes
             .checked_sub(policy.baseline_resident_bytes)
-            .ok_or_else(|| serve_error("campaign process baseline exceeds MemoryMax"))?;
+            .ok_or_else(|| {
+                CampaignProcessAdmissionError::policy("campaign process baseline exceeds MemoryMax")
+            })?;
         let structure = HostServiceBootstrap::control_bytes()
-            .map_err(|error| serve_error(error.to_string()))?
+            .map_err(|error| CampaignProcessAdmissionError::policy(error.to_string()))?
             .checked_add(std::mem::size_of::<ProcessActor>() as u64)
-            .ok_or_else(|| serve_error("campaign process account structure overflows"))?;
+            .ok_or_else(|| {
+                CampaignProcessAdmissionError::policy(
+                    "campaign process account structure overflows",
+                )
+            })?;
         let original = HostServiceBootstrap::new(
             policy.tasks_max,
             policy.file_descriptors,
@@ -201,7 +263,7 @@ impl CampaignProcessOwner {
             policy.metadata_bytes,
         )
         .and_then(|original| original.reserve_structure(structure))
-        .map_err(|error| serve_error(error.to_string()))?;
+        .map_err(|error| CampaignProcessAdmissionError::policy(error.to_string()))?;
         // There is one private entry and no re-exec path. Publication moves the
         // two admitted counters straight into permanent inline actor storage.
         let actor = ACTOR.get_or_init(|| {
@@ -217,10 +279,11 @@ impl CampaignProcessOwner {
                 _policy: policy_file,
             }
         });
-        SqliteProcessHeap::prepare_bootstrap(&actor).map_err(CliError::SqliteStartup)?;
+        SqliteProcessHeap::prepare_bootstrap(&actor)
+            .map_err(CampaignProcessAdmissionError::Store)?;
         let control = actor
             .metadata(SqliteHeapIssuer::control_bytes::<ProcessHeapAuthority>())
-            .map_err(CliError::SqliteStartup)?;
+            .map_err(CampaignProcessAdmissionError::Store)?;
         let heap = SqliteProcessHeap::install(
             SqliteHeapIssuer::new(
                 ProcessHeapAuthority {
@@ -232,37 +295,47 @@ impl CampaignProcessOwner {
             policy.sqlite_heap_bytes,
             policy.sqlite_connections,
         )
-        .map_err(CliError::SqliteStartup)?;
+        .map_err(CampaignProcessAdmissionError::Store)?;
         Ok(Self { policy, heap })
     }
 }
 
-fn load_policy() -> Result<(ProcessPolicy, File), String> {
-    let path = std::fs::canonicalize(POLICY_PATH).map_err(|error| error.to_string())?;
+fn load_policy() -> Result<(ProcessPolicy, File), CampaignProcessAdmissionError> {
+    let path = std::fs::canonicalize(POLICY_PATH)
+        .map_err(|error| CampaignProcessAdmissionError::policy(error.to_string()))?;
     if !path.starts_with(Path::new("/nix/store")) {
-        return Err("campaign process policy is not an immutable evaluated store file".into());
+        return Err(CampaignProcessAdmissionError::policy(
+            "campaign process policy is not an immutable evaluated store file",
+        ));
     }
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
         .open(path)
-        .map_err(|error| error.to_string())?;
-    let metadata = file.metadata().map_err(|error| error.to_string())?;
+        .map_err(|error| CampaignProcessAdmissionError::policy(error.to_string()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| CampaignProcessAdmissionError::policy(error.to_string()))?;
     if !metadata.is_file()
         || metadata.uid() != 0
         || metadata.mode() & 0o222 != 0
         || metadata.len() > MAX_POLICY_BYTES as u64
     {
-        return Err("campaign process policy is mutable, unowned or exceeds its bound".into());
+        return Err(CampaignProcessAdmissionError::policy(
+            "campaign process policy is mutable, unowned or exceeds its bound",
+        ));
     }
     let mut text = String::with_capacity(metadata.len() as usize);
     (&mut file)
         .take((MAX_POLICY_BYTES + 1) as u64)
         .read_to_string(&mut text)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| CampaignProcessAdmissionError::policy(error.to_string()))?;
     if text.len() > MAX_POLICY_BYTES {
-        return Err("campaign process policy exceeds its bound".into());
+        return Err(CampaignProcessAdmissionError::policy(
+            "campaign process policy exceeds its bound",
+        ));
     }
-    let policy = toml::from_str(&text).map_err(|error| error.to_string())?;
+    let policy = toml::from_str(&text)
+        .map_err(|error| CampaignProcessAdmissionError::policy(error.to_string()))?;
     Ok((policy, file))
 }
