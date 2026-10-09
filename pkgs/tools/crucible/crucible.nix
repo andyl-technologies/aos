@@ -563,11 +563,9 @@
     inherit version;
     src = null;
     buildDeps = [bash];
-    runtimeDeps =
-      [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]
-      # The wrapper shebang names target Bash. A cross build dependency only
-      # retains the native shell used to assemble the suite.
-      ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [bash];
+    # Both suite launchers use target Bash at runtime. Keep their interpreter
+    # references through the final build-reference scrub on native and cross builds.
+    runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux bash];
     propagatedDeps = [];
     phases = [
       {
