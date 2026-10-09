@@ -141,4 +141,3 @@ pub enum PublicApiAuditMethodV1 {
     #[serde(rename = "/aos.sandbox.v1.OperatorService/Recover")]
     OperatorRecover,
 }
-
