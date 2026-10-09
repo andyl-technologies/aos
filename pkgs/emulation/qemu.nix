@@ -2653,7 +2653,13 @@ in
                    r"\s*#endif\s*/\*.*?\*/\s*async_run_on_cpu\(", 1),
                   ("RR timer notification header is TCG-only", cpu_timers,
                    r'#ifdef CONFIG_TCG\s*#include "accel/tcg/'
-                   r'tcg-accel-ops-rr\.h"\s*#endif', 1),
+                   r'tcg-accel-ops-rr\.h"\s*'
+                   r'#include "accel/tcg/tcg-accel-ops-sim-shmem\.h"\s*'
+                   r'#endif', 1),
+                  ("sole RR timer notification header", cpu_timers,
+                   r'#include "accel/tcg/tcg-accel-ops-rr\.h"', 1),
+                  ("sole native SIM timer notification header", cpu_timers,
+                   r'#include "accel/tcg/tcg-accel-ops-sim-shmem\.h"', 1),
                   ("RR timer notification has one guarded call", cpu_timers,
                    r"rr_crucible_sim_timer_notify_needs_vcpu_work\(\)", 1),
                   ("timer notify queues work only for parked RR states",
@@ -3314,11 +3320,16 @@ in
                    r"qemu_timer_register_crucible_determinism_sampler\(\s*"
                    r"rr_crucible_sim_sample_determinism_timer\);\s*"
                    r"qemu_timer_register_crucible_global_virtual_timer_owner\("
-                   r"\s*rr_crucible_sim_global_virtual_timer_owner\);\s*\}\s*"
+                   r"\s*rr_crucible_sim_global_virtual_timer_owner\);\s*"
+                   r"if \(crucible_node_control_registered\(\)\) \{\s*"
+                   r"qemu_timer_register_crucible_node_virtual_timer_owner\(\s*"
+                   r"rr_crucible_node_virtual_timer_owner\);\s*\}\s*\}\s*"
                    r"qemu_event_init\(&rr_dispatch_ceiling_event, false\);",
                    1),
                   ("sole determinism timer sampler registration", rr,
                    r"qemu_timer_register_crucible_determinism_sampler\(", 1),
+                  ("sole native virtual timer owner registration", rr,
+                   r"qemu_timer_register_crucible_node_virtual_timer_owner\(", 1),
                   ("determinism virtual timer callback trace", timer_callback,
                    r"if \(timer_list->clock->type == QEMU_CLOCK_VIRTUAL &&\s*"
                    r"timer_exact_virtual_ps &&\s*"
