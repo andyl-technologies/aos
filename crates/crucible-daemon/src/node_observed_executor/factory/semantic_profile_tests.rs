@@ -859,3 +859,6 @@ fn semantic_successor_reaction_waits_for_exclusive_cut_and_reuses_original_batch
     drop(runtime);
     reclaim(&catalog);
 }
+
+#[path = "generic_phase_tests.rs"]
+mod generic_phase;

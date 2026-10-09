@@ -454,22 +454,20 @@ impl HostModelNode {
                 ));
             }
             self.validate_staged_inputs(inputs, &staged.acknowledgement)?;
-            if matches!(self.model.as_ref(), Some(HostModel::Semantics(_))) {
-                // A closed prefix cannot pass an unconsumed original delivery.
-                // Refuse a cut between delivery and its selected reaction before
-                // any earlier input in this immutable batch can take effect.
-                for delivery in staged
-                    .original
-                    .deliveries()
-                    .iter()
-                    .skip(staged.consumed)
-                    .take_while(|delivery| delivery.delivery < limit)
-                {
-                    if self.input_reaction(delivery.delivery)? >= limit {
-                        return Err(failure(
-                            "semantic exclusive cut excludes the original input reaction",
-                        ));
-                    }
+            // A closed prefix cannot pass an unconsumed original delivery.
+            // Check the complete original batch before any request can mutate
+            // native state, including a phase-only cut excluding its Reaction.
+            for delivery in staged
+                .original
+                .deliveries()
+                .iter()
+                .skip(staged.consumed)
+                .take_while(|delivery| delivery.delivery < limit)
+            {
+                if self.input_reaction(delivery.delivery)? >= limit {
+                    return Err(failure(
+                        "host exclusive cut excludes the original input reaction",
+                    ));
                 }
             }
         } else if self

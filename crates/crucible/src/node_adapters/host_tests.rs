@@ -11,6 +11,9 @@ use super::*;
 #[path = "host_scripted_tests.rs"]
 mod scripted;
 
+#[path = "host_phase_tests.rs"]
+mod phase;
+
 struct ClockQualification;
 
 impl HostModelQualification for ClockQualification {

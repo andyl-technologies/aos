@@ -745,6 +745,32 @@ metadata changes only two existing hashes and line counts, preserving the
 runtime repair inventory. This stage does not qualify captured semantic input
 state, imported compatibility migration or external-input profiles.
 
+## Whole input-prefix phase protection
+
+The pre-effect immutable-batch check now also covers generic same-microstep
+Block and Link reactions. A phase-only grant can include Delivery while
+excluding Reaction; claiming a closed prefix in that case would leave an
+original input behind. The adapter refuses the entire remaining batch before
+an earlier request can change native state. Later valid grants retain the same
+batch and consume its original requests in order. Reaction mapping, native
+codecs, receipt validation and scheduler closure rules remain unchanged.
+
+Central verification passes 142 selected cases: the unchanged identity golden,
+five actual installed scenarios, 99 existing/new adapter cases and 37
+source-quality cases. The actual cohort completes in 7.69 seconds and includes
+the genuine installed Script-to-Block pipeline; two direct Block/Link
+state comparisons within the adapter cohort use explicitly synthetic admission.
+Five-file formatting and nine-crate all-target strict checks pass. Original
+failed capture attempts are retained: a staggered source/device cut cannot
+serve as a common-cut archive oracle. Native state comparisons and the ordinary
+installed pipeline are separate evidence; no capture guard is relaxed.
+
+The hermetic application unit/integration target build passes for the preceding
+runtime repair stack ending at `cbb361f8cb`, output
+`54yppih35hb55m0l8g49mqza9ni0f6p7-aos-test-targets-0.1.0`. It does not extend
+that compilation result to these later semantic and phase changes. Their
+coherent application-target build remains required.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
