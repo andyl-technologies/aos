@@ -142,6 +142,8 @@ in
           patch -p1 < ${./rebalancer-oss-includes.patch}
           patch -p1 < ${./rebalancer-fmt-includes.patch}
           patch -p1 < ${./rebalancer-map-order-test.patch}
+          # Extreme order statistics have exact existing LP representations.
+          patch -p1 < ${./rebalancer-extrema-lp.patch}
         '';
       }
       {
