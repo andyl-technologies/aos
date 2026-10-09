@@ -26,6 +26,7 @@ pub struct NativeLaunchEndpoint {
     scope_digest: [u8; 32],
     edition: NativeControlEdition,
     initialization: Option<crucible_protocol::node_control::NativeInitializationPreparation>,
+    pub(super) phase_projection: Option<crucible_protocol::node_control::NativePhasePreparation>,
 }
 
 impl NativeLaunchEndpoint {
@@ -44,6 +45,13 @@ impl NativeLaunchEndpoint {
         &self,
     ) -> Option<&crucible_protocol::node_control::NativeInitializationPreparation> {
         self.initialization.as_ref()
+    }
+
+    /// Returns the complete original source projection pinned before construction.
+    pub fn phase_projection(
+        &self,
+    ) -> Option<&crucible_protocol::node_control::NativePhasePreparation> {
+        self.phase_projection.as_ref()
     }
 
     /// Transfers the owned socket to the supervised inherited-descriptor launcher.
@@ -66,6 +74,7 @@ pub struct NativeQemuControlTransport {
     pub(super) cpu_park: Option<NativeCpuParkFacts>,
     pub(super) timer_objects: BTreeMap<u64, super::timers::TimerAssembly>,
     pub(super) initialization: Option<super::initialization::InitializationJournal>,
+    pub(super) phase_projection: Option<super::phase::PhaseJournal>,
     pub(super) writer_objects: BTreeMap<u64, super::writers::WriterAssembly>,
 }
 
@@ -95,6 +104,10 @@ impl NativeQemuControlTransport {
         preparation: NativePreparation,
         edition: NativeControlEdition,
     ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
+        if edition == NativeControlEdition::PhaseProjection {
+            // This edition requires the complete original construction companion.
+            return Err(NativeCommandError::Conflict.into());
+        }
         Self::prepare_channel(
             preparation.clone(),
             edition,
@@ -133,6 +146,7 @@ impl NativeQemuControlTransport {
                 cpu_park: None,
                 timer_objects: BTreeMap::new(),
                 writer_objects: BTreeMap::new(),
+                phase_projection: None,
                 initialization: initialization
                     .clone()
                     .map(super::initialization::InitializationJournal::new),
@@ -142,6 +156,7 @@ impl NativeQemuControlTransport {
                 scope_digest,
                 edition,
                 initialization,
+                phase_projection: None,
             },
         ))
     }
@@ -188,7 +203,7 @@ impl NativeQemuControlTransport {
         {
             return Err(NativeCommandError::Conflict.into());
         }
-        if self.channel.edition() == NativeControlEdition::OwnedCustody
+        if self.channel.edition() != NativeControlEdition::Original
             && self.writer_observation(U64::new(0)).is_none()
         {
             return Err(NativeCommandError::Conflict.into());
@@ -217,6 +232,7 @@ impl NativeQemuControlTransport {
             }
             NativeFrame::SourceFault(facts) => self.accept_source_fault(facts)?,
             NativeFrame::TimerChunk(chunk) => self.accept_timer_chunk(chunk)?,
+            NativeFrame::PhaseTimerChunk(chunk) => self.accept_phase_timer_chunk(chunk)?,
             NativeFrame::WriterChunk(chunk) => self.accept_writer_chunk(chunk)?,
             NativeFrame::CpuPark(facts) => {
                 if facts.prepared_scope_hash != self.prepared_scope_hash

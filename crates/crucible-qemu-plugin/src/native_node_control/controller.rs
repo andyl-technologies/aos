@@ -41,6 +41,7 @@ struct State {
 pub(crate) struct NativeNodeControl {
     initialization: Option<super::initialization_custody::InitializationCustody>,
     initialization_registered: AtomicBool,
+    phase_projection: Option<super::phase_custody::PhaseProjectionCustody>,
     state: Mutex<State>,
     protocol_worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     worker_gate: OnceLock<Arc<crate::runtime::worker_quiescence::LiveWorkerQuiescence>>,
@@ -63,6 +64,7 @@ impl NativeNodeControl {
         let prepared_scope_hash = scope.identity_digest()?;
         Ok(Self {
             initialization: None,
+            phase_projection: None,
             initialization_registered: AtomicBool::new(false),
             prepared_scope_hash,
             cpu_query: None,
@@ -161,6 +163,7 @@ impl NativeNodeControl {
                 Ok(())
             }
             Some(NativeFrame::QueryTimers(query)) => self.send_timer_chunk(&query),
+            Some(NativeFrame::QueryPhaseTimers(query)) => self.send_phase_timer_chunk(&query),
             Some(NativeFrame::QueryWriters(query)) => self.send_writer_chunk(&query),
             Some(NativeFrame::QueryCpuPark(scope)) => {
                 if scope != self.prepared_scope_hash {
@@ -176,6 +179,8 @@ impl NativeNodeControl {
                 | NativeFrame::TimerChunk(_)
                 | NativeFrame::WriterChunk(_)
                 | NativeFrame::SourceFault(_)
+                | NativeFrame::PreparePhase(_)
+                | NativeFrame::PhaseTimerChunk(_)
                 | NativeFrame::PrepareInitialization(_)
                 | NativeFrame::InitializationCut(_)
                 | NativeFrame::InitializationStopped(_)
@@ -398,6 +403,11 @@ impl NativeNodeControl {
             (self as *const Self).cast_mut().cast(),
         );
         if result == 0 {
+            if self.register_phase_projection().is_err() {
+                // Native control already retains callbacks into this library.
+                // An ordinary error return could unload still-referenced code.
+                std::process::abort();
+            }
             Ok(())
         } else {
             if self.initialization_registered.load(Ordering::Acquire) {
@@ -659,7 +669,8 @@ extern "C" fn get_command(out: *mut NativeNodeCommand, userdata: *mut c_void) ->
     let Some(command) = owner.command() else {
         if (owner.observe_initial_cpu_park().is_err()
             || owner.observe_writers(U64::new(0)).is_err()
-            || owner.observe_timers(U64::new(0)).is_err())
+            || owner.observe_timers(U64::new(0)).is_err()
+            || owner.observe_phase_timers(U64::new(0)).is_err())
             && let Ok(mut state) = owner.state.lock()
         {
             state.quarantined = true;
@@ -691,6 +702,9 @@ extern "C" fn publish_stop(receipt: *const NativeNodeReceipt, userdata: *mut c_v
             || owner
                 .observe_writers(U64::new(receipt.command_sequence))
                 .is_err()
+            || owner
+                .observe_phase_timers(U64::new(receipt.command_sequence))
+                .is_err()
         {
             if let Ok(mut state) = owner.state.lock() {
                 state.quarantined = true;
@@ -720,3 +734,6 @@ mod writers;
 
 #[path = "initialization_callbacks.rs"]
 mod initialization_callbacks;
+
+#[path = "phase_callbacks.rs"]
+mod phase_callbacks;

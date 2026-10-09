@@ -3323,13 +3323,35 @@ in
                    r"\s*rr_crucible_sim_global_virtual_timer_owner\);\s*"
                    r"if \(crucible_node_control_registered\(\)\) \{\s*"
                    r"qemu_timer_register_crucible_node_virtual_timer_owner\(\s*"
-                   r"rr_crucible_node_virtual_timer_owner\);\s*\}\s*\}\s*"
+                   r"rr_crucible_node_virtual_timer_owner\);\s*"
+                   r"rr_node_timer_owner_registered = true;\s*\}\s*\}\s*"
                    r"qemu_event_init\(&rr_dispatch_ceiling_event, false\);",
                    1),
                   ("sole determinism timer sampler registration", rr,
                    r"qemu_timer_register_crucible_determinism_sampler\(", 1),
-                  ("sole native virtual timer owner registration", rr,
-                   r"qemu_timer_register_crucible_node_virtual_timer_owner\(", 1),
+                  ("native virtual timer owner registration paths", rr,
+                   r"qemu_timer_register_crucible_node_virtual_timer_owner\(", 2),
+                  ("late native phase registers the actual all-list owner", rr,
+                   r"void rr_crucible_node_install_phase_sampler\(void\).*?"
+                   r"assert\(crucible_node_control_registered\(\) &&\s*"
+                   r"crucible_node_phase_registered\(\)\);\s*"
+                   r"qemu_timer_node_register_birth_sampler\("
+                   r"rr_crucible_node_sample_timer_birth\);\s*"
+                   r"if \(!rr_node_timer_owner_registered\) \{\s*"
+                   r"qemu_timer_register_crucible_node_virtual_timer_owner\(\s*"
+                   r"rr_crucible_node_virtual_timer_owner\);\s*"
+                   r"rr_node_timer_owner_registered = true;\s*\}", 1),
+                  ("strict preparation registration requires BQL", main_loop,
+                   r"int main_loop_register_node_initialization\("
+                   r"bool \(\*dispatch\)\(void\)\).*?"
+                   r"if \(!bql_locked\(\)\) \{\s*return -EPERM;\s*\}", 1),
+                  ("strict preparation excludes ordinary model polling", main_loop,
+                   r"if \(node_initialization_dispatch\) \{.*?"
+                   r"qemu_event_reset\(&node_initialization_event\);\s*"
+                   r"node_initialization_dispatch\(\);\s*"
+                   r"bql_unlock\(\);\s*"
+                   r"qemu_event_wait\(&node_initialization_event\);\s*"
+                   r"bql_lock\(\);\s*return;\s*\}", 1),
                   ("determinism virtual timer callback trace", timer_callback,
                    r"if \(timer_list->clock->type == QEMU_CLOCK_VIRTUAL &&\s*"
                    r"timer_exact_virtual_ps &&\s*"
@@ -3353,7 +3375,15 @@ in
                    r"\(int64_t\)expire_time,\s*"
                    r"\(int64_t\)virtual_time, raw\);\s*"
                    r"qemu_crucible_determinism_trace_end\(\);\s*\}\s*\}\s*"
-                   r"cb\(opaque\);", 1),
+                   r"if \(qatomic_load_acquire\(&crucible_node_birth_enabled\)\) \{\s*"
+                   r"uint64_t previous_parent_id = crucible_node_parent_timer_id;\s*"
+                   r"uint64_t previous_parent_arm = crucible_node_parent_arm_generation;\s*"
+                   r"crucible_node_parent_timer_id = ts->crucible_hot_fork_id;\s*"
+                   r"crucible_node_parent_arm_generation = ts->crucible_node_arm_generation;\s*"
+                   r"cb\(opaque\);\s*"
+                   r"crucible_node_parent_timer_id = previous_parent_id;\s*"
+                   r"crucible_node_parent_arm_generation = previous_parent_arm;\s*"
+                   r"\} else \{\s*cb\(opaque\);\s*\}", 1),
                   ("global virtual timer RR ownership gate", timer_callback,
                    r"if \(timer_list == "
                    r"main_loop_tlg\.tl\[QEMU_CLOCK_VIRTUAL\]\) \{\s*"

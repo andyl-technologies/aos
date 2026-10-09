@@ -1,4 +1,4 @@
-From 1b702f5673868727fde64c2835f3fde0ad848bfd Mon Sep 17 00:00:00 2001
+From cfc8b158bd726b08b23a479c23f5c18316c5a444 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0700
 Subject: [PATCH] Integrate deterministic execution and validated TSC source
@@ -178,6 +178,25 @@ x86_64 and aarch64, together with forty-six native unit cases and actual
 QMP edition-one/edition-three refusal and malformed-edition probes. These
 fixture corrections do not qualify complete native readiness or KVM
 execution without the accelerator device.
+
+Add an independently negotiated native phase-control component with bounded
+original virtual timer arm inventories, immutable retained cut identity and
+late authentic CPU coordinate sampling. Preserve the legacy command and
+observation layouts, conservative refusal and original 50 ps instruction
+service. Do not grant execution or capture authority from a timer inventory.
+
+Park enrolled native preparation on a dedicated event with the BQL released.
+Service only the original pinned finite HOME callbacks before ordinary main
+loop polling. Retain matching original cuts and pending writer rows through
+acknowledgment; reject registration outside BQL ownership and preserve the
+no-initializer path. Install the virtual timer owner at the successful late
+phase seam when CPU construction precedes plugin installation.
+
+Configured x86_64 and aarch64 source builds and native units pass. Actual
+exclusive PIT instruction cuts, malformed phase-query controls, sixteen
+repeated original three-callback HOME runs and legacy V4 controls pass.
+These components do not qualify complete native phase closure, IRQ/device
+settlement, snapshots, retained forks or a complete simulation node.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -4593,10 +4612,10 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ffbeeff2ba 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..7980f8a6cfe55b9d09a81eb30c9d3b0dfb7da418 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,2814 @@
+@@ -27,45 +27,2957 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -5051,6 +5070,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
 +    if (qatomic_load_acquire(&rr_dispatch_ceiling_event_initialized)) {
 +        qemu_event_set(&rr_dispatch_ceiling_event);
 +    }
++    main_loop_node_initialization_notify();
 +}
 +
 +void rr_crucible_sim_reset_handoff_ready(void)
@@ -5584,6 +5604,8 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
 +static uint64_t rr_node_writer_gate;
 +static bool rr_node_writer_dispatch;
 +static bool rr_node_stop_query;
++static bool rr_node_timer_owner_registered;
++static bool rr_crucible_node_virtual_timer_owner(void);
 +static bool rr_crucible_sim_all_vcpus_halted(void);
 +static void rr_crucible_node_wait(uint64_t sequence);
 +
@@ -6143,7 +6165,10 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
 +    int result, end_result;
 +
 +    if (!rr_initialization_home_pending) {
-+        return false;
++        /* The registered strict preparation lane never releases an ordinary
++         * main-loop poll, even before its first RR-owned HOLD or after HOME.
++         * Only an original finite command may dispatch enrolled callbacks. */
++        return true;
 +    }
 +    /* MainLoop's real top-of-iteration seam calls this with BQL, before any
 +     * ordinary poll, timer, FD or unrelated BH dispatch. */
@@ -6288,10 +6313,131 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
 +    rr_initialization_home_pending = true;
 +    /* qemu_notify_event() schedules an ordinary BH and would block under
 +     * retained HOLD. Wake the real HOME poll administratively, adding no BH. */
-+    event_notifier_set(&qemu_get_aio_context()->notifier);
-+    g_main_context_wakeup(g_main_context_default());
++    main_loop_node_initialization_notify();
 +    rr_crucible_node_wait(0);
 +    return true;
++}
++
++static bool rr_node_instruction_evaluation;
++static bool rr_node_phase_sealed;
++
++static bool rr_crucible_node_sample_timer_birth(QemuTimerNodeBirth *birth)
++{
++    const QemuPluginCrucibleNodePhasePolicy *policy;
++    int64_t observed;
++
++    /* Foreign timer writers cannot read the RR-private mutable grant flags. */
++    if (!current_cpu || !qemu_cpu_is_self(current_cpu) ||
++        !current_cpu->running || !bql_locked() ||
++        !crucible_node_phase_registered() || !rr_node_phase_sealed ||
++        icount_enabled() != ICOUNT_PRECISE ||
++        !rr_node_instruction_evaluation || !rr_node_writer_dispatch ||
++        !rr_node_command_valid || rr_node_command_stopped ||
++        rr_node_command.kind != QEMU_PLUGIN_CRUCIBLE_NODE_EXACT_RUN) {
++        return false;
++    }
++    policy = crucible_node_phase_policy();
++    observed = icount_crucible_sim_tick_observed();
++    if (observed < 0 || (uint64_t)observed < rr_node_command.start_ps ||
++        (uint64_t)observed >= rr_node_command.limit_ps) {
++        /* The sampler never replaces a missing actual instruction coordinate
++         * with a later observer time or the command start. */
++        return false;
++    }
++    *birth = (QemuTimerNodeBirth) {
++        .birth_kind = QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_BIRTH_REACTION,
++        .birth_phase = 3,
++        .birth_flags = QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_BIRTH_INSTRUCTION_MAPPING,
++        .birth_time_ps = observed,
++        .source_original_sequence = rr_node_command.sequence,
++    };
++    memcpy(birth->prepared_scope_hash, policy->prepared_scope_hash, 32);
++    memcpy(birth->source_original_digest, rr_node_command.grant_hash, 32);
++    return true;
++}
++
++void rr_crucible_node_install_phase_sampler(void)
++{
++    /* SIM installs plugins after board/vCPU realization. Install at the actual
++     * original phase registration seam, before its V6 seal and first grant. */
++    assert(crucible_node_control_registered() &&
++           crucible_node_phase_registered());
++    qemu_timer_node_register_birth_sampler(rr_crucible_node_sample_timer_birth);
++    if (!rr_node_timer_owner_registered) {
++        qemu_timer_register_crucible_node_virtual_timer_owner(
++            rr_crucible_node_virtual_timer_owner);
++        rr_node_timer_owner_registered = true;
++    }
++}
++
++int qemu_plugin_crucible_node_query_timer_births(
++    const uint8_t scope[32], uint64_t expected_generation,
++    QemuPluginCrucibleNodeTimerBirthInventory *inventory,
++    QemuPluginCrucibleNodeTimerList *lists, uint32_t list_capacity,
++    QemuPluginCrucibleNodeTimerBirth *timers, uint32_t timer_capacity)
++{
++    const QemuPluginCrucibleNodePhasePolicy *policy;
++    QemuPluginCrucibleNodeCpuParkFacts park;
++    QemuPluginCrucibleNodeTimerInventory native;
++    QemuAsyncWorkerHotForkBarrierInventory barrier;
++    int result;
++
++    G_STATIC_ASSERT(sizeof(*inventory) == 112);
++    G_STATIC_ASSERT(sizeof(*timers) == 200);
++    if (!inventory) {
++        return -EINVAL;
++    }
++    memset(inventory, 0, sizeof(*inventory));
++    if (!scope || !expected_generation || !lists || !list_capacity ||
++        list_capacity > QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_LIST_MAX ||
++        (timer_capacity && !timers) ||
++        timer_capacity > QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_MAX) {
++        return -EINVAL;
++    }
++    policy = crucible_node_phase_policy();
++    if (!crucible_node_phase_registered() ||
++        !crucible_node_phase_prepared_scope_matches(
++            scope, policy->phase_preparation_commitment)) {
++        return -ESTALE;
++    }
++    result = qemu_plugin_crucible_node_query_cpu_park(scope, &park);
++    if (result < 0) {
++        return result;
++    }
++    qemu_async_worker_hot_fork_barrier(
++        QEMU_ASYNC_WORKER_HOT_FORK_BARRIER_QUERY, &barrier);
++    if (!rr_node_writer_gate || expected_generation != rr_node_writer_gate ||
++        !barrier.held || !barrier.quiescent ||
++        barrier.generation != expected_generation ||
++        barrier.owner_thread_id != qemu_get_thread_id() ||
++        rr_node_writer_dispatch || rr_node_instruction_evaluation ||
++        qemu_cpu_node_source_failed()) {
++        return -EAGAIN;
++    }
++    result = qemu_timer_crucible_node_birth_inventory(
++        &native, lists, list_capacity, timers, timer_capacity);
++    if (result < 0) {
++        return result;
++    }
++    if (native.current_ps != park.current_ps) {
++        return -EAGAIN;
++    }
++    *inventory = (QemuPluginCrucibleNodeTimerBirthInventory) {
++        .version = QEMU_PLUGIN_CRUCIBLE_NODE_PHASE_VERSION,
++        .size = sizeof(*inventory),
++        .list_count = native.list_count,
++        .timer_count = native.timer_count,
++        .current_ps = native.current_ps,
++        .mutation_generation = native.mutation_generation,
++        .gate_generation = expected_generation,
++        .source_original_sequence = rr_node_command_valid ?
++            rr_node_command.sequence : 0,
++    };
++    memcpy(inventory->prepared_scope_hash, scope, 32);
++    if (rr_node_command_valid) {
++        memcpy(inventory->source_original_digest, rr_node_command.grant_hash, 32);
++    }
++    return 0;
 +}
 +
 +static bool rr_crucible_node_virtual_timer_owner(void)
@@ -6353,6 +6499,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
 +
 +static void rr_crucible_node_stop(uint32_t reason)
 +{
++    rr_node_phase_sealed = false;
 +    qemu_cpu_node_owner_dispatch(false);
 +    if (rr_node_writer_dispatch) {
 +        if (qemu_async_worker_node_dispatch_end(rr_node_writer_gate) < 0) {
@@ -6470,6 +6617,19 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
 +            rr_crucible_node_wait(command.sequence);
 +            return true;
 +        }
++    }
++    if (crucible_node_phase_registered()) {
++        const QemuPluginCrucibleNodePhasePolicy *policy =
++            crucible_node_phase_policy();
++
++        if (!crucible_node_phase_prepared_scope_matches(
++                policy->prepared_scope_hash,
++                policy->phase_preparation_commitment)) {
++            rr_crucible_node_stop(QEMU_PLUGIN_CRUCIBLE_NODE_STOP_UNSUPPORTED);
++            rr_crucible_node_wait(command.sequence);
++            return true;
++        }
++        rr_node_phase_sealed = true;
 +    }
 +    if (rr_node_writer_gate && !rr_node_writer_dispatch) {
 +        QemuAsyncWorkerHotForkBarrierInventory pending;
@@ -7322,7 +7482,9 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
 +                return true;
 +            }
 +        }
++        rr_node_instruction_evaluation = crucible_node_phase_registered();
 +        r = tcg_cpu_exec(cpu);
++        rr_node_instruction_evaluation = false;
 +        if (icount_enabled()) {
 +            if (retain_replay) {
 +                icount_process_data_replay_locked(cpu);
@@ -7430,7 +7592,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +2853,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +2996,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -7463,7 +7625,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
      }
  }
  
-@@ -110,15 +2891,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +3034,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -7597,7 +7759,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
      }
  }
  
-@@ -140,6 +3037,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +3180,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -7616,7 +7778,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +3093,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +3236,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -7625,7 +7787,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +3115,209 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +3258,209 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -7853,7 +8015,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -252,13 +3331,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -252,13 +3474,34 @@ static void *rr_cpu_thread_fn(void *arg)
              icount_handle_deadline();
  
              cpu_budget = icount_percpu_budget(cpu_count);
@@ -7889,7 +8051,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +3376,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +3519,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -8028,7 +8190,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +3500,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +3643,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -8168,7 +8330,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
      }
  
      g_assert_not_reached();
-@@ -318,13 +3639,38 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +3782,39 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -8187,6 +8349,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c31f7181f37894a24d7505c7461db4ff
 +            if (crucible_node_control_registered()) {
 +                qemu_timer_register_crucible_node_virtual_timer_owner(
 +                    rr_crucible_node_virtual_timer_owner);
++                rr_node_timer_owner_registered = true;
 +            }
 +        }
 +        qemu_event_init(&rr_dispatch_ceiling_event, false);
@@ -8459,10 +8622,10 @@ index 2a76a296127e81edc61f45a59785a89705daae90..6838434940bdc20cd6b71bc9fb3a78b9
  #endif /* TCG_ACCEL_OPS_RR_H */
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..45d256b5da8dd789d6d96176deb5733fd2153f4b
+index 0000000000000000000000000000000000000000..844fc73e89546f2956b9385cd30707891796bb32
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
-@@ -0,0 +1,427 @@
+@@ -0,0 +1,529 @@
 +/*
 + * QEMU TCG Crucible deterministic simulation shmem dispatch glue
 + */
@@ -8476,6 +8639,7 @@ index 0000000000000000000000000000000000000000..45d256b5da8dd789d6d96176deb5733f
 +#include "qemu/plugin.h"
 +#include "exec/icount.h"
 +#include "qemu/aio.h"
++#include "qemu/timer.h"
 +#include "qemu/main-loop.h"
 +#include "qemu/bswap.h"
 +#include "tcg-accel-ops-sim-shmem.h"
@@ -8745,6 +8909,107 @@ index 0000000000000000000000000000000000000000..45d256b5da8dd789d6d96176deb5733f
 +    memcpy(initialization_authorization.policy_digest, bytes + 96, 32);
 +    initialization_launch_pinned = true;
 +    qemu_bh_node_initialization_enable();
++    qemu_timer_node_construction_begin(bytes, bytes + 32);
++    return 0;
++}
++
++G_STATIC_ASSERT(sizeof(QemuPluginCrucibleNodePhasePolicy) == 152);
++static QemuPluginCrucibleNodePhasePolicy node_phase_policy;
++static bool node_phase_launch_pinned;
++static bool node_phase_registered;
++
++int crucible_node_phase_pin_early(const char *argument)
++{
++    uint8_t bytes[140];
++    uint32_t mapping;
++    uint64_t maximum_microsteps;
++    int upper, lower;
++
++    if (!argument || node_phase_launch_pinned ||
++        strlen(argument) != 3 + 2 * sizeof(bytes) ||
++        memcmp(argument, "v1:", 3)) {
++        return -EINVAL;
++    }
++    for (uint32_t index = 0; index < sizeof(bytes); index++) {
++        upper = initialization_hex_digit(argument[3 + index * 2]);
++        lower = initialization_hex_digit(argument[4 + index * 2]);
++        if (upper < 0 || lower < 0) {
++            return -EINVAL;
++        }
++        bytes[index] = upper * 16 + lower;
++    }
++    mapping = ldl_le_p(bytes + 128);
++    maximum_microsteps = ldq_le_p(bytes + 132);
++    if (mapping != QEMU_PLUGIN_CRUCIBLE_NODE_PHASE_INSTRUCTION_SERVICE ||
++        !maximum_microsteps || maximum_microsteps >
++            QEMU_PLUGIN_CRUCIBLE_NODE_PHASE_MAX_MICROSTEPS ||
++        !initialization_digest_present(bytes) ||
++        !initialization_digest_present(bytes + 32) ||
++        !initialization_digest_present(bytes + 64) ||
++        !initialization_digest_present(bytes + 96)) {
++        return -EINVAL;
++    }
++    node_phase_policy = (QemuPluginCrucibleNodePhasePolicy) {
++        .version = QEMU_PLUGIN_CRUCIBLE_NODE_PHASE_VERSION,
++        .size = sizeof(node_phase_policy),
++        .mapping_id = mapping,
++        .maximum_microsteps = maximum_microsteps,
++    };
++    memcpy(node_phase_policy.prepared_scope_hash, bytes, 32);
++    memcpy(node_phase_policy.phase_preparation_commitment, bytes + 32, 32);
++    memcpy(node_phase_policy.realize_request_digest, bytes + 64, 32);
++    memcpy(node_phase_policy.policy_digest, bytes + 96, 32);
++    node_phase_launch_pinned = true;
++    qemu_timer_node_enable_birth_observation();
++    return 0;
++}
++
++bool crucible_node_phase_launch_pinned(void)
++{
++    return node_phase_launch_pinned;
++}
++
++bool crucible_node_phase_registered(void)
++{
++    return node_phase_registered;
++}
++
++const QemuPluginCrucibleNodePhasePolicy *crucible_node_phase_policy(void)
++{
++    return &node_phase_policy;
++}
++
++bool crucible_node_phase_authorization_matches(
++    const uint8_t scope[32], const uint8_t commitment[32])
++{
++    return node_phase_launch_pinned && scope && commitment &&
++        !memcmp(scope, node_phase_policy.prepared_scope_hash, 32) &&
++        !memcmp(commitment, node_phase_policy.phase_preparation_commitment, 32);
++}
++
++int qemu_plugin_register_crucible_node_phase_projection(
++    const QemuPluginCrucibleNodePhasePolicy *policy)
++{
++    if (!policy || node_phase_registered || !node_phase_launch_pinned ||
++        memcmp(policy, &node_phase_policy, sizeof(*policy)) ||
++        !crucible_node_control_registered() ||
++        !crucible_node_initialization_registered() ||
++        !initialization_launch_pinned ||
++        memcmp(policy->prepared_scope_hash,
++               initialization_authorization.prepared_scope_hash, 32) ||
++        memcmp(policy->realize_request_digest,
++               initialization_authorization.realize_request_digest, 32) ||
++        !current_accel_is_sim() || !icount_crucible_sim_configuration_valid() ||
++        qemu_plugin_icount_raw() != 0) {
++        return -EINVAL;
++    }
++    /* Registration cannot adopt a late V4/V5 seal into a new source policy. */
++    if (crucible_node_control_prepared_scope_matches(
++            policy->prepared_scope_hash)) {
++        return -EALREADY;
++    }
++    node_phase_registered = true;
++    rr_crucible_node_install_phase_sampler();
 +    return 0;
 +}
 +
@@ -8892,10 +9157,10 @@ index 0000000000000000000000000000000000000000..45d256b5da8dd789d6d96176deb5733f
 +}
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.h b/accel/tcg/tcg-accel-ops-sim-shmem.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..1b7b3fc1c0c0d0b2c6ff93e52d01a7eb20a2dbe2
+index 0000000000000000000000000000000000000000..18cded2ad70992d6c31191d5282f38811c23a3db
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.h
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,56 @@
 +#ifndef TCG_ACCEL_OPS_SIM_SHMEM_H
 +#define TCG_ACCEL_OPS_SIM_SHMEM_H
 +
@@ -8915,6 +9180,17 @@ index 0000000000000000000000000000000000000000..1b7b3fc1c0c0d0b2c6ff93e52d01a7eb
 +int64_t crucible_sim_observer_clamp_cpu_budget(uint64_t current_icount,
 +                                               int64_t cpu_budget);
 +bool crucible_sim_shmem_may_advance_to(uint64_t candidate_icount);
++
++int crucible_node_phase_pin_early(const char *argument);
++/* Installs the actual RR source at original phase registration, not CPU creation. */
++void rr_crucible_node_install_phase_sampler(void);
++bool crucible_node_phase_launch_pinned(void);
++bool crucible_node_phase_registered(void);
++bool crucible_node_phase_authorization_matches(
++    const uint8_t scope[32], const uint8_t commitment[32]);
++const QemuPluginCrucibleNodePhasePolicy *crucible_node_phase_policy(void);
++bool crucible_node_phase_prepared_scope_matches(
++    const uint8_t scope[32], const uint8_t commitment[32]);
 +
 +int crucible_node_initialization_pin_early(const char *argument);
 +bool crucible_node_initialization_launch_pinned(void);
@@ -61462,7 +61738,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..36c355bf303715c91112dcceb32fb779
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..d5d05a745218706c31b1333ed457cbe2e0150a12 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..fcfe0f64c001d30a929d1760433000ab97d36b81 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -61792,7 +62068,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..d5d05a745218706c31b1333ed457cbe2
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -826,6 +1146,897 @@ const void *qemu_plugin_request_time_control(void);
+@@ -826,6 +1146,908 @@ const void *qemu_plugin_request_time_control(void);
  QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
@@ -61993,6 +62269,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..d5d05a745218706c31b1333ed457cbe2
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_VERSION 3
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_NODE_VERSION 4
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_INITIALIZATION_VERSION 5
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_PHASE_VERSION 6
 +
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_CONTROL_SOCKET (UINT64_C(1) << 0)
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_SHMEM_MAPPING (UINT64_C(1) << 1)
@@ -62010,6 +62287,10 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..d5d05a745218706c31b1333ed457cbe2
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_APP_RANDOM (UINT64_C(1) << 14)
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_CONTROL (UINT64_C(1) << 15)
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_INITIALIZATION (UINT64_C(1) << 16)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_PHASE (UINT64_C(1) << 17)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_PHASE_ALL \
++    (QEMU_PLUGIN_CRUCIBLE_RESOURCE_INITIALIZATION_ALL | \
++     QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_PHASE)
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_INITIALIZATION_ALL \
 +    (QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_ALL | \
 +     QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_INITIALIZATION)
@@ -62096,6 +62377,12 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..d5d05a745218706c31b1333ed457cbe2
 +struct qemu_plugin_crucible_resource_manifest_v5 {
 +    struct qemu_plugin_crucible_resource_manifest_v4 native;
 +    uint8_t initialization_commitment[32];
++};
++
++/* V6 preserves V5 and inventories the original pre-construction phase policy. */
++struct qemu_plugin_crucible_resource_manifest_v6 {
++    struct qemu_plugin_crucible_resource_manifest_v5 initialization;
++    uint8_t phase_preparation_commitment[32];
 +};
 +
 +#define QEMU_PLUGIN_CRUCIBLE_NODE_INITIALIZATION_VERSION 1
@@ -62690,7 +62977,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..d5d05a745218706c31b1333ed457cbe2
  /**
   * typedef qemu_plugin_vcpu_syscall_cb_t - vCPU syscall callback function type
   * @vcpu_index: the executing vCPU
-@@ -1178,6 +2389,59 @@ QEMU_PLUGIN_API
+@@ -1178,6 +2400,59 @@ QEMU_PLUGIN_API
  bool qemu_plugin_read_memory_vaddr(uint64_t addr,
                                     GByteArray *data, size_t len);
  
@@ -62750,7 +63037,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..d5d05a745218706c31b1333ed457cbe2
  /**
   * qemu_plugin_write_memory_vaddr() - write to memory using a virtual address
   *
-@@ -1292,6 +2556,666 @@ qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
+@@ -1292,6 +2567,666 @@ qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
  QEMU_PLUGIN_API
  bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr);
  
@@ -63417,7 +63704,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..d5d05a745218706c31b1333ed457cbe2
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
-@@ -1363,6 +3287,456 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
+@@ -1363,6 +3298,556 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry);
  
@@ -63791,6 +64078,106 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..d5d05a745218706c31b1333ed457cbe2
 +    QemuPluginCrucibleNodeTimerInventory *inventory,
 +    QemuPluginCrucibleNodeTimerList *lists, uint32_t list_capacity,
 +    QemuPluginCrucibleNodeTimer *timers, uint32_t timer_capacity);
++
++/* These GPL-private ABI facts are explicitly encoded by the process protocol. */
++#define QEMU_PLUGIN_CRUCIBLE_NODE_PHASE_VERSION 1
++#define QEMU_PLUGIN_CRUCIBLE_NODE_PHASE_INSTRUCTION_SERVICE 1U
++#define QEMU_PLUGIN_CRUCIBLE_NODE_PHASE_MAX_MICROSTEPS UINT64_C(1000000)
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_BIRTH_UNKNOWN 0U
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_BIRTH_CONSTRUCTION 1U
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_BIRTH_REACTION 2U
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_BIRTH_INSTRUCTION_MAPPING 1U
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_BIRTH_PARENT_DIAGNOSTIC 2U
++
++typedef struct QemuPluginCrucibleNodePhasePolicy {
++    uint32_t version;
++    uint32_t size;
++    uint32_t mapping_id;
++    uint32_t reserved;
++    uint64_t maximum_microsteps;
++    uint8_t prepared_scope_hash[32];
++    uint8_t phase_preparation_commitment[32];
++    uint8_t realize_request_digest[32];
++    uint8_t policy_digest[32];
++} QemuPluginCrucibleNodePhasePolicy;
++
++typedef struct QemuPluginCrucibleNodeTimerBirth {
++    QemuPluginCrucibleNodeTimer timer;
++    uint32_t birth_kind;
++    uint32_t birth_phase;
++    uint32_t birth_flags;
++    uint32_t reserved;
++    uint64_t birth_time_ps;
++    uint64_t birth_microstep;
++    uint64_t source_original_sequence;
++    uint64_t parent_timer_id;
++    uint64_t parent_arm_generation;
++    uint8_t prepared_scope_hash[32];
++    uint8_t source_original_digest[32];
++    uint8_t construction_commitment[32];
++} QemuPluginCrucibleNodeTimerBirth;
++
++typedef struct QemuPluginCrucibleNodeTimerBirthInventory {
++    uint32_t version;
++    uint32_t size;
++    uint32_t list_count;
++    uint32_t timer_count;
++    uint64_t current_ps;
++    uint64_t mutation_generation;
++    uint64_t gate_generation;
++    uint64_t source_original_sequence;
++    uint8_t prepared_scope_hash[32];
++    uint8_t source_original_digest[32];
++} QemuPluginCrucibleNodeTimerBirthInventory;
++
++/**
++ * qemu_plugin_register_crucible_node_phase_projection() - bind original policy
++ * @policy: exact policy pinned before original model construction
++ *
++ * Only instruction-service-v1 is implemented. Its Reaction/microstep-zero
++ * assignment applies exclusively inside actual precise RR instruction
++ * execution. Registration compares all fields with the original early launch
++ * pin and the companion original initialization Realize/scope. V6 must retain
++ * this policy before a source observation is available. Neither registration
++ * nor a matching policy hash authorizes execution or establishes qualification.
++ * The callback-free policy introduces no worker and grants no timer/BH phase.
++ * Old command168, timer48 and manifestV3/V4/V5 semantics remain unchanged.
++ * Returns zero, or negative errno for unsupported, mismatched or late policy.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_register_crucible_node_phase_projection(
++    const QemuPluginCrucibleNodePhasePolicy *policy);
++
++/**
++ * qemu_plugin_crucible_node_query_timer_births() - observe original arm births
++ * @prepared_scope_hash: exact original V6 scope
++ * @expected_generation: nonzero original retained asynchronous writer HOLD
++ * @inventory: receives an authenticated original source cut; zero on failure
++ * @lists: receives the original bounded virtual-list roster
++ * @list_capacity: at most 64 rows
++ * @timers: receives at most 4096 timer rows in original list FIFO order
++ * @timer_capacity: available timer storage
++ *
++ * The actual BQL-held RR getter/stopped seam copies arm incarnations and births
++ * under the same queue/custody locks. Construction records bind the original
++ * preparation epoch and have no modeled Position: their zero coordinate fields
++ * are reserved, not an assertion that construction occurred at a Reaction.
++ * Unknown records have no Position or grant. Parent-only Unknown rows identify
++ * the actual original callback arm without authorizing its causal successor.
++ * Reaction records come only from the pinned precise instruction projection;
++ * the live counter is sampled during the actual arm mutation, never at a stop.
++ * Timers whose old birth is unknown are never retrospectively labeled.
++ * No timer callback phase is enrolled by this query. Other native source and
++ * device coverage remains unknown; these facts cannot qualify all-source Ready,
++ * execution, capture or a finite settlement cut. Capacity/scope refusals retain
++ * the original HOLD and do not mutate timers. Returns zero or negative errno.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_node_query_timer_births(
++    const uint8_t prepared_scope_hash[32], uint64_t expected_generation,
++    QemuPluginCrucibleNodeTimerBirthInventory *inventory,
++    QemuPluginCrucibleNodeTimerList *lists, uint32_t list_capacity,
++    QemuPluginCrucibleNodeTimerBirth *timers, uint32_t timer_capacity);
 +
 +/**
 + * typedef qemu_plugin_crucible_node_command_cb_t - copy original native command
@@ -65463,10 +65850,10 @@ index 0000000000000000000000000000000000000000..af115a7c8f106667ceca6af7304a72e3
 +#endif
 diff --git a/include/qemu/crucible-hot-fork-plugin.h b/include/qemu/crucible-hot-fork-plugin.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..1a5e3df593de72493190cd13616e432b8272d159
+index 0000000000000000000000000000000000000000..2fe5f3f53d526164dd8de5ebf59bf92d9aa4cd6a
 --- /dev/null
 +++ b/include/qemu/crucible-hot-fork-plugin.h
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,58 @@
 +/*
 + * Crucible plugin resource inventory shared by QEMU subsystems and QMP.
 + *
@@ -65492,6 +65879,8 @@ index 0000000000000000000000000000000000000000..1a5e3df593de72493190cd13616e432b
 +    bool native_registered;
 +    struct qemu_plugin_crucible_resource_manifest_v5 initialization_manifest;
 +    bool initialization_registered;
++    struct qemu_plugin_crucible_resource_manifest_v6 phase_manifest;
++    bool phase_registered;
 +} QemuPluginCrucibleHotForkInventory;
 +
 +typedef struct QemuPluginCrucibleHotForkBarrierInventory {
@@ -65800,22 +66189,24 @@ index e155f59a0df573a85d2350a8f564ff4f8d331b9c..bc934bf69afda0f216efe8c7042e10c0
  #define QEMU_MADV_UNMERGEABLE QEMU_MADV_INVALID
  #define QEMU_MADV_DODUMP QEMU_MADV_INVALID
 diff --git a/include/qemu/main-loop.h b/include/qemu/main-loop.h
-index 8c1241a2c11c289bc3c69fff66ab67d06e9f257c..bf913ca965ddc11a9e5bbcc315c2f64cfdb86630 100644
+index 8c1241a2c11c289bc3c69fff66ab67d06e9f257c..36b1ff098bf5df6894f6df6555086415f0434f7e 100644
 --- a/include/qemu/main-loop.h
 +++ b/include/qemu/main-loop.h
-@@ -91,6 +91,11 @@ int qemu_init_main_loop(Error **errp);
+@@ -91,6 +91,13 @@ int qemu_init_main_loop(Error **errp);
   */
  void main_loop_wait(int nonblocking);
  
-+/* A registered initialization seam runs before every ordinary poll/timer pass.
-+ * Returning true skips the entire ordinary main-loop iteration. */
++/* A registered strict initialization lane excludes ordinary poll/timer passes.
++ * Its callback may dispatch only the independently authorized finite HOME cut. */
 +int main_loop_register_node_initialization(bool (*dispatch)(void));
 +
++/* Administrative wake only; this never admits an ordinary event-loop pass. */
++void main_loop_node_initialization_notify(void);
 +
  /**
   * qemu_get_aio_context: Return the main loop's AioContext
   */
-@@ -438,6 +443,7 @@ enum {
+@@ -438,6 +445,7 @@ enum {
      MAIN_LOOP_POLL_FILL,
      MAIN_LOOP_POLL_ERR,
      MAIN_LOOP_POLL_OK,
@@ -65823,7 +66214,7 @@ index 8c1241a2c11c289bc3c69fff66ab67d06e9f257c..bf913ca965ddc11a9e5bbcc315c2f64c
  };
  
  typedef struct MainLoopPoll {
-@@ -448,5 +454,13 @@ typedef struct MainLoopPoll {
+@@ -448,5 +456,13 @@ typedef struct MainLoopPoll {
  
  void main_loop_poll_add_notifier(Notifier *notify);
  void main_loop_poll_remove_notifier(Notifier *notify);
@@ -66481,7 +66872,7 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..eff8dc4e5e7a3693797bc130fa0647ff
  /**
   * qemu_thread_atexit_add:
 diff --git a/include/qemu/timer.h b/include/qemu/timer.h
-index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..b6975b72150757d9609c3ee47d7c70ca24779abd 100644
+index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..25eafd15c118b1fe9c85d53fe1efd67d4a8fed1f 100644
 --- a/include/qemu/timer.h
 +++ b/include/qemu/timer.h
 @@ -6,6 +6,8 @@
@@ -66493,7 +66884,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..b6975b72150757d9609c3ee47d7c70ca
  #define MICROSECONDS_PER_SECOND 1000000LL
  
  /* timers */
-@@ -81,15 +83,56 @@ struct QEMUTimerListGroup {
+@@ -81,15 +83,89 @@ struct QEMUTimerListGroup {
  
  typedef void QEMUTimerCB(void *opaque);
  typedef void QEMUTimerListNotifyCB(void *opaque, QEMUClockType type);
@@ -66514,6 +66905,38 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..b6975b72150757d9609c3ee47d7c70ca
 +/* Opt-in native admission gates every virtual list before callback dequeue. */
 +void qemu_timer_register_crucible_node_virtual_timer_owner(
 +    QemuCrucibleGlobalVirtualTimerOwner *owner);
++
++/* Native retained arm metadata; zero kind means no modeled birth proof. */
++typedef struct QemuTimerNodeBirth {
++    uint32_t birth_kind;
++    uint32_t birth_phase;
++    uint32_t birth_flags;
++    uint32_t reserved;
++    uint64_t birth_time_ps;
++    uint64_t birth_microstep;
++    uint64_t source_original_sequence;
++    uint64_t parent_timer_id;
++    uint64_t parent_arm_generation;
++    uint8_t prepared_scope_hash[32];
++    uint8_t source_original_digest[32];
++    uint8_t construction_commitment[32];
++} QemuTimerNodeBirth;
++
++typedef bool QemuTimerNodeBirthSampler(QemuTimerNodeBirth *birth);
++void qemu_timer_node_register_birth_sampler(QemuTimerNodeBirthSampler *sample);
++void qemu_timer_node_enable_birth_observation(void);
++/* Epoch observations grant no modeled callback or guest execution permission. */
++void qemu_timer_node_construction_begin(const uint8_t scope[32],
++                                        const uint8_t commitment[32]);
++void qemu_timer_node_construction_complete(void);
++
++struct QemuPluginCrucibleNodeTimerInventory;
++struct QemuPluginCrucibleNodeTimerList;
++struct QemuPluginCrucibleNodeTimerBirth;
++int qemu_timer_crucible_node_birth_inventory(
++    struct QemuPluginCrucibleNodeTimerInventory *inventory,
++    struct QemuPluginCrucibleNodeTimerList *lists, uint32_t list_capacity,
++    struct QemuPluginCrucibleNodeTimerBirth *timers, uint32_t timer_capacity);
 +
 +struct QemuPluginCrucibleNodeTimerInventory;
 +struct QemuPluginCrucibleNodeTimerList;
@@ -66544,6 +66967,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..b6975b72150757d9609c3ee47d7c70ca
 +    uint64_t crucible_hot_fork_id;
 +    /* Retains the actual arm incarnation even when identity/expiry are reused. */
 +    uint64_t crucible_node_arm_generation;
++    QemuTimerNodeBirth crucible_node_birth;
 +    bool crucible_hot_fork_pending;
 +    __int128 crucible_hot_fork_expire_time;
 +    QEMUTimer *crucible_hot_fork_next;
@@ -66551,7 +66975,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..b6975b72150757d9609c3ee47d7c70ca
  };
  
  extern QEMUTimerListGroup main_loop_tlg;
-@@ -105,6 +148,41 @@ extern QEMUTimerListGroup main_loop_tlg;
+@@ -105,6 +181,41 @@ extern QEMUTimerListGroup main_loop_tlg;
   */
  int64_t qemu_clock_get_ns(QEMUClockType type);
  
@@ -66593,7 +67017,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..b6975b72150757d9609c3ee47d7c70ca
  /**
   * qemu_clock_get_ms;
   * @type: the clock type
-@@ -652,6 +730,22 @@ static inline void timer_free(QEMUTimer *ts)
+@@ -652,6 +763,22 @@ static inline void timer_free(QEMUTimer *ts)
   */
  void timer_mod_ns(QEMUTimer *ts, int64_t expire_time);
  
@@ -66616,7 +67040,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..b6975b72150757d9609c3ee47d7c70ca
  /**
   * timer_mod_anticipate_ns:
   * @ts: the timer
-@@ -665,6 +759,12 @@ void timer_mod_ns(QEMUTimer *ts, int64_t expire_time);
+@@ -665,6 +792,12 @@ void timer_mod_ns(QEMUTimer *ts, int64_t expire_time);
   */
  void timer_mod_anticipate_ns(QEMUTimer *ts, int64_t expire_time);
  
@@ -66629,7 +67053,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..b6975b72150757d9609c3ee47d7c70ca
  /**
   * timer_mod:
   * @ts: the timer
-@@ -691,6 +791,38 @@ void timer_mod(QEMUTimer *ts, int64_t expire_timer);
+@@ -691,6 +824,38 @@ void timer_mod(QEMUTimer *ts, int64_t expire_timer);
   */
  void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time);
  
@@ -66668,7 +67092,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..b6975b72150757d9609c3ee47d7c70ca
  /**
   * timer_pending:
   * @ts: the timer
-@@ -702,6 +834,9 @@ void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time);
+@@ -702,6 +867,9 @@ void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time);
   */
  bool timer_pending(const QEMUTimer *ts);
  
@@ -66678,7 +67102,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..b6975b72150757d9609c3ee47d7c70ca
  /**
   * timer_expired:
   * @ts: the timer
-@@ -717,12 +852,41 @@ bool timer_expired(const QEMUTimer *timer_head, int64_t current_time);
+@@ -717,12 +885,41 @@ bool timer_expired(const QEMUTimer *timer_head, int64_t current_time);
   * timer_expire_time_ns:
   * @ts: the timer
   *
@@ -79043,10 +79467,10 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..92ec2a6bcd76dbc7f1ea4840bb3e4609ec74f03e 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6174b2781f291aa162f5a9a7fb04a2ae25d03d0d 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -11,12 +11,46 @@
+@@ -11,12 +11,47 @@
   */
  
  #include "qemu/osdep.h"
@@ -79090,10 +79514,11 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..92ec2a6bcd76dbc7f1ea4840bb3e4609
 +G_STATIC_ASSERT(sizeof(struct qemu_plugin_crucible_resource_manifest) == 88);
 +G_STATIC_ASSERT(sizeof(struct qemu_plugin_crucible_resource_manifest_v4) == 128);
 +G_STATIC_ASSERT(sizeof(struct qemu_plugin_crucible_resource_manifest_v5) == 160);
++G_STATIC_ASSERT(sizeof(struct qemu_plugin_crucible_resource_manifest_v6) == 192);
  
  /*
   * In system mode we cannot trace the binary being executed so the
-@@ -101,14 +135,1101 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
+@@ -101,14 +136,1148 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
   */
  static bool has_control;
  static Error *migration_blocker;
@@ -79488,6 +79913,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..92ec2a6bcd76dbc7f1ea4840bb3e4609
 +    uint64_t allowed_workers = QEMU_PLUGIN_CRUCIBLE_WORKER_ALL;
 +    uint64_t allowed_callbacks = QEMU_PLUGIN_CRUCIBLE_CALLBACK_ALL &
 +        ~QEMU_PLUGIN_CRUCIBLE_CALLBACK_NODE_INITIALIZATION;
++    const struct qemu_plugin_crucible_resource_manifest_v6 *phase = NULL;
 +    const struct qemu_plugin_crucible_resource_manifest_v5 *initialization = NULL;
 +    const struct qemu_plugin_crucible_resource_manifest_v4 *native = NULL;
 +    struct stat native_identity = { 0 };
@@ -79497,8 +79923,24 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..92ec2a6bcd76dbc7f1ea4840bb3e4609
 +        return -EINVAL;
 +    }
 +    if (manifest->schema_version ==
++            QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_PHASE_VERSION &&
++        manifest->struct_size == sizeof(*phase)) {
++        phase = (const struct qemu_plugin_crucible_resource_manifest_v6 *)manifest;
++        if (!crucible_node_phase_registered() ||
++            !crucible_node_phase_authorization_matches(
++                phase->initialization.native.prepared_scope_hash,
++                phase->phase_preparation_commitment) ||
++            !(manifest->resource_mask & QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_PHASE)) {
++            return -EINVAL;
++        }
++    } else if (crucible_node_phase_launch_pinned() ||
++               crucible_node_phase_registered()) {
++        /* A source phase policy cannot be concealed in an older manifest. */
++        return -EINVAL;
++    }
++    if (phase || (manifest->schema_version ==
 +            QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_INITIALIZATION_VERSION &&
-+        manifest->struct_size == sizeof(*initialization)) {
++        manifest->struct_size == sizeof(*initialization))) {
 +        initialization =
 +            (const struct qemu_plugin_crucible_resource_manifest_v5 *)manifest;
 +        if (!crucible_node_initialization_registered() ||
@@ -79511,7 +79953,8 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..92ec2a6bcd76dbc7f1ea4840bb3e4609
 +              QEMU_PLUGIN_CRUCIBLE_CALLBACK_NODE_INITIALIZATION)) {
 +            return -EINVAL;
 +        }
-+        allowed_resources = QEMU_PLUGIN_CRUCIBLE_RESOURCE_INITIALIZATION_ALL;
++        allowed_resources = phase ? QEMU_PLUGIN_CRUCIBLE_RESOURCE_PHASE_ALL :
++            QEMU_PLUGIN_CRUCIBLE_RESOURCE_INITIALIZATION_ALL;
 +        allowed_callbacks = QEMU_PLUGIN_CRUCIBLE_CALLBACK_ALL;
 +    }
 +    if (initialization ||
@@ -79573,6 +80016,16 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..92ec2a6bcd76dbc7f1ea4840bb3e4609
 +        return -EINVAL;
 +    }
 +    if (qemu_plugin_crucible_resource_inventory.registered) {
++        if (phase) {
++            QemuPluginCrucibleHotForkInventory *retained =
++                &qemu_plugin_crucible_resource_inventory;
++
++            return retained->phase_registered &&
++                retained->native_fd_device == native_identity.st_dev &&
++                retained->native_fd_inode == native_identity.st_ino &&
++                memcmp(&retained->phase_manifest, phase, sizeof(*phase)) == 0 ?
++                0 : -EALREADY;
++        }
 +        if (initialization) {
 +            QemuPluginCrucibleHotForkInventory *retained =
 +                &qemu_plugin_crucible_resource_inventory;
@@ -79639,6 +80092,10 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..92ec2a6bcd76dbc7f1ea4840bb3e4609
 +            *initialization;
 +        qemu_plugin_crucible_resource_inventory.initialization_registered = true;
 +    }
++    if (phase) {
++        qemu_plugin_crucible_resource_inventory.phase_manifest = *phase;
++        qemu_plugin_crucible_resource_inventory.phase_registered = true;
++    }
 +    qemu_plugin_crucible_resource_inventory.manifest = *manifest;
 +    qemu_plugin_crucible_resource_inventory.registered = true;
 +    qemu_plugin_crucible_resource_inventory.complete = native == NULL;
@@ -79677,6 +80134,21 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..92ec2a6bcd76dbc7f1ea4840bb3e4609
 +                                          &identity) &&
 +        identity.st_dev == retained->native_fd_device &&
 +        identity.st_ino == retained->native_fd_inode;
++}
++
++bool crucible_node_phase_prepared_scope_matches(
++    const uint8_t scope[32], const uint8_t commitment[32])
++{
++    QemuPluginCrucibleHotForkInventory *retained =
++        &qemu_plugin_crucible_resource_inventory;
++
++    if (!crucible_node_control_prepared_scope_matches(scope)) {
++        return false;
++    }
++    QEMU_LOCK_GUARD(&qemu_plugin_crucible_resource_lock);
++    return commitment && retained->phase_registered &&
++        !memcmp(commitment, retained->phase_manifest.phase_preparation_commitment,
++                32) && crucible_node_phase_authorization_matches(scope, commitment);
 +}
 +
 +static void crucible_node_machine_ready(Notifier *notifier, void *data)
@@ -80198,7 +80670,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..92ec2a6bcd76dbc7f1ea4840bb3e4609
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1244,1998 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1292,1998 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -124413,7 +124885,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..2270b958aafcee7af145c150eeb0a293
 +            'end-ns': 'uint64', 'stop-budget-ns': 'uint64' },
 +  'returns': 'CrucibleKvmClockInfo' }
 diff --git a/qemu-options.hx b/qemu-options.hx
-index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..652fc9c78ce329dbdeb06861651ddae6da5be6bd 100644
+index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..3b3320f88f07f62bcf8377b9ce421eb2d60e80d2 100644
 --- a/qemu-options.hx
 +++ b/qemu-options.hx
 @@ -232,7 +232,7 @@ SRST
@@ -124425,10 +124897,15 @@ index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..652fc9c78ce329dbdeb06861651ddae6
      "                select accelerator (kvm, xen, hvf, nitro, nvmm, whpx, mshv or tcg; use 'help' for a list)\n"
      "                igd-passthru=on|off (enable Xen integrated Intel graphics passthrough, default=off)\n"
      "                kernel-irqchip=on|off|split controls accelerated irqchip support (default=on)\n"
-@@ -5313,16 +5313,25 @@ SRST
+@@ -5313,16 +5313,30 @@ SRST
      Windows guest and will re-inject them.
  ERST
  
++DEF("crucible-node-phase", HAS_ARG,
++    QEMU_OPTION_crucible_node_phase,
++    "-crucible-node-phase v1:HEX original source projection pin\n",
++    QEMU_ARCH_ALL)
++
 +DEF("crucible-node-initialization", HAS_ARG,
 +    QEMU_OPTION_crucible_node_initialization,
 +    "-crucible-node-initialization v1:HEX original preparation-only pin\n",
@@ -124455,7 +124932,7 @@ index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..652fc9c78ce329dbdeb06861651ddae6
      then the virtual cpu speed will be automatically adjusted to keep
      virtual time within a few seconds of real time.
  
-@@ -5348,7 +5357,14 @@ SRST
+@@ -5348,7 +5362,14 @@ SRST
      option. Whenever the guest clock is behind the host clock and if
      ``align=on`` is specified then we print a message to the user to
      inform about the delay. Currently this option does not work when
@@ -131968,7 +132445,7 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..c626b250aa82fd28d11e0f31dff17639
      notifier_list_notify(&shutdown_notifiers, &cause);
  }
 diff --git a/system/vl.c b/system/vl.c
-index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..fb699b95339768885c3e3e8903546556dbf8b8d1 100644
+index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..dfea38ca2c0092ce39d6fd6ecd5add33378183c4 100644
 --- a/system/vl.c
 +++ b/system/vl.c
 @@ -43,7 +43,9 @@
@@ -132001,7 +132478,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..fb699b95339768885c3e3e8903546556
          }, {
              .name = "rr",
              .type = QEMU_OPT_STRING,
-@@ -1678,6 +1686,59 @@ static const QEMUOption *lookup_opt(int argc, char **argv,
+@@ -1678,6 +1686,81 @@ static const QEMUOption *lookup_opt(int argc, char **argv,
      return popt;
  }
  
@@ -132017,7 +132494,9 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..fb699b95339768885c3e3e8903546556
 +     * operands. Without an explicit candidate, legacy argv is untouched. */
 +    for (int scan = 1; scan < argc; scan++) {
 +        if (!strcmp(argv[scan], "-crucible-node-initialization") ||
-+            !strcmp(argv[scan], "--crucible-node-initialization")) {
++            !strcmp(argv[scan], "--crucible-node-initialization") ||
++            !strcmp(argv[scan], "-crucible-node-phase") ||
++            !strcmp(argv[scan], "--crucible-node-phase")) {
 +            candidate = true;
 +            break;
 +        }
@@ -132036,6 +132515,15 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..fb699b95339768885c3e3e8903546556
 +            option->index == QEMU_OPTION_preconfig) {
 +            restores_or_defers_machine = true;
 +        }
++        if (option->index == QEMU_OPTION_crucible_node_phase) {
++#ifdef CONFIG_TCG
++            if (crucible_node_phase_pin_early(argument) == 0) {
++                continue;
++            }
++#endif
++            error_report("invalid or duplicate original native phase pin");
++            exit(EXIT_FAILURE);
++        }
 +        if (option->index != QEMU_OPTION_crucible_node_initialization) {
 +            continue;
 +        }
@@ -132048,11 +132536,22 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..fb699b95339768885c3e3e8903546556
 +        exit(EXIT_FAILURE);
 +    }
 +#ifdef CONFIG_TCG
-+    if (crucible_node_initialization_launch_pinned() &&
-+        restores_or_defers_machine) {
++    if ((crucible_node_initialization_launch_pinned() ||
++         crucible_node_phase_launch_pinned()) && restores_or_defers_machine) {
 +        /* An original constructor epoch cannot adopt or clean an unchanged
 +         * captured/restore cut, including a zero-time VM image. */
 +        error_report("native initialization requires an original fresh machine");
++        exit(EXIT_FAILURE);
++    }
++    if (crucible_node_phase_launch_pinned() &&
++        (!crucible_node_initialization_launch_pinned() ||
++         memcmp(crucible_node_phase_policy()->prepared_scope_hash,
++                crucible_node_initialization_authorization()->prepared_scope_hash,
++                32) ||
++         memcmp(crucible_node_phase_policy()->realize_request_digest,
++                crucible_node_initialization_authorization()->realize_request_digest,
++                32))) {
++        error_report("native phase pin requires its original initialization Realize");
 +        exit(EXIT_FAILURE);
 +    }
 +#endif
@@ -132061,7 +132560,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..fb699b95339768885c3e3e8903546556
  static MachineClass *select_machine(QDict *qdict, Error **errp)
  {
      ERRP_GUARD();
-@@ -2716,16 +2777,23 @@ static void qemu_init_displays(void)
+@@ -2716,16 +2799,23 @@ static void qemu_init_displays(void)
      }
  }
  
@@ -132088,15 +132587,16 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..fb699b95339768885c3e3e8903546556
      if (machine_class->auto_create_sdcard) {
          bool ambigous;
  
-@@ -2808,6 +2876,7 @@ static bool qemu_machine_creation_done(Error **errp)
+@@ -2808,6 +2898,8 @@ static bool qemu_machine_creation_done(Error **errp)
                      "type does not use that option; "
                      "No VGA device has been created");
      }
++    qemu_timer_node_construction_complete();
 +    qemu_crucible_cold_stop_machine_ready(machine);
      return true;
  }
  
-@@ -2820,6 +2889,22 @@ void qmp_x_exit_preconfig(Error **errp)
+@@ -2820,6 +2912,27 @@ void qmp_x_exit_preconfig(Error **errp)
  
      qemu_init_board();
      qemu_create_cli_devices();
@@ -132115,11 +132615,16 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..fb699b95339768885c3e3e8903546556
 +        error_setg(errp, "native initialization pin lacks matching callbacks");
 +        return;
 +    }
++    if (crucible_node_phase_launch_pinned() &&
++        !crucible_node_phase_registered()) {
++        error_setg(errp, "native phase pin lacks its original source policy");
++        return;
++    }
 +#endif
      if (!qemu_machine_creation_done(errp)) {
          return;
      }
-@@ -2906,6 +2991,7 @@ void qemu_init(int argc, char **argv)
+@@ -2906,6 +3019,7 @@ void qemu_init(int argc, char **argv)
      module_init_info(qemu_modinfo);
      module_allow_arch(target_name());
  
@@ -132127,17 +132632,18 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..fb699b95339768885c3e3e8903546556
      qemu_init_subsystems();
  
      /* first pass of option parsing */
-@@ -3549,6 +3635,9 @@ void qemu_init(int argc, char **argv)
+@@ -3549,6 +3663,10 @@ void qemu_init(int argc, char **argv)
                      exit(1);
                  }
                  break;
++            case QEMU_OPTION_crucible_node_phase:
 +            case QEMU_OPTION_crucible_node_initialization:
 +                /* Already strictly pinned before original model construction. */
 +                break;
              case QEMU_OPTION_icount:
                  icount_opts = qemu_opts_parse_noisily(qemu_find_opts("icount"),
                                                        optarg, true);
-@@ -3768,6 +3857,9 @@ void qemu_init(int argc, char **argv)
+@@ -3768,6 +3886,9 @@ void qemu_init(int argc, char **argv)
      trace_init_file();
  
      qemu_init_main_loop(&error_fatal);
@@ -185072,10 +185578,10 @@ index 0000000000000000000000000000000000000000..2959d327c93b23a69e0ce12dbe31dd19
 +}
 diff --git a/tests/unit/test-crucible-settle-prepark.py b/tests/unit/test-crucible-settle-prepark.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1fafc98dea
+index 0000000000000000000000000000000000000000..25007f7590fc5012856eab5cba50121fb4aa33a0
 --- /dev/null
 +++ b/tests/unit/test-crucible-settle-prepark.py
-@@ -0,0 +1,490 @@
+@@ -0,0 +1,497 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production RR prepark, completion, settlement and futex event bodies.
 +
@@ -185140,6 +185646,9 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +static uint64_t rr_wake_publish_generation, rr_wake_consumed_generation;
 +static QemuEvent rr_dispatch_ceiling_event;
 +static bool rr_dispatch_ceiling_event_initialized = true;
++/* This legacy fixture never installs a native initialization lane. */
++static QemuEvent node_initialization_event;
++static bool node_initialization_event_ready;
 +#define CPU_FOREACH(item) for ((item) = first_cpu; (item); (item) = NULL)
 +static bool rr_replay_mutex_owned, locked;
 +static bool control_pending, lifecycle_pending, work_pending;
@@ -185160,6 +185669,7 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +bool qemu_plugin_time_advance_settle_is_pending(void);
 +void qemu_plugin_time_advance_settle_at_rr_idle(void);
 +static void qemu_plugin_time_advance_complete_bh(void *opaque);
++void main_loop_node_initialization_notify(void);
 +void qemu_event_init(QemuEvent *ev, bool init);
 +void qemu_event_set(QemuEvent *ev);
 +void qemu_event_reset(QemuEvent *ev);
@@ -185504,6 +186014,7 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +    rr = (arguments.source_root / "accel/tcg/tcg-accel-ops-rr.c").read_text()
 +    api = (arguments.source_root / "plugins/api-system.c").read_text()
 +    event = (arguments.source_root / "util/event.c").read_text()
++    main_loop = (arguments.source_root / "util/main-loop.c").read_text()
 +    thread = (arguments.source_root / "include/qemu/thread.h").read_text()
 +    event_type = thread[thread.index("typedef struct QemuEvent {"):
 +                        thread.index("} QemuEvent;") + len("} QemuEvent;")]
@@ -185537,6 +186048,8 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +        "static bool rr_crucible_sim_complete_wake_boundary(",
 +        "static void rr_crucible_sim_prepark(",
 +        "static void rr_crucible_sim_acknowledge_control_boundary("])
++    rr_bodies = (definition(main_loop, "void main_loop_node_initialization_notify(")
++                 + "\n\n" + rr_bodies)
 +    # The upstream hook retains an unused ABI parameter; annotate only its
 +    # signature while leaving its production body and prototype checks intact.
 +    rr_bodies = rr_bodies.replace("CPUState *unused)",
@@ -196356,7 +196869,7 @@ index 33607d5ff24d0ace1ddec5fc90dc11235234d866..13bf69f128e31c939a2594d0ca21f071
          return 0;
      }
 diff --git a/util/main-loop.c b/util/main-loop.c
-index 65e5dbcc941bd2d397c42befad5b212959329714..31dd060740758f76d9d9daaf7690ce824046acf6 100644
+index 65e5dbcc941bd2d397c42befad5b212959329714..d86c66d40d6fca1d7120748e7d31228ba7a5ffef 100644
 --- a/util/main-loop.c
 +++ b/util/main-loop.c
 @@ -30,6 +30,7 @@
@@ -196427,11 +196940,11 @@ index 65e5dbcc941bd2d397c42befad5b212959329714..31dd060740758f76d9d9daaf7690ce82
      bql_unlock();
      replay_mutex_unlock();
 +    main_loop_crucible_replay_released();
- 
--    ret = qemu_poll_ns((GPollFD *)gpollfds->data, gpollfds->len, timeout);
++
 +    ret = main_loop_crucible_poll_ns(
 +        (GPollFD *)gpollfds->data, gpollfds->len, timeout);
-+
+ 
+-    ret = qemu_poll_ns((GPollFD *)gpollfds->data, gpollfds->len, timeout);
 +    main_loop_crucible_poll_ready(ret, timeout);
  
      replay_mutex_lock();
@@ -196441,11 +196954,11 @@ index 65e5dbcc941bd2d397c42befad5b212959329714..31dd060740758f76d9d9daaf7690ce82
  
      replay_mutex_unlock();
 +    main_loop_crucible_replay_released();
-+
-+    g_poll_ret = main_loop_crucible_poll_ns(
-+        poll_fds, n_poll_fds + w->num, poll_timeout_ns);
  
 -    g_poll_ret = qemu_poll_ns(poll_fds, n_poll_fds + w->num, poll_timeout_ns);
++    g_poll_ret = main_loop_crucible_poll_ns(
++        poll_fds, n_poll_fds + w->num, poll_timeout_ns);
++
 +    main_loop_crucible_poll_ready(select_ret || g_poll_ret, poll_timeout_ns);
  
      replay_mutex_lock();
@@ -196472,36 +196985,60 @@ index 65e5dbcc941bd2d397c42befad5b212959329714..31dd060740758f76d9d9daaf7690ce82
  void main_loop_poll_add_notifier(Notifier *notify)
  {
      notifier_list_add(&main_loop_poll_notifiers, notify);
-@@ -562,6 +634,17 @@ void main_loop_poll_remove_notifier(Notifier *notify)
+@@ -562,6 +634,33 @@ void main_loop_poll_remove_notifier(Notifier *notify)
      notifier_remove(notify);
  }
  
 +static bool (*node_initialization_dispatch)(void);
++static QemuEvent node_initialization_event;
++static bool node_initialization_event_ready;
 +
 +int main_loop_register_node_initialization(bool (*dispatch)(void))
 +{
++    /* Registration and every callback-pointer read share BQL. Installation
++     * cannot race an ordinary iteration or publish a half-initialized event. */
++    if (!bql_locked()) {
++        return -EPERM;
++    }
 +    if (!dispatch || node_initialization_dispatch) {
 +        return -EALREADY;
 +    }
++    qemu_event_init(&node_initialization_event, false);
++    qatomic_store_release(&node_initialization_event_ready, true);
 +    node_initialization_dispatch = dispatch;
 +    return 0;
++}
++
++void main_loop_node_initialization_notify(void)
++{
++    if (qatomic_load_acquire(&node_initialization_event_ready)) {
++        qemu_event_set(&node_initialization_event);
++    }
 +}
 +
  void main_loop_wait(int nonblocking)
  {
      MainLoopPoll mlpoll = {
-@@ -576,6 +659,10 @@ void main_loop_wait(int nonblocking)
+@@ -576,6 +675,18 @@ void main_loop_wait(int nonblocking)
          mlpoll.timeout = 0;
      }
  
-+    if (node_initialization_dispatch && node_initialization_dispatch()) {
++    if (node_initialization_dispatch) {
++        /* Reset under BQL before inspecting original HOME custody. The RR
++         * owner cannot publish a new HOME command until this thread releases
++         * BQL, so its administrative wake cannot be lost at the wait seam. */
++        qemu_event_reset(&node_initialization_event);
++        node_initialization_dispatch();
++        bql_unlock();
++        qemu_event_wait(&node_initialization_event);
++        bql_lock();
 +        return;
 +    }
 +
      /* poll any events */
      g_array_set_size(gpollfds, 0); /* reset for new iteration */
      /* XXX: separate device handlers from system ones */
-@@ -603,6 +690,9 @@ void main_loop_wait(int nonblocking)
+@@ -603,6 +714,9 @@ void main_loop_wait(int nonblocking)
          icount_start_warp_timer();
      }
      qemu_clock_run_all_timers();
@@ -198314,7 +198851,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..1b59d60925d365c2f3747dad8c06d5df
      pthread_sigmask(SIG_SETMASK, &oldset, NULL);
  
 diff --git a/util/qemu-timer.c b/util/qemu-timer.c
-index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8e47243c8 100644
+index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452bb81ed86 100644
 --- a/util/qemu-timer.c
 +++ b/util/qemu-timer.c
 @@ -23,6 +23,8 @@
@@ -198404,7 +198941,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  
  /* A QEMUTimerList is a list of timers attached to a clock. More
   * than one QEMUTimerList can be attached to each clock, for instance
-@@ -75,8 +141,265 @@ struct QEMUTimerList {
+@@ -75,8 +141,346 @@ struct QEMUTimerList {
  
      /* lightweight method to mark the end of timerlist's running */
      QemuEvent timers_done_ev;
@@ -198412,6 +198949,76 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
 +    uint64_t crucible_hot_fork_id;
  };
  
++static QemuTimerNodeBirthSampler *crucible_node_birth_sampler;
++static bool crucible_node_birth_enabled;
++static QemuTimerNodeBirth crucible_node_construction_birth;
++static bool crucible_node_construction_active;
++static bool crucible_node_construction_pinned;
++static __thread uint64_t crucible_node_parent_timer_id;
++static __thread uint64_t crucible_node_parent_arm_generation;
++
++void qemu_timer_node_enable_birth_observation(void)
++{
++    /* Opt-in precedes original model construction. It grants no dispatch. */
++    qatomic_store_release(&crucible_node_birth_enabled, true);
++}
++
++void qemu_timer_node_construction_begin(const uint8_t scope[32],
++                                        const uint8_t commitment[32])
++{
++    /* The strictly checked original argv precedes native threads and model
++     * construction. A later observation cannot enroll an old arm. */
++    assert(scope && commitment && !crucible_node_construction_pinned);
++    crucible_node_construction_birth = (QemuTimerNodeBirth) {
++        .birth_kind = QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_BIRTH_CONSTRUCTION,
++    };
++    memcpy(crucible_node_construction_birth.prepared_scope_hash, scope, 32);
++    memcpy(crucible_node_construction_birth.construction_commitment,
++           commitment, 32);
++    crucible_node_construction_pinned = true;
++    qatomic_store_release(&crucible_node_construction_active, true);
++}
++
++void qemu_timer_node_construction_complete(void)
++{
++    qatomic_store_release(&crucible_node_construction_active, false);
++}
++
++void qemu_timer_node_register_birth_sampler(QemuTimerNodeBirthSampler *sample)
++{
++    assert(sample && !crucible_node_birth_sampler);
++    qatomic_store_release(&crucible_node_birth_sampler, sample);
++}
++
++static QemuTimerNodeBirth crucible_node_timer_birth(QEMUTimer *timer)
++{
++    QemuTimerNodeBirth birth = { 0 };
++    QemuTimerNodeBirthSampler *sample;
++
++    if (timer->timer_list->clock->type != QEMU_CLOCK_VIRTUAL) {
++        return birth;
++    }
++    if (qatomic_load_acquire(&crucible_node_construction_active) &&
++        qemu_get_thread_id() == getpid()) {
++        return crucible_node_construction_birth;
++    }
++    sample = qatomic_load_acquire(&crucible_node_birth_sampler);
++    if (!crucible_node_parent_timer_id && sample && sample(&birth)) {
++        return birth;
++    }
++    /* Actual callback ancestry does not authorize a successor Position.
++     * Old-v1 timer dispatch has no finite phase permit. */
++    memset(&birth, 0, sizeof(birth));
++    if (crucible_node_parent_timer_id &&
++        crucible_node_parent_arm_generation) {
++        birth.birth_flags =
++            QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_BIRTH_PARENT_DIAGNOSTIC;
++        birth.parent_timer_id = crucible_node_parent_timer_id;
++        birth.parent_arm_generation = crucible_node_parent_arm_generation;
++    }
++    return birth;
++}
++
 +static bool timer_expired_internal(const QEMUTimer *timer_head,
 +                                   __int128 current_time);
 +
@@ -198476,6 +199083,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
 +    timer->crucible_hot_fork_id = crucible_hot_fork_timer_next_id++;
 +    assert(timer->crucible_hot_fork_id != 0);
 +    timer->crucible_node_arm_generation = 0;
++    memset(&timer->crucible_node_birth, 0, sizeof(timer->crucible_node_birth));
 +    timer->crucible_hot_fork_pending = false;
 +    timer->crucible_hot_fork_expire_time = -1;
 +    timer->crucible_hot_fork_next = NULL;
@@ -198495,6 +199103,13 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
 +
 +static void crucible_hot_fork_timer_set_pending(QEMUTimer *timer, bool pending)
 +{
++    QemuTimerNodeBirth birth;
++    bool capture_birth = pending &&
++        qatomic_load_acquire(&crucible_node_birth_enabled);
++
++    if (capture_birth) {
++        birth = crucible_node_timer_birth(timer);
++    }
 +    crucible_hot_fork_timer_lock();
 +    if (pending) {
 +        if (!timer->crucible_hot_fork_pending) {
@@ -198509,6 +199124,9 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
 +        timer->crucible_hot_fork_expire_time = timer->expire_time;
 +        crucible_hot_fork_timer_advance_generation();
 +        timer->crucible_node_arm_generation = crucible_hot_fork_timer_generation;
++        if (capture_birth) {
++            timer->crucible_node_birth = birth;
++        }
 +    } else if (timer->crucible_hot_fork_pending) {
 +        *timer->crucible_hot_fork_prev = timer->crucible_hot_fork_next;
 +        if (timer->crucible_hot_fork_next) {
@@ -198670,7 +199288,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  /**
   * qemu_clock_ptr:
   * @type: type of clock
-@@ -90,11 +413,321 @@ static inline QEMUClock *qemu_clock_ptr(QEMUClockType type)
+@@ -90,11 +494,366 @@ static inline QEMUClock *qemu_clock_ptr(QEMUClockType type)
      return &qemu_clocks[type];
  }
  
@@ -198685,7 +199303,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
 +}
 +
 +bool qemu_timer_exact_virtual_ps_enabled(void)
- {
++{
 +    return timer_exact_virtual_ps != NULL;
 +}
 +
@@ -198775,7 +199393,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
 +static int64_t timer_deadline_internal_to_ns(QEMUClockType type,
 +                                             __int128 expire_time,
 +                                             __int128 now)
-+{
+ {
 +    unsigned __int128 delta;
 +
 +    if (expire_time <= now) {
@@ -198824,10 +199442,11 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
      return timer_head && (timer_head->expire_time <= current_time);
  }
  
-+int qemu_timer_crucible_node_inventory(
++static int qemu_timer_crucible_node_inventory_internal(
 +    QemuPluginCrucibleNodeTimerInventory *inventory,
 +    QemuPluginCrucibleNodeTimerList *lists, uint32_t list_capacity,
-+    QemuPluginCrucibleNodeTimer *timers, uint32_t timer_capacity)
++    QemuPluginCrucibleNodeTimer *timers,
++    QemuPluginCrucibleNodeTimerBirth *births, uint32_t timer_capacity)
 +{
 +#ifdef CONFIG_POSIX
 +    QEMUTimerList *roster[QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_LIST_MAX];
@@ -198843,6 +199462,8 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
 +    G_STATIC_ASSERT(sizeof(*inventory) == 32);
 +    G_STATIC_ASSERT(sizeof(*lists) == 16);
 +    G_STATIC_ASSERT(sizeof(*timers) == 48);
++    G_STATIC_ASSERT(sizeof(*births) == 200);
++    G_STATIC_ASSERT(sizeof(QemuTimerNodeBirth) == 152);
 +
 +    if (!inventory) {
 +        return -EINVAL;
@@ -198850,7 +199471,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
 +    memset(inventory, 0, sizeof(*inventory));
 +    if (!lists || list_capacity == 0 ||
 +        list_capacity > QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_LIST_MAX ||
-+        (timer_capacity != 0 && !timers) ||
++        (timer_capacity != 0 && !timers && !births) ||
 +        timer_capacity > QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_MAX) {
 +        return -EINVAL;
 +    }
@@ -198950,7 +199571,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
 +                result = -EOVERFLOW;
 +                goto out;
 +            }
-+            timers[timer_count++] = (QemuPluginCrucibleNodeTimer) {
++            QemuPluginCrucibleNodeTimer row = {
 +                .timer_id = timer->crucible_hot_fork_id,
 +                .list_id = timer_list->crucible_hot_fork_id,
 +                .arm_generation = timer->crucible_node_arm_generation,
@@ -198959,6 +199580,30 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
 +                .attributes = timer->attributes,
 +                .scale = timer->scale,
 +            };
++            if (timers) {
++                timers[timer_count] = row;
++            }
++            if (births) {
++                births[timer_count].timer = row;
++                QemuTimerNodeBirth *birth = &timer->crucible_node_birth;
++                QemuPluginCrucibleNodeTimerBirth *out = &births[timer_count];
++
++                out->birth_kind = birth->birth_kind;
++                out->birth_phase = birth->birth_phase;
++                out->birth_flags = birth->birth_flags;
++                out->reserved = birth->reserved;
++                out->birth_time_ps = birth->birth_time_ps;
++                out->birth_microstep = birth->birth_microstep;
++                out->source_original_sequence = birth->source_original_sequence;
++                out->parent_timer_id = birth->parent_timer_id;
++                out->parent_arm_generation = birth->parent_arm_generation;
++                memcpy(out->prepared_scope_hash, birth->prepared_scope_hash, 32);
++                memcpy(out->source_original_digest,
++                       birth->source_original_digest, 32);
++                memcpy(out->construction_commitment,
++                       birth->construction_commitment, 32);
++            }
++            timer_count++;
 +            lists[index].timer_count++;
 +            previous_expiry = timer->expire_time;
 +        }
@@ -198990,10 +199635,28 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
 +#endif
 +}
 +
++int qemu_timer_crucible_node_inventory(
++    QemuPluginCrucibleNodeTimerInventory *inventory,
++    QemuPluginCrucibleNodeTimerList *lists, uint32_t list_capacity,
++    QemuPluginCrucibleNodeTimer *timers, uint32_t timer_capacity)
++{
++    return qemu_timer_crucible_node_inventory_internal(
++        inventory, lists, list_capacity, timers, NULL, timer_capacity);
++}
++
++int qemu_timer_crucible_node_birth_inventory(
++    QemuPluginCrucibleNodeTimerInventory *inventory,
++    QemuPluginCrucibleNodeTimerList *lists, uint32_t list_capacity,
++    QemuPluginCrucibleNodeTimerBirth *timers, uint32_t timer_capacity)
++{
++    return qemu_timer_crucible_node_inventory_internal(
++        inventory, lists, list_capacity, NULL, timers, timer_capacity);
++}
++
  QEMUTimerList *timerlist_new(QEMUClockType type,
                               QEMUTimerListNotifyCB *cb,
                               void *opaque)
-@@ -102,24 +735,32 @@ QEMUTimerList *timerlist_new(QEMUClockType type,
+@@ -102,24 +861,32 @@ QEMUTimerList *timerlist_new(QEMUClockType type,
      QEMUTimerList *timer_list;
      QEMUClock *clock = qemu_clock_ptr(type);
  
@@ -199026,7 +199689,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  }
  
  static void qemu_clock_init(QEMUClockType type, QEMUTimerListNotifyCB *notify_cb)
-@@ -144,9 +785,12 @@ void qemu_clock_notify(QEMUClockType type)
+@@ -144,9 +911,12 @@ void qemu_clock_notify(QEMUClockType type)
  {
      QEMUTimerList *timer_list;
      QEMUClock *clock = qemu_clock_ptr(type);
@@ -199039,7 +199702,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  }
  
  /* Disabling the clock will wait for related timerlists to stop
-@@ -160,7 +804,10 @@ void qemu_clock_enable(QEMUClockType type, bool enabled)
+@@ -160,7 +930,10 @@ void qemu_clock_enable(QEMUClockType type, bool enabled)
  {
      QEMUClock *clock = qemu_clock_ptr(type);
      QEMUTimerList *tl;
@@ -199051,7 +199714,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
      clock->enabled = enabled;
      if (enabled && !old) {
          qemu_clock_notify(type);
-@@ -169,6 +816,7 @@ void qemu_clock_enable(QEMUClockType type, bool enabled)
+@@ -169,6 +942,7 @@ void qemu_clock_enable(QEMUClockType type, bool enabled)
              qemu_event_wait(&tl->timers_done_ev);
          }
      }
@@ -199059,7 +199722,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  }
  
  bool timerlist_has_timers(QEMUTimerList *timer_list)
-@@ -184,7 +832,7 @@ bool qemu_clock_has_timers(QEMUClockType type)
+@@ -184,7 +958,7 @@ bool qemu_clock_has_timers(QEMUClockType type)
  
  bool timerlist_expired(QEMUTimerList *timer_list)
  {
@@ -199068,7 +199731,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  
      if (!qatomic_read(&timer_list->active_timers)) {
          return false;
-@@ -194,10 +842,11 @@ bool timerlist_expired(QEMUTimerList *timer_list)
+@@ -194,10 +968,11 @@ bool timerlist_expired(QEMUTimerList *timer_list)
          if (!timer_list->active_timers) {
              return false;
          }
@@ -199081,7 +199744,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  }
  
  bool qemu_clock_expired(QEMUClockType type)
-@@ -213,8 +862,7 @@ bool qemu_clock_expired(QEMUClockType type)
+@@ -213,8 +988,7 @@ bool qemu_clock_expired(QEMUClockType type)
  
  int64_t timerlist_deadline_ns(QEMUTimerList *timer_list)
  {
@@ -199091,7 +199754,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  
      if (!qatomic_read(&timer_list->active_timers)) {
          return -1;
-@@ -232,16 +880,14 @@ int64_t timerlist_deadline_ns(QEMUTimerList *timer_list)
+@@ -232,16 +1006,14 @@ int64_t timerlist_deadline_ns(QEMUTimerList *timer_list)
          if (!timer_list->active_timers) {
              return -1;
          }
@@ -199113,7 +199776,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  }
  
  /* Calculate the soonest deadline across all timerlists attached
-@@ -252,8 +898,7 @@ int64_t timerlist_deadline_ns(QEMUTimerList *timer_list)
+@@ -252,8 +1024,7 @@ int64_t timerlist_deadline_ns(QEMUTimerList *timer_list)
  int64_t qemu_clock_deadline_ns_all(QEMUClockType type, int attr_mask)
  {
      int64_t deadline = -1;
@@ -199123,7 +199786,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
      QEMUTimer *ts;
      QEMUTimerList *timer_list;
      QEMUClock *clock = qemu_clock_ptr(type);
-@@ -276,25 +921,91 @@ int64_t qemu_clock_deadline_ns_all(QEMUClockType type, int attr_mask)
+@@ -276,25 +1047,91 @@ int64_t qemu_clock_deadline_ns_all(QEMUClockType type, int attr_mask)
              qemu_mutex_unlock(&timer_list->active_timers_lock);
              continue;
          }
@@ -199219,7 +199882,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  }
  
  /* Transition function to convert a nanosecond timeout to ms
-@@ -353,6 +1064,7 @@ void timer_init_full(QEMUTimer *ts,
+@@ -353,6 +1190,7 @@ void timer_init_full(QEMUTimer *ts,
                       int scale, int attributes,
                       QEMUTimerCB *cb, void *opaque)
  {
@@ -199227,7 +199890,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
      if (!timer_list_group) {
          timer_list_group = &main_loop_tlg;
      }
-@@ -362,12 +1074,23 @@ void timer_init_full(QEMUTimer *ts,
+@@ -362,12 +1200,23 @@ void timer_init_full(QEMUTimer *ts,
      ts->scale = scale;
      ts->attributes = attributes;
      ts->expire_time = -1;
@@ -199252,7 +199915,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  }
  
  static void timer_del_locked(QEMUTimerList *timer_list, QEMUTimer *ts)
-@@ -375,6 +1098,7 @@ static void timer_del_locked(QEMUTimerList *timer_list, QEMUTimer *ts)
+@@ -375,6 +1224,7 @@ static void timer_del_locked(QEMUTimerList *timer_list, QEMUTimer *ts)
      QEMUTimer **pt, *t;
  
      ts->expire_time = -1;
@@ -199260,7 +199923,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
      pt = &timer_list->active_timers;
      for(;;) {
          t = *pt;
-@@ -395,8 +1119,8 @@ static void timer_fire(CPUState *cpu, run_on_cpu_data data)
+@@ -395,8 +1245,8 @@ static void timer_fire(CPUState *cpu, run_on_cpu_data data)
      t->cb(t->opaque);
  }
  
@@ -199271,7 +199934,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  {
      QEMUTimer **pt, *t;
  
-@@ -416,7 +1140,7 @@ static bool timer_mod_ns_locked(QEMUTimerList *timer_list,
+@@ -416,7 +1266,7 @@ static bool timer_mod_ns_locked(QEMUTimerList *timer_list,
      if (replay_mode != REPLAY_MODE_NONE &&
          timer_list->clock->type == QEMU_CLOCK_VIRTUAL &&
          !(ts->attributes & QEMU_TIMER_ATTR_EXTERNAL) &&
@@ -199280,7 +199943,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
          async_run_on_cpu(first_cpu, timer_fire,
                           RUN_ON_CPU_HOST_PTR(ts));
          return false;
-@@ -426,12 +1150,14 @@ static bool timer_mod_ns_locked(QEMUTimerList *timer_list,
+@@ -426,12 +1276,14 @@ static bool timer_mod_ns_locked(QEMUTimerList *timer_list,
      pt = &timer_list->active_timers;
      for (;;) {
          t = *pt;
@@ -199297,7 +199960,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
      ts->next = *pt;
      qatomic_set(pt, ts);
  
-@@ -448,44 +1174,139 @@ void timer_del(QEMUTimer *ts)
+@@ -448,11 +1300,16 @@ void timer_del(QEMUTimer *ts)
  {
      QEMUTimerList *timer_list = ts->timer_list;
  
@@ -199314,45 +199977,20 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  }
  
  /* modify the current timer so that it will be fired when current_time
-    >= expire_time. The corresponding callback will be called. */
+@@ -460,32 +1317,122 @@ void timer_del(QEMUTimer *ts)
  void timer_mod_ns(QEMUTimer *ts, int64_t expire_time)
-+{
-+    QEMUTimerList *timer_list = ts->timer_list;
-+    __int128 internal_expire_time;
-+    bool rearm;
-+
-+    internal_expire_time = timer_ns_to_internal(
-+        timer_list->clock->type, expire_time);
-+    qemu_async_worker_hot_fork_admission_begin();
-+    qemu_mutex_lock(&timer_list->active_timers_lock);
-+    timer_del_locked(timer_list, ts);
-+    rearm = timer_mod_internal_locked(timer_list, ts, internal_expire_time);
-+#ifdef CONFIG_POSIX
-+    crucible_hot_fork_timer_set_pending(ts, true);
-+#endif
-+    qemu_mutex_unlock(&timer_list->active_timers_lock);
-+
-+    if (rearm) {
-+        timerlist_rearm(timer_list);
-+    }
-+    qemu_async_worker_hot_fork_admission_end();
-+}
-+
-+void timer_mod_ps_wide(QEMUTimer *ts, __int128 expire_time_ps)
  {
      QEMUTimerList *timer_list = ts->timer_list;
++    __int128 internal_expire_time;
      bool rearm;
  
-+    if (!timer_tcg_ps_enabled ||
-+        timer_list->clock->type != QEMU_CLOCK_VIRTUAL) {
-+        error_report("Picosecond timer used outside a TCG virtual clock");
-+        exit(EXIT_FAILURE);
-+    }
++    internal_expire_time = timer_ns_to_internal(
++        timer_list->clock->type, expire_time);
 +    qemu_async_worker_hot_fork_admission_begin();
      qemu_mutex_lock(&timer_list->active_timers_lock);
      timer_del_locked(timer_list, ts);
 -    rearm = timer_mod_ns_locked(timer_list, ts, expire_time);
-+    rearm = timer_mod_internal_locked(timer_list, ts, expire_time_ps);
++    rearm = timer_mod_internal_locked(timer_list, ts, internal_expire_time);
 +#ifdef CONFIG_POSIX
 +    crucible_hot_fork_timer_set_pending(ts, true);
 +#endif
@@ -199361,6 +199999,31 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
      if (rearm) {
          timerlist_rearm(timer_list);
      }
++    qemu_async_worker_hot_fork_admission_end();
++}
++
++void timer_mod_ps_wide(QEMUTimer *ts, __int128 expire_time_ps)
++{
++    QEMUTimerList *timer_list = ts->timer_list;
++    bool rearm;
++
++    if (!timer_tcg_ps_enabled ||
++        timer_list->clock->type != QEMU_CLOCK_VIRTUAL) {
++        error_report("Picosecond timer used outside a TCG virtual clock");
++        exit(EXIT_FAILURE);
++    }
++    qemu_async_worker_hot_fork_admission_begin();
++    qemu_mutex_lock(&timer_list->active_timers_lock);
++    timer_del_locked(timer_list, ts);
++    rearm = timer_mod_internal_locked(timer_list, ts, expire_time_ps);
++#ifdef CONFIG_POSIX
++    crucible_hot_fork_timer_set_pending(ts, true);
++#endif
++    qemu_mutex_unlock(&timer_list->active_timers_lock);
++
++    if (rearm) {
++        timerlist_rearm(timer_list);
++    }
 +    qemu_async_worker_hot_fork_admission_end();
 +}
 +
@@ -199442,7 +200105,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
          } else {
              rearm = false;
          }
-@@ -493,6 +1314,56 @@ void timer_mod_anticipate_ns(QEMUTimer *ts, int64_t expire_time)
+@@ -493,6 +1440,56 @@ void timer_mod_anticipate_ns(QEMUTimer *ts, int64_t expire_time)
      if (rearm) {
          timerlist_rearm(timer_list);
      }
@@ -199499,7 +200162,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  }
  
  void timer_mod(QEMUTimer *ts, int64_t expire_time)
-@@ -507,25 +1378,60 @@ void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time)
+@@ -507,25 +1504,60 @@ void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time)
  
  bool timer_pending(const QEMUTimer *ts)
  {
@@ -199564,7 +200227,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  
      qemu_event_reset(&timer_list->timers_done_ev);
      if (!timer_list->clock->enabled) {
-@@ -560,10 +1466,10 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
+@@ -560,10 +1592,10 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
       * the checkpoint can be issued at a time until no timers are left and we are
       * done".
       */
@@ -199577,7 +200240,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
              /* No expired timers left.  The checkpoint can be skipped
               * if no timers fired or they were all external.
               */
-@@ -584,13 +1490,68 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
+@@ -584,13 +1616,79 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
          /* remove timer from the list before calling the callback */
          timer_list->active_timers = ts->next;
          ts->next = NULL;
@@ -199592,6 +200255,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  
          /* run the callback (the timer list can be modified) */
          qemu_mutex_unlock(&timer_list->active_timers_lock);
+-        cb(opaque);
 +        if (timer_list->clock->type == QEMU_CLOCK_VIRTUAL &&
 +            timer_exact_virtual_ps &&
 +            crucible_virtual_timer_witness_begin &&
@@ -199636,7 +200300,18 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
 +                qemu_crucible_determinism_trace_end();
 +            }
 +        }
-         cb(opaque);
++        if (qatomic_load_acquire(&crucible_node_birth_enabled)) {
++            uint64_t previous_parent_id = crucible_node_parent_timer_id;
++            uint64_t previous_parent_arm = crucible_node_parent_arm_generation;
++
++            crucible_node_parent_timer_id = ts->crucible_hot_fork_id;
++            crucible_node_parent_arm_generation = ts->crucible_node_arm_generation;
++            cb(opaque);
++            crucible_node_parent_timer_id = previous_parent_id;
++            crucible_node_parent_arm_generation = previous_parent_arm;
++        } else {
++            cb(opaque);
++        }
 +        if (witness_generation != 0) {
 +            crucible_virtual_timer_witness_complete(witness_generation);
 +        }
@@ -199646,7 +200321,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
          qemu_mutex_lock(&timer_list->active_timers_lock);
  
          progress = true;
-@@ -599,6 +1560,7 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
+@@ -599,6 +1697,7 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
  
  out:
      qemu_event_set(&timer_list->timers_done_ev);
@@ -199654,7 +200329,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
      return progress;
  }
  
-@@ -639,6 +1601,15 @@ int64_t timerlistgroup_deadline_ns(QEMUTimerListGroup *tlg)
+@@ -639,6 +1738,15 @@ int64_t timerlistgroup_deadline_ns(QEMUTimerListGroup *tlg)
      int64_t deadline = -1;
      QEMUClockType type;
      for (type = 0; type < QEMU_CLOCK_MAX; type++) {
@@ -199670,7 +200345,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
          if (qemu_clock_use_for_deadline(type)) {
              deadline = qemu_soonest_timeout(deadline,
                                              timerlist_deadline_ns(tlg->tl[type]));
-@@ -662,6 +1633,18 @@ int64_t qemu_clock_get_ns(QEMUClockType type)
+@@ -662,6 +1770,18 @@ int64_t qemu_clock_get_ns(QEMUClockType type)
      }
  }
  
@@ -199689,7 +200364,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  static void qemu_virtual_clock_set_ns(int64_t time)
  {
      return cpus_set_virtual_clock(time);
-@@ -670,6 +1653,8 @@ static void qemu_virtual_clock_set_ns(int64_t time)
+@@ -670,6 +1790,8 @@ static void qemu_virtual_clock_set_ns(int64_t time)
  void qemu_init_clocks(QEMUTimerListNotifyCB *notify_cb)
  {
      QEMUClockType type;
@@ -199698,7 +200373,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
      for (type = 0; type < QEMU_CLOCK_MAX; type++) {
          qemu_clock_init(type, notify_cb);
      }
-@@ -681,7 +1666,80 @@ void qemu_init_clocks(QEMUTimerListNotifyCB *notify_cb)
+@@ -681,7 +1803,80 @@ void qemu_init_clocks(QEMUTimerListNotifyCB *notify_cb)
  
  uint64_t timer_expire_time_ns(const QEMUTimer *ts)
  {
@@ -199780,7 +200455,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
  }
  
  bool qemu_clock_run_all_timers(void)
-@@ -700,8 +1758,11 @@ bool qemu_clock_run_all_timers(void)
+@@ -700,8 +1895,11 @@ bool qemu_clock_run_all_timers(void)
  
  int64_t qemu_clock_advance_virtual_time(int64_t dest)
  {
@@ -199793,7 +200468,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..4062f9264771aeda1b738a348bfa70e8
      aio_context = qemu_get_aio_context();
      while (clock < dest) {
          int64_t deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
-@@ -716,5 +1777,6 @@ int64_t qemu_clock_advance_virtual_time(int64_t dest)
+@@ -716,5 +1914,6 @@ int64_t qemu_clock_advance_virtual_time(int64_t dest)
      }
      qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
  

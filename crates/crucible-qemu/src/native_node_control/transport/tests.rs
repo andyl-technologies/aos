@@ -1,5 +1,7 @@
 //! Socket-level original custody tests with a mechanical provider fixture.
 
+#![allow(clippy::unwrap_used)]
+
 use super::*;
 use crucible_node_contract::{HashRef, Id, Phase, Position};
 use crucible_protocol::node_control::{BoundaryPolicy, ExecutionKind, OwnerScope};

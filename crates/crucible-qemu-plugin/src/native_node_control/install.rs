@@ -48,7 +48,8 @@ pub(crate) fn install(
     let socket = unsafe { std::os::unix::net::UnixDatagram::from_raw_fd(config.descriptor()) };
     let writer_query = match config.edition() {
         crucible_protocol::node_control::NativeControlEdition::Original => None,
-        crucible_protocol::node_control::NativeControlEdition::OwnedCustody => Some(
+        crucible_protocol::node_control::NativeControlEdition::OwnedCustody
+        | crucible_protocol::node_control::NativeControlEdition::PhaseProjection => Some(
             super::writer_abi::resolve_query_writers()
                 .ok_or(NativeControlInstallError::MissingCapability)?,
         ),
@@ -58,12 +59,28 @@ pub(crate) fn install(
     if writer_query.is_some() && cpu_query.is_none() {
         return Err(NativeControlInstallError::MissingCapability);
     }
-    let (plan, initialization) = match (channel.receive()?, config.initialization()) {
-        (Some(NativeFrame::Prepare(plan)), None) => (*plan, None),
+    let (plan, initialization, phase) = match (channel.receive()?, config.initialization()) {
+        (Some(NativeFrame::Prepare(plan)), None) => (*plan, None, None),
         (Some(NativeFrame::PrepareInitialization(initialization)), Some(pinned))
-            if pinned.matches(&initialization)? =>
+            if config.phase().is_none() && pinned.matches(&initialization)? =>
         {
-            (initialization.preparation.clone(), Some(*initialization))
+            (
+                initialization.preparation.clone(),
+                Some(*initialization),
+                None,
+            )
+        }
+        (Some(NativeFrame::PreparePhase(phase)), Some(pinned))
+            if pinned.matches(&phase.initialization)?
+                && config
+                    .phase()
+                    .is_some_and(|pin| pin.matches(&phase) == Ok(true)) =>
+        {
+            (
+                phase.initialization.preparation.clone(),
+                Some(phase.initialization.clone()),
+                Some(*phase),
+            )
         }
         _ => return Err(NativeControlInstallError::MissingPreparation),
     };
@@ -79,16 +96,19 @@ pub(crate) fn install(
     let control = control
         .with_writer_query(writer_query)
         .with_protocol_notify(notify);
-    let source_fault_query = if config.edition()
-        == crucible_protocol::node_control::NativeControlEdition::OwnedCustody
-    {
-        super::source_fault_abi::resolve_query_source_fault()
-    } else {
-        None
-    };
+    let source_fault_query =
+        if config.edition() != crucible_protocol::node_control::NativeControlEdition::Original {
+            super::source_fault_abi::resolve_query_source_fault()
+        } else {
+            None
+        };
     let control = control.with_source_fault_query(source_fault_query);
     let control = match initialization {
         Some(preparation) => control.with_initialization(preparation)?,
+        None => control,
+    };
+    let control = match phase {
+        Some(preparation) => control.with_phase_projection(preparation)?,
         None => control,
     };
     // Callback ownership lasts until process termination. A leaked transport

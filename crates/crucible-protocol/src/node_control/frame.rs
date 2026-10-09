@@ -15,6 +15,11 @@ use super::{
 /// Rejects invalid local records, zero sequences or exhausted byte allowances.
 pub fn encode_frame(frame: &NativeFrame) -> Result<Vec<u8>, NativeCommandError> {
     let (kind, body) = match frame {
+        NativeFrame::PreparePhase(_)
+        | NativeFrame::QueryPhaseTimers(_)
+        | NativeFrame::PhaseTimerChunk(_) => {
+            return Err(NativeCommandError::UnsupportedVersion(3));
+        }
         NativeFrame::QueryWriters(_)
         | NativeFrame::WriterChunk(_)
         | NativeFrame::SourceFault(_)
@@ -157,6 +162,7 @@ pub fn decode_frame(encoded: &[u8]) -> Result<NativeFrame, NativeCommandError> {
         return Err(NativeCommandError::Invalid("native frame length mismatch"));
     }
     let frame = match kind {
+        21..=23 => return Err(NativeCommandError::UnsupportedVersion(3)),
         9 => {
             let query = super::NativeTimerQuery {
                 prepared_scope_hash: cursor.array()?,

@@ -17,6 +17,8 @@ pub enum NativeControlEdition {
     Original,
     /// Selects the opt-in protocol for retained writer and complete custody records.
     OwnedCustody,
+    /// Selects raw source phase projection with a fresh original pinned mapping.
+    PhaseProjection,
 }
 
 impl NativeControlEdition {
@@ -25,6 +27,7 @@ impl NativeControlEdition {
         match self {
             Self::Original => 1,
             Self::OwnedCustody => 2,
+            Self::PhaseProjection => 3,
         }
     }
 }
@@ -41,6 +44,30 @@ pub fn encode_frame_for_edition(
     edition: NativeControlEdition,
     frame: &NativeFrame,
 ) -> Result<Vec<u8>, NativeCommandError> {
+    if edition == NativeControlEdition::PhaseProjection {
+        let (kind, body) = match frame {
+            NativeFrame::PreparePhase(preparation) => (21u16, preparation.encode()?),
+            NativeFrame::QueryPhaseTimers(query) => (22u16, query.encode()?.to_vec()),
+            NativeFrame::PhaseTimerChunk(chunk) => (23u16, chunk.encode()?),
+            _ => {
+                // Prior bodies remain byte-identical; only the pinned header changes.
+                let mut bytes =
+                    encode_frame_for_edition(NativeControlEdition::OwnedCustody, frame)?;
+                bytes[8..10].copy_from_slice(&edition.version().to_be_bytes());
+                return Ok(bytes);
+            }
+        };
+        if body.len() > NODE_CONTROL_MAX_BODY_BYTES {
+            return Err(NativeCommandError::ResourceLimit);
+        }
+        let mut bytes = Vec::with_capacity(NODE_CONTROL_HEADER_BYTES + body.len());
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&edition.version().to_be_bytes());
+        bytes.extend_from_slice(&kind.to_be_bytes());
+        bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&body);
+        return Ok(bytes);
+    }
     if edition == NativeControlEdition::OwnedCustody {
         let (kind, body) = match frame {
             NativeFrame::PrepareInitialization(preparation) => (14, preparation.encode()?),
@@ -126,7 +153,31 @@ pub fn decode_frame_for_edition(
     if cursor.0.len() != length {
         return Err(NativeCommandError::Invalid("native frame length mismatch"));
     }
+    if edition == NativeControlEdition::PhaseProjection {
+        let frame = match kind {
+            21 => NativeFrame::PreparePhase(Box::new(super::NativePhasePreparation::decode(
+                cursor.take(cursor.0.len())?,
+            )?)),
+            22 => NativeFrame::QueryPhaseTimers(super::NativePhaseTimerQuery::decode(
+                cursor.take(cursor.0.len())?,
+            )?),
+            23 => NativeFrame::PhaseTimerChunk(Box::new(super::NativePhaseTimerChunk::decode(
+                cursor.take(cursor.0.len())?,
+            )?)),
+            _ => {
+                let mut prior = bytes.to_vec();
+                prior[8..10]
+                    .copy_from_slice(&NativeControlEdition::OwnedCustody.version().to_be_bytes());
+                return decode_frame_for_edition(NativeControlEdition::OwnedCustody, &prior);
+            }
+        };
+        if !cursor.0.is_empty() {
+            return Err(NativeCommandError::Invalid("trailing phase frame bytes"));
+        }
+        return Ok(frame);
+    }
     let frame = match kind {
+        21..=23 => return Err(NativeCommandError::UnsupportedVersion(3)),
         14 => NativeFrame::PrepareInitialization(Box::new(
             super::NativeInitializationPreparation::decode(cursor.take(cursor.0.len())?)?,
         )),
@@ -264,3 +315,7 @@ mod tests {
 #[cfg(test)]
 #[path = "initialization_frame_tests.rs"]
 mod initialization_tests;
+
+#[cfg(test)]
+#[path = "phase_frame_tests.rs"]
+mod phase_frame_tests;

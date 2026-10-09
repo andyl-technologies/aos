@@ -16,9 +16,14 @@ pub struct NativeNodeControlConfig {
     scope_digest: [u8; 32],
     edition: crucible_protocol::node_control::NativeControlEdition,
     initialization: Option<super::NativeInitializationConfig>,
+    phase: Option<super::NativePhaseConfig>,
 }
 
 impl NativeNodeControlConfig {
+    /// Returns the separately pinned original source projection, if present.
+    pub const fn phase(self) -> Option<super::NativePhaseConfig> {
+        self.phase
+    }
     /// Returns the separately pinned original construction authorization, if present.
     pub const fn initialization(self) -> Option<super::NativeInitializationConfig> {
         self.initialization
@@ -47,7 +52,11 @@ pub(super) fn parse(
         PLUGIN_ARG_NODE_CONTROL_VERSION,
     ];
     let initialization = super::native_initialization::parse(parsed)?;
-    if keys.iter().all(|key| parsed.value(key).is_none()) && initialization.is_none() {
+    let phase = super::native_phase::parse(parsed)?;
+    if keys.iter().all(|key| parsed.value(key).is_none())
+        && initialization.is_none()
+        && phase.is_none()
+    {
         return Ok(None);
     }
     for key in keys {
@@ -58,10 +67,17 @@ pub(super) fn parse(
     let edition = match parsed.value(PLUGIN_ARG_NODE_CONTROL_VERSION) {
         Some("1") => crucible_protocol::node_control::NativeControlEdition::Original,
         Some("2") => crucible_protocol::node_control::NativeControlEdition::OwnedCustody,
+        Some("3") if phase.is_some() => {
+            crucible_protocol::node_control::NativeControlEdition::PhaseProjection
+        }
         _ => return Err(PluginArgsParseError::InvalidNativeNodeControl),
     };
-    if initialization.is_some()
-        && edition != crucible_protocol::node_control::NativeControlEdition::OwnedCustody
+    if (initialization.is_some()
+        && edition == crucible_protocol::node_control::NativeControlEdition::Original)
+        || (phase.is_some()
+            && (initialization.is_none()
+                || edition
+                    != crucible_protocol::node_control::NativeControlEdition::PhaseProjection))
     {
         return Err(PluginArgsParseError::InvalidNativeNodeControl);
     }
@@ -70,11 +86,13 @@ pub(super) fn parse(
         scope_digest: parse_required_hash(parsed, PLUGIN_ARG_NODE_CONTROL_SCOPE_HASH)?,
         edition,
         initialization,
+        phase,
     }))
 }
 
 pub(super) fn is_key(key: &str) -> bool {
-    super::native_initialization::is_key(key)
+    super::native_phase::is_key(key)
+        || super::native_initialization::is_key(key)
         || matches!(
             key,
             PLUGIN_ARG_NODE_CONTROL_FD

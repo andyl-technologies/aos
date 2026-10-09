@@ -185,6 +185,9 @@ extern "C" fn get_initialization_command(
         || owner
             .observe_timers(crucible_node_contract::U64::new(0))
             .is_err()
+        || owner
+            .observe_phase_timers(crucible_node_contract::U64::new(0))
+            .is_err()
     {
         owner.fail_initialization();
         return false;

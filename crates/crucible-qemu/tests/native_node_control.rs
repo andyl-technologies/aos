@@ -1,6 +1,7 @@
 //! Actual QEMU/GPL plugin boundary probes, without provider qualification claims.
 
 #![cfg(target_os = "linux")]
+#![allow(clippy::unwrap_used)]
 
 use std::{
     error::Error,
@@ -152,6 +153,8 @@ fn artifact(variable: &str) -> Result<PathBuf, Box<dyn Error>> {
     Ok(path)
 }
 
+// Wall time bounds this external-process test watchdog; it is never a modeled clock.
+#[allow(clippy::disallowed_methods)]
 fn next_any_frame(
     control: &mut NativeQemuControlTransport,
     child: &mut Child,
@@ -185,6 +188,7 @@ fn next_frame(
             frame,
             NativeFrame::CpuPark(_)
                 | NativeFrame::WriterChunk(_)
+                | NativeFrame::PhaseTimerChunk(_)
                 | NativeFrame::InitializationCut(_)
                 | NativeFrame::InitializationStopped(_)
                 | NativeFrame::InitializationAcknowledged(_)
@@ -233,6 +237,7 @@ fn run_probe(
         writer_custody,
         expect_source_fault,
         false,
+        false,
     )
 }
 
@@ -243,6 +248,7 @@ fn run_initialized_probe(
     writer_custody: bool,
     expect_source_fault: bool,
     initialize: bool,
+    phase_projection: bool,
 ) -> Result<Vec<NativeStopFacts>, Box<dyn Error>> {
     let qemu = artifact("CRUCIBLE_NATIVE_PROBE_QEMU")?;
     let plugin = artifact("CRUCIBLE_NATIVE_PROBE_PLUGIN")?;
@@ -254,12 +260,17 @@ fn run_initialized_probe(
             0xc0, 0xe6, 0x40, 0xeb, 0xfe,
         ];
         let loop_program = [0x90, 0xeb, 0xfd];
-        let program: &[u8] = if pit_timer {
+        let phase_program = [
+            0xb0, 0x30, 0xe6, 0x43, 0xb0, 0x04, 0xe6, 0x40, 0xb0, 0, 0xe6, 0x40, 0x90, 0xeb, 0xfd,
+        ];
+        let program: &[u8] = if phase_projection {
+            &phase_program
+        } else if pit_timer {
             &pit_program
         } else {
             &loop_program
         };
-        rom[..program.len()].copy_from_slice(&program);
+        rom[..program.len()].copy_from_slice(program);
         rom[0xfff0..0xfff5].copy_from_slice(&[0xea, 0, 0, 0, 0xf0]);
         let mut firmware = tempfile::NamedTempFile::new()?;
         firmware.write_all(&rom)?;
@@ -269,7 +280,9 @@ fn run_initialized_probe(
     } else {
         artifact("CRUCIBLE_NATIVE_PROBE_BIOS")?
     };
-    let edition = if writer_custody {
+    let edition = if phase_projection {
+        NativeControlEdition::PhaseProjection
+    } else if writer_custody {
         NativeControlEdition::OwnedCustody
     } else {
         NativeControlEdition::Original
@@ -290,7 +303,22 @@ fn run_initialized_probe(
                 maximum_callbacks: 64,
             },
         );
-    let (mut native, endpoint) = if let Some(initialization) = &initialization {
+    let phase_preparation =
+        initialization
+            .as_ref()
+            .filter(|_| phase_projection)
+            .map(
+                |initialization| crucible_protocol::node_control::NativePhasePreparation {
+                    initialization: initialization.clone(),
+                    policy_digest: [13; 32],
+                    mapping:
+                        crucible_protocol::node_control::NativePhaseMapping::InstructionReaction,
+                    maximum_microstep: U64::new(1024),
+                },
+            );
+    let (mut native, endpoint) = if let Some(phase) = &phase_preparation {
+        NativeQemuControlTransport::prepare_phase(phase.clone())?
+    } else if let Some(initialization) = &initialization {
         NativeQemuControlTransport::prepare_initialization(initialization.clone())?
     } else {
         NativeQemuControlTransport::prepare_for_edition(preparation, edition)?
@@ -371,7 +399,22 @@ fn run_initialized_probe(
         plugin_args.push_str(&format!(",node_initialization_commitment={},node_initialization_realize_digest={},node_initialization_policy_digest={},node_initialization_class_mask={},node_initialization_max_callbacks={}",
             hex(&initialization.identity_digest()?), hex(&initialization.realize_request_digest), hex(&initialization.policy_digest), initialization.class_mask, initialization.maximum_callbacks));
     }
+    if let Some(phase) = &phase_preparation {
+        let hex = |bytes: &[u8]| {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        plugin_args.push_str(&format!(",node_phase_commitment={},node_phase_policy_digest={},node_phase_mapping=1,node_phase_max_microsteps={}",
+            hex(&phase.identity_digest()?),hex(&phase.policy_digest),phase.maximum_microstep.get()));
+    }
     let mut command = Command::new(qemu);
+    if let Some(phase) = &phase_preparation {
+        command
+            .arg("-crucible-node-phase")
+            .arg(phase.early_launch_argument()?);
+    }
     if let Some(initialization) = &initialization {
         command
             .arg("-crucible-node-initialization")
@@ -554,21 +597,23 @@ fn run_initialized_probe(
         // This actual PC fixture enrolls its original dispatcher and two IDE
         // restart callbacks before construction; an empty cut would not prove
         // the HOME cleanup path this test is intended to exercise.
-        assert_eq!(cut.rows.len(), 3);
-        assert_eq!(
-            cut.rows
-                .iter()
-                .filter(|row| row.class == NativeInitializationClass::QmpDispatcherStartup)
-                .count(),
-            1
-        );
-        assert_eq!(
-            cut.rows
-                .iter()
-                .filter(|row| row.class == NativeInitializationClass::IdeZeroErrorRestart)
-                .count(),
-            2
-        );
+        if !phase_projection {
+            assert_eq!(cut.rows.len(), 3);
+            assert_eq!(
+                cut.rows
+                    .iter()
+                    .filter(|row| row.class == NativeInitializationClass::QmpDispatcherStartup)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                cut.rows
+                    .iter()
+                    .filter(|row| row.class == NativeInitializationClass::IdeZeroErrorRestart)
+                    .count(),
+                2
+            );
+        }
         let writers = original_writers
             .as_ref()
             .ok_or("original writer cut absent")?;
@@ -709,7 +754,7 @@ fn run_initialized_probe(
             next_frame(&mut native, &mut child.0)?,
             NativeFrame::Stopped(facts.clone())
         );
-        if pit_timer {
+        if pit_timer && !phase_projection {
             let sequence = U64::new(index as u64 + 1);
             let observation = read_timers(&mut native, &mut child.0, sequence)?;
             assert_eq!(observation.sequence, sequence);
@@ -755,6 +800,43 @@ fn run_initialized_probe(
                     );
                 }
             }
+        }
+        if phase_projection {
+            let sequence = facts.sequence;
+            let births = read_phase_timers(&mut native, &mut child.0, sequence)?;
+            eprintln!(
+                "actual original phase stop seq={} clock={} retired={} births={:?}",
+                sequence.get(),
+                facts.reached.time_ps.get(),
+                facts.retired_count.get(),
+                births.timers
+            );
+            if facts.reached.time_ps.get() == 350 {
+                assert_eq!(facts.retired_count.get(), 6);
+                assert!(births.timers.iter().all(|timer| {
+                    timer
+                        .birth
+                        .position()
+                        .is_none_or(|position| position.time_ps.get() < 350)
+                }));
+            }
+            if facts.reached.time_ps.get() == 351 {
+                assert_eq!(facts.retired_count.get(), 7);
+                assert!(births.timers.iter().any(|timer| matches!(&timer.birth,
+                    crucible_protocol::node_control::NativeTimerBirth::Reaction { position, sequence:birth_sequence, command_digest, .. }
+                    if position.time_ps.get()==350 && position.microstep.get()==0 && position.phase==Phase::Reaction
+                        && *birth_sequence==sequence && *command_digest==facts.command_digest)));
+            }
+            assert!(native.request_phase_timer_observation(sequence)?);
+            loop {
+                if matches!(
+                    next_any_frame(&mut native, &mut child.0)?,
+                    NativeFrame::PhaseTimerChunk(_)
+                ) {
+                    break;
+                }
+            }
+            assert_eq!(native.phase_timer_observation(sequence), Some(&births));
         }
         assert!(native.transmit_acknowledgement(U64::new(index as u64 + 1))?);
         assert!(matches!(
@@ -837,6 +919,8 @@ fn actual_native_pit_inventory_retains_original_arm_at_horizon_and_across_slice_
     Ok(())
 }
 
+// Wall time bounds this external-process test watchdog; it is never a modeled clock.
+#[allow(clippy::disallowed_methods)]
 fn read_writers(
     native: &mut NativeQemuControlTransport,
     child: &mut Child,
@@ -898,10 +982,49 @@ fn actual_native_source_fault_requires_independent_child_containment() -> Result
 #[ignore = "requires source-built native initialization QEMU and matching GPL plugin"]
 fn original_construction_epoch_applies_finite_home_cut_and_retains_ack_custody()
 -> Result<(), Box<dyn Error>> {
-    let outcomes = run_initialized_probe(&[110, 200], true, false, true, false, true)?;
+    let outcomes = run_initialized_probe(&[110, 200], true, false, true, false, true, false)?;
     assert_eq!(outcomes.len(), 2);
     assert_eq!(outcomes[0].kind, NativeStopKind::HorizonPark);
     assert_eq!(outcomes[0].retired_count.get(), 2);
     assert_eq!(outcomes[1].retired_count.get(), 3);
+    Ok(())
+}
+
+// Wall time bounds this external-process test watchdog; it is never a modeled clock.
+#[allow(clippy::disallowed_methods)]
+fn read_phase_timers(
+    native: &mut NativeQemuControlTransport,
+    child: &mut Child,
+    sequence: U64,
+) -> Result<crucible_protocol::node_control::NativePhaseTimerObservation, Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(native.request_phase_timer_observation(sequence)?);
+        while native.poll_original()?.is_some() {}
+        if let Some(observation) = native.phase_timer_observation(sequence) {
+            return Ok(observation.clone());
+        }
+        if let Some(status) = child.try_wait()? {
+            return Err(io::Error::other(format!("native QEMU exited: {status}")).into());
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "native phase original slice unavailable",
+            )
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+#[ignore = "requires genuine V6 source phase policy, matched GPL plugin and original construction pin"]
+fn actual_native_pit_instruction_birth_is_excluded_at350_and_mapped_at351()
+-> Result<(), Box<dyn Error>> {
+    let stops = run_initialized_probe(&[350, 351], true, true, true, false, true, true)?;
+    assert_eq!(stops.len(), 2);
+    assert_eq!(stops[0].retired_count.get(), 6);
+    assert_eq!(stops[1].retired_count.get(), 7);
     Ok(())
 }

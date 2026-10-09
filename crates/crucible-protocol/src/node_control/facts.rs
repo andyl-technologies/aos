@@ -105,6 +105,12 @@ impl NativePreparation {
 /// Selects a closed frame of the independently negotiated native channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeFrame {
+    /// Pins the original fresh mapping policy on an explicitly prepared edition-three peer.
+    PreparePhase(Box<super::NativePhasePreparation>),
+    /// Selects retained original phase-timer bytes, without authorizing execution.
+    QueryPhaseTimers(super::NativePhaseTimerQuery),
+    /// Returns a bounded slice of the same raw source phase-timer observation.
+    PhaseTimerChunk(Box<super::NativePhaseTimerChunk>),
     /// Pins original construction authorization before any native execution.
     PrepareInitialization(Box<super::NativeInitializationPreparation>),
     /// Selects the already retained original source construction cut.

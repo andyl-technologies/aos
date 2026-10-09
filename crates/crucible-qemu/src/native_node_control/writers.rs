@@ -29,7 +29,7 @@ impl NativeQemuControlTransport {
         sequence: U64,
     ) -> Result<bool, NativeQemuControlError> {
         if self.channel.edition()
-            != crucible_protocol::node_control::NativeControlEdition::OwnedCustody
+            == crucible_protocol::node_control::NativeControlEdition::Original
         {
             return Err(NativeCommandError::UnsupportedVersion(2).into());
         }
