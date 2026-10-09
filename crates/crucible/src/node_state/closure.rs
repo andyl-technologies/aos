@@ -133,14 +133,14 @@ fn enqueue(
 ) -> Result<(), StateError> {
     use crucible_node_contract::Validate;
     reference.validate().map_err(schema)?;
-    if let Some(previous) = references.get(&reference.hash) {
-        if previous != &reference {
-            return Err(StateError::new(
-                StateErrorCode::Content,
-                "reference",
-                "same digest has inconsistent length or media type",
-            ));
-        }
+    if let Some(previous) = references.get(&reference.hash)
+        && previous != &reference
+    {
+        return Err(StateError::new(
+            StateErrorCode::Content,
+            "reference",
+            "same digest has inconsistent length or media type",
+        ));
     }
     if queued.contains(&reference.hash) {
         return Ok(());
@@ -166,14 +166,14 @@ pub(super) fn core_references(
     while let Some(value) = stack.pop() {
         match value {
             serde_json::Value::Object(object) => {
-                if let Some(extensions) = object.get("extensions") {
-                    if !extensions.as_object().is_some_and(|value| value.is_empty()) {
-                        return Err(StateError::new(
-                            StateErrorCode::Schema,
-                            "extensions",
-                            "capture extension semantics are not registered",
-                        ));
-                    }
+                if let Some(extensions) = object.get("extensions")
+                    && !extensions.as_object().is_some_and(|value| value.is_empty())
+                {
+                    return Err(StateError::new(
+                        StateErrorCode::Schema,
+                        "extensions",
+                        "capture extension semantics are not registered",
+                    ));
                 }
                 if object.contains_key("hash")
                     && object.contains_key("length")

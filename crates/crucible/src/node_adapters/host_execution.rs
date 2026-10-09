@@ -102,6 +102,12 @@ pub(super) fn validate_inventory(
                 "integer host clock has no guest timer or external I/O lanes",
             ));
         }
+    } else if matches!(model, HostModel::ScriptedSource(_)) {
+        if input.is_some() || output.is_none() {
+            return Err(failure(
+                "scripted source requires one output and no ingress lane",
+            ));
+        }
     } else if input.is_none() || output.is_none() {
         return Err(failure(
             "host I/O profile lacks complete request/response inventory",
@@ -118,23 +124,49 @@ pub(super) fn validate_inventory(
             HostModel::Io(io) => io.pending_completion_keys().count(),
             HostModel::Link(link) => link.inflight_len(),
             HostModel::Clock(_) => 0,
+            HostModel::ScriptedSource(source) => source.requests().len() - source.cursor(),
         };
         if pending as u64 > lane.maximum_pending_events.get() {
             return Err(failure(
                 "host initial native pending queue exceeds its admitted lane ceiling",
             ));
         }
-        if let HostModel::Link(link) = model {
-            if link
+        if let HostModel::Link(link) = model
+            && link
                 .snapshot()
                 .inflight
                 .iter()
                 .any(|frame| frame.response.payload.len() as u64 > lane.maximum_payload_bytes.get())
-            {
-                return Err(failure(
-                    "host initial native frame exceeds its admitted lane ceiling",
-                ));
-            }
+        {
+            return Err(failure(
+                "host initial native frame exceeds its admitted lane ceiling",
+            ));
+        }
+    }
+    if let HostModel::ScriptedSource(source) = model {
+        let endpoint = output
+            .as_ref()
+            .ok_or_else(|| failure("script output is absent"))?;
+        let lane = descriptor
+            .ports
+            .iter()
+            .find(|port| port.id == endpoint.port_id)
+            .and_then(|port| port.lanes.iter().find(|lane| lane.id == endpoint.lane_id))
+            .ok_or_else(|| failure("script output lane is absent"))?;
+        let expected = match source.kind() {
+            super::super::ScriptedRequestKind::Block => "crucible/block-request-v1",
+            super::super::ScriptedRequestKind::Ninep => "crucible/filesystem-request-v1",
+        };
+        if lane.payload_schema.id.as_str() != expected
+            || lane.payload_schema.version != 1
+            || source
+                .requests()
+                .iter()
+                .any(|request| request.payload.len() as u64 > lane.maximum_payload_bytes.get())
+        {
+            return Err(failure(
+                "scripted source request codec or lane geometry differs",
+            ));
         }
     }
     Ok((input, output))
@@ -232,15 +264,13 @@ impl HostModelNode {
                     if let crucible_device::ninep::codec::TMessage::Read { count, .. }
                     | crucible_device::ninep::codec::TMessage::Readdir { count, .. } =
                         message.body
-                    {
-                        if u64::from(count)
+                        && u64::from(count)
                             .checked_add(11)
                             .is_none_or(|size| size > output_lane.maximum_payload_bytes.get())
-                        {
-                            return Err(failure(
-                                "host filesystem read exceeds the realized response lane geometry",
-                            ));
-                        }
+                    {
+                        return Err(failure(
+                            "host filesystem read exceeds the realized response lane geometry",
+                        ));
                     }
                 }
                 Some(HostModel::Link(_)) => {
@@ -431,10 +461,13 @@ impl HostModelNode {
         loop {
             let input_position = admission
                 .inputs()
-                .and_then(|_| self.staged.as_ref())
+                .and(self.staged.as_ref())
                 .and_then(|staged| staged.original.deliveries().get(staged.consumed))
                 .map(|delivery| reaction(delivery.delivery));
-            let local_position = self.next_local_event().map(|time| root_reaction(time));
+            let local_position = match self.model.as_ref() {
+                Some(HostModel::ScriptedSource(source)) => source.next_position(),
+                _ => self.next_local_event().map(root_reaction),
+            };
             let next = match (input_position, local_position) {
                 (Some(input), Some(local)) => Some(input.min(local)),
                 (input, local) => input.or(local),
@@ -451,7 +484,18 @@ impl HostModelNode {
             if input_position == Some(next) {
                 self.consume_input()?;
             } else {
-                let mut due = self.publish_local(next, admission.token().operation())?;
+                if let Some(HostModel::ScriptedSource(source)) = self.model.as_mut()
+                    && !source.evaluated()
+                {
+                    source.evaluate();
+                    continue;
+                }
+                let evaluation = if matches!(self.model, Some(HostModel::ScriptedSource(_))) {
+                    root_reaction(next.time_ps.get())
+                } else {
+                    next
+                };
+                let mut due = self.publish_local(evaluation, admission.token().operation())?;
                 publications.append(&mut due);
                 if publications.len() > self.limits.maximum_operations {
                     return Err(failure("host publication count exceeds custody ceiling"));
@@ -465,6 +509,9 @@ impl HostModelNode {
             clock
                 .advance_to(limit.time_ps.get())
                 .map_err(|error| failure(&error.to_string()))?;
+        }
+        if let Some(HostModel::ScriptedSource(source)) = self.model.as_mut() {
+            source.park(limit.time_ps.get())?;
         }
         self.boundary = limit;
         let original_objects = state::state_receipt_objects(self)?;
@@ -550,6 +597,7 @@ impl HostModelNode {
         match self.model.as_ref() {
             Some(HostModel::Io(io)) => io.next_exact_local_event(),
             Some(HostModel::Link(link)) => link.next_exact_local_event(),
+            Some(HostModel::ScriptedSource(source)) => source.next_time(),
             _ => None,
         }
     }
@@ -667,6 +715,9 @@ impl HostModelNode {
                     ));
                 }
             }
+            Some(HostModel::ScriptedSource(source)) => {
+                outputs.extend(source.publish_due(evaluation.time_ps.get()));
+            }
             _ => return Err(failure("clock has no armed native alarm")),
         }
         let endpoint = self
@@ -724,6 +775,15 @@ impl HostModelNode {
             // The qualified integer clock has no public outputs, armed guest
             // timers or autonomous worker, so this covers its entire inventory.
             NativeOutputBound::AfterInstant(U64::new(u64::MAX))
+        } else if let Some(HostModel::ScriptedSource(source)) = self.model.as_ref() {
+            // No ingress or autonomous transition can create an earlier output.
+            // This retained cursor covers the entire immutable future inventory.
+            source.next_time().map_or(
+                NativeOutputBound::AfterInstant(U64::new(u64::MAX)),
+                |time| {
+                    NativeOutputBound::At(Position::new(time.into(), 1.into(), Phase::Publication))
+                },
+            )
         } else if let Some(HostModel::Link(link)) = self.model.as_ref() {
             // The installed fault-free model has no autonomous publications.
             // Every unseen request is at or beyond the authenticated half-open

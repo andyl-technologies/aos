@@ -24,6 +24,9 @@ use crate::node_adapters::{
 };
 use crate::node_contract::*;
 
+#[path = "model_tests.rs"]
+mod model_tests;
+
 struct TestDirectory(std::path::PathBuf);
 
 impl TestDirectory {

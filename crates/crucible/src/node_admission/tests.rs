@@ -72,7 +72,10 @@ impl AdmissionEvidence for Evidence {
     }
 
     fn authenticate_schema(&self, schema: &SchemaRef) -> Result<(), EvidenceError> {
-        if self.reject_schema || schema.id != id("test.bytes") || schema.version != 1 {
+        if self.reject_schema
+            || ![id("test.bytes"), id("crucible/block-request-v1")].contains(&schema.id)
+            || schema.version != 1
+        {
             return Err(EvidenceError {
                 message: "no installed schema validator".into(),
             });
@@ -140,6 +143,7 @@ pub(super) fn nondeterministic_fixture_with_content() -> (AdmittedGraph, BTreeMa
     (admitted, fixture.evidence.blobs)
 }
 
+#[cfg(test)]
 pub(super) fn restore_fixture_with_content(
     nondeterministic: bool,
 ) -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
@@ -160,6 +164,7 @@ pub(super) fn restore_fixture_with_content(
     (admitted, fixture.evidence.blobs)
 }
 
+#[cfg(test)]
 pub(super) fn execution_fixture_with_content(
     shared_writers: bool,
 ) -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
@@ -168,6 +173,7 @@ pub(super) fn execution_fixture_with_content(
     (admitted, fixture.evidence.blobs)
 }
 
+#[cfg(test)]
 pub(super) fn isolated_execution_fixture_with_content(
     shared_writers: bool,
 ) -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
@@ -176,6 +182,7 @@ pub(super) fn isolated_execution_fixture_with_content(
     (admitted, fixture.evidence.blobs)
 }
 
+#[cfg(test)]
 fn execution_fixture(shared_writers: bool, isolated: bool) -> Fixture {
     let mut fixture = Fixture::new();
     let proof = fixture.ownership.inventory_proof_ref.clone();
@@ -217,20 +224,24 @@ fn execution_fixture(shared_writers: bool, isolated: bool) -> Fixture {
     fixture
 }
 
+#[cfg(test)]
 pub(super) fn host_clock_fixture_with_content() -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
     host_clock_fixture(false, false)
 }
 
+#[cfg(test)]
 pub(super) fn host_clock_execution_fixture_with_content()
 -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
     host_clock_fixture(true, false)
 }
 
+#[cfg(test)]
 pub(super) fn host_clock_restore_fixture_with_content() -> (AdmittedGraph, BTreeMap<String, Vec<u8>>)
 {
     host_clock_fixture(true, true)
 }
 
+#[cfg(test)]
 fn host_clock_fixture(
     execution: bool,
     restored: bool,
@@ -282,6 +293,7 @@ fn host_clock_fixture(
     (admitted, fixture.evidence.blobs)
 }
 
+#[cfg(test)]
 pub(super) fn host_model_fixture_with_content(
     role: &str,
     initialization: Vec<u8>,
@@ -289,6 +301,7 @@ pub(super) fn host_model_fixture_with_content(
     host_model_fixture(role, initialization, false)
 }
 
+#[cfg(test)]
 pub(super) fn host_model_restore_fixture_with_content(
     role: &str,
     initialization: Vec<u8>,
@@ -296,14 +309,69 @@ pub(super) fn host_model_restore_fixture_with_content(
     host_model_fixture(role, initialization, true)
 }
 
+#[cfg(test)]
 fn host_model_fixture(
     role: &str,
     initialization: Vec<u8>,
     restored: bool,
 ) -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
+    host_model_fixture_parameters(role, initialization, restored, false, 2)
+}
+
+#[cfg(test)]
+pub(super) fn host_initial_queue_fixture_with_content(
+    role: &str,
+    initialization: Vec<u8>,
+    generation: u64,
+) -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
+    assert!(generation > 0);
+    host_model_fixture_parameters(role, initialization, generation > 1, true, generation)
+}
+
+#[cfg(test)]
+fn host_model_fixture_parameters(
+    role: &str,
+    initialization: Vec<u8>,
+    restored: bool,
+    initial_queue: bool,
+    generation: u64,
+) -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
     let mut fixture = execution_fixture(false, false);
     fixture.world.connections.clear();
+    if initial_queue {
+        // Native queued work is committed by the immutable initialization.
+        // The remaining input codec is internal to this indivisible native
+        // owner, with no public ingress or unobserved external producer.
+        fixture.coordinator.external_inputs.clear();
+        let policy_ref = &fixture.descriptors[0].ports[0].configuration_ref;
+        let mut policy: PortPolicy =
+            serde_json::from_slice(&fixture.evidence.blobs[&policy_ref.hash.digest]).unwrap();
+        policy.internal = true;
+        fixture.descriptors[0].ports[0].configuration_ref = fixture.evidence.put(&policy);
+    }
     fixture.descriptors[0].roles = vec![id(role)];
+    if role == "scripted_source" {
+        fixture.coordinator.external_inputs.clear();
+        let port = &mut fixture.descriptors[0].ports[0];
+        let mut policy: PortPolicy =
+            serde_json::from_slice(&fixture.evidence.blobs[&port.configuration_ref.hash.digest])
+                .unwrap();
+        port.lanes
+            .retain(|lane| lane.direction == Direction::Output);
+        policy.lanes.retain(|lane| lane.lane_id == id("output"));
+        port.lanes[0].payload_schema.id = id("crucible/block-request-v1");
+        fixture.bindings[0]
+            .compatibility
+            .implementation
+            .formats
+            .push(port.lanes[0].payload_schema.clone());
+        fixture.bindings[0]
+            .compatibility
+            .implementation
+            .formats
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        port.configuration_ref = fixture.evidence.put(&policy);
+    }
     fixture.descriptors[1].roles = vec![id("clock")];
     fixture.descriptors[1].ports.clear();
     let reference = canonical::content_ref(&initialization, "application/octet-stream").unwrap();
@@ -347,9 +415,15 @@ fn host_model_fixture(
         binding.compatibility.capabilities_ref = fixture.evidence.put(&capability);
         binding.compatibility.operating_contract.facets = facets.clone();
         if restored {
-            binding.authority.owner_generation = 2.into();
-            binding.authority.incarnation_id =
-                id(&format!("live/restored-{}", binding.compatibility.node_id));
+            binding.authority.owner_generation = generation.into();
+            binding.authority.incarnation_id = if initial_queue {
+                id(&format!(
+                    "live/restored-{generation}-{}",
+                    binding.compatibility.node_id
+                ))
+            } else {
+                id(&format!("live/restored-{}", binding.compatibility.node_id))
+            };
         }
     }
     fixture.refresh();
@@ -357,6 +431,7 @@ fn host_model_fixture(
     (admitted, fixture.evidence.blobs)
 }
 
+#[cfg(test)]
 pub(super) fn reference_device_fixture_with_content(
     executable: Vec<u8>,
 ) -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {

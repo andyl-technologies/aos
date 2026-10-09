@@ -38,6 +38,8 @@ pub enum HostModel {
     Link(Box<NetLink>),
     /// Owns an exact integer coordinator-clock model, without guest timers.
     Clock(VirtualClock),
+    /// Owns a finite immutable public request script and its exact native cursor.
+    ScriptedSource(Box<super::ScriptedSource>),
 }
 
 impl HostModel {
@@ -54,6 +56,7 @@ impl HostModel {
             Self::Io(_) => "filesystem",
             Self::Link(_) => "network_link",
             Self::Clock(_) => "clock",
+            Self::ScriptedSource(_) => "scripted_source",
         }
     }
 
@@ -66,6 +69,7 @@ impl HostModel {
                 .ok_or_else(|| failure("unknown concrete host I/O device")),
             Self::Link(link) => Ok(link.current_icount()),
             Self::Clock(clock) => Ok(clock.current_icount()),
+            Self::ScriptedSource(source) => Ok(source.time_ps()),
         }
     }
 
@@ -80,6 +84,7 @@ impl HostModel {
                 .canonical_bytes_with_limit(maximum as u64)
                 .map_err(|e| failure(&e.to_string()))?,
             Self::Clock(clock) => host_clock_initial_bytes(clock.current_icount()),
+            Self::ScriptedSource(source) => source.capture()?,
         };
         if bytes.len() > maximum {
             return Err(failure(
@@ -425,10 +430,10 @@ impl SimulationNode for HostModelNode {
             state_inventory: self.readiness_inventory.clone(),
             ready_receipt: self.receipt("host-model-owned-inactive-v1")?,
         };
-        if let Some((original, retained)) = &self.readiness {
-            if original != world || retained != &ready {
-                return Err(failure("host already armed for another world"));
-            }
+        if let Some((original, retained)) = &self.readiness
+            && (original != world || retained != &ready)
+        {
+            return Err(failure("host already armed for another world"));
         }
         self.readiness = Some((world.clone(), ready.clone()));
         Ok(ready)
@@ -761,7 +766,7 @@ mod execution;
 #[path = "host_state.rs"]
 mod state;
 
-fn failure(reason: &str) -> OperationFailure {
+pub(super) fn failure(reason: &str) -> OperationFailure {
     OperationFailure {
         effects: EffectKnowledge::None,
         reason: reason.into(),

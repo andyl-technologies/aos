@@ -4,6 +4,9 @@ use std::task::Waker;
 
 use super::*;
 
+#[path = "host_scripted_tests.rs"]
+mod scripted;
+
 struct ClockQualification;
 
 impl HostModelQualification for ClockQualification {
@@ -702,7 +705,7 @@ impl HostModelQualification for ContinuationQualification {
         if native != self.native
             || source != &self.source
             || binding.authority.owner_generation.get() != 2
-            || !matches!(model, HostModel::Link(_))
+            || !matches!(model, HostModel::Link(_) | HostModel::ScriptedSource(_))
             || target.generation.get() != 2
         {
             return Err(failure(

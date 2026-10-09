@@ -8,6 +8,11 @@
 mod host;
 mod inventory;
 mod reference_device;
+mod scripted_source;
+
+pub use scripted_source::{
+    MAXIMUM_SCRIPTED_REQUESTS, ScriptedRequest, ScriptedRequestKind, ScriptedSource,
+};
 
 pub use host::{
     HOST_EXACT_PROFILE, HOST_PHYSICAL_PAUSE_PROFILE, HOST_PRESERVATION_PROFILE,

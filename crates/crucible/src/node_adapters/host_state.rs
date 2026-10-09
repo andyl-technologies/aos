@@ -362,7 +362,7 @@ pub(super) fn capture_live(
             .activation_authority
             .as_ref()
             .is_some_and(|authority| !Rc::ptr_eq(authority, &activation.authority))
-        || source.source_activation != (&*activation.record()).into()
+        || source.source_activation != activation.record().into()
         || source.capture_cut != node.boundary
         || node.route.owners.iter().any(|owner| {
             !source.owners.iter().any(|saved| {
@@ -685,8 +685,8 @@ impl HostModelNode {
                     ));
                 }
             }
-            if let Some(observation) = &operation.outcome.scheduling {
-                if !references.contains(&observation.proof_ref)
+            if let Some(observation) = &operation.outcome.scheduling
+                && (!references.contains(&observation.proof_ref)
                     || observation
                         .bounds
                         .iter()
@@ -700,12 +700,11 @@ impl HostModelNode {
                             object.reference == publication.payload
                                 && object.bytes == publication.payload_bytes
                         })
-                    })
-                {
-                    return Err(failure(
-                        "captured host original native evidence is incomplete",
-                    ));
-                }
+                    }))
+            {
+                return Err(failure(
+                    "captured host original native evidence is incomplete",
+                ));
             }
             previous = Some(operation.operation.clone());
         }
@@ -850,6 +849,18 @@ impl HostModelNode {
             return Err(error);
         }
         let finalize = (|| -> Result<(Vec<u8>, ContentRef), OperationFailure> {
+            if let Some(HostModel::ScriptedSource(source)) = self.model.as_ref()
+                && (source.time_ps() != captured.boundary.time_ps.get()
+                    || source.cursor() as u64 != captured.native_sequence.get()
+                    || source
+                        .next_position()
+                        .is_some_and(|next| next < captured.boundary)
+                    || !pending.is_empty())
+            {
+                return Err(failure(
+                    "restored script cursor, publication sequence or causal cut differs from actual native state",
+                ));
+            }
             let queued: std::collections::BTreeSet<_> = match self.model.as_ref() {
                 Some(HostModel::Io(io)) => io.pending_completion_keys().collect(),
                 Some(HostModel::Link(link)) => link
@@ -1050,10 +1061,10 @@ fn restore_model(
                     "host link continuation changed the installed immutable timing/fault profile",
                 ));
             }
-            *link =
-                Box::new(NetLink::restore(&snapshot).map_err(|error| failure(&error.to_string()))?);
+            **link = NetLink::restore(&snapshot).map_err(|error| failure(&error.to_string()))?;
             Ok(())
         }
+        HostModel::ScriptedSource(source) => source.restore(bytes),
         HostModel::Clock(clock) => {
             let prefix = b"crucible.host-clock.v1\0";
             let ticks = bytes

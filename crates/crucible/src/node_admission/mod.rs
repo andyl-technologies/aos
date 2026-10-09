@@ -331,6 +331,15 @@ pub(crate) fn test_fixture_host_model(
 }
 
 #[cfg(test)]
+pub(crate) fn test_fixture_host_initial_queue(
+    role: &str,
+    initialization: Vec<u8>,
+    generation: u64,
+) -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
+    tests::host_initial_queue_fixture_with_content(role, initialization, generation)
+}
+
+#[cfg(test)]
 pub(crate) fn test_restore_fixture_host_model(
     role: &str,
     initialization: Vec<u8>,
