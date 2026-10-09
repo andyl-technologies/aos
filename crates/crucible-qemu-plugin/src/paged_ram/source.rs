@@ -123,6 +123,47 @@ pub(crate) trait SourceOperationFactory: Send + Sync {
     fn begin(&self, class: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>>;
 }
 
+/// Keeps logical validation typed until the caller selects its error boundary.
+///
+/// Ordinary reads retain their historical I/O diagnostics. Root-scratch reads
+/// move a logical cause directly into the existing operational failure owner.
+pub(super) enum SourceFetchError {
+    Core(crucible_ram::RamError),
+    Io(io::Error),
+}
+
+impl SourceFetchError {
+    fn from_core<const BORROWED: bool>(error: crucible_ram::RamError) -> Self {
+        if BORROWED {
+            Self::Core(error)
+        } else {
+            // Preserve ordinary conversion at the exact validation failure,
+            // before the transport and response frame leave their scope.
+            Self::Io(invalid(error))
+        }
+    }
+
+    fn into_io(self) -> io::Error {
+        match self {
+            Self::Core(error) => invalid(error),
+            Self::Io(error) => error,
+        }
+    }
+
+    pub(super) fn into_ram(self) -> crate::ram_error::RamError {
+        match self {
+            Self::Core(error) => crate::ram_error::RamError::Core(error),
+            Self::Io(error) => error.into(),
+        }
+    }
+}
+
+impl From<io::Error> for SourceFetchError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
 /// Owns one independently namespaced immutable source connection.
 pub(crate) struct LazyPageSource {
     stream: Option<UnixStream>,
@@ -297,6 +338,7 @@ impl LazyPageSource {
         output: &mut [u8; PAGE_BYTES],
     ) -> io::Result<(u32, PageDigest, PageProof)> {
         self.fetch_with_page_hasher::<false>(region_ordinal, page_index, operation, output, None)
+            .map_err(SourceFetchError::into_io)
     }
 
     /// Authenticates a private observation using the caller's borrowed hasher.
@@ -310,7 +352,7 @@ impl LazyPageSource {
         operation: &dyn SourceOperation,
         output: &mut [u8; PAGE_BYTES],
         hasher: Option<&NativePageHasher>,
-    ) -> io::Result<(u32, PageDigest, PageProof)> {
+    ) -> Result<(u32, PageDigest, PageProof), SourceFetchError> {
         self.fetch_with_page_hasher::<true>(region_ordinal, page_index, operation, output, hasher)
     }
 
@@ -321,9 +363,9 @@ impl LazyPageSource {
         operation: &dyn SourceOperation,
         output: &mut [u8; PAGE_BYTES],
         hasher: Option<&NativePageHasher>,
-    ) -> io::Result<(u32, PageDigest, PageProof)> {
+    ) -> Result<(u32, PageDigest, PageProof), SourceFetchError> {
         if self.poisoned {
-            return Err(invalid("source authority is unavailable"));
+            return Err(invalid("source authority is unavailable").into());
         }
         operation.wait_slice()?;
         let region = self
@@ -335,7 +377,7 @@ impl LazyPageSource {
         let valid_length = region
             .geometry()
             .valid_length(page_index)
-            .map_err(invalid)?;
+            .map_err(SourceFetchError::from_core::<BORROWED>)?;
         let sequence = self
             .sequence
             .checked_add(1)
@@ -372,13 +414,12 @@ impl LazyPageSource {
             || response.status != RamPageStatus::Page
             || response.page.len() != valid_length as usize
         {
-            return Err(invalid(
-                "source response namespace, status, or length mismatch",
-            ));
+            return Err(invalid("source response namespace, status, or length mismatch").into());
         }
-        let proof = PageProof::decode(response.proof, self.limits).map_err(invalid)?;
+        let proof = PageProof::decode(response.proof, self.limits)
+            .map_err(SourceFetchError::from_core::<BORROWED>)?;
         if proof.region_id() != region.id() || proof.page_index() != page_index {
-            return Err(invalid("source proof coordinate differs from request"));
+            return Err(invalid("source proof coordinate differs from request").into());
         }
         let expected = RamRootDigest::from_bytes(self.binding.root_digest);
         let digest = if BORROWED && let Some(hasher) = hasher {
@@ -387,18 +428,22 @@ impl LazyPageSource {
             // successful readiness and endpoint reuse remain later effects.
             proof
                 .verify_identity(&self.root, expected)
-                .map_err(invalid)?;
+                .map_err(SourceFetchError::from_core::<BORROWED>)?;
             if response.page.len() != proof.valid_length() as usize {
-                return Err(invalid(crucible_ram::RamError::InvalidLength));
+                return Err(SourceFetchError::from_core::<BORROWED>(
+                    crucible_ram::RamError::InvalidLength,
+                ));
             }
             if hasher.hash(response.page)? != proof.page_digest() {
-                return Err(invalid(crucible_ram::RamError::DigestMismatch));
+                return Err(SourceFetchError::from_core::<BORROWED>(
+                    crucible_ram::RamError::DigestMismatch,
+                ));
             }
             proof.page_digest()
         } else {
             proof
                 .verify(response.page, &self.root, expected)
-                .map_err(invalid)?
+                .map_err(SourceFetchError::from_core::<BORROWED>)?
         };
 
         transport.ready(libc::POLLOUT)?;
@@ -555,6 +600,32 @@ mod tests {
         (root, tree, binding)
     }
 
+    #[test]
+    fn root_source_conversion_moves_the_exact_owned_core_payload() {
+        let message = String::from("retained logical read failure");
+        let pointer = message.as_ptr();
+        let capacity = message.capacity();
+        let original = crucible_ram::RamError::Read(message);
+
+        let retained = SourceFetchError::Core(original).into_ram();
+
+        let crate::ram_error::RamError::Core(crucible_ram::RamError::Read(message)) = retained
+        else {
+            panic!("logical cause must remain typed")
+        };
+        assert_eq!(message.as_ptr(), pointer);
+        assert_eq!(message.capacity(), capacity);
+        assert_eq!(message, "retained logical read failure");
+    }
+
+    #[test]
+    fn ordinary_source_conversion_preserves_the_original_io_diagnostic() {
+        let error = SourceFetchError::Core(crucible_ram::RamError::Malformed).into_io();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "malformed logical RAM record");
+    }
+
     struct BorrowedHashState<'a> {
         operation: &'a LiveOperation,
         calls: std::sync::atomic::AtomicUsize,
@@ -665,8 +736,16 @@ mod tests {
             };
             let mut scratch = [0xa5; PAGE_BYTES];
 
-            let result =
+            let raw_result =
                 source.fetch_with_borrowed_hasher(0, 0, &operation, &mut scratch, Some(&hasher));
+            if refusal != 0 {
+                assert!(matches!(
+                    &raw_result,
+                    Err(SourceFetchError::Io(error))
+                        if error.raw_os_error() == Some(libc::EPIPE)
+                ));
+            }
+            let result = raw_result.map_err(SourceFetchError::into_ram);
 
             assert_eq!(
                 state.calls.load(std::sync::atomic::Ordering::Acquire),
@@ -694,7 +773,15 @@ mod tests {
             } else {
                 assert_eq!(scratch, [0xa5; PAGE_BYTES]);
                 if refusal != 0 {
-                    assert_eq!(result.err().unwrap().raw_os_error(), Some(libc::EPIPE));
+                    let crate::ram_error::RamError::Io(error) = result.err().unwrap() else {
+                        panic!("native hasher errno must remain an I/O cause")
+                    };
+                    assert_eq!(error.raw_os_error(), Some(libc::EPIPE));
+                } else {
+                    assert!(matches!(
+                        result.err().unwrap(),
+                        crate::ram_error::RamError::Core(crucible_ram::RamError::DigestMismatch)
+                    ));
                 }
             }
             worker.join().unwrap();

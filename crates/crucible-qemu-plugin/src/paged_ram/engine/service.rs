@@ -288,12 +288,11 @@ impl FaultService {
             .as_ref()
             .ok_or("cold page has no authenticated preservation")?;
         let (valid, _) = if BORROWED {
-            source.fetch_with_borrowed_hasher(
-                arena.native.region_index,
-                page_index,
-                scratch,
-                hasher,
-            )?
+            source
+                .fetch_with_borrowed_hasher(arena.native.region_index, page_index, scratch, hasher)
+                // The source mutex and operation close before the historical
+                // service error conversion; only logical errors bypass it.
+                .map_err(crate::paged_ram::source::SourceFetchError::into_ram)?
         } else if observation {
             source.fetch_for_observation(arena.native.region_index, page_index, scratch)?
         } else {
@@ -628,9 +627,20 @@ fn read_operational_page<const ROOT_SCRATCH: bool>(
                     .resident;
                 if !resident {
                     let length = if ROOT_SCRATCH {
-                        service.read_cold_with_hasher::<true>(
+                        match service.read_cold_with_hasher::<true>(
                             arena, page_index, coordinate, true, bytes, hasher,
-                        )?
+                        ) {
+                            Ok(length) => length,
+                            Err(error) => {
+                                owner.retain_operational_failure_owned(
+                                    SourceOperationClass::FingerprintUpdate,
+                                    error,
+                                );
+                                return Err(RamError::Invariant(
+                                    "original root source failure is retained",
+                                ));
+                            }
+                        }
                     } else {
                         service.read_cold(arena, page_index, coordinate, true, bytes)?
                     };

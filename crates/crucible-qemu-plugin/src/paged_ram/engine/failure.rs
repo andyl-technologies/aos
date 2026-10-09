@@ -33,6 +33,26 @@ impl PausedPagingOwner {
         self.failed.store(true, Ordering::Release);
     }
 
+    /// Moves a root-reader cause before returning its generic native status.
+    ///
+    /// Logical causes already live by value in `RamError::Core`; moving them
+    /// into this existing slot neither formats them nor creates shared custody.
+    pub(super) fn retain_operational_failure_owned(
+        &self,
+        class: SourceOperationClass,
+        error: RamError,
+    ) {
+        let _ = self
+            .first_operational_failure
+            .set(RetainedOperationalFailure {
+                class,
+                policy_revision: self.requested_policy_revision.load(Ordering::Acquire),
+                topology_generation: self.topology_generation.load(Ordering::Acquire),
+                error,
+            });
+        self.failed.store(true, Ordering::Release);
+    }
+
     pub(super) fn writeback_failure(&self, error: RamError) -> RamError {
         self.retain_operational_failure(SourceOperationClass::Writeback, &error);
         error
@@ -113,6 +133,56 @@ mod tests {
         };
         assert_eq!(failure.to_wire().cause, RamControlFailureCause::Other);
         assert!(matches!(failure.error, RamError::Native { status: 0, .. }));
+    }
+
+    #[test]
+    fn owned_root_logical_failure_keeps_its_original_cut_and_first_cause() {
+        let resources = PluginRamResources {
+            resident_peak_bytes: 8192,
+            backing_peak_bytes: 16384,
+            metadata_bytes: 4096,
+            staging_bytes: 4096,
+            paging_io_slots: 1,
+            cpu_slots: 1,
+            task_slots: 1,
+            file_descriptors: 3,
+        };
+        let owner = PausedPagingOwner::new(resources, Arc::new(NoOperations))
+            .unwrap_or_else(|error| panic!("test owner admission: {error}"));
+        owner
+            .seal_geometry(7, 8192)
+            .unwrap_or_else(|error| panic!("test geometry admission: {error}"));
+        owner.requested_policy_revision.store(3, Ordering::Release);
+        let message = String::from("original logical root failure");
+        let pointer = message.as_ptr();
+
+        owner.retain_operational_failure_owned(
+            SourceOperationClass::FingerprintUpdate,
+            RamError::Core(crucible_ram::RamError::Read(message)),
+        );
+        owner.requested_policy_revision.store(4, Ordering::Release);
+        owner.retain_operational_failure_owned(
+            SourceOperationClass::Cleanup,
+            RamError::Invariant("later cleanup refusal"),
+        );
+
+        let retained = owner
+            .first_operational_failure
+            .get()
+            .unwrap_or_else(|| panic!("original logical failure must stay retained"));
+        let RamError::Core(crucible_ram::RamError::Read(message)) = &retained.error else {
+            panic!("retained cause must remain the original logical error")
+        };
+        assert_eq!(message.as_ptr(), pointer);
+        assert_eq!(retained.policy_revision, 3);
+        assert_eq!(retained.topology_generation, 7);
+        assert_eq!(retained.class, SourceOperationClass::FingerprintUpdate);
+        assert!(owner.failed.load(Ordering::Acquire));
+        assert_eq!(
+            retained.to_wire().operation,
+            RamControlFailureOperation::FingerprintUpdate
+        );
+        assert_eq!(retained.to_wire().cause, RamControlFailureCause::Other);
     }
 
     #[test]

@@ -111,7 +111,7 @@ impl RestorePageSource {
         page_index: u64,
         output: &mut [u8; PAGE_BYTES],
         hasher: Option<&NativePageHasher>,
-    ) -> io::Result<(u32, PageDigest)> {
+    ) -> Result<(u32, PageDigest), super::source::SourceFetchError> {
         let operation = self
             .operations
             .begin(SourceOperationClass::FingerprintUpdate)?;
