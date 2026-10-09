@@ -25,6 +25,7 @@ pub mod mutation;
 pub mod observation;
 pub mod portable;
 pub mod portable_resource;
+pub mod projection;
 pub mod proto_json;
 mod proto_observation;
 pub mod registry;
