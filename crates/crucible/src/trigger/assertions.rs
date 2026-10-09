@@ -1504,6 +1504,21 @@ impl HostAssertionEvaluator {
         states
     }
 
+    /// Returns the earliest deadline of an original pending liveness obligation.
+    ///
+    /// This read does not evaluate a predicate or expire the obligation. Exact
+    /// node adapters use it to retain a future evaluation opportunity while
+    /// preserving the deadline's existing inclusive input semantics.
+    #[must_use]
+    pub fn next_eventually_deadline(&self) -> Option<VirtualTime> {
+        self.states
+            .iter()
+            .filter(|state| state.terminal.is_none())
+            .flat_map(|state| &state.pending_eventually)
+            .map(|obligation| obligation.deadline)
+            .min()
+    }
+
     fn observe_due_eventually_deadlines<O>(
         &mut self,
         prefix: &ConditionEventLogPrefix,
