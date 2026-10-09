@@ -236,9 +236,26 @@ observations preserve inventory order; transient first-error order can differ.
 No measured timeout cause is inferred from the source cost correction.
 Private composition `0e09995dca` passes strict native all-target Clippy with
 warnings denied (28.82 seconds;
-`/tmp/terrane-linear-pair-recovery-clippy.log`). The three-case recurring and
-restore qualification is running from that frozen source. Owning checks and
-the complete T1 floor remain unqualified; these results accept no task or exit.
+`/tmp/terrane-linear-pair-recovery-clippy.log`). Its recurring late-residue and
+two fresh-placement restore cases are terminal with three passes and 908 skips
+(280.061 seconds; run `cd067ab4-9695-4fa5-90d0-350813e5a747`,
+`/tmp/terrane-linear-pair-recovery-focused-nextest.log`). Private composition
+`7ef8cb644b` also passes strict native all-target Clippy (15.79 seconds;
+`/tmp/terrane-linear-pair-witnesses-clippy.log`) and both actual retained-prefix
+replacement and canceled-worker exclusion witnesses (2/2, 911 skips;
+6.489 seconds; run `501d88d8-3e38-46ea-8454-6ae4f56337ba`,
+`/tmp/terrane-linear-pair-witnesses-nextest.log`). These focused results do not
+qualify the owning reconciliation gate. Its twenty-three-case Nix request
+fails on the first large-family recovery case after 252.31 seconds with
+`gc-checkpoint` denial of the current configured collector session; the other
+twenty-two cases do not run (`/tmp/terrane-linear-pair-permanent-owning-nix.log`,
+`/nix/store/pcl885h2mglffvlss14cmqzbv5z7y5ss-terrane-gate-local-permanent-reconciliation-0.1.0.drv`).
+The configured ninety-second session and 4,100 additional trash directories
+remain unchanged. Source renews once before recurring reconciliation; the
+log does not establish per-stage cost or the measured cause of expiry.
+A separate recovery task reviews genuine renewal at borrow-free handoffs.
+Owning checks and the complete T1 floor remain unqualified; no task or exit
+is accepted by these results.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
