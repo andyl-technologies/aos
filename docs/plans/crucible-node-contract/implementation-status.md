@@ -626,8 +626,11 @@ Central checks pass all three affected native packages' test targets, 37
 source-quality cases and strict all-target checks across nine crates. The test
 output reports 1,828 passes including nested test runners; this is not a count
 of distinct cases. ABI conformance and the hermetic application test-target
-build also pass. Full license-boundary qualification is recorded separately
-when its complete package run finishes.
+build also pass. The subsequent complete controller run reports 6,465 tests:
+6,463 pass, two fail and 201 are explicitly skipped. The failures identify the
+runtime module's source-size limit and missing safety sections in three FFI
+files. They keep the broader license-boundary gate failing; their corrections
+require a separate verified successor.
 
 The installed matched QEMU/plugin pair passes the actual held-epoch refusal
 and eight preserved ownership/transport selectors. A separate source diagnostic
@@ -639,6 +642,36 @@ refuses identity authentication. A later installed endpoint fixture stops
 because stripping removes its required private source symbol. Both original
 failed cohorts remain retained locally, and neither is presented as a passing
 native semantic test.
+
+## Shared-owner dispatch and installed live host capabilities
+
+A blocked public alias no longer reserves its execution owner before receiving
+a grant. A runnable sibling can progress while the executor preserves one
+original operation per owner and serializes overlapping ownership domains.
+Four sealed-graph model cases verify alias progress, original FIFO staging,
+one-operation ownership, shared-domain exclusion and disjoint-owner progress.
+These fixtures do not qualify native multi-view host ownership.
+
+Capability selection accepts `exact_run` and `boundary_settle` for existing
+source-installed HostIo, HostScripted, HostNetLink and HostSemantics profiles
+with the exact version-one `host/exact-v1` facet. Full candidate regeneration
+and descriptor, configuration, schema and guarantee matching still precede
+allocation. Unsupported controls, compute, extensions, richer operations and
+archive policies retain their existing refusal.
+
+Central verification passes four actual authored host scenarios: original
+Script/Block results with a Clock, two native octet peers through a Link, the
+installed no-ingress semantic evaluator and changed-contract/control/artifact
+refusals. This semantic case qualifies version two without ingress; it does
+not qualify version-one construction or the successor reaction convention for
+semantic inputs. All 37 source-quality cases and nine-crate all-target strict
+checks pass. The first central runner stops after selecting four ignored
+fixtures without enabling them; its successor runs the actual fixtures. Later
+quality failures identify one missing watchdog annotation and the second
+substring inventory for the same single polling call. Their original cohorts
+are retained; the final corrections change only that annotation and its
+precise source-bound inventory. Production policy and native test behavior
+remain unchanged by those corrections.
 
 ## Performance evidence
 

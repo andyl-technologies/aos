@@ -17,6 +17,9 @@ mod tests;
 #[cfg(test)]
 mod native_tests;
 
+#[cfg(test)]
+mod host_exact_tests;
+
 use super::{
     InstalledNodeCatalog, InstalledNodeSelection, InstalledPreparedWorld, NodeObservedError,
     PreparationSource, SelectedPreparation, refused,

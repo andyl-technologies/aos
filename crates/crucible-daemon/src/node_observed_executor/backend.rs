@@ -338,14 +338,15 @@ impl NodeObservedBackend {
         let mut grants = Vec::new();
         let mut quantized = Vec::new();
         let mut maximum_budget = Duration::ZERO;
-        let mut owners = BTreeSet::new();
         let mut dispatched_owners = BTreeSet::new();
         for node in self.graph.node_ids() {
             let binding = self
                 .graph
                 .binding(node)
                 .ok_or_else(|| NodeObservedError::Native("sealed node disappeared".into()))?;
-            if !owners.insert(binding.compatibility.execution_owner.id.clone()) {
+            // A blocked public alias does not reserve its shared execution owner.
+            // Reserve only after obtaining a grant, so a runnable sibling can progress.
+            if dispatched_owners.contains(&binding.compatibility.execution_owner.id) {
                 continue;
             }
             if self
@@ -862,3 +863,7 @@ fn retain_event(
     events.push(value);
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "backend/shared_owner_tests.rs"]
+mod shared_owner_tests;

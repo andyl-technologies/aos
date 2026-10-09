@@ -393,3 +393,10 @@ crucible-qemu-plugin	src/native_node_control/preparation_fifo_tests	retry	1
 # Source: crates/crucible-qemu-plugin/src/runtime/native_run_control_tests.rs
 # SHA-256: dbe8ae4619e08d9c01e99080c1f34bec7fde24488875a63ca4eaba6ccde7778d
 crucible-qemu-plugin	src/runtime/native_run_control_tests	retry	1
+
+# Authored host capability fixture polls one original native execution under one
+# absolute watchdog; it never reruns a failed assertion, command or test.
+# Source: crates/crucible-daemon/src/node_observed_executor/factory/capabilities/host_exact_tests.rs
+# SHA-256: 1f44a6b6afcd319e3fdf9bf2e8d80ef57d3fd5141a16f0e5969f394043173ff6
+crucible-daemon	src/node_observed_executor/factory/capabilities/host_exact_tests	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/capabilities/host_exact_tests	thread::sleep	1

@@ -77,6 +77,18 @@ pub(super) fn qualify_kind(
                 }
                 _ => false,
             },
+            InstalledNodeKind::HostIo { .. }
+            | InstalledNodeKind::HostScripted { .. }
+            | InstalledNodeKind::HostNetLink { .. }
+            | InstalledNodeKind::HostSemantics { .. } => {
+                // These source-installed models use the same exact operation
+                // facade. Full configuration, schema and facet bodies were
+                // matched above; richer control and archive policies stay separate.
+                matches!(
+                    operation.operation.as_str(),
+                    "exact_run" | "boundary_settle"
+                ) && operation.facet.id.as_str() == "host/exact-v1"
+            }
             InstalledNodeKind::ReferenceDevice { .. }
             | InstalledNodeKind::ReferenceNativeLinked { .. } => {
                 matches!(
