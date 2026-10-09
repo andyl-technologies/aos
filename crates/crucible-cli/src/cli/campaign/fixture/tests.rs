@@ -622,3 +622,38 @@ fn worked_network_fixture_rejects_incomplete_boot_assets_before_creating_output(
     );
     assert!(!output.exists());
 }
+
+#[test]
+fn worked_network_quiet_boot_contract_matches_driver_fixture() {
+    let temporary = tempfile::tempdir().expect("fixture temporary directory");
+    let kernel = temporary.path().join("kernel-placeholder");
+    let root_image = temporary.path().join("root-placeholder");
+    fs::write(&kernel, b"worked-network eligibility kernel fixture\n").expect("kernel fixture");
+    fs::write(&root_image, b"worked-network eligibility root fixture\n").expect("root fixture");
+    let output = temporary.path().join("quiet-envoy");
+    generate_worked_network_fixture(
+        &output,
+        Some(&kernel),
+        Some(&root_image),
+        Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+    )
+    .expect("current CLI author produces the quiet fixture");
+    let generated = ScenarioDefForm::from_compact_binary(
+        &fs::read(output.join("scenario.bin")).expect("generated scenario bytes"),
+    )
+    .expect("generated scenario");
+    let projection = ScenarioDefForm::from_components(
+        generated.world(),
+        &Plan::empty(),
+        &Properties::empty(),
+        generated.seed(),
+    )
+    .expect("eligibility projection")
+    .with_selectables(generated.selectables().clone())
+    .expect("complete catalog");
+    let retained = ScenarioDefForm::from_canonical_toml(include_str!(
+        "../../../../../crucible-daemon/src/qemu_campaign_driver/tests/fixtures/worked-network-quiet.toml"
+    )).expect("shared driver contract fixture");
+
+    assert_eq!(projection, retained);
+}

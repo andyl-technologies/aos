@@ -39,7 +39,7 @@ pub(super) fn envoy_choice_free_boot_eligible(input: &CrucibleAttemptExecution) 
         .filter(|node| {
             node.cmdline
                 == format!(
-                    "root=/dev/vda rw init=/init console=ttyS0 noapic nolapic network.role={} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2",
+                    "root=/dev/vda rw init=/init console=ttyS0 quiet loglevel=4 noapic nolapic network.role={} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2",
                     node.id.name
                 )
                 && node.arch == VmArchitecture::X86_64
