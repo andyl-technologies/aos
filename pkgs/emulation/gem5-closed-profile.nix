@@ -87,18 +87,23 @@ in
           export CRUCIBLE_GEM5_REQUIRE_FRESH_CLOSURE=1
           export CRUCIBLE_GEM5_IMAGE_AUDITOR=${gem5-process-image-inventory}/bin/gem5-process-image-inventory
           profile="$out/share/crucible/gem5"
+          # DMTCP applies special rules to temporary resources. Use that same
+          # namespace as installed owners so a /build-only pass cannot mask
+          # a stale captured custody root after private reconstruction.
+          witness_root="$(mktemp -d /tmp/crucible-gem5-closed-profile.XXXXXXXX)"
           for isa in x86_64 aarch64; do
             ${coreutils}/bin/timeout 600 ${python3}/bin/python3 -B \
               "$profile/controller/native-owner-check.py" \
               ${gem5}/bin/gem5 "$profile/controller/native-owner.py" "$isa" \
-              "$profile/guests/$isa.elf" "$profile/guests/x86_64.elf" "$PWD/witness-$isa" \
+              "$profile/guests/$isa.elf" "$profile/guests/x86_64.elf" "$witness_root/$isa" \
               ${dmtcp} ${gem5-process-custody}/lib/libcrucible-resource-custody.so
           done
           cat > profile-inputs.json <<'EOF'
           ${specification}
           EOF
           ${python3}/bin/python3 -B ${./_gem5/closed-profile-manifest.py} \
-            "$PWD/profile-inputs.json" "$out" "$PWD/witness-x86_64" "$PWD/witness-aarch64"
+            "$PWD/profile-inputs.json" "$out" "$witness_root/x86_64" "$witness_root/aarch64"
+          rm -rf "$witness_root"
         '';
       }
     ];

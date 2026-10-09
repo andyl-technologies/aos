@@ -48,17 +48,34 @@ parsing a manifest or accepting operator-supplied hashes cannot mint it.
 
 ## Local source-build result
 
+An independent installed check of the earlier `7mh` bundle refused fresh
+captures in both architectures: the restored owner retained the original
+native capture-custody root, so its new supplementary checkpoint files were
+missing. The earlier `p592` bundle used the same controller and custody helper.
+Their builder-only successes could not establish the required resource-root
+lifecycle in other supported host namespaces.
+
+The corrected owner validates its actual restored private root, updates the
+Python binding and native libc environment, and verifies native readback before
+readiness or any modeled callback. The builder now uses fresh private `/tmp`
+witness trees, which exercise the resource namespace that exposed the defect.
+Independent host checks for both architectures then passed original capture,
+source death and absence, two fresh recaptures with actual supplementary files,
+unchanged continuation and group reaping. The independently checked private
+controller copies have the same SHA-256 as the corrected installed bundle.
+No missing-file or image-body check was relaxed.
+
 Command, executed on this machine with remote builders disabled:
 
 ```text
 aos-dev --release build package gem5-closed-profile --no-out-link \
-  --option builders '' --cores 128 --keep-failed
+  --builders ''
 ```
 
-The passing output was
-`/nix/store/p592b5k5m190daprl82i9v0i99brfh33-gem5-closed-profile-1`.
+The passing output is
+`/nix/store/05fw6c809l3j12yp37ip9bld71byk353-gem5-closed-profile-1`.
 Its installed `share/crucible/gem5/closed-profile.json` is 12,230 bytes with SHA-256
-`24ef695a02c055d8278862a4b1051ae0ea37edfe884ce1c875396fe4635f8cfb`.
+`ada655580bb5262f09c4abb710eab6bb3c2a6be35ff3aaad383b60dff88435a9`.
 All 25 installed artifact bindings were independently remeasured after package
 fixup and scrubbing; every SHA-256 and byte length matched.
 
@@ -74,8 +91,8 @@ Both real checks passed. The source-exit reconstruction image commitments were:
 
 | Guest ISA | Image SHA-256 | Final native tick (ps) |
 | --- | --- | --- |
-| x86-64 | `36d5ed44078a4b1c5d4b80f24686184469f5431982f559f381b35e48668783dd` | 700677000 |
-| AArch64 | `50d8b948b2ec07b59d02880a4fa2e12be93c42ba640a4e89ffaf9a0c4b1d273d` | 641023000 |
+| x86-64 | `a05f9f2c2e1bfad20f191c36259606ced5ac3ddaa9a63a0ccad39ceef5c91719` | 700677000 |
+| AArch64 | `0d876aa16095ae813a768e93e2b2ed57f8de87b5209a3fa64a7b24c0a5fbdff3` | 641023000 |
 
 These commitments identify particular native captures, not a portable process
 ABI or a fidelity certificate. The checked native host ABI was x86-64 Linux

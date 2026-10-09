@@ -50,8 +50,15 @@ divergent reconstructions with separate writable files. Real x86_64 and
 AArch64 O3/classic-cache/DDR3 witnesses also passed two concurrent, private-output
 reconstructions after source exit and removal of the source's owned output
 root. The source-owned
-[closed-profile package](gem5-closed-profile-evidence.md) now qualifies complete
+[closed-profile package](gem5-closed-profile-evidence.md) qualifies complete
 opaque process capture for the two fixed freestanding checksum configurations.
+Independent installed checks exposed missing supplementary files after
+restored-owner capture because native custody still named the original root.
+The corrected owner explicitly rebinds its validated current custody root in
+native libc before readiness or modeled work. Both independent host checks and
+builder checks using private `/tmp` witness trees then passed, including new
+captures in both restored owners. Earlier builder-only successes cannot waive
+the missing-file or image-body checks that caught that defect.
 It binds the actual image, complete native process-resource ledger, immutable
 source/tool/model/guest artifacts, native ABI, stopped boundary and witnessed
 continuation. This restricted profile includes no arbitrary guest, external
@@ -471,6 +478,24 @@ event references bind the same identity across native owners. A conflicting kind
 for one native object fails; a per-observation body guard prevents cyclic packet
 and sender-state ownership from recursing indefinitely. Native addresses remain
 inside the inspector. Each observation resets the identity and body registry.
+
+### Diagnostic observation cost
+
+The selected O3 fixture has 512 MiB of physical RAM; its visitor hashes the
+entire backing extent on each full observation. A measured AArch64 cut in the
+typed-visitor investigation contained 495,938 fields, including 347,648 O3
+fields. These counts describe that measured cut, not a fixed bound for every
+configuration or execution prefix. The owner seals full diagnostics into
+bounded content-addressed blobs, which bounds wire traffic but does not remove
+the native digest and field-construction cost.
+
+Before optimizing this path, measure observation wall and CPU time separately
+from native event execution, capture, and digest construction. An unchanged
+observation cache must invalidate on every native event and every host input,
+publication acknowledgment, device action, or other modeled-state mutation;
+equal native clock values do not establish unchanged state. Complete opaque
+capture authentication and exact boundary receipts remain mandatory even if
+full typed diagnostics become explicitly requested observations.
 
 ### Whole process-image qualification
 

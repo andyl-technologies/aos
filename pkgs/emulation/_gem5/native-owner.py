@@ -577,6 +577,27 @@ while True:
                 raise ValueError("fresh reconstruction has no private resource root")
             output_path = Path(restored_root.value.decode("utf-8")) / "guest.output"
             resource_root = Path(restored_root.value.decode("utf-8"))
+            if (
+                not resource_root.is_absolute() or resource_root.resolve() != resource_root
+                or not resource_root.is_dir() or resource_root.stat().st_mode & 0o077
+                or resource_root.stat().st_uid != os.getuid()
+            ):
+                raise ValueError("restored native resource root is not canonically private")
+            # File reconstruction has finished using the captured source root.
+            # Onward captures must explicitly own this incarnation's files;
+            # retaining the old root relies on DMTCP's unrelated file heuristics.
+            os.environ["CRUCIBLE_CAPTURE_RESOURCE_ROOT"] = str(resource_root)
+            native_setenv = library.setenv
+            native_setenv.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+            native_setenv.restype = ctypes.c_int
+            resource_bytes = os.fsencode(resource_root)
+            if native_setenv(b"CRUCIBLE_CAPTURE_RESOURCE_ROOT", resource_bytes, 1) != 0:
+                raise ValueError("cannot rebind native capture resource custody")
+            native_getenv = library.getenv
+            native_getenv.argtypes = [ctypes.c_char_p]
+            native_getenv.restype = ctypes.c_char_p
+            if native_getenv(b"CRUCIBLE_CAPTURE_RESOURCE_ROOT") != resource_bytes:
+                raise ValueError("native capture resource custody did not rebind")
             operational_root = ctypes.create_string_buffer(4096)
             if restart_env(b"CRUCIBLE_GEM5_OPERATIONAL_ROOT", operational_root,
                            len(operational_root)) != 0:
