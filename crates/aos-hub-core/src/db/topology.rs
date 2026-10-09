@@ -3957,9 +3957,17 @@ impl Database {
             }
         };
         let (registry_id, cache_id) = surface.ids();
-        let surface_predicate = match surface {
-            SurfaceTarget::Registry(_) => "registry_id = ?1 AND cache_id IS NULL",
-            SurfaceTarget::BinaryCache(_) => "registry_id IS NULL AND cache_id = ?2",
+        let (surface_id, surface_predicate, update_route_predicate) = match surface {
+            SurfaceTarget::Registry(id) => (
+                id,
+                "registry_id = ?1 AND cache_id IS NULL",
+                "r.registry_id = ?1 AND r.cache_id IS NULL",
+            ),
+            SurfaceTarget::BinaryCache(id) => (
+                id,
+                "registry_id IS NULL AND cache_id = ?1",
+                "r.registry_id IS NULL AND r.cache_id = ?1",
+            ),
         };
         let route_surface_predicate = match surface {
             SurfaceTarget::Registry(_) => "r.registry_id = ?1 AND r.cache_id IS NULL",
@@ -3970,15 +3978,15 @@ impl Database {
             self.backend
                 .execute(
                     &format!(
-                        "UPDATE route_advertisements SET route_id = ?4,
-                         resource_version = resource_version + 1, updated_at = ?5
-                         WHERE {surface_predicate} AND audience = ?3
-                           AND resource_version = ?6 AND EXISTS (
-                             SELECT 1 FROM routes r WHERE r.id = ?4
-                               AND {route_surface_predicate}
+                        "UPDATE route_advertisements SET route_id = ?3,
+                         resource_version = resource_version + 1, updated_at = ?4
+                         WHERE {surface_predicate} AND audience = ?2
+                           AND resource_version = ?5 AND EXISTS (
+                             SELECT 1 FROM routes r WHERE r.id = ?3
+                               AND {update_route_predicate}
                                AND r.enabled = 1 AND {capability} = 1)"
                     ),
-                    &vals![registry_id, cache_id, audience, route_id, now, expected],
+                    &vals![surface_id, audience, route_id, now, expected],
                 )
                 .await?
         } else {
@@ -4013,19 +4021,18 @@ impl Database {
         surface: SurfaceTarget,
         audience: &str,
     ) -> Result<Option<RouteAdvertisementRecord>> {
-        let (registry_id, cache_id) = surface.ids();
-        let surface_predicate = match surface {
-            SurfaceTarget::Registry(_) => "registry_id = ?1 AND cache_id IS NULL",
-            SurfaceTarget::BinaryCache(_) => "registry_id IS NULL AND cache_id = ?2",
+        let (surface_id, surface_predicate) = match surface {
+            SurfaceTarget::Registry(id) => (id, "registry_id = ?1 AND cache_id IS NULL"),
+            SurfaceTarget::BinaryCache(id) => (id, "registry_id IS NULL AND cache_id = ?1"),
         };
         self.backend
             .query_opt(
                 &format!(
                     "SELECT registry_id, cache_id, audience, route_id,
                  resource_version, created_at, updated_at FROM route_advertisements
-                 WHERE {surface_predicate} AND audience = ?3"
+                 WHERE {surface_predicate} AND audience = ?2"
                 ),
-                &vals![registry_id, cache_id, audience],
+                &vals![surface_id, audience],
             )
             .await?
             .map(|row| {
@@ -4220,10 +4227,11 @@ impl Database {
         surface: SurfaceTarget,
         audience: &str,
     ) -> Result<Option<ReadyRouteAdvertisementIdentity>> {
-        let (registry_id, cache_id) = surface.ids();
-        let surface_predicate = match surface {
-            SurfaceTarget::Registry(_) => "cr.registry_id = ?1 AND cr.cache_id IS NULL",
-            SurfaceTarget::BinaryCache(_) => "cr.registry_id IS NULL AND cr.cache_id = ?2",
+        // Bind only the selected identity. PostgreSQL cannot infer the type of
+        // an unused NULL parameter left by the other surface branch.
+        let (surface_id, surface_predicate) = match surface {
+            SurfaceTarget::Registry(id) => (id, "cr.registry_id = ?1 AND cr.cache_id IS NULL"),
+            SurfaceTarget::BinaryCache(id) => (id, "cr.registry_id IS NULL AND cr.cache_id = ?1"),
         };
         self.backend
             .query_opt(
@@ -4247,7 +4255,7 @@ impl Database {
                   AND ao.configuration_digest = h.configuration_digest
                   AND ao.access_policy_digest = h.access_policy_digest
                   AND ao.state = 'verified'
-                 WHERE {surface_predicate} AND cr.audience = ?3
+                 WHERE {surface_predicate} AND cr.audience = ?2
                    AND r.enabled = 1
                    AND (r.mode <> 'direct' OR EXISTS (
                      SELECT 1 FROM direct_route_evidence de
@@ -4272,7 +4280,7 @@ impl Database {
                        AND eo.state = 'healthy' AND eo.listener_observed = 1
                        AND (e.scheme = 'http' OR eo.tls_observed = 1)))"
                 ),
-                &vals![registry_id, cache_id, audience],
+                &vals![surface_id, audience],
             )
             .await?
             .map(|row| {

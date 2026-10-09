@@ -966,6 +966,16 @@ async fn exercise(db: &Database) {
         .expect("managed registry resolves by scope");
     assert_eq!(record.id, reg);
     assert_eq!(record.visibility, "private");
+
+    // A fresh registry has no advertised route. PostgreSQL must still prepare
+    // the lookup successfully without an unused, untyped cache parameter.
+    assert_eq!(db.ready_registry_canonical_url(reg).await.unwrap(), None);
+    assert!(db
+        .route_advertisement(SurfaceTarget::Registry(reg), "git")
+        .await
+        .unwrap()
+        .is_none());
+
     let registry_scope = db.registry_authorization_scope(reg).await.unwrap();
     let registry_placement = common::create_ready_placement(
         db,
@@ -992,6 +1002,12 @@ async fn exercise(db: &Database) {
         )
         .await
         .unwrap();
+    assert_eq!(db.ready_cache_canonical_url(cache).await.unwrap(), None);
+    assert!(db
+        .route_advertisement(SurfaceTarget::BinaryCache(cache), "nix_cache")
+        .await
+        .unwrap()
+        .is_none());
     assert_eq!(
         db.binary_cache_by_slug("acme-cache")
             .await
