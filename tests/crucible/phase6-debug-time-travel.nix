@@ -200,7 +200,7 @@
       }
       {
         label = "forward-only duration step";
-        needle = "Duration(SimDuration { nanos: 10 }).reverse_grain()";
+        needle = "Duration(SimDuration { ticks: 10 }).reverse_grain()";
       }
     ]
     ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_debug_time_travel.rs" timeTravelTest [

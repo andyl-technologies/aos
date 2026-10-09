@@ -377,7 +377,7 @@
         --frozen \
         --offline \
         -j$NIX_BUILD_CORES \
-        -p crucible-control-api \
+        -p crucible-daemon \
         --example crucible-e2e-determinism-scenario \
         --message-format=json-render-diagnostics \
         > "$NIX_BUILD_TOP/crucible-scenario-example.jsonl"
