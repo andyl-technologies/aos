@@ -221,7 +221,17 @@ and burned-fallback refusal pass in one 126.038-second run with unchanged bounds
 changed between those two runs, so the earlier timeout's cause is not established.
 The matching full thirty-one-case runtime has started (run
 `cf52bbd2-6224-4a3c-bf53-54dba13b7583`, raw log
-`/tmp/terrane-native-recovery-corrected-full-nextest.log`); full native
+`/tmp/terrane-native-recovery-corrected-full-nextest.log`). Its first ten
+completed cases include seven passes and three failures; the original process
+remains live. The positives include all-absent and index-only first ownership,
+lineage removal with preserved burns, and complete live DATA without a foreign
+Original. Source review traces the three failures to distinct refusal oracles:
+a changed Guard incarnation returns the producer's exact destination-plan
+denial, while deliberately unexecuted owner and preparation slot renames fail
+the install command's actual destination reread as corruption. The private
+worker seals narrow test corrections on `f0a16ae620`, retaining absent-slot,
+no-ownership acknowledgment, source and barrier assertions. These corrections
+are not composed into the live run and remain unqualified. Full native
 qualification remains pending. The inventory audit finds
 that every admitted writable native selection validates known ref, catalog and
 exclusion inventories. Unknown legacy inputs remain read-only: their ref
@@ -231,11 +241,16 @@ cover rejected incomplete successors and that legacy boundary. Their actual
 owning-gate qualification is still required; a fabricated unknown writable
 selection would not be valid collector evidence (GC-2, GC-29).
 The parent registers a sixth `gc-roots-complete` case for genuine collection on
-the freshly admitted known-empty ref inventory. It will reuse the real native
-lease fixture's Guard and Original, independently observe the explicit empty
-selected inventories, and publish/finish the actual empty-root snapshot. This
-positive is distinct from read-only unknown-inventory refusal. Its isolated
-implementation and qualification remain pending; registration accepts no task.
+the freshly admitted known-empty ref inventory. Its isolated source is sealed
+on `2206323347`: the real native lease fixture's Guard and Original independently
+observe explicit empty selected inventories, publish and finish an empty-root
+snapshot, then reopen and resume its unchanged Sweep progress. Parent and
+independent review verify physical checkpoint bytes against the protected
+commit/transaction and portable snapshot, with fresh selected revalidation.
+This positive is distinct from read-only unknown-inventory refusal and proves
+neither takeover nor destructive recovery. Source formatting and diff checks
+pass; compilation, runtime and owning-gate qualification remain unrun while
+the existing recovery process owns the build lane. No task is accepted.
 
 All ten
 exact native Active completion cases pass on `4e6c14a7f3`. The eight-case native
