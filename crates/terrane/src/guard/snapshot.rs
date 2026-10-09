@@ -1,5 +1,8 @@
 //! Loads complete canonical tree witnesses anchored to immutable commit identities.
 
+#[cfg(all(feature = "std", unix))]
+pub(crate) mod layers;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use terrane_core::identity::{Digest, IdentityKind, TERRANE_V1};

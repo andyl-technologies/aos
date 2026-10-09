@@ -77,6 +77,8 @@ pub use original::{OriginalAuthority, OriginalCommitContext, RetainedBootstrap};
 pub use read::AuthorizedSnapshot;
 #[cfg(feature = "std")]
 pub use read::indexes;
+#[cfg(all(feature = "std", unix))]
+pub use snapshot::layers::OverlayInput;
 pub(crate) use snapshot::{TreeEvidence, invalid};
 pub use staged::{CommitRequest, StagedUpload};
 #[cfg(feature = "std")]

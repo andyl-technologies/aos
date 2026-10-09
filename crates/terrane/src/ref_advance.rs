@@ -16,7 +16,7 @@ mod disclosure;
 mod disclosure_rotation;
 mod native;
 #[cfg(unix)]
-mod overlay;
+pub(crate) mod overlay;
 mod prepared;
 mod watch;
 
