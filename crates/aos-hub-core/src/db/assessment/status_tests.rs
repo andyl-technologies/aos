@@ -89,3 +89,34 @@ async fn scan_lists_exclude_partial_admissions_and_foreign_registry_rows() -> Re
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn terminal_uncommitted_generations_do_not_remain_pending() -> Result<()> {
+    for state in ["failed", "cancelled", "superseded"] {
+        let (db, registry_id, request) = setup().await?;
+        let scan = db.request_assessment_scan(registry_id, &request).await?;
+        let profiles = [Profile::Updates];
+        assert!(
+            db.assessment_status_page(registry_id, &profiles, "", 10)
+                .await?
+                .subjects[0]
+                .profiles[0]
+                .pending
+        );
+
+        db.backend.execute(
+            "UPDATE assessment_scans SET state = ?2, completed_at = created_at WHERE scan_id = ?1",
+            &vals![@slice scan.scan_id, state],
+        ).await?;
+        let page = db
+            .assessment_status_page(registry_id, &profiles, "", 10)
+            .await?;
+        let status = &page.subjects[0].profiles[0];
+        assert_eq!(status.desired_generation, scan.generation);
+        assert_eq!(status.committed_generation, 0);
+        assert!(!status.pending);
+        assert!(!status.fresh);
+        assert!(status.assessment_digest.is_none());
+    }
+    Ok(())
+}

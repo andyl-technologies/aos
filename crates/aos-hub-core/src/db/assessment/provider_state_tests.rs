@@ -312,7 +312,7 @@ async fn candidate_first_observation_uses_admitted_retrieval_and_replay_does_not
     Ok(())
 }
 
-fn failure(plan: &ProviderWorkPlanV1) -> Result<ProviderWorkResultV1> {
+pub(super) fn failure(plan: &ProviderWorkPlanV1) -> Result<ProviderWorkResultV1> {
     Ok(ProviderWorkResultV1 {
         schema: PROVIDER_WORK_RESULT_V1.into(),
         plan_digest: plan.digest()?,

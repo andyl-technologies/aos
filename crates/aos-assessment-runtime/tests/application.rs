@@ -49,7 +49,7 @@ fn status_round_trip_preserves_unassessed_members_without_inventing_freshness() 
 }
 
 #[test]
-fn status_deadlines_are_exclusive_and_pending_is_generation_derived() -> Result<()> {
+fn status_deadlines_are_exclusive_and_terminal_generations_can_be_uncommitted() -> Result<()> {
     let mut value = status();
     let profile = &mut value["subjects"][0]["profiles"][0];
     profile["desiredGeneration"] = json!(2);
@@ -63,6 +63,9 @@ fn status_deadlines_are_exclusive_and_pending_is_generation_derived() -> Result<
     assert!(AssessmentStatusV1::from_slice(&serde_json::to_vec(&value)?).is_err());
     value["subjects"][0]["profiles"][0]["fresh"] = json!(false);
     value["subjects"][0]["profiles"][0]["pending"] = json!(false);
+    AssessmentStatusV1::from_slice(&serde_json::to_vec(&value)?)?;
+    value["subjects"][0]["profiles"][0]["desiredGeneration"] = json!(1);
+    value["subjects"][0]["profiles"][0]["pending"] = json!(true);
     assert!(AssessmentStatusV1::from_slice(&serde_json::to_vec(&value)?).is_err());
     Ok(())
 }

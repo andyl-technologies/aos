@@ -100,6 +100,17 @@ where
         .context("assessment scan is absent")?;
     authority.require_current(&scan).await?;
     let claim = db.claim_assessment_scan(registry_id, scan_id, 900).await?;
+    if let Some((input, data)) = db
+        .assessment_evaluation_checkpoint(registry_id, &claim)
+        .await?
+    {
+        authority.require_current(&scan).await?;
+        let result = aos_assessment::evaluator::evaluate(&input, &data)?;
+        authority.require_current(&scan).await?;
+        db.commit_assessment_evaluation(registry_id, &claim, &result)
+            .await?;
+        return Ok(result);
+    }
     let port = DatabaseAcquisition {
         db,
         scan: &scan,
@@ -324,7 +335,16 @@ impl<A: AssessmentAuthority, T: ProviderTransport, R: AssessmentSourceRoutes> Ac
                 return Err(error);
             }
         };
-        result.validate_for(&plan, &self.db.assessment_database_time().await?)?;
+        if let Err(error) = result.validate_for(&plan, &self.db.assessment_database_time().await?) {
+            self.db
+                .fail_assessment_provider_work(
+                    self.scan.registry_id,
+                    &plan.claim,
+                    "source-result-refused",
+                )
+                .await?;
+            return Err(error);
+        }
         self.db
             .admit_assessment_provider_result(self.scan.registry_id, &plan, &result)
             .await?;

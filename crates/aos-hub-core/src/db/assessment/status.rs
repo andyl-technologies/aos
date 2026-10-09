@@ -1,6 +1,6 @@
 //! Bounded database status projections without implicit provider acquisition.
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use aos_assessment::input::Profile;
 use aos_assessment::time::Timestamp;
 use aos_assessment_runtime::scan::ScanState;
@@ -26,7 +26,7 @@ pub struct AssessmentProfileStatus {
     pub validated_until: Option<Timestamp>,
     /// Whether complete evidence remains fresh at this page's database time.
     pub fresh: bool,
-    /// Whether a newer desired generation has yet to commit.
+    /// Whether a newer desired generation still has an active scan.
     pub pending: bool,
 }
 
@@ -140,10 +140,17 @@ impl Database {
             .transpose()?;
         let heads = if let Some(last) = &last {
             self.backend.query(
-                "SELECT subject_ref, profile, desired_generation, committed_generation, assessment_digest,
-                    input_digest, validated_until FROM assessment_heads
-                 WHERE registry_id = ?1 AND inventory_digest = ?2 AND policy_digest = ?3
-                   AND subject_ref > ?4 AND subject_ref <= ?5 ORDER BY subject_ref, profile LIMIT ?6",
+                "SELECT head.subject_ref, head.profile, head.desired_generation, head.committed_generation, head.assessment_digest,
+                    head.input_digest, head.validated_until,
+                    EXISTS(SELECT 1 FROM assessment_scans AS scan
+                        JOIN assessment_scan_targets AS target ON target.scan_id = scan.scan_id
+                        WHERE scan.registry_id = head.registry_id AND scan.inventory_digest = head.inventory_digest
+                          AND scan.policy_digest = head.policy_digest AND scan.generation = head.desired_generation
+                          AND target.subject_ref = head.subject_ref AND target.profile = head.profile
+                          AND scan.admission_complete = 1 AND scan.state IN('queued', 'running', 'cancelling'))
+                 FROM assessment_heads AS head
+                 WHERE head.registry_id = ?1 AND head.inventory_digest = ?2 AND head.policy_digest = ?3
+                   AND head.subject_ref > ?4 AND head.subject_ref <= ?5 ORDER BY head.subject_ref, head.profile LIMIT ?6",
                 &vals![@slice registry_id, resource.inventory_digest.to_string(), resource.policy_digest.to_string(), after_subject, last, u64::from(limit) * 3],
             ).await?
         } else {
@@ -183,7 +190,7 @@ impl Database {
                         fresh: validated_until
                             .as_ref()
                             .is_some_and(|deadline| &now < deadline),
-                        pending: desired > committed,
+                        pending: desired > committed && head.get::<bool>(7)?,
                         validated_until,
                     }
                 } else {

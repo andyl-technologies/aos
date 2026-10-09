@@ -92,7 +92,7 @@ pub struct ProfileStatus {
     pub validated_until: Option<Timestamp>,
     /// Effective complete freshness at the status page's explicit time.
     pub fresh: bool,
-    /// Whether a newer generation is still awaiting a successful commit.
+    /// Whether a newer desired generation still has an active scan.
     pub pending: bool,
 }
 
@@ -196,8 +196,8 @@ impl AssessmentStatusV1 {
             for profile in &subject.profiles {
                 if profile.desired_generation > 9_007_199_254_740_991
                     || profile.committed_generation > profile.desired_generation
-                    || profile.pending
-                        != (profile.desired_generation > profile.committed_generation)
+                    || (profile.pending
+                        && profile.desired_generation <= profile.committed_generation)
                     || profile.fresh
                         != profile
                             .validated_until

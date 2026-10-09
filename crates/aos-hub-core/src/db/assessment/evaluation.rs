@@ -18,6 +18,42 @@ use super::scans::{claim_values, profile_name};
 use super::AssessmentObjectKind;
 
 impl Database {
+    /// Restores an existing frozen closure under the current coordinator claim.
+    ///
+    /// A reclaimed operation reuses its original input and evaluation time;
+    /// it cannot spend provider quota or replace evidence after freezing.
+    ///
+    /// # Errors
+    /// Returns an error for a stale claim, incomplete checkpoint or unavailable
+    /// or inconsistent retained evidence.
+    pub async fn assessment_evaluation_checkpoint(
+        &self,
+        registry_id: i64,
+        claim: &TaskClaim,
+    ) -> Result<Option<(ScanInputV1, EvaluationData)>> {
+        self.check_assessment_scan_claim(registry_id, claim).await?;
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT evaluation_input_digest, evaluation_data_digest FROM assessment_scans
+             WHERE registry_id = ?1 AND scan_id = ?2",
+                &vals![@slice registry_id, claim.scan_id],
+            )
+            .await?
+            .context("assessment operation is absent")?;
+        match (row.get::<Option<String>>(0)?, row.get::<Option<String>>(1)?) {
+            (None, None) => Ok(None),
+            (Some(_), Some(_)) => {
+                let checkpoint = self
+                    .assessment_frozen_evaluation(registry_id, &claim.scan_id)
+                    .await?;
+                self.check_assessment_scan_claim(registry_id, claim).await?;
+                Ok(Some(checkpoint))
+            }
+            _ => bail!("assessment evaluation checkpoint is incomplete"),
+        }
+    }
+
     /// Loads the admitted inventory closure with the operation's pinned policy.
     ///
     /// Provider acquisition may augment this closure before freezing. This read
