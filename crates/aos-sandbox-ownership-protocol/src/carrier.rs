@@ -30,6 +30,7 @@
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_core::ProtocolVersion;
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError, checked_byte_region};
 use aos_sandbox_core::model::{KeyReference, KeyUsage, StableKeyId};
 
 use crate::protocol::{
@@ -102,12 +103,12 @@ pub fn encode_client_hello_v1(hello: &OwnershipClientHelloV1) -> Vec<u8> {
 pub fn decode_client_hello_v1(
     record: &[u8],
 ) -> Result<OwnershipClientHelloV1, OwnershipCarrierErrorV1> {
-    let mut reader = HandshakeReader::new(record, CLIENT_HELLO_MAGIC)?;
-    let nonce = reader.take::<32>()?;
-    let version = reader.version()?;
-    let authority = reader.key_reference()?;
-    let methods = reader.methods()?;
-    let response_max = u32::from_be_bytes(reader.take::<4>()?);
+    let mut reader = handshake_reader(record, CLIENT_HELLO_MAGIC)?;
+    let nonce = reader.array::<32>()?;
+    let version = read_version(&mut reader)?;
+    let authority = read_key_reference(&mut reader)?;
+    let methods = read_methods(&mut reader)?;
+    let response_max = u32::from_be_bytes(reader.array::<4>()?);
     reader.finish()?;
     Ok(OwnershipClientHelloV1::new(
         nonce,
@@ -169,15 +170,15 @@ pub fn decode_server_hello_v1(
     hello: &OwnershipClientHelloV1,
     record: &[u8],
 ) -> Result<NegotiatedOwnershipSessionV1, OwnershipCarrierErrorV1> {
-    let mut reader = HandshakeReader::new(record, SERVER_HELLO_MAGIC)?;
-    let server_nonce = reader.take::<32>()?;
-    let version = reader.version()?;
-    let authority = reader.key_reference()?;
-    let methods = reader.methods()?;
-    let request_max = u32::from_be_bytes(reader.take::<4>()?);
-    let response_max = u32::from_be_bytes(reader.take::<4>()?);
-    let lease_max = u64::from_be_bytes(reader.take::<8>()?);
-    let binding = reader.take::<32>()?;
+    let mut reader = handshake_reader(record, SERVER_HELLO_MAGIC)?;
+    let server_nonce = reader.array::<32>()?;
+    let version = read_version(&mut reader)?;
+    let authority = read_key_reference(&mut reader)?;
+    let methods = read_methods(&mut reader)?;
+    let request_max = u32::from_be_bytes(reader.array::<4>()?);
+    let response_max = u32::from_be_bytes(reader.array::<4>()?);
+    let lease_max = u64::from_be_bytes(reader.array::<8>()?);
+    let binding = reader.array::<32>()?;
     reader.finish()?;
 
     let session = NegotiatedOwnershipSessionV1::negotiate(hello, server_nonce, authority, methods)?;
@@ -211,91 +212,69 @@ fn append_methods(record: &mut Vec<u8>, methods: &[OwnershipMethodV1]) {
     record.extend(methods.iter().copied().map(method_code));
 }
 
-struct HandshakeReader<'a> {
-    record: &'a [u8],
-    offset: usize,
+fn malformed_read_error(_: ReadError) -> OwnershipCarrierErrorV1 {
+    OwnershipCarrierErrorV1::Malformed
 }
 
-impl<'a> HandshakeReader<'a> {
-    fn new(record: &'a [u8], magic: &[u8; 8]) -> Result<Self, OwnershipCarrierErrorV1> {
-        if record.len() > MAXIMUM_OWNERSHIP_HELLO_BYTES {
-            return Err(OwnershipCarrierErrorV1::Oversized);
-        }
-        if record.get(..8) != Some(magic.as_slice()) {
-            return Err(OwnershipCarrierErrorV1::Malformed);
-        }
-        Ok(Self { record, offset: 8 })
+fn handshake_reader<'a>(
+    record: &'a [u8],
+    magic: &[u8; 8],
+) -> Result<BoundedReader<'a, OwnershipCarrierErrorV1>, OwnershipCarrierErrorV1> {
+    if record.len() > MAXIMUM_OWNERSHIP_HELLO_BYTES {
+        return Err(OwnershipCarrierErrorV1::Oversized);
     }
+    if record.get(..8) != Some(magic.as_slice()) {
+        return Err(OwnershipCarrierErrorV1::Malformed);
+    }
+    let mut reader = BoundedReader::new(record, malformed_read_error);
+    reader.bytes(8)?;
+    Ok(reader)
+}
 
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], OwnershipCarrierErrorV1> {
-        let end = self
-            .offset
-            .checked_add(N)
-            .ok_or(OwnershipCarrierErrorV1::Malformed)?;
-        let bytes = self
-            .record
-            .get(self.offset..end)
-            .ok_or(OwnershipCarrierErrorV1::Malformed)?;
-        self.offset = end;
-        bytes
-            .try_into()
-            .map_err(|_| OwnershipCarrierErrorV1::Malformed)
-    }
+fn read_version(
+    reader: &mut BoundedReader<'_, OwnershipCarrierErrorV1>,
+) -> Result<ProtocolVersion, OwnershipCarrierErrorV1> {
+    let major = u16::from_be_bytes(reader.array::<2>()?);
+    let minor = u16::from_be_bytes(reader.array::<2>()?);
+    Ok(ProtocolVersion::new(major, minor))
+}
 
-    fn version(&mut self) -> Result<ProtocolVersion, OwnershipCarrierErrorV1> {
-        let major = u16::from_be_bytes(self.take::<2>()?);
-        let minor = u16::from_be_bytes(self.take::<2>()?);
-        Ok(ProtocolVersion::new(major, minor))
+fn read_key_reference(
+    reader: &mut BoundedReader<'_, OwnershipCarrierErrorV1>,
+) -> Result<KeyReference, OwnershipCarrierErrorV1> {
+    let length = reader.array::<1>()?[0] as usize;
+    if length == 0 {
+        return Err(OwnershipCarrierErrorV1::Malformed);
     }
+    let key_id = reader.bytes(length)?;
+    let key_id = std::str::from_utf8(key_id).map_err(|_| OwnershipCarrierErrorV1::Malformed)?;
+    let key_id =
+        StableKeyId::new(key_id.to_owned()).map_err(|_| OwnershipCarrierErrorV1::Malformed)?;
+    let generation = u64::from_be_bytes(reader.array::<8>()?);
+    let fingerprint = ObjectDigest::from_bytes(reader.array::<32>()?);
+    if reader.array::<1>()?[0] != 5 {
+        return Err(OwnershipCarrierErrorV1::Malformed);
+    }
+    Ok(KeyReference::new(
+        key_id,
+        generation,
+        fingerprint,
+        KeyUsage::OwnershipLease,
+    ))
+}
 
-    fn key_reference(&mut self) -> Result<KeyReference, OwnershipCarrierErrorV1> {
-        let length = self.take::<1>()?[0] as usize;
-        if length == 0 {
-            return Err(OwnershipCarrierErrorV1::Malformed);
-        }
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(OwnershipCarrierErrorV1::Malformed)?;
-        let key_id = self
-            .record
-            .get(self.offset..end)
-            .ok_or(OwnershipCarrierErrorV1::Malformed)?;
-        self.offset = end;
-        let key_id = std::str::from_utf8(key_id).map_err(|_| OwnershipCarrierErrorV1::Malformed)?;
-        let key_id =
-            StableKeyId::new(key_id.to_owned()).map_err(|_| OwnershipCarrierErrorV1::Malformed)?;
-        let generation = u64::from_be_bytes(self.take::<8>()?);
-        let fingerprint = ObjectDigest::from_bytes(self.take::<32>()?);
-        if self.take::<1>()?[0] != 5 {
-            return Err(OwnershipCarrierErrorV1::Malformed);
-        }
-        Ok(KeyReference::new(
-            key_id,
-            generation,
-            fingerprint,
-            KeyUsage::OwnershipLease,
-        ))
+fn read_methods(
+    reader: &mut BoundedReader<'_, OwnershipCarrierErrorV1>,
+) -> Result<Vec<OwnershipMethodV1>, OwnershipCarrierErrorV1> {
+    let count = reader.array::<1>()?[0] as usize;
+    if count == 0 || count > 3 {
+        return Err(OwnershipCarrierErrorV1::Malformed);
     }
-
-    fn methods(&mut self) -> Result<Vec<OwnershipMethodV1>, OwnershipCarrierErrorV1> {
-        let count = self.take::<1>()?[0] as usize;
-        if count == 0 || count > 3 {
-            return Err(OwnershipCarrierErrorV1::Malformed);
-        }
-        let mut methods = Vec::with_capacity(count);
-        for _ in 0..count {
-            methods.push(method_from_code(self.take::<1>()?[0])?);
-        }
-        Ok(methods)
+    let mut methods = Vec::with_capacity(count);
+    for _ in 0..count {
+        methods.push(method_from_code(reader.array::<1>()?[0])?);
     }
-
-    fn finish(self) -> Result<(), OwnershipCarrierErrorV1> {
-        if self.offset != self.record.len() {
-            return Err(OwnershipCarrierErrorV1::Malformed);
-        }
-        Ok(())
-    }
+    Ok(methods)
 }
 
 /// Encodes an exact request for the already-negotiated ownership session.
@@ -588,25 +567,20 @@ fn take_artifact(
     offset: &mut usize,
     maximum: usize,
 ) -> Result<Vec<u8>, OwnershipCarrierErrorV1> {
-    let length_bytes = body
-        .get(*offset..*offset + 4)
-        .ok_or(OwnershipCarrierErrorV1::Malformed)?;
+    let (length_bytes, end) =
+        checked_byte_region(body, *offset, 4).map_err(malformed_read_error)?;
     let length = u32::from_be_bytes(
         length_bytes
             .try_into()
             .map_err(|_| OwnershipCarrierErrorV1::Malformed)?,
     ) as usize;
-    *offset += 4;
+    *offset = end;
     if length == 0 || length > maximum {
         return Err(OwnershipCarrierErrorV1::Malformed);
     }
-    let end = offset
-        .checked_add(length)
-        .ok_or(OwnershipCarrierErrorV1::Malformed)?;
-    let artifact = body
-        .get(*offset..end)
-        .ok_or(OwnershipCarrierErrorV1::Malformed)?
-        .to_vec();
+    let (artifact, end) =
+        checked_byte_region(body, *offset, length).map_err(malformed_read_error)?;
+    let artifact = artifact.to_vec();
     *offset = end;
     Ok(artifact)
 }

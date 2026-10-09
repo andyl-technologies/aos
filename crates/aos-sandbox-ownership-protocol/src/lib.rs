@@ -35,6 +35,7 @@ pub mod authenticated;
 pub mod carrier;
 pub mod protocol;
 
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use aos_sandbox_core::format::{decode_signature, encode_signature};
 use aos_sandbox_core::model::{KeyReference, KeyUsage, StableKeyId};
 use aos_sandbox_core::{
@@ -241,34 +242,31 @@ impl OwnershipClaimV1 {
         if bytes.len() != CLAIM_BYTES {
             return Err(OwnershipClaimError::InvalidEncoding);
         }
-        let mut cursor = 0;
-        if take::<8>(bytes, &mut cursor)? != *CLAIM_MAGIC
-            || u16::from_be_bytes(take::<2>(bytes, &mut cursor)?) != CLAIM_VERSION
+        let mut reader = BoundedReader::new(bytes, claim_read_error);
+        if reader.array::<8>()? != *CLAIM_MAGIC
+            || u16::from_be_bytes(reader.array::<2>()?) != CLAIM_VERSION
         {
             return Err(OwnershipClaimError::InvalidEncoding);
         }
-        let action = OwnershipClaimAction::from_code(take::<1>(bytes, &mut cursor)?[0])?;
-        if take::<5>(bytes, &mut cursor)? != [0; 5] {
+        let action = OwnershipClaimAction::from_code(reader.array::<1>()?[0])?;
+        if reader.array::<5>()? != [0; 5] {
             return Err(OwnershipClaimError::InvalidEncoding);
         }
-        let request_id = take::<16>(bytes, &mut cursor)?;
+        let request_id = reader.array::<16>()?;
         let assignment = LeaseAssignment::new(
-            SandboxId::from_bytes(take::<16>(bytes, &mut cursor)?),
-            IncarnationId::from_bytes(take::<16>(bytes, &mut cursor)?),
-            aos_sandbox_core::AssignmentEpoch::new(u64::from_be_bytes(take::<8>(
-                bytes,
-                &mut cursor,
-            )?)),
-            ObjectDigest::from_bytes(take::<32>(bytes, &mut cursor)?),
+            SandboxId::from_bytes(reader.array::<16>()?),
+            IncarnationId::from_bytes(reader.array::<16>()?),
+            aos_sandbox_core::AssignmentEpoch::new(u64::from_be_bytes(reader.array::<8>()?)),
+            ObjectDigest::from_bytes(reader.array::<32>()?),
         )
         .map_err(|_| OwnershipClaimError::InvalidEncoding)?;
-        let node = NodeId::from_bytes(take::<16>(bytes, &mut cursor)?);
+        let node = NodeId::from_bytes(reader.array::<16>()?);
         let desired_generation =
-            DesiredGeneration::new(u64::from_be_bytes(take::<8>(bytes, &mut cursor)?));
-        let expected_generation = u64::from_be_bytes(take::<8>(bytes, &mut cursor)?);
-        let expected_digest = ObjectDigest::from_bytes(take::<32>(bytes, &mut cursor)?);
-        let requested_maximum_seconds = u64::from_be_bytes(take::<8>(bytes, &mut cursor)?);
-        if cursor != bytes.len() {
+            DesiredGeneration::new(u64::from_be_bytes(reader.array::<8>()?));
+        let expected_generation = u64::from_be_bytes(reader.array::<8>()?);
+        let expected_digest = ObjectDigest::from_bytes(reader.array::<32>()?);
+        let requested_maximum_seconds = u64::from_be_bytes(reader.array::<8>()?);
+        if !reader.is_empty() {
             return Err(OwnershipClaimError::InvalidEncoding);
         }
         let expected_prior = match action {
@@ -483,40 +481,40 @@ impl OwnershipTransactionReceiptV1 {
         if bytes.len() > MAXIMUM_RECEIPT_BYTES || bytes.len() < RECEIPT_FIXED_BYTES + 1 {
             return Err(OwnershipReceiptError::InvalidEncoding);
         }
-        let mut cursor = 0;
-        if receipt_take::<8>(bytes, &mut cursor)? != *RECEIPT_MAGIC
-            || u16::from_be_bytes(receipt_take::<2>(bytes, &mut cursor)?) != RECEIPT_VERSION
-            || u16::from_be_bytes(receipt_take::<2>(bytes, &mut cursor)?) != RECEIPT_PROTOCOL_CODE
-            || u16::from_be_bytes(receipt_take::<2>(bytes, &mut cursor)?) != RECEIPT_PROTOCOL_MAJOR
+        let mut reader = BoundedReader::new(bytes, receipt_read_error);
+        if reader.array::<8>()? != *RECEIPT_MAGIC
+            || u16::from_be_bytes(reader.array::<2>()?) != RECEIPT_VERSION
+            || u16::from_be_bytes(reader.array::<2>()?) != RECEIPT_PROTOCOL_CODE
+            || u16::from_be_bytes(reader.array::<2>()?) != RECEIPT_PROTOCOL_MAJOR
         {
             return Err(OwnershipReceiptError::InvalidEncoding);
         }
-        if u16::from_be_bytes(receipt_take::<2>(bytes, &mut cursor)?) != RECEIPT_PROTOCOL_MINOR {
+        if u16::from_be_bytes(reader.array::<2>()?) != RECEIPT_PROTOCOL_MINOR {
             return Err(OwnershipReceiptError::InvalidEncoding);
         }
-        let action = OwnershipClaimAction::from_code(receipt_take::<1>(bytes, &mut cursor)?[0])
+        let action = OwnershipClaimAction::from_code(reader.array::<1>()?[0])
             .map_err(|_| OwnershipReceiptError::InvalidEncoding)?;
-        if receipt_take::<7>(bytes, &mut cursor)? != [0; 7] {
+        if reader.array::<7>()? != [0; 7] {
             return Err(OwnershipReceiptError::InvalidEncoding);
         }
-        let key_id_length = usize::from(u16::from_be_bytes(receipt_take::<2>(bytes, &mut cursor)?));
+        let key_id_length = usize::from(u16::from_be_bytes(reader.array::<2>()?));
         if key_id_length == 0 || key_id_length > 255 {
             return Err(OwnershipReceiptError::InvalidEncoding);
         }
-        let key_id = std::str::from_utf8(receipt_slice(bytes, &mut cursor, key_id_length)?)
+        let key_id = std::str::from_utf8(reader.bytes(key_id_length)?)
             .map_err(|_| OwnershipReceiptError::InvalidEncoding)?;
         let authority = KeyReference::new(
             StableKeyId::new(key_id.to_owned())
                 .map_err(|_| OwnershipReceiptError::InvalidEncoding)?,
-            u64::from_be_bytes(receipt_take::<8>(bytes, &mut cursor)?),
-            ObjectDigest::from_bytes(receipt_take::<32>(bytes, &mut cursor)?),
+            u64::from_be_bytes(reader.array::<8>()?),
+            ObjectDigest::from_bytes(reader.array::<32>()?),
             KeyUsage::OwnershipLease,
         );
-        let request_id = receipt_take::<16>(bytes, &mut cursor)?;
-        let claim_digest = ObjectDigest::from_bytes(receipt_take::<32>(bytes, &mut cursor)?);
-        let lease_size = u64::from_be_bytes(receipt_take::<8>(bytes, &mut cursor)?);
-        let lease_digest = ObjectDigest::from_bytes(receipt_take::<32>(bytes, &mut cursor)?);
-        if cursor != bytes.len()
+        let request_id = reader.array::<16>()?;
+        let claim_digest = ObjectDigest::from_bytes(reader.array::<32>()?);
+        let lease_size = u64::from_be_bytes(reader.array::<8>()?);
+        let lease_digest = ObjectDigest::from_bytes(reader.array::<32>()?);
+        if !reader.is_empty()
             || authority.generation() == 0
             || authority.public_key_sha256().as_bytes() == &[0; 32]
             || request_id == [0; 16]
@@ -1364,17 +1362,8 @@ fn append<const N: usize>(target: &mut [u8; CLAIM_BYTES], cursor: &mut usize, va
     *cursor = end;
 }
 
-fn take<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Result<[u8; N], OwnershipClaimError> {
-    let end = cursor
-        .checked_add(N)
-        .ok_or(OwnershipClaimError::InvalidEncoding)?;
-    let value = bytes
-        .get(*cursor..end)
-        .ok_or(OwnershipClaimError::InvalidEncoding)?;
-    *cursor = end;
-    value
-        .try_into()
-        .map_err(|_| OwnershipClaimError::InvalidEncoding)
+fn claim_read_error(_: ReadError) -> OwnershipClaimError {
+    OwnershipClaimError::InvalidEncoding
 }
 
 fn claim_digest(bytes: &[u8; CLAIM_BYTES]) -> ObjectDigest {
@@ -1411,26 +1400,6 @@ fn encode_receipt(
     bytes
 }
 
-fn receipt_take<const N: usize>(
-    bytes: &[u8],
-    cursor: &mut usize,
-) -> Result<[u8; N], OwnershipReceiptError> {
-    receipt_slice(bytes, cursor, N)?
-        .try_into()
-        .map_err(|_| OwnershipReceiptError::InvalidEncoding)
-}
-
-fn receipt_slice<'a>(
-    bytes: &'a [u8],
-    cursor: &mut usize,
-    length: usize,
-) -> Result<&'a [u8], OwnershipReceiptError> {
-    let end = cursor
-        .checked_add(length)
-        .ok_or(OwnershipReceiptError::InvalidEncoding)?;
-    let value = bytes
-        .get(*cursor..end)
-        .ok_or(OwnershipReceiptError::InvalidEncoding)?;
-    *cursor = end;
-    Ok(value)
+fn receipt_read_error(_: ReadError) -> OwnershipReceiptError {
+    OwnershipReceiptError::InvalidEncoding
 }
