@@ -88,6 +88,57 @@ fn stage_reply_omits_material_and_binds_complete_original() {
 }
 
 #[test]
+fn probe_reply_allows_bounded_clock_skew_without_extending_expiry() {
+    let key = StorageWorkKey::new("fixture-custody-key-independent-0001").unwrap();
+    let original = request();
+    original.validate("fixture-deployment", 99).unwrap();
+    assert!(original.validate("fixture-deployment", 94).is_err());
+
+    for (observed_at, accepted) in [
+        (94, false),
+        (95, true),
+        (99, true),
+        (110, true),
+        (111, true),
+        (115, true),
+        (116, false),
+        (130, false),
+    ] {
+        let signed = sign_storage_credential_custody_probe_reply(
+            &key,
+            &StorageCredentialCustodyProbeReply {
+                request: original.clone(),
+                observed_at,
+                evidence: StorageCredentialProbeEvidence {
+                    valid: true,
+                    conditional_writes_supported: false,
+                    error: None,
+                    evidence: serde_json::json!({"getStatus":404}),
+                },
+            },
+        )
+        .unwrap();
+
+        let result = verify_storage_credential_custody_probe_reply(
+            &key,
+            &signed.signature,
+            &signed.body,
+            &original,
+            110,
+        );
+        assert_eq!(result.is_ok(), accepted, "observation time {observed_at}");
+        assert!(verify_storage_credential_custody_probe_reply(
+            &key,
+            &signed.signature,
+            &signed.body,
+            &original,
+            130,
+        )
+        .is_err());
+    }
+}
+
+#[test]
 fn probe_reply_requires_fresh_exact_task_nonce_and_purpose() {
     let key = StorageWorkKey::new("fixture-custody-key-independent-0001").unwrap();
     let original = request();
@@ -187,6 +238,31 @@ fn cold_adoption_accepts_current_exact_snapshot_without_rotating_eligibility() {
     .unwrap();
     verify_storage_binding_adoption_reply(&key, &signed.signature, &signed.body, &request, 115)
         .unwrap();
+    request.validate("fixture-deployment", 109).unwrap();
+    assert!(request.validate("fixture-deployment", 104).is_err());
+
+    for (issued_at, accepted) in [(109, true), (110, true), (115, true), (116, false)] {
+        let mut acknowledged = request.expected.clone();
+        acknowledged.issued_at = issued_at;
+        acknowledged.expires_at = issued_at + 3600;
+        let signed = sign_storage_binding_adoption_reply(
+            &key,
+            &StorageBindingAdoptionReply {
+                request: request.clone(),
+                acknowledged,
+            },
+        )
+        .unwrap();
+        let result = verify_storage_binding_adoption_reply(
+            &key,
+            &signed.signature,
+            &signed.body,
+            &request,
+            110,
+        );
+        assert_eq!(result.is_ok(), accepted, "acknowledgement time {issued_at}");
+    }
+
     let mut wrong = request.clone();
     wrong.expected.credentials[0].generation += 1;
     assert!(verify_storage_binding_adoption_reply(
@@ -237,7 +313,7 @@ fn retained_adoption_observation_preserves_live_deadline_and_mac_checks() {
     reply.validate_observation_for(&original).unwrap();
     verify_storage_binding_adoption_reply(&key, &signed.signature, &signed.body, &original, 115)
         .unwrap();
-    for now in [109, 140, 10_000] {
+    for now in [104, 140, 10_000] {
         assert!(verify_storage_binding_adoption_reply(
             &key,
             &signed.signature,
