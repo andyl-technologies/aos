@@ -196,6 +196,17 @@ The existing 1,024-occurrence ordinary native index witness also fails on
 `/tmp/terrane-current-raw-routing-1024-index-nextest.log`). Its writer budget
 remains thirty seconds. The other five growing populations are unqualified;
 Raw routing's passing small regressions do not establish DRV-29 performance.
+The exact twenty native singleton/administrative cases, six roots cases, four
+grace cases and fourteen marking cases all pass on `1d4405cf78` (44/44;
+235.106 seconds; run `e0624c8b-81be-4a1d-9d35-d75d8d9291da`,
+`/tmp/terrane-current-native-gc-44-nextest.log`). The independent non-Send case
+and owning Nix checks remain necessary. Reviewed cadence composition
+`8392c8964c` passes strict native all-target Clippy with warnings denied
+(20.69 seconds; `/tmp/terrane-copied-renewal-cadence-composition-clippy.log`).
+It preserves complete renewal/effect authority and cancellation poisoning;
+its new native ACK observer is followed by actual selected-slot, transaction
+and physical whole-lease checks. Changed-source runtime qualification remains
+pending, including the two previously timed-out recovery cases.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
