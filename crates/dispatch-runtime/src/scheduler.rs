@@ -25,6 +25,7 @@ pub(crate) async fn execute(
     let mut worker: Option<WorkerLease> = None;
     let mut pending = true;
     let mut reusable = false;
+    let mut validation_binding = None;
     let request = ExecutionRequest {
         input: &input,
         hint: hint.as_deref(),
@@ -33,9 +34,9 @@ pub(crate) async fn execute(
     };
     let mut result = tokio::select! {
         biased;
-        _ = cancellation(&mut cancel) => empty_result(&inner, &job, Termination::Cancelled, "cancelled before execution"),
+        _ = cancellation(&mut cancel) => empty_result(&inner, &job, Termination::Cancelled, "request cancelled"),
         _ = tokio::time::sleep_until(deadline) => empty_result(&inner, &job, Termination::LimitReached, "submission deadline expired"),
-        outcome = run(&inner, &job, &request, &mut worker, &mut pending) => {
+        outcome = run(&inner, &job, &request, &mut worker, &mut pending, &mut validation_binding) => {
             match outcome {
                 Ok(finished) => {
                     reusable = true;
@@ -53,6 +54,24 @@ pub(crate) async fn execute(
             }
         }
     };
+    if let Some(binding) = validation_binding {
+        if result
+            .observation_basis
+            .as_ref()
+            .is_some_and(|basis| *basis != binding.observation_basis)
+        {
+            reusable = false;
+            result = empty_result(
+                &inner,
+                &job,
+                Termination::ExecutionFailed,
+                "trusted result observation basis differs from its validation binding",
+            );
+        }
+        result.model_digest = Some(binding.model_digest);
+        result.request_digest = Some(binding.request_digest);
+        result.observation_basis = Some(binding.observation_basis);
+    }
     result.requested_options = Some(EffectiveOptions {
         mode: options.mode,
         wall_time_millis: u64::try_from(options.deadline.as_millis()).unwrap_or(u64::MAX),
@@ -136,6 +155,12 @@ pub(crate) async fn execute(
     }
 }
 
+struct ValidationBinding {
+    model_digest: Vec<u8>,
+    request_digest: Vec<u8>,
+    observation_basis: std::collections::BTreeMap<String, String>,
+}
+
 struct ExecutionRequest<'a> {
     input: &'a Arc<Input>,
     hint: Option<&'a Input>,
@@ -149,6 +174,7 @@ async fn run(
     request: &ExecutionRequest<'_>,
     worker: &mut Option<WorkerLease>,
     pending: &mut bool,
+    validation_binding: &mut Option<ValidationBinding>,
 ) -> Result<wire::Finished, RuntimeError> {
     *worker = Some(
         inner
@@ -183,6 +209,12 @@ async fn run(
         wall_time_millis: u64::try_from(request.options.deadline.as_millis()).unwrap_or(u64::MAX),
         ..Default::default()
     };
+    let json_limits = worker
+        .capabilities
+        .limits
+        .as_ref()
+        .ok_or_else(|| RuntimeError::Protocol("negotiated worker omitted limits".into()))?
+        .json_limits()?;
     worker
         .solve(
             inner.generation,
@@ -190,6 +222,27 @@ async fn run(
             hint_json,
             native_options,
             request.deadline.saturating_duration_since(Instant::now()),
+            |binding| {
+                let observation_basis = dispatch_protocol::json::from_slice(
+                    &binding.observation_basis_json,
+                    json_limits,
+                )?;
+                if let Some(prepared) = request.input.binding.get()
+                    && (prepared.digest != binding.model_digest
+                        || prepared.basis != observation_basis)
+                {
+                    return Err(dispatch_protocol::ProtocolError::CommitmentMismatch.into());
+                }
+                // This state belongs to one solve, not its reusable model input.
+                // Dropping the search future retains facts already attested by
+                // the configured trusted validation runner.
+                *validation_binding = Some(ValidationBinding {
+                    model_digest: binding.model_digest,
+                    request_digest: binding.request_digest,
+                    observation_basis,
+                });
+                Ok(())
+            },
         )
         .await
 }

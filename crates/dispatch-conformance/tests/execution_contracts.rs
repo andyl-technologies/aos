@@ -4,10 +4,10 @@
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use dispatch_model::{Assignment, Binding};
+use dispatch_model::{Assignment, Binding, Problem};
 use dispatch_runtime::{
     CandidateClass, CloseMode, ExecutionProfile, JobStatus, RuntimeError, Session, SessionBuilder,
-    SessionLimits, SolveOptions, Termination,
+    SessionLimits, SolveOptions, SolveResult, Termination,
     providers::{SubprocessProvider, WorkerLaunch},
 };
 
@@ -87,6 +87,56 @@ async fn wait_native_solve(path: &std::path::Path, count: usize) {
     .expect("native actually entered fixture solve");
 }
 
+fn assert_validated_binding(result: &SolveResult, problem: &Problem, deadline: Duration) {
+    let validated = dispatch_model::validate(problem.clone()).expect("valid submitted model");
+    let model_digest =
+        dispatch_protocol::canonical::model_digest(&validated).expect("model commitment");
+    let requested = dispatch_protocol::wire::SolveOptions {
+        mode: dispatch_protocol::wire::SearchMode::LocalSearch as i32,
+        wall_time_millis: u64::try_from(deadline.as_millis()).expect("fixture deadline"),
+        threads: 1,
+        ..Default::default()
+    };
+    let request_digest = dispatch_protocol::canonical::request_digest_for_backend(
+        &validated,
+        "conformance-fixture",
+        &requested,
+        None,
+    )
+    .expect("independent original-request commitment");
+
+    assert_eq!(
+        result.model_digest.as_deref(),
+        Some(model_digest.as_slice())
+    );
+    assert_eq!(
+        result.request_digest.as_deref(),
+        Some(request_digest.as_slice())
+    );
+    assert_eq!(
+        result.observation_basis.as_ref(),
+        Some(&problem.observation_basis)
+    );
+    assert_eq!(
+        result.backend_build_id.as_deref(),
+        Some("conformance-fixture-v1")
+    );
+    assert!(result.worker_generation.is_some());
+    assert_eq!(
+        result
+            .requested_options
+            .as_ref()
+            .map(|options| options.wall_time_millis),
+        Some(requested.wall_time_millis),
+    );
+    for field in ["model_digest", "request_digest", "observation_basis"] {
+        assert!(
+            !result.provenance_unavailable.contains_key(field),
+            "established {field} must survive a native failure: {result:?}",
+        );
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires a built trusted worker executable"]
 async fn runner_rejects_native_feasibility_claims_and_preserves_snapshot_commitments() {
@@ -149,13 +199,20 @@ async fn structurally_valid_unsupported_model_version_has_a_typed_capability_rej
 #[tokio::test]
 #[ignore = "requires a built trusted worker executable"]
 async fn crash_corrupt_frames_and_wrong_generations_are_execution_failures() {
-    for mode in ["crash", "oversized", "truncated", "wrong_generation"] {
+    for mode in [
+        "crash",
+        "oversized",
+        "truncated",
+        "wrong_generation",
+        "wrong_model_digest",
+        "wrong_request_digest",
+        "forged_validation_binding",
+    ] {
         let session = session(mode, SessionLimits::default()).await;
+        let problem = models::problem(&[[1, 1]], &[false], &[None], &[0]);
+        let deadline = Duration::from_secs(3);
         let job = session
-            .submit(
-                models::problem(&[[1, 1]], &[false], &[None], &[0]),
-                options(Duration::from_secs(3)),
-            )
+            .submit(problem.clone(), options(deadline))
             .expect("accepted job");
         let result = tokio::time::timeout(Duration::from_secs(5), job.wait())
             .await
@@ -167,6 +224,17 @@ async fn crash_corrupt_frames_and_wrong_generations_are_execution_failures() {
             "mode {mode}: {result:?}"
         );
         assert_eq!(result.candidate, CandidateClass::Absent, "mode {mode}");
+        assert!(result.assignment.is_none(), "mode {mode}");
+        assert_validated_binding(&result, &problem, deadline);
+        if matches!(
+            mode,
+            "wrong_model_digest" | "wrong_request_digest" | "forged_validation_binding"
+        ) {
+            assert!(
+                result.detail.contains("commitment"),
+                "mode {mode}: {result:?}"
+            );
+        }
         let report = session
             .close(CloseMode::Cancel, Duration::from_secs(2))
             .await
@@ -192,8 +260,9 @@ async fn deadlines_and_cancellation_terminate_uncooperative_native_work() {
     )
     .await;
     let problem = models::problem(&[[1, 1]], &[false], &[None], &[0]);
+    let timed_deadline = Duration::from_millis(750);
     let timed = session
-        .submit(problem.clone(), options(Duration::from_millis(750)))
+        .submit(problem.clone(), options(timed_deadline))
         .expect("timed job");
     wait_native_solve(&solves, 1).await;
     let result = tokio::time::timeout(Duration::from_secs(3), timed.wait())
@@ -201,9 +270,11 @@ async fn deadlines_and_cancellation_terminate_uncooperative_native_work() {
         .expect("hard deadline bound")
         .expect("terminal deadline");
     assert_eq!(result.termination, Termination::LimitReached);
+    assert_validated_binding(&result, &problem, timed_deadline);
 
+    let cancel_deadline = Duration::from_secs(10);
     let cancelled = session
-        .submit(problem, options(Duration::from_secs(10)))
+        .submit(problem.clone(), options(cancel_deadline))
         .expect("cancelled job");
     wait_running(&cancelled).await;
     wait_native_solve(&solves, 2).await;
@@ -213,6 +284,7 @@ async fn deadlines_and_cancellation_terminate_uncooperative_native_work() {
         .expect("hard cancellation bound")
         .expect("terminal cancellation");
     assert_eq!(result.termination, Termination::Cancelled);
+    assert_validated_binding(&result, &problem, cancel_deadline);
     assert!(!cancelled.cancel());
     let report = session
         .close(CloseMode::Cancel, Duration::from_secs(2))

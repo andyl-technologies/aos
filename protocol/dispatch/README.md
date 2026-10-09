@@ -55,6 +55,16 @@ verification classification. Imported verification labels confer no authority
 and must be checked again. Allocation observations do not become reservations,
 execution permissions, or freshness proofs.
 
+After portable validation and commitment verification, the trusted runner emits
+one `Progress.validation_binding` before sending input to native execution. The
+binding carries the independently recomputed model and request digests plus
+the exact observation basis. The supervisor retains these facts even if later
+native execution crashes or exceeds its deadline. This establishes input
+validation, not candidate feasibility. The field is reserved to the configured
+trusted runner: native progress cannot originate or replace it, and attempted
+native bindings fail the worker channel. A consumer checks request correlation,
+32-byte commitments, and bounded strict observation-basis JSON before retention.
+
 ## JSON interoperability
 
 All exact integers use canonical decimal strings, including small values.

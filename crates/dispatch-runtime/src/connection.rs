@@ -80,14 +80,18 @@ impl ConnectedWorker {
         }
     }
 
-    pub async fn solve(
+    pub async fn solve<F>(
         &mut self,
         session_generation: u64,
         problem_json: Vec<u8>,
         hint_json: Vec<u8>,
         options: wire::SolveOptions,
         remaining: Duration,
-    ) -> Result<wire::Finished, RuntimeError> {
+        mut on_validation: F,
+    ) -> Result<wire::Finished, RuntimeError>
+    where
+        F: FnMut(wire::ValidationBinding) -> Result<(), RuntimeError>,
+    {
         if !self.capabilities.search_modes.contains(&options.mode) {
             return Err(RuntimeError::Unsupported(
                 "backend does not implement requested search mode".into(),
@@ -121,15 +125,44 @@ impl ConnectedWorker {
         write_frame_async(&mut self.connection.writer, &request, self.max_frame_bytes)
             .await
             .map_err(protocol_error)?;
+        let mut validated: Option<(Vec<u8>, Vec<u8>)> = None;
         loop {
             let response = read_frame_async(&mut self.connection.reader, self.max_frame_bytes)
                 .await
                 .map_err(protocol_error)?;
             check_response(&request, &response)?;
             match response.body {
-                Some(Body::Finished(finished)) => return Ok(finished),
-                Some(Body::Progress(_)) => {}
-                Some(Body::Error(error)) => return Err(RuntimeError::Protocol(error.detail)),
+                Some(Body::Finished(finished)) => {
+                    if let Some((model, request)) = &validated
+                        && (finished.model_digest != *model || finished.request_digest != *request)
+                    {
+                        return Err(dispatch_protocol::ProtocolError::CommitmentMismatch.into());
+                    }
+                    return Ok(finished);
+                }
+                Some(Body::Progress(progress)) => {
+                    if let Some(binding) = progress.validation_binding {
+                        if validated.is_some()
+                            || progress.stage != wire::ExecutionStage::Materializing as i32
+                            || binding.model_digest.len() != 32
+                            || binding.request_digest.len() != 32
+                        {
+                            return Err(RuntimeError::Protocol(
+                                "invalid trusted validation binding event".into(),
+                            ));
+                        }
+                        let commitments =
+                            (binding.model_digest.clone(), binding.request_digest.clone());
+                        on_validation(binding)?;
+                        validated = Some(commitments);
+                    }
+                }
+                Some(Body::Error(error)) => {
+                    if error.code == wire::ErrorCode::CommitmentMismatch as i32 {
+                        return Err(dispatch_protocol::ProtocolError::CommitmentMismatch.into());
+                    }
+                    return Err(RuntimeError::Protocol(error.detail));
+                }
                 _ => return Err(RuntimeError::Protocol("unexpected solve response".into())),
             }
         }

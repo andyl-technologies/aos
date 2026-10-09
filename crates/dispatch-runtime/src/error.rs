@@ -34,7 +34,7 @@ pub enum RuntimeError {
     #[error("execution JSON conversion failed")]
     Json(#[from] serde_json::Error),
     /// The language-neutral protocol rejected transport or exact interchange.
-    #[error("worker wire protocol failed")]
+    #[error("worker wire protocol failed: {0}")]
     Wire(#[from] dispatch_protocol::ProtocolError),
     /// Portable model validation failed.
     #[error("invalid allocation model")]

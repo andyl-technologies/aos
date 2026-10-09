@@ -259,7 +259,7 @@ async fn serve<W: AsyncWrite + Unpin>(
                 let native = native_slot
                     .as_mut()
                     .ok_or_else(|| RuntimeError::Protocol("native connection missing".into()))?;
-                solve_request(&request, solve, &prepared, native, input, &limits).await?
+                solve_request(&request, solve, &prepared, native, input, writer, &limits).await?
             }
             _ => error_response(
                 &request,
@@ -270,15 +270,20 @@ async fn serve<W: AsyncWrite + Unpin>(
         write_frame_async(writer, &response, frame_limit)
             .await
             .map_err(protocol_error)?;
+        if matches!(&response.body, Some(Body::Error(error)) if error.code == wire::ErrorCode::CommitmentMismatch as i32)
+        {
+            return Err(dispatch_protocol::ProtocolError::CommitmentMismatch.into());
+        }
     }
 }
 
-async fn solve_request(
+async fn solve_request<W: AsyncWrite + Unpin>(
     request: &wire::WorkerEnvelope,
     solve: &wire::Solve,
     prepared: &BTreeMap<String, ValidatedProblem>,
     native: &mut Native,
     input: &mut InputReceiver,
+    writer: &mut W,
     limits: &wire::WireLimits,
 ) -> Result<wire::WorkerEnvelope, RuntimeError> {
     let started = Instant::now();
@@ -373,6 +378,18 @@ async fn solve_request(
         }
         return Ok(response);
     }
+    // Validation authority belongs to this runner. Publish the immutable
+    // request facts before native execution so later failure cannot erase them.
+    let observation_basis_json = serde_json::to_vec(&problem.problem().observation_basis)?;
+    let binding = validation_progress(
+        request,
+        digest.clone(),
+        request_digest.clone(),
+        observation_basis_json.clone(),
+    );
+    write_frame_async(writer, &binding, limits.max_frame_bytes)
+        .await
+        .map_err(protocol_error)?;
     let remaining = solve
         .remaining_wall_time_millis
         .unwrap_or(options.wall_time_millis);
@@ -405,13 +422,28 @@ async fn solve_request(
         };
         check_response(request, &response)?;
         match response.body {
-            Some(Body::Progress(_)) => continue,
+            Some(Body::Progress(progress)) => {
+                if progress.validation_binding.is_some() {
+                    return Ok(error_response(
+                        request,
+                        wire::ErrorCode::CommitmentMismatch,
+                        "native backend attempted a reserved trusted validation binding",
+                    ));
+                }
+                continue;
+            }
             Some(Body::Finished(mut finished)) => {
+                if finished.model_digest != digest || finished.request_digest != request_digest {
+                    return Ok(error_response(
+                        request,
+                        wire::ErrorCode::CommitmentMismatch,
+                        "native model or request commitment mismatch",
+                    ));
+                }
                 finished.model_digest = digest;
                 finished.request_digest = request_digest;
                 finished.backend_build_id = native.capabilities.backend_build_id.clone();
-                finished.observation_basis_json =
-                    serde_json::to_vec(&problem.problem().observation_basis)?;
+                finished.observation_basis_json = observation_basis_json;
                 let verification_started = Instant::now();
                 verify_finished(&problem, &mut finished, limits)?;
                 finished
@@ -444,8 +476,7 @@ async fn solve_request(
                     finished.model_digest = digest;
                     finished.request_digest = request_digest;
                     finished.backend_build_id = native.capabilities.backend_build_id.clone();
-                    finished.observation_basis_json =
-                        serde_json::to_vec(&problem.problem().observation_basis)?;
+                    finished.observation_basis_json = observation_basis_json;
                     if let Some(Body::Solve(forwarded)) = &forwarded.body {
                         finished.effective_options = forwarded.options.clone();
                     }
@@ -684,4 +715,24 @@ pub(crate) fn input_error_code(error: &RuntimeError) -> wire::ErrorCode {
         },
         _ => wire::ErrorCode::InvalidMessage,
     }
+}
+
+pub(crate) fn validation_progress(
+    request: &wire::WorkerEnvelope,
+    model_digest: Vec<u8>,
+    request_digest: Vec<u8>,
+    observation_basis_json: Vec<u8>,
+) -> wire::WorkerEnvelope {
+    with_body(
+        request,
+        Body::Progress(wire::Progress {
+            stage: wire::ExecutionStage::Materializing as i32,
+            validation_binding: Some(wire::ValidationBinding {
+                model_digest,
+                request_digest,
+                observation_basis_json,
+            }),
+            ..Default::default()
+        }),
+    )
 }

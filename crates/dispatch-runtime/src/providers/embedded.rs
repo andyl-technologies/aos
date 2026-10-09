@@ -20,7 +20,10 @@ use super::{ExecutionProvider, ResourceGrant, WorkerConnection, WorkerControl, W
 use crate::{
     RuntimeError,
     connection::{default_wire_limits, protocol_error, version},
-    worker::{input_error_code, parse_problem, rejected, rejected_model, verify_finished},
+    worker::{
+        input_error_code, parse_problem, rejected, rejected_model, validation_progress,
+        verify_finished,
+    },
 };
 
 /// Gives an embedded backend cooperative cancellation without forceful claims.
@@ -340,6 +343,15 @@ async fn serve<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                 .map_err(protocol_error)?;
             continue;
         }
+        let binding = validation_progress(
+            &request,
+            digest.clone(),
+            request_digest.clone(),
+            serde_json::to_vec(&model.problem().observation_basis)?,
+        );
+        write_frame_async(&mut writer, &binding, limits.max_frame_bytes)
+            .await
+            .map_err(protocol_error)?;
         options.wall_time_millis = solve
             .remaining_wall_time_millis
             .unwrap_or(options.wall_time_millis);

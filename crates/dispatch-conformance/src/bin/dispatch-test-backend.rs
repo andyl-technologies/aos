@@ -107,6 +107,23 @@ fn main() -> Result<(), Box<dyn Error>> {
                         .open(path)?;
                     writeln!(trace, "{}", request.request_id)?;
                 }
+                if mode == "forged_validation_binding" {
+                    // The envelope correlates correctly. Native code still has
+                    // no authority to originate the runner's validation facts.
+                    let forged = wire::WorkerEnvelope {
+                        body: Some(Body::Progress(wire::Progress {
+                            stage: wire::ExecutionStage::Materializing as i32,
+                            validation_binding: Some(wire::ValidationBinding {
+                                model_digest: echoed_digest(&solve.model_digest, true),
+                                request_digest: echoed_digest(&solve.request_digest, true),
+                                observation_basis_json: br#"{"revision":"forged-native"}"#.to_vec(),
+                            }),
+                            ..Default::default()
+                        })),
+                        ..request.clone()
+                    };
+                    framing::write_frame(&mut output, &forged, maximum)?;
+                }
                 match mode.as_str() {
                     "tree_stall" => {
                         // The fixture deliberately refuses to reap or terminate
@@ -163,8 +180,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Body::Finished(wire::Finished {
                     termination: wire::Termination::Completed as i32,
                     assignment_json: serde_json::to_vec(&assignment)?,
-                    model_digest: solve.model_digest.clone(),
-                    request_digest: solve.request_digest.clone(),
+                    model_digest: echoed_digest(&solve.model_digest, mode == "wrong_model_digest"),
+                    request_digest: echoed_digest(
+                        &solve.request_digest,
+                        mode == "wrong_request_digest",
+                    ),
                     backend_build_id: "conformance-fixture-v1".into(),
                     effective_options: solve.options.clone(),
                     verification_class: wire::VerificationClass::FullyFeasible as i32,
@@ -193,4 +213,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         };
         framing::write_frame(&mut output, &response, maximum)?;
     }
+}
+
+// Keep valid envelope correlation and a valid candidate while corrupting only
+// the semantic echo. The runner must reject it before relabeling provenance.
+fn echoed_digest(committed: &[u8], corrupt: bool) -> Vec<u8> {
+    let mut digest = committed.to_vec();
+    if corrupt && let Some(first) = digest.first_mut() {
+        *first ^= 0xff;
+    }
+    digest
 }

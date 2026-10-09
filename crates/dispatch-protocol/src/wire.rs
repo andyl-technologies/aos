@@ -247,6 +247,26 @@ pub struct Progress {
     /// Encodes detail according to the published schema.
     #[prost(string, tag = "3")]
     pub detail: String,
+    /// Binds independently validated input before native execution begins.
+    ///
+    /// Only the trusted runner may originate this message; native progress does
+    /// not confer validation authority and cannot populate this field.
+    #[prost(message, optional, tag = "4")]
+    pub validation_binding: Option<ValidationBinding>,
+}
+
+/// Carries immutable validation facts established by the trusted runner.
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+pub struct ValidationBinding {
+    /// The independently recomputed 32-byte immutable model commitment.
+    #[prost(bytes = "vec", tag = "1")]
+    pub model_digest: Vec<u8>,
+    /// The independently recomputed 32-byte original request commitment.
+    #[prost(bytes = "vec", tag = "2")]
+    pub request_digest: Vec<u8>,
+    /// The exact typed JSON observation basis of the validated model.
+    #[prost(bytes = "vec", tag = "3")]
+    pub observation_basis_json: Vec<u8>,
 }
 
 /// Carries the candidate protocol message.

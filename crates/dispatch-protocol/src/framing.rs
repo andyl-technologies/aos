@@ -242,6 +242,57 @@ mod tests {
         assert_eq!(prefix.position(), 4);
     }
 
+    #[test]
+    fn validation_binding_round_trips_as_a_typed_nested_message() {
+        let envelope = wire::WorkerEnvelope {
+            body: Some(wire::worker_envelope::Body::Progress(wire::Progress {
+                stage: wire::ExecutionStage::Materializing as i32,
+                validation_binding: Some(wire::ValidationBinding {
+                    model_digest: vec![1; 32],
+                    request_digest: vec![2; 32],
+                    observation_basis_json: br#"{"revision":"opaque"}"#.to_vec(),
+                }),
+                ..Default::default()
+            })),
+            ..hello()
+        };
+
+        let frame = encode_frame(&envelope, 1024).unwrap();
+
+        assert_eq!(decode_frame(&frame, 1024).unwrap(), envelope);
+    }
+
+    #[test]
+    fn validation_binding_rejects_unknown_and_duplicate_nested_fields() {
+        let binding = wire::ValidationBinding {
+            model_digest: vec![1; 32],
+            request_digest: vec![2; 32],
+            observation_basis_json: b"{}".to_vec(),
+        };
+
+        for invalid_field in [vec![0x20, 0x01], vec![0x0a, 0x00]] {
+            let mut binding_payload = binding.encode_to_vec();
+            binding_payload.extend_from_slice(&invalid_field);
+
+            let mut progress_payload = vec![0x08, 0x01, 0x22, binding_payload.len() as u8];
+            progress_payload.extend_from_slice(&binding_payload);
+            let mut payload = wire::WorkerEnvelope {
+                body: None,
+                ..hello()
+            }
+            .encode_to_vec();
+            payload.extend_from_slice(&[0x7a, progress_payload.len() as u8]);
+            payload.extend_from_slice(&progress_payload);
+            let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
+            frame.extend_from_slice(&payload);
+
+            assert!(matches!(
+                decode_frame(&frame, 1024),
+                Err(ProtocolError::NonCanonicalProtobuf)
+            ));
+        }
+    }
+
     #[tokio::test]
     async fn asynchronous_transport_handles_fragmented_frames() {
         let expected = hello();

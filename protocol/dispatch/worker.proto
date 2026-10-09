@@ -117,6 +117,14 @@ message Progress {
   ExecutionStage stage = 1;
   uint64 completed_iterations = 2;
   string detail = 3;
+  // Reserved to the trusted runner after independent portable input validation.
+  ValidationBinding validation_binding = 4;
+}
+
+message ValidationBinding {
+  bytes model_digest = 1;
+  bytes request_digest = 2;
+  bytes observation_basis_json = 3;
 }
 
 enum ExecutionStage {
