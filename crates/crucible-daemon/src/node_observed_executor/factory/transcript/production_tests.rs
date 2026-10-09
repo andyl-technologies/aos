@@ -247,5 +247,325 @@ pub(super) fn drive_service_original(fixture: ServiceReplayFixture) {
         );
         deadline.pause(Duration::from_millis(1));
     }
-    assert!(retention.retention_roots().unwrap().is_empty());
+    // Native worlds have retired, while durable original admission history
+    // remains independently rooted and cannot become a replacement dispatch.
+    assert!(!retention.retention_roots().unwrap().is_empty());
+}
+
+// The public socket consumes the same operator-owned signer capability as the
+// actor; request bytes cannot enroll a source path, key or replay qualification.
+pub(super) fn drive_control_original(fixture: ServiceReplayFixture) {
+    use crate::node_control::{
+        NodeConditionalReplayRequest, NodeControlCommand, NodeControlDaemon, NodeControlRequest,
+        NodeControlResult, NodeDaemonPolicy, decode_conditional_preparation, decode_node_state,
+        request_node_control,
+    };
+    use crate::node_observed_executor::ConditionalPreparationState;
+    use crucible_campaign::observed_node_attempt::ObservedAttemptRequest;
+    use std::{
+        os::unix::fs::PermissionsExt,
+        sync::atomic::{AtomicBool, Ordering},
+    };
+
+    let ServiceReplayFixture {
+        archive,
+        sources,
+        executable,
+        private_root,
+        configuration,
+        ..
+    } = fixture;
+    let state_directory = private_root.join("conditional-control");
+    std::fs::create_dir(&state_directory).unwrap();
+    std::fs::set_permissions(&state_directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = state_directory.join("control.sock");
+    let policy = NodeDaemonPolicy {
+        format: "crucible.node-daemon-policy".into(),
+        version: 1,
+        state_directory,
+        socket: socket.clone(),
+        expected_device: measure_executable(&executable).unwrap(),
+        device_executable: executable,
+        control_timeout_ms: 5000,
+        maximum_worlds: 2,
+        maximum_pending_requests: 2,
+        maximum_host_state_worlds: None,
+        maximum_native_state_requests: None,
+        immutable_artifacts: Vec::new(),
+    };
+    let mut daemon = NodeControlDaemon::start_with_conditional_archive(policy, archive).unwrap();
+    let retention = daemon.retention_owner();
+    let stopping = Arc::new(AtomicBool::new(false));
+    let serving_stop = stopping.clone();
+    let serving = std::thread::spawn(move || {
+        daemon.serve(&serving_stop).unwrap();
+        assert!(
+            retention.is_retired(),
+            "complete original runtime custody was not reclaimed"
+        );
+        assert!(
+            !daemon.retention_roots().unwrap().is_empty(),
+            "durable admission receipts lost their GC owner"
+        );
+    });
+    let configuration_bytes =
+        canonical::canonical_json(&serde_json::to_value(&configuration).unwrap()).unwrap();
+    let original = NodeConditionalReplayRequest::new(
+        "socket-original-replay".into(),
+        "67676767676767676767676767676767".into(),
+        sources.clone(),
+        configuration_bytes.clone(),
+    )
+    .unwrap();
+    let deadline = ProcessDeadline::after(Duration::from_secs(15)).unwrap();
+
+    // Syntax can reserve admission, but counterfactual source scope cannot become Ready.
+    let mut changed_configuration = configuration.clone();
+    changed_configuration.horizon_ps = U64::new(100);
+    let changed = NodeConditionalReplayRequest::new(
+        "changed-context".into(),
+        "66666666666666666666666666666666".into(),
+        sources.clone(),
+        canonical::canonical_json(&serde_json::to_value(&changed_configuration).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let changed_request =
+        NodeControlRequest::conditional_replay("changed-horizon", changed).unwrap();
+    let changed_receipt =
+        decode_conditional_preparation(&request_node_control(&socket, &changed_request).unwrap())
+            .unwrap();
+    let changed_terminal = await_conditional_receipt(&socket, &changed_receipt, &deadline);
+    assert!(matches!(
+        changed_terminal.outcome,
+        ConditionalPreparationState::Unavailable { .. }
+    ));
+    let missing = NodeControlRequest::new(
+        "missing-before-admission",
+        NodeControlCommand::Status {
+            execution: changed_receipt.execution.clone(),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        request_node_control(&socket, &missing).unwrap().result,
+        NodeControlResult::Refused { .. }
+    ));
+
+    let request =
+        NodeControlRequest::conditional_replay("original-admission", original.clone()).unwrap();
+    let pending =
+        decode_conditional_preparation(&request_node_control(&socket, &request).unwrap()).unwrap();
+    let repeated =
+        decode_conditional_preparation(&request_node_control(&socket, &request).unwrap()).unwrap();
+    assert_eq!(pending.request, repeated.request);
+    let mut changed_retry = original;
+    changed_retry.configuration = crucible_node_contract::Bytes::new(
+        configuration_bytes.iter().copied().chain(*b" ").collect(),
+    );
+    let changed_retry =
+        NodeControlRequest::conditional_replay("altered-exact-original-bytes", changed_retry)
+            .unwrap();
+    assert!(matches!(
+        request_node_control(&socket, &changed_retry)
+            .unwrap()
+            .result,
+        NodeControlResult::Refused { .. }
+    ));
+    let ready = await_conditional_receipt(&socket, &pending, &deadline);
+    let ConditionalPreparationState::Admitted { observed_request } = ready.outcome else {
+        panic!("original source admission did not finish");
+    };
+    let original_request =
+        ObservedAttemptRequest::from_canonical_bytes(observed_request.as_slice()).unwrap();
+    assert!(original_request.conditional_scope().is_some());
+    assert!(!original_request.capabilities().roster().is_repeatable());
+    let status = NodeControlRequest::new(
+        "original-status",
+        NodeControlCommand::Status {
+            execution: pending.execution,
+        },
+    )
+    .unwrap();
+    loop {
+        let state = decode_node_state(&request_node_control(&socket, &status).unwrap()).unwrap();
+        assert_eq!(state.request(), &original_request);
+        match state {
+            ObservedAttemptState::Completed(_) => break,
+            ObservedAttemptState::Quarantined { reason, .. } => panic!("socket replay: {reason}"),
+            ObservedAttemptState::Reserved(_) => {}
+        }
+        assert!(!deadline.expired(), "socket conditional replay stalled");
+        deadline.pause(Duration::from_millis(1));
+    }
+
+    if let Some(cli) = std::env::var_os("CRUCIBLE_TEST_CLI") {
+        let sources_path = private_root.join("conditional-original-sources.json");
+        let configuration_path = private_root.join("conditional-original-configuration.json");
+        std::fs::write(
+            &sources_path,
+            canonical::canonical_json(&serde_json::to_value(&sources).unwrap()).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(&configuration_path, &configuration_bytes).unwrap();
+        let cli_execution = "68686868686868686868686868686868";
+        let output = std::process::Command::new(&cli)
+            .args(["node", "conditional-replay", "--socket"])
+            .arg(&socket)
+            .args([
+                "--ledger",
+                "socket-original-replay",
+                "--execution",
+                cli_execution,
+                "--sources",
+            ])
+            .arg(&sources_path)
+            .arg("--configuration")
+            .arg(&configuration_path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "conditional CLI: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["materialization"], "conditional_transcript_replay");
+        assert_eq!(value["repeatable"], false);
+        let read = NodeControlRequest::conditional_replay_status(
+            "cli-preparation-status",
+            cli_execution.to_owned(),
+        )
+        .unwrap();
+        let pending =
+            decode_conditional_preparation(&request_node_control(&socket, &read).unwrap()).unwrap();
+        let ready = await_conditional_receipt(&socket, &pending, &deadline);
+        assert!(matches!(
+            ready.outcome,
+            ConditionalPreparationState::Admitted { .. }
+        ));
+        let cli_status = std::process::Command::new(&cli)
+            .args(["node", "conditional-replay-status", "--socket"])
+            .arg(&socket)
+            .args(["--execution", cli_execution])
+            .output()
+            .unwrap();
+        assert!(
+            cli_status.status.success(),
+            "conditional status CLI: {}",
+            String::from_utf8_lossy(&cli_status.stderr)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&cli_status.stdout).unwrap();
+        assert_eq!(value["admission"], "admitted");
+        assert_eq!(value["source_authenticated"], true);
+        let status = NodeControlRequest::new(
+            "cli-completion",
+            NodeControlCommand::Status {
+                execution: cli_execution.into(),
+            },
+        )
+        .unwrap();
+        loop {
+            match decode_node_state(&request_node_control(&socket, &status).unwrap()).unwrap() {
+                ObservedAttemptState::Completed(result) => {
+                    assert_eq!(
+                        result.request().plan_digest(),
+                        original_request.plan_digest()
+                    );
+                    break;
+                }
+                ObservedAttemptState::Quarantined { reason, .. } => {
+                    panic!("conditional CLI: {reason}")
+                }
+                ObservedAttemptState::Reserved(_) => {}
+            }
+            assert!(!deadline.expired(), "conditional CLI did not finish");
+            deadline.pause(Duration::from_millis(1));
+        }
+        let mut changed_sources = sources;
+        let producer = changed_sources
+            .remove(&Id::new("producer").unwrap())
+            .unwrap();
+        changed_sources.insert(Id::new("counterfactual-producer").unwrap(), producer);
+        std::fs::write(
+            &sources_path,
+            canonical::canonical_json(&serde_json::to_value(changed_sources).unwrap()).unwrap(),
+        )
+        .unwrap();
+        let changed_execution = "69696969696969696969696969696969";
+        let output = std::process::Command::new(&cli)
+            .args(["node", "conditional-replay", "--socket"])
+            .arg(&socket)
+            .args([
+                "--ledger",
+                "changed-source-actor",
+                "--execution",
+                changed_execution,
+                "--sources",
+            ])
+            .arg(&sources_path)
+            .arg("--configuration")
+            .arg(&configuration_path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "syntax-only pending receipt was unavailable"
+        );
+        let read = NodeControlRequest::conditional_replay_status(
+            "changed-source-status",
+            changed_execution.into(),
+        )
+        .unwrap();
+        let pending =
+            decode_conditional_preparation(&request_node_control(&socket, &read).unwrap()).unwrap();
+        assert!(matches!(
+            await_conditional_receipt(&socket, &pending, &deadline).outcome,
+            ConditionalPreparationState::Unavailable { .. }
+        ));
+        let absent = NodeControlRequest::new(
+            "counterfactual-source-status",
+            NodeControlCommand::Status {
+                execution: changed_execution.into(),
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            request_node_control(&socket, &absent).unwrap().result,
+            NodeControlResult::Refused { .. }
+        ));
+    }
+    stopping.store(true, Ordering::Release);
+    serving.join().unwrap();
+}
+
+fn await_conditional_receipt(
+    socket: &std::path::Path,
+    original: &crate::node_observed_executor::ConditionalPreparationRecord,
+    deadline: &ProcessDeadline,
+) -> crate::node_observed_executor::ConditionalPreparationRecord {
+    use crate::node_observed_executor::ConditionalPreparationState;
+    let request = crate::node_control::NodeControlRequest::conditional_replay_status(
+        "original-preparation-status",
+        original.execution.clone(),
+    )
+    .unwrap();
+    loop {
+        let record = crate::node_control::decode_conditional_preparation(
+            &crate::node_control::request_node_control(socket, &request).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record.request, original.request);
+        assert_eq!(record.execution, original.execution);
+        if !matches!(
+            record.outcome,
+            ConditionalPreparationState::AwaitingAdmission { .. }
+        ) {
+            return record;
+        }
+        assert!(
+            !deadline.expired(),
+            "original conditional admission stalled"
+        );
+        deadline.pause(Duration::from_millis(1));
+    }
 }

@@ -139,6 +139,7 @@ impl InstalledNodeCatalog {
                     preserved_cut: boundary,
                 },
                 label: Some(profile),
+                capabilities: None,
             },
         )
     }

@@ -13,6 +13,9 @@
 //! operator. Requests cannot install implementations or mint qualification.
 //! Compilation and dispatch belong to the actual daemon's installed catalog.
 
+mod conditional_replay;
+#[cfg(test)]
+mod conditional_replay_tests;
 mod daemon;
 mod host_state;
 mod host_state_ledger;
@@ -36,6 +39,9 @@ use crate::node_observed_executor::{
 };
 use crate::node_observed_executor::{NativeWorldRecord, NativeWorldRequest};
 
+pub use conditional_replay::{
+    NodeConditionalReplayRequest, decode_conditional_preparation, decode_conditional_replay_sources,
+};
 pub use daemon::{
     NodeArchiveArtifactMode, NodeControlDaemon, NodeDaemonPolicy, NodeImmutableArtifactPolicy,
 };
@@ -92,6 +98,16 @@ pub enum NodeControlCommand {
     NativeState {
         /// Contains the original closed native operation without native authority.
         request: Box<NativeWorldRequest>,
+    },
+    /// Selects only unchanged-source replay under explicit control edition five.
+    ConditionalReplay {
+        /// Contains signed source identities and original context, never authority.
+        request: Box<NodeConditionalReplayRequest>,
+    },
+    /// Reads original conditional preparation without waiting for slow source admission.
+    ConditionalReplayStatus {
+        /// Names the original independent nonzero admission nonce.
+        execution: String,
     },
     /// Captures, restores, or reads exact state under control edition two.
     HostState {
@@ -150,6 +166,11 @@ pub enum NodeControlResult {
     NativeState {
         /// Retains the original nonce, archive, actual owner scopes and operation.
         record: Box<NativeWorldRecord>,
+    },
+    /// Retains data-only source admission custody under explicit edition five.
+    ConditionalPreparation {
+        /// Holds exact durable request commitment and original admission status.
+        record: Bytes,
     },
     /// Returns the original complete exact-state reservation or result.
     HostState {
@@ -274,6 +295,8 @@ impl NodeControlRequest {
             NodeControlCommand::CacheReuse { .. } => 6,
             NodeControlCommand::TerminalState { .. } => 4,
             NodeControlCommand::NativeState { .. } => 3,
+            NodeControlCommand::ConditionalReplay { .. }
+            | NodeControlCommand::ConditionalReplayStatus { .. } => 5,
             NodeControlCommand::HostState { .. } => 2,
             _ => 1,
         };
@@ -292,6 +315,10 @@ impl NodeControlRequest {
                 request.validate()
             }
             NodeControlCommand::NativeState { request } => request.validate().map_err(refused),
+            NodeControlCommand::ConditionalReplay { request } => request.validate(),
+            NodeControlCommand::ConditionalReplayStatus { execution } => {
+                execution_id(execution).map(|_| ())
+            }
             NodeControlCommand::Compile { selections } => validate_selections(selections),
             NodeControlCommand::Observe {
                 ledger,
@@ -386,6 +413,9 @@ pub fn decode_node_state(
         NodeControlResult::Refused { reason } => Err(refused(reason)),
         NodeControlResult::CacheReused { .. } => Err(refused(
             "cache reuse is original evidence, not fresh execution state",
+        )),
+        NodeControlResult::ConditionalPreparation { .. } => Err(refused(
+            "conditional preparation is not admitted observed execution state",
         )),
         NodeControlResult::HostState { .. } => {
             Err(refused("exact state is not observed execution state"))

@@ -2,6 +2,7 @@
 
 mod archive_artifacts;
 mod cached_artifacts;
+mod capabilities;
 mod clock_label;
 mod gem5_profile;
 mod host_state;
@@ -24,6 +25,9 @@ mod semantic_terminal_tests;
 
 pub(super) use transcript::replay_stepper::{ReplayStep, ReplayStepper};
 
+pub use capabilities::{
+    InstalledCapabilityCandidate, InstalledCapabilityClockFactory, ResolvedCapabilityWorld,
+};
 pub use clock_label::{InstalledClockLabelFactory, InstalledClockLabelProfile};
 pub use gem5_profile::InstalledGem5ClosedProfile;
 pub use host_state::InstalledHostStateFactory;
@@ -265,6 +269,7 @@ struct PreparationSource<'a> {
 struct SelectedPreparation<'a> {
     source: PreparationSource<'a>,
     label: Option<&'a clock_label::ClockLabelPolicy>,
+    capabilities: Option<&'a capabilities::ResolvedCapabilityWorld>,
 }
 
 /// Owns trusted local installation measurements and finite world retirement slots.
@@ -437,11 +442,23 @@ impl InstalledNodeCatalog {
         blobs: Arc<dyn ImmutableBlobBackend>,
         refs: Arc<dyn MutableRefBackend>,
     ) -> Result<NodeObservedBackend, NodeObservedError> {
+        let prepared = self.prepare_world(selections, scenario, execution)?;
+        Self::finish_observed(prepared, selections, configuration, execution, blobs, refs)
+    }
+
+    fn finish_observed(
+        prepared_world: InstalledPreparedWorld,
+        selections: &[InstalledNodeSelection],
+        configuration: NodeRunConfiguration,
+        execution: ExecutionId,
+        blobs: Arc<dyn ImmutableBlobBackend>,
+        refs: Arc<dyn MutableRefBackend>,
+    ) -> Result<NodeObservedBackend, NodeObservedError> {
         let InstalledPreparedWorld {
             scenario,
             graph,
             realization: prepared,
-        } = self.prepare_world(selections, scenario, execution)?;
+        } = prepared_world;
         let context = super::backend::input_context_bytes(&scenario, &configuration)?;
         let inputs = ContentId::for_bytes(ObjectKind::Trace, 1, &context);
         let receipt = blobs.put_if_absent(inputs, &BlobHandle::from_bytes(context))?;
@@ -579,6 +596,7 @@ impl InstalledNodeCatalog {
             SelectedPreparation {
                 source,
                 label: None,
+                capabilities: None,
             },
         )
     }
@@ -592,7 +610,11 @@ impl InstalledNodeCatalog {
         mut recorder: Option<&mut transcript::ReferenceRecorder<'_>>,
         preparation: SelectedPreparation<'_>,
     ) -> Result<(InstalledPreparedWorld, ActivationRecord), NodeObservedError> {
-        let SelectedPreparation { source, label } = preparation;
+        let SelectedPreparation {
+            source,
+            label,
+            capabilities,
+        } = preparation;
         let mut resolved = profile::build_world(
             selections,
             &self.host_identity,
@@ -606,6 +628,20 @@ impl InstalledNodeCatalog {
                 ));
             }
             resolved.scenario = label.labeled.clone();
+        }
+        if let Some(capabilities) = capabilities {
+            if label.is_some() {
+                return Err(refused(
+                    "capability and label selection require a separately qualified composed candidate",
+                ));
+            }
+            capabilities::policy::matches(
+                selections,
+                &resolved.scenario,
+                &capabilities.requirements,
+            )?;
+            resolved.scenario =
+                capabilities::bind_requirements(resolved.scenario, &capabilities.requirements)?;
         }
         if scenario.canonical_bytes()? != resolved.scenario.canonical_bytes()? {
             return Err(refused(
@@ -817,6 +853,15 @@ impl InstalledNodeCatalog {
                 &clock_label::LabelAdmission {
                     original: &evidence,
                     registry: &registry,
+                },
+                admission_limits,
+            )?
+        } else if let Some(capabilities) = capabilities {
+            scenario.admit(
+                &bindings,
+                &capabilities::admission::CapabilityAdmission {
+                    original: &evidence,
+                    resolved: capabilities,
                 },
                 admission_limits,
             )?

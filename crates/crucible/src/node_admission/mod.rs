@@ -7,6 +7,7 @@
 //! or permission to activate. Preparation, all-owner readiness, durable world
 //! publication, and execution grants remain separate host transactions.
 
+mod capabilities;
 mod error;
 mod evidence;
 mod extensions;
@@ -23,6 +24,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use crucible_node_contract::{
     GuaranteeProfile, HashRef, Id, NodeBinding, NodeDescriptor, OwnerBinding, Repeatability,
     WorldBinding,
+};
+
+pub use capabilities::{
+    AdmittedCapabilitySelection, CAPABILITY_REQUIREMENTS_FORMAT,
+    CAPABILITY_REQUIREMENTS_MEDIA_TYPE, CAPABILITY_SELECTION_FORMAT,
+    CAPABILITY_SELECTION_MEDIA_TYPE, CapabilityBinding, CapabilityRequirements,
+    CapabilitySelection, ComputeRequirement, GuaranteeRequirement, MAX_CAPABILITY_REQUIREMENTS,
+    NodeCapabilityRequirement, OperationRequirement, TimingRequirement,
 };
 
 pub use error::{AdmissionCode, AdmissionError, AdmissionStage, AdmissionSubject, EffectCertainty};
@@ -78,9 +87,22 @@ pub struct AdmittedGraph {
     requirements: ScenarioRequirements,
     owner_conflicts: BTreeMap<Id, BTreeSet<Id>>,
     selected_extensions: AdmittedExtensionSet,
+    capability_requirements: Option<AdmittedCapabilitySelection>,
 }
 
 impl AdmittedGraph {
+    /// Borrows explicit mandatory capabilities bound into the selected scenario root.
+    pub fn capability_requirements(&self) -> Option<&CapabilityRequirements> {
+        self.capability_requirements
+            .as_ref()
+            .map(AdmittedCapabilitySelection::requirements)
+    }
+
+    /// Borrows the complete original authored selection inventory sealed at admission.
+    pub fn capability_selection(&self) -> Option<&AdmittedCapabilitySelection> {
+        self.capability_requirements.as_ref()
+    }
+
     /// Borrows the exact qualified extensions and their selected immutable closure.
     ///
     /// Installed but unselected definitions do not contribute to this inventory.
@@ -213,6 +235,7 @@ pub fn admit_graph(
         },
     )?;
     let nodes::NodeSelections {
+        scenario_bytes,
         guarantees,
         operating_policies,
     } = nodes::validate_nodes(&request, &mut content)?;
@@ -249,6 +272,13 @@ pub fn admit_graph(
 
     let owner_conflicts = graph::owner_conflicts(&request, &ownership, limits)?;
     let selected_extensions = content.take_extensions();
+    let capability_requirements = capabilities::check_selection(
+        &request,
+        &guarantees,
+        &selected_extensions,
+        scenario_bytes,
+        &mut content,
+    )?;
 
     Ok(AdmittedGraph {
         world: request.world.clone(),
@@ -279,6 +309,7 @@ pub fn admit_graph(
         requirements: request.requirements.clone(),
         owner_conflicts,
         selected_extensions,
+        capability_requirements,
     })
 }
 

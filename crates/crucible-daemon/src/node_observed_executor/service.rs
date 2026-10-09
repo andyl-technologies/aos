@@ -59,12 +59,24 @@ pub enum NodeObservationServiceError {
     Refused(String),
 }
 
+#[path = "service/conditional_preparation.rs"]
+mod conditional_preparation;
+use conditional_preparation::ledger::{ConditionalPreparationLedger, PreparationReservation};
+pub use conditional_preparation::{
+    ConditionalPreparationRecord, ConditionalPreparationRequest, ConditionalPreparationState,
+};
+
 type Reply = SyncSender<Result<ObservedAttemptState, NodeObservationServiceError>>;
 
 enum Command {
     CacheReuse {
         request: super::NodeCacheReuseRequest,
         reply: SyncSender<Result<super::NodeCacheReuseReceipt, NodeObservationServiceError>>,
+    },
+    ConditionalPreparation {
+        request: ConditionalPreparationRequest,
+        reservation: PreparationReservation,
+        ledger: ConditionalPreparationLedger,
     },
     Compile {
         selections: Vec<InstalledNodeSelection>,
@@ -96,6 +108,7 @@ struct ActorWorker {
 }
 
 struct ActorStorage {
+    preparations: Option<ConditionalPreparationLedger>,
     transcripts: Option<crucible::node_adapters::transcript::TranscriptArchive>,
     repository: Arc<CampaignRepository>,
     blobs: Arc<dyn ImmutableBlobBackend>,
@@ -118,6 +131,7 @@ struct ActorControl {
 pub struct NodeObservationRetention {
     roots: Arc<Mutex<BTreeSet<ContentId>>>,
     retired: Arc<AtomicBool>,
+    preparations: Option<ConditionalPreparationLedger>,
 }
 
 impl NodeObservationRetention {
@@ -126,10 +140,15 @@ impl NodeObservationRetention {
     /// # Errors
     /// Refuses a poisoned root mutex rather than representing an empty inventory.
     pub fn retention_roots(&self) -> Result<BTreeSet<ContentId>, NodeObservationServiceError> {
-        self.roots
+        let mut roots = self
+            .roots
             .lock()
-            .map(|roots| roots.clone())
-            .map_err(|_| refused("operational retention fence is poisoned"))
+            .map_err(|_| refused("operational retention fence is poisoned"))?
+            .clone();
+        if let Some(preparations) = &self.preparations {
+            roots.extend(preparations.retention_roots()?);
+        }
+        Ok(roots)
     }
 
     /// Reports that admission stopped and every original native world was reclaimed.
@@ -151,6 +170,7 @@ pub struct NodeObservationService {
     stopping: Arc<AtomicBool>,
     roots: Arc<Mutex<BTreeSet<ContentId>>>,
     retired: Arc<AtomicBool>,
+    preparations: Option<ConditionalPreparationLedger>,
 }
 
 impl NodeObservationService {
@@ -182,6 +202,14 @@ impl NodeObservationService {
         {
             return Err(NodeObservationServiceError::Capacity);
         }
+        let preparations = if transcripts.is_some() {
+            Some(ConditionalPreparationLedger::new(
+                blobs.clone(),
+                refs.clone(),
+            )?)
+        } else {
+            None
+        };
         let (commands, receiver) = mpsc::sync_channel(configuration.maximum_pending_requests);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let stopping = Arc::new(AtomicBool::new(false));
@@ -190,6 +218,7 @@ impl NodeObservationService {
         let actor_roots = Arc::clone(&roots);
         let retired = Arc::new(AtomicBool::new(false));
         let actor_retired = Arc::clone(&retired);
+        let actor_preparations = preparations.clone();
         thread::Builder::new()
             .name("crucible-node-observer".into())
             .spawn(move || {
@@ -211,6 +240,7 @@ impl NodeObservationService {
                             catalog,
                             configuration.maximum_worlds,
                             ActorStorage {
+                                preparations: actor_preparations,
                                 transcripts,
                                 repository,
                                 blobs,
@@ -238,6 +268,7 @@ impl NodeObservationService {
             stopping,
             roots,
             retired,
+            preparations,
         })
     }
 
@@ -352,6 +383,7 @@ impl NodeObservationService {
         NodeObservationRetention {
             roots: self.roots.clone(),
             retired: self.retired.clone(),
+            preparations: self.preparations.clone(),
         }
     }
 
@@ -407,22 +439,26 @@ fn run_actor(
         if gc.is_err() {
             stopping.store(true, Ordering::Release);
         }
-        if let Some(command) = command {
-            if stopping.load(Ordering::Acquire) {
-                reply_refusal(command, NodeObservationServiceError::Unavailable);
-            } else if catch_unwind(AssertUnwindSafe(|| {
-                handle_command(
-                    command,
-                    &mut workers,
-                    &mut catalog,
-                    maximum_worlds.saturating_sub(retired_roots.len()),
-                    &storage,
-                );
+        if let Some(command) = command
+            && catch_unwind(AssertUnwindSafe(|| {
+                if stopping.load(Ordering::Acquire) {
+                    // Refusal may persist original preparation custody through
+                    // user-supplied storage. Its unwind must also leave the
+                    // catalog and original workers with this owning actor.
+                    reply_refusal(command, NodeObservationServiceError::Unavailable);
+                } else {
+                    handle_command(
+                        command,
+                        &mut workers,
+                        &mut catalog,
+                        maximum_worlds.saturating_sub(retired_roots.len()),
+                        &storage,
+                    );
+                }
             }))
             .is_err()
-            {
-                stopping.store(true, Ordering::Release);
-            }
+        {
+            stopping.store(true, Ordering::Release);
         }
         for (execution, owned) in &mut workers {
             let shutting_down = stopping.load(Ordering::Acquire);
@@ -517,8 +553,41 @@ fn handle_command(
         ..
     } = storage;
     match command {
+        Command::ConditionalPreparation {
+            request,
+            reservation,
+            ledger,
+        } => {
+            let result =
+                conditional_preparation::execution_id(&request.execution).and_then(|execution| {
+                    replay::submit(
+                        replay::ReplayRequest {
+                            ledger: request.ledger,
+                            execution,
+                            sources: request.sources,
+                            configuration: request.configuration.into_vec(),
+                        },
+                        workers,
+                        catalog,
+                        maximum_worlds,
+                        storage,
+                        Some(&reservation),
+                    )
+                });
+            let outcome = match result {
+                Ok(original) => ConditionalPreparationState::Admitted {
+                    observed_request: crucible_node_contract::Bytes::new(
+                        original.request().canonical_bytes(),
+                    ),
+                },
+                Err(_) => ConditionalPreparationState::Unavailable {},
+            };
+            // Failure keeps the original durable AwaitingAdmission record. No
+            // replacement nonce or source request can acquire its dispatch.
+            let _ = ledger.complete(&reservation, outcome);
+        }
         Command::ConditionalReplay { request, reply } => {
-            let result = replay::submit(request, workers, catalog, maximum_worlds, storage);
+            let result = replay::submit(request, workers, catalog, maximum_worlds, storage, None);
             let _ = reply.send(result);
         }
         Command::CacheReuse { request, reply } => {
@@ -650,6 +719,13 @@ fn reply_refusal(command: Command, error: NodeObservationServiceError) {
     match command {
         Command::CacheReuse { reply, .. } => {
             let _ = reply.send(Err(error));
+        }
+        Command::ConditionalPreparation {
+            reservation,
+            ledger,
+            ..
+        } => {
+            let _ = ledger.complete(&reservation, ConditionalPreparationState::Unavailable {});
         }
         Command::Compile { reply, .. } => {
             let _ = reply.send(Err(error));

@@ -146,6 +146,11 @@ impl NativeArchive {
         factory: &dyn NativeWorldFactory,
         edition: ContentInventoryEdition,
     ) -> Result<NativeArchiveRecord, StateError> {
+        if graph.capability_selection().is_some() && edition == ContentInventoryEdition::Legacy {
+            return Err(refused(
+                "authored capability preservation requires native typed inventory edition two",
+            ));
+        }
         let selected = match edition {
             ContentInventoryEdition::Legacy => {
                 require_supported_extensions(graph)?;
@@ -197,7 +202,7 @@ impl NativeArchive {
             world_repeatability: graph.world_repeatability(),
         };
         // Known portable and immutable custody is reserved before any native capture hook.
-        let native_limits = if selected.is_some() {
+        let native_limits = if selected.is_some() || graph.capability_selection().is_some() {
             super::extensions::credits::remaining_native(
                 graph,
                 &content,
@@ -408,6 +413,11 @@ impl NativeArchiveRecord {
         requirements: StateRequirements,
         factory: &dyn NativeWorldFactory,
     ) -> Result<VerifiedCapture, StateError> {
+        if graph.capability_selection().is_some() && self.index.schema_version != 2 {
+            return Err(refused(
+                "capability source cannot be admitted through legacy native inventory",
+            ));
+        }
         let selected = super::extensions::archive::authenticate_archive(self, graph, factory)?;
         let graph_refs = selected
             .as_ref()

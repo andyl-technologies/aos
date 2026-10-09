@@ -225,6 +225,13 @@ impl NodeControlDaemon {
     /// Refuses unsupported policy, unprivate state paths, existing socket names,
     /// competing owners, changed executable artifacts, or actor startup failure.
     pub fn start(policy: NodeDaemonPolicy) -> Result<Self, NodeControlError> {
+        Self::start_inner(policy, None)
+    }
+
+    pub(super) fn start_inner(
+        policy: NodeDaemonPolicy,
+        transcripts: Option<crucible::node_adapters::transcript::TranscriptArchive>,
+    ) -> Result<Self, NodeControlError> {
         policy.validate()?;
         let lock_path = policy.state_directory.join("node-daemon.lock");
         let fd = rustix::fs::open(
@@ -258,20 +265,31 @@ impl NodeControlDaemon {
             policy.state_directory.join("refs"),
         ));
         let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs.clone()));
-        let service = NodeObservationService::start(
-            NodeObservationServiceConfig {
-                installed_artifacts: policy.installed_artifacts(),
-                device_executable: policy.device_executable.clone(),
-                expected_device: policy.expected_device.clone(),
-                socket_parent: policy.state_directory.clone(),
-                control_timeout: Duration::from_millis(policy.control_timeout_ms),
-                maximum_worlds: policy.maximum_worlds,
-                maximum_pending_requests: policy.maximum_pending_requests,
-            },
-            repository.clone(),
-            Arc::clone(&blobs),
-            Arc::clone(&refs),
-        )
+        let service_configuration = NodeObservationServiceConfig {
+            installed_artifacts: policy.installed_artifacts(),
+            device_executable: policy.device_executable.clone(),
+            expected_device: policy.expected_device.clone(),
+            socket_parent: policy.state_directory.clone(),
+            control_timeout: Duration::from_millis(policy.control_timeout_ms),
+            maximum_worlds: policy.maximum_worlds,
+            maximum_pending_requests: policy.maximum_pending_requests,
+        };
+        let service = if let Some(archive) = transcripts {
+            NodeObservationService::start_with_transcript_archive(
+                service_configuration,
+                archive,
+                repository.clone(),
+                Arc::clone(&blobs),
+                Arc::clone(&refs),
+            )
+        } else {
+            NodeObservationService::start(
+                service_configuration,
+                repository.clone(),
+                Arc::clone(&blobs),
+                Arc::clone(&refs),
+            )
+        }
         .map_err(refused)?;
 
         // Register the separately owned retention fence before exposing admission.
@@ -477,6 +495,29 @@ impl NodeControlDaemon {
                     .map_err(refused)?;
                 Ok(NodeControlResult::NativeState {
                     record: Box::new(record),
+                })
+            }
+            NodeControlCommand::ConditionalReplay { request } => {
+                let record = service
+                    .submit_conditional_preparation(
+                        crate::node_observed_executor::ConditionalPreparationRequest {
+                            ledger: request.ledger,
+                            execution: request.execution,
+                            sources: request.sources,
+                            configuration: request.configuration,
+                        },
+                    )
+                    .map_err(refused)?;
+                Ok(NodeControlResult::ConditionalPreparation {
+                    record: Bytes::new(record.canonical_bytes().map_err(refused)?),
+                })
+            }
+            NodeControlCommand::ConditionalReplayStatus { execution } => {
+                let record = service
+                    .conditional_preparation_status(&execution)
+                    .map_err(refused)?;
+                Ok(NodeControlResult::ConditionalPreparation {
+                    record: Bytes::new(record.canonical_bytes().map_err(refused)?),
                 })
             }
             NodeControlCommand::HostState { request } => {

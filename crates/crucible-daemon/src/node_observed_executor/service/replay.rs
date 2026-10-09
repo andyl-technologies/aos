@@ -28,6 +28,7 @@ pub(super) fn submit(
     catalog: &InstalledNodeCatalog,
     maximum_worlds: usize,
     storage: &ActorStorage,
+    queued: Option<&PreparationReservation>,
 ) -> Result<ObservedAttemptState, NodeObservationServiceError> {
     let ReplayRequest {
         ledger,
@@ -35,6 +36,16 @@ pub(super) fn submit(
         sources,
         configuration,
     } = request;
+    let original_raw_request = ConditionalPreparationRequest {
+        ledger: ledger.clone(),
+        execution: execution
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+        sources: sources.clone(),
+        configuration: crucible_node_contract::Bytes::new(configuration.clone()),
+    };
     let configuration = NodeRunConfiguration::from_json(&configuration).map_err(refused)?;
     let original_configuration = crucible_node_contract::canonical::canonical_json(
         &serde_json::to_value(&configuration).map_err(refused)?,
@@ -49,6 +60,14 @@ pub(super) fn submit(
             return Err(refused(
                 "conditional retry changed original sources or context",
             ));
+        }
+        if let Some(preparations) = &storage.preparations {
+            let original = preparations.reserve(&original_raw_request)?;
+            if original.original_dispatch {
+                return Err(refused(
+                    "live conditional cursor omits its original admission commitment",
+                ));
+            }
         }
         return owned
             .worker
@@ -142,6 +161,32 @@ pub(super) fn submit(
             config.payload().to_vec(),
         )
         .map_err(refused)?;
+    let preparations = storage
+        .preparations
+        .as_ref()
+        .ok_or_else(|| refused("conditional source admission ledger is unavailable"))?;
+    let direct;
+    let reservation = if let Some(original) = queued {
+        let retry = preparations.reserve(&original_raw_request)?;
+        if !original.original_dispatch
+            || retry.original_dispatch
+            || retry.record.request != original.record.request
+            || retry.record.execution != original.record.execution
+        {
+            return Err(refused(
+                "conditional queue changed original admission custody",
+            ));
+        }
+        original
+    } else {
+        direct = preparations.reserve(&original_raw_request)?;
+        if !direct.original_dispatch {
+            return Err(refused(
+                "conditional source nonce already belongs to original admission custody",
+            ));
+        }
+        &direct
+    };
     let request = backend.request(execution).map_err(refused)?;
     let admission = backend.admission().clone();
     let worker =
@@ -161,10 +206,20 @@ pub(super) fn submit(
     let owned = workers
         .get_mut(&execution)
         .ok_or_else(|| refused("conditional actor custody disappeared"))?;
-    owned
+    let result = owned
         .worker
         .submit(&ledger, &owned.request, &owned.admission)
-        .map_err(refused)
+        .map_err(refused);
+    let outcome = match &result {
+        Ok(original) => ConditionalPreparationState::Admitted {
+            observed_request: crucible_node_contract::Bytes::new(
+                original.request().canonical_bytes(),
+            ),
+        },
+        Err(_) => ConditionalPreparationState::Unavailable {},
+    };
+    preparations.complete(reservation, outcome)?;
+    result
 }
 
 impl NodeObservationService {

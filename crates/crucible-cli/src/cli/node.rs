@@ -6,6 +6,8 @@
 
 #[path = "node_cache_reuse.rs"]
 mod cache_reuse;
+#[path = "node_conditional_replay.rs"]
+mod conditional_replay;
 
 #[path = "node_host_state.rs"]
 mod host_state;
@@ -50,6 +52,8 @@ enum NodeCommand {
     #[command(flatten)]
     TerminalState(terminal_state::NodeTerminalCommand),
     #[command(flatten)]
+    ConditionalReplay(conditional_replay::NodeConditionalReplayCommand),
+    #[command(flatten)]
     ExactState(host_state::NodeHostStateCommand),
     #[command(flatten)]
     NativeState(native_state::NodeNativeStateCommand),
@@ -60,6 +64,9 @@ enum NodeCommand {
         /// Load the operator's independently authenticated installation policy JSON.
         #[arg(long)]
         policy: PathBuf,
+        /// Own the private signed source archive for explicit conditional replay.
+        #[arg(long)]
+        transcript_archive: Option<PathBuf>,
     },
     /// Compile a complete scenario using the owning daemon's installed identities.
     Compile {
@@ -125,10 +132,14 @@ pub(super) fn run_node_invocation(cli: &Cli, args: &NodeArgs) -> Result<(), CliE
     match &args.command {
         NodeCommand::CacheReuse(command) => cache_reuse::run(command),
         NodeCommand::TerminalState(command) => terminal_state::run(command),
+        NodeCommand::ConditionalReplay(command) => conditional_replay::run(command),
         NodeCommand::ExactState(command) => host_state::run(command),
         NodeCommand::NativeState(command) => native_state::run(command),
         NodeCommand::Kvm(command) => kvm::run(command),
-        NodeCommand::Serve { policy } => serve(policy),
+        NodeCommand::Serve {
+            policy,
+            transcript_archive,
+        } => serve(policy, transcript_archive.as_deref()),
         NodeCommand::Compile {
             socket,
             selections,
@@ -191,7 +202,10 @@ pub(super) fn run_node_invocation(cli: &Cli, args: &NodeArgs) -> Result<(), CliE
     }
 }
 
-fn serve(policy: &std::path::Path) -> Result<(), CliError> {
+fn serve(
+    policy: &std::path::Path,
+    transcript_archive: Option<&std::path::Path>,
+) -> Result<(), CliError> {
     let policy =
         NodeDaemonPolicy::from_json(&bounded_file(policy, 64 * 1024)?).map_err(node_error)?;
     let stopping = Arc::new(AtomicBool::new(false));
@@ -210,7 +224,12 @@ fn serve(policy: &std::path::Path) -> Result<(), CliError> {
             ))
         })
         .map_err(CliError::Io)?;
-    let mut daemon = NodeControlDaemon::start(policy).map_err(node_error)?;
+    let mut daemon = if let Some(path) = transcript_archive {
+        NodeControlDaemon::start_with_conditional_directory(policy, path.to_owned())
+            .map_err(node_error)?
+    } else {
+        NodeControlDaemon::start(policy).map_err(node_error)?
+    };
     // The signal thread changes only operational admission state; model execution
     // and cleanup remain on the existing owning actor and durable original ledger.
     let signal = std::thread::Builder::new()
@@ -245,6 +264,9 @@ fn print_state(state: &ObservedAttemptState) -> Result<(), CliError> {
         "inputs":request.inputs().to_string(),
         "repeatable":request.capabilities().roster().is_repeatable(),
     });
+    if request.conditional_scope().is_some() {
+        value["materialization"] = json!("conditional_transcript_replay");
+    }
     match state {
         ObservedAttemptState::Reserved(_) => {
             value["status"] = json!("reserved");

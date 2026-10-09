@@ -439,6 +439,28 @@ fn actual_direct_native_source_records_complete_original_inputs_before_retiremen
         blobs: blobs.clone(),
         refs: refs.clone(),
     });
+    let control_archive = TranscriptArchive::open(
+        temporary.path().join("transcripts"),
+        TranscriptLimits {
+            maximum_records: U64::new(128),
+            maximum_record_bytes: U64::new(1024 * 1024),
+            maximum_total_bytes: U64::new(16 * 1024 * 1024),
+        },
+    )
+    .unwrap();
+    production_tests::drive_control_original(production_tests::ServiceReplayFixture {
+        archive: control_archive,
+        sources: recorded
+            .iter()
+            .map(|(node, source)| (node.clone(), source.reference().clone()))
+            .collect(),
+        executable: executable.clone(),
+        private_root: temporary.path().to_owned(),
+        configuration: run_configuration.clone(),
+        repository: repository.clone(),
+        blobs: blobs.clone(),
+        refs: refs.clone(),
+    });
     // Authenticate the source once, then remove its retrieval namespace before
     // any fresh replay response. The fresh node owns complete signed raw bytes.
     std::fs::remove_dir_all(temporary.path().join("transcripts")).unwrap();

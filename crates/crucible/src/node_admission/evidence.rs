@@ -202,6 +202,25 @@ pub trait AdmissionEvidence {
     /// content digest or generic JSON decoding is not schema support.
     fn authenticate_schema(&self, schema: &SchemaRef) -> Result<(), EvidenceError>;
 
+    /// Qualifies mandatory operation and architectural meanings for actual custody.
+    ///
+    /// Matching advertised facet strings or requirement references does not prove
+    /// semantic support. Implementations must authenticate the complete selected
+    /// source policy and current enrolled binding; the default refuses.
+    ///
+    /// # Errors
+    /// Refuses unavailable installed semantic support or a foreign/stale scope.
+    fn qualify_capability(
+        &self,
+        _world: &crucible_node_contract::WorldBinding,
+        _binding: &NodeBinding,
+        _requirement: &super::NodeCapabilityRequirement,
+    ) -> Result<(), EvidenceError> {
+        Err(EvidenceError {
+            message: "installed capability semantics unavailable".into(),
+        })
+    }
+
     /// Accepts an exact claim under the host's qualification policy.
     ///
     /// # Errors

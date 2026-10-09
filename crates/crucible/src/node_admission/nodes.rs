@@ -19,6 +19,7 @@ use super::{
 use crate::node_scheduling::ExecutionPolicy;
 
 pub(super) struct NodeSelections {
+    pub scenario_bytes: Vec<u8>,
     pub guarantees: BTreeMap<Id, GuaranteeProfile>,
     pub operating_policies: BTreeMap<Id, ExecutionPolicy>,
 }
@@ -210,7 +211,7 @@ pub(super) fn validate_nodes(
     request: &AdmissionRequest<'_>,
     content: &mut VerifiedContent<'_>,
 ) -> Result<NodeSelections, AdmissionError> {
-    content.verify(&request.world.scenario_ref)?;
+    let scenario_bytes = content.read(&request.world.scenario_ref)?;
     content.verify(&request.world.initialization_ref)?;
     let mut guarantees = BTreeMap::new();
     let mut operating_policies = BTreeMap::new();
@@ -486,6 +487,7 @@ pub(super) fn validate_nodes(
         operating_policies.insert(descriptor.id.clone(), operating);
     }
     Ok(NodeSelections {
+        scenario_bytes,
         guarantees,
         operating_policies,
     })

@@ -286,12 +286,58 @@ passed 875 cases and failed seven at the 1,024-descriptor limit; its original lo
 is retained. A complete rerun at eight test threads passes all 882 cases. These
 results qualify the recorded scope, not arbitrary counterfactual replay.
 
-A separate, unregistered terminal assertion overlay passes a 20.01-second
-installed source-gone/two-fresh continuation witness. Its closed scope is one
-input-free assertion program plus integer HostClock participants, preserving the
-original barrier, once-only assertion report and acknowledgment. It is private
-prototype evidence, not committed production terminal support or completion of
-fault, RNG, controller, debugger, input-provenance or general workflow state.
+The consolidated checkpoint `ac5e3d2a32` registers terminal assertion and semantic
+workflow continuation, Clock labels, production conditional recording/replay,
+deterministic result reuse, public gem5 preparation and bounded source inspection.
+Terminal state retains the original barrier, once-only report, acknowledgment
+and complete owner/coordinator custody. The actual CLI deletes the source world
+and restores two fresh continuations; Clock-label state requires its explicitly
+selected typed archive policy. Result reuse authenticates the original result,
+nonce, capability and input closure without allocating or executing a new world.
+Coupled nondeterministic results refuse that reuse path. Source inspections remain
+observations and cannot supply missing vendor behavioral qualification.
+
+The checkpoint passes 2,586 focused library/CLI cases, all-target strict checks,
+required hermetic application test-target compilation and all 33 QMP cases.
+Actual CLI terminal/cache workflows, public gem5 preparation and ordinary
+observed execution pass separately. Production native recording/replay passes
+ten storage-failure controls while retaining the original source and raw evidence.
+The complete registered license-boundary gate passes all 6,359 controller tests
+with 153 explicitly excluded native fixtures, packaging and complete source
+reconstruction. These results cover the captured checkpoint; later native,
+capability, seeded-fault, scheduler and provider stages need their own checks.
+
+The registered stage-six KVM package adds bounded original RUN-return custody
+and exact native receipt Query/ACK. Both ISA object checks, the retained original
+response oracles and seventeen compiled mutation controls pass. The
+[native KVM implementation](kvm-native-implementation.md) documents its limits:
+native return custody does not establish device closure, physical CPU stopping,
+whole-node readiness or hardware execution qualification.
+
+### Capability-selected preservation and durable preparation
+
+The next controller stage resolves authored capability requirements against the
+installed, independently regenerated catalog before allocating native peers. A
+selected integer HostClock world supports exact preservation through a typed
+archive: the original requirements, descriptor, compatibility, owner state,
+coordinator ledger and artifact bodies remain authenticated together. Complete
+portable and immutable storage credits are checked before native effects.
+Reference, compute, EXT, fork and replay preservation require their own qualified
+source policies and remain refused by this selected path.
+
+Conditional replay preparation now records the exact request and an Awaiting
+status durably before dispatch. Status inspection and exact retry preserve the
+original operation; restarting the daemon does not redispatch uncertain work.
+The actor fences callback panics during both normal operation and queued shutdown
+while retaining the original native world for reclamation.
+
+The integrated source passes all 51 admission cases, legacy native codecs,
+conditional preparation and control codecs, strict checks across nine crates,
+and the required hermetic application unit/integration test-target build.
+Actual native Clock capture survives source removal and two fresh continuations.
+The actual CLI recording/replay fixture passes ten storage-failure controls; two
+real directory-completion panic branches pass the queued-shutdown reclamation
+fixture. These results qualify the selected scopes, not general vendor readiness.
 
 ## Performance evidence
 
