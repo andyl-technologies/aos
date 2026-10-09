@@ -59,7 +59,15 @@ impl Actor {
                 serde_json::json!({"stage":case.stage,"batch":case.batch,"operation":case.operation,"grant":case.grant,"input_cut":case.input_cut})
             ).collect::<Vec<_>>()).collect::<Vec<_>>(),
         }));
-        serde_json::json!({"schema":"crucible.reference.candidate-failure.v1","phase":self.phase,
+        #[cfg(test)]
+        let window_loss = self.window_loss.as_ref().map(|loss| loss.retained());
+        #[cfg(not(test))]
+        let window_loss = serde_json::Value::Null;
+        #[cfg(test)]
+        let original_loss = self.original_loss.as_ref().map(|loss| loss.retained());
+        #[cfg(not(test))]
+        let original_loss = serde_json::Value::Null;
+        serde_json::json!({"original_response_loss":original_loss,"window_provider_loss":window_loss,"schema":"crucible.reference.candidate-failure.v1","phase":self.phase,
             "error":error,"candidate":candidate,"original_observations":observations,"original_transmission_observations":transmission_observations,"original_conflict_observations":conflict_observations,"original_conflict_premises":self.conflict_policies.iter().map(|policy|policy.retained()).collect::<Vec<_>>(),
             "original_completed_windows":self.windows,"original_runtime_retries":self.runtime_retries,"source_probes":self.probes,"prepared_probes":self.prepared_probes,"wire_resends":self.resends,"lifecycle_resend_premises":self.lifecycle_policies.iter().map(|policy|policy.retained_premises()).collect::<Vec<_>>(),"qualification_accepted":false})
     }

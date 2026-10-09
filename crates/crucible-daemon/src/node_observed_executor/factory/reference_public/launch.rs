@@ -224,6 +224,8 @@ pub(super) fn launch(
     // native group to the pre-reserved owning actor slot.
     let mut guard =
         CnpLaunchGuard::new(child, request.directory, slot).map_err(|failure| failure.error)?;
+    #[cfg(test)]
+    request.lifecycle_policy.arm_window_loss(&guard)?;
     let mut stdin = stdin.ok_or(ProviderError::Correlation(
         "original private launch pipe absent",
     ))?;
@@ -312,6 +314,10 @@ pub(super) fn launch(
         Duration::from_secs(3),
         installed.qualifications.clone(),
     )?;
+    #[cfg(test)]
+    request
+        .lifecycle_policy
+        .install_original_loss(&mut controller)?;
     let conflicts = controller.observe_original_conflicts(
         crucible_node_provider::client::OriginalConflictLimits {
             maximum_transmissions: super::source_original_conflict_plan::MAXIMUM_CONFLICTS,

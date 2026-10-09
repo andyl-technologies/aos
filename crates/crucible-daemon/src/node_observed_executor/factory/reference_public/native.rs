@@ -110,6 +110,16 @@ impl NativePublicEnrollment {
         Ok(result)
     }
 
+    /// Returns the provider PID retained by the original kernel enrollment.
+    ///
+    /// # Errors
+    /// Refuses an original numeric identity that cannot fit the kernel PID type.
+    #[cfg(test)]
+    pub(super) fn original_provider_pid(&self) -> Result<u32, ProviderError> {
+        u32::try_from(self.provider.pid.get())
+            .map_err(|_| ProviderError::Correlation("original provider PID overflow"))
+    }
+
     /// Returns the companion PID retained by the original kernel enrollment.
     ///
     /// # Errors

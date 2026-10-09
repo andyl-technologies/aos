@@ -673,6 +673,32 @@ are retained; the final corrections change only that annotation and its
 precise source-bound inventory. Production policy and native test behavior
 remain unchanged by those corrections.
 
+## Original provider loss and unread response custody
+
+Two source-planned adverse workflows retain the original transmission and
+process authority. After an actual nonempty native Close, provider-only loss
+makes the duplicate transport incomplete while preserving the original receipt,
+uncertain token and cached refusal. A separate SDK hook authenticates a
+predeclared original Begin, records its first completed canonical write and
+fences transport before any completion read. Physical execution in this second
+case remains unknown; a completed write does not prove native progress.
+
+The SDK hook is absent by default. Its observation handle exposes the retained
+frame and explicit completion absence without handing out socket, controller
+or signal authority. Both workflows preserve original cached archives and
+reclaim the original provider/native groups without creating another wire row.
+The unchanged same-ID conflict scenario independently preserves its third-window
+native checksum oracle.
+
+Central verification passes 51 distinct selected cases: both actual loss
+workflows, the actual two-provider conflict regression, eleven SDK client cases
+and all 37 source-quality cases. Nine-crate all-target strict checks pass.
+Actual loss cases complete in 54.69 and 59.59 seconds; the unchanged conflict
+case completes in 53.52 seconds on the same compiled test binary and installed
+reference package. Raw original archives remain local. This stage does not
+qualify loss during demonstrable native progress, reconnect, full vendor
+conformance or ordinary Ready admission.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

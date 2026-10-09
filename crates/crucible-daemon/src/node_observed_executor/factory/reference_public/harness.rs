@@ -35,6 +35,11 @@ use std::{
     time::Duration,
 };
 
+#[path = "harness_windows.rs"]
+mod native_windows;
+
+use super::context::ActorFixture;
+
 static QUALIFICATION_ACTOR_RESERVED: AtomicBool = AtomicBool::new(false);
 
 struct QualificationActorLease;
@@ -55,10 +60,10 @@ use super::{
     witness::{OriginalPublicWindowWitness, collect_original_windows},
 };
 use crate::node_observed_executor::activation::StoredWorldActivationPublisher;
+use crate::node_qualification::ReferenceWindowCase;
 use crate::node_qualification::{
     ReferenceExpectedWindow, ReferenceOracleContract, ReferenceWindowObservation,
 };
-use crate::node_qualification::{ReferenceWindowCase, collect_reference_window};
 
 /// Retains the durable original result after authentic native reclamation.
 pub(super) struct CandidateHarnessResult {
@@ -160,6 +165,11 @@ pub(super) fn start(
 }
 
 struct Actor {
+    fixture: ActorFixture,
+    #[cfg(test)]
+    window_loss: Option<Rc<super::source_window_provider_loss::SourceWindowProviderLoss>>,
+    #[cfg(test)]
+    original_loss: Option<Rc<super::source_original_response_loss::SourceOriginalResponseLoss>>,
     private: PathBuf,
     blobs: Arc<DirectoryBlobBackend>,
     refs: Arc<DirectoryRefBackend>,
@@ -192,6 +202,14 @@ fn run_actor(
     directory: PathBuf,
     unavailable: impl FnOnce(),
 ) -> Result<CandidateHarnessResult, ProviderError> {
+    run_actor_fixture(directory, unavailable, ActorFixture::CompletedOriginals)
+}
+
+fn run_actor_fixture(
+    directory: PathBuf,
+    unavailable: impl FnOnce(),
+    fixture: ActorFixture,
+) -> Result<CandidateHarnessResult, ProviderError> {
     use std::os::unix::fs::DirBuilderExt;
     if !directory.is_absolute() {
         return Err(ProviderError::Frame(
@@ -200,6 +218,11 @@ fn run_actor(
     }
     std::fs::DirBuilder::new().mode(0o700).create(&directory)?;
     let mut actor = Actor {
+        fixture,
+        #[cfg(test)]
+        window_loss: None,
+        #[cfg(test)]
+        original_loss: None,
         blobs: Arc::new(DirectoryBlobBackend::new(
             "installed-reference-qualification",
             directory.join("blobs"),
@@ -584,7 +607,9 @@ impl Actor {
             self.planned.push(cases);
         }
         self.phase = "predeclared-qualification-unit";
-        let unit = super::context::measure(candidate, &self.oracles)?;
+        let adverse_fixture = self.fixture.definition();
+        let unit =
+            super::context::measure_with_fixture(candidate, &self.oracles, &adverse_fixture)?;
         let criteria =
             ReferenceQualificationCriteria::build(unit.identity.clone()).map_err(failure)?;
         self.unit = Some(unit);
@@ -624,6 +649,27 @@ impl Actor {
                     self.lifecycle_native_origins.clone(),
                 )?,
             ));
+        }
+        #[cfg(test)]
+        if matches!(self.fixture, ActorFixture::KnownWindowProviderLoss) {
+            let request = self.lifecycle_policies[0].window_loss_target()?;
+            let loss =
+                Rc::new(super::source_window_provider_loss::SourceWindowProviderLoss::new(request));
+            self.lifecycle_policies[0].attach_window_loss(Rc::clone(&loss))?;
+            self.window_loss = Some(loss);
+        }
+        #[cfg(test)]
+        if matches!(self.fixture, ActorFixture::OriginalResponseLoss) {
+            let loss = Rc::new(
+                super::source_original_response_loss::SourceOriginalResponseLoss::new(
+                    &candidate.installations[0],
+                    self.lifecycle_policies[0].window_loss_target()?,
+                    &self.planned[0][1],
+                    Rc::clone(&self.lifecycle_native_origins[0]),
+                )?,
+            );
+            self.lifecycle_policies[0].attach_original_loss(Rc::clone(&loss))?;
+            self.original_loss = Some(loss);
         }
         for (index, (installed, cases)) in candidate
             .installations
@@ -761,30 +807,21 @@ impl Actor {
                 .map_err(failure)?;
         }
         self.phase = "original-native-windows";
-        let mut context = Context::from_waker(Waker::noop());
-        for (index, quantum) in [(1usize, 0usize), (0, 0), (0, 1), (1, 1), (0, 2), (1, 2)] {
-            // The single connection credit remains in original custody until
-            // consumer input ACK. Consume the pending prefix before granting
-            // another producer window; no horizon or capacity is widened.
-            let case = &self.planned[index][quantum];
-            self.windows[index].push(
-                collect_reference_window(runtime, &graph, &activation, case, &mut context)
-                    .map_err(failure)?,
-            );
-            self.phase = "original-runtime-cached-recovery";
-            let window = self.windows[index].last().ok_or(ProviderError::Frame(
-                "original window unavailable for recovery",
-            ))?;
-            self.runtime_retries[index].push(super::runtime_retries::collect(
-                runtime,
-                &graph,
-                &activation,
-                case,
-                window,
-                &mut context,
-            )?);
-            self.phase = "original-native-windows";
-        }
+        native_windows::collect_original_windows(native_windows::OriginalWindowExecution {
+            runtime,
+            graph: &graph,
+            activation: &activation,
+            planned: &self.planned,
+            windows: &mut self.windows,
+            runtime_retries: &mut self.runtime_retries,
+            phase: &mut self.phase,
+            #[cfg(test)]
+            window_loss: self.window_loss.as_ref(),
+            #[cfg(test)]
+            original_loss: self.original_loss.as_ref(),
+            #[cfg(test)]
+            transmission_observers: &self.transmission_observers,
+        })?;
         self.phase = "independent-window-oracle";
         let mut witnesses = Vec::<OriginalPublicWindowWitness>::with_capacity(2);
         for (index, installed) in candidate.installations.iter().enumerate() {
@@ -1325,6 +1362,118 @@ mod completed_lifecycle_resend_native_test {
         );
         eprintln!(
             "actual original lifecycle duplicates: two Ready/world controls and two native Input/Begin/Close/Consumed cycles per provider, thirteen real transmissions per archive; three-window independent checksum/input oracle and original process reclamation; partial original {} at {}",
+            original.original_result().encode(),
+            path.display()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires compiled installed source-built reference implementation package"]
+    fn actual_original_sent_begin_response_loss_retains_uncertain_authority() {
+        let nonce = super::super::candidate::entropy().unwrap();
+        let short = nonce
+            .as_slice()
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let path = PathBuf::from(format!("/tmp/orig-loss-{short}"));
+        let original = super::run_actor_fixture(
+            path.clone(),
+            || panic!("original response-loss issuance unavailable"),
+            super::ActorFixture::OriginalResponseLoss,
+        )
+        .unwrap();
+        assert!(!original.succeeded());
+        let value = canonical::parse_json(original.original_bytes(), 16 * 1024 * 1024).unwrap();
+        assert_eq!(value["phase"], "original-sent-begin-response-loss");
+        let loss = &value["original_response_loss"];
+        assert_eq!(
+            loss["original"]["original_predecessor"]["receipt"]["output"]["checksum"],
+            "0"
+        );
+        assert_eq!(loss["original"]["effect_knowledge"], "UNKNOWN");
+        assert_eq!(loss["original"]["signal_attempted"], true);
+        assert_eq!(loss["original"]["provider_terminal"], true);
+        assert_eq!(loss["recovery"]["same_original_authority"], true);
+        assert_eq!(loss["recovery"]["effects"], "Unknown");
+        assert_eq!(loss["recovery"]["attempted"]["write_completed"], true);
+        assert_eq!(loss["recovery"]["attempted"]["response_read"], false);
+        assert_eq!(
+            loss["recovery"]["attempted"],
+            loss["recovery"]["after_cached_checks"]
+        );
+        let request_bytes: Vec<u8> =
+            serde_json::from_value(loss["recovery"]["attempted"]["request"].clone()).unwrap();
+        let first_original =
+            crucible_node_provider::envelope::Envelope::decode(&request_bytes, 65536).unwrap();
+        assert_eq!(
+            first_original.method,
+            crucible_node_provider::envelope::Method::Begin
+        );
+        let snapshot = &value["original_observations"][0];
+        let journal = snapshot["evidence"]["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| {
+                record["key"]["request_id"]
+                    == serde_json::to_value(first_original.request_id.0.clone()).unwrap()
+            })
+            .unwrap();
+        assert!(journal["response"].is_null());
+        let retirement = canonical::parse_json(original.retirement_bytes(), 1024 * 1024).unwrap();
+        assert_eq!(retirement["reclaimed_original_peers"], 2);
+        assert_eq!(retirement["world_reservations"], 0);
+        eprintln!(
+            "first original Begin write retained with completion unread and physical effects unknown; authentic original token/cached refusal and original groups reclaimed; failed original {} at {}",
+            original.original_result().encode(),
+            path.display()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires compiled installed source-built reference implementation package"]
+    fn actual_known_nonempty_window_provider_loss_retains_original_uncertainty() {
+        let nonce = super::super::candidate::entropy().unwrap();
+        let short = nonce
+            .as_slice()
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let path = PathBuf::from(format!("/tmp/window-loss-{short}"));
+        let original = super::run_actor_fixture(
+            path.clone(),
+            || panic!("original loss issuance unavailable"),
+            super::ActorFixture::KnownWindowProviderLoss,
+        )
+        .unwrap();
+        assert!(!original.succeeded());
+        let value = canonical::parse_json(original.original_bytes(), 16 * 1024 * 1024).unwrap();
+        assert_eq!(value["schema"], "crucible.reference.candidate-failure.v1");
+        assert_eq!(value["phase"], "known-window-duplicate-provider-loss");
+        let loss = &value["window_provider_loss"];
+        assert_eq!(
+            loss["original"]["receipt"]["output"]["bytes_processed"],
+            "38"
+        );
+        assert_eq!(
+            loss["original"]["receipt"]["output"]["checksum"],
+            "9793506953516239273"
+        );
+        assert_eq!(loss["recovery"]["same_original_authority"], true);
+        assert_eq!(loss["recovery"]["effects"], "Unknown");
+        assert_eq!(loss["recovery"]["attempted"]["incomplete"], true);
+        assert_eq!(
+            loss["recovery"]["attempted"],
+            loss["recovery"]["after_cached_checks"]
+        );
+        let retirement = canonical::parse_json(original.retirement_bytes(), 1024 * 1024).unwrap();
+        assert_eq!(retirement["reclaimed_original_peers"], 2);
+        assert_eq!(retirement["world_reservations"], 0);
+        eprintln!(
+            "known nonempty native window retains original receipt and authentic uncertain token; provider-only pidfd death makes duplicate transport incomplete, cached checks emit no new row, original groups reclaimed; failed original {} at {}",
             original.original_result().encode(),
             path.display()
         );

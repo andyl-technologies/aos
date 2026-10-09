@@ -23,6 +23,8 @@ mod qualification;
 mod run_error;
 mod runtime_retries;
 mod source_metadata_reviews;
+#[cfg(test)]
+mod source_original_response_loss;
 mod source_pre_activation_execution;
 mod source_pre_activation_probe;
 mod source_probe;
@@ -53,3 +55,6 @@ mod source_resend_plan;
 mod source_original_conflict_plan;
 mod source_original_conflict_policy;
 mod source_original_conflict_wire;
+
+#[cfg(test)]
+mod source_window_provider_loss;

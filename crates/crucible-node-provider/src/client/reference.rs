@@ -21,6 +21,13 @@ pub use evidence::{
     ObservedRequestKey, RecordedReferenceObservation, ReferenceObservationSnapshot,
 };
 
+#[path = "reference/original_response_loss.rs"]
+pub(crate) mod original_response_loss;
+pub use original_response_loss::{
+    OriginalResponseLossObservation, OriginalResponseLossObservationHandle,
+    OriginalResponseLossQualification,
+};
+
 #[path = "reference/resend.rs"]
 mod resend;
 

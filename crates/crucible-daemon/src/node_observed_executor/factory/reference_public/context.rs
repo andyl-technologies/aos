@@ -17,10 +17,48 @@ use crate::node_qualification::{ReferenceOracleContract, normative_specification
 
 const MAXIMUM_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
 
+/// Selects the immutable source fixture included in the measured semantic unit.
+#[derive(Clone, Copy)]
+pub(super) enum ActorFixture {
+    /// Selects the unchanged original success and hostile-body controls.
+    CompletedOriginals,
+    /// Selects known-window completion followed by provider-only transport loss.
+    #[cfg(test)]
+    KnownWindowProviderLoss,
+    /// Selects one first original Begin write with its completion unread.
+    #[cfg(test)]
+    OriginalResponseLoss,
+}
+
+impl ActorFixture {
+    /// Produces the exact reusable recipe before any native child is launched.
+    pub(super) fn definition(self) -> serde_json::Value {
+        match self {
+            Self::CompletedOriginals => serde_json::Value::Null,
+            #[cfg(test)]
+            Self::KnownWindowProviderLoss => super::source_window_provider_loss::fixture(),
+            #[cfg(test)]
+            Self::OriginalResponseLoss => super::source_original_response_loss::fixture(),
+        }
+    }
+}
+
 /// Measures the actual source-owned context and complete immutable fixture.
 pub(super) fn measure(
     candidate: &PrivateCandidate,
     oracles: &[ReferenceOracleContract],
+) -> Result<SemanticQualificationUnit, ProviderError> {
+    measure_with_fixture(candidate, oracles, &serde_json::Value::Null)
+}
+
+/// Measures a separately declared source-owned adverse fixture before effects.
+///
+/// # Errors
+/// Refuses changed source, original unit or incomplete source object closure.
+pub(super) fn measure_with_fixture(
+    candidate: &PrivateCandidate,
+    oracles: &[ReferenceOracleContract],
+    adverse_fixture: &serde_json::Value,
 ) -> Result<SemanticQualificationUnit, ProviderError> {
     if oracles.len() != 2 {
         return Err(ProviderError::Frame(
@@ -38,64 +76,195 @@ pub(super) fn measure(
         "locale":"C", "private_directory_mode":"0700",
         "native_process_groups":"one-provider-and-one-companion-per-private-group-v1"
     }))?;
+    let sources = [
+        ["harness", include_str!("harness.rs")],
+        ["harness_windows", include_str!("harness_windows.rs")],
+        ["context", include_str!("context.rs")],
+        ["candidate", include_str!("candidate.rs")],
+        ["installation", include_str!("installation.rs")],
+        ["launch", include_str!("launch.rs")],
+        ["native", include_str!("native.rs")],
+        ["custody", include_str!("custody.rs")],
+        ["package", include_str!("package.rs")],
+        ["graphs", include_str!("graphs.rs")],
+        ["world", include_str!("world.rs")],
+        ["unit", include_str!("unit.rs")],
+        ["witness", include_str!("witness.rs")],
+        ["lifecycle", include_str!("lifecycle_witness.rs")],
+        [
+            "supported_lifecycle",
+            include_str!("supported_lifecycle.rs"),
+        ],
+        [
+            "supported_execution",
+            include_str!("supported_execution.rs"),
+        ],
+        ["runtime_retries", include_str!("runtime_retries.rs")],
+        [
+            "metadata_inspection",
+            include_str!("metadata_inspection.rs"),
+        ],
+        [
+            "source_metadata_reviews",
+            include_str!("source_metadata_reviews.rs"),
+        ],
+        [
+            "source_metadata_review_tests",
+            include_str!("source_metadata_review_tests.rs"),
+        ],
+        ["issuer", include_str!("issuer.rs")],
+        [
+            "package_metadata_controls",
+            include_str!("package_metadata_controls.rs"),
+        ],
+        ["source_probe", include_str!("source_probe.rs")],
+        ["source_resend_plan", include_str!("source_resend_plan.rs")],
+        [
+            "source_resend_execution",
+            include_str!("source_resend_execution.rs"),
+        ],
+        [
+            "source_lifecycle_resend_plan",
+            include_str!("source_lifecycle_resend_plan.rs"),
+        ],
+        [
+            "source_lifecycle_resend_policy",
+            include_str!("source_lifecycle_resend_policy.rs"),
+        ],
+        [
+            "source_lifecycle_requests",
+            include_str!("source_lifecycle_requests.rs"),
+        ],
+        [
+            "source_lifecycle_world",
+            include_str!("source_lifecycle_world.rs"),
+        ],
+        [
+            "source_lifecycle_evidence",
+            include_str!("source_lifecycle_evidence.rs"),
+        ],
+        [
+            "source_lifecycle_evidence_tests",
+            include_str!("source_lifecycle_evidence_tests.rs"),
+        ],
+        ["harness_failure", include_str!("harness_failure.rs")],
+        [
+            "source_window_provider_loss",
+            include_str!("source_window_provider_loss.rs"),
+        ],
+        [
+            "source_original_response_loss",
+            include_str!("source_original_response_loss.rs"),
+        ],
+        [
+            "sdk_original_response_loss",
+            include_str!(
+                "../../../../../crucible-node-provider/src/client/reference/original_response_loss.rs"
+            ),
+        ],
+        [
+            "sdk_original_session",
+            include_str!("../../../../../crucible-node-provider/src/client/session.rs"),
+        ],
+        [
+            "source_original_conflict_plan",
+            include_str!("source_original_conflict_plan.rs"),
+        ],
+        [
+            "source_original_conflict_policy",
+            include_str!("source_original_conflict_policy.rs"),
+        ],
+        [
+            "source_original_conflict_wire",
+            include_str!("source_original_conflict_wire.rs"),
+        ],
+        [
+            "sdk_original_conflict",
+            include_str!(
+                "../../../../../crucible-node-provider/src/client/session/original_conflict.rs"
+            ),
+        ],
+        [
+            "sdk_reference_original_conflict",
+            include_str!(
+                "../../../../../crucible-node-provider/src/client/reference/original_conflict.rs"
+            ),
+        ],
+        [
+            "sdk_conflict_transmissions",
+            include_str!(
+                "../../../../../crucible-node-provider/src/client/reference/conflict_transmissions.rs"
+            ),
+        ],
+        [
+            "cnp_original_conflict",
+            include_str!("../../../../../crucible/src/node_adapters/cnp/original_conflict.rs"),
+        ],
+        [
+            "sdk_session_lifecycle_resend",
+            include_str!(
+                "../../../../../crucible-node-provider/src/client/session/lifecycle_resend.rs"
+            ),
+        ],
+        [
+            "sdk_reference_lifecycle_resend",
+            include_str!(
+                "../../../../../crucible-node-provider/src/client/reference/lifecycle_resend.rs"
+            ),
+        ],
+        [
+            "cnp_lifecycle_resend",
+            include_str!("../../../../../crucible/src/node_adapters/cnp/lifecycle_resend.rs"),
+        ],
+        [
+            "preparation_resend",
+            include_str!("../../../../../crucible/src/node_adapters/cnp/preparation_resend.rs"),
+        ],
+        [
+            "sdk_session_resend",
+            include_str!("../../../../../crucible-node-provider/src/client/session/resend.rs"),
+        ],
+        [
+            "sdk_reference_resend",
+            include_str!("../../../../../crucible-node-provider/src/client/reference/resend.rs"),
+        ],
+        [
+            "sdk_transmissions",
+            include_str!(
+                "../../../../../crucible-node-provider/src/client/reference/transmissions.rs"
+            ),
+        ],
+        [
+            "sdk_evidence_privacy",
+            include_str!("../../../../../crucible-node-provider/src/client/reference/evidence.rs"),
+        ],
+        [
+            "source_probe_execution",
+            include_str!("source_probe_execution.rs"),
+        ],
+        ["provider_only", include_str!("native/provider_only.rs")],
+        [
+            "prepared_adverse",
+            include_str!("../../../../../crucible/src/node_adapters/cnp/preparation_adverse.rs"),
+        ],
+        ["prepared_gate", include_str!("prepared_gate_evidence.rs")],
+        [
+            "prepared_execution",
+            include_str!("source_pre_activation_execution.rs"),
+        ],
+        [
+            "prepared_plan",
+            include_str!("source_pre_activation_probe.rs"),
+        ],
+        [
+            "preparation_probe",
+            include_str!("../../../../../crucible/src/node_adapters/cnp/preparation_probe.rs"),
+        ],
+    ];
     let harness = canonical::canonical_json(&serde_json::json!({
         "schema":"crucible.reference.qualification-harness.v1",
         "executable":measure_executable()?,
-        "source": [
-            ["harness",include_str!("harness.rs")],
-            ["context",include_str!("context.rs")],
-            ["candidate",include_str!("candidate.rs")],
-            ["installation",include_str!("installation.rs")],
-            ["launch",include_str!("launch.rs")],
-            ["native",include_str!("native.rs")],
-            ["custody",include_str!("custody.rs")],
-            ["package",include_str!("package.rs")],
-            ["graphs",include_str!("graphs.rs")],
-            ["world",include_str!("world.rs")],
-            ["unit",include_str!("unit.rs")],
-            ["witness",include_str!("witness.rs")],
-            ["lifecycle",include_str!("lifecycle_witness.rs")],
-            ["supported_lifecycle",include_str!("supported_lifecycle.rs")],
-            ["supported_execution",include_str!("supported_execution.rs")],
-            ["runtime_retries",include_str!("runtime_retries.rs")],
-            ["metadata_inspection",include_str!("metadata_inspection.rs")],
-            ["source_metadata_reviews",include_str!("source_metadata_reviews.rs")],
-            ["source_metadata_review_tests",include_str!("source_metadata_review_tests.rs")],
-            ["issuer",include_str!("issuer.rs")],
-            ["package_metadata_controls",include_str!("package_metadata_controls.rs")],
-            ["source_probe",include_str!("source_probe.rs")],
-            ["source_resend_plan",include_str!("source_resend_plan.rs")],
-            ["source_resend_execution",include_str!("source_resend_execution.rs")],
-            ["source_lifecycle_resend_plan",include_str!("source_lifecycle_resend_plan.rs")],
-            ["source_lifecycle_resend_policy",include_str!("source_lifecycle_resend_policy.rs")],
-            ["source_lifecycle_requests",include_str!("source_lifecycle_requests.rs")],
-            ["source_lifecycle_world",include_str!("source_lifecycle_world.rs")],
-            ["source_lifecycle_evidence",include_str!("source_lifecycle_evidence.rs")],
-            ["source_lifecycle_evidence_tests",include_str!("source_lifecycle_evidence_tests.rs")],
-            ["harness_failure",include_str!("harness_failure.rs")],
-            ["source_original_conflict_plan",include_str!("source_original_conflict_plan.rs")],
-            ["source_original_conflict_policy",include_str!("source_original_conflict_policy.rs")],
-            ["source_original_conflict_wire",include_str!("source_original_conflict_wire.rs")],
-            ["sdk_original_conflict",include_str!("../../../../../crucible-node-provider/src/client/session/original_conflict.rs")],
-            ["sdk_reference_original_conflict",include_str!("../../../../../crucible-node-provider/src/client/reference/original_conflict.rs")],
-            ["sdk_conflict_transmissions",include_str!("../../../../../crucible-node-provider/src/client/reference/conflict_transmissions.rs")],
-            ["cnp_original_conflict",include_str!("../../../../../crucible/src/node_adapters/cnp/original_conflict.rs")],
-            ["sdk_session_lifecycle_resend",include_str!("../../../../../crucible-node-provider/src/client/session/lifecycle_resend.rs")],
-            ["sdk_reference_lifecycle_resend",include_str!("../../../../../crucible-node-provider/src/client/reference/lifecycle_resend.rs")],
-            ["cnp_lifecycle_resend",include_str!("../../../../../crucible/src/node_adapters/cnp/lifecycle_resend.rs")],
-            ["preparation_resend",include_str!("../../../../../crucible/src/node_adapters/cnp/preparation_resend.rs")],
-            ["sdk_session_resend",include_str!("../../../../../crucible-node-provider/src/client/session/resend.rs")],
-            ["sdk_reference_resend",include_str!("../../../../../crucible-node-provider/src/client/reference/resend.rs")],
-            ["sdk_transmissions",include_str!("../../../../../crucible-node-provider/src/client/reference/transmissions.rs")],
-            ["sdk_evidence_privacy",include_str!("../../../../../crucible-node-provider/src/client/reference/evidence.rs")],
-            ["source_probe_execution",include_str!("source_probe_execution.rs")],
-            ["provider_only",include_str!("native/provider_only.rs")],
-            ["prepared_adverse",include_str!("../../../../../crucible/src/node_adapters/cnp/preparation_adverse.rs")],
-            ["prepared_gate",include_str!("prepared_gate_evidence.rs")],
-            ["prepared_execution",include_str!("source_pre_activation_execution.rs")],
-            ["prepared_plan",include_str!("source_pre_activation_probe.rs")],
-            ["preparation_probe",include_str!("../../../../../crucible/src/node_adapters/cnp/preparation_probe.rs")]
-        ]
+        "source":sources.as_slice()
     }))?;
     let source_probes = candidate
         .installations
@@ -137,6 +306,7 @@ pub(super) fn measure(
         })
         .collect::<Result<Vec<_>, ProviderError>>()?;
     let fixtures = canonical::canonical_json(&serde_json::json!({
+        "explicit_adverse_fixture":adverse_fixture,
         "original_conflict_plans":conflict_plans.iter().map(|plan|serde_json::json!({"reference":plan.reference,"bytes":plan.bytes,"objects":plan.objects.iter().map(|(reference,bytes)|serde_json::json!({"reference":reference,"bytes":bytes})).collect::<Vec<_>>() })).collect::<Vec<_>>(),
         "lifecycle_resend_plans":lifecycle_plans.iter().map(|plan|serde_json::json!({"reference":plan.fixture,"bytes":plan.bytes,"objects":plan.objects.iter().map(|(reference,bytes)|serde_json::json!({"reference":reference,"bytes":bytes})).collect::<Vec<_>>() })).collect::<Vec<_>>(),
         "transmission_archive":{"maximum_transmissions":13,"maximum_bytes":16777216,"before_original_control":true},

@@ -52,6 +52,11 @@ pub(super) struct SourceLifecycleResendPolicy {
     selected: RefCell<Vec<OriginalLifecyclePremise>>,
     root_slots: RefCell<Vec<Vec<ContentRef>>>,
     #[cfg(test)]
+    window_loss: RefCell<Option<Rc<super::source_window_provider_loss::SourceWindowProviderLoss>>>,
+    #[cfg(test)]
+    original_loss:
+        RefCell<Option<Rc<super::source_original_response_loss::SourceOriginalResponseLoss>>>,
+    #[cfg(test)]
     original_controls: RefCell<
         Vec<(
             CnpCompletedLifecycleScope,
@@ -213,7 +218,98 @@ impl SourceLifecycleResendPolicy {
             root_slots: RefCell::new(root_slots),
             #[cfg(test)]
             original_controls,
+            #[cfg(test)]
+            window_loss: RefCell::new(None),
+            #[cfg(test)]
+            original_loss: RefCell::new(None),
         })
+    }
+
+    /// Selects the exact declared consumer native completion before launch.
+    ///
+    /// # Errors
+    /// Refuses missing original fixture scope or replacement of its custody.
+    #[cfg(test)]
+    pub(super) fn window_loss_target(&self) -> Result<crucible_node_contract::Id, ProviderError> {
+        self.plan
+            .targets
+            .iter()
+            .find(|target| {
+                target.phase
+                    == crucible::node_adapters::cnp::CnpCompletedLifecyclePhase::WindowCompleted
+                    && target
+                        .grant
+                        .as_ref()
+                        .is_some_and(|grant| grant.quantum.get() == 1)
+            })
+            .map(|target| target.request.clone())
+            .ok_or(ProviderError::Correlation("loss original target absent"))
+    }
+
+    /// Retains the declared adverse fixture before observation or native controls.
+    ///
+    /// # Errors
+    /// Refuses missing original fixture scope or replacement of its custody.
+    #[cfg(test)]
+    pub(super) fn attach_window_loss(
+        &self,
+        loss: Rc<super::source_window_provider_loss::SourceWindowProviderLoss>,
+    ) -> Result<(), ProviderError> {
+        if self.window_loss.borrow().is_some() || self.observer.borrow().is_some() {
+            return Err(ProviderError::Correlation(
+                "loss fixture must precede original controls",
+            ));
+        }
+        *self.window_loss.borrow_mut() = Some(loss);
+        Ok(())
+    }
+
+    /// Opens the loss anchor while the original Child is still guarded.
+    ///
+    /// # Errors
+    /// Refuses missing original fixture scope or replacement of its custody.
+    #[cfg(test)]
+    pub(super) fn arm_window_loss(&self, guard: &CnpLaunchGuard) -> Result<(), ProviderError> {
+        if let Some(loss) = self.window_loss.borrow().as_ref() {
+            loss.arm(guard)?;
+        }
+        if let Some(loss) = self.original_loss.borrow().as_ref() {
+            loss.arm(guard)?;
+        }
+        Ok(())
+    }
+
+    /// Retains a distinct original-response loss fixture before any controls.
+    ///
+    /// # Errors
+    /// Refuses late or duplicate source plan installation.
+    #[cfg(test)]
+    pub(super) fn attach_original_loss(
+        &self,
+        loss: Rc<super::source_original_response_loss::SourceOriginalResponseLoss>,
+    ) -> Result<(), ProviderError> {
+        if self.original_loss.borrow().is_some() || self.observer.borrow().is_some() {
+            return Err(ProviderError::Correlation(
+                "original-loss fixture already installed",
+            ));
+        }
+        *self.original_loss.borrow_mut() = Some(loss);
+        Ok(())
+    }
+
+    /// Reserves the distinct first-original loss archive before controller effects.
+    ///
+    /// # Errors
+    /// Refuses unavailable finite source plan or controller observation custody.
+    #[cfg(test)]
+    pub(super) fn install_original_loss(
+        &self,
+        controller: &mut crucible_node_provider::client::ReferenceController,
+    ) -> Result<(), ProviderError> {
+        if let Some(loss) = self.original_loss.borrow().as_ref() {
+            loss.install(controller)?;
+        }
+        Ok(())
     }
 
     /// Associates the inert archive before the first original control.
@@ -424,6 +520,22 @@ impl SourceLifecycleResendPolicy {
         self.original_controls
             .borrow_mut()
             .push((scope.clone(), facts.body));
+        #[cfg(test)]
+        if let Some(loss) = self.window_loss.borrow().as_ref() {
+            let selected = self.selected.borrow();
+            let premise = selected
+                .last()
+                .ok_or(ProviderError::Correlation("loss original premise absent"))?;
+            let observer = self.observer.borrow();
+            loss.after_adoption(
+                guard,
+                scope,
+                premise,
+                observer
+                    .as_ref()
+                    .ok_or(ProviderError::Correlation("loss original observer absent"))?,
+            )?;
+        }
         Ok(true)
     }
 

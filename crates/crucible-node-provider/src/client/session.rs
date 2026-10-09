@@ -146,6 +146,8 @@ pub struct ClientSession {
     sequence: U64,
     peer_pid: u32,
     peer_executable: ContentRef,
+    pub(super) original_response_loss:
+        Option<super::reference::original_response_loss::OriginalResponseLossRecorder>,
 }
 
 impl ClientSession {
@@ -222,6 +224,7 @@ impl ClientSession {
             sequence: U64::new(2),
             peer_pid: peer.pid,
             peer_executable: peer.executable.clone(),
+            original_response_loss: None,
         })
     }
 
@@ -299,7 +302,27 @@ impl ClientSession {
                 },
             );
         }
+        let lose_response = if let Some(loss) = &mut self.original_response_loss {
+            loss.prepare(&request)?
+        } else {
+            false
+        };
         self.send(request.clone())?;
+        if lose_response {
+            // Fence before the source action so an unwind cannot resend an unknown original.
+            self.close();
+            let loss = self
+                .original_response_loss
+                .as_ref()
+                .ok_or(ProviderError::Correlation(
+                    "original response-loss custody disappeared",
+                ))?;
+            loss.written_and_fenced()?;
+            loss.after_original_write(&request)?;
+            return Err(ProviderError::Correlation(
+                "original response deliberately unread",
+            ));
+        }
         loop {
             let frame = self
                 .connection
