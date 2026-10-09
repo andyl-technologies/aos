@@ -7,7 +7,7 @@
 //! which must present a fresh, independently signed mutation grant.
 //!
 //! ```text
-//! retained-preparation-v1 =
+//! retained-preparation(v1|v2) =
 //!   magic || version || operation-id || sandbox-id || request-id ||
 //!   preparation-digest || consumption-state || apply-request-id ||
 //!   apply-transport-digest || apply-semantic-digest || apply-plan-digest ||
@@ -20,9 +20,10 @@
 //!   resolved-catalog || receipt
 //! ```
 //!
-//! The sole format also binds the exact catalog format, root-policy digest,
+//! Both record versions bind the exact catalog format, root-policy digest,
 //! and whole-tree Clone identity digest, plus the generation and complete
 //! digest of the trusted resolver-policy catalog and its exact assignment row.
+//! Version 2 remains non-consuming and cannot authorize ordinary Apply.
 
 use aos_proto::aos::sandbox::local::v1::PrepareStorageCatalogResponse;
 use aos_sandbox_core::{
@@ -990,6 +991,7 @@ impl Encoder {
     }
 }
 
+// Core owns checked byte reads and EOF; preparation semantics stay in these helpers.
 type PreparationReader<'a> = BoundedReader<'a, StorageCatalogPreparationError>;
 
 fn corrupt_preparation(_: ReadError) -> StorageCatalogPreparationError {
