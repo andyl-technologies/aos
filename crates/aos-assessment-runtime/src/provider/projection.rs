@@ -126,9 +126,9 @@ pub enum WorkOutcome {
 pub struct ProviderUsage {
     /// Conservatively consumed provider calls, including uncertain timeouts.
     pub requests: u32,
-    /// Original encoded source transfer bytes.
+    /// Confirmed encoded source bytes; failed transfers may be unobservable.
     pub compressed_bytes: u64,
-    /// Decoded source bytes before parsing/projection.
+    /// Confirmed decoded source bytes before parsing/projection.
     pub decompressed_bytes: u64,
     /// Executor elapsed time, never part of a semantic assessment input.
     pub duration_milliseconds: u32,

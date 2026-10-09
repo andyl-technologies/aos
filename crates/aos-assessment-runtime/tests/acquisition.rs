@@ -316,6 +316,46 @@ async fn newly_acquired_positive_records_survive_a_later_failed_retrieval_batch(
 }
 
 #[tokio::test]
+async fn a_failed_request_inside_one_batch_preserves_its_prior_complete_records() -> Result<()> {
+    let mut data = common::fixture("1.2.0")?;
+    data.advisory_snapshot = None;
+    data.advisories.clear();
+    let modified = "2026-10-09T01:00:00Z";
+    let mut first = osv_record(modified);
+    first["id"] = json!("GHSA-fixture-first");
+    let port = Port::new(vec![
+        json!({"results":[{"vulns":[
+            {"id":"GHSA-fixture-first", "modified":modified},
+            {"id":"GHSA-fixture-second", "modified":modified}
+        ]}]}),
+        first,
+    ])?;
+    let subjects = vec!["subject".into()];
+    let profiles = vec![Profile::Vulnerabilities];
+    let diagnostics = acquire(
+        &port,
+        &port.custody,
+        "fixture",
+        &mut data,
+        &subjects,
+        &profiles,
+    )
+    .await?;
+    assert_eq!(diagnostics, vec!["source-acquisition-incomplete"]);
+    assert_eq!(data.advisories.len(), 1);
+    let input = data.freeze_selected(profiles, subjects, FixedClock.now()?)?;
+    let result = aos_assessment::evaluator::evaluate(&input, &data)?;
+    assert_eq!(result.subject_results[0].findings.len(), 1);
+    assert!(
+        !data.advisory_snapshot.as_ref().context("snapshot")?.sources[0]
+            .observation
+            .coverage
+            .is_complete()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn refresh_stale_skips_complete_fresh_queries_and_refreshes_expired_evidence() -> Result<()> {
     let mut data = common::fixture("1.2.0")?;
     let port = Port::new(vec![])?;

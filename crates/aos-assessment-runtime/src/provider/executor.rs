@@ -45,6 +45,9 @@ pub trait SourceTransport: RuntimeBounds {
     /// Implementations resolve scoped credential references independently,
     /// disable redirects and enforce connection, request and streaming limits.
     /// Conditional headers come exclusively from the admitted cache reference.
+    /// The executor may reduce `limits.response_bytes` to the remaining source
+    /// allowance before each read. The operation, pairing and credential scope
+    /// remain unchanged; physical ports must honor the tightened limit.
     ///
     /// # Errors
     /// Returns an error for unsupported profiles, revoked credentials, unsafe
@@ -93,13 +96,45 @@ pub async fn execute_source<T: SourceTransport, E: EvidenceStore, C: Clock>(
     let mut coverage = complete();
     for request in requests {
         plan.validate_at(&clock.now()?)?;
+        let remaining = plan
+            .limits
+            .source_bytes
+            .checked_sub(usage.compressed_bytes.max(usage.decompressed_bytes))
+            .filter(|remaining| *remaining > 0);
+        let Some(remaining) = remaining else {
+            outcome = WorkOutcome::Partial;
+            coverage = ProviderCoverage::Partial {
+                reason: "source-byte-budget-exhausted".into(),
+                continuation: None,
+            };
+            diagnostics.insert("source-byte-budget-exhausted".into());
+            break;
+        };
+        // Tighten this physical read before dispatch. Checking only after a
+        // response would allow the last request to overspend the total ceiling.
+        let mut physical = plan.clone();
+        physical.limits.response_bytes = physical.limits.response_bytes.min(remaining);
         // No retries occur here: another physical invocation needs a newly
         // admitted quota reservation and attempt, including uncertain timeouts.
         usage.requests += 1;
-        let response = transport.fetch(plan, &request).await?;
+        let response = match transport.fetch(&physical, &request).await {
+            Ok(response) => response,
+            Err(error) => {
+                if objects.is_empty() {
+                    return Err(error);
+                }
+                outcome = WorkOutcome::Partial;
+                coverage = ProviderCoverage::Partial {
+                    reason: "source-request-incomplete".into(),
+                    continuation: None,
+                };
+                diagnostics.insert("source-request-incomplete".into());
+                break;
+            }
+        };
         let validated_at = clock.now()?;
         plan.validate_at(&validated_at)?;
-        if response.body.len() as u64 > plan.limits.response_bytes {
+        if response.body.len() as u64 > physical.limits.response_bytes {
             bail!("source response exceeds the per-response byte ceiling");
         }
         usage.compressed_bytes = usage

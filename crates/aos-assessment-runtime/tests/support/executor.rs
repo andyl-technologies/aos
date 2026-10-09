@@ -51,6 +51,76 @@ struct Source {
     requests: Mutex<Vec<SourceRequest>>,
 }
 
+struct RemainingBudgetSource {
+    first: Vec<u8>,
+    ceilings: Mutex<Vec<u64>>,
+}
+
+#[async_trait::async_trait]
+impl SourceTransport for RemainingBudgetSource {
+    async fn fetch(&self, plan: &ProviderWorkPlanV1, _: &SourceRequest) -> Result<SourceResponse> {
+        let mut ceilings = self
+            .ceilings
+            .lock()
+            .map_err(|_| anyhow::anyhow!("fixture ceiling lock"))?;
+        ceilings.push(plan.limits.response_bytes);
+        if ceilings.len() != 1 {
+            anyhow::bail!("fixture source became unavailable");
+        }
+        Ok(SourceResponse {
+            status: 200,
+            body: self.first.clone(),
+            transferred_bytes: self.first.len() as u64,
+            validators: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn source_reads_are_tightened_to_the_remaining_aggregate_budget_before_dispatch() -> Result<()>
+{
+    let mut plan = super::plan()?;
+    plan.operation = ProviderOperation::RetrieveAdvisories {
+        project: "fixture-query".into(),
+        ids: vec!["OSV-2026-1".into(), "OSV-2026-2".into()],
+    };
+    plan.adapter_version = plan.operation.adapter_version().into();
+    plan.budget_reservation.requests = 2;
+    plan.limits.requests = 2;
+    plan.limits.concurrency = 1;
+    let raw = br#"{"schema_version":"1.9.1","id":"OSV-2026-1","modified":"2026-10-09T01:00:00Z","affected":[{"package":{"ecosystem":"crates.io","name":"fixture"},"versions":["1.2.0"]}]}"#.to_vec();
+    let size = raw.len() as u64;
+    plan.limits.source_bytes = size + 8;
+    plan.limits.response_bytes = size + 8;
+    let source = RemainingBudgetSource {
+        first: raw,
+        ceilings: Mutex::new(vec![]),
+    };
+    let result = execute_source(
+        &source,
+        &Custody::default(),
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+    assert_eq!(
+        *source
+            .ceilings
+            .lock()
+            .map_err(|_| anyhow::anyhow!("fixture ceiling lock"))?,
+        vec![size + 8, 8]
+    );
+    assert_eq!(result.outcome, WorkOutcome::Partial);
+    assert_eq!(result.usage.requests, 2);
+    assert_eq!(result.usage.decompressed_bytes, size);
+    assert_eq!(result.diagnostics, vec!["source-request-incomplete"]);
+    assert!(result.normalized_objects.iter().any(|projection| matches!(&projection.object, NormalizedObject::Advisory(record) if record.id == "OSV-2026-1")));
+    result.validate_for(&plan, &FixedClock.now()?)?;
+    Ok(())
+}
+
 impl Source {
     fn new(status: u16, body: Vec<u8>) -> Self {
         Self {
