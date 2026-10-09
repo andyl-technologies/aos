@@ -47,20 +47,22 @@
   # outputs that are not separate published packages. Keep them registered in
   # the fixture store alongside their recipes and package metadata.
   retainArtifact = artifact: [artifact (builtins.unsafeDiscardOutputDependency artifact.drvPath)];
-  nativeRoots = lib.uniqueBy builtins.toString (lib.concatMap (name: let
+  sourceOutputs = lib.concatMap (name: let
     package = publicationPackages.${name};
-    sourceOutputs = map (outputName:
+  in
+    map (outputName:
       if outputName == "out"
       then package
       else package.${outputName})
-    (package.outputs or ["out"]);
-    artifacts =
-      sourceOutputs
-      ++ [package.deploymentArtifact package.documentationArtifact]
-      ++ lib.optional (package ? qualificationArtifact && package.qualificationArtifact != null) package.qualificationArtifact;
-  in
-    lib.concatMap retainArtifact artifacts)
-  names);
+    (package.outputs or ["out"]))
+  names;
+  # The release policy names a distinct deployment companion for each output.
+  # Use its retention projection so the fixture and APR select the same roots.
+  publicationRoots = policy.releaseDerivationRoots {
+    inherit system names;
+    packages = publicationPackages;
+  };
+  nativeRoots = lib.uniqueBy builtins.toString (lib.concatMap retainArtifact (sourceOutputs ++ publicationRoots));
   # Inventory locators deliberately have no string context. Restore retention
   # from their actual package roots without inventing publication metadata.
   inventoryFile = pkgs.writeTextFile {
