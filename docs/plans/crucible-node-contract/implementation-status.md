@@ -67,6 +67,18 @@ schemas and test adapters establish component behavior, not native support.
 | `ba1f14accc` | Qualified logical property namespaces and read-only assertion deadline inspection | Four property admission/legacy identity regressions and strict production checks pass |
 | `04892b92ae` | Signed continuation edition two, complete saved-copy manifests and original native process custody | 33 provider and 28 core gem5 checks pass; an actual umask-000 subprocess proves exclusive private file installation; the mixed x86 in-flight operation witness passes with two complete fresh worlds |
 | `8e2c95a6fb` | Source-built independently measured public reference implementation | Package runs 152 provider unit cases, seven emitter cases, four actual client cases, six public conformance cases, seven companion cases and production Clippy; independent installed measurement verifies the complete runtime/build graphs and 290 regular ELF objects |
+| `2b9492c247` | Installed bounded KVM candidate and separately versioned userspace-response caller | 34 controller/QMP checks and strict all-target checks pass; candidate preparation cannot qualify hardware execution |
+| `7e31d0ab40` | Signed QEMU userspace-exit ledger and mandatory source validation | Production two-ISA build, 46 native units, 19 extracted proofs, 15 ledger controls, nine compiled mutation controls, signed-source regeneration and matching complete source pass; no live KVM qualification |
+| `cd6c39b848` | Authenticated extension schemas, dependency admission and immutable selected closure | 25 admission, four contract and five native archive controls pass; unsupported archive extensions refuse before allocation; production strict checks pass |
+| `9f8a6dae25` | Original gem5 Terminal birth, acknowledgment and bounded continuation mechanisms | Pure native Terminal and actual ARM PL011 continuations preserve held original bytes and acknowledgments through source deletion and two fresh branches; complete full-system closure and Linux boot qualification remain separate |
+| `02832565cd` | Measured installed gem5 profile and supervised complete-world native cold continuations | Both architecture native witnesses pass; three installed policy checks, five backing checks, selected ISA/budget checks and actual actor-unwind reclamation pass; mixed native factory remains test-only |
+| `5f958e0e52` | Exact original typed content roles for identical transcript bytes | All 17 registered transcript cases and production strict checks pass; altered bytes and unretained media roles refuse |
+| `c01aa7496c` | Legacy host archive extension guards at capture, admission, construction and staging | All nine host archive cases and production strict checks pass; actual source bytes remain unchanged and bypass staging refuses before allocation |
+| `2ae4d34e2a` | Local deliberate panic-test allowances for extension schema regressions | Allowances remain confined to test modules; production checks and admission behavior are unchanged |
+| `13a48c240a` | Original native recording context, bounded typed fragments and complete refusal custody | Eight registered recording cases pass, including genuine direct-provider input recording and original whole-world reclamation after early/late preparation refusal; all-target strict Clippy passes without global exemptions |
+| `64711d6bbf` | QEMU package metadata formatting | Source formatting preserves package behavior; changed raw-recipe identity requires rebuilding the production binary and corresponding source before final comparison |
+| `6c22368da4` | Allocation-free borrowed gem5 address-range lookup predicates | More than 850,000 semantic comparisons and five matched lookup rounds pass; both installed fixed-workload ISA witnesses remove original resources and pass two fresh continuations/recaptures with all 27 bindings independently measured |
+| `b6839fa7a1` | Bounded original KVM userspace-response completion and retry hooks | Public stage-five check builds actual x86/ARM objects, preserves earlier source/arithmetic checks and passes ABI/response/admission controls with six independently compiled rejected mutants; no live KVM execution or node qualification |
 
 Legacy codec bytes, hash domains, fault identifiers, and existing exact QEMU
 restore semantics remain unchanged by these source extractions. New node
@@ -151,11 +163,24 @@ two independently restored complete worlds retain the same cut, original
 operation ID and native prefix history, produce the same future checksum, and
 complete the original commit, acknowledgment and native reclamation. Its
 selected policy uses 65,536 callbacks per poll and retains every original raw
-diagnostic body. The ARM held-publication test fails before capture because ten
+diagnostic body. The earlier ARM held-publication test failed before capture because ten
 full native inventories consume 254,801,355 bytes of the unchanged 256-MiB
-diagnostic allowance. A separately selected ARM policy and diagnostic-credit
-preflight remain in progress. These mixed native tests currently use a private
+diagnostic allowance. That failed source and its original prefixes remain
+recorded. A new, explicitly selected ARM policy uses 262,144 callbacks per poll
+and passes the held-publication witness in 141.18 seconds: the complete original
+namespace is absent, two fresh complete worlds preserve the same operation,
+payload coordinates, original scheduling reservation and native acknowledgment,
+and both produce the same future checksum. Every original poll budget is bound
+into the signed configuration; cross-ISA or historical budget mismatches refuse
+before materialization. The 256-MiB byte allowance is unchanged. Diagnostic-credit
+preflight is a separate, unpromoted protocol successor. These mixed native tests currently use a private
 test factory; production installed selection and CLI integration remain required.
+
+The extension checkpoint passes the complete core library: 799 cases pass and
+five actual-provider fixtures are explicitly excluded from that run. The public
+ABI-conformance gate and required hermetic application test-target compilation
+also pass at their recorded source checkpoints. Later registrations require
+fresh checks; these results do not certify unregistered drafts or every backend.
 
 The [KVM audit](kvm-feasibility.md) records the clock/timer/interrupt mediation
 requirements. The current machine does not expose `/dev/kvm`, so native KVM
@@ -194,8 +219,21 @@ guest/placement results must not be compared as a speedup. The
 [baseline record](reference-baseline.md) identifies executables, guest bytes,
 clock policy, host placement and measurement limits.
 
-There is no candidate speedup claim yet. Candidate comparisons must reuse the
-same guest bytes and workload, record interventions and compare full witnesses.
+The gem5 address-range predicate check removes one million temporary allocations
+per one-million-query round. Five matched rounds preserve the identical 17-million
+checksum; median lookup time drops from 17,114,414 to 3,254,498 ns (5.26x).
+The source-built check is
+`mjvd2kirzrqgqicl0x8yvvb0h8yg1iv0-gem5-addr-range-predicate-check-1`.
+The successor fixed-workload profile has manifest SHA256
+`9e2b4e66ef68d06e79526eaad33823bfca8071bdfe16e9d0bbd124c4fd939659`;
+independent x86 and ARM witnesses preserve exact native birth/checksum context
+through source removal, two fresh restores and complete fresh resource audits.
+This isolated lookup result does not measure Linux boot, device parity, CPU
+fidelity or complete typed diagnostics.
+
+There is no overall Linux boot candidate speedup claim yet. Candidate comparisons
+must reuse the same guest bytes and workload, record interventions and compare
+full witnesses.
 Raw traces, build logs and state dumps remain local; only concise results and
 artifact identities belong in the change description.
 
