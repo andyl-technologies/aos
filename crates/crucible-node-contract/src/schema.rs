@@ -28,11 +28,13 @@ where
 
 mod bindings;
 mod descriptors;
+mod extensions;
 mod manifests;
 mod profiles;
 
 pub use bindings::*;
 pub use descriptors::*;
+pub use extensions::*;
 pub use manifests::*;
 pub use profiles::*;
 

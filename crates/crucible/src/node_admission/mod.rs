@@ -9,6 +9,7 @@
 
 mod error;
 mod evidence;
+mod extensions;
 mod graph;
 mod nodes;
 mod policy;
@@ -26,6 +27,13 @@ use crucible_node_contract::{
 
 pub use error::{AdmissionCode, AdmissionError, AdmissionStage, AdmissionSubject, EffectCertainty};
 pub use evidence::{AdmissionEvidence, AdmissionLimits, EvidenceError, QualificationClaim};
+pub use extensions::{
+    AdmittedExtensionApplication, AdmittedExtensionSet, ExtensionApplication,
+    ExtensionApplicationScope, ExtensionImpact, ExtensionInstallationAuthority,
+    ExtensionQualificationAuthority, ExtensionRecordKind, ExtensionRecordPath,
+    ExtensionRegistration, ExtensionRegistryLimits, ExtensionSemanticContract,
+    ExtensionSemanticHandler, InstalledExtensionRegistry,
+};
 pub use policy::{
     ConnectionDelivery, ConnectionPolicy, CoordinatorPolicy, FlowControl, InternalDependency,
     LanePolicy, LaneVisibility, ObjectState, OwnerCapturePolicy, OwnershipPolicy, PortPolicy,
@@ -33,6 +41,7 @@ pub use policy::{
 };
 
 /// Borrows a complete resolved graph and its explicitly selected scenario contract.
+#[derive(Clone, Copy)]
 pub struct AdmissionRequest<'a> {
     /// Contains the complete immutable world binding selected during resolution.
     pub world: &'a WorldBinding,
@@ -68,9 +77,19 @@ pub struct AdmittedGraph {
     operating_policies: BTreeMap<Id, crate::node_scheduling::ExecutionPolicy>,
     requirements: ScenarioRequirements,
     owner_conflicts: BTreeMap<Id, BTreeSet<Id>>,
+    selected_extensions: AdmittedExtensionSet,
 }
 
 impl AdmittedGraph {
+    /// Borrows the exact qualified extensions and their selected immutable closure.
+    ///
+    /// Installed but unselected definitions do not contribute to this inventory.
+    /// Native capture/restore codecs must independently support and preserve this
+    /// closure rather than consulting current registry defaults.
+    pub fn selected_extensions(&self) -> &AdmittedExtensionSet {
+        &self.selected_extensions
+    }
+
     /// Returns the immutable complete world whose graph was admitted.
     pub fn world(&self) -> &WorldBinding {
         &self.world
@@ -178,6 +197,7 @@ pub fn admit_graph(
     let mut content = evidence::VerifiedContent::new(evidence, limits);
     nodes::check_core(&request, limits)?;
     let world_hash = request.world.identity().map_err(nodes::schema_error)?;
+    content.configure_extensions(request, world_hash.clone());
     evidence::bounded_core(request.requirements, limits.maximum_core_object_bytes)?;
     let requirements_hash = crucible_node_contract::canonical::json_hash(
         "cnp.admission-requirements.v1",
@@ -228,6 +248,7 @@ pub fn admit_graph(
     )?;
 
     let owner_conflicts = graph::owner_conflicts(&request, &ownership, limits)?;
+    let selected_extensions = content.take_extensions();
 
     Ok(AdmittedGraph {
         world: request.world.clone(),
@@ -257,12 +278,18 @@ pub fn admit_graph(
         operating_policies,
         requirements: request.requirements.clone(),
         owner_conflicts,
+        selected_extensions,
     })
 }
 
 #[cfg(test)]
 pub(crate) fn test_fixture_with_content() -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
     tests::admitted_fixture_with_content()
+}
+
+#[cfg(test)]
+pub(crate) fn test_model_graph_with_extension() -> AdmittedGraph {
+    extensions::test_model_graph_with_extension()
 }
 
 #[cfg(test)]

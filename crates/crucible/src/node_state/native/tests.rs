@@ -41,6 +41,32 @@ fn store(archive: &NativeArchive, mut bytes: &[u8]) -> ContentRef {
     reference
 }
 
+#[test]
+fn existing_empty_extension_admission_preserves_native_archive_gate() {
+    let (graph, _) = crate::node_admission::test_fixture_with_content();
+
+    assert!(graph.selected_extensions().is_empty());
+    require_supported_extensions(&graph).unwrap();
+}
+
+#[test]
+fn selected_extension_graph_refuses_before_native_archive_allocation() {
+    let graph = crate::node_admission::test_model_graph_with_extension();
+    assert!(!graph.selected_extensions().is_empty());
+
+    let failure = require_supported_extensions(&graph).unwrap_err();
+
+    assert_eq!(
+        failure.code,
+        crate::node_state::StateErrorCode::NativeEvidence
+    );
+    assert!(
+        failure
+            .reason
+            .contains("no qualified selected-extension closure codec")
+    );
+}
+
 fn storage_index(archive: &NativeArchive, image: ContentRef) -> Index {
     let (graph, _) = crate::node_admission::test_fixture_host_model(
         "clock",

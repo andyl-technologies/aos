@@ -9,6 +9,9 @@ use crucible_node_contract::{
 
 use super::error::refuse;
 use super::evidence::{AdmissionLimits, VerifiedContent, bounded_core};
+use super::extensions::{
+    ExtensionRecordKind as Kind, ExtensionRecordPath as Path, RecordPlacement,
+};
 use super::{
     AdmissionCode, AdmissionError, AdmissionRequest, AdmissionStage, AdmissionSubject,
     QualificationClaim,
@@ -240,21 +243,28 @@ pub(super) fn validate_nodes(
             ));
         }
 
-        // Unknown identity-bearing extensions cannot be promoted to supported
-        // semantics merely because their enclosing JSON object can be hashed.
-        if !descriptor.extensions.is_empty()
-            || !compatibility.extensions.is_empty()
-            || !compatibility.implementation.extensions.is_empty()
-            || !compatibility.operating_contract.extensions.is_empty()
-            || !binding.extensions.is_empty()
-            || !binding.authority.extensions.is_empty()
-        {
-            return Err(fail(
-                AdmissionCode::UnknownInterface,
-                "host-supported selected core extensions",
-                "unregistered core extension",
-            ));
-        }
+        content.extension_record(descriptor, &descriptor.extensions, || {
+            RecordPlacement::node(Kind::NodeDescriptor, &descriptor.id)
+        })?;
+        content.extension_record(compatibility, &compatibility.extensions, || {
+            RecordPlacement::node(Kind::BindingCompatibility, &descriptor.id)
+        })?;
+        content.extension_record(
+            &compatibility.implementation,
+            &compatibility.implementation.extensions,
+            || RecordPlacement::node(Kind::ImplementationIdentity, &descriptor.id),
+        )?;
+        content.extension_record(
+            &compatibility.operating_contract,
+            &compatibility.operating_contract.extensions,
+            || RecordPlacement::node(Kind::OperatingContract, &descriptor.id),
+        )?;
+        content.extension_record(binding, &binding.extensions, || {
+            RecordPlacement::node(Kind::NodeBinding, &descriptor.id)
+        })?;
+        content.extension_record(&binding.authority, &binding.authority.extensions, || {
+            RecordPlacement::node(Kind::LiveAuthority, &descriptor.id)
+        })?;
         for reference in [
             &descriptor.model_ref,
             &descriptor.configuration_ref,
@@ -299,26 +309,27 @@ pub(super) fn validate_nodes(
             content.verify(proof)?;
         }
         for artifact in &compatibility.implementation.artifacts {
-            if !artifact.extensions.is_empty() {
-                return Err(fail(
-                    AdmissionCode::UnknownInterface,
-                    "registered artifact semantics",
-                    "unknown artifact extension",
-                ));
-            }
+            content.extension_record(artifact, &artifact.extensions, || RecordPlacement {
+                kind: Kind::ArtifactIdentity,
+                node: Some(&descriptor.id),
+                path: Path::Artifact {
+                    artifact: artifact.id.clone(),
+                },
+            })?;
             content.verify(&artifact.content)?;
         }
         for model in &compatibility.implementation.model_definitions {
             content.verify(model)?;
         }
         for format in &compatibility.implementation.formats {
-            if !format.extensions.is_empty() {
-                return Err(fail(
-                    AdmissionCode::UnknownInterface,
-                    "registered state/protocol format semantics",
-                    "unknown schema extension",
-                ));
-            }
+            content.extension_record(format, &format.extensions, || RecordPlacement {
+                kind: Kind::SchemaRef,
+                node: Some(&descriptor.id),
+                path: Path::ImplementationSchema {
+                    schema: format.id.clone(),
+                    version: format.version,
+                },
+            })?;
             content.verify(&format.definition)?;
             content
                 .source
@@ -374,24 +385,23 @@ pub(super) fn validate_nodes(
         capability.validate().map_err(schema_error)?;
         let guarantee: GuaranteeProfile = content.policy(&compatibility.guarantees_ref)?;
         guarantee.validate().map_err(schema_error)?;
-        if !capability.extensions.is_empty() || !guarantee.extensions.is_empty() {
-            return Err(fail(
-                AdmissionCode::UnknownInterface,
-                "host-supported capability and guarantee contracts",
-                "unregistered extension",
-            ));
-        }
+        content.extension_record(&capability, &capability.extensions, || {
+            RecordPlacement::node(Kind::CapabilityProfile, &descriptor.id)
+        })?;
+        content.extension_record(&guarantee, &guarantee.extensions, || {
+            RecordPlacement::node(Kind::GuaranteeProfile, &descriptor.id)
+        })?;
         content.verify(&capability.devices_ref)?;
         content.verify(&capability.requirements_ref)?;
         content.verify(&guarantee.limitations_ref)?;
         for facet in &capability.facets {
-            if !facet.extensions.is_empty() {
-                return Err(fail(
-                    AdmissionCode::UnknownInterface,
-                    "registered operation facet semantics",
-                    "unknown facet extension",
-                ));
-            }
+            content.extension_record(facet, &facet.extensions, || RecordPlacement {
+                kind: Kind::FacetSelection,
+                node: Some(&descriptor.id),
+                path: Path::AdvertisedFacet {
+                    facet: facet.id.clone(),
+                },
+            })?;
             content.verify(&facet.configuration_ref)?;
             content.verify(&facet.guarantees_ref)?;
         }
@@ -403,6 +413,13 @@ pub(super) fn validate_nodes(
                     "selected facet differs or is absent",
                 ));
             }
+            content.extension_record(facet, &facet.extensions, || RecordPlacement {
+                kind: Kind::FacetSelection,
+                node: Some(&descriptor.id),
+                path: Path::SelectedFacet {
+                    facet: facet.id.clone(),
+                },
+            })?;
         }
         content.qualify(
             subject.clone(),

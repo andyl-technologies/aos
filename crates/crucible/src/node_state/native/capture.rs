@@ -24,7 +24,7 @@ use super::super::{
 use super::storage::{Index, NativeArtifactState, Object};
 use super::{
     AuthenticatedNativeSource, NativeArchive, NativeArchiveRecord, NativeOwnerState,
-    NativeWorldFactory, decode_record, owner_state, refused,
+    NativeWorldFactory, decode_record, owner_state, refused, require_supported_extensions,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -75,6 +75,7 @@ impl NativeArchive {
         immutable: &dyn CaptureEvidence,
         factory: &dyn NativeWorldFactory,
     ) -> Result<NativeArchiveRecord, StateError> {
+        require_supported_extensions(graph)?;
         if requirements.restore_mode != StateRestoreMode::DurableRestart {
             return Err(refused(
                 "native archive selects durable reconstruction explicitly",
@@ -281,6 +282,7 @@ impl NativeArchiveRecord {
         requirements: StateRequirements,
         factory: &dyn NativeWorldFactory,
     ) -> Result<VerifiedCapture, StateError> {
+        require_supported_extensions(graph)?;
         if self.index.owners.len() != self.manifest.owners.len()
             || self
                 .index

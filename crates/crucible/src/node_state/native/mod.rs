@@ -180,6 +180,15 @@ fn refused(reason: impl Into<String>) -> StateError {
     )
 }
 
+fn require_supported_extensions(graph: &AdmittedGraph) -> Result<(), StateError> {
+    if !graph.selected_extensions().is_empty() {
+        return Err(refused(
+            "native archive edition one has no qualified selected-extension closure codec",
+        ));
+    }
+    Ok(())
+}
+
 fn storage_error(error: impl std::fmt::Display) -> StateError {
     StateError::new(
         super::StateErrorCode::Content,

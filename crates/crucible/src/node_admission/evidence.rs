@@ -157,6 +157,15 @@ pub struct EvidenceError {
 /// executable evidence for the exact supplied claim, including all selected
 /// configuration restrictions. It does not confer native custody or execution.
 pub trait AdmissionEvidence {
+    /// Borrows a source-installed exact semantic registry, when explicitly configured.
+    ///
+    /// The default preserves refusal of nonempty identity-bearing extension maps.
+    /// Negotiated feature strings and portable declarations cannot construct a
+    /// registry or replace namespace, handler, and application qualification.
+    fn extension_registry(&self) -> Option<&super::InstalledExtensionRegistry> {
+        None
+    }
+
     /// Reads the complete immutable object under an enforced byte ceiling.
     ///
     /// # Errors
@@ -205,6 +214,7 @@ pub(super) struct VerifiedContent<'a> {
     pub source: &'a dyn AdmissionEvidence,
     pub limits: AdmissionLimits,
     consumed: usize,
+    extensions: Option<super::extensions::ExtensionAdmission<'a>>,
 }
 
 impl<'a> VerifiedContent<'a> {
@@ -213,7 +223,49 @@ impl<'a> VerifiedContent<'a> {
             source,
             limits,
             consumed: 0,
+            extensions: None,
         }
+    }
+
+    pub fn configure_extensions(
+        &mut self,
+        request: super::AdmissionRequest<'a>,
+        world_hash: HashRef,
+    ) {
+        self.extensions = self.source.extension_registry().map(|registry| {
+            super::extensions::ExtensionAdmission::new(registry, request, world_hash)
+        });
+    }
+
+    pub fn extension_record<'p>(
+        &mut self,
+        record: &impl Serialize,
+        extensions: &crucible_node_contract::Extensions,
+        placement: impl FnOnce() -> super::extensions::RecordPlacement<'p>,
+    ) -> Result<(), AdmissionError> {
+        if extensions.is_empty() {
+            return Ok(());
+        }
+        let placement = placement();
+        if let Some(admission) = &mut self.extensions {
+            return admission.check(record, extensions, placement, self.limits);
+        }
+        Err(refuse(
+            AdmissionStage::Nodes,
+            placement.node.map_or(AdmissionSubject::World, |node| {
+                AdmissionSubject::Node(node.clone())
+            }),
+            AdmissionCode::UnknownInterface,
+            "explicit source-installed exact semantic registry",
+            "nonempty extension map has no authenticated installed interpretation",
+        ))
+    }
+
+    pub fn take_extensions(&mut self) -> super::AdmittedExtensionSet {
+        self.extensions
+            .take()
+            .map(super::extensions::ExtensionAdmission::into_selected)
+            .unwrap_or_default()
     }
 
     pub fn read(&mut self, reference: &ContentRef) -> Result<Vec<u8>, AdmissionError> {

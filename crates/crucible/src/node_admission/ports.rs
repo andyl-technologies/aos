@@ -8,6 +8,9 @@ use crucible_node_contract::{
 
 use super::error::refuse;
 use super::evidence::VerifiedContent;
+use super::extensions::{
+    ExtensionRecordKind as Kind, ExtensionRecordPath as Path, RecordPlacement,
+};
 use super::nodes::ordered_ids;
 use super::{
     AdmissionCode, AdmissionError, AdmissionRequest, AdmissionStage, AdmissionSubject,
@@ -66,16 +69,35 @@ pub(super) fn validate_ports(
                     "edition or lane roster differs",
                 ));
             }
-            if !port.extensions.is_empty()
-                || port.lanes.iter().any(|lane| {
-                    !lane.extensions.is_empty() || !lane.payload_schema.extensions.is_empty()
-                })
-            {
-                return Err(fail(
-                    AdmissionCode::UnknownInterface,
-                    "registered exact port and schema semantics",
-                    "unregistered extension",
-                ));
+            content.extension_record(port, &port.extensions, || RecordPlacement {
+                kind: Kind::PortDescriptor,
+                node: Some(&node.id),
+                path: Path::Port {
+                    port: port.id.clone(),
+                },
+            })?;
+            for lane in &port.lanes {
+                content.extension_record(lane, &lane.extensions, || RecordPlacement {
+                    kind: Kind::LaneDescriptor,
+                    node: Some(&node.id),
+                    path: Path::Lane {
+                        port: port.id.clone(),
+                        lane: lane.id.clone(),
+                    },
+                })?;
+                content.extension_record(
+                    &lane.payload_schema,
+                    &lane.payload_schema.extensions,
+                    || RecordPlacement {
+                        kind: Kind::SchemaRef,
+                        node: Some(&node.id),
+                        path: Path::LaneSchema {
+                            port: port.id.clone(),
+                            lane: lane.id.clone(),
+                            schema: lane.payload_schema.id.clone(),
+                        },
+                    },
+                )?;
             }
             if policy.execution_owner_id != binding.compatibility.execution_owner.id {
                 return Err(fail(
@@ -340,13 +362,25 @@ pub(super) fn validate_connections(
                 "endpoint or connection selection differs; no implicit subset or conversion",
             ));
         }
-        if !connection.extensions.is_empty() || !connection.payload_schema.extensions.is_empty() {
-            return Err(fail(
-                AdmissionCode::UnknownInterface,
-                "registered connection semantics",
-                "unregistered extension",
-            ));
-        }
+        content.extension_record(connection, &connection.extensions, || RecordPlacement {
+            kind: Kind::ConnectionDescriptor,
+            node: None,
+            path: Path::Connection {
+                connection: connection.id.clone(),
+            },
+        })?;
+        content.extension_record(
+            &connection.payload_schema,
+            &connection.payload_schema.extensions,
+            || RecordPlacement {
+                kind: Kind::SchemaRef,
+                node: None,
+                path: Path::ConnectionSchema {
+                    connection: connection.id.clone(),
+                    schema: connection.payload_schema.id.clone(),
+                },
+            },
+        )?;
         if !same_ordering(producer_semantics, consumer_semantics) {
             return Err(fail(
                 AdmissionCode::OrderingMismatch,

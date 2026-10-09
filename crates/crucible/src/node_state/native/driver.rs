@@ -14,7 +14,10 @@ use super::super::{
     PreparedRestoreAllocation, RestoreReservations, StateError, StateLimits, VerifiedCapture,
     WorldRestoreDriver,
 };
-use super::{NativeArchiveLimits, NativeArchiveRecord, NativeWorldFactory, refused};
+use super::{
+    NativeArchiveLimits, NativeArchiveRecord, NativeWorldFactory, refused,
+    require_supported_extensions,
+};
 
 /// Restores installed mixed-native state through the existing complete-world barrier.
 ///
@@ -40,6 +43,7 @@ impl NativeWorldRestoreDriver {
         factory: Rc<dyn NativeWorldFactory>,
         custody: RuntimeCustodyQueue,
     ) -> Result<Self, StateError> {
+        require_supported_extensions(&graph)?;
         if graph.world_binding_hash() != &archive.manifest().world_binding_hash {
             return Err(refused("native restore world or backend binding differs"));
         }
@@ -71,6 +75,7 @@ impl WorldRestoreDriver for NativeWorldRestoreDriver {
         limits: StateLimits,
         allocation: &mut PreparedRestoreAllocation,
     ) -> Result<(), StateError> {
+        require_supported_extensions(graph)?;
         if capture.artifact() != self.archive.artifact()
             || capture.manifest() != self.archive.manifest()
             || graph.world() != self.graph.world()

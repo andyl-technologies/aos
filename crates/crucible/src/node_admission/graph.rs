@@ -6,6 +6,9 @@ use crucible_node_contract::{GuaranteeProfile, HashRef, Id, Repeatability};
 
 use super::error::refuse;
 use super::evidence::VerifiedContent;
+use super::extensions::{
+    ExtensionRecordKind as Kind, ExtensionRecordPath as Path, RecordPlacement,
+};
 use super::nodes::ordered_ids;
 use super::ports::{CausalEdges, PortPolicies};
 use super::{
@@ -220,14 +223,7 @@ fn validate_ownership(
             observed,
         )
     };
-    if ownership.schema_version != 1
-        || !request.world.extensions.is_empty()
-        || request
-            .world
-            .node_bindings
-            .iter()
-            .any(|binding| !binding.extensions.is_empty())
-    {
+    if ownership.schema_version != 1 {
         return Err(refuse(
             AdmissionStage::Graph,
             AdmissionSubject::World,
@@ -235,6 +231,22 @@ fn validate_ownership(
             "supported closed world and ownership policy",
             "unknown edition or unregistered extension",
         ));
+    }
+    content.extension_record(request.world, &request.world.extensions, || {
+        RecordPlacement {
+            kind: Kind::WorldBinding,
+            node: None,
+            path: Path::World,
+        }
+    })?;
+    for binding in &request.world.node_bindings {
+        content.extension_record(binding, &binding.extensions, || RecordPlacement {
+            kind: Kind::NodeBindingRef,
+            node: Some(&binding.node_id),
+            path: Path::WorldNodeBindingRef {
+                node: binding.node_id.clone(),
+            },
+        })?;
     }
     ordered_ids(
         ownership.domains.iter().map(|domain| &domain.id),
@@ -366,17 +378,22 @@ fn validate_ownership(
     }
     for owner in request.owners {
         content.verify(&owner.ownership_ref)?;
-        if !owner.extensions.is_empty()
-            || owner
-                .node_bindings
-                .iter()
-                .any(|binding| !binding.extensions.is_empty())
-        {
-            return Err(fail(
-                AdmissionSubject::Owner(owner.owner.id.clone()),
-                "supported owner constraints",
-                "unregistered ownership extension",
-            ));
+        content.extension_record(owner, &owner.extensions, || RecordPlacement {
+            kind: Kind::OwnerBinding,
+            node: None,
+            path: Path::Owner {
+                owner: owner.owner.id.clone(),
+            },
+        })?;
+        for binding in &owner.node_bindings {
+            content.extension_record(binding, &binding.extensions, || RecordPlacement {
+                kind: Kind::NodeBindingRef,
+                node: Some(&binding.node_id),
+                path: Path::OwnerNodeBindingRef {
+                    owner: owner.owner.id.clone(),
+                    node: binding.node_id.clone(),
+                },
+            })?;
         }
         let members: BTreeSet<_> = owner.owner.participant_ids.iter().cloned().collect();
         let state: BTreeSet<_> = owner.owner.state_domain_ids.iter().cloned().collect();
