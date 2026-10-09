@@ -270,7 +270,8 @@ pub(super) fn authorization(value: &PermanentDeleteAuthorization) -> Result<(), 
                 value.grace_elapsed_nanos,
                 value.deletion_elapsed_nanos,
             )?;
-            fence_key(&value.fence, value.exclusion.cycle)?;
+            // Final current checkpoints may outlive the preparation's root
+            // snapshot without replacing its immutable barrier or wait evidence.
             let (_, predecessor_revision) = fence::fence_pointer(&value.fence)?;
             if value.genesis.revision != 0
                 || value.preparation.revision <= value.genesis.revision
@@ -279,7 +280,7 @@ pub(super) fn authorization(value: &PermanentDeleteAuthorization) -> Result<(), 
                 return Err(RetirementError::Contradiction);
             }
             if let Some(fence) = &value.lineage_fence {
-                fence_key(fence, value.exclusion.cycle)?;
+                fence::fence_pointer(fence)?;
             }
             match (&value.backend, &value.barrier) {
                 (BackendBinding::Remote { .. }, BarrierArtifact::Remote(artifact)) => {

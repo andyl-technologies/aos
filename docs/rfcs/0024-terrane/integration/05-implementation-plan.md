@@ -5056,6 +5056,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Core directory and both workspace Cargo files byte-for-byte. These results
   qualify that Core source only; native composition and runtime qualification
   remain pending.
+  D-115 extends the distinct checkpoint association to final copied first
+  ownership and independently qualified optional lineage. Original preparation,
+  barrier and valid continuous G/D observations remain fixed while genuinely
+  changed current roots use fresh checkpoints. Preparation-initial and ordinary
+  sweep associations remain unchanged. Pure later-cycle and refusal coverage is
+  added; compilation, owning gates and native qualification remain pending.
   Actual remote provider qualification belongs to T3. No remote conformance
   or full `gc-two-phase-delete` pass is claimed. D-78
   registers physical creation journals and recoverable deletion intent.

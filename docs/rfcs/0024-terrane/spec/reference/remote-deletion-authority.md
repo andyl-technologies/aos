@@ -228,6 +228,22 @@ the actual CURRENT whole lease and expiry; it MUST NOT reset valid barrier
 age. Epoch/holder takeover needs a genuinely current new selected preparation
 and fresh cycle/barrier rather than rewriting the original plan.
 
+The final placement fence MUST bind the genuinely current destination collection
+checkpoint. Its fence, roots and traversal pointers agree on their own checkpoint
+cycle, which MAY differ from the immutable preparation's exclusion/barrier cycle.
+The final fence revision MUST equal the actual selecting predecessor revision.
+Changed current roots require a fresh independently qualified checkpoint; this
+MUST NOT alone reset independently proven continuity or completed G/D observation
+of the same immutable NEW barrier. Unchanged roots may be reused only after exact
+independent current revalidation. The original preparation, exclusion, operation
+key, tombstone and barrier identity remain unchanged. Unknown or failed physical
+or clock continuity still resets the wait under the rules below. An optional
+lineage fence also uses its own independently qualified current checkpoint cycle
+and the same exact predecessor revision; it still requires complete ordinary
+authenticated lineage qualification and every actual consumed Original input.
+Neither decoded final pointer nor a checkpoint-cycle change supplies permission
+or elapsed evidence.
+
 The winning case-3 transaction compares whole Preparing bytes/state and
 selects Proposed at the NEXT checked revision with immutable copied
 retirement authorization and null future owner/pass pointers. It promotes

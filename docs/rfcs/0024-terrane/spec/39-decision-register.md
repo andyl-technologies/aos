@@ -2400,6 +2400,37 @@ is added rather than editing history.
     freeze and completes no task or gate.
   - **Affects:** GC-7/15/23/29, D-82 and copied-placement reconciliation.
 
+- **[D-115] Separate copied barriers from final checkpoint cycles.**
+  - **Status:** Decided (2026-10-09)
+  - **Decision:** Final copied-retirement authorization binds a genuinely
+    current placement checkpoint whose cycle may differ from the immutable
+    preparing exclusion/barrier cycle. Its roots, traversal and fence agree on
+    their own checkpoint cycle, and the fence revision equals the exact current
+    predecessor. Optional lineage checkpoints have the same current-revision
+    requirement and retain independent complete authenticated qualification.
+    The initial preparation, operation key, exclusion, tombstone, barrier,
+    holder/epoch and actual continuous G/D observations remain unchanged.
+  - **Rationale:** The implementation still equated final copied and lineage
+    fence cycles to the original barrier cycle. CreateOnce roots cannot be
+    replaced when actual current roots change. That association would force
+    valid immutable-barrier waits to restart after unrelated publication,
+    contradicting the required continuity rule, or encourage stale roots or
+    immutable overwrite. D-114 resolved recurring permanent passes; this fix
+    resolves the separate final first-ownership association.
+  - **Alternatives considered:** Restart G/D after every changed current root
+    (rejected: unrelated publication cannot alone reset valid barrier age);
+    retain stale closure or overwrite original roots (rejected: violates current
+    completeness and CreateOnce); change barrier/operation identity or add key
+    suffixes (rejected: existing independently qualified collection cycles
+    already represent current checkpoints without replacing the preparation).
+  - **Compatibility:** No identity, encoding, key grammar, requirement ID,
+    gate name or existing golden byte changes. Preparation-initial and ordinary
+    sweep cycle checks remain unchanged. Exact predecessor, checkpoint digest,
+    current whole lease, complete DATA, consumed Original predicates and actual
+    immutable barrier/clock continuity remain mandatory. The fix precedes T1's
+    freeze and completes no task or gate.
+  - **Affects:** GC-4/7/10/12/15/16/29 and copied first ownership under D-82.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

@@ -265,6 +265,9 @@ impl CopiedRetirementAuthorization {
     ///
     /// Same-holder/epoch lease renewal may extend expiry without changing valid
     /// barrier age. Actual current whole lease and live continuity remain runtime checks.
+    /// Final physical and optional lineage checkpoints may use fresh collection
+    /// cycles; their current predecessor and complete inputs require independent
+    /// qualification without replacing the preparation's barrier.
     ///
     /// # Errors
     /// Rejects malformed records, wrong preparation slot/plan, changed backend,

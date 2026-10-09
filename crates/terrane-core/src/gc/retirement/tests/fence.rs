@@ -44,6 +44,10 @@ fn fence_state_bytes(copy: bool, local: bool) -> Vec<u8> {
 }
 
 fn fence_bytes(copy: bool, local: bool) -> Vec<u8> {
+    fence_bytes_at_cycle(copy, local, 3)
+}
+
+fn fence_bytes_at_cycle(copy: bool, local: bool, cycle: u64) -> Vec<u8> {
     let mut bytes = Vec::new();
     write_map(&mut bytes, if copy { 12 } else { 10 });
     field(&mut bytes, 0, if copy { 2 } else { 1 });
@@ -56,9 +60,9 @@ fn fence_bytes(copy: bool, local: bool) -> Vec<u8> {
     write_uint(&mut bytes, 5);
     write_bytes(&mut bytes, &fence_state_bytes(copy, local));
     write_uint(&mut bytes, 6);
-    pointer(&mut bytes, "gc/3/roots", [18; 32]);
+    pointer(&mut bytes, &format!("gc/{cycle}/roots"), [18; 32]);
     write_uint(&mut bytes, 7);
-    pointer(&mut bytes, "gc/3/state", [19; 32]);
+    pointer(&mut bytes, &format!("gc/{cycle}/state"), [19; 32]);
     write_uint(&mut bytes, 8);
     bytes.extend(if local { local_bytes() } else { remote_bytes() });
     bytes.extend_from_slice(&[9, 0x80]);
@@ -127,6 +131,77 @@ fn permanent_fences_match_independent_bytes_and_keep_copy_data_separate() {
             assert!(CopiedPlacementFence::decode(&bytes[..cut]).is_err());
         }
     }
+}
+
+#[test]
+fn copied_authorization_keeps_its_barrier_with_a_fresh_current_checkpoint() {
+    for local in [false, true] {
+        let bytes = fence_bytes_at_cycle(true, local, 9);
+        let fence = CopiedPlacementFence::decode(&bytes).unwrap();
+        assert_eq!(fence.encode().unwrap(), bytes);
+        assert_eq!(fence.roots.key, "gc/9/roots");
+        assert_eq!(fence.marks.key, "gc/9/state");
+
+        let mut authorization =
+            CopiedRetirementAuthorization::decode(&auth_bytes(true, local)).unwrap();
+        let original = authorization.clone();
+        authorization.fence = RecordPointer {
+            key: "gc/9/fence/2".into(),
+            digest: *blake3::hash(&bytes).as_bytes(),
+        };
+        let checked = PermanentDeleteAuthorization::Copied(authorization.clone());
+        checked.check_fence(&bytes).unwrap();
+        checked.check_predecessor(&fence.state).unwrap();
+        checked.check_key(&key()).unwrap();
+        let mut lineage = authorization.clone();
+        lineage.lineage_fence = Some(RecordPointer {
+            key: "gc/11/fence/2".into(),
+            digest: [12; 32],
+        });
+        PermanentDeleteAuthorization::Copied(lineage.clone())
+            .check_predecessor(&fence.state)
+            .unwrap();
+        lineage.lineage_fence.as_mut().unwrap().key = "gc/11/fence/3".into();
+        assert!(
+            PermanentDeleteAuthorization::Copied(lineage)
+                .check_predecessor(&fence.state)
+                .is_err()
+        );
+        assert_eq!(authorization.exclusion, original.exclusion);
+        assert_eq!(authorization.barrier, original.barrier);
+        assert_eq!(authorization.tombstone, original.tombstone);
+        assert_eq!(authorization.preparation, original.preparation);
+        assert_eq!(
+            authorization.grace_elapsed_nanos,
+            original.grace_elapsed_nanos
+        );
+        assert_eq!(
+            authorization.deletion_elapsed_nanos,
+            original.deletion_elapsed_nanos
+        );
+
+        for invalid in ["gc/3/fence/2", "gc/9/fence/1", "gc/9/fence/3"] {
+            let mut mismatch = authorization.clone();
+            mismatch.fence.key = invalid.into();
+            assert!(
+                PermanentDeleteAuthorization::Copied(mismatch)
+                    .check_fence(&bytes)
+                    .is_err()
+            );
+        }
+        let mut wrong_digest = authorization;
+        wrong_digest.fence.digest[0] ^= 1;
+        assert!(
+            PermanentDeleteAuthorization::Copied(wrong_digest)
+                .check_fence(&bytes)
+                .is_err()
+        );
+    }
+
+    // Ordinary sweep remains tied to its original collection cycle.
+    let mut sweep = RemoteSweepDeleteAuthorization::decode(&auth_bytes(false, false)).unwrap();
+    sweep.fence.key = "gc/9/fence/2".into();
+    assert!(sweep.encode().is_err());
 }
 
 #[test]

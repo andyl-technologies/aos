@@ -900,14 +900,14 @@ CopiedRetirementAuthorization = {
        ; no invented pack/index identity, version or witness
   8 => bstr .size (1..128) .cbor Tombstone,
   9 => uint,                           ; FULL barrier D lower bound, nanoseconds
-  10 => [tstr, digest32],               ; current final CopiedPlacementFence
+  10 => [tstr, digest32],               ; current final fence, its own checkpoint cycle
   11 => uint,                          ; G, whole seconds
   12 => uint,                          ; FULL barrier G lower bound, nanoseconds
   13 => 1,                             ; same permanent key-family scope
   14 => 1,                             ; copied-placement retirement case
   15 => permanent-ownership-slot,       ; genuine destination genesis, not source
   16 => permanent-ownership-slot,       ; actual prior selected preparation slot
-  ? 17 => [tstr, digest32],             ; optional complete current lineage fence
+  ? 17 => [tstr, digest32],             ; independently current complete lineage fence
 }
 ; Unknown keys reject. Sweep has key 7 and no 14..17; copied retirement has
 ; no key 7 and mandatory 14..16. No source witness/owner/age is inferred.

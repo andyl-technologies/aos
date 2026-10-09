@@ -135,6 +135,34 @@ fn copied_preparation_is_disjoint_and_renewal_preserves_exact_plan() {
         authorization
             .check_preparation(&preparation, &slot)
             .unwrap();
+        authorization.fence.key = "gc/9/fence/2".into();
+        authorization.lineage_fence = Some(RecordPointer {
+            key: "gc/11/fence/2".into(),
+            digest: [12; 32],
+        });
+        authorization
+            .check_preparation(&preparation, &slot)
+            .unwrap();
+        PermanentDeleteAuthorization::Copied(authorization.clone())
+            .check_key(&key())
+            .unwrap();
+        assert_eq!(authorization.exclusion, preparation.plan.exclusion);
+        assert_eq!(authorization.tombstone, preparation.plan.tombstone);
+        assert_eq!(authorization.grace_elapsed_nanos, 1_000_000_000);
+        assert_eq!(authorization.deletion_elapsed_nanos, 2_000_000_000);
+        let mut changed_preparation = preparation.clone();
+        changed_preparation.plan.fence.key = "gc/9/fence/0".into();
+        assert!(changed_preparation.encode().is_err());
+
+        for invalid in ["gc/09/fence/2", "gc/9/fence/02", "gc/9/roots/2"] {
+            let mut malformed = authorization.clone();
+            malformed.fence.key = invalid.into();
+            assert!(malformed.encode().is_err());
+            malformed = authorization.clone();
+            malformed.lineage_fence.as_mut().unwrap().key = invalid.into();
+            assert!(malformed.encode().is_err());
+        }
+
         authorization.lease.holder = "B".into();
         assert!(
             authorization
