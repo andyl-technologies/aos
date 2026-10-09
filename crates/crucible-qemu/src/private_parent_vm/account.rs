@@ -42,10 +42,6 @@ enum ReservationState {
 }
 
 impl OriginalParentAccount {
-    pub(super) fn source_contract(&self) -> &ExternalSourceContract {
-        &self.source
-    }
-
     pub(super) fn admit(source: ExternalSourceContract) -> Result<Self, AdmissionError> {
         if source.resident_bytes == 0
             || source.backing_bytes == 0

@@ -10,12 +10,13 @@
   operatorPolicy,
   actorInventory,
   sourceManifest,
+  workflow,
 }: let
   source = import ./_source.nix {inherit lib;};
   qemu = pkgs.qemu-crucible;
   correspondingSource = pkgs.qemu-crucible-source;
   qemuExecutable = "${qemu}/bin/qemu-system-x86_64";
-  sourceFields = ["residentBytes" "backingBytes" "tasks" "descriptors"];
+  sourceFields = ["residentBytes" "backingBytes" "tasks" "descriptors" "totalMetadataBytes"];
   validSource = builtins.all (name:
     externalSource ? ${name}
     && builtins.isInt externalSource.${name}
@@ -64,6 +65,9 @@
       CRUCIBLE_PARENT_OPERATOR = "${operatorPolicy}";
       CRUCIBLE_PARENT_ACTOR_INVENTORY = "${actorInventory}";
       CRUCIBLE_PARENT_SOURCE_MANIFEST = "${sourceManifest}";
+      CRUCIBLE_PARENT_TOTAL_METADATA = toString externalSource.totalMetadataBytes;
+      CRUCIBLE_PARENT_CGROUP = "/sys/fs/cgroup/system.slice/crucible-campaign.service/workload";
+      CRUCIBLE_PARENT_WORKFLOW = "${workflow}/share/crucible/resident-workflow/workflow.json";
       CRUCIBLE_PARENT_INVENTORY = "${inventory}/share/crucible/parent-images.json";
       CRUCIBLE_PARENT_QEMU = qemuExecutable;
       CRUCIBLE_PARENT_ROOTFS = "${ownedRootfs}";
@@ -71,12 +75,12 @@
       CRUCIBLE_PARENT_INITRD = "${initrd}";
     };
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu --bin crucible-measurement-parent --features private-measurement-domain"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-cli --bin crucible --features private-parent-fixture"
     ];
     doCheck = false;
     buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.protobuf];
-    runtimeDeps = [pkgs.openssl pkgs.sqlite pkgs.crucible correspondingSource inventory ownedRootfs kernel initrd operatorPolicy actorInventory sourceManifest];
-    nukeRefsKeep = [qemu correspondingSource inventory ownedRootfs kernel initrd operatorPolicy actorInventory sourceManifest];
+    runtimeDeps = [pkgs.openssl pkgs.sqlite pkgs.crucible correspondingSource inventory ownedRootfs kernel initrd operatorPolicy actorInventory sourceManifest workflow];
+    nukeRefsKeep = [qemu correspondingSource inventory ownedRootfs kernel initrd operatorPolicy actorInventory sourceManifest workflow];
     passthru = {
       privateFixture = true;
       runtimeAdmission = false;
@@ -92,6 +96,7 @@ in
   assert ownedRootfs.passthru.operatorPolicy == operatorPolicy;
   assert ownedRootfs.passthru.imageInventory == actorInventory;
   assert ownedRootfs.passthru.sourceManifest == sourceManifest;
+  assert ownedRootfs.passthru.workflow == workflow;
     pkgs.mkDerivation {
       pname = "crucible-private-parent-fixture";
       version = "0";
@@ -105,7 +110,7 @@ in
             mkdir -p "$out/bin" "$out/nix-support"
             cat > "$out/bin/crucible-private-parent" <<'ENTRY'
             #!${pkgs.bash}/bin/bash
-            exec ${parent}/bin/crucible-measurement-parent
+            exec ${parent}/bin/crucible serve --production-qemu --listen 127.0.0.1:0 --trusted-unauthenticated-bind
             ENTRY
             chmod +x "$out/bin/crucible-private-parent"
             ln -s ${source} "$out/source"
@@ -122,6 +127,7 @@ in
       ];
       passthru = {
         inherit parent inventory externalSource;
+        controller = parent;
         privateFixture = true;
         runtimeAdmission = false;
       };

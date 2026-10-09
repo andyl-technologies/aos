@@ -31,8 +31,25 @@ pub(crate) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), Cl
                 crucible_daemon::campaign_process::CampaignProcessAdmissionError::Store(source) => {
                     CliError::SqliteStartup(source)
                 }
+                #[cfg(feature = "private-parent-fixture")]
+                source @ (crucible_daemon::campaign_process::CampaignProcessAdmissionError::ParentAdmission(_)
+                | crucible_daemon::campaign_process::CampaignProcessAdmissionError::Parent(_)) => {
+                    serve_error(source.to_string())
+                }
             }
         })?;
+    #[cfg(feature = "private-parent-fixture")]
+    if args.production_qemu {
+        // The fixed private fixture accepts its one attempt in this already
+        // authenticated process, before ordinary runtime or request preparation.
+        if process.run_original_parent().is_err() {
+            // The actual cause remains in its permanent owner. Enter retained
+            // quarantine directly: no admitted bounded reporting sink exists,
+            // and stderr must not block before custody is preserved.
+            process.retain_failed_original_parent();
+        }
+        return Ok(());
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(process.worker_threads())
         .max_blocking_threads(process.blocking_threads())

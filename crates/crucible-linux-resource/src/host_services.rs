@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 mod bootstrap;
+pub mod process_birth;
 
 #[cfg(feature = "private-measurement-domain")]
 mod native_extents;

@@ -12,7 +12,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
-const FRAME_BYTES: usize = 192;
+const FRAME_BYTES: usize = 224;
 const MAX_POLICY: u64 = 16_384;
 const MAX_DESCRIPTOR: u64 = 1 << 20;
 
@@ -30,6 +30,14 @@ struct Policy {
     host_backing_bytes: u64,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkflowSelection {
+    schema: String,
+    family: String,
+    native_count: u64,
+}
+
 pub(super) struct Bridge {
     listener: UnixListener,
     peer: Option<UnixStream>,
@@ -37,6 +45,7 @@ pub(super) struct Bridge {
     _policy: File,
     _images: File,
     _source: File,
+    _workflow: File,
     frame: [u8; FRAME_BYTES],
 }
 
@@ -46,6 +55,7 @@ impl Bridge {
         policy_path: &Path,
         images_path: &Path,
         source_path: &Path,
+        workflow_path: &Path,
     ) -> Result<Self, ParentFailure> {
         let mut policy = immutable(policy_path, MAX_POLICY)?;
         let mut policy_bytes = Vec::new();
@@ -71,13 +81,31 @@ impl Bridge {
         {
             return Err(ParentFailure::CompiledInput("operator fixed role contract"));
         }
+        // Workflow identity is bound before the endpoint is published. The
+        // consumer validates the full service policy under this exact digest.
+        let mut workflow = immutable(workflow_path, MAX_DESCRIPTOR)?;
+        let mut workflow_bytes = Vec::new();
+        (&mut workflow)
+            .take(MAX_DESCRIPTOR + 1)
+            .read_to_end(&mut workflow_bytes)
+            .map_err(ParentFailure::Io)?;
+        let selected: WorkflowSelection =
+            serde_json::from_slice(&workflow_bytes).map_err(ParentFailure::Inventory)?;
+        if selected.schema != "crucible.measurement-resident-workflow.v2"
+            || selected.family != "residentThroughput"
+            || fields.mode != "nativeOnly"
+            || selected.native_count != fields.native_count
+        {
+            return Err(ParentFailure::CompiledInput("fixed workflow family/width"));
+        }
         let mut images = immutable(images_path, MAX_DESCRIPTOR)?;
         let mut source = immutable(source_path, MAX_DESCRIPTOR)?;
         let mut frame = [0; FRAME_BYTES];
-        frame[..8].copy_from_slice(b"CPARNT01");
+        frame[..8].copy_from_slice(b"CPARNT02");
         frame[8..40].copy_from_slice(blake3::hash(&policy_bytes).as_bytes());
         frame[40..72].copy_from_slice(&digest(&mut images, MAX_DESCRIPTOR)?);
         frame[72..104].copy_from_slice(&digest(&mut source, MAX_DESCRIPTOR)?);
+        frame[192..224].copy_from_slice(blake3::hash(&workflow_bytes).as_bytes());
         File::open("/dev/urandom")
             .and_then(|mut random| random.read_exact(&mut frame[104..136]))
             .map_err(ParentFailure::Io)?;
@@ -111,6 +139,7 @@ impl Bridge {
             _policy: policy,
             _images: images,
             _source: source,
+            _workflow: workflow,
             frame,
         })
     }
@@ -325,7 +354,8 @@ impl Bridge {
             path,
             _policy: pins.try_clone().unwrap(),
             _images: pins.try_clone().unwrap(),
-            _source: pins,
+            _source: pins.try_clone().unwrap(),
+            _workflow: pins,
             frame: [0; FRAME_BYTES],
         }
     }

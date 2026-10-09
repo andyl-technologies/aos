@@ -6,6 +6,7 @@
   operatorPolicy,
   imageInventory,
   sourceManifest,
+  workflow,
   imageBytes,
   operatorMode,
 }: let
@@ -62,7 +63,7 @@
       exec ${initExecutable}
     '';
   };
-  dependencies = [installedImages operatorPolicy imageInventory sourceManifest birth init pkgs.bash pkgs.coreutils pkgs.util-linux];
+  dependencies = [installedImages operatorPolicy imageInventory sourceManifest workflow birth init pkgs.bash pkgs.coreutils pkgs.util-linux];
   closure = import ../../../lib/build/closure-info.nix {inherit pkgs lib;} {
     rootPaths = dependencies;
     pname = "crucible-private-parent-rootfs-closure";
@@ -92,6 +93,7 @@ in
             ln -s ${operatorPolicy} rootfs/etc/crucible/measurement-operator.json
             ln -s ${imageInventory} rootfs/etc/crucible/measurement-images.json
             ln -s ${sourceManifest} rootfs/etc/crucible/measurement-source.json
+            ln -s ${workflow}/share/crucible/resident-workflow/workflow.json rootfs/etc/crucible/measurement-workflow.json
             ln -s ${birth}/bin/actor-birth rootfs/etc/crucible/measurement-actor-birth
             truncate -s ${toString imageBytes} "$out"
             ${pkgs.fakeroot}/bin/fakeroot ${pkgs.bash}/bin/bash -c '
@@ -102,7 +104,7 @@ in
         }
       ];
       passthru = {
-        inherit operatorPolicy imageInventory sourceManifest installedImages birth init operatorMode;
+        inherit operatorPolicy imageInventory sourceManifest workflow installedImages birth init operatorMode;
         privateFixture = true;
         runtimeAdmission = false;
       };

@@ -8,7 +8,6 @@
 
 mod account;
 mod bridge;
-mod enclosure;
 mod inventory;
 
 #[cfg(test)]
@@ -44,6 +43,7 @@ impl fmt::Display for OriginalParentRefusal {
             Some(ParentFailure::Io(error)) => write!(formatter, "{error}"),
             Some(ParentFailure::Inventory(error)) => write!(formatter, "{error}"),
             Some(ParentFailure::Host(error)) => write!(formatter, "{error}"),
+            Some(ParentFailure::Enclosing(error)) => write!(formatter, "{error}"),
             Some(ParentFailure::CompiledInput(field)) => {
                 write!(formatter, "missing compiled {field}")
             }
@@ -59,6 +59,15 @@ impl fmt::Display for OriginalParentRefusal {
         if let Some(cleanup) = &record.cleanup {
             write!(formatter, "; physical cleanup: {cleanup:?}")?;
         }
+        if let Some(error) = &record.setup.watcher_cleanup_failure {
+            write!(formatter, "; originating watcher cleanup: {error}")?;
+        }
+        if let Some(error) = &record.setup.group_cleanup_failure {
+            write!(formatter, "; originating group removal: {error}")?;
+        }
+        if let Some(error) = &record.setup.cleanup_original_post {
+            write!(formatter, "; separate original cleanup postcheck: {error}")?;
+        }
         Ok(())
     }
 }
@@ -69,6 +78,7 @@ enum ParentFailure {
     Io(std::io::Error),
     Inventory(serde_json::Error),
     Host(crate::QemuVmRealizationError),
+    Enclosing(crucible_linux_resource::host_services::process_birth::OriginalParentAttemptRefusal),
     Occupied,
     CompiledInput(&'static str),
     Deadline,
@@ -82,17 +92,20 @@ struct ParentRecord {
     owner: Option<LinuxQemuAttemptHostOwner>,
     directory: Option<crate::QemuPreparedRunDirectory>,
     child: Option<Child>,
+    setup: crate::linux_attempt_host::OriginalParentSetup,
     exit: Option<ExitStatus>,
     first: Option<ParentFailure>,
     cleanup: Option<ParentFailure>,
     occupied: bool,
+    #[cfg(test)]
     deadline: Option<crate::supervision::HostSupervisionDeadline>,
     post_expired: bool,
     rootfs_path: Option<std::path::PathBuf>,
     rootfs_file: Option<fs::File>,
     bridge: Option<bridge::Bridge>,
-    enclosure: Option<enclosure::Enclosure>,
     guest_complete: bool,
+    // External original credit and ancestor identity outlive every covered field.
+    enclosing: Option<crucible_linux_resource::host_services::process_birth::OriginalParentAttempt>,
 }
 
 impl ParentRecord {
@@ -103,17 +116,19 @@ impl ParentRecord {
             owner: None,
             directory: None,
             child: None,
+            setup: crate::linux_attempt_host::OriginalParentSetup::empty(),
             exit: None,
             first: None,
             cleanup: None,
             occupied: false,
+            #[cfg(test)]
             deadline: None,
             post_expired: false,
             rootfs_path: None,
             rootfs_file: None,
             bridge: None,
-            enclosure: None,
             guest_complete: false,
+            enclosing: None,
         }
     }
 
@@ -127,28 +142,38 @@ impl ParentRecord {
     }
 
     fn boundary(&self) -> Result<(), ParentFailure> {
+        if let Some(enclosing) = &self.enclosing {
+            return enclosing.check_original().map_err(ParentFailure::Enclosing);
+        }
+        // Local child controls have a test-only clock; installed code has no
+        // standalone clock or entry that can bypass the original reservation.
+        #[cfg(test)]
         if self
             .deadline
             .as_ref()
             .is_some_and(|deadline| deadline.has_time_remaining())
         {
-            Ok(())
-        } else {
-            Err(ParentFailure::Deadline)
+            return Ok(());
         }
+        Err(ParentFailure::Deadline)
     }
 
     fn poll_timeout(&self) -> Result<rustix::time::Timespec, ParentFailure> {
-        let remaining = self
-            .deadline
-            .as_ref()
-            .and_then(crate::supervision::HostSupervisionDeadline::remaining)
-            .filter(|remaining| !remaining.is_zero())
-            .ok_or(ParentFailure::Deadline)?;
+        let remaining = if let Some(original) = &self.enclosing {
+            original.remaining().map_err(ParentFailure::Enclosing)?
+        } else {
+            #[cfg(test)]
+            {
+                self.deadline
+                    .as_ref()
+                    .and_then(crate::supervision::HostSupervisionDeadline::remaining)
+                    .filter(|remaining| !remaining.is_zero())
+                    .ok_or(ParentFailure::Deadline)?
+            }
+            #[cfg(not(test))]
+            return Err(ParentFailure::Occupied);
+        };
         let slice = remaining.min(Duration::from_millis(10));
-
-        // This samples the existing absolute end; it never starts another wait
-        // allowance. The actual poll still receives the original postcheck.
         Ok(rustix::time::Timespec {
             tv_sec: 0,
             tv_nsec: i64::from(slice.subsec_nanos()),
@@ -164,11 +189,9 @@ impl ParentRecord {
         if let Err(first) = result {
             self.retain(first);
         }
-        if after.is_err() {
+        if let Err(cause) = after {
             self.post_expired = true;
-            if self.first.is_none() {
-                self.retain(ParentFailure::Deadline);
-            }
+            self.retain(cause);
         }
         if self.first.is_some() {
             Err(ParentFailure::Retained)
@@ -182,6 +205,16 @@ impl ParentRecord {
             return Err(ParentFailure::Occupied);
         }
         self.occupied = true;
+        if let Some(enclosing) = &self.enclosing {
+            enclosing
+                .matches_source(
+                    source.resident_bytes,
+                    source.backing_bytes,
+                    u64::from(source.tasks),
+                    source.descriptors,
+                )
+                .map_err(ParentFailure::Enclosing)?;
+        }
         // The complete reservation is published before factory/file effects.
         self.account =
             Some(OriginalParentAccount::admit(source).map_err(ParentFailure::Admission)?);
@@ -200,18 +233,18 @@ impl ParentRecord {
         self.postchecked(result)?;
         self.boundary()?;
         let account = self.account.as_ref().ok_or(ParentFailure::Occupied)?;
-        let result = self.factory.as_mut().ok_or(ParentFailure::Occupied)?.begin(
-            10,
-            account.resident_ceiling(),
-            account.backing_ceiling(),
-        );
-        let result = match result {
-            Ok(owner) => {
-                self.owner = Some(owner);
-                Ok(())
-            }
-            Err(error) => Err(ParentFailure::Host(error)),
-        };
+        let original = self.enclosing.as_ref().ok_or(ParentFailure::Occupied)?;
+        let result = self
+            .factory
+            .as_mut()
+            .ok_or(ParentFailure::Occupied)?
+            .begin_under_original_parent(
+                original,
+                (10, account.resident_ceiling(), account.backing_ceiling()),
+                &mut self.owner,
+                &mut self.setup,
+            )
+            .map_err(ParentFailure::Host);
         self.postchecked(result)?;
         self.boundary()?;
         let result = self
@@ -313,15 +346,28 @@ impl ParentRecord {
             return Err(ParentFailure::Occupied);
         }
         self.boundary()?;
+        let enclosing = self.enclosing.as_ref().ok_or(ParentFailure::Occupied)?;
         self.owner
             .as_mut()
             .ok_or(ParentFailure::Occupied)?
-            .finish()
+            .finish_under_original_parent(enclosing, &mut self.setup)
             .map_err(ParentFailure::Host)?;
+        // Factual joins and absence of native-controller aliases precede all
+        // owner/factory control frees. The external pair and counter outlive
+        // these controls and the final observation.
+        self.owner.take();
+        self.factory.take();
         self.account
             .as_mut()
             .ok_or(ParentFailure::Occupied)?
             .record_physical_retirement();
+        self.child.take();
+        self.rootfs_path.take();
+        if let Some(enclosing) = &self.enclosing {
+            enclosing
+                .observe_after_physical_join()
+                .map_err(ParentFailure::Enclosing)?;
+        }
         // Account remains in this once-only slot even after factual retirement.
         Ok(())
     }
@@ -345,6 +391,7 @@ struct InstalledParentInputs {
     operator: &'static str,
     actor_inventory: &'static str,
     source_manifest: &'static str,
+    workflow: &'static str,
     images: InstalledImages,
 }
 
@@ -397,6 +444,10 @@ impl InstalledParentInputs {
                 option_env!("CRUCIBLE_PARENT_SOURCE_MANIFEST"),
                 "source manifest",
             )?,
+            workflow: locator(
+                option_env!("CRUCIBLE_PARENT_WORKFLOW"),
+                "workflow descriptor",
+            )?,
             images: InstalledImages {
                 qemu: locator(option_env!("CRUCIBLE_PARENT_QEMU"), "QEMU")?,
                 rootfs: locator(option_env!("CRUCIBLE_PARENT_ROOTFS"), "rootfs")?,
@@ -433,19 +484,8 @@ impl InstalledImages {
     }
 }
 
-/// Runs the generated private operator using its required compiled Source policy.
-///
-/// The surrounding owned fixture must establish the operator's original
-/// ancestor containment before this executable is born. This entry creates the
-/// new once-only logical parent account; readbacks do not issue entitlement.
-/// The parent retains every uncertain child and physical owner in its static
-/// slot. A caller receiving refusal must retain this process until owned outer
-/// containment physically retires it; exiting is not a retirement certificate.
-///
-/// # Errors
-/// Refuses missing immutable inputs, repeated entry, invalid original admission,
-/// inadequate image floors, original expiry, factory effects or VM failure.
-pub fn run_original_parent_operator() -> Result<(), OriginalParentRefusal> {
+// Only the registered process owner's consumed attempt reaches this body.
+fn run_retained_parent() -> Result<(), OriginalParentRefusal> {
     let mut record = ORIGINAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -511,6 +551,31 @@ pub fn run_original_parent_operator() -> Result<(), OriginalParentRefusal> {
     }
 }
 
+/// Runs the private Parent under the existing process's paid original attempt.
+///
+/// The caller admits this non-clone reservation before request/input work. The
+/// Parent stores it before compiled inputs, image reads or physical effects;
+/// its same ancestor and absolute end remain accessible through quarantine.
+///
+/// # Errors
+/// Refuses a repeated Parent, mismatched compiled purpose, original expiry or
+/// any preparation, VM or physical-retirement failure.
+pub fn run_original_parent_under(
+    enclosing: crucible_linux_resource::host_services::process_birth::OriginalParentAttempt,
+) -> Result<(), OriginalParentRefusal> {
+    {
+        let mut record = ORIGINAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if record.occupied || record.enclosing.is_some() {
+            record.retain(ParentFailure::Occupied);
+            return Err(OriginalParentRefusal);
+        }
+        record.enclosing = Some(enclosing);
+    }
+    run_retained_parent()
+}
+
 /// Keeps the failed operator alive with its exact retained physical custody.
 ///
 /// The external fixture's original containment must terminate and reap this
@@ -532,26 +597,9 @@ fn prepare(record: &mut ParentRecord) -> Result<(), ParentFailure> {
         operator,
         actor_inventory,
         source_manifest,
+        workflow,
     } = inputs;
     record.admit(source)?;
-    record.deadline = Some(crate::supervision::HostSupervisionDeadline::start(
-        Duration::from_secs(3900),
-    ));
-    record.boundary()?;
-    let result = enclosure::Enclosure::verify(
-        record
-            .account
-            .as_ref()
-            .ok_or(ParentFailure::Occupied)?
-            .source_contract(),
-    );
-    match result {
-        Ok(enclosure) => {
-            record.enclosure = Some(enclosure);
-            record.postchecked(Ok(()))?;
-        }
-        Err(error) => return record.postchecked(Err(error)),
-    }
     record.boundary()?;
     let result = inventory::installed_floor(Path::new(inventory), images.qemu);
     let (mapped_floor, backing_floor) = match result {
@@ -569,8 +617,15 @@ fn prepare(record: &mut ParentRecord) -> Result<(), ParentFailure> {
             std::mem::size_of::<Mutex<ParentRecord>>() as u64,
         )
         .map_err(ParentFailure::Admission)?;
+    let enclosing = record.enclosing.as_ref().ok_or(ParentFailure::Occupied)?;
+    let parent_root = option_env!("CRUCIBLE_PARENT_CGROUP").ok_or(ParentFailure::CompiledInput(
+        "original Parent workload descendant",
+    ))?;
+    enclosing
+        .verify_factory_descendant(Path::new(parent_root))
+        .map_err(ParentFailure::Enclosing)?;
     let config = LinuxQemuAttemptHostConfig::new(
-        enclosure::ROOT,
+        parent_root,
         "/run/crucible-measurement-parent",
         "original-parent",
         2_000_000,
@@ -609,6 +664,7 @@ fn prepare(record: &mut ParentRecord) -> Result<(), ParentFailure> {
         Path::new(operator),
         Path::new(actor_inventory),
         Path::new(source_manifest),
+        Path::new(workflow),
     );
     match result {
         Ok(bridge) => {

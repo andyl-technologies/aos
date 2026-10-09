@@ -113,6 +113,47 @@ fn real_primary_and_cleanup_are_retained_separately() {
 }
 
 #[test]
+fn actual_io_primary_survives_late_original_end_and_distinct_cleanup() {
+    use std::io::Write;
+
+    let root = tempfile::tempdir().unwrap();
+    let missing = root.path().join("absent");
+    let primary = fs::File::open(&missing).unwrap_err();
+    let readable = root.path().join("read-only");
+    fs::write(&readable, b"retained").unwrap();
+    let cleanup = fs::File::open(&readable)
+        .unwrap()
+        .write_all(b"x")
+        .unwrap_err();
+    let mut record = admitted();
+    record.deadline = Some(crate::supervision::HostSupervisionDeadline::start(
+        Duration::ZERO,
+    ));
+
+    // This is the existing test-only original clock, not a registered-owner
+    // grant. The actual IO outcome precedes its independent late postcheck.
+    let completed = record.postchecked(Err(ParentFailure::Io(primary)));
+    record.retain(completed.unwrap_err());
+    record.retain_cleanup(Err(ParentFailure::Io(cleanup)));
+
+    assert!(matches!(&record.first,
+        Some(ParentFailure::Io(error)) if error.raw_os_error() == Some(libc::ENOENT)
+    ));
+    assert!(matches!(&record.cleanup,
+        Some(ParentFailure::Io(error)) if error.raw_os_error() == Some(libc::EBADF)
+    ));
+    assert!(record.post_expired);
+    assert!(record.account.is_some());
+    eprintln!(
+        "target Parent Mutex record={} setup={} watcher_error={} release_error={}",
+        std::mem::size_of::<Mutex<ParentRecord>>(),
+        std::mem::size_of::<crate::linux_attempt_host::OriginalParentSetup>(),
+        std::mem::size_of::<crate::linux_cgroup::LinuxQemuCgroupWatcherWaitError>(),
+        std::mem::size_of::<crate::linux_cgroup::LinuxQemuCgroupReleaseError>(),
+    );
+}
+
+#[test]
 fn original_account_is_once_only_and_guest_is_not_double_charged() {
     let mut record = admitted();
     let account = record.account.as_ref().unwrap();

@@ -103,6 +103,19 @@ impl HostServiceBootstrap {
 }
 
 impl AdmittedHostServiceBootstrap {
+    pub(super) fn matches_process_capacity(
+        &self,
+        tasks: u64,
+        descriptors: u64,
+        resident_bytes: u64,
+        metadata_bytes: u64,
+    ) -> bool {
+        self.original.resources.tasks == tasks
+            && self.original.resources.descriptors == descriptors
+            && self.original.resources.resident_bytes == resident_bytes
+            && self.original.metadata.resident_bytes == metadata_bytes
+    }
+
     /// Returns the structural charge retained in each original account.
     #[must_use]
     pub fn structural_bytes(&self) -> u64 {

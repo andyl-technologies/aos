@@ -16,8 +16,8 @@ use std::fs::File;
 use std::io::{Read, Seek};
 use std::os::unix::fs::MetadataExt;
 
-const FRAME_BYTES: usize = 192;
-const MAGIC: &[u8; 8] = b"CPARNT01";
+const FRAME_BYTES: usize = 224;
+const MAGIC: &[u8; 8] = b"CPARNT02";
 
 pub(super) fn receive(
     origin: MeasurementInvocationOrigin,
@@ -84,10 +84,12 @@ fn authenticated_fields(
     let image_digest = hash(40);
     let source_digest = hash(72);
     let incarnation = hash(104);
+    let workflow_digest = hash(192);
     let generation = word(136);
     if &frame[..8] != MAGIC
         || frame[146..152] != [0; 6]
         || operator_digest != origin.policy_digest
+        || workflow_digest == [0; 32]
         || image_digest == [0; 32]
         || source_digest == [0; 32]
         || incarnation == [0; 32]
@@ -118,6 +120,7 @@ fn authenticated_fields(
             _record: file,
         },
         operator_digest,
+        workflow_digest,
         incarnation,
         generation,
         mode,

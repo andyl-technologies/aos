@@ -53,6 +53,14 @@ pub(crate) enum LinuxQemuAttemptProcessOwnerError {
         /// Stable diagnostic from the retained startup error.
         message: String,
     },
+    /// The original Parent permanently retains the complete watcher failure.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error("original Parent retains its originating watcher cleanup failure")]
+    OriginalParentWatcherRetained,
+    /// The original Parent permanently retains the complete group failure.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error("original Parent retains its originating group removal failure")]
+    OriginalParentGroupRetained,
     /// An impossible internal state omitted required authority.
     #[error("QEMU attempt process owner lost {authority} authority")]
     MissingAuthority {
@@ -147,6 +155,44 @@ impl LinuxQemuAttemptProcessOwner {
             failed_children: VecDeque::new(),
             quarantine: None,
         }
+    }
+
+    /// Publishes the existing watcher before the caller's original postcheck.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn start_saved_watcher(&mut self) -> Result<(), LinuxQemuAttemptProcessOwnerError> {
+        let group =
+            self.group
+                .as_mut()
+                .ok_or(LinuxQemuAttemptProcessOwnerError::MissingAuthority {
+                    authority: "created Parent group",
+                })?;
+        self.watcher = Some(group.start_watcher()?);
+        Ok(())
+    }
+
+    /// Stores the sealed contract while the original caller retains this owner.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn seal_saved_contract(
+        &mut self,
+        limits: crate::spawn::QemuChildFileLimits,
+        user: u32,
+        group_id: u32,
+    ) -> Result<(), LinuxQemuAttemptProcessOwnerError> {
+        let group =
+            self.group
+                .as_ref()
+                .ok_or(LinuxQemuAttemptProcessOwnerError::MissingAuthority {
+                    authority: "created Parent group",
+                })?;
+        self.process_contract = Some(group.child_process_contract(
+            limits.writable_bytes,
+            limits.descriptors,
+            limits.locked_bytes,
+            user,
+            group_id,
+            None,
+        )?);
+        Ok(())
     }
 
     /// Starts the one watcher and seals the exact child launch contract.
@@ -367,6 +413,69 @@ impl LinuxQemuAttemptProcessOwner {
         }
     }
 
+    /// Retains the direct Parent owner while joining under its original end.
+    ///
+    /// # Errors
+    /// Refuses failed-child/quarantine aliases or unfinished authority without
+    /// starting an ordinary quarantine worker.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn finish_under_original_parent(
+        &mut self,
+        original: &crucible_linux_resource::host_services::process_birth::OriginalParentAttempt,
+        setup: &mut crate::linux_attempt_host::OriginalParentSetup,
+    ) -> Result<LinuxQemuAttemptProcessOwnerStatus, LinuxQemuAttemptProcessOwnerError> {
+        check_parent_cleanup_slot(setup)?;
+        if self.quarantine.is_some() || !self.failed_children.is_empty() {
+            return Err(LinuxQemuAttemptProcessOwnerError::MissingAuthority {
+                authority: "original Parent requires retained direct-child retirement",
+            });
+        }
+        if self.group.is_none() {
+            return Ok(LinuxQemuAttemptProcessOwnerStatus::ReapedAndReleased);
+        }
+        self.process_contract = None;
+        if let Some(watcher) = self.watcher.take() {
+            let completed = watcher.finish_under_original_parent(original);
+            let retained = retain_parent_watcher_outcome(setup, completed);
+            let post = original.check_original();
+            if let Err(error) = post {
+                setup.cleanup_original_post = Some(error);
+            }
+            // The real work error stays primary even if the original end also
+            // refused. Its complete owner precedes both checks and reporting.
+            retained?;
+            if let Some(error) = &setup.cleanup_original_post {
+                return Err(LinuxQemuAttemptProcessOwnerError::Watcher {
+                    message: error.to_string(),
+                });
+            }
+        }
+        original
+            .check_original()
+            .map_err(|error| LinuxQemuAttemptProcessOwnerError::Watcher {
+                message: error.to_string(),
+            })?;
+        let group =
+            self.group
+                .take()
+                .ok_or(LinuxQemuAttemptProcessOwnerError::MissingAuthority {
+                    authority: "configured original Parent cgroup",
+                })?;
+        let removed = group.remove_if_empty();
+        let retained = retain_parent_group_outcome(setup, removed);
+        let post = original.check_original();
+        if let Err(error) = post {
+            setup.cleanup_original_post = Some(error);
+        }
+        retained?;
+        if let Some(error) = &setup.cleanup_original_post {
+            return Err(LinuxQemuAttemptProcessOwnerError::Watcher {
+                message: error.to_string(),
+            });
+        }
+        Ok(LinuxQemuAttemptProcessOwnerStatus::ReapedAndReleased)
+    }
+
     /// Completes normal watcher and cgroup cleanup within `timeout`.
     ///
     /// A retained failed child changes this operation into quarantine transfer;
@@ -484,6 +593,46 @@ impl Drop for LinuxQemuAttemptProcessOwner {
         match LinuxQemuAttemptProcessQuarantine::start_retained(group, watcher, children) {
             Ok(quarantine) => drop(quarantine),
             Err(error) => drop(error),
+        }
+    }
+}
+
+#[cfg(feature = "private-measurement-domain")]
+fn check_parent_cleanup_slot(
+    setup: &crate::linux_attempt_host::OriginalParentSetup,
+) -> Result<(), LinuxQemuAttemptProcessOwnerError> {
+    if setup.has_retained_cleanup() {
+        return Err(LinuxQemuAttemptProcessOwnerError::MissingAuthority {
+            authority: "unoccupied original Parent cleanup slot",
+        });
+    }
+    Ok(())
+}
+
+#[cfg(feature = "private-measurement-domain")]
+fn retain_parent_watcher_outcome(
+    setup: &mut crate::linux_attempt_host::OriginalParentSetup,
+    completed: Result<(), super::LinuxQemuCgroupWatcherWaitError>,
+) -> Result<(), LinuxQemuAttemptProcessOwnerError> {
+    match completed {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            setup.watcher_cleanup_failure = Some(error);
+            Err(LinuxQemuAttemptProcessOwnerError::OriginalParentWatcherRetained)
+        }
+    }
+}
+
+#[cfg(feature = "private-measurement-domain")]
+fn retain_parent_group_outcome(
+    setup: &mut crate::linux_attempt_host::OriginalParentSetup,
+    completed: Result<(), super::LinuxQemuCgroupReleaseError>,
+) -> Result<(), LinuxQemuAttemptProcessOwnerError> {
+    match completed {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            setup.group_cleanup_failure = Some(error);
+            Err(LinuxQemuAttemptProcessOwnerError::OriginalParentGroupRetained)
         }
     }
 }
@@ -620,6 +769,157 @@ mod tests {
             )
             .into());
         }
+        Ok(())
+    }
+
+    #[cfg(feature = "private-measurement-domain")]
+    #[test]
+    fn parent_saved_process_keeps_watcher_on_contract_refusal_and_unwind()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, group) = group_fixture()?;
+        let mut saved = Some(LinuxQemuAttemptProcessOwner::retain_created(group));
+        saved
+            .as_mut()
+            .expect("published process")
+            .start_saved_watcher()?;
+        let result = saved
+            .as_mut()
+            .expect("published process")
+            .seal_saved_contract(
+                crate::spawn::QemuChildFileLimits {
+                    writable_bytes: 4096,
+                    descriptors: 1024,
+                    locked_bytes: 0,
+                },
+                65_533,
+                65_532,
+            );
+        assert!(
+            result.is_err(),
+            "regular filesystem cannot seal a cgroup contract"
+        );
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                panic!("original postcheck after contract refusal");
+            }))
+            .is_err()
+        );
+
+        let owner = saved
+            .as_mut()
+            .expect("same published process survives unwind");
+        assert!(owner.group.is_some());
+        assert!(owner.watcher.is_some());
+        assert!(owner.process_contract.is_none());
+        assert!(
+            owner.quarantine.is_none(),
+            "no ordinary worker owns this failure"
+        );
+        let watcher = owner.watcher.take().expect("same actual started watcher");
+        watcher.finish_and_wait(Duration::from_secs(1))?;
+        // Synthetic control files do not prove kernel enforcement. The test
+        // closes its own joined watcher without invoking the ordinary Drop.
+        drop(owner.group.take());
+        assert!(root.path().join("attempt").is_dir());
+        Ok(())
+    }
+
+    #[cfg(feature = "private-measurement-domain")]
+    #[test]
+    fn parent_cleanup_retains_actual_signal_io_and_watcher_before_postcheck_panic()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("read-only-wake");
+        fs::write(&path, b"wake")?;
+        let read_only = fs::File::open(&path)?;
+        let identity = rustix::fs::fstat(&read_only)?;
+        let watcher = LinuxQemuCgroupWatcher {
+            cancellation_event: read_only.into(),
+            watcher_state: Arc::new(AtomicU8::new(WATCHER_RUNNING)),
+            join: None,
+            path,
+        };
+        let mut saved = crate::linux_attempt_host::OriginalParentSetup::empty();
+
+        // The real write fails on a read-only descriptor. No cgroup, issuer or
+        // original grant is synthesized by this local error-custody fixture.
+        let completed = watcher.finish_and_wait(Duration::from_secs(1));
+        let primary = retain_parent_watcher_outcome(&mut saved, completed);
+        assert!(matches!(
+            primary,
+            Err(LinuxQemuAttemptProcessOwnerError::OriginalParentWatcherRetained)
+        ));
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                panic!("caller postcheck after actual failed signal");
+            }))
+            .is_err()
+        );
+
+        let error = saved
+            .watcher_cleanup_failure
+            .as_ref()
+            .expect("whole signal error");
+        let super::super::LinuxQemuCgroupWatcherWaitError::Signal { watcher, source } = error
+        else {
+            panic!("actual signal failure was replaced: {error}");
+        };
+        assert_eq!(source.raw_os_error(), Some(libc::EBADF));
+        let retained = rustix::fs::fstat(&watcher.cancellation_event)?;
+        assert_eq!(
+            (retained.st_dev, retained.st_ino),
+            (identity.st_dev, identity.st_ino)
+        );
+        assert!(
+            check_parent_cleanup_slot(&saved).is_err(),
+            "no later cleanup can overwrite the actual error"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "private-measurement-domain")]
+    #[test]
+    fn parent_cleanup_retains_actual_removal_io_and_pinned_group_on_substitution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, group) = group_fixture()?;
+        let identity = rustix::fs::fstat(&group.control.directory)?;
+        let mut saved = crate::linux_attempt_host::OriginalParentSetup::empty();
+
+        // Ordinary fixture files make the real rmdir fail with ENOTEMPTY.
+        let completed = group.remove_if_empty();
+        let primary = retain_parent_group_outcome(&mut saved, completed);
+        assert!(matches!(
+            primary,
+            Err(LinuxQemuAttemptProcessOwnerError::OriginalParentGroupRetained)
+        ));
+        let actual = root.path().join("attempt");
+        let moved = root.path().join("retained-original");
+        fs::rename(&actual, &moved)?;
+        fs::create_dir(&actual)?;
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                panic!("late caller refusal after actual removal failure");
+            }))
+            .is_err()
+        );
+
+        let error = saved
+            .group_cleanup_failure
+            .as_ref()
+            .expect("whole release error");
+        assert!(matches!(&error.source,
+            LinuxQemuCgroupError::Io { source, .. } if source.raw_os_error() == Some(libc::ENOTEMPTY)
+        ));
+        let retained = rustix::fs::fstat(&error.group.control.directory)?;
+        assert_eq!(
+            (retained.st_dev, retained.st_ino),
+            (identity.st_dev, identity.st_ino)
+        );
+        let replacement = open_directory(&actual, "inspect replacement fixture")?;
+        assert_ne!(rustix::fs::fstat(&replacement)?.st_ino, retained.st_ino);
+        assert!(check_parent_cleanup_slot(&saved).is_err());
+        assert!(moved.is_dir());
+        assert!(actual.is_dir());
         Ok(())
     }
 

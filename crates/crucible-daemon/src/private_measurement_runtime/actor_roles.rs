@@ -40,6 +40,46 @@ struct PublishedActor {
 }
 
 impl OriginalActorRoleIssuer {
+    pub(super) fn prepare_workflow_decode_owner(
+        &self,
+    ) -> Result<crucible_qemu::OriginalActorDecodeOwner, MeasurementRuntimeAdmissionError> {
+        self.require_original()?;
+        let held = self
+            .held
+            .as_ref()
+            .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                "retained original actor custody",
+            ))?;
+        Ok(held.accounts.prepare_decode_owner()?)
+    }
+
+    pub(super) fn admit_workflow_service(
+        &self,
+        decoder: &crucible_qemu::OriginalActorDecodeOwner,
+        bytes: &[u8],
+    ) -> Result<crucible_qemu::OriginalActorServicePolicy, MeasurementRuntimeAdmissionError> {
+        let held = self
+            .held
+            .as_ref()
+            .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                "retained original actor custody",
+            ))?;
+        Ok(held.accounts.admit_workflow_service(decoder, bytes)?)
+    }
+
+    pub(super) fn prepare_workflow_sqlite(
+        &self,
+        policy: crucible_qemu::OriginalActorServicePolicy,
+    ) -> Result<crucible_qemu::OriginalActorSqliteOwner, MeasurementRuntimeAdmissionError> {
+        let held = self
+            .held
+            .as_ref()
+            .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                "retained original actor custody",
+            ))?;
+        Ok(held.accounts.prepare_sqlite_owner(policy)?)
+    }
+
     /// Consumes the same authenticated parent invocation before publication.
     ///
     /// The immutable certified partition supplies the aggregate account values

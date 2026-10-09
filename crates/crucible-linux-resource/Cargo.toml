@@ -20,6 +20,7 @@ crucible-ram = { path = "../crucible-ram", optional = true }
 libc = { workspace = true }
 rustix = { workspace = true, features = ["time"] }
 thiserror = { workspace = true }
+zbus = { workspace = true }
 
 [dev-dependencies]
 crucible-linux-resource = { path = ".", features = ["test-support"] }

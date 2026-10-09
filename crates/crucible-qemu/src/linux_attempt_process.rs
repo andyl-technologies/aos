@@ -316,6 +316,97 @@ impl LinuxQemuAttemptProcessFactory {
         })
     }
 
+    /// Keeps created process authority in the original caller before effects.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn begin_under_original_parent(
+        &mut self,
+        original: &crucible_linux_resource::host_services::process_birth::OriginalParentAttempt,
+        ceilings: (u32, u64, u64),
+        saved: &mut Option<LinuxQemuAttemptProcessOwner>,
+        setup: &mut crate::linux_attempt_host::OriginalParentSetup,
+    ) -> Result<(), QemuVmRealizationError> {
+        use crate::linux_attempt_host::parent_setup::parent_original_error;
+
+        original.check_original().map_err(parent_original_error)?;
+        let (maximum_vcpus, maximum_resident_bytes, maximum_writable_bytes) = ceilings;
+        if self.poisoned || saved.is_some() || maximum_writable_bytes == 0 {
+            return Err(invalid_config(
+                "original Parent process setup is occupied or invalid",
+            ));
+        }
+        let limits = LinuxQemuCgroupLimits::new(
+            maximum_vcpus,
+            maximum_resident_bytes,
+            self.config.maximum_tasks,
+        )
+        .map_err(|source| map_cgroup_error("validate original Parent cgroup limits", &source))?;
+        let sequence = self.next_attempt;
+        self.next_attempt = sequence
+            .checked_add(1)
+            .ok_or_else(|| invalid_config("Parent process-name sequence is exhausted"))?;
+        let name = attempt_name(&self.config.attempt_namespace, sequence);
+        let group = match self.root.create(name, limits) {
+            Ok(group) => group,
+            Err(error) => {
+                self.poisoned = true;
+                setup.retain_group_failure(error);
+                let _original_after = original.check_original();
+                return Err(map_cgroup_error(
+                    "create original Parent cgroup",
+                    setup
+                        .group_failure
+                        .as_ref()
+                        .ok_or_else(|| invalid_config("Parent cgroup error is missing"))?
+                        .source_error(),
+                ));
+            }
+        };
+        *saved = Some(LinuxQemuAttemptProcessOwner {
+            owner: CgroupAttemptProcessOwner::retain_created(group),
+            maximum_vcpus,
+            maximum_resident_bytes,
+            maximum_writable_bytes,
+            maximum_tasks: self.config.maximum_tasks,
+            finish_timeout: self.config.finish_timeout,
+            hot_fork_children_retained: 0,
+        });
+        original.check_original().map_err(parent_original_error)?;
+        let owner = saved
+            .as_mut()
+            .ok_or_else(|| invalid_config("Parent process owner is missing"))?;
+        let started = owner.owner.start_saved_watcher();
+        if let Err(error) = started {
+            self.poisoned = true;
+            setup.process_failure = Some(error);
+        }
+        let after = original.check_original();
+        if let Some(error) = setup.process_failure.as_ref() {
+            return Err(map_owner_error("start retained Parent watcher", error));
+        }
+        after.map_err(parent_original_error)?;
+        let sealed = owner.owner.seal_saved_contract(
+            crate::spawn::QemuChildFileLimits {
+                writable_bytes: maximum_writable_bytes,
+                descriptors: self.config.maximum_file_descriptors,
+                locked_bytes: self.config.maximum_locked_bytes,
+            },
+            self.config.child_user_id,
+            self.config.child_group_id,
+        );
+        if let Err(error) = sealed {
+            self.poisoned = true;
+            setup.process_failure = Some(error);
+        }
+        let after = original.check_original();
+        if let Some(error) = setup.process_failure.as_ref() {
+            return Err(map_owner_error(
+                "seal retained Parent child contract",
+                error,
+            ));
+        }
+        after.map_err(parent_original_error)
+    }
+
     /// Publishes physical setup remnants before returning their first refusal.
     #[cfg(feature = "private-measurement-domain")]
     pub(crate) fn begin_under_original(
@@ -504,6 +595,22 @@ impl LinuxQemuAttemptProcessOwner {
     /// Retains a failed launch's exact direct-child wait handle.
     pub fn retain_failed_child(&mut self, child: QemuNodeChild) {
         self.owner.retain_failed_child(child);
+    }
+
+    /// Joins this Parent process owner within its unchanged original end.
+    ///
+    /// # Errors
+    /// Retains unfinished authority on original refusal or kernel failure.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn finish_under_original_parent(
+        &mut self,
+        original: &crucible_linux_resource::host_services::process_birth::OriginalParentAttempt,
+        setup: &mut crate::linux_attempt_host::OriginalParentSetup,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.owner
+            .finish_under_original_parent(original, setup)
+            .map_err(|error| map_owner_error("finish original Parent process owner", &error))?;
+        Ok(())
     }
 
     /// Joins the watcher, proves the group empty, and releases the cgroup.
@@ -795,6 +902,14 @@ fn map_owner_error(
         CgroupAttemptProcessOwnerError::Cgroup(error) => map_cgroup_error(operation, error),
         CgroupAttemptProcessOwnerError::Watcher { .. }
         | CgroupAttemptProcessOwnerError::Quarantine { .. } => {
+            QemuVmRealizationError::ExecutorUnavailable {
+                operation,
+                message: error.to_string(),
+            }
+        }
+        #[cfg(feature = "private-measurement-domain")]
+        CgroupAttemptProcessOwnerError::OriginalParentWatcherRetained
+        | CgroupAttemptProcessOwnerError::OriginalParentGroupRetained => {
             QemuVmRealizationError::ExecutorUnavailable {
                 operation,
                 message: error.to_string(),

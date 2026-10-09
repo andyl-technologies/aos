@@ -7,10 +7,11 @@
 
 use super::*;
 
-const FRAME_BYTES: usize = 192;
+const FRAME_BYTES: usize = 224;
 const PORT: &str = "/dev/vport0p1";
 const IMAGE_PATH: &str = "/etc/crucible/measurement-images.json";
 const SOURCE_PATH: &str = "/etc/crucible/measurement-source.json";
+const WORKFLOW_PATH: &str = "/etc/crucible/measurement-workflow.json";
 const MAX_DESCRIPTOR_BYTES: u64 = 1 << 20;
 
 pub(super) struct ParentBinding {
@@ -20,6 +21,7 @@ pub(super) struct ParentBinding {
     record: File,
     images: Option<File>,
     source: Option<File>,
+    workflow: Option<File>,
     bytes: [u8; FRAME_BYTES],
 }
 
@@ -52,6 +54,7 @@ impl ParentBinding {
             record: File::from(record),
             images: None,
             source: None,
+            workflow: None,
             bytes: [0; FRAME_BYTES],
         };
         let mut filled = 0;
@@ -89,7 +92,7 @@ impl ParentBinding {
             StaticMode::NativeOnly => 0,
             StaticMode::KernelMeasurement => 1,
         };
-        if &self.bytes[..8] != b"CPARNT01"
+        if &self.bytes[..8] != b"CPARNT02"
             || self.bytes[8..40] != digest
             || self.bytes[104..136] == [0; 32]
             || word(136) == 0
@@ -119,7 +122,13 @@ impl ParentBinding {
         let (source, source_digest) = digest_descriptor(SOURCE_PATH, interval)?;
         self.source = Some(source);
         interval.after_io(Ok(()))?;
-        if self.bytes[40..72] != image_digest || self.bytes[72..104] != source_digest {
+        let (workflow, workflow_digest) = digest_descriptor(WORKFLOW_PATH, interval)?;
+        self.workflow = Some(workflow);
+        interval.after_io(Ok(()))?;
+        if self.bytes[40..72] != image_digest
+            || self.bytes[72..104] != source_digest
+            || self.bytes[192..224] != workflow_digest
+        {
             return Err(MeasurementOriginError::Authentication(
                 "external installed images",
             ));

@@ -38,8 +38,3 @@ crucible-linux-resource = { path = "../crucible-linux-resource", default-feature
 crucible-cas = { workspace = true, features = ["test-support"] }
 crucible = { path = "../crucible", features = ["test-double"] }
 rustix = { workspace = true, features = ["time"] }
-
-[[bin]]
-name = "crucible-measurement-parent"
-path = "src/bin/measurement_parent.rs"
-required-features = ["private-measurement-domain"]

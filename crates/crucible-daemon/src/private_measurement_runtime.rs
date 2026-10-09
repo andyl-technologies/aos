@@ -12,12 +12,17 @@ use crucible_linux_resource::measurement_origin::{
 };
 
 mod actor_roles;
+mod workflow;
 
 pub use actor_roles::OriginalActorRoleIssuer;
+pub use workflow::{OriginalWorkflowInputError, OriginalWorkflowReadError};
 
 /// First refusal while deriving the closed original actor from its actual issuer.
 #[derive(Debug, thiserror::Error)]
 pub enum MeasurementRuntimeAdmissionError {
+    /// The actual fixed workflow read failed under its original input owner.
+    #[error("{0}")]
+    WorkflowRead(#[from] OriginalWorkflowReadError),
     /// The actual issuer or same original absolute interval refused admission.
     #[error("original actor issuance refused: {0}")]
     Origin(#[from] MeasurementOriginError),
@@ -58,8 +63,10 @@ pub fn run_original_actor() -> Result<(), MeasurementRuntimeAdmissionError> {
     let invocation = AuthenticatedParentInvocation::receive_original()?;
     let issuer = OriginalActorRoleIssuer::admit_parent(invocation)?;
     issuer.require_original()?;
+    let mut workflow = workflow::OriginalResidentWorkflowOwner::load(&issuer)?;
+    let _sqlite = issuer.prepare_workflow_sqlite(workflow.take_service_policy()?)?;
 
     Err(MeasurementRuntimeAdmissionError::MissingPurpose(
-        "installed immutable genuine workflow",
+        "source-qualified SQLite initialization and service deployment",
     ))
 }

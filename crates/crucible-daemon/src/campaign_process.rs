@@ -18,7 +18,7 @@ use crucible_cas::content_store::{
 };
 use crucible_cas::owned_decode::ResourceLoan;
 use crucible_linux_resource::host_services::{
-    HostServiceAllocator, HostServiceBootstrap, HostServiceLease, HostServiceLeasePair,
+    HostServiceBootstrap, HostServiceLease, HostServiceLeasePair,
 };
 
 #[path = "campaign_process/manager.rs"]
@@ -34,21 +34,15 @@ static ENTRY: AtomicBool = AtomicBool::new(false);
 static ACTOR: OnceLock<ProcessActor> = OnceLock::new();
 
 struct ProcessActor {
-    resident: HostServiceAllocator,
-    metadata: HostServiceAllocator,
-    deadline: u64,
-    invocation: [u8; 16],
+    accounts: crucible_linux_resource::host_services::process_birth::AuthenticatedProcessResources,
     native_bootstrap_bytes: u64,
     heap_bytes: u64,
-    _cgroup: File,
     _policy: File,
 }
 
 impl ProcessActor {
     fn verify(&self) -> Result<(), StoreError> {
-        if self.invocation == [0; 16]
-            || manager::monotonic_microseconds().is_none_or(|now| now >= self.deadline)
-        {
+        if !self.accounts.is_live() {
             return Err(StoreError::Unauthorized);
         }
         Ok(())
@@ -64,12 +58,12 @@ impl ProcessActor {
             )
             .and_then(|n| n.checked_add(ResourceLoan::allocation_bytes::<ProcessCredit>()))
             .ok_or(StoreError::Quota)?;
-        let (metadata, resident) = self
-            .metadata
-            .reserve_paired_bytes(&self.resident, purpose)
+        let leases = self
+            .accounts
+            .reserve_metadata(purpose)
             .map_err(|_| StoreError::Quota)?;
         Ok(ResourceLoan::new(ProcessCredit {
-            _leases: HostServiceLeasePair::new(resident, metadata),
+            _leases: leases,
             _actor: self,
         }))
     }
@@ -115,8 +109,8 @@ impl SqliteHeapAuthority for ProcessHeapAuthority {
         }
         let native = self
             .actor
-            .resident
-            .reserve_resources(0, 0, bytes)
+            .accounts
+            .reserve_resident(0, 0, bytes)
             .map_err(|_| StoreError::Quota)?;
         Ok(ResourceLoan::new(NativeCredit {
             _native: native,
@@ -144,8 +138,8 @@ impl SqliteProcessBootstrapAuthority for &'static ProcessActor {
                 .ok_or(StoreError::Quota)?,
         )?;
         let native = self
-            .resident
-            .reserve_resources(0, 0, self.native_bootstrap_bytes)
+            .accounts
+            .reserve_resident(0, 0, self.native_bootstrap_bytes)
             .map_err(|_| StoreError::Quota)?;
         Ok(ResourceLoan::new(NativeCredit {
             _native: native,
@@ -181,6 +175,16 @@ pub enum CampaignProcessAdmissionError {
     /// The same original process heap or credit could not be admitted.
     #[error(transparent)]
     Store(StoreError),
+    /// The exact Parent purpose refusal remains in original process custody.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error(transparent)]
+    ParentAdmission(
+        crucible_linux_resource::host_services::process_birth::OriginalParentAttemptRefusal,
+    ),
+    /// The actual Parent work and cleanup causes remain in its permanent slot.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error("{0}")]
+    Parent(crucible_qemu::OriginalParentRefusal),
 }
 
 impl CampaignProcessAdmissionError {
@@ -190,6 +194,36 @@ impl CampaignProcessAdmissionError {
 }
 
 impl CampaignProcessOwner {
+    /// Runs the fixed Parent attempt in the already authenticated process scope.
+    ///
+    /// The same registered banks reserve before Parent input preparation. This
+    /// private route borrows neither a fixture heap nor the guest actor account.
+    ///
+    /// # Errors
+    /// Refuses unavailable original custody, missing compiled purposes, exhausted
+    /// original credit, incompatible hierarchy or actual Parent failure.
+    #[cfg(feature = "private-measurement-domain")]
+    pub fn run_original_parent(&self) -> Result<(), CampaignProcessAdmissionError> {
+        let actor = ACTOR.get().ok_or_else(|| {
+            CampaignProcessAdmissionError::policy("original process owner is unpublished")
+        })?;
+        let enclosing = actor
+            .accounts
+            .begin_original_parent()
+            .map_err(CampaignProcessAdmissionError::ParentAdmission)?;
+        crucible_qemu::run_original_parent_under(enclosing)
+            .map_err(CampaignProcessAdmissionError::Parent)
+    }
+
+    /// Retains the failed private fixture until its enclosing owner retires it.
+    ///
+    /// This wait keeps the process-lifetime account and actual Parent custody
+    /// reachable. It neither renews the original end nor certifies cleanup.
+    #[cfg(feature = "private-measurement-domain")]
+    pub fn retain_failed_original_parent(&self) -> ! {
+        crucible_qemu::retain_original_parent_quarantine()
+    }
+
     /// Returns the operator-authored ordinary runtime worker count.
     #[must_use]
     pub fn worker_threads(&self) -> usize {
@@ -264,20 +298,16 @@ impl CampaignProcessOwner {
         )
         .and_then(|original| original.reserve_structure(structure))
         .map_err(|error| CampaignProcessAdmissionError::policy(error.to_string()))?;
+        let accounts = proof
+            .publish_original_process(original)
+            .map_err(|error| CampaignProcessAdmissionError::policy(error.to_string()))?;
         // There is one private entry and no re-exec path. Publication moves the
         // two admitted counters straight into permanent inline actor storage.
-        let actor = ACTOR.get_or_init(|| {
-            let (resident, metadata) = original.publish();
-            ProcessActor {
-                resident,
-                metadata,
-                deadline: proof.deadline,
-                invocation: proof.invocation,
-                native_bootstrap_bytes: policy.sqlite_bootstrap_bytes,
-                heap_bytes: policy.sqlite_heap_bytes,
-                _cgroup: proof.cgroup,
-                _policy: policy_file,
-            }
+        let actor = ACTOR.get_or_init(|| ProcessActor {
+            accounts,
+            native_bootstrap_bytes: policy.sqlite_bootstrap_bytes,
+            heap_bytes: policy.sqlite_heap_bytes,
+            _policy: policy_file,
         });
         SqliteProcessHeap::prepare_bootstrap(&actor)
             .map_err(CampaignProcessAdmissionError::Store)?;

@@ -9,6 +9,7 @@ publish = false
 default = []
 destructive-recovery-faults = ["crucible-daemon/destructive-recovery-faults"]
 packaged-midpoint-flight = []
+private-parent-fixture = ["crucible-daemon/private-measurement-domain"]
 test-double = ["crucible-session/test-double"]
 
 [[bin]]

@@ -17,6 +17,10 @@ pub use configuration::LinuxQemuAttemptHostConfig;
 
 mod native_resources;
 #[cfg(feature = "private-measurement-domain")]
+pub(crate) mod parent_setup;
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use parent_setup::OriginalParentSetup;
+#[cfg(feature = "private-measurement-domain")]
 mod original_actor;
 #[cfg(feature = "private-measurement-domain")]
 mod original_host;
@@ -27,7 +31,10 @@ use native_resources::NativeResourceState;
 pub use native_resources::OriginalNativeControlRetirement;
 pub use native_resources::{LinuxQemuNativeResourceController, LinuxQemuNativeResourceError};
 #[cfg(feature = "private-measurement-domain")]
-pub use original_actor::{OriginalActorAccountCustody, OriginalActorAccountError};
+pub use original_actor::{
+    OriginalActorAccountCustody, OriginalActorAccountError, OriginalActorDecodeOwner,
+    OriginalActorServicePolicy, OriginalActorSqliteInstallError, OriginalActorSqliteOwner,
+};
 #[cfg(feature = "private-measurement-domain")]
 pub(crate) use original_roster::NativeAccountAttempt;
 #[cfg(feature = "private-measurement-domain")]
@@ -291,6 +298,52 @@ fn finish_native_owned_resources(
 }
 
 impl LinuxQemuAttemptHostOwner {
+    /// Joins the outer Parent using its same retained original process end.
+    ///
+    /// Native controllers belong to separately admitted attempt roles; the
+    /// Parent path never creates one and refuses any foreign control alias.
+    /// The caller retains this owner and its loan on every uncertain outcome.
+    ///
+    /// # Errors
+    /// Refuses native aliases, an unfinished watcher, original expiry or storage
+    /// cleanup failure without transferring custody to a new cleanup worker.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn finish_under_original_parent(
+        &mut self,
+        original: &crucible_linux_resource::host_services::process_birth::OriginalParentAttempt,
+        setup: &mut crate::linux_attempt_host::OriginalParentSetup,
+    ) -> Result<(), QemuVmRealizationError> {
+        if setup.has_retained_cleanup()
+            || self.native_resources.is_some()
+            || self.original_retirement_pinned
+            || self.quarantine.is_some()
+            || self.original_account.is_some()
+        {
+            return Err(missing_authority(
+                "original Parent has foreign native or quarantine aliases",
+            ));
+        }
+        if let Some(process) = self.process.as_mut() {
+            process.finish_under_original_parent(original, setup)?;
+        }
+        self.process = None;
+        original
+            .check_original()
+            .map_err(|error| QemuVmRealizationError::Executor {
+                operation: "original Parent storage cleanup",
+                message: error.to_string(),
+            })?;
+        let cleanup = finish_owned_resources(&mut self.process, &mut self.storage);
+        let post = original.check_original();
+        cleanup?;
+        post.map_err(|error| QemuVmRealizationError::Executor {
+            operation: "original Parent storage cleanup",
+            message: error.to_string(),
+        })?;
+        self.terminal = true;
+        Ok(())
+    }
+
     /// Lends weak concrete resource control for this exact live attempt.
     ///
     /// # Errors

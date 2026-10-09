@@ -74,6 +74,7 @@ pub enum CertifiedMeasurementMode {
 pub struct CertifiedNativeRoleEvidence {
     images: VerifiedImageInventory,
     operator_digest: [u8; 32],
+    workflow_digest: [u8; 32],
     incarnation: [u8; 32],
     generation: u64,
     mode: CertifiedMeasurementMode,
@@ -91,6 +92,12 @@ impl CertifiedNativeRoleEvidence {
     #[must_use]
     pub fn operator_digest(&self) -> &[u8; 32] {
         &self.operator_digest
+    }
+
+    /// Borrows the immutable versioned workflow, including service purposes.
+    #[must_use]
+    pub fn workflow_digest(&self) -> &[u8; 32] {
+        &self.workflow_digest
     }
 
     /// Borrows the externally owned VM incarnation identity.

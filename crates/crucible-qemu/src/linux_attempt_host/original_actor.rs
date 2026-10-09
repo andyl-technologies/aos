@@ -9,6 +9,15 @@ use std::sync::Arc;
 
 use super::original_roster::{OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster};
 
+mod decode;
+pub use decode::OriginalActorDecodeOwner;
+
+mod sqlite;
+pub use sqlite::{OriginalActorSqliteInstallError, OriginalActorSqliteOwner};
+
+mod workflow;
+pub use workflow::OriginalActorServicePolicy;
+
 use crucible_linux_resource::host_services::{
     HostServiceAllocator, HostServiceBootstrap, HostServiceError, HostServiceLeasePair,
 };
@@ -22,6 +31,24 @@ use crucible_linux_resource::measurement_origin::{
 /// Refuses certified account publication without substituting an original.
 #[derive(Debug, thiserror::Error)]
 pub enum OriginalActorAccountError {
+    /// The authenticated workflow refused before a separate original postcheck.
+    #[error("original workflow refused: {source}; original: {original:?}")]
+    WorkflowBoundary {
+        /// Actual first immutable-workflow or service-profile refusal.
+        #[source]
+        source: MeasurementOriginError,
+        /// The same retained preparation's independent postcheck.
+        original: Option<HostSupervisionError>,
+    },
+    /// The actual workflow parser failed before a separate original postcheck.
+    #[error("original workflow decode refused: {source}; original: {original:?}")]
+    WorkflowDecode {
+        /// Actual parser syntax or typed admission marker.
+        #[source]
+        source: serde_json::Error,
+        /// The same retained preparation's independent postcheck.
+        original: Option<HostSupervisionError>,
+    },
     /// The same authenticated invocation refused its identity or interval.
     #[error("original actor binding refused: {0}")]
     Origin(#[from] MeasurementOriginError),
@@ -49,6 +76,9 @@ pub enum OriginalActorAccountError {
         /// The same retained Cleanup's independent boundary refusal.
         original: Option<HostSupervisionError>,
     },
+    /// The same original decoder account refused constructor admission.
+    #[error("original actor decode refused: {0}")]
+    Decode(#[source] crucible::owned_decode::DecodeAdmissionError),
     /// Required retained custody has already been consumed.
     #[error("original actor custody is unavailable")]
     Unavailable,
@@ -161,6 +191,31 @@ impl OriginalActorAccountCustody {
             .ok_or(OriginalActorAccountError::Unavailable)?;
         held.preparation.wait_slice()?;
         Ok(())
+    }
+
+    /// Opens a decode budget from the same published original actor banks.
+    ///
+    /// The authenticated metadata subset bounds this finite decode. Every
+    /// actual parser/output allocation still requires an admitted charge;
+    /// neither a format byte limit nor this owner certifies complete decoding.
+    ///
+    /// # Errors
+    /// Refuses missing custody, original expiry/cancellation, target control
+    /// geometry or either original account before any decode publication.
+    pub fn prepare_decode_owner(
+        &self,
+    ) -> Result<OriginalActorDecodeOwner, OriginalActorAccountError> {
+        self.require_original()?;
+        let held = self
+            .held
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        OriginalActorDecodeOwner::prepare(
+            &held.preparation,
+            &held.resident,
+            &held.metadata,
+            held.evidence.actor_partition().metadata_bytes(),
+        )
     }
 
     /// Reserves the certified FULL residency and TOTAL metadata account pair.
