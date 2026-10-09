@@ -197,6 +197,17 @@ The two passing cases cover only negative refusal. The worker has sealed the
 genuine index capture, verified codec-envelope oracle and unused-hook closure
 corrections; combined runtime qualification remains pending. No native gate or
 task acceptance follows (GC-15, GC-24, GC-29).
+The private corrected source `054921610a` now passes the same strict native
+all-target Clippy profile (raw log
+`/tmp/terrane-copied-preimage-api-all-target-clippy.log`). Its preceding
+composition `25506ff107` failed with three test API errors; the corrections use
+existing canonical ref reads and explicit publication error inspection without
+changing production receipt traits. The actual whole-lease witness queues a
+real renewal behind the held barrier and checks its selected durable value;
+its refusal may precede native ownership dispatch and proves no ownership ACK,
+not an in-worker refusal. Four focused runtime cases have started with unchanged
+bounds; full native qualification and the collector unknown-inventory refusal
+witnesses remain pending.
 
 All ten
 exact native Active completion cases pass on `4e6c14a7f3`. The eight-case native
