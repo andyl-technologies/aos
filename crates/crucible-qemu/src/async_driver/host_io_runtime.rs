@@ -63,6 +63,36 @@ pub trait QemuHostIoRuntime: Send {
         None
     }
 
+    /// Waits under a borrowed original operation without starting a new class.
+    ///
+    /// # Errors
+    /// Refuses runtimes without a genuine original-bound wait implementation.
+    fn await_child_under_original(
+        &mut self,
+        _wait: QemuAsyncWait,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "original quantum wait",
+            "runtime has no original-bound wait",
+        ))
+    }
+
+    /// Repolls the same quantum under its caller's original operation.
+    ///
+    /// # Errors
+    /// Refuses runtimes without an original-bound repoll implementation.
+    fn repoll_child_under_original(
+        &mut self,
+        _wait: QemuAsyncWait,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "original quantum repoll",
+            "runtime has no original-bound repoll",
+        ))
+    }
+
     /// Returns the existing node-local service allocator for qualification.
     ///
     /// The clone shares the actual registration's accounting; it grants no new

@@ -63,13 +63,79 @@ where
     R: QemuHostIoRuntime + ?Sized,
     F: FnOnce(&mut T, &mut T::PendingQuantum) -> Result<(), QemuNodeChannelError>,
 {
+    run_node_step_with_operation(
+        target,
+        runtime,
+        policy,
+        crash_detector,
+        horizon,
+        after_start,
+        None,
+    )
+}
+
+/// Borrows the original operation through publication, resume and every wait.
+#[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+pub(crate) fn run_qemu_node_step_under_original<T, R, F>(
+    target: &mut T,
+    runtime: &mut R,
+    policy: QemuAsyncDriverPolicy,
+    crash_detector: &QemuCrashDetector,
+    horizon: ExecutionHorizon,
+    after_start: F,
+    original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+) -> Result<QemuAsyncNodeStepReport, QemuAsyncDriverError>
+where
+    T: QemuAsyncNodeStepTarget,
+    R: QemuHostIoRuntime + ?Sized,
+    F: FnOnce(&mut T, &mut T::PendingQuantum) -> Result<(), QemuNodeChannelError>,
+{
+    run_node_step_with_operation(
+        target,
+        runtime,
+        policy,
+        crash_detector,
+        horizon,
+        after_start,
+        Some(original),
+    )
+}
+
+fn check_original(
+    original: Option<&crucible_linux_resource::host_supervision::HostOperationGuard>,
+) -> Result<(), QemuAsyncDriverError> {
+    if let Some(original) = original {
+        original.wait_slice().map_err(supervision_error)?;
+    }
+    Ok(())
+}
+
+fn run_node_step_with_operation<T, R, F>(
+    target: &mut T,
+    runtime: &mut R,
+    policy: QemuAsyncDriverPolicy,
+    crash_detector: &QemuCrashDetector,
+    horizon: ExecutionHorizon,
+    after_start: F,
+    original: Option<&crucible_linux_resource::host_supervision::HostOperationGuard>,
+) -> Result<QemuAsyncNodeStepReport, QemuAsyncDriverError>
+where
+    T: QemuAsyncNodeStepTarget,
+    R: QemuHostIoRuntime + ?Sized,
+    F: FnOnce(&mut T, &mut T::PendingQuantum) -> Result<(), QemuNodeChannelError>,
+{
     policy.validate()?;
 
-    let host_operation = runtime
-        .host_operation_supervisor()
-        .map(|supervisor| supervisor.begin(HostOperationClass::Quantum))
-        .transpose()
-        .map_err(supervision_error)?;
+    check_original(original)?;
+    let host_operation = if original.is_some() {
+        None
+    } else {
+        runtime
+            .host_operation_supervisor()
+            .map(|supervisor| supervisor.begin(HostOperationClass::Quantum))
+            .transpose()
+            .map_err(supervision_error)?
+    };
     target
         .operational_health()
         .map_err(QemuAsyncDriverError::OperationalHealth)?;
@@ -80,10 +146,13 @@ where
         .map_err(QemuAsyncDriverError::Runtime)?;
     async_operations.push(QemuAsyncDriverOperation::YieldToControlPlane);
 
+    check_original(original)?;
     let mut pending = target
         .start_quantum(horizon)
         .map_err(QemuAsyncDriverError::Channel)?;
+    check_original(original)?;
     after_start(target, &mut pending).map_err(QemuAsyncDriverError::Channel)?;
+    check_original(original)?;
     runtime
         .arm_advance_completion_fence(target.advance_completion_fence(&pending))
         .map_err(QemuAsyncDriverError::Runtime)?;
@@ -98,13 +167,15 @@ where
     };
     let mut first_wait = true;
     let completion = loop {
-        let wait_timeout = match &host_operation {
+        let wait_timeout = match original.or(host_operation.as_ref()) {
             Some(operation) => match operation.wait_slice() {
                 Ok(slice) => slice,
                 Err(source) => {
-                    target
-                        .shutdown_after_crash()
-                        .map_err(QemuAsyncDriverError::Target)?;
+                    if original.is_none() {
+                        target
+                            .shutdown_after_crash()
+                            .map_err(QemuAsyncDriverError::Target)?;
+                    }
                     return Err(supervision_error(source));
                 }
             },
@@ -114,10 +185,23 @@ where
         if is_initial_wait {
             first_wait = false;
         }
-        let wait_result = if is_initial_wait {
+        let wait_result = if let Some(original) = original {
+            if is_initial_wait {
+                runtime.await_child_under_original(QemuAsyncWait::AdvanceCompletion, original)
+            } else {
+                runtime.repoll_child_under_original(QemuAsyncWait::AdvanceCompletion, original)
+            }
+        } else if is_initial_wait {
             runtime.await_child(QemuAsyncWait::AdvanceCompletion, wait_timeout)
         } else {
             runtime.repoll_child(QemuAsyncWait::AdvanceCompletion, wait_timeout)
+        };
+        // Keep an actual original-bound runtime refusal before independently
+        // observing health or the caller's later cancellation.
+        let wait_result = if original.is_some() {
+            Ok(wait_result.map_err(QemuAsyncDriverError::Runtime)?)
+        } else {
+            wait_result
         };
         // Source failure closes only operational continuation. The actual
         // process and pending buffers remain owned for explicit containment;
@@ -126,6 +210,7 @@ where
             .operational_health()
             .map_err(QemuAsyncDriverError::OperationalHealth)?;
         let wait_outcome = wait_result.map_err(QemuAsyncDriverError::Runtime)?;
+        check_original(original)?;
         let observed_wait = QemuAsyncDriverOperation::AwaitChild {
             wait: QemuAsyncWait::AdvanceCompletion,
             timeout: wait_timeout,
@@ -138,13 +223,24 @@ where
             *last = observed_wait;
         }
         if wait_outcome == QemuAsyncWaitOutcome::TimedOut {
-            if host_operation.is_none() && !policy.unbounded_advance_completion {
+            if original.is_none()
+                && host_operation.is_none()
+                && !policy.unbounded_advance_completion
+            {
                 break None;
             }
             if let Some(exit_status) = target
                 .child_exit_status()
                 .map_err(QemuAsyncDriverError::Target)?
             {
+                if original.is_some() {
+                    return Err(QemuAsyncDriverError::Target(
+                        QemuAsyncDriverTargetError::new(
+                            "original reset quantum child exit",
+                            format!("owned child exited: {exit_status}"),
+                        ),
+                    ));
+                }
                 async_operations.push(QemuAsyncDriverOperation::ShutdownAfterCrash);
                 let status = crash_detector.unexpected_child_exit(exit_status);
                 let shutdown = target
@@ -162,16 +258,20 @@ where
                     async_operations,
                 });
             }
-            runtime
-                .renew_advance_completion_poll(wait_timeout)
-                .map_err(QemuAsyncDriverError::Runtime)?;
+            if original.is_none() {
+                runtime
+                    .renew_advance_completion_poll(wait_timeout)
+                    .map_err(QemuAsyncDriverError::Runtime)?;
+            }
             continue;
         }
+        check_original(original)?;
         match target.finish_quantum(&mut pending) {
             Ok(completion) => {
                 target
                     .operational_health()
                     .map_err(QemuAsyncDriverError::OperationalHealth)?;
+                check_original(original)?;
                 break Some(completion);
             }
             Err(error) => {
@@ -209,6 +309,7 @@ where
     if let Some(operation) = host_operation {
         operation.complete().map_err(supervision_error)?;
     }
+    check_original(original)?;
     assert_async_driver_quantum_hot_path_is_shmem_only(&completion.operations)?;
 
     runtime
@@ -216,6 +317,7 @@ where
         .map_err(QemuAsyncDriverError::Runtime)?;
     async_operations.push(QemuAsyncDriverOperation::YieldToControlPlane);
 
+    check_original(original)?;
     Ok(QemuAsyncNodeStepReport {
         ceiling: Some(completion.ceiling),
         outcome: QemuAsyncNodeStepOutcome::Completed {

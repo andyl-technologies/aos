@@ -163,6 +163,22 @@ impl QemuLiveHostIoRuntime {
         snapshot: &crucible_shmem::NodeSlotSnapshot,
         timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.clamp_completed_quantum_with_original(snapshot, timeout, None)
+    }
+
+    pub(super) fn clamp_completed_quantum_with_original(
+        &mut self,
+        snapshot: &crucible_shmem::NodeSlotSnapshot,
+        timeout: Duration,
+        original: Option<&crucible_linux_resource::host_supervision::HostOperationGuard>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        // Original-bound work admits before effects; ordinary work retains its
+        // existing separate clamp admission after boundary revocation.
+        let original_deadline = original
+            .map(|guard| {
+                OperationPollBudget::borrow_original(guard, "acknowledge completed-quantum clamp")
+            })
+            .transpose()?;
         self.performance.boundary(self.vm_slot);
         let ceiling =
             authorize_advance_ceiling(snapshot.current_icount, snapshot.current_icount, None)
@@ -187,6 +203,9 @@ impl QemuLiveHostIoRuntime {
         // post-device publication. This makes the later read-only checkpoint
         // readiness observation stable: any newly submitted coroutine is
         // already represented by `device_io_active` before the quantum returns.
+        if let Some(deadline) = &original_deadline {
+            deadline.complete("acknowledge completed-quantum clamp")?;
+        }
         let request = self.signal_wake(None)?;
         // Boundary discovery and revocation acknowledgement are distinct
         // liveness phases. A quantum may consume nearly all of its discovery
@@ -195,12 +214,16 @@ impl QemuLiveHostIoRuntime {
         // correct guest outcome depend on host contention. Give the handshake
         // its own bounded policy interval. Neither interval enters canonical
         // state or changes the exact guest coordinate.
-        let deadline = OperationPollBudget::begin(
-            self.host_operation_supervisor.as_ref(),
-            HostOperationClass::Quiescence,
-            timeout,
-            "acknowledge completed-quantum clamp",
-        )?;
+
+        let deadline = match original_deadline {
+            Some(deadline) => deadline,
+            None => OperationPollBudget::begin(
+                self.host_operation_supervisor.as_ref(),
+                HostOperationClass::Quiescence,
+                timeout,
+                "acknowledge completed-quantum clamp",
+            )?,
+        };
         self.wait_observation.begin_clamp(timeout);
         let mut last_observed_state;
         let mut boundary_acknowledged = false;
@@ -214,6 +237,9 @@ impl QemuLiveHostIoRuntime {
         };
         let mut device_progress_observed = false;
         loop {
+            if original.is_some() {
+                deadline.complete("acknowledge completed-quantum clamp")?;
+            }
             drained_fault_events += self.drain_fault_events_for_operation(
                 self.fault_event_staging_limit,
                 &deadline,
@@ -227,8 +253,17 @@ impl QemuLiveHostIoRuntime {
                 .node_slot(self.vm_slot)
                 .map_err(map_slot_error)?
                 .snapshot();
+            if original.is_some() {
+                deadline.complete("acknowledge completed-quantum clamp")?;
+            }
             let block_progress = self.service_block_io(&observed)?;
+            if original.is_some() {
+                deadline.complete("acknowledge completed-quantum clamp")?;
+            }
             let ninep_progress = self.service_ninep_io(&observed)?;
+            if original.is_some() {
+                deadline.complete("acknowledge completed-quantum clamp")?;
+            }
             let accelerator_progress = self.service_accelerator_io(&observed)?;
             let device_progress = block_progress || ninep_progress || accelerator_progress;
             device_progress_observed |= device_progress;
@@ -239,6 +274,9 @@ impl QemuLiveHostIoRuntime {
             };
             last_observed_state = (observed, device_progress);
             if device_progress {
+                if original.is_some() {
+                    deadline.complete("acknowledge completed-quantum clamp")?;
+                }
                 self.publish_device_completion_deadline()?;
             }
             let request_acknowledged = control_boundary_request_is_acknowledged(request, &observed);

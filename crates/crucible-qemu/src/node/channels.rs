@@ -412,6 +412,36 @@ pub trait QemuShmemHotPathChannel: Send {
         ))
     }
 
+    /// Prevalidates one exact stopped request without changing its ledger.
+    ///
+    /// # Errors
+    /// Refuses an unsupported channel, stale request or queued reply.
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    fn validate_selectable_reset(
+        &mut self,
+        _pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "validate selectable reset",
+            "selectable reset transport unavailable",
+        ))
+    }
+
+    /// Abandons the exact request after correlated terminal reset observation.
+    ///
+    /// # Errors
+    /// Refuses an unsupported channel or inconsistent retained request ledger.
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    fn abandon_selectable_after_reset(
+        &mut self,
+        _pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "abandon selectable reset",
+            "selectable reset transport unavailable",
+        ))
+    }
+
     /// Returns the exact host-mirrored selectable catalog plan, when enabled.
     #[must_use]
     fn selectable_catalog_plan(
@@ -533,10 +563,11 @@ impl QemuNodePendingQuantum {
 /// QMP machine-control channel for snapshot and quit commands.
 pub(crate) trait QemuQmpMachineControlChannel: Send {
     #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
-    fn reset_under_original(
+    fn reset_selectable_under_original(
         &mut self,
+        _pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
         _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
-    ) -> Result<crate::qmp::QmpCommandComplete, crate::qmp::QmpError> {
+    ) -> Result<crate::qmp::QmpSelectableResetComplete, crate::qmp::QmpError> {
         Err(crate::qmp::QmpError::InvalidBound {
             operation: "managed reset channel unavailable",
         })
@@ -644,6 +675,21 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
     /// Returns [`QemuNodeChannelError`] when QEMU does not acknowledge the
     /// running-state transition. The next bounded step proves execution.
     fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError>;
+
+    /// Resumes through the same client while borrowing the original operation.
+    ///
+    /// # Errors
+    /// Refuses unsupported channels before any command is sent.
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    fn resume_after_checkpoint_under_original(
+        &mut self,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "original reset resume",
+            "channel has no original-bound resume",
+        ))
+    }
 
     /// Imports one descriptor for an exact RAM checkpoint operation.
     ///

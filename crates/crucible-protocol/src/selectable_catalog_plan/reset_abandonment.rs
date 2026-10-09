@@ -134,6 +134,37 @@ impl SelectableCatalogPlan {
         &mut self,
         old: &SelectablePlanPendingRequest,
     ) -> Result<(), SelectableCatalogPlanError> {
+        self.validate_reset_abandonment(old)?;
+        let total = self.continuation.total_abandoned_requests + 1;
+        let identifier = old.request.selectable_id();
+        let count = self
+            .continuation
+            .abandoned_requests
+            .get(identifier)
+            .copied()
+            .unwrap_or(0)
+            + 1;
+
+        self.continuation
+            .abandoned_requests
+            .insert(identifier.to_owned(), count);
+        self.continuation.total_abandoned_requests = total;
+        self.continuation.last_abandoned_request_sequence = Some(old.request.sequence());
+        self.continuation.pending = None;
+        Ok(())
+    }
+
+    /// Checks exact reset abandonment without changing the continuation.
+    ///
+    /// Callers use this before asking QEMU to reset; authentic physical
+    /// completion and counter-map allocation admission remain separate.
+    ///
+    /// # Errors
+    /// Refuses a different pending token or overflowing/exhausted accounting.
+    pub fn validate_reset_abandonment(
+        &self,
+        old: &SelectablePlanPendingRequest,
+    ) -> Result<(), SelectableCatalogPlanError> {
         if self.continuation.pending.as_ref() != Some(old) {
             return Err(SelectableCatalogPlanError::InvalidTransition {
                 reason: "reset abandonment differs from the exact pending request",
@@ -155,12 +186,7 @@ impl SelectableCatalogPlan {
             .checked_add(1)
             .ok_or(SelectableCatalogPlanError::CountOverflow)?;
 
-        self.continuation
-            .abandoned_requests
-            .insert(identifier.to_owned(), count);
-        self.continuation.total_abandoned_requests = total;
-        self.continuation.last_abandoned_request_sequence = Some(old.request.sequence());
-        self.continuation.pending = None;
+        let _validated_counts = (total, count);
         Ok(())
     }
 

@@ -36,7 +36,9 @@ mod block_completion_observation;
 mod checkpoint;
 mod command;
 #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
-mod guarded_reset;
+mod selectable_reset;
+#[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+pub use selectable_reset::QmpSelectableResetComplete;
 #[cfg(feature = "kernel-swap-measurement")]
 mod kernel_swap_residency;
 mod paused_cpu;
@@ -284,6 +286,10 @@ pub struct QmpClient<S> {
     predeclared_debug_guest_endpoint: bool,
     poisoned: bool,
     host_supervisor: Option<HostOperationSupervisor>,
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    selectable_reset_correlation: u64,
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    selectable_reset_observation: u64,
 }
 
 impl<S> QmpClient<S>
@@ -358,6 +364,10 @@ where
             predeclared_debug_guest_endpoint: false,
             poisoned: false,
             host_supervisor: supervisor,
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            selectable_reset_correlation: 0,
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            selectable_reset_observation: 0,
         };
         client.greeting = client.read_greeting()?;
         client.send_command(QmpCommand::Capabilities)?;
@@ -990,6 +1000,16 @@ where
             self.stream.get_mut().poison_qmp_stream();
             return Err(error);
         }
+        #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+        let result = match &command {
+            QmpCommand::SelectableReset {
+                pending,
+                correlation,
+                ..
+            } => self.read_selectable_reset_response(pending, *correlation, &deadline),
+            _ => self.read_command_response(kind, &deadline),
+        };
+        #[cfg(not(any(test, feature = "test-support", feature = "private-measurement-domain")))]
         let result = self.read_command_response(kind, &deadline);
         if result
             .as_ref()
@@ -999,7 +1019,14 @@ where
             self.stream.get_mut().poison_qmp_stream();
         }
         let response = result?;
-        deadline.complete(kind.wire_name())?;
+        if let Err(error) = deadline.complete(kind.wire_name()) {
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            if kind == QmpCommandKind::SelectableReset {
+                self.poisoned = true;
+                self.stream.get_mut().poison_qmp_stream();
+            }
+            return Err(error);
+        }
         Ok(response)
     }
 
@@ -1054,6 +1081,12 @@ where
                 return Ok(QmpCommandReturn {
                     command,
                     value: value.clone(),
+                    #[cfg(any(
+                        test,
+                        feature = "test-support",
+                        feature = "private-measurement-domain"
+                    ))]
+                    selectable_reset: None,
                 });
             }
             if let Some(error) = response.get("error") {
@@ -1663,9 +1696,9 @@ pub enum QmpCommandKind {
     Stop,
     /// Resume guest execution.
     Cont,
-    /// Request a managed guest reset using the caller's original operation.
+    /// Correlated physical reset of an exact stopped selectable request.
     #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
-    SystemReset,
+    SelectableReset,
     /// Authenticated terminal lifecycle completion.
     CompleteTerminalLifecycle,
     /// QEMU-owned sealed plugin-resource inventory query.
@@ -1748,7 +1781,7 @@ impl QmpCommandKind {
             Self::Stop => QMP_STOP_COMMAND,
             Self::Cont => QMP_CONT_COMMAND,
             #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
-            Self::SystemReset => "system_reset",
+            Self::SelectableReset => "crucible-selectable-reset-v1",
             Self::CompleteTerminalLifecycle => QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND,
             Self::QueryHotForkPluginResourceInventory => {
                 QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND
@@ -1792,6 +1825,8 @@ pub struct QmpCommandComplete {
 struct QmpCommandReturn {
     command: QmpCommandKind,
     value: Value,
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    selectable_reset: Option<QmpSelectableResetComplete>,
 }
 
 #[path = "qmp/error.rs"]

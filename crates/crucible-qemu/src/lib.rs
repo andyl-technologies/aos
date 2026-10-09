@@ -297,6 +297,8 @@ pub use production_fault_sink::ProductionFaultActionSink;
 #[cfg(any(test, feature = "test-support"))]
 pub use qmp::QemuPerformanceObservation;
 pub(crate) use qmp::QmpCheckpointRestoreRequest;
+#[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+pub use qmp::QmpSelectableResetComplete;
 pub use qmp::{
     QMP_CAPABILITIES_COMMAND, QMP_CLOSEFD_COMMAND, QMP_COMMAND_TIMEOUT, QMP_CONT_COMMAND,
     QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QMP_DESCRIPTOR_NAME_MAX_BYTES, QMP_GETFD_COMMAND,

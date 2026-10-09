@@ -397,7 +397,18 @@ impl QemuLiveHostIoRuntime {
         &mut self,
         timeout: Duration,
     ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
-        if !self.advance_wait_deadline.start(timeout) {
+        self.poll_advance_completion_with_original(timeout, None)
+    }
+
+    fn poll_advance_completion_with_original(
+        &mut self,
+        timeout: Duration,
+        original: Option<&crucible_linux_resource::host_supervision::HostOperationGuard>,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        let deadline = original
+            .map(|guard| OperationPollBudget::borrow_original(guard, "original quantum wake"))
+            .transpose()?;
+        if original.is_none() && !self.advance_wait_deadline.start(timeout) {
             return Err(QemuAsyncDriverRuntimeError::new(
                 "start advance completion deadline",
                 "timeout deadline overflow",
@@ -411,6 +422,9 @@ impl QemuLiveHostIoRuntime {
         self.wait_observation.begin(timeout);
         self.device_wake_publish_generation = None;
         self.checkpoint_idle_coordinate = checkpoint_idle_coordinate(&initial);
+        if let Some(deadline) = &deadline {
+            deadline.complete("original quantum wake")?;
+        }
         if self.checkpoint_idle_coordinate.is_some() {
             // A QMP-resumed checkpoint retains the plugin's completed
             // all-halted edge. An acknowledged control boundary republishes
@@ -420,7 +434,10 @@ impl QemuLiveHostIoRuntime {
         } else {
             self.write_wake_doorbell()?;
         }
-        self.repoll_advance_completion(timeout)
+        if let Some(deadline) = &deadline {
+            deadline.complete("original quantum wake")?;
+        }
+        self.repoll_advance_completion_with_original(timeout, original)
     }
 
     /// Polls for a quantum boundary after the initial plugin wake was sent.
@@ -434,7 +451,22 @@ impl QemuLiveHostIoRuntime {
         &mut self,
         timeout: Duration,
     ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
-        let remaining = self.advance_wait_deadline.remaining().ok_or_else(|| {
+        self.repoll_advance_completion_with_original(timeout, None)
+    }
+
+    fn repoll_advance_completion_with_original(
+        &mut self,
+        timeout: Duration,
+        original: Option<&crucible_linux_resource::host_supervision::HostOperationGuard>,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        let deadline = original
+            .map(|guard| OperationPollBudget::borrow_original(guard, "original quantum poll"))
+            .transpose()?;
+        let remaining = match &deadline {
+            Some(deadline) => deadline.remaining("original quantum poll")?,
+            None => self.advance_wait_deadline.remaining(),
+        }
+        .ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(
                 "repoll advance completion",
                 "initial await did not establish a deadline",
@@ -446,7 +478,11 @@ impl QemuLiveHostIoRuntime {
         }
         let attempts = bounded_poll_attempts(remaining, self.poll_interval);
         for attempt in 0..attempts {
-            let remaining = self.advance_wait_deadline.remaining().ok_or_else(|| {
+            let remaining = match &deadline {
+                Some(deadline) => deadline.remaining("original quantum poll")?,
+                None => self.advance_wait_deadline.remaining(),
+            }
+            .ok_or_else(|| {
                 QemuAsyncDriverRuntimeError::new(
                     "repoll advance completion",
                     "initial await did not establish a deadline",
@@ -457,6 +493,9 @@ impl QemuLiveHostIoRuntime {
                 return Ok(QemuAsyncWaitOutcome::TimedOut);
             }
 
+            if let Some(deadline) = &deadline {
+                deadline.complete("original quantum poll")?;
+            }
             self.service_console_output()?;
             let snapshot = self
                 .region
@@ -488,13 +527,25 @@ impl QemuLiveHostIoRuntime {
             // on a probe read cannot reach the ceiling until its response is
             // delivered, so draining and delivering at the observed icount is what
             // lets the advance make progress.
+            if let Some(deadline) = &deadline {
+                deadline.complete("original quantum poll")?;
+            }
             let block_progress = self.service_block_io(&snapshot)?;
+            if let Some(deadline) = &deadline {
+                deadline.complete("original quantum poll")?;
+            }
             let ninep_progress = self.service_ninep_io(&snapshot)?;
+            if let Some(deadline) = &deadline {
+                deadline.complete("original quantum poll")?;
+            }
             let accelerator_progress = self.service_accelerator_io(&snapshot)?;
             if (block_progress || ninep_progress || accelerator_progress)
                 && self.device_wake_publish_generation.is_none()
             {
                 self.device_wake_publish_generation = Some(snapshot.publish_gen);
+            }
+            if let Some(deadline) = &deadline {
+                deadline.complete("original quantum poll")?;
             }
             self.publish_device_completion_deadline()?;
             let idle = idle_state_from_snapshot(snapshot);
@@ -521,18 +572,30 @@ impl QemuLiveHostIoRuntime {
                 QuantumBoundary::Reached { .. } | QuantumBoundary::Paused { .. } => {
                     self.scheduler_input_publish_generation = None;
                     self.checkpoint_idle_coordinate = None;
-                    self.clamp_completed_quantum(&snapshot, timeout)?;
+                    self.clamp_completed_quantum_with_original(&snapshot, timeout, original)?;
                     self.completed_outbound_write_index = self.outbound_write_index()?;
+                    if let Some(deadline) = &deadline {
+                        deadline.complete("original quantum poll")?;
+                    }
                     self.service_console_output()?;
+                    if let Some(deadline) = &deadline {
+                        deadline.complete("original quantum poll")?;
+                    }
                     return Ok(QemuAsyncWaitOutcome::Completed);
                 }
                 QuantumBoundary::Pending => {
                     if snapshot.status == STATUS_DONE {
                         self.device_wake_publish_generation = None;
                         self.checkpoint_idle_coordinate = None;
+                        if let Some(deadline) = &deadline {
+                            deadline.complete("original quantum poll")?;
+                        }
                         return Ok(QemuAsyncWaitOutcome::Completed);
                     }
                     if self.device_wake_publish_generation.is_none() && attempt % 16 == 15 {
+                        if let Some(deadline) = &deadline {
+                            deadline.complete("original quantum poll")?;
+                        }
                         if checkpoint_idle_unreleased {
                             let _request = self.signal_wake(None)?;
                         } else {
@@ -542,7 +605,11 @@ impl QemuLiveHostIoRuntime {
                 }
             }
             if attempt + 1 < attempts {
-                let remaining = self.advance_wait_deadline.remaining().ok_or_else(|| {
+                let remaining = match &deadline {
+                    Some(deadline) => deadline.remaining("original quantum poll")?,
+                    None => self.advance_wait_deadline.remaining(),
+                }
+                .ok_or_else(|| {
                     QemuAsyncDriverRuntimeError::new(
                         "repoll advance completion",
                         "initial await did not establish a deadline",
@@ -553,7 +620,12 @@ impl QemuLiveHostIoRuntime {
                     return Ok(QemuAsyncWaitOutcome::TimedOut);
                 }
                 self.observe_pending_wait("advance-pending", &snapshot, None, remaining);
-                self.wait_for_poll_interval(remaining);
+                if let Some(deadline) = &deadline {
+                    self.performance.pending_sleep();
+                    deadline.wait(self.poll_interval, "original quantum poll")?;
+                } else {
+                    self.wait_for_poll_interval(remaining);
+                }
             }
         }
         Ok(QemuAsyncWaitOutcome::TimedOut)
@@ -1720,6 +1792,46 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 self.await_child(wait, timeout)
             }
         }
+    }
+
+    fn await_child_under_original(
+        &mut self,
+        wait: QemuAsyncWait,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        if wait != QemuAsyncWait::AdvanceCompletion {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "original quantum wait",
+                "unsupported wait class",
+            ));
+        }
+        let deadline = OperationPollBudget::borrow_original(original, "original quantum wait")?;
+        let timeout = deadline
+            .remaining("original quantum wait")?
+            .ok_or_else(|| {
+                QemuAsyncDriverRuntimeError::new("original quantum wait", "expired original")
+            })?;
+        self.poll_advance_completion_with_original(timeout, Some(original))
+    }
+
+    fn repoll_child_under_original(
+        &mut self,
+        wait: QemuAsyncWait,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        if wait != QemuAsyncWait::AdvanceCompletion {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "original quantum repoll",
+                "unsupported wait class",
+            ));
+        }
+        let deadline = OperationPollBudget::borrow_original(original, "original quantum repoll")?;
+        let timeout = deadline
+            .remaining("original quantum repoll")?
+            .ok_or_else(|| {
+                QemuAsyncDriverRuntimeError::new("original quantum repoll", "expired original")
+            })?;
+        self.repoll_advance_completion_with_original(timeout, Some(original))
     }
 
     fn await_fault_result(

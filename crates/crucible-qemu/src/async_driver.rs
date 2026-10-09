@@ -274,6 +274,8 @@ pub use error::{QemuAsyncDriverError, QemuAsyncDriverRuntimeError, QemuAsyncDriv
 
 mod driver;
 pub(crate) use driver::run_bounded_qemu_node_step_with_start_hook;
+#[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+pub(crate) use driver::run_qemu_node_step_under_original;
 pub use driver::{await_bounded_lifecycle_event, run_bounded_qemu_node_step};
 
 #[cfg(test)]

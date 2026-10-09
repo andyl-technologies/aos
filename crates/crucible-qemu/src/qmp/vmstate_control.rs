@@ -75,11 +75,13 @@ where
     }
 
     #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
-    pub(crate) fn reset_under_original(
+    pub(crate) fn reset_selectable_under_original(
         &mut self,
+        pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
         original: &crucible_linux_resource::host_supervision::HostOperationGuard,
-    ) -> Result<QmpCommandComplete, QmpError> {
-        self.client.reset_under_original(original)
+    ) -> Result<crate::QmpSelectableResetComplete, QmpError> {
+        self.client
+            .reset_selectable_under_original(pending, original)
     }
 
     /// Attaches the independently owned target execution's live class budgets.
@@ -348,6 +350,17 @@ where
         self.client
             .cont_acknowledged()
             .map(|_complete| ())
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    pub(crate) fn resume_guest_under_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .exchange_under(super::QmpCommand::Cont, original)
+            .map(|_| ())
             .map_err(QemuNodeChannelError::from)
     }
 

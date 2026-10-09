@@ -1551,6 +1551,42 @@ impl QemuNodeSet {
         Ok(())
     }
 
+    /// Resets the exact retained selectable request after its completed writes.
+    ///
+    /// The old token remains retained on every refusal. Success removes it only
+    /// after the node has observed correlated physical completion and updated
+    /// its abandoned ledger; a guest-consumed reply is never substituted.
+    ///
+    /// # Errors
+    /// Returns the original typed QMP or host-boundary error. The caller owns
+    /// uncertain process retirement and independent cleanup on refusal.
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    pub fn reset_selectable_under_original(
+        &mut self,
+        pending: &QemuNodeSelectablePendingRequest,
+        original: &std::sync::Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+    ) -> Result<crate::QmpSelectableResetComplete, crate::QmpError> {
+        if self.pending_selectable_requests.get(pending.node()) != Some(pending.pending()) {
+            return Err(crate::QmpError::SelectableResetBoundary {
+                source: crate::QemuNodeChannelError::new(
+                    "reset retained selectable request",
+                    "exact old request is not retained",
+                ),
+            });
+        }
+        let node = self.nodes.get_mut(pending.node()).ok_or_else(|| {
+            crate::QmpError::SelectableResetBoundary {
+                source: crate::QemuNodeChannelError::new(
+                    "reset retained selectable request",
+                    "retained node is unavailable",
+                ),
+            }
+        })?;
+        let completion = node.reset_selectable_under_original(pending.pending(), original)?;
+        self.pending_selectable_requests.remove(pending.node());
+        Ok(completion)
+    }
+
     /// Copies every live node's exact host-mirrored selectable catalog plan.
     #[must_use]
     pub fn selectable_catalog_plans(

@@ -644,6 +644,9 @@ pub struct QemuNode {
     fault_event_terminal_failure: Option<String>,
     #[cfg(target_os = "linux")]
     _launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
+    // Drop the retained original after every other node-owned resource.
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    reset_resume_pending: Option<guarded_reset::ResetResumeTransition>,
 }
 
 impl QemuNode {
@@ -790,6 +793,8 @@ impl QemuNode {
             pending_preemption: None,
             bounded_scheduler_preemption: None,
             selectable_resume_pending: false,
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            reset_resume_pending: None,
             network_output_resume_pending: false,
             hot_fork_resume_pending: false,
             pending_network_outputs: Vec::new(),
@@ -1299,6 +1304,12 @@ impl QemuNode {
         &mut self,
         block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
     ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        if self.reset_resume_is_pending() {
+            return Err(QemuNodeChannelError::new(
+                "prepare hot-fork template",
+                "reset continuation has not resumed",
+            ));
+        }
         self.channels
             .qmp_machine_control
             .prepare_hot_fork_template(block_snapshot_bindings)
@@ -1314,6 +1325,12 @@ impl QemuNode {
         &mut self,
         block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],
     ) -> Result<crate::QmpHotForkTemplateState, QemuNodeChannelError> {
+        if self.reset_resume_is_pending() {
+            return Err(QemuNodeChannelError::new(
+                "prepare hot-fork template",
+                "reset continuation has not resumed",
+            ));
+        }
         self.channels
             .qmp_machine_control
             .prepare_hot_fork_template_barriers(block_snapshot_bindings)
@@ -1775,12 +1792,25 @@ impl QemuNode {
             .cloned()
     }
 
+    fn reset_resume_is_pending(&self) -> bool {
+        #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+        {
+            self.reset_resume_pending.is_some()
+        }
+        #[cfg(not(any(test, feature = "test-support", feature = "private-measurement-domain")))]
+        {
+            false
+        }
+    }
+
     /// Reports whether no selectable reply awaits plugin consumption.
     #[must_use]
     pub fn selectable_reply_is_checkpoint_quiescent(&self) -> bool {
-        self.channels
-            .shmem_hot_path
-            .selectable_reply_is_checkpoint_quiescent()
+        !self.reset_resume_is_pending()
+            && self
+                .channels
+                .shmem_hot_path
+                .selectable_reply_is_checkpoint_quiescent()
     }
 
     /// Prepares the paused node's observable stream for authoritative execution.
@@ -1819,6 +1849,11 @@ impl QemuNode {
         ceiling: Icount,
         stop_condition: crate::QemuQuantumStopCondition,
     ) -> Result<crate::QemuAsyncNodeStepReport, QemuNodeError> {
+        if self.reset_resume_is_pending() {
+            return Err(QemuNodeError::checkpoint(
+                "reset requires its original-bound idle and fresh capture",
+            ));
+        }
         let Some(evidence) = self.bounded_scheduler_preemption.take() else {
             return self.advance_to_ceiling_report_without_host_preemption(ceiling, stop_condition);
         };
@@ -2271,6 +2306,11 @@ impl QemuNode {
         &mut self,
         scheduler_binding: crucible::ContentHash,
     ) -> Result<crate::QemuHostIoCheckpoint, QemuNodeError> {
+        if self.reset_resume_is_pending() {
+            return Err(QemuNodeError::checkpoint(
+                "reset continuation cannot cross a host-I/O checkpoint",
+            ));
+        }
         if !self.checkpoint_device_io_is_quiescent()? {
             return Err(QemuNodeError::checkpoint(
                 "host-I/O projection requested while QEMU device I/O is active",
@@ -2288,6 +2328,11 @@ impl QemuNode {
         &mut self,
         checkpoint: &crate::QemuNodeContinuationCheckpoint,
     ) -> Result<(), QemuNodeError> {
+        if self.reset_resume_is_pending() {
+            return Err(QemuNodeError::checkpoint(
+                "reset continuation cannot be replaced by restore",
+            ));
+        }
         if checkpoint.next_fault_command_sequence < 2 {
             return Err(QemuNodeError::checkpoint(
                 "restored fault-command sequence precedes setup capability admission",
@@ -2338,6 +2383,11 @@ impl QemuNode {
     /// Returns [`QemuNodeError`] when QMP does not acknowledge the running-state
     /// transition. The next bounded step proves execution.
     pub(crate) fn resume_after_restore(&mut self) -> Result<(), QemuNodeError> {
+        if self.reset_resume_is_pending() {
+            return Err(QemuNodeError::checkpoint(
+                "reset cannot use ordinary restore resume",
+            ));
+        }
         self.channels
             .qmp_machine_control
             .resume_after_checkpoint()

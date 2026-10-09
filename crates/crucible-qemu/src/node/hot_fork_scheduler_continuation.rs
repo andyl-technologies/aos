@@ -341,6 +341,8 @@ impl QemuHotForkSchedulerNodeContinuation {
             pending_preemption: state.pending_preemption,
             bounded_scheduler_preemption: None,
             selectable_resume_pending: false,
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            reset_resume_pending: None,
             network_output_resume_pending: false,
             hot_fork_resume_pending: true,
             pending_network_outputs: Vec::new(),

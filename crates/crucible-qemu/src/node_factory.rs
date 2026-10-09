@@ -52,11 +52,13 @@ where
     S: QmpTimeoutStream,
 {
     #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
-    fn reset_under_original(
+    fn reset_selectable_under_original(
         &mut self,
+        pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
         original: &crucible_linux_resource::host_supervision::HostOperationGuard,
-    ) -> Result<crate::qmp::QmpCommandComplete, crate::qmp::QmpError> {
-        self.vmstate.reset_under_original(original)
+    ) -> Result<crate::qmp::QmpSelectableResetComplete, crate::qmp::QmpError> {
+        self.vmstate
+            .reset_selectable_under_original(pending, original)
     }
 
     #[cfg(feature = "kernel-swap-measurement")]
@@ -141,6 +143,14 @@ where
 
     fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
         self.vmstate.resume_guest_acknowledged()
+    }
+
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    fn resume_after_checkpoint_under_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate.resume_guest_under_original(original)
     }
 
     #[cfg(unix)]

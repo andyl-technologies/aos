@@ -13,6 +13,20 @@ pub enum QmpError {
         /// The exact operational failure, excluded from guest outcomes.
         message: String,
     },
+    /// Native reset processing refused after accepting the exact pending request.
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    #[error("correlated selectable reset failed with native status {status}")]
+    SelectableResetFailed {
+        /// Exact negative native status; independent cleanup must retain ownership.
+        status: i64,
+    },
+    /// Host reset admission or reconciliation refused on its actual channel.
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    #[error("selectable reset boundary failed: {source}")]
+    SelectableResetBoundary {
+        /// Exact channel-local cause; an observed reset remains caller-owned.
+        source: QemuNodeChannelError,
+    },
     /// A descriptor name is outside the typed Crucible QMP grammar.
     #[error("invalid QMP descriptor name of {length} bytes")]
     InvalidDescriptorName {

@@ -184,7 +184,11 @@ impl HotForkBlockBarrierAction {
 pub(super) enum QmpCommand<'a> {
     Capabilities,
     #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
-    SystemReset,
+    SelectableReset {
+        pending: &'a crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+        request_hex: &'a str,
+        correlation: u64,
+    },
     SaveVm {
         tag: &'a QmpSnapshotTag,
         job_id: &'a str,
@@ -342,7 +346,7 @@ impl QmpCommand<'_> {
         match self {
             Self::Capabilities => QmpCommandKind::Capabilities,
             #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
-            Self::SystemReset => QmpCommandKind::SystemReset,
+            Self::SelectableReset { .. } => QmpCommandKind::SelectableReset,
             Self::SaveVm { .. } => QmpCommandKind::SaveVm,
             Self::DeleteSnapshot { .. } => QmpCommandKind::DeleteSnapshot,
             Self::CheckpointCapture { .. } => QmpCommandKind::CheckpointCapture,
@@ -410,7 +414,22 @@ impl QmpCommand<'_> {
                 },
             }),
             #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
-            Self::SystemReset => json!({"execute": "system_reset"}),
+            Self::SelectableReset {
+                pending,
+                request_hex,
+                correlation,
+            } => json!({
+                "execute": "crucible-selectable-reset-v1",
+                "arguments": {
+                    "schema-version": 1,
+                    "correlation": correlation,
+                    "request-hex": request_hex,
+                    "raw-icount": pending.raw_icount(),
+                    "trap-tick-ps": pending.trap_tick_ps(),
+                    "vcpu-index": pending.vcpu_index(),
+                    "reply-address": pending.guest_virtual_address(),
+                },
+            }),
             Self::SaveVm { tag, job_id } => {
                 snapshot_request(QMP_SNAPSHOT_SAVE_COMMAND, job_id, tag)
             }

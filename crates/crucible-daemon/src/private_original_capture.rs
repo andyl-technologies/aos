@@ -136,18 +136,35 @@ impl OriginalPreparation {
     ///
     /// The driver retains the genuine node/factory owner and authenticates its
     /// completed-write opportunity before this call. The result acknowledges
-    /// only QMP acceptance; physical reset, loader reseeding and whole-RAM root
-    /// evidence remain separate observations under that same ownership.
+    /// correlated terminal reset completion and exact host abandonment. Loader
+    /// reseeding and whole-RAM evidence remain separate under that same ownership.
     /// This method does not complete the original or create another operation.
     ///
     /// # Errors
     /// Returns the adapter's original typed QMP error for unavailable support,
-    /// original refusal, command rejection or uncertain acknowledgement.
-    pub fn reset_node_under_original(
+    /// original refusal, command rejection or uncertain terminal observation.
+    pub fn reset_selectable_node_under_original(
         &self,
         node: &mut crucible_qemu::QemuNode,
-    ) -> Result<crucible_qemu::QmpCommandComplete, crucible_qemu::QmpError> {
-        node.reset_under_original(&self.original)
+        pending: &crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+    ) -> Result<crucible_qemu::QmpSelectableResetComplete, crucible_qemu::QmpError> {
+        node.reset_selectable_under_original(pending, &self.original)
+    }
+
+    /// Continues its reset to a fresh idle and sample under the retained original.
+    ///
+    /// The node verifies this exact original Arc against its reset transaction.
+    /// A failed continuation retains node custody for actual owner containment;
+    /// it does not establish physical RAM or independent reset evidence.
+    ///
+    /// # Errors
+    /// Returns the actual identity, supervision, idle or fresh-capture refusal.
+    pub fn resume_reset_node_under_original(
+        &self,
+        node: &mut crucible_qemu::QemuNode,
+        liveness_ceiling: crucible::Icount,
+    ) -> Result<crucible::ExecutionFingerprint, crucible_qemu::QemuNodeError> {
+        node.resume_reset_to_fresh_idle_under_original(liveness_ceiling, &self.original)
     }
 
     pub(crate) fn boundary(&self) -> Result<(), HostSupervisionError> {
