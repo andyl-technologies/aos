@@ -262,6 +262,7 @@ impl NativeTimerChunk {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::node_control::{NativeFrame, decode_frame, encode_frame};

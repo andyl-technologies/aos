@@ -726,6 +726,7 @@ extern "C" fn publish_stop(receipt: *const NativeNodeReceipt, userdata: *mut c_v
 
 #[cfg(test)]
 #[path = "tests.rs"]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests;
 
 #[path = "cpu_park.rs"]

@@ -282,4 +282,5 @@ impl<'a> Cursor<'a> {
 
 #[cfg(test)]
 #[path = "tests.rs"]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests;

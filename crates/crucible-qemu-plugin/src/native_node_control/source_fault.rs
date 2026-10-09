@@ -92,6 +92,7 @@ impl NativeNodeControl {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::native_node_control::controller::tests::command;

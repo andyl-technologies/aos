@@ -297,6 +297,7 @@ fn read_frame(cursor: &mut Cursor<'_>) -> Result<NativeFrame, NativeCommandError
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::node_control::{BoundaryPolicy, ExecutionKind, OwnerScope};
