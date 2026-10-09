@@ -594,8 +594,8 @@ fn verify_with_recipe(
     }
     let body_bytes = packet_bytes - 64;
     let names_offset = body_bytes - 128;
-    ProtectedJournalNamesV1::from_bytes(&packet[names_offset..names_offset + 48])?;
-    let source_names = ProtectedJournalNamesV1::from_bytes(&packet[names_offset + 48..names_offset + 96])?;
+    ProtectedJournalNamesV1::from_bytes(&packet[names_offset..names_offset + 48]).map_err(crate::journal::JournalError::from)?;
+    let source_names = ProtectedJournalNamesV1::from_bytes(&packet[names_offset + 48..names_offset + 96]).map_err(crate::journal::JournalError::from)?;
     let acceptance =
         ControllerSourceGenesisAcceptanceRecordV1::from_record_bytes(&packet[64..names_offset])?;
     let source_instance = take::<32>(packet, names_offset + 96)?;

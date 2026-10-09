@@ -24,8 +24,23 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+use aos_sandbox_protocol::domain_ledger::source_project_history::RESERVATION_DOMAIN;
+
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use sha2::{Digest as _, Sha256};
+
+use aos_sandbox_protocol::domain_ledger::source_project_history::{
+    SourceProjectAdmissionHistoryV1 as CurrentProjectAdmissionRows,
+    SourceProjectAdmissionSettlementV1, SourceProjectReservationCancellationV1,
+    SourceProjectTerminalRecordV1, SourceProjectTerminalRetirementAckV1,
+};
+pub use aos_sandbox_protocol::domain_ledger::source_project_history::{
+    SOURCE_PROJECT_ADMISSION_CHALLENGE_BYTES_V1, SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1,
+    SOURCE_PROJECT_ADMISSION_TERMINAL_BYTES_V1, SourceProjectAdmissionChallengeKindV1,
+    SourceProjectAdmissionChallengeV1, SourceProjectAdmissionReservationV1,
+    SourceProjectAdmissionTerminalV1,
+};
 
 use super::{
     Journal, JournalError, JournalRecord, JournalTransaction, ProtectedJournalNamesV1,
@@ -38,35 +53,12 @@ use crate::policy_compiler::{
 use crate::reconciler::ControllerProjectHistoryAcceptanceV1;
 
 const KEY: &[u8] = b"\0aos-source-project-admission-challenge-v1\0";
-const MAGIC: &[u8; 8] = b"AOSQPA01";
-const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.source-project-admission-challenge.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.source-project-admission-transaction.v1\0";
-const RECORD_BYTES: usize = 232;
 const RESERVATION_KEY: &[u8] = b"\0aos-source-project-admission-reservation-v1\0";
-const RESERVATION_MAGIC: &[u8; 8] = b"AOSQPV01";
-const RESERVATION_DOMAIN: &[u8] = b"aos.sandbox.source-project-admission-reservation.v1\0";
-const RESERVATION_BYTES: usize = 136;
 const CANCELLATION_KEY: &[u8] = b"\0aos-source-project-reservation-cancellation-v1\0";
-const CANCELLATION_MAGIC: &[u8; 8] = b"AOSQPC02";
-const CANCELLATION_DOMAIN: &[u8] = b"aos.sandbox.source-project-reservation-cancellation.v1\0";
-const CANCELLATION_BYTES: usize = 120;
 const RETIREMENT_ACK_KEY: &[u8] = b"\0aos-source-project-terminal-retirement-ack-v1\0";
-const RETIREMENT_ACK_MAGIC: &[u8; 8] = b"AOSQPT01";
-const RETIREMENT_ACK_DOMAIN: &[u8] = b"aos.sandbox.source-project-terminal-retirement-ack.v1\0";
-const RETIREMENT_ACK_BYTES: usize = 152;
 
-/// Distinguishes ancestry-bearing admission from a nonauthorizing abort row.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SourceProjectAdmissionChallengeKindV1 {
-    /// The current typed Source ancestry can be used for Root admission.
-    Admission,
-    /// Only the durable Source challenge and physical names can be retired.
-    AbortOnly,
-}
 const SETTLEMENT_KEY: &[u8] = b"\0aos-source-project-admission-settlement-v1\0";
-const SETTLEMENT_MAGIC: &[u8; 8] = b"AOSQPC01";
-const SETTLEMENT_DOMAIN: &[u8] = b"aos.sandbox.source-project-admission-settlement.v1\0";
-const SETTLEMENT_BYTES: usize = 152;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SourceProjectAdmissionTransition {
@@ -78,522 +70,25 @@ pub(super) enum SourceProjectAdmissionTransition {
     AcknowledgeRetirement,
 }
 
-/// Bounds a canonical Source settlement, or a zero-padded cancellation.
-pub const SOURCE_PROJECT_ADMISSION_TERMINAL_BYTES_V1: usize = SETTLEMENT_BYTES;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SourceProjectTerminalRetirementAckV1 {
-    issue: u64,
-    reservation: ObjectDigest,
-    source_terminal: ObjectDigest,
-    root_floor: ObjectDigest,
-}
 
-impl SourceProjectTerminalRetirementAckV1 {
-    fn encode(self) -> [u8; RETIREMENT_ACK_BYTES] {
-        let mut bytes = [0; RETIREMENT_ACK_BYTES];
-        bytes[..8].copy_from_slice(RETIREMENT_ACK_MAGIC);
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        bytes[16..24].copy_from_slice(&self.issue.to_be_bytes());
-        bytes[24..56].copy_from_slice(self.reservation.as_bytes());
-        bytes[56..88].copy_from_slice(self.source_terminal.as_bytes());
-        bytes[88..120].copy_from_slice(self.root_floor.as_bytes());
-        let checksum = Sha256::new()
-            .chain_update(RETIREMENT_ACK_DOMAIN)
-            .chain_update(&bytes[..120])
-            .finalize();
-        bytes[120..].copy_from_slice(&checksum);
-        bytes
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
-        if bytes.len() != RETIREMENT_ACK_BYTES
-            || bytes.get(..8) != Some(RETIREMENT_ACK_MAGIC.as_slice())
-            || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
-            || bytes[10..16] != [0; 6]
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let row = Self {
-            issue: u64::from_be_bytes(take::<8>(bytes, 16)?),
-            reservation: ObjectDigest::from_bytes(take::<32>(bytes, 24)?),
-            source_terminal: ObjectDigest::from_bytes(take::<32>(bytes, 56)?),
-            root_floor: ObjectDigest::from_bytes(take::<32>(bytes, 88)?),
-        };
-        if row.issue == 0
-            || [row.reservation, row.source_terminal, row.root_floor]
-                .iter()
-                .any(|digest| digest.as_bytes() == &[0; 32])
-            || row.encode().as_slice() != bytes
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(row)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SourceProjectTerminalRecordV1 {
-    Settlement(SourceProjectAdmissionSettlementV1),
-    Cancellation(SourceProjectReservationCancellationV1),
-}
-
-/// Retains actual canonical Source rows for a completed-terminal readback.
-///
-/// This structural projection grants no Root authority. Only independent
-/// Source signature verification authenticates a transported observation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SourceProjectAdmissionTerminalV1 {
-    reservation: SourceProjectAdmissionReservationV1,
-    challenge: Option<SourceProjectAdmissionChallengeV1>,
-    terminal: SourceProjectTerminalRecordV1,
-}
-
-impl SourceProjectAdmissionTerminalV1 {
-    /// Returns the actual retained pre-stage reservation.
-    pub const fn reservation(self) -> SourceProjectAdmissionReservationV1 {
-        self.reservation
-    }
-
-    /// Returns the actual challenged row, absent for reservation cancellation.
-    pub const fn challenge(self) -> Option<SourceProjectAdmissionChallengeV1> {
-        self.challenge
-    }
-
-    /// Returns SHA-256 of the unpadded actual Source terminal record.
-    pub fn source_terminal_digest(self) -> ObjectDigest {
-        let bytes = self.record_bytes();
-        let length = match self.terminal {
-            SourceProjectTerminalRecordV1::Settlement(_) => SETTLEMENT_BYTES,
-            SourceProjectTerminalRecordV1::Cancellation(_) => CANCELLATION_BYTES,
-        };
-        ObjectDigest::from_bytes(Sha256::digest(&bytes[..length]).into())
-    }
-
-    /// Returns the exact Root outcome or cancellation marker digest.
-    pub const fn root_terminal_digest(self) -> ObjectDigest {
-        match self.terminal {
-            SourceProjectTerminalRecordV1::Settlement(row) => row.outcome,
-            SourceProjectTerminalRecordV1::Cancellation(row) => row.root_marker,
-        }
-    }
-
-    /// Returns the actual Source terminal, padding only a cancellation's tail.
-    pub fn record_bytes(self) -> [u8; SOURCE_PROJECT_ADMISSION_TERMINAL_BYTES_V1] {
-        match self.terminal {
-            SourceProjectTerminalRecordV1::Settlement(row) => row.encode(),
-            SourceProjectTerminalRecordV1::Cancellation(row) => {
-                let mut bytes = [0; SOURCE_PROJECT_ADMISSION_TERMINAL_BYTES_V1];
-                bytes[..CANCELLATION_BYTES].copy_from_slice(&row.encode());
-                bytes
-            }
-        }
-    }
-
-    pub(crate) fn from_record_parts(
-        reservation: SourceProjectAdmissionReservationV1,
-        challenge: Option<SourceProjectAdmissionChallengeV1>,
-        bytes: &[u8],
-    ) -> Result<Self, JournalError> {
-        let terminal = if bytes.get(..8) == Some(SETTLEMENT_MAGIC.as_slice()) {
-            SourceProjectTerminalRecordV1::Settlement(SourceProjectAdmissionSettlementV1::decode(
-                bytes,
-            )?)
-        } else if bytes.len() == SOURCE_PROJECT_ADMISSION_TERMINAL_BYTES_V1
-            && bytes[CANCELLATION_BYTES..] == [0; SETTLEMENT_BYTES - CANCELLATION_BYTES]
-        {
-            SourceProjectTerminalRecordV1::Cancellation(
-                SourceProjectReservationCancellationV1::decode(&bytes[..CANCELLATION_BYTES])?,
-            )
-        } else {
-            return Err(JournalError::ProtectedBoundary);
-        };
-        let rows = CurrentProjectAdmissionRows {
-            reservation: Some(reservation),
-            challenge,
-            settlement: match terminal {
-                SourceProjectTerminalRecordV1::Settlement(row) => Some(row),
-                _ => None,
-            },
-            cancellation: match terminal {
-                SourceProjectTerminalRecordV1::Cancellation(row) => Some(row),
-                _ => None,
-            },
-            retirement_ack: None,
-        };
-        rows.require_joined()?;
-        rows.terminal().ok_or(JournalError::ProtectedBoundary)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SourceProjectReservationCancellationV1 {
-    issue: u64,
-    reservation: ObjectDigest,
-    root_marker: ObjectDigest,
-}
-
-impl SourceProjectReservationCancellationV1 {
-    fn encode(self) -> [u8; CANCELLATION_BYTES] {
-        let mut bytes = [0; CANCELLATION_BYTES];
-        bytes[..8].copy_from_slice(CANCELLATION_MAGIC);
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        bytes[16..24].copy_from_slice(&self.issue.to_be_bytes());
-        bytes[24..56].copy_from_slice(self.reservation.as_bytes());
-        bytes[56..88].copy_from_slice(self.root_marker.as_bytes());
-        let checksum = Sha256::new()
-            .chain_update(CANCELLATION_DOMAIN)
-            .chain_update(&bytes[..88])
-            .finalize();
-        bytes[88..].copy_from_slice(&checksum);
-        bytes
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
-        if bytes.len() != CANCELLATION_BYTES
-            || bytes.get(..8) != Some(CANCELLATION_MAGIC.as_slice())
-            || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
-            || bytes[10..16] != [0; 6]
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let row = Self {
-            issue: u64::from_be_bytes(take::<8>(bytes, 16)?),
-            reservation: ObjectDigest::from_bytes(take::<32>(bytes, 24)?),
-            root_marker: ObjectDigest::from_bytes(take::<32>(bytes, 56)?),
-        };
-        if row.issue == 0
-            || row.reservation.as_bytes() == &[0; 32]
-            || row.root_marker.as_bytes() == &[0; 32]
-            || row.encode().as_slice() != bytes
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(row)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SourceProjectAdmissionSettlementV1 {
-    issue: u64,
-    challenge: ObjectDigest,
-    stage: ObjectDigest,
-    outcome: ObjectDigest,
-}
-
-impl SourceProjectAdmissionSettlementV1 {
-    fn encode(self) -> [u8; SETTLEMENT_BYTES] {
-        let mut bytes = [0; SETTLEMENT_BYTES];
-        bytes[..8].copy_from_slice(SETTLEMENT_MAGIC);
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        bytes[16..24].copy_from_slice(&self.issue.to_be_bytes());
-        bytes[24..56].copy_from_slice(self.challenge.as_bytes());
-        bytes[56..88].copy_from_slice(self.stage.as_bytes());
-        bytes[88..120].copy_from_slice(self.outcome.as_bytes());
-        let checksum = Sha256::new()
-            .chain_update(SETTLEMENT_DOMAIN)
-            .chain_update(&bytes[..120])
-            .finalize();
-        bytes[120..].copy_from_slice(&checksum);
-        bytes
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
-        if bytes.len() != SETTLEMENT_BYTES
-            || bytes.get(..8) != Some(SETTLEMENT_MAGIC.as_slice())
-            || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
-            || bytes[10..16] != [0; 6]
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let row = Self {
-            issue: u64::from_be_bytes(take::<8>(bytes, 16)?),
-            challenge: ObjectDigest::from_bytes(take::<32>(bytes, 24)?),
-            stage: ObjectDigest::from_bytes(take::<32>(bytes, 56)?),
-            outcome: ObjectDigest::from_bytes(take::<32>(bytes, 88)?),
-        };
-        if row.issue == 0
-            || row.challenge.as_bytes() == &[0; 32]
-            || row.stage.as_bytes() == &[0; 32]
-            || row.outcome.as_bytes() == &[0; 32]
-            || row.encode().as_slice() != bytes
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(row)
-    }
-
-    fn matches(self, challenge: SourceProjectAdmissionChallengeV1) -> bool {
-        self.issue == challenge.issue && self.challenge == challenge.record_digest()
-    }
-}
-
-/// Bounds the canonical Source project-admission challenge row.
-pub const SOURCE_PROJECT_ADMISSION_CHALLENGE_BYTES_V1: usize = RECORD_BYTES;
-
-/// Bounds the canonical pre-stage Source reservation row.
-pub const SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1: usize = RESERVATION_BYTES;
-
-/// Retains Source journal headroom before Root may create a project stage.
-///
-/// The reservation does not assert ancestry or authorize Root admission. Its
-/// immutable row is retained through the later Source challenge and outcome.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SourceProjectAdmissionReservationV1 {
-    issue: u64,
-    client_nonce: [u8; 16],
-    project: ProjectId,
-    names: ProtectedJournalNamesV1,
-}
-
-impl SourceProjectAdmissionReservationV1 {
-    /// Returns the monotone Source admission issue.
-    pub const fn issue(self) -> u64 {
-        self.issue
-    }
-
-    /// Returns the effect-owned nonce to be spent by one Root stage.
-    pub const fn client_nonce(self) -> [u8; 16] {
-        self.client_nonce
-    }
-
-    /// Returns the project named by the accepted Create.
-    pub const fn project(self) -> ProjectId {
-        self.project
-    }
-
-    /// Returns the fixed protected Source names.
-    pub const fn names(self) -> ProtectedJournalNamesV1 {
-        self.names
-    }
-
-    /// Returns the digest of the exact durable reservation row.
-    #[must_use]
-    pub fn record_digest(self) -> ObjectDigest {
-        ObjectDigest::from_bytes(Sha256::digest(self.encode()).into())
-    }
-
-    /// Returns the canonical row for a Source-only signed readback.
-    #[must_use]
-    pub fn record_bytes(self) -> [u8; RESERVATION_BYTES] {
-        self.encode()
-    }
-
-    /// Decodes untrusted bytes without authenticating Source custody.
-    ///
-    /// # Errors
-    ///
-    /// Rejects changed fields, framing, or checksum.
-    pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, JournalError> {
-        Self::decode(bytes)
-    }
-
-    fn encode(self) -> [u8; RESERVATION_BYTES] {
-        let mut bytes = [0; RESERVATION_BYTES];
-        bytes[..8].copy_from_slice(RESERVATION_MAGIC);
-        bytes[8..10].copy_from_slice(&2_u16.to_be_bytes());
-        bytes[16..24].copy_from_slice(&self.issue.to_be_bytes());
-        bytes[24..40].copy_from_slice(&self.client_nonce);
-        bytes[40..56].copy_from_slice(self.project.as_bytes());
-        bytes[56..104].copy_from_slice(&self.names.to_bytes());
-        let checksum = Sha256::new()
-            .chain_update(RESERVATION_DOMAIN)
-            .chain_update(&bytes[..104])
-            .finalize();
-        bytes[104..].copy_from_slice(&checksum);
-        bytes
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
-        if bytes.len() != RESERVATION_BYTES
-            || bytes.get(..8) != Some(RESERVATION_MAGIC.as_slice())
-            || bytes.get(8..10) != Some(2_u16.to_be_bytes().as_slice())
-            || bytes[10..16] != [0; 6]
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let row = Self {
-            issue: u64::from_be_bytes(take::<8>(bytes, 16)?),
-            client_nonce: take::<16>(bytes, 24)?,
-            project: ProjectId::from_bytes(take::<16>(bytes, 40)?),
-            names: ProtectedJournalNamesV1::from_bytes(&bytes[56..104])?,
-        };
-        if row.issue == 0
-            || row.client_nonce == [0; 16]
-            || row.project.as_bytes() == &[0; 16]
-            || row.encode().as_slice() != bytes
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(row)
-    }
-}
-
-/// Retains one Root project-admission challenge spent under the Source writer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SourceProjectAdmissionChallengeV1 {
-    kind: SourceProjectAdmissionChallengeKindV1,
-    issue: u64,
+/// Checks this row against a retained writer or independent signer view.
+pub(crate) fn source_project_challenge_matches_current(
+    row: SourceProjectAdmissionChallengeV1,
     nonce: [u8; 16],
     cut: ObjectDigest,
     project: ProjectId,
     ancestry: ObjectDigest,
     stage: ObjectDigest,
     names: ProtectedJournalNamesV1,
-}
-
-impl SourceProjectAdmissionChallengeV1 {
-    /// Returns whether this row can support admission or only exact abort.
-    pub const fn kind(self) -> SourceProjectAdmissionChallengeKindV1 {
-        self.kind
-    }
-    /// Returns the monotone Source-journal challenge issue.
-    pub const fn issue(self) -> u64 {
-        self.issue
-    }
-
-    /// Returns the Root nonce spent under Source custody.
-    pub const fn nonce(self) -> [u8; 16] {
-        self.nonce
-    }
-
-    /// Returns the Root session cut.
-    pub const fn cut(self) -> ObjectDigest {
-        self.cut
-    }
-
-    /// Returns the challenged project.
-    pub const fn project(self) -> ProjectId {
-        self.project
-    }
-
-    /// Returns the protected Source ancestry head.
-    pub const fn ancestry(self) -> ObjectDigest {
-        self.ancestry
-    }
-
-    /// Returns the exact immutable Root stage for cold outcome recovery.
-    pub const fn stage(self) -> ObjectDigest {
-        self.stage
-    }
-
-    /// Returns the exact Source directory, journal, and lock identities.
-    pub const fn names(self) -> ProtectedJournalNamesV1 {
-        self.names
-    }
-
-    /// Returns the digest of the canonical durable row.
-    #[must_use]
-    pub fn record_digest(self) -> ObjectDigest {
-        ObjectDigest::from_bytes(Sha256::digest(self.encode()).into())
-    }
-
-    /// Returns the exact canonical row for transport to Root.
-    #[must_use]
-    pub fn record_bytes(self) -> [u8; RECORD_BYTES] {
-        self.encode()
-    }
-
-    /// Decodes an untrusted row without granting Source writer authority.
-    ///
-    /// # Errors
-    ///
-    /// Rejects changed framing, fields, or checksum.
-    pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, JournalError> {
-        Self::decode(bytes)
-    }
-
-    /// Checks this row against a retained writer or independent signer view.
-    pub(crate) fn matches_current(
-        self,
-        nonce: [u8; 16],
-        cut: ObjectDigest,
-        project: ProjectId,
-        ancestry: ObjectDigest,
-        stage: ObjectDigest,
-        names: ProtectedJournalNamesV1,
-    ) -> bool {
-        self.kind == SourceProjectAdmissionChallengeKindV1::Admission
-            && self.nonce == nonce
-            && self.cut == cut
-            && self.project == project
-            && self.ancestry == ancestry
-            && self.stage == stage
-            && self.names == names
-    }
-
-    fn encode(self) -> [u8; RECORD_BYTES] {
-        let mut bytes = [0; RECORD_BYTES];
-        bytes[..8].copy_from_slice(MAGIC);
-        bytes[8..10].copy_from_slice(&2_u16.to_be_bytes());
-        bytes[10] = match self.kind {
-            SourceProjectAdmissionChallengeKindV1::Admission => 1,
-            SourceProjectAdmissionChallengeKindV1::AbortOnly => 2,
-        };
-        bytes[16..24].copy_from_slice(&self.issue.to_be_bytes());
-        bytes[24..40].copy_from_slice(&self.nonce);
-        bytes[40..72].copy_from_slice(self.cut.as_bytes());
-        bytes[72..88].copy_from_slice(self.project.as_bytes());
-        bytes[88..120].copy_from_slice(self.ancestry.as_bytes());
-        bytes[120..152].copy_from_slice(self.stage.as_bytes());
-        bytes[152..200].copy_from_slice(&self.names.to_bytes());
-        let checksum = Sha256::new()
-            .chain_update(CHECKSUM_DOMAIN)
-            .chain_update(&bytes[..200])
-            .finalize();
-        bytes[200..].copy_from_slice(&checksum);
-        bytes
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
-        if bytes.len() != RECORD_BYTES
-            || bytes.get(..8) != Some(MAGIC.as_slice())
-            || bytes.get(8..10) != Some(2_u16.to_be_bytes().as_slice())
-            || bytes[11..16] != [0; 5]
-            || bytes[200..]
-                != Sha256::new()
-                    .chain_update(CHECKSUM_DOMAIN)
-                    .chain_update(&bytes[..200])
-                    .finalize()[..]
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let row = Self {
-            kind: match bytes[10] {
-                1 => SourceProjectAdmissionChallengeKindV1::Admission,
-                2 => SourceProjectAdmissionChallengeKindV1::AbortOnly,
-                _ => return Err(JournalError::ProtectedBoundary),
-            },
-            issue: u64::from_be_bytes(take::<8>(bytes, 16)?),
-            nonce: take::<16>(bytes, 24)?,
-            cut: ObjectDigest::from_bytes(take::<32>(bytes, 40)?),
-            project: ProjectId::from_bytes(take::<16>(bytes, 72)?),
-            ancestry: ObjectDigest::from_bytes(take::<32>(bytes, 88)?),
-            stage: ObjectDigest::from_bytes(take::<32>(bytes, 120)?),
-            names: ProtectedJournalNamesV1::from_bytes(&bytes[152..200])?,
-        };
-        if row.issue == 0
-            || row.nonce == [0; 16]
-            || row.cut.as_bytes() == &[0; 32]
-            || row.project.as_bytes() == &[0; 16]
-            || (row.kind == SourceProjectAdmissionChallengeKindV1::Admission
-                && row.ancestry.as_bytes() == &[0; 32])
-            || (row.kind == SourceProjectAdmissionChallengeKindV1::AbortOnly
-                && row.ancestry.as_bytes() != &[0; 32])
-            || row.stage.as_bytes() == &[0; 32]
-            || row.encode().as_slice() != bytes
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(row)
-    }
-}
-
-fn take<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], JournalError> {
-    bytes
-        .get(offset..offset + N)
-        .and_then(|field| field.try_into().ok())
-        .ok_or(JournalError::ProtectedBoundary)
+) -> bool {
+    row.kind() == SourceProjectAdmissionChallengeKindV1::Admission
+        && row.nonce() == nonce
+        && row.cut() == cut
+        && row.project() == project
+        && row.ancestry() == ancestry
+        && row.stage() == stage
+        && row.names() == names
 }
 
 /// Replays only the typed row; callers establish protected custody first.
@@ -602,7 +97,7 @@ pub(crate) fn replay_source_project_admission_challenge_v1(
 ) -> Result<Option<SourceProjectAdmissionChallengeV1>, JournalError> {
     journal
         .get(RecordNamespace::DesiredState, KEY)
-        .map(SourceProjectAdmissionChallengeV1::decode)
+        .map(|bytes| SourceProjectAdmissionChallengeV1::decode(bytes).map_err(JournalError::from))
         .transpose()
 }
 
@@ -611,7 +106,7 @@ fn current_reservation(
 ) -> Result<Option<SourceProjectAdmissionReservationV1>, JournalError> {
     state
         .get(&(RecordNamespace::DesiredState, RESERVATION_KEY.to_vec()))
-        .map(|bytes| SourceProjectAdmissionReservationV1::decode(bytes))
+        .map(|bytes| SourceProjectAdmissionReservationV1::decode(bytes).map_err(JournalError::from))
         .transpose()
 }
 
@@ -620,88 +115,36 @@ fn current_cancellation(
 ) -> Result<Option<SourceProjectReservationCancellationV1>, JournalError> {
     state
         .get(&(RecordNamespace::DesiredState, CANCELLATION_KEY.to_vec()))
-        .map(|bytes| SourceProjectReservationCancellationV1::decode(bytes))
+        .map(|bytes| SourceProjectReservationCancellationV1::decode(bytes).map_err(JournalError::from))
         .transpose()
 }
 
-#[derive(Clone, Copy)]
-struct CurrentProjectAdmissionRows {
-    reservation: Option<SourceProjectAdmissionReservationV1>,
-    cancellation: Option<SourceProjectReservationCancellationV1>,
-    challenge: Option<SourceProjectAdmissionChallengeV1>,
-    settlement: Option<SourceProjectAdmissionSettlementV1>,
-    retirement_ack: Option<SourceProjectTerminalRetirementAckV1>,
-}
-
-impl CurrentProjectAdmissionRows {
-    fn terminal(self) -> Option<SourceProjectAdmissionTerminalV1> {
-        let terminal = match (self.settlement, self.cancellation) {
-            (Some(row), None) => SourceProjectTerminalRecordV1::Settlement(row),
-            (None, Some(row)) => SourceProjectTerminalRecordV1::Cancellation(row),
-            _ => return None,
-        };
-        Some(SourceProjectAdmissionTerminalV1 {
-            reservation: self.reservation?,
-            challenge: self.challenge,
-            terminal,
-        })
-    }
-
-    fn require_joined(self) -> Result<(), JournalError> {
-        if self.challenge.is_some_and(|row| {
-            !self.reservation.is_some_and(|reserved| {
-                row.issue == reserved.issue
-                    && row.project == reserved.project
-                    && row.names == reserved.names
-            })
-        }) || self.settlement.is_some_and(|row| {
-            !self
-                .challenge
-                .is_some_and(|challenge| row.matches(challenge) && row.stage == challenge.stage())
-        }) || self.cancellation.is_some_and(|row| {
-            self.challenge.is_some()
-                || self.settlement.is_some()
-                || !self.reservation.is_some_and(|reservation| {
-                    row.issue == reservation.issue && row.reservation == reservation.record_digest()
-                })
-        }) || self.retirement_ack.is_some_and(|row| {
-            !self.terminal().is_some_and(|terminal| {
-                row.issue == terminal.reservation.issue()
-                    && row.reservation == terminal.reservation.record_digest()
-                    && row.source_terminal == terminal.source_terminal_digest()
-            })
-        }) {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(())
-    }
-}
 
 fn current_rows(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<CurrentProjectAdmissionRows, JournalError> {
     let challenge = state
         .get(&(RecordNamespace::DesiredState, KEY.to_vec()))
-        .map(|bytes| SourceProjectAdmissionChallengeV1::decode(bytes))
+        .map(|bytes| SourceProjectAdmissionChallengeV1::decode(bytes).map_err(JournalError::from))
         .transpose()?;
     let settlement = state
         .get(&(RecordNamespace::DesiredState, SETTLEMENT_KEY.to_vec()))
-        .map(|bytes| SourceProjectAdmissionSettlementV1::decode(bytes))
+        .map(|bytes| SourceProjectAdmissionSettlementV1::decode(bytes).map_err(JournalError::from))
         .transpose()?;
     let reservation = current_reservation(state)?;
     let cancellation = current_cancellation(state)?;
     let retirement_ack = state
         .get(&(RecordNamespace::DesiredState, RETIREMENT_ACK_KEY.to_vec()))
-        .map(|bytes| SourceProjectTerminalRetirementAckV1::decode(bytes))
+        .map(|bytes| SourceProjectTerminalRetirementAckV1::decode(bytes).map_err(JournalError::from))
         .transpose()?;
-    let rows = CurrentProjectAdmissionRows {
+    let rows = CurrentProjectAdmissionRows::from_historical_fields(
         reservation,
         cancellation,
         challenge,
         settlement,
         retirement_ack,
-    };
-    rows.require_joined()?;
+    );
+    rows.require_joined().map_err(JournalError::from)?;
     Ok(rows)
 }
 
@@ -710,13 +153,12 @@ pub(super) fn require_no_mutation(
     transaction: &JournalTransaction,
     transition: SourceProjectAdmissionTransition,
 ) -> Result<(), JournalError> {
-    let CurrentProjectAdmissionRows {
-        reservation,
-        cancellation,
-        challenge,
-        settlement,
-        retirement_ack,
-    } = current_rows(state)?;
+    let rows = current_rows(state)?;
+    let reservation = rows.reservation();
+    let cancellation = rows.cancellation();
+    let challenge = rows.challenge();
+    let settlement = rows.settlement();
+    let retirement_ack = rows.retirement_ack();
     let records = transaction.records();
     match transition {
         SourceProjectAdmissionTransition::None => {
@@ -746,18 +188,18 @@ pub(super) fn require_no_mutation(
             let next = record
                 .value()
                 .ok_or(JournalError::ProtectedBoundary)
-                .and_then(SourceProjectAdmissionReservationV1::decode)?;
+                .and_then(|bytes| SourceProjectAdmissionReservationV1::decode(bytes).map_err(JournalError::from))?;
             match (reservation, challenge, settlement, rest) {
-                (None, None, None, []) if next.issue == 1 && retirement_ack.is_none() => {}
+                (None, None, None, []) if next.issue() == 1 && retirement_ack.is_none() => {}
                 (
                     Some(previous),
                     Some(_),
                     Some(_),
                     [delete_challenge, delete_settlement, delete_ack],
                 ) if retirement_ack.is_some()
-                    && next.issue
+                    && next.issue()
                         == previous
-                            .issue
+                            .issue()
                             .checked_add(1)
                             .ok_or(JournalError::ProtectedBoundary)?
                     && delete_challenge.namespace() == RecordNamespace::DesiredState
@@ -770,9 +212,9 @@ pub(super) fn require_no_mutation(
                 (Some(previous), None, None, [delete_cancellation, delete_ack])
                     if cancellation.is_some()
                         && retirement_ack.is_some()
-                        && next.issue
+                        && next.issue()
                             == previous
-                                .issue
+                                .issue()
                                 .checked_add(1)
                                 .ok_or(JournalError::ProtectedBoundary)?
                         && delete_cancellation.namespace() == RecordNamespace::DesiredState
@@ -792,16 +234,16 @@ pub(super) fn require_no_mutation(
             let next = record
                 .value()
                 .ok_or(JournalError::ProtectedBoundary)
-                .and_then(SourceProjectAdmissionChallengeV1::decode)?;
+                .and_then(|bytes| SourceProjectAdmissionChallengeV1::decode(bytes).map_err(JournalError::from))?;
             if !rest.is_empty()
                 || challenge.is_some()
                 || settlement.is_some()
                 || cancellation.is_some()
                 || retirement_ack.is_some()
                 || !reservation.is_some_and(|reserved| {
-                    next.issue == reserved.issue
-                        && next.project == reserved.project
-                        && next.names == reserved.names
+                    next.issue() == reserved.issue()
+                        && next.project() == reserved.project()
+                        && next.names() == reserved.names()
                 })
             {
                 return Err(JournalError::ProtectedBoundary);
@@ -814,7 +256,7 @@ pub(super) fn require_no_mutation(
             let row = record
                 .value()
                 .ok_or(JournalError::ProtectedBoundary)
-                .and_then(SourceProjectAdmissionSettlementV1::decode)?;
+                .and_then(|bytes| SourceProjectAdmissionSettlementV1::decode(bytes).map_err(JournalError::from))?;
             if record.namespace() != RecordNamespace::DesiredState
                 || record.key() != SETTLEMENT_KEY
                 || settlement.is_some()
@@ -832,7 +274,7 @@ pub(super) fn require_no_mutation(
             let row = record
                 .value()
                 .ok_or(JournalError::ProtectedBoundary)
-                .and_then(SourceProjectReservationCancellationV1::decode)?;
+                .and_then(|bytes| SourceProjectReservationCancellationV1::decode(bytes).map_err(JournalError::from))?;
             if record.namespace() != RecordNamespace::DesiredState
                 || record.key() != CANCELLATION_KEY
                 || challenge.is_some()
@@ -840,7 +282,7 @@ pub(super) fn require_no_mutation(
                 || cancellation.is_some()
                 || retirement_ack.is_some()
                 || !reservation.is_some_and(|reservation| {
-                    row.issue == reservation.issue && row.reservation == reservation.record_digest()
+                    row.issue() == reservation.issue() && row.reservation() == reservation.record_digest()
                 })
             {
                 return Err(JournalError::ProtectedBoundary);
@@ -853,15 +295,15 @@ pub(super) fn require_no_mutation(
             let row = record
                 .value()
                 .ok_or(JournalError::ProtectedBoundary)
-                .and_then(SourceProjectTerminalRetirementAckV1::decode)?;
+                .and_then(|bytes| SourceProjectTerminalRetirementAckV1::decode(bytes).map_err(JournalError::from))?;
             let rows = current_rows(state)?;
             let terminal = rows.terminal().ok_or(JournalError::ProtectedBoundary)?;
             if record.namespace() != RecordNamespace::DesiredState
                 || record.key() != RETIREMENT_ACK_KEY
                 || retirement_ack.is_some()
-                || row.issue != terminal.reservation.issue()
-                || row.reservation != terminal.reservation.record_digest()
-                || row.source_terminal != terminal.source_terminal_digest()
+                || row.issue() != terminal.reservation().issue()
+                || row.reservation() != terminal.reservation().record_digest()
+                || row.source_terminal() != terminal.source_terminal_digest()
             {
                 return Err(JournalError::ProtectedBoundary);
             }
@@ -874,7 +316,7 @@ pub(super) fn require_no_compaction(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<(), JournalError> {
     let rows = current_rows(state)?;
-    if rows.reservation.is_some() && rows.retirement_ack.is_none() {
+    if rows.reservation().is_some() && rows.retirement_ack().is_none() {
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(())
@@ -917,7 +359,7 @@ impl Journal {
         let rows = current_rows(self.native.state())?;
         let terminal = rows.terminal().ok_or(JournalError::ProtectedBoundary)?;
         let floor = proof.floor();
-        if self.protected_writer_physical_names_v1()? != terminal.reservation.names() {
+        if self.protected_writer_physical_names_v1()? != terminal.reservation().names() {
             return Err(JournalError::ProtectedBoundary);
         }
         controller.validate_source_ack(
@@ -926,13 +368,13 @@ impl Journal {
             terminal.challenge(),
             terminal.source_terminal_digest(),
         )?;
-        let ack = SourceProjectTerminalRetirementAckV1 {
-            issue: terminal.reservation.issue(),
-            reservation: terminal.reservation.record_digest(),
-            source_terminal: terminal.source_terminal_digest(),
-            root_floor: floor.record_digest(),
-        };
-        if let Some(prior) = rows.retirement_ack {
+        let ack = SourceProjectTerminalRetirementAckV1::from_historical_fields(
+            terminal.reservation().issue(),
+            terminal.reservation().record_digest(),
+            terminal.source_terminal_digest(),
+            floor.record_digest(),
+        );
+        if let Some(prior) = rows.retirement_ack() {
             return if prior == ack {
                 Ok(())
             } else {
@@ -950,9 +392,9 @@ impl Journal {
             terminal.source_terminal_digest(),
         )?;
         let current = current_rows(self.native.state())?;
-        if current.retirement_ack != Some(ack)
+        if current.retirement_ack() != Some(ack)
             || current.terminal() != Some(terminal)
-            || self.protected_writer_physical_names_v1()? != terminal.reservation.names()
+            || self.protected_writer_physical_names_v1()? != terminal.reservation().names()
         {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -968,15 +410,15 @@ impl Journal {
     ) -> Result<Option<(SourceProjectAdmissionReservationV1, bool)>, JournalError> {
         let rows = current_rows(self.native.state())?;
         Ok(rows
-            .reservation
-            .map(|row| (row, rows.cancellation.is_some())))
+            .reservation()
+            .map(|row| (row, rows.cancellation().is_some())))
     }
 
     /// Replays the immutable Source reservation before or after promotion.
     pub(crate) fn source_project_admission_reservation_v1(
         &self,
     ) -> Result<Option<SourceProjectAdmissionReservationV1>, JournalError> {
-        Ok(current_rows(self.native.state())?.reservation)
+        Ok(current_rows(self.native.state())?.reservation())
     }
 
     /// Retires an unconsumed reservation only after exact Root cancellation.
@@ -991,7 +433,7 @@ impl Journal {
         source_domain_policy_hold::ensure_source_domain(self)?;
         let marker = proof.marker();
         let rows = current_rows(self.native.state())?;
-        if rows.reservation != Some(expected)
+        if rows.reservation() != Some(expected)
             || self.protected_writer_physical_names_v1()? != expected.names()
             || marker.reservation() != expected.record_digest()
             || marker.client_nonce() != expected.client_nonce()
@@ -999,12 +441,12 @@ impl Journal {
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        let cancellation = SourceProjectReservationCancellationV1 {
-            issue: expected.issue(),
-            reservation: expected.record_digest(),
-            root_marker: marker.record_digest(),
-        };
-        let prior = rows.cancellation;
+        let cancellation = SourceProjectReservationCancellationV1::from_historical_fields(
+            expected.issue(),
+            expected.record_digest(),
+            marker.record_digest(),
+        );
+        let prior = rows.cancellation();
         if let Some(prior) = prior {
             return if prior == cancellation {
                 Ok(())
@@ -1012,7 +454,7 @@ impl Journal {
                 Err(JournalError::ProtectedBoundary)
             };
         }
-        if rows.challenge.is_some() || rows.settlement.is_some() {
+        if rows.challenge().is_some() || rows.settlement().is_some() {
             return Err(JournalError::ProtectedBoundary);
         }
         let transaction = cancellation_transaction(cancellation)?;
@@ -1052,24 +494,24 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         let rows = current_rows(self.native.state())?;
-        if let Some(prior) = rows.reservation {
-            if prior.client_nonce == client_nonce
-                && prior.project == project
-                && prior.names == names
-                && rows.cancellation.is_none()
-                && rows.retirement_ack.is_none()
+        if let Some(prior) = rows.reservation() {
+            if prior.client_nonce() == client_nonce
+                && prior.project() == project
+                && prior.names() == names
+                && rows.cancellation().is_none()
+                && rows.retirement_ack().is_none()
             {
                 return Ok(prior);
             }
-            if rows.retirement_ack.is_none() {
+            if rows.retirement_ack().is_none() {
                 return Err(JournalError::ProtectedBoundary);
             }
         }
-        Ok(SourceProjectAdmissionReservationV1 {
-            issue: rows
-                .reservation
+        Ok(SourceProjectAdmissionReservationV1::from_historical_fields(
+            rows
+                .reservation()
                 .map(|row| {
-                    row.issue
+                    row.issue()
                         .checked_add(1)
                         .ok_or(JournalError::ProtectedBoundary)
                 })
@@ -1078,7 +520,7 @@ impl Journal {
             client_nonce,
             project,
             names,
-        })
+        ))
     }
 
     /// Reserves Source capacity and fences unrelated writes before Root stages.
@@ -1095,11 +537,11 @@ impl Journal {
         let row =
             self.preview_source_project_admission_reservation_v1(client_nonce, project, names)?;
         let rows = current_rows(self.native.state())?;
-        if rows.reservation == Some(row) {
+        if rows.reservation() == Some(row) {
             return Ok(row);
         }
         let transaction =
-            reservation_transaction(row, rows.settlement.is_some(), rows.cancellation.is_some())?;
+            reservation_transaction(row, rows.settlement().is_some(), rows.cancellation().is_some())?;
         self.commit_source_project_admission_transition(
             &transaction,
             SourceProjectAdmissionTransition::Reserve,
@@ -1117,7 +559,7 @@ impl Journal {
         &self,
     ) -> Result<Option<(SourceProjectAdmissionChallengeV1, bool)>, JournalError> {
         let rows = current_rows(self.native.state())?;
-        Ok(rows.challenge.map(|row| (row, rows.settlement.is_some())))
+        Ok(rows.challenge().map(|row| (row, rows.settlement().is_some())))
     }
 
     /// Preflights reservation, challenge, terminal, and ACK writes before Root stages.
@@ -1143,63 +585,63 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         let rows = current_rows(self.native.state())?;
-        let prior = rows.challenge;
-        let settlement = rows.settlement;
-        let prior_reservation = rows.reservation;
-        let cancellation = rows.cancellation;
-        if prior_reservation.is_some() && rows.retirement_ack.is_none() {
+        let prior = rows.challenge();
+        let settlement = rows.settlement();
+        let prior_reservation = rows.reservation();
+        let cancellation = rows.cancellation();
+        if prior_reservation.is_some() && rows.retirement_ack().is_none() {
             return Err(JournalError::ProtectedBoundary);
         }
         let issue = prior_reservation
             .map(|row| {
-                row.issue
+                row.issue()
                     .checked_add(1)
                     .ok_or(JournalError::ProtectedBoundary)
             })
             .transpose()?
             .unwrap_or(1);
-        let reservation = SourceProjectAdmissionReservationV1 {
+        let reservation = SourceProjectAdmissionReservationV1::from_historical_fields(
             issue,
             client_nonce,
             project,
             names,
-        };
-        let challenge = SourceProjectAdmissionChallengeV1 {
-            kind: SourceProjectAdmissionChallengeKindV1::Admission,
+        );
+        let challenge = SourceProjectAdmissionChallengeV1::from_historical_fields(
+            SourceProjectAdmissionChallengeKindV1::Admission,
             issue,
-            nonce: [11; 16],
-            cut: ObjectDigest::from_bytes([12; 32]),
+            [11; 16],
+            ObjectDigest::from_bytes([12; 32]),
             project,
             ancestry,
-            stage: ObjectDigest::from_bytes([13; 32]),
+            ObjectDigest::from_bytes([13; 32]),
             names,
-        };
+        );
         let reservation_write = reservation_transaction(
             reservation,
             prior.is_some() && settlement.is_some(),
             cancellation.is_some(),
         )?;
         let acquisition = acquisition_transaction(challenge)?;
-        let settlement_row = SourceProjectAdmissionSettlementV1 {
+        let settlement_row = SourceProjectAdmissionSettlementV1::from_historical_fields(
             issue,
-            challenge: challenge.record_digest(),
-            stage: challenge.stage(),
-            outcome: ObjectDigest::from_bytes([14; 32]),
-        };
-        let terminal = SourceProjectAdmissionTerminalV1 {
+            challenge.record_digest(),
+            challenge.stage(),
+            ObjectDigest::from_bytes([14; 32]),
+        );
+        let terminal = SourceProjectAdmissionTerminalV1::from_historical_fields(
             reservation,
-            challenge: Some(challenge),
-            terminal: SourceProjectTerminalRecordV1::Settlement(settlement_row),
-        };
+            Some(challenge),
+            SourceProjectTerminalRecordV1::Settlement(settlement_row),
+        );
         let retirement_ack = |terminal: SourceProjectAdmissionTerminalV1| {
             single_record_transaction(
                 RETIREMENT_ACK_KEY,
-                &SourceProjectTerminalRetirementAckV1 {
+                &SourceProjectTerminalRetirementAckV1::from_historical_fields(
                     issue,
-                    reservation: reservation.record_digest(),
-                    source_terminal: terminal.source_terminal_digest(),
-                    root_floor: ObjectDigest::from_bytes([16; 32]),
-                }
+                    reservation.record_digest(),
+                    terminal.source_terminal_digest(),
+                    ObjectDigest::from_bytes([16; 32]),
+                )
                 .encode(),
             )
         };
@@ -1238,31 +680,31 @@ impl Journal {
         let reservation =
             self.preview_source_project_admission_reservation_v1(client_nonce, project, names)?;
         let rows = current_rows(self.native.state())?;
-        if rows.reservation.is_some() && rows.retirement_ack.is_none() {
+        if rows.reservation().is_some() && rows.retirement_ack().is_none() {
             return Err(JournalError::ProtectedBoundary);
         }
-        let cancellation = SourceProjectReservationCancellationV1 {
-            issue: reservation.issue,
-            reservation: reservation.record_digest(),
-            root_marker: ObjectDigest::from_bytes([15; 32]),
-        };
-        let terminal = SourceProjectAdmissionTerminalV1 {
+        let cancellation = SourceProjectReservationCancellationV1::from_historical_fields(
+            reservation.issue(),
+            reservation.record_digest(),
+            ObjectDigest::from_bytes([15; 32]),
+        );
+        let terminal = SourceProjectAdmissionTerminalV1::from_historical_fields(
             reservation,
-            challenge: None,
-            terminal: SourceProjectTerminalRecordV1::Cancellation(cancellation),
-        };
-        let ack = SourceProjectTerminalRetirementAckV1 {
-            issue: reservation.issue,
-            reservation: reservation.record_digest(),
-            source_terminal: terminal.source_terminal_digest(),
-            root_floor: ObjectDigest::from_bytes([16; 32]),
-        };
+            None,
+            SourceProjectTerminalRecordV1::Cancellation(cancellation),
+        );
+        let ack = SourceProjectTerminalRetirementAckV1::from_historical_fields(
+            reservation.issue(),
+            reservation.record_digest(),
+            terminal.source_terminal_digest(),
+            ObjectDigest::from_bytes([16; 32]),
+        );
         self.preflight_transactions_with_capacity_scope_and_project_admission(
             &[
                 reservation_transaction(
                     reservation,
-                    rows.settlement.is_some(),
-                    rows.cancellation.is_some(),
+                    rows.settlement().is_some(),
+                    rows.cancellation().is_some(),
                 )?,
                 cancellation_transaction(cancellation)?,
                 single_record_transaction(RETIREMENT_ACK_KEY, &ack.encode())?,
@@ -1357,33 +799,33 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         let rows = current_rows(self.native.state())?;
-        let reserved = rows.reservation.ok_or(JournalError::ProtectedBoundary)?;
-        if let Some(row) = rows.challenge {
-            if row.kind == kind
-                && row.nonce == nonce
-                && row.cut == cut
-                && row.project == project
-                && row.ancestry == ancestry
-                && row.stage == stage
-                && row.names == names
+        let reserved = rows.reservation().ok_or(JournalError::ProtectedBoundary)?;
+        if let Some(row) = rows.challenge() {
+            if row.kind() == kind
+                && row.nonce() == nonce
+                && row.cut() == cut
+                && row.project() == project
+                && row.ancestry() == ancestry
+                && row.stage() == stage
+                && row.names() == names
             {
                 return Ok(row);
             }
             return Err(JournalError::ProtectedBoundary);
         }
-        if rows.settlement.is_some() || reserved.project != project || reserved.names != names {
+        if rows.settlement().is_some() || reserved.project() != project || reserved.names() != names {
             return Err(JournalError::ProtectedBoundary);
         }
-        let row = SourceProjectAdmissionChallengeV1 {
+        let row = SourceProjectAdmissionChallengeV1::from_historical_fields(
             kind,
-            issue: reserved.issue,
+            reserved.issue(),
             nonce,
             cut,
             project,
             ancestry,
             stage,
             names,
-        };
+        );
         let transaction = acquisition_transaction(row)?;
         self.commit_source_project_admission_transition(
             &transaction,
@@ -1416,7 +858,7 @@ impl Journal {
         source_domain_policy_hold::ensure_source_domain(self)?;
         let outcome = proof.outcome();
         let rows = current_rows(self.native.state())?;
-        if rows.challenge != Some(expected)
+        if rows.challenge() != Some(expected)
             || self.protected_writer_physical_names_v1()? != expected.names()
             || outcome.project() != expected.project()
             || outcome.source_row() != expected.record_digest()
@@ -1424,13 +866,13 @@ impl Journal {
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        let settlement = SourceProjectAdmissionSettlementV1 {
-            issue: expected.issue(),
-            challenge: expected.record_digest(),
-            stage: outcome.stage(),
-            outcome: outcome.record_digest(),
-        };
-        let prior = rows.settlement;
+        let settlement = SourceProjectAdmissionSettlementV1::from_historical_fields(
+            expected.issue(),
+            expected.record_digest(),
+            outcome.stage(),
+            outcome.record_digest(),
+        );
+        let prior = rows.settlement();
         if let Some(prior) = prior {
             return if prior == settlement {
                 Ok(())
@@ -1443,7 +885,7 @@ impl Journal {
             &transaction,
             SourceProjectAdmissionTransition::Settle,
         )?;
-        if current_rows(self.native.state())?.settlement != Some(settlement)
+        if current_rows(self.native.state())?.settlement() != Some(settlement)
             || self.protected_writer_physical_names_v1()? != expected.names()
         {
             return Err(JournalError::ProtectedBoundary);
@@ -1545,12 +987,12 @@ mod tests {
             .source_project_admission_terminal_v1()
             .unwrap()
             .unwrap();
-        let ack = SourceProjectTerminalRetirementAckV1 {
-            issue: terminal.reservation().issue(),
-            reservation: terminal.reservation().record_digest(),
-            source_terminal: terminal.source_terminal_digest(),
-            root_floor: ObjectDigest::from_bytes([22; 32]),
-        };
+        let ack = SourceProjectTerminalRetirementAckV1::from_historical_fields(
+            terminal.reservation().issue(),
+            terminal.reservation().record_digest(),
+            terminal.source_terminal_digest(),
+            ObjectDigest::from_bytes([22; 32]),
+        );
         writer
             .commit_source_project_admission_transition(
                 &single_record_transaction(RETIREMENT_ACK_KEY, &ack.encode()).unwrap(),
@@ -1603,10 +1045,12 @@ mod tests {
             Some((reservation, false)),
         );
         assert!(cold.commit(&ordinary).is_err());
-        let wrong = SourceProjectAdmissionReservationV1 {
-            project: ProjectId::from_bytes([9; 16]),
-            ..reservation
-        };
+        let wrong = SourceProjectAdmissionReservationV1::from_historical_fields(
+            reservation.issue(),
+            reservation.client_nonce(),
+            ProjectId::from_bytes([9; 16]),
+            reservation.names(),
+        );
         let wrong_proof = RootProjectReservationCancellationProofV1::from_test_marker(
             test_root_project_reservation_cancellation_v1(wrong),
         );
@@ -1798,10 +1242,16 @@ mod tests {
         assert!(writer.commit(&ordinary).is_err());
         assert!(writer.compact().is_err());
 
-        let other = SourceProjectAdmissionChallengeV1 {
-            project: ProjectId::from_bytes([5; 16]),
-            ..first
-        };
+        let other = SourceProjectAdmissionChallengeV1::from_historical_fields(
+            first.kind(),
+            first.issue(),
+            first.nonce(),
+            first.cut(),
+            ProjectId::from_bytes([5; 16]),
+            first.ancestry(),
+            first.stage(),
+            first.names(),
+        );
         let wrong = RootProjectAdmissionOutcomeProofV1::from_test_outcome(
             test_source_project_admission_outcome_v1(other, ObjectDigest::from_bytes([6; 32])),
         );
@@ -1844,7 +1294,7 @@ mod tests {
             .expect("ordinary mutation after Root retirement ACK");
         cold.record_source_project_admission_reservation_v1([8; 16], project, names)
             .expect("successor reservation");
-        assert!(current_rows(cold.native.state()).unwrap().retirement_ack.is_none());
+        assert!(current_rows(cold.native.state()).unwrap().retirement_ack().is_none());
         assert!(
             cold.source_project_admission_terminal_v1()
                 .unwrap()
@@ -1918,7 +1368,7 @@ mod tests {
             .expect("durable abort-only row");
         assert_eq!(row.kind(), SourceProjectAdmissionChallengeKindV1::AbortOnly);
         assert_eq!(row.ancestry().as_bytes(), &[0; 32]);
-        assert!(!row.matches_current(
+        assert!(!source_project_challenge_matches_current(row,
             row.nonce(),
             row.cut(),
             project,
@@ -1976,12 +1426,12 @@ mod tests {
                 names,
             )
             .unwrap();
-        let settlement = SourceProjectAdmissionSettlementV1 {
-            issue: challenge.issue(),
-            challenge: challenge.record_digest(),
-            stage: challenge.stage(),
-            outcome: ObjectDigest::from_bytes([7; 32]),
-        };
+        let settlement = SourceProjectAdmissionSettlementV1::from_historical_fields(
+            challenge.issue(),
+            challenge.record_digest(),
+            challenge.stage(),
+            ObjectDigest::from_bytes([7; 32]),
+        );
         writer
             .commit_source_project_admission_transition(
                 &settlement_transaction(settlement).unwrap(),
@@ -1992,22 +1442,31 @@ mod tests {
             .source_project_admission_terminal_v1()
             .unwrap()
             .unwrap();
-        let ack = SourceProjectTerminalRetirementAckV1 {
-            issue: reservation.issue(),
-            reservation: reservation.record_digest(),
-            source_terminal: terminal.source_terminal_digest(),
-            root_floor: ObjectDigest::from_bytes([8; 32]),
-        };
+        let ack = SourceProjectTerminalRetirementAckV1::from_historical_fields(
+            reservation.issue(),
+            reservation.record_digest(),
+            terminal.source_terminal_digest(),
+            ObjectDigest::from_bytes([8; 32]),
+        );
         for foreign in [
-            SourceProjectTerminalRetirementAckV1 { issue: 2, ..ack },
-            SourceProjectTerminalRetirementAckV1 {
-                reservation: ObjectDigest::from_bytes([9; 32]),
-                ..ack
-            },
-            SourceProjectTerminalRetirementAckV1 {
-                source_terminal: ObjectDigest::from_bytes([9; 32]),
-                ..ack
-            },
+            SourceProjectTerminalRetirementAckV1::from_historical_fields(
+                2,
+                ack.reservation(),
+                ack.source_terminal(),
+                ack.root_floor(),
+            ),
+            SourceProjectTerminalRetirementAckV1::from_historical_fields(
+                ack.issue(),
+                ObjectDigest::from_bytes([9; 32]),
+                ack.source_terminal(),
+                ack.root_floor(),
+            ),
+            SourceProjectTerminalRetirementAckV1::from_historical_fields(
+                ack.issue(),
+                ack.reservation(),
+                ObjectDigest::from_bytes([9; 32]),
+                ack.root_floor(),
+            ),
         ] {
             let mut state = writer.native.state().clone();
             state.insert(
@@ -2022,10 +1481,12 @@ mod tests {
         let mut wrong_stage = writer.native.state().clone();
         wrong_stage.insert(
             (RecordNamespace::DesiredState, SETTLEMENT_KEY.to_vec()),
-            SourceProjectAdmissionSettlementV1 {
-                stage: ObjectDigest::from_bytes([10; 32]),
-                ..settlement
-            }
+            SourceProjectAdmissionSettlementV1::from_historical_fields(
+                settlement.issue(),
+                settlement.challenge(),
+                ObjectDigest::from_bytes([10; 32]),
+                settlement.outcome(),
+            )
             .encode()
             .to_vec(),
         );
@@ -2256,12 +1717,12 @@ mod tests {
             .source_project_admission_terminal_v1()
             .unwrap()
             .unwrap();
-        let foreign = SourceProjectTerminalRetirementAckV1 {
-            issue: reservation.issue(),
-            reservation: reservation.record_digest(),
-            source_terminal: ObjectDigest::from_bytes([9; 32]),
-            root_floor: ObjectDigest::from_bytes([10; 32]),
-        };
+        let foreign = SourceProjectTerminalRetirementAckV1::from_historical_fields(
+            reservation.issue(),
+            reservation.record_digest(),
+            ObjectDigest::from_bytes([9; 32]),
+            ObjectDigest::from_bytes([10; 32]),
+        );
         let before = fs::read(directory.path().join(name)).unwrap();
         assert!(
             cold.commit_source_project_admission_transition(
@@ -2309,8 +1770,8 @@ mod tests {
             next
         );
         let rows = current_rows(recovered.native.state()).unwrap();
-        assert!(rows.retirement_ack.is_none());
+        assert!(rows.retirement_ack().is_none());
         assert!(rows.terminal().is_none());
-        assert_eq!(rows.reservation, Some(next));
+        assert_eq!(rows.reservation(), Some(next));
     }
 }

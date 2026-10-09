@@ -14,12 +14,20 @@
 
 pub mod capacity;
 pub mod operation;
+pub mod protected_names;
 pub mod public_operation;
 pub mod records;
+pub mod source_project_history;
 pub mod transaction;
 
 use aos_sandbox_journal::framing::FrameError;
 use aos_sandbox_journal::record::RecordError;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProtectedHistoryDataErrorV1 {
+    #[error("protected history DATA is malformed")]
+    Malformed,
+}
 
 /// Reports malformed or unrepresentable typed transaction DATA.
 #[derive(Debug, thiserror::Error)]

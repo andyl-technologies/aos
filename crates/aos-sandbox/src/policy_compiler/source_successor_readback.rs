@@ -531,7 +531,7 @@ fn decode_with_recipe<'data>(
         None => Cow::Owned(SourceTreeGenesisReceiptV1::decode(&packet[genesis_offset..tail])?),
     };
     let genesis_ack = crate::journal::source_tree_genesis::SourceGenesisAckV1::decode(&packet[tail..tail + 192])?;
-    let names = ProtectedJournalNamesV1::from_bytes(&packet[tail + 920..tail + 968])?;
+    let names = ProtectedJournalNamesV1::from_bytes(&packet[tail + 920..tail + 968]).map_err(crate::journal::JournalError::from)?;
     if genesis.instance() != context.instance() || genesis.project() != context.project()
         || genesis.tree_head() != context.old_tree_head() || genesis.lineage_head() != context.old_lineage_head()
         || genesis_ack.instance != context.instance() || genesis_ack.project != context.project()

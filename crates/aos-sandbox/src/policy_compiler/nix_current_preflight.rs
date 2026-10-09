@@ -1159,8 +1159,8 @@ impl VerifiedCurrentNixControllerReceiptV1 {
         {
             return Err(CurrentNixPreflightDataErrorV1::Changed);
         }
-        let controller_names = ProtectedJournalNamesV1::from_bytes(&bytes[312..360])?;
-        let source_names = ProtectedJournalNamesV1::from_bytes(&bytes[360..408])?;
+        let controller_names = ProtectedJournalNamesV1::from_bytes(&bytes[312..360]).map_err(crate::journal::JournalError::from)?;
+        let source_names = ProtectedJournalNamesV1::from_bytes(&bytes[360..408]).map_err(crate::journal::JournalError::from)?;
         let mut message = [0; CONTROLLER_SIGNATURE_DOMAIN.len() + CONTROLLER_BODY_BYTES];
         message[..CONTROLLER_SIGNATURE_DOMAIN.len()].copy_from_slice(CONTROLLER_SIGNATURE_DOMAIN);
         message[CONTROLLER_SIGNATURE_DOMAIN.len()..].copy_from_slice(&bytes[..CONTROLLER_BODY_BYTES]);

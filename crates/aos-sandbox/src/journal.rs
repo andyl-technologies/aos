@@ -218,7 +218,9 @@ pub use source_domain_policy_hold::{
     SourceDomainPolicyHoldV1, SourceDomainPolicyV8PendingSettlementV1,
 };
 use source_project_admission_challenge::SourceProjectAdmissionTransition;
-pub(crate) use source_project_admission_challenge::replay_source_project_admission_challenge_v1;
+pub(crate) use source_project_admission_challenge::{
+    replay_source_project_admission_challenge_v1, source_project_challenge_matches_current,
+};
 pub use source_project_admission_challenge::{
     SOURCE_PROJECT_ADMISSION_CHALLENGE_BYTES_V1, SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1,
     SOURCE_PROJECT_ADMISSION_TERMINAL_BYTES_V1, SourceProjectAdmissionChallengeKindV1,
@@ -537,6 +539,16 @@ pub enum JournalError {
     #[cfg(target_os = "linux")]
     #[error("journal coverage native history failed: {0}")]
     GitCoverageNativeHistory(#[source] Box<GitCoverageNativeHistoryErrorV1>),
+}
+
+impl From<aos_sandbox_protocol::domain_ledger::ProtectedHistoryDataErrorV1> for JournalError {
+    fn from(error: aos_sandbox_protocol::domain_ledger::ProtectedHistoryDataErrorV1) -> Self {
+        match error {
+            aos_sandbox_protocol::domain_ledger::ProtectedHistoryDataErrorV1::Malformed => {
+                Self::ProtectedBoundary
+            }
+        }
+    }
 }
 
 impl From<JournalTransactionDataError> for JournalError {

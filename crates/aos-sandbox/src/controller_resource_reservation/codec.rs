@@ -422,8 +422,8 @@ pub(super) fn decode_preparation(bytes: &[u8]) -> Result<PreparationBinding, Res
     let binding = PreparationBinding {
         claim: decode_claim(&bytes[8..539])?,
         nonce: fixed(&bytes[539..555])?,
-        controller_names: crate::journal::ProtectedJournalNamesV1::from_bytes(&bytes[555..603])?,
-        source_names: crate::journal::ProtectedJournalNamesV1::from_bytes(&bytes[603..651])?,
+        controller_names: crate::journal::ProtectedJournalNamesV1::from_bytes(&bytes[555..603]).map_err(crate::journal::JournalError::from)?,
+        source_names: crate::journal::ProtectedJournalNamesV1::from_bytes(&bytes[603..651]).map_err(crate::journal::JournalError::from)?,
         source_sequence: u64::from_be_bytes(fixed(&bytes[651..659])?),
         floor: fixed(&bytes[659..691])?,
         tree_head: fixed(&bytes[691..723])?,

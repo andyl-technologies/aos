@@ -92,78 +92,18 @@ pub(crate) struct ProtectedWriterNameWitness {
     pub(super) lock: FileIdentity,
 }
 
-/// Identifies the three fixed physical names shared by a Source writer and signer view.
-///
-/// Device/inode equality is necessary for a same-cut proof, but does not by
-/// itself prove a held flock or authorize a policy effect.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProtectedJournalNamesV1 {
-    pub(super) directory: (u64, u64),
-    pub(super) journal: (u64, u64),
-    pub(super) lock: (u64, u64),
-}
+pub use aos_sandbox_protocol::domain_ledger::protected_names::ProtectedJournalNamesV1;
 
-impl ProtectedJournalNamesV1 {
-    /// Encodes the directory, journal, and lock device/inode pairs.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 48] {
-        let mut bytes = [0; 48];
-        for (index, (device, inode)) in [self.directory, self.journal, self.lock]
-            .into_iter()
-            .enumerate()
-        {
-            let offset = index * 16;
-            bytes[offset..offset + 8].copy_from_slice(&device.to_be_bytes());
-            bytes[offset + 8..offset + 16].copy_from_slice(&inode.to_be_bytes());
-        }
-        bytes
-    }
-
-    /// Decodes nonzero physical-name pairs from an untrusted claim.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a truncated or empty physical identity.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, JournalError> {
-        if bytes.len() != 48 {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let mut pairs = [(0, 0); 3];
-        for (index, pair) in pairs.iter_mut().enumerate() {
-            let offset = index * 16;
-            let device = u64::from_be_bytes(
-                bytes[offset..offset + 8]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            );
-            let inode = u64::from_be_bytes(
-                bytes[offset + 8..offset + 16]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            );
-            if device == 0 || inode == 0 {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            *pair = (device, inode);
-        }
-        Ok(Self {
-            directory: pairs[0],
-            journal: pairs[1],
-            lock: pairs[2],
-        })
-    }
-
-    pub(super) fn from_identities(
-        directory: FileIdentity,
-        journal: FileIdentity,
-        lock: FileIdentity,
-    ) -> Self {
-        Self {
-            directory: (directory.device, directory.inode),
-            journal: (journal.device, journal.inode),
-            lock: (lock.device, lock.inode),
-        }
-    }
+fn names_from_identities(
+    directory: FileIdentity,
+    journal: FileIdentity,
+    lock: FileIdentity,
+) -> ProtectedJournalNamesV1 {
+    ProtectedJournalNamesV1::from_historical_fields(
+        (directory.device, directory.inode),
+        (journal.device, journal.inode),
+        (lock.device, lock.inode),
+    )
 }
 
 /// Holds a nonauthorizing replay of one named protected journal.
@@ -240,7 +180,7 @@ impl ReadOnlyProtectedJournal {
 
     /// Returns only the fixed names observed by this read-only replay.
     pub(crate) fn physical_names_v1(&self) -> ProtectedJournalNamesV1 {
-        ProtectedJournalNamesV1::from_identities(
+        names_from_identities(
             self.witness.directory_identity,
             self.witness.file_identity,
             self.witness.lock_identity,
@@ -396,7 +336,7 @@ impl Journal {
             .protected
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
-        Ok(ProtectedJournalNamesV1::from_identities(
+        Ok(names_from_identities(
             FileIdentity::of(&location.directory)?,
             FileIdentity::of(self.native.file())?,
             FileIdentity::of(self.native.lock_file())?,

@@ -891,9 +891,9 @@ fn require_original_lower_clearance_recipe(
     let (_, source_hold, cache_hold, pairs) = terminal_hold_pair_recipes(
         identity, controller, original_held, gen1.floor(), original_cache,
     )?;
-    let source_names = crate::journal::ProtectedJournalNamesV1::from_bytes(&prehold_metadata[224..272])?;
+    let source_names = crate::journal::ProtectedJournalNamesV1::from_bytes(&prehold_metadata[224..272]).map_err(crate::journal::JournalError::from)?;
     let source_next = u64::from_be_bytes(super::fixed(prehold_metadata, 472));
-    let cache_names = crate::journal::ProtectedJournalNamesV1::from_bytes(&prehold_metadata[272..320])?;
+    let cache_names = crate::journal::ProtectedJournalNamesV1::from_bytes(&prehold_metadata[272..320]).map_err(crate::journal::JournalError::from)?;
     let cache_next = u64::from_be_bytes(super::fixed(prehold_metadata, 480));
     let observed_source = gen1.source_coordinates()?;
     if observed_source != (source_names, source_next.checked_add(11).ok_or(CreateQ04ErrorV1::Bounds)?) {
@@ -2894,10 +2894,10 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
             let root = self.root.as_mut().ok_or(CreateQ04ErrorV1::ChangedCut)?;
             let gen1 = root.q04_refresh_completed_gen1(&self.controller_complete, &self.source_complete)?;
             if gen1.controller_coordinates()? != (
-                crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[176..224])?,
+                crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[176..224]).map_err(crate::journal::JournalError::from)?,
                 u64::from_be_bytes(super::fixed(metadata, 464)).checked_add(31).ok_or(CreateQ04ErrorV1::Bounds)?,
             ) || gen1.source_coordinates()? != (
-                crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[224..272])?,
+                crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[224..272]).map_err(crate::journal::JournalError::from)?,
                 u64::from_be_bytes(super::fixed(metadata, 472)).checked_add(11).ok_or(CreateQ04ErrorV1::Bounds)?,
             ) {
                 return Err(CreateQ04ErrorV1::ChangedCut);
@@ -2992,7 +2992,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         let gen1 = root.q04_refresh_completed_gen1(&self.controller_complete, &self.source_complete)?;
         let original = super::Q04PreholdInputDataV1::decode(&self.prehold)?;
         let metadata = original.fields()[0];
-        let original_names = crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[176..224])?;
+        let original_names = crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[176..224]).map_err(crate::journal::JournalError::from)?;
         let original_next = u64::from_be_bytes(super::fixed(metadata, 464));
         let packet = decode_root_create_q04_transfer_v1(
             self.acknowledgement_frames.get(packet_index).ok_or(CreateQ04ErrorV1::ChangedCut)?,
@@ -3063,7 +3063,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         let prehold = super::Q04PreholdInputDataV1::decode(&self.prehold)?;
         let metadata = prehold.fields()[0];
         let original_next = u64::from_be_bytes(super::fixed(metadata, 464));
-        let original_names = crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[176..224])?;
+        let original_names = crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[176..224]).map_err(crate::journal::JournalError::from)?;
         let packet = decode_root_create_q04_transfer_v1(
             self.acknowledgement_frames.get(packet_index).ok_or(CreateQ04ErrorV1::ChangedCut)?,
             request, identity.nonce(),
@@ -3182,7 +3182,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         }
         let request = crate::cache_residency::Q04RootCacheTerminalRequestV1 {
             identity, phase,
-            original_names: crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[272..320])?,
+            original_names: crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[272..320]).map_err(crate::journal::JournalError::from)?,
             original_next: u64::from_be_bytes(super::fixed(metadata, 480)),
             held: cache.hold(), release_authorization: release.digest(),
         };

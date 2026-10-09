@@ -1916,8 +1916,8 @@ fn verify_controller_successor_with_recipe(
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
     let begin = ControllerFirstSourceSuccessorBeginV2::decode(&bytes[begin_offset..tail])?;
-    let names = ProtectedJournalNamesV1::from_bytes(&take::<48>(bytes, 64)?)?;
-    let source_names = ProtectedJournalNamesV1::from_bytes(&take::<48>(bytes, 112)?)?;
+    let names = ProtectedJournalNamesV1::from_bytes(&take::<48>(bytes, 64)?).map_err(crate::journal::JournalError::from)?;
+    let source_names = ProtectedJournalNamesV1::from_bytes(&take::<48>(bytes, 112)?).map_err(crate::journal::JournalError::from)?;
     if names == source_names || begin.approval() != packet.digest() || begin.source_uid() != source_uid
         || begin.predecessor_floor() != digest_at(packet.body(), 144)
         || begin.genesis_complete() != digest_at(packet.body(), 176)
