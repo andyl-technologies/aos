@@ -395,6 +395,12 @@
     rawDownloadMiB,
     recoveryBundleMiB,
   }: {
+    aos.activation.stages.host.configuration = [
+      (builtins.path {
+        path = ./_image-acceptance-agent-policy.nix;
+        name = "aos-hub-fleet-agent-policy.nix";
+      })
+    ];
     aos.image.budgets = {
       # The merged Native modules produce a 912.3 MiB diagnostic closure.
       # Retain a small allowance for package metadata and executable growth.
@@ -422,7 +428,7 @@
       fixture.hubSystem.config.aos.registry-hub
       // {
         deploymentId = "fleet-hybrid-v1";
-        externalUrl = "https://aos.andyl.org";
+        externalUrl = "https://aos.fleet.test";
         listen =
           if externalDirect
           then "127.0.0.1:4443"
@@ -431,8 +437,12 @@
         channelReceiptKeyId = "staging-channel-v1";
         hybrid = {
           enable = true;
-          workerUrl = "https://aos.andyl.org";
-          originUrl = "https://aos.staging.andyl.org";
+          workerUrl = "https://aos.fleet.test";
+          originUrl = "https://aos-origin.fleet.test";
+          uploadMode =
+            if externalDirect
+            then "direct"
+            else "worker_proxy";
         };
         credentials =
           fixture.hubSystem.config.aos.registry-hub.credentials
@@ -482,7 +492,11 @@
         # Native also retains the full Hub server and initializer payload.
         aos.image.budgets.maxRuntimeClosureMiB = lib.mkForce 1024;
         # Runtime roles must survive evaluation of the retained host sources.
-        aos.activation.stages.host.configuration = ["${nativeHostModule}/module.nix"];
+        aos.activation.stages.host.configuration = lib.mkForce (
+          lib.remove "${fixture.hubRuntimeModule}/module.nix"
+          fixture.hubSystem.config.aos.activation.stages.host.configuration
+          ++ ["${nativeHostModule}/module.nix"]
+        );
         aos.kernel.modules = ["9pnet_virtio" "9p"];
         environment.systemPackages = [pkgs.util-linux];
       }
@@ -527,6 +541,7 @@
   workerRunner = writeFixture "hub-hybrid-fleet-worker-runner" (builtins.readFile ./_hub-worker-runner.cjs);
   # Adjacent imports select the same reviewed fixture files in every guest.
   managedFixtureModules = pkgs.runCommand "hub-managed-fleet-fixture-modules" {} ''
+    ${pkgs.python3}/bin/python3 ${./_hub-direct-queue-restart-launch-tests.py} ${./_hub-direct-queue-restart.py}
     mkdir -p "$out"
     mkdir -p "$out/protocol"
     cp ${../../pkgs/tools/aos-hub-direct-staged-races.mjs} "$out/aos-hub-direct-staged-races.mjs"
@@ -650,12 +665,12 @@
         {
           HUB_TOPOLOGY = "hybrid";
           HUB_DEPLOYMENT_ID = "fleet-hybrid-v1";
-          HUB_HYBRID_ORIGIN_URL = "https://aos.staging.andyl.org";
+          HUB_HYBRID_ORIGIN_URL = "https://aos-origin.fleet.test";
           HUB_HYBRID_INGRESS_KEY = "hybrid-fleet-ingress-key-with-at-least-thirty-two-bytes";
           HUB_STORAGE_WORK_KEY = "hybrid-fleet-storage-key-with-at-least-thirty-two-bytes";
         }
         // lib.optionalAttrs externalDirect {
-          HUB_DIRECT_UPLOAD_PUBLIC_ORIGIN = "https://aos.andyl.org";
+          HUB_DIRECT_UPLOAD_PUBLIC_ORIGIN = "https://aos.fleet.test";
           HUB_DIRECT_UPLOAD_MANAGED_R2 = "false";
           HUB_DIRECT_UPLOAD_QUALIFICATION_ENABLED = "true";
           HUB_DIRECT_UPLOAD_CLOCK_MODE = "bounded_utc";
@@ -825,10 +840,9 @@ in {
         system = clientSystem;
         bootMode = "image";
         hostStoreMount = true;
-        imageDiskMiB =
-          if externalDirect
-          then 32768
-          else 16384;
+        # Signed container preparation retains both its full source cache and
+        # staged publication. The proxy workload also needs this headroom.
+        imageDiskMiB = 32768;
         # Preparing signed source closures is separate from Hub throughput.
         # Give APR enough parallel compression capacity for the real corpus.
         memoryMiB = 8192;
@@ -839,7 +853,7 @@ in {
         system = nativeSystem;
         bootMode = "image";
         hostStoreMount = true;
-        hostAliases = ["aos.staging.andyl.org"];
+        hostAliases = ["aos-origin.fleet.test"];
         imageDiskMiB = 16384;
         memoryMiB = 4096;
         varProvisioning = "repart";
@@ -848,7 +862,7 @@ in {
         system = edgeSystem;
         bootMode = "image";
         hostStoreMount = true;
-        hostAliases = ["aos.andyl.org"];
+        hostAliases = ["aos.fleet.test"];
         imageDiskMiB =
           if externalDirect
           then 32768
@@ -1007,10 +1021,13 @@ in {
 
       for machine in (client, native, worker, s3${lib.optionalString separateDatabase ", database"}):
           machine.wait_for_unit("multi-user.target", timeout=240)
+          # Only pinned, immutable closure members are exposed below. Cache
+          # their data and metadata so APR preparation does not repeatedly
+          # traverse the host through uncached 9p filesystem operations.
           machine.succeed(textwrap.dedent("""
               set -eu
               mkdir -p /run/aos-host-store
-              ${pkgs.util-linux}/bin/mount -t 9p -o trans=virtio,version=9p2000.L,msize=1048576,ro \\
+              ${pkgs.util-linux}/bin/mount -t 9p -o trans=virtio,version=9p2000.L,msize=1048576,cache=loose,ro \\
                 aos-host-store /run/aos-host-store
               while IFS= read -r store_path; do
                 test -e "$store_path" && continue
@@ -1380,8 +1397,8 @@ in {
               "aos": AOS, "apr": APR, "git": "${pkgs.git}/bin/git", "opensshBin": "${pkgs.openssh}/bin",
               "aosStorePath": "${pkgs.aos}", "containerPublicationInputs": "${containerPublicationInputs}",
               "openssl": "${pkgs.openssl}/bin/openssl", "helperStorePath": "${fixture.helperV1}",
-              "deploymentId": "fleet-hybrid-v1", "workerUrl": "https://aos.andyl.org",
-              "nativeOriginUrl": "https://aos.staging.andyl.org", "garage": GARAGE,
+              "deploymentId": "fleet-hybrid-v1", "workerUrl": "https://aos.fleet.test",
+              "nativeOriginUrl": "https://aos-origin.fleet.test", "garage": GARAGE,
               "s3Ca": "${s3PublicTrust}/value",
               "s3PublicTrust": "${s3PublicTrust}/value",
               "issuerCertificate": "${serverCertificate}/value", "issuerPrivateKey": "${serverPrivateKey}/value",

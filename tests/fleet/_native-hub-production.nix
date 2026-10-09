@@ -113,9 +113,18 @@
   # integrity and boot path while scoping the larger root artifact contract to
   # these test systems.
   qualificationImage = {
+    # The image adapter owns the transport agent. A second package-owned
+    # instance would compete for its virtio-serial port during host replay.
+    aos.activation.stages.host.configuration = [
+      (builtins.path {
+        path = ./_image-acceptance-agent-policy.nix;
+        name = "aos-hub-fleet-agent-policy.nix";
+      })
+    ];
     aos.image.budgets = {
       maxRuntimeClosureMiB = 3072;
-      maxDownloadMiB = 816;
+      # The publisher is the largest qualification image at 868 MiB.
+      maxDownloadMiB = 896;
       maxRootMiB = 768;
     };
     # Fleet assertions and the publisher runbook use the same small Unix
@@ -138,67 +147,113 @@
     ];
   };
 
-  consumerBaseline = {
-    systemd.services.aos-upgrade-removed = {
-      description = "Upgrade qualification service removed by generation two";
-      wantedBy = ["multi-user.target"];
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = "${pkgs.coreutils}/bin/true";
-        ExecStop = "${pkgs.coreutils}/bin/touch /run/removed-stop-ran";
-        RemainAfterExit = true;
-      };
+  upgradeMarkerService = description: stop: {
+    enable = true;
+    lifecycle = {
+      inherit description;
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
+        {
+          executable = {
+            path = "${pkgs.coreutils}/bin/true";
+            arguments = [];
+          };
+          ignore_failure = false;
+        }
+      ];
+      post_start = [];
+      inherit stop;
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 30000;
+      stop_timeout_millis = 30000;
     };
+  };
+  consumerBaseline.aos.services.aos-upgrade-removed =
+    upgradeMarkerService
+    "Upgrade qualification service removed by generation two"
+    [
+      {
+        executable = {
+          path = "${pkgs.coreutils}/bin/touch";
+          arguments = ["/run/removed-stop-ran"];
+        };
+        ignore_failure = false;
+      }
+    ];
+
+  consumerUpgrade = {
+    aos.system.version = "test-2";
+    aos.abilities.configuration.operations.file.effects.upgrade-marker.input = {
+      path = "/etc/aos/upgrade-test/marker.conf";
+      content = "marker = 1\n";
+      mode = "0644";
+    };
+    aos.dbus.openFileLimit = 16384;
+    aos.services.aos-upgrade-test-marker =
+      upgradeMarkerService
+      "Upgrade qualification generation-two marker" [];
   };
 
-  consumerUpgrade = {...}: {
-    aos.system.version = "test-2";
-    environment.etc."aos/upgrade-test/marker.conf".text = "marker = 1\n";
-    systemd.services.dbus.serviceConfig.LimitNOFILE = "16384";
-    systemd.services.aos-upgrade-test-marker = {
-      description = "Upgrade qualification generation-two marker";
-      wantedBy = ["multi-user.target"];
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = "${pkgs.coreutils}/bin/true";
-        RemainAfterExit = true;
+  # Inline image overrides are ephemeral. Retain actual service and upgrade
+  # settings so the in-guest host evaluator applies the same configuration.
+  retainedModule = name: configuration:
+    pkgs.writeTextFile {
+      inherit name;
+      destination = "/module.nix";
+      text = "{...}: builtins.fromJSON ${builtins.toJSON (builtins.toJSON configuration)}";
+    };
+  hubConfiguration = {
+    aos.registry-hub = {
+      enable = true;
+      # The cleartext listener is deliberate in the first qualification
+      # layer: the topology records and explicitly acknowledges it.  A
+      # separate TLS-edge suite fronts this loopback listener.
+      listen = "0.0.0.0:8420";
+      externalUrl = "http://hub:8420";
+      credentials = {
+        jwtSecret = "native-hub-jwt-secret";
+        routeReservationKeys = "native-hub-route-reservation-keys";
+        domainProbeSignerManifest = "native-hub-probe-signers";
       };
     };
+    # The server profile is default-deny. A production operator must admit
+    # the native listener explicitly when it is bound beyond loopback.
+    aos.networkPolicy.allowedTCP = [8420];
+    # Deterministic fixture bytes are copied into the platform credential
+    # namespace at boot. The hub module owns the LoadCredential bindings and
+    # file-environment contract exactly as it does in production.
+    environment.etc."tmpfiles.d/native-hub-credentials.conf".text = ''
+      d /run/credentials/@system 0700 root root -
+      C /run/credentials/@system/native-hub-jwt-secret 0600 root root - ${jwtSecret}/value
+      C /run/credentials/@system/native-hub-route-reservation-keys 0600 root root - ${routeKeys}/value
+      C /run/credentials/@system/native-hub-probe-signers 0600 root root - ${probeSigners}/value
+    '';
   };
+  hubRuntimeModule =
+    retainedModule "native-hub-runtime-configuration"
+    (builtins.removeAttrs hubConfiguration ["environment"]);
+  consumerBaselineModule = retainedModule "native-hub-consumer-baseline" consumerBaseline;
+  consumerUpgradeModule =
+    retainedModule "native-hub-consumer-upgrade"
+    (consumerUpgrade // {aos = builtins.removeAttrs consumerUpgrade.aos ["system"];});
 
   hubSystem = mkSystem [
     ../../systems/server-test.nix
     qualificationImage
+    hubConfiguration
     {
       aos.packages.aos-hub = {
         package = pkgs.aos-hub;
         bundle = true;
       };
-      aos.registry-hub = {
-        enable = true;
-        # The cleartext listener is deliberate in the first qualification
-        # layer: the topology records and explicitly acknowledges it.  A
-        # separate TLS-edge suite fronts this loopback listener.
-        listen = "0.0.0.0:8420";
-        externalUrl = "http://hub:8420";
-        credentials = {
-          jwtSecret = "native-hub-jwt-secret";
-          routeReservationKeys = "native-hub-route-reservation-keys";
-          domainProbeSignerManifest = "native-hub-probe-signers";
-        };
-      };
-      # The server profile is default-deny. A production operator must admit
-      # the native listener explicitly when it is bound beyond loopback.
-      aos.firewall.allowedTCP = [8420];
-      # Deterministic fixture bytes are copied into the platform credential
-      # namespace at boot. The hub module owns the LoadCredential bindings and
-      # file-environment contract exactly as it does in production.
-      environment.etc."tmpfiles.d/native-hub-credentials.conf".text = ''
-        d /run/credentials/@system 0700 root root -
-        C /run/credentials/@system/native-hub-jwt-secret 0600 root root - ${jwtSecret}/value
-        C /run/credentials/@system/native-hub-route-reservation-keys 0600 root root - ${routeKeys}/value
-        C /run/credentials/@system/native-hub-probe-signers 0600 root root - ${probeSigners}/value
-      '';
+      aos.activation.stages.host.configuration = ["${hubRuntimeModule}/module.nix"];
     }
   ];
 
@@ -226,6 +281,7 @@
     qualificationImage
     consumerTools
     consumerBaseline
+    {aos.activation.stages.host.configuration = ["${consumerBaselineModule}/module.nix"];}
   ];
 
   consumerUpgradeSystem = mkSystem [
@@ -233,9 +289,11 @@
     qualificationImage
     consumerTools
     consumerUpgrade
+    {aos.activation.stages.host.configuration = ["${consumerUpgradeModule}/module.nix"];}
   ];
 in {
   inherit
+    hubRuntimeModule
     consumerSystem
     consumerUpgradeSystem
     helperV1

@@ -1,4 +1,4 @@
-//! Closed configured runtime bounds and their original foreground eligibility.
+//! Closed configured runtime bounds and separate foreground and queue eligibility.
 //!
 //! A reference names independently reviewed evidence; its fields cannot prove
 //! measurement, cancellation, provider privacy, settlement or readiness.
@@ -38,7 +38,7 @@ pub struct DirectRuntimeQualification {
     pub qualification_digest: String,
     /// Maximum source size; the protocol ceiling alone cannot qualify this limit.
     pub maximum_object_bytes: WireInteger,
-    /// Maximum verification duration within the actual remaining invocation budget.
+    /// Maximum verification duration within the selected execution budget.
     pub maximum_verification_seconds: WireInteger,
     /// Positive protected control/settlement reserve, never a guessed default.
     pub settlement_reserve_seconds: WireInteger,
@@ -99,6 +99,36 @@ impl DirectRuntimeQualification {
         ensure!(
             available.is_some_and(|seconds| self.maximum_verification_seconds.get() <= seconds),
             "direct runtime verification exceeds foreground budget"
+        );
+        Ok(())
+    }
+
+    /// Checks verification and settlement within a queue consumer's remaining window.
+    ///
+    /// [Queue consumers](https://developers.cloudflare.com/queues/platform/limits/)
+    /// have a separate 900-second wall time ceiling. Accepting
+    /// this window never extends an HTTP invocation's foreground deadline.
+    ///
+    /// # Errors
+    /// Returns an error for invalid inputs or when verification, uncertainty and
+    /// the explicit settlement reserve exceed the supplied remaining window.
+    pub fn validate_queue_window(
+        &self,
+        actual_remaining_seconds: u64,
+        qualified_uncertainty: u64,
+    ) -> Result<()> {
+        self.validate()?;
+        ensure!(
+            (1..=900).contains(&actual_remaining_seconds)
+                && (1..30).contains(&qualified_uncertainty),
+            "invalid direct runtime queue policy"
+        );
+        let available = actual_remaining_seconds
+            .checked_sub(qualified_uncertainty)
+            .and_then(|remaining| remaining.checked_sub(self.settlement_reserve_seconds.get()));
+        ensure!(
+            available.is_some_and(|seconds| self.maximum_verification_seconds.get() <= seconds),
+            "direct runtime verification exceeds queue budget"
         );
         Ok(())
     }

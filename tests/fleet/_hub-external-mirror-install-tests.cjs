@@ -22,7 +22,7 @@ function fixture() {
     execution: 'emulated_external', reviewerKeyId: 'mirror-reviewer', deploymentId: 'controlled-deployment',
     publicOrigin: 'https://localhost:4673', sourceDigest: digest, scriptVersion: 'emulated-' + digest,
     protectedProfile: profile, directEvidenceSha256: digest, externalDomainSha256: digest,
-    upstreamBase: 'https://aos.andyl.org:4778/fleet-mirror/' + run,
+    upstreamBase: 'https://aos.fleet.test:4778/fleet-mirror/' + run,
     placementPrefix: '.aos-mirror-qualification/' + run + '/final', maximumObjectBytes: 1024,
     installation, issuedAt: Math.floor(Date.now() / 1000) - 1,
     validUntil: Math.floor(Date.now() / 1000) + 100, signature: 'd'.repeat(128) };

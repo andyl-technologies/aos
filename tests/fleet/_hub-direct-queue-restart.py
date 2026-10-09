@@ -51,9 +51,23 @@ def start_direct_restart_original(worker, tools, origin, control_key_file,
                 stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, start_new_session=True)
         directory = Path('/proc') / str(process.pid)
         fields = (directory / 'stat').read_text().rpartition(') ')[2].split()
+        start_ticks = fields[19]
+        expected_arguments = [os.fsencode(value) for value in selected['arguments']]
+        # A packaged Node launcher briefly retains its interpreter argv before
+        # exec. Wait for the selected command without accepting a different PID
+        # lifetime, owner, or final argument vector.
+        deadline = time.monotonic() + 5
+        while process.poll() is None and time.monotonic() < deadline:
+            current_fields = (directory / 'stat').read_text().rpartition(') ')[2].split()
+            if current_fields[19] != start_ticks or directory.stat().st_uid != os.getuid():
+                raise ValueError('restart driver lifetime differs from selected process')
+            if (directory / 'cmdline').read_bytes().split(b'\\x00')[:-1] == expected_arguments:
+                break
+            time.sleep(0.01)
         if (directory.stat().st_uid != os.getuid()
+                or (directory / 'stat').read_text().rpartition(') ')[2].split()[19] != start_ticks
                 or (directory / 'cmdline').read_bytes().split(b'\\x00')[:-1]
-                    != [os.fsencode(value) for value in selected['arguments']]):
+                    != expected_arguments):
             raise ValueError('restart driver lifetime differs from selected process')
         print(json.dumps({'version': 1, 'runId': selected['runId'], 'root': str(root),
             'pid': process.pid, 'ownerUid': directory.stat().st_uid, 'startTicks': fields[19],

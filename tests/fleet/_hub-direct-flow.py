@@ -650,7 +650,7 @@ def direct_page_samples(client, tools, count):
         arguments = selected['curl'] + ['-fsS', '--max-time', '30', '-o', '/dev/null',
             '-b', '/var/lib/hybrid-client/browser-session/cookies',
             '-H', 'cf-connecting-ip: 192.0.2.10', '-w', selected['writeout'],
-            'https://aos.andyl.org/-/instance']
+            'https://aos.fleet.test/-/instance']
         probes, samples = [], []
         for _ in range(selected['count']):
             started = time.time_ns()

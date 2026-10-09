@@ -94,7 +94,7 @@ class VerificationSelectionTests(unittest.TestCase):
             source.direct_guest_python = guest
             actual = source.publish_direct_verification_source(None, {
                 "python": sys.executable, "aos": sys.executable,
-                "workerUrl": "https://aos.andyl.org", "providerPolicyFile": "/private/policy.json",
+                "workerUrl": "https://aos.fleet.test", "providerPolicyFile": "/private/policy.json",
             }, "test/read-timeout", prepared, "private-test-bearer")
 
             self.assertNotEqual(actual["exitCode"], 0)
@@ -136,7 +136,7 @@ class VerificationSelectionTests(unittest.TestCase):
             source.direct_guest_python = guest
             tools = {"python": sys.executable, "apr": "unused", "git": "unused",
                 "opensshBin": "unused", "nixBin": "unused", "helperStorePath": helper,
-                "workerUrl": "https://aos.andyl.org", "publicationProject": "unused"}
+                "workerUrl": "https://aos.fleet.test", "publicationProject": "unused"}
             actual = source.prepare_direct_verification_source(None, tools, "test")
             self.assertEqual(actual["original"]["relativePath"], "nar/helper.nar.xz")
             self.assertEqual(actual["narinfo"]["storePath"], helper)

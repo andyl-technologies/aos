@@ -2622,6 +2622,8 @@ pub struct RpcService {
     pub surface: Arc<dyn SurfaceProvider>,
     /// Native hybrid origins authorize exact R2 delivery snapshots here.
     pub hybrid_delivery: bool,
+    /// Explicit client upload transport; independent of hybrid delivery guards.
+    pub hybrid_upload_mode: crate::hybrid_upload::HybridUploadMode,
     /// The placement surface-write port used by typed cache uploads and
     /// placement-aware registry publications.
     ///
@@ -10249,6 +10251,7 @@ impl RpcService {
             surface,
             deployment_id: None,
             hybrid_delivery: false,
+            hybrid_upload_mode: crate::hybrid_upload::HybridUploadMode::default(),
             surface_write,
             lease,
             reindexer,
@@ -10663,6 +10666,19 @@ impl RpcService {
     #[must_use]
     pub fn with_hybrid_delivery(mut self) -> Self {
         self.hybrid_delivery = true;
+        self
+    }
+
+    /// Selects the upload transport advertised by an enabled hybrid origin.
+    ///
+    /// Worker proxy mode retains signed ingress and Native body restrictions.
+    /// It does not provide a fallback when direct controls fail.
+    #[must_use]
+    pub fn with_hybrid_upload_mode(
+        mut self,
+        mode: crate::hybrid_upload::HybridUploadMode,
+    ) -> Self {
+        self.hybrid_upload_mode = mode;
         self
     }
 
@@ -20278,7 +20294,9 @@ impl RpcService {
         Ok(pb::WhoAmIResponse {
             deployment_id,
             principal_id,
-            transfer_mode: if self.hybrid_delivery {
+            transfer_mode: if self.hybrid_delivery
+                && self.hybrid_upload_mode == crate::hybrid_upload::HybridUploadMode::Direct
+            {
                 "direct_required".into()
             } else {
                 "legacy".into()

@@ -13,7 +13,7 @@ import time
 
 
 def direct_root_browser_token(client, curl, python, private_command, reuse_session=False,
-                              *, origin="https://aos.andyl.org",
+                              *, origin="https://aos.fleet.test",
                               evidence_root="/var/lib/hybrid-client/browser-session"):
     """Obtain the genuine root browser bearer without retaining its material in logs."""
     validate_control_destination(origin, evidence_root)
@@ -69,7 +69,7 @@ def validate_control_destination(origin, evidence_root):
     parsed = urlsplit(origin)
     if (parsed.scheme != "https" or parsed.username or parsed.password
             or parsed.path or parsed.query or parsed.fragment
-            or parsed.hostname != "aos.andyl.org" and parsed.hostname != "localhost"
+            or parsed.hostname != "aos.fleet.test" and parsed.hostname != "localhost"
             or parsed.port is not None and not 1024 <= parsed.port <= 65535):
         raise ValueError("fixture control requires the selected HTTPS origin")
     if (not isinstance(evidence_root, str)
@@ -82,7 +82,7 @@ class DirectBootstrapControls:
     """Retain actual metadata controls and apply the server's persisted plans."""
 
     def __init__(self, client, curl, python, token, private_command, refresh_token=None,
-                 *, origin="https://aos.andyl.org",
+                 *, origin="https://aos.fleet.test",
                  evidence_root="/var/lib/hybrid-client/bootstrap-controls"):
         validate_control_destination(origin, evidence_root)
         self.origin = origin

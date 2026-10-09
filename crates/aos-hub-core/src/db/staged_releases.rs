@@ -908,12 +908,15 @@ impl Database {
             ));
         }
         if expected_revision == 0 {
+            // PostgreSQL must resolve this nullable parameter consistently in
+            // the projection, null check and publication lookup. The text cast
+            // also preserves SQLite's nullable string representation.
             writes.push(CheckedStatement::exact(
                 "INSERT INTO staged_releases
                   (registry_id, stage_id, current_revision, state, publication_id, created_at, updated_at,
                    release_id, source_branch, source_commit, inventory_digest, object_count, total_bytes, container_repository)
-                 SELECT ?1, ?2, ?3, 'draft', ?4, ?5, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
-                  WHERE (?4 IS NULL OR EXISTS (SELECT 1 FROM registry_publications publication
+                 SELECT ?1, ?2, ?3, 'draft', CAST(?4 AS TEXT), ?5, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+                  WHERE (CAST(?4 AS TEXT) IS NULL OR EXISTS (SELECT 1 FROM registry_publications publication
                     WHERE publication.publication_id = ?4 AND publication.registry_id = ?1 AND publication.state = 'preparing'))
                     AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks WHERE registry_id = ?1)
                     AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences WHERE registry_id = ?1 AND state = 'collecting')",
@@ -924,11 +927,11 @@ impl Database {
         } else {
             writes.push(CheckedStatement::exact(
                 "UPDATE staged_releases SET current_revision = ?4, state = 'draft',
-                     publication_id = ?5, updated_at = ?6, release_id = ?7, source_branch = ?8,
+                     publication_id = CAST(?5 AS TEXT), updated_at = ?6, release_id = ?7, source_branch = ?8,
                      source_commit = ?9, inventory_digest = ?10, object_count = ?11, total_bytes = ?12, container_repository = ?13
                   WHERE registry_id = ?1 AND stage_id = ?2 AND current_revision = ?3
                     AND state IN('draft', 'ready')
-                    AND (?5 IS NULL OR EXISTS (SELECT 1 FROM registry_publications publication
+                    AND (CAST(?5 AS TEXT) IS NULL OR EXISTS (SELECT 1 FROM registry_publications publication
                       WHERE publication.publication_id = ?5 AND publication.registry_id = ?1 AND publication.state = 'preparing'))
                     AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks WHERE registry_id = ?1)
                         AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences WHERE registry_id = ?1 AND state = 'collecting')",

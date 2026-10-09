@@ -83,7 +83,7 @@ async function requestBytes(request, maximum) {
 export async function startListener(configuration) {
   if (!exact(configuration, FIELDS) || configuration.version !== 1
       || configuration.upstreamHost !== 'worker' || configuration.upstreamPort !== 443
-      || configuration.originHost !== 'aos.andyl.org'
+      || configuration.originHost !== 'aos.fleet.test'
       || !Number.isInteger(configuration.listenPort)
       || configuration.listenPort < 0 || configuration.listenPort > 65535) {
     throw new Error('listener_configuration');

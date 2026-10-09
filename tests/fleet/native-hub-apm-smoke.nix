@@ -16,6 +16,22 @@
   pkgs,
 }: let
   fixture = import ./_native-hub-production.nix {inherit lib mkSystem pkgs;};
+  publicationProject = import ./_container-publication-project.nix {
+    inherit lib pkgs;
+    packages = {
+      hub-helper = fixture.helperV1;
+      hub-tool = fixture.toolV1;
+      nginx = pkgs.nginx;
+      aos-hub = pkgs.aos-hub;
+    };
+  };
+  updateProject = import ./_container-publication-project.nix {
+    inherit lib pkgs;
+    packages = {
+      hub-helper = fixture.helperV2;
+      hub-tool = fixture.toolV2;
+    };
+  };
   upgradeToplevel = fixture.consumerUpgradeSystem.config.system.build.toplevel;
   upgradeImage = fixture.consumerUpgradeSystem.config.system.build.image.raw;
   upgradeImageDisk = fixture.consumerUpgradeSystem.config.system.build.imageArtifacts.raw.disk;
@@ -35,6 +51,8 @@
       pkgs.binutils
       pkgs.sbsigntools
       pkgs.systemd
+      publicationProject.project
+      updateProject.project
     ];
     pname = "native-hub-publisher-closure-info";
   };
@@ -75,6 +93,9 @@ in {
       # Nix's canonical NAR writer can transiently exceed 6 GiB while hashing
       # the production-sized raw disk and A/B payload imported over 9p.
       memoryMiB = 8192;
+      # Match the signed publisher's compression pool rather than serializing
+      # its source preparation on the harness's two-CPU default.
+      vcpuCount = 8;
       varProvisioning = "repart";
     };
   };
@@ -218,6 +239,9 @@ in {
 
       # The native service must boot under its hardened unit before any local
       # recovery/bootstrap action is taken. The database starts empty.
+      # The guest agent becomes ready before the host graph finishes creating
+      # application units. Wait for the production manager to realize the Hub.
+      hub.wait_until_succeeds("systemctl is-active --quiet aos-hub.service", timeout=180)
       hub.succeed(textwrap.dedent("""
           systemctl is-active --quiet aos-hub.service || {
             systemctl status --no-pager --full aos-hub.service || true
@@ -248,26 +272,29 @@ in {
 
       # Authenticate the root browser identity, then exchange its same-origin
       # session for the short-lived API bearer used for reviewed setup.
-      token = hub.succeed(textwrap.dedent(f"""
-          set -eu
-          headers=/tmp/hub-login.headers
-          page=/tmp/hub-console.html
-          {CURL} -sS -D "$headers" -o /dev/null -X POST \\
-            --data-urlencode 'email=fleet-root@example.test' \\
-            --data-urlencode 'password=fleet-root-password' \\
-            {HUB}/login/password
-          cookie=$(sed -n 's/^set-cookie: \\([^;]*\\).*/\\1/ip' "$headers" | head -n1)
-          test -n "$cookie"
-          {CURL} -sS -H "Cookie: $cookie" {HUB}/-/instance > "$page"
-          csrf=$(sed -n 's/.*name="aos-session-csrf" content="\\([^"]*\\)".*/\\1/p' "$page" | head -n1)
-          test -n "$csrf"
-          {CURL} -fsS -X POST \\
-            -H "Cookie: $cookie" \\
-            -H 'Origin: {HUB}' \\
-            -H "x-aos-csrf: $csrf" \\
-            -H 'x-aos-console-route: /-/instance' \\
-            {HUB}/-/auth/session-token | {JQ} -er .accessToken
-      """), timeout=120).strip()
+      def refresh_browser_token():
+          return hub.succeed(textwrap.dedent(f"""
+              set -eu
+              headers=/tmp/hub-login.headers
+              page=/tmp/hub-console.html
+              {CURL} -sS -D "$headers" -o /dev/null -X POST \\
+                --data-urlencode 'email=fleet-root@example.test' \\
+                --data-urlencode 'password=fleet-root-password' \\
+                {HUB}/login/password
+              cookie=$(sed -n 's/^set-cookie: \\([^;]*\\).*/\\1/ip' "$headers" | head -n1)
+              test -n "$cookie"
+              {CURL} -sS -H "Cookie: $cookie" {HUB}/-/instance > "$page"
+              csrf=$(sed -n 's/.*name="aos-session-csrf" content="\\([^"]*\\)".*/\\1/p' "$page" | head -n1)
+              test -n "$csrf"
+              {CURL} -fsS -X POST \\
+                -H "Cookie: $cookie" \\
+                -H 'Origin: {HUB}' \\
+                -H "x-aos-csrf: $csrf" \\
+                -H 'x-aos-console-route: /-/instance' \\
+                {HUB}/-/auth/session-token | {JQ} -er .accessToken
+          """), timeout=120).strip()
+
+      token = refresh_browser_token()
       assert token.startswith("ey"), "browser session did not mint a JWT"
 
       identity = json.loads(publisher.succeed(hub_command("whoami", token)))
@@ -289,11 +316,12 @@ in {
 
       # The publisher receives host-built paths through 9p, then makes only
       # that closure visible at its canonical paths and in its local Nix DB.
+      # Cached reads are safe for these pinned immutable closure members.
       # No store bytes are copied into this VM image.
       publisher.succeed(textwrap.dedent(f"""
           set -eu
           mkdir -p /run/aos-host-store
-          {MOUNT} -t 9p -o trans=virtio,version=9p2000.L,msize=1048576,ro \\
+          {MOUNT} -t 9p -o trans=virtio,version=9p2000.L,msize=1048576,cache=loose,ro \\
             aos-host-store /run/aos-host-store
           test -r /run/aos-host-store/$(basename {CLOSURE_INFO})/registration
           while IFS= read -r store_path; do
@@ -578,6 +606,9 @@ in {
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
           export NIX_REMOTE=""
           export NIX_CONF_DIR="$HOME/.config/nix"
+          export TMPDIR=/var/tmp/aos-publication-work
+          mkdir -p "$TMPDIR"
+          cd ${publicationProject.project}
           mkdir -p "$NIX_CONF_DIR" /var/tmp/aos-publication-v1
           printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' \\
             > "$NIX_CONF_DIR/nix.conf"
@@ -597,31 +628,18 @@ in {
           initial = "$key"
           EOF
           {APR} publish {HELPER_V1} --registry production \\
-            --name hub-helper --version 1.0.0 \\
-            --description 'Native Hub helper fixture' --license MIT \\
-            --maintainer publisher@example.test \\
             --key-id initial
           {APR} publish {NGINX} --registry production \\
-            --name nginx --version '${pkgs.nginx.version}' \\
-            --description 'nginx — high-performance HTTP and reverse proxy server' \\
-            --license BSD-2-Clause --maintainer publisher@example.test \\
             --key-id initial
           {APR} publish {AOS_HUB_PACKAGE} --registry production \\
-            --name aos-hub --version '${pkgs.aos-hub.version}' \\
-            --description 'Native and Worker registry Hub service.' \\
-            --license Apache-2.0 --maintainer publisher@example.test \\
             --key-id initial
+          {APR} publish {TOOL_V1} --registry production --key-id initial
           {APR} release 1.0.0 --registry production \\
-            --store-path {TOOL_V1} --name hub-tool \\
-            --description 'Native Hub production fixture' --license MIT \\
-            --maintainer publisher@example.test --key-id initial \\
+            --key-id initial \\
             --channel stable --init-channel --cache-url {REGISTRY} \\
             --upload-url file:///var/tmp/aos-publication-v1
           {APR} verify --registry production
-          {AOS} --json hub registry publish upload acme/production \\
-            --hub {HUB} --token {shlex.quote(token)} \\
-            --root /var/tmp/aos-publication-v1
-      """), timeout=900)
+      """), timeout=1800)
       if publication_status != 0:
           print("--- native Hub journal after publication failure ---")
           print(hub.succeed(
@@ -631,6 +649,15 @@ in {
               "initial registry publication failed "
               f"(status={publication_status}): {publication}\n{publication_stderr}"
           )
+      # Browser API grants last five minutes; local compression must not
+      # consume the grant intended for the following authenticated transfer.
+      token = refresh_browser_token()
+      publication = publisher.succeed(
+          f"{AOS} --json hub registry publish upload acme/production "
+          f"--hub {HUB} --token {shlex.quote(token)} "
+          "--root /var/tmp/aos-publication-v1",
+          timeout=900,
+      )
       publication_data = json.loads(publication)["data"]
       assert publication_data["state"] == "ready", publication_data
 
@@ -882,22 +909,25 @@ in {
           export NIX_CONF_DIR="$HOME/.config/nix"
           rm -rf /var/tmp/aos-publication-v2
           mkdir -p /var/tmp/aos-publication-v2
+          export TMPDIR=/var/tmp/aos-publication-work
+          cd ${updateProject.project}
           {APR} publish {HELPER_V2} --registry production \\
-            --name hub-helper --version 2.0.0 --previous 1.0.0 \\
-            --description 'Native Hub helper fixture update' --license MIT \\
-            --maintainer publisher@example.test --key-id initial
+            --previous 1.0.0 --key-id initial
+          {APR} publish {TOOL_V2} --registry production \\
+            --previous 1.0.0 --key-id initial
           {APR} release 2.0.0 --registry production \\
-            --store-path {TOOL_V2} --name hub-tool --version 2.0.0 \\
-            --previous 1.0.0 \\
-            --description 'Native Hub production fixture update' --license MIT \\
-            --maintainer publisher@example.test --key-id initial \\
+            --key-id initial \\
             --channel stable --count 256 --cache-url {REGISTRY} \\
             --upload-url file:///var/tmp/aos-publication-v2
           {APR} verify --registry production
-          {AOS} --json hub registry publish upload acme/production \\
-            --hub {HUB} --token {shlex.quote(token)} \\
-            --root /var/tmp/aos-publication-v2
       """), timeout=900)
+      token = refresh_browser_token()
+      publication_v2 = publisher.succeed(
+          f"{AOS} --json hub registry publish upload acme/production "
+          f"--hub {HUB} --token {shlex.quote(token)} "
+          "--root /var/tmp/aos-publication-v2",
+          timeout=900,
+      )
       publication_v2_data = json.loads(publication_v2)["data"]
       assert publication_v2_data["state"] == "ready", publication_v2_data
       publisher.wait_until_succeeds(

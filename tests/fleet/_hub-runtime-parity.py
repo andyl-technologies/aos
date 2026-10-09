@@ -25,8 +25,8 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
                 or not corpus_fixture["surfaceRoot"].startswith("/var/lib/hybrid-client/")):
             raise ValueError("selected signed parity corpus identity differs")
     port = 8443 if corpus_fixture is None else 8453
-    native_origin = f"https://aos.staging.andyl.org:{port}"
-    worker_origin = f"https://aos.andyl.org:{port}"
+    native_origin = f"https://aos-origin.fleet.test:{port}"
+    worker_origin = f"https://aos.fleet.test:{port}"
     registry_slug = "fleet/containers" if corpus_fixture is None else corpus_fixture["registrySlug"]
     if run_id is not None and (not re.fullmatch(r"[0-9a-f]{32}", run_id)
             or corpus_fixture is None or hybrid_reader is None or publication_setup is None

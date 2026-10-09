@@ -110,6 +110,9 @@ enum Command {
         /// HTTPS origin hostname presented to the hybrid Worker's origin fetch.
         #[arg(long, env = "HUB_HYBRID_ORIGIN_URL")]
         hybrid_origin_url: Option<String>,
+        /// Upload transport: direct (default) or explicit Worker proxy compatibility.
+        #[arg(long, env = "HUB_HYBRID_UPLOAD_MODE")]
+        hybrid_upload_mode: Option<aos_hub_core::hybrid_upload::HybridUploadMode>,
         /// HMAC key used to authorize Native-issued storage plans.
         #[arg(long, env = "HUB_STORAGE_WORK_KEY_FILE")]
         storage_work_key_file: Option<PathBuf>,
@@ -980,6 +983,7 @@ async fn main() -> Result<()> {
             hybrid_ingress_key_file,
             hybrid_worker_url,
             hybrid_origin_url,
+            hybrid_upload_mode,
             storage_work_key_file,
             direct_upload_acceptance_file,
             direct_upload_review_keys_file,
@@ -1061,6 +1065,11 @@ async fn main() -> Result<()> {
             let mut direct_runtime: Option<
                 Arc<dyn aos_hub::direct_upload::DirectUploadTransportFactory>,
             > = None;
+            anyhow::ensure!(
+                hybrid || hybrid_upload_mode.is_none(),
+                "HUB_HYBRID_UPLOAD_MODE requires hybrid topology"
+            );
+            let hybrid_upload_mode = hybrid_upload_mode.unwrap_or_default();
             let hybrid_runtime = if hybrid {
                 anyhow::ensure!(
                     cli.database_url.as_deref().is_some_and(|url| {
@@ -2033,12 +2042,13 @@ async fn main() -> Result<()> {
                 };
                 let app = match hybrid_runtime {
                     Some((deployment_id, key, work)) => {
-                        aos_hub::server::router_with_hybrid_ingress_and_direct(
+                        aos_hub::server::router_with_hybrid_upload_mode(
                             state,
                             key,
                             deployment_id,
                             work,
                             direct_runtime,
+                            hybrid_upload_mode,
                         )
                         .await
                     }
@@ -2053,12 +2063,13 @@ async fn main() -> Result<()> {
             } else {
                 let app = match hybrid_runtime {
                     Some((deployment_id, key, work)) => {
-                        aos_hub::server::router_with_hybrid_ingress_and_direct(
+                        aos_hub::server::router_with_hybrid_upload_mode(
                             state,
                             key,
                             deployment_id,
                             work,
                             direct_runtime,
+                            hybrid_upload_mode,
                         )
                         .await
                     }
@@ -2780,6 +2791,35 @@ mod production_vm_coverage {
             ],
             _ => panic!("expected a native or Worker deployment command"),
         }
+    }
+
+    #[test]
+    fn hybrid_upload_mode_requires_an_explicit_supported_selection() {
+        use aos_hub_core::hybrid_upload::HybridUploadMode;
+
+        for (arguments, expected) in [
+            (vec!["aos-hub", "serve"], None),
+            (
+                vec!["aos-hub", "serve", "--hybrid-upload-mode", "worker_proxy"],
+                Some(HybridUploadMode::WorkerProxy),
+            ),
+            (
+                vec!["aos-hub", "serve", "--hybrid-upload-mode", "direct"],
+                Some(HybridUploadMode::Direct),
+            ),
+        ] {
+            let Command::Serve {
+                hybrid_upload_mode, ..
+            } = Cli::try_parse_from(arguments).unwrap().command
+            else {
+                panic!("expected serve command");
+            };
+            assert_eq!(hybrid_upload_mode, expected);
+        }
+
+        assert!(
+            Cli::try_parse_from(["aos-hub", "serve", "--hybrid-upload-mode", "fallback"]).is_err()
+        );
     }
 
     #[test]

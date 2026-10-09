@@ -437,8 +437,8 @@ def run_managed_read_window(client, native, worker, tools, prepared, processes,
             "parityModuleFile": tools["readParityModule"], "parityModuleSha256": selected_module(tools["readParityModule"]),
             "indexModuleFile": tools["readIndexModule"], "indexModuleSha256": selected_module(tools["readIndexModule"])}
         native_ip = prepared["captureSelection"]["nativeAddress"]
-        context["curlArgv"] += ["--resolve", "aos.staging.andyl.org:8453:" + native_ip,
-            "--resolve", "aos.andyl.org:8453:127.0.0.1", "--resolve", "localhost:4643:127.0.0.1"]
+        context["curlArgv"] += ["--resolve", "aos-origin.fleet.test:8453:" + native_ip,
+            "--resolve", "aos.fleet.test:8453:127.0.0.1", "--resolve", "localhost:4643:127.0.0.1"]
         return adapter.run_direct_read_window(client, native, worker, tools=tools,
             context=context, index_readers=live["index_readers"], retain=retain)
 

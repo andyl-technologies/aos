@@ -517,7 +517,7 @@ def run_pack_memory_case(client, native, worker, tools, prepared, processes, hel
                 "index_path": inputs["indexPath"], "oid": pair["selectedOid"]}))
         manifest = pack_memory_publish(transport, native, native_root, "fixture-manifest.json", pair)
         source_selection = pack_memory_publish(transport, worker, worker_root, "source-selection.json", {
-            "version": 1, "host": "aos.andyl.org:4778", "port": 4778, "frontedBySelectedMirror": True,
+            "version": 1, "host": "aos.fleet.test:4778", "port": 4778, "frontedBySelectedMirror": True,
             "runId": run, "bootId": prepared_worker["bootId"], "privateRoot": worker_root,
             "controlSocket": worker_root + "/source.sock", "cutoffUptimeMillis": worker_cutoff * 1000,
             "tlsKeyFile": tools["issuerPrivateKey"], "tlsCertificateFile": tools["issuerCertificate"],

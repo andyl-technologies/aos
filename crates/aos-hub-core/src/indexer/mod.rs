@@ -2535,6 +2535,7 @@ struct DocumentationNarInfo {
 fn parse_documentation_narinfo(text: &str) -> Result<DocumentationNarInfo> {
     let mut fields = BTreeMap::<&str, &str>::new();
     let mut references = Vec::new();
+    let mut references_seen = false;
     for line in text.lines() {
         let Some((name, value)) = line.split_once(':') else {
             continue;
@@ -2542,10 +2543,15 @@ fn parse_documentation_narinfo(text: &str) -> Result<DocumentationNarInfo> {
         let value = value.trim();
         if name == "References" {
             anyhow::ensure!(
-                references.is_empty(),
+                !references_seen,
                 "documentation narinfo repeats References"
             );
-            references = value.split_whitespace().map(str::to_string).collect();
+            references_seen = true;
+            // Signed locators retain hashes; narinfo normally adds store names.
+            references = value
+                .split_whitespace()
+                .map(native_documentation::narinfo_reference_hash)
+                .collect::<Result<Vec<_>>>()?;
             continue;
         }
         if matches!(

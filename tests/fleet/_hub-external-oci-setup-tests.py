@@ -67,7 +67,7 @@ class SetupTests(unittest.TestCase):
     def test_origins_database_and_roots_cannot_alias_main_or_another_run(self):
         value = coordinates()
         self.assertEqual(setup.setup_coordinates(value), value)
-        for field, changed in (("publicOrigin", "https://aos.andyl.org"),
+        for field, changed in (("publicOrigin", "https://aos.fleet.test"),
                 ("controlOrigin", "https://localhost:4673"), ("listen", "127.0.0.1:4660"),
                 ("databaseName", "postgres"), ("workerRoot", "/var/lib/hybrid-worker"),
                 ("placementPrefix", "normal/registry"), ("operatorRole", "reader;GRANT")):

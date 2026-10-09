@@ -69,7 +69,7 @@
       f"{CURL} -fsS -X POST "
       f"-H 'x-aos-storage-work-signature: {challenge_signature}' "
       f"--data-binary {shlex.quote(challenge.decode())} "
-      "https://aos.andyl.org/_internal/storage/v1/capabilities",
+      "https://aos.fleet.test/_internal/storage/v1/capabilities",
       timeout=60,
   ))
   assert capabilities["deployment_id"] == "fleet-hybrid-v1", capabilities
@@ -78,7 +78,7 @@
       f"-H 'x-aos-storage-work-signature: {challenge_signature}' "
       f"-H 'x-aos-storage-work-signature: {challenge_signature}' "
       f"--data-binary {shlex.quote(challenge.decode())} "
-      "https://aos.andyl.org/_internal/storage/v1/capabilities",
+      "https://aos.fleet.test/_internal/storage/v1/capabilities",
       timeout=60,
   ).strip()
   assert duplicate_signature_status == "401", duplicate_signature_status
@@ -90,7 +90,7 @@
           "-X POST -H 'content-type: application/json' "
           f"-H 'x-aos-storage-work-signature: {control_signature}' "
           f"--data-binary {shlex.quote(control_body.decode())} "
-          "https://aos.andyl.org/_internal/storage/v1/bindings",
+          "https://aos.fleet.test/_internal/storage/v1/bindings",
           timeout=60,
       ).strip()
       return status, client.succeed("cat /tmp/hybrid-binding-control.response")
@@ -98,7 +98,7 @@
   unsigned_binding_status = client.succeed(
       f"{CURL} -sS -o /dev/null -w '%{{http_code}}' -X POST "
       "-H 'content-type: application/json' --data '{}' "
-      "https://aos.andyl.org/_internal/storage/v1/bindings",
+      "https://aos.fleet.test/_internal/storage/v1/bindings",
       timeout=60,
   ).strip()
   assert unsigned_binding_status == "401", unsigned_binding_status
@@ -258,7 +258,7 @@
           "-H 'content-type: application/json' "
           f"-H 'x-aos-storage-work-signature: {plan_signature}' "
           f"--data-binary {shlex.quote(plan_body.decode())} "
-          "https://aos.andyl.org/_internal/storage/v1/execute",
+          "https://aos.fleet.test/_internal/storage/v1/execute",
           timeout=60,
       ).strip()
       return status, client.succeed("cat /tmp/hybrid-external-plan.response")
@@ -639,7 +639,7 @@
       f"-H 'content-type: application/json' "
       f"-H 'x-aos-storage-work-signature: {signature}' "
       f"--data-binary {shlex.quote(body.decode())} "
-      "https://aos.andyl.org/_internal/storage/v1/execute"
+      "https://aos.fleet.test/_internal/storage/v1/execute"
   )
   result = json.loads(client.succeed(command, timeout=60))
   assert result["outcome"]["kind"] == "not_found", result
@@ -657,31 +657,31 @@
       f"-H 'content-type: application/json' "
       f"-H 'x-aos-storage-work-signature: {expired_signature}' "
       f"--data-binary {shlex.quote(expired_body.decode())} "
-      "https://aos.andyl.org/_internal/storage/v1/execute",
+      "https://aos.fleet.test/_internal/storage/v1/execute",
       timeout=60,
   ).strip()
   assert expired_status == "401", expired_status
 
   worker.wait_until_succeeds(
       f"{CURL} -sS -o /dev/null -w '%{{http_code}}' "
-      "https://aos.staging.andyl.org/-/health | "
+      "https://aos-origin.fleet.test/-/health | "
       f"{GREP} -qx 401",
       timeout=180,
   )
   client.wait_until_succeeds(
-      f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.andyl.org/-/health",
+      f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.fleet.test/-/health",
       timeout=180,
   )
   client.succeed(
-      f"test \"$({CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.andyl.org/.well-known/aos-deployment)\" = fleet-hybrid-v1"
+      f"test \"$({CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.fleet.test/.well-known/aos-deployment)\" = fleet-hybrid-v1"
   )
   client.succeed(
-      f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.andyl.org/login | {GREP} -q '<html'"
+      f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.fleet.test/login | {GREP} -q '<html'"
   )
   oci_creation_body_status = client.succeed(
       f"{CURL} -sS -o /dev/null -w '%{{http_code}}' -X POST "
       "--data-binary 'unexpected-oci-upload-body' "
-      "https://aos.andyl.org/team/containers/v2/aos/blobs/uploads/",
+      "https://aos.fleet.test/team/containers/v2/aos/blobs/uploads/",
       timeout=60,
   ).strip()
   assert oci_creation_body_status == "400", oci_creation_body_status
@@ -691,17 +691,17 @@
         -H 'cf-connecting-ip: 192.0.2.10' \\
         --data-urlencode 'email=fleet-root@example.test' \\
         --data-urlencode 'password=fleet-root-password' \\
-        https://aos.andyl.org/login/password
+        https://aos.fleet.test/login/password
       cookie=$({SED} -n 's/^set-cookie: \\([^;]*\\).*/\\1/ip' /tmp/hybrid-login.headers | head -n1)
       test -n "$cookie"
       printf '%s' "$cookie" > /tmp/hybrid-cookie
       {CURL} -fsS -D /tmp/hybrid-instance.headers -H 'cf-connecting-ip: 192.0.2.10' \\
         -H "Cookie: $cookie" \\
-        https://aos.andyl.org/-/instance | {GREP} -q '<html'
+        https://aos.fleet.test/-/instance | {GREP} -q '<html'
       ! {GREP} -qi '^x-aos-hybrid-native-ms:' /tmp/hybrid-instance.headers
   """), timeout=120)
   client.succeed(
-      f"test \"$({CURL} -s -o /dev/null -w '%{{http_code}}' https://aos.staging.andyl.org/-/instance)\" = 401"
+      f"test \"$({CURL} -s -o /dev/null -w '%{{http_code}}' https://aos-origin.fleet.test/-/instance)\" = 401"
   )
 
   def worker_process_counters():
@@ -720,7 +720,7 @@
       while test "$attempt" -lt 100; do
         {CURL} -sS -o /dev/null -w {shlex.quote(PAGE_PERF_WRITEOUT)} \\
           -H 'cf-connecting-ip: 192.0.2.10' -H "Cookie: $cookie" \\
-          https://aos.andyl.org/-/instance
+          https://aos.fleet.test/-/instance
         attempt=$((attempt + 1))
       done
   """), timeout=180).splitlines()
@@ -776,15 +776,15 @@
           set -eu
           cookie=$(cat /tmp/hybrid-cookie)
           {CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' \\
-            -H "Cookie: $cookie" https://aos.andyl.org/-/instance \\
+            -H "Cookie: $cookie" https://aos.fleet.test/-/instance \\
             > /tmp/hybrid-instance.html
           csrf=$({SED} -n 's/.*name="aos-session-csrf" content="\\([^"]*\\)".*/\\1/p' \\
             /tmp/hybrid-instance.html | head -n1)
           test -n "$csrf"
           {CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' \\
-            -H "Cookie: $cookie" -H 'Origin: https://aos.andyl.org' \\
+            -H "Cookie: $cookie" -H 'Origin: https://aos.fleet.test' \\
             -H "x-aos-csrf: $csrf" -H 'x-aos-console-route: /-/instance' \\
-            https://aos.andyl.org/-/auth/session-token
+            https://aos.fleet.test/-/auth/session-token
       """), timeout=120))["accessToken"]
 
   session_token = refresh_session_token()
@@ -792,14 +792,14 @@
       f"{CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' "
       f"-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
       f"-H 'Authorization: Bearer {session_token}' --data '{{}}' "
-      "https://aos.andyl.org/aos.hub.v1.IdentityService/WhoAmI",
+      "https://aos.fleet.test/aos.hub.v1.IdentityService/WhoAmI",
       timeout=60,
   ))
   assert whoami["principalRef"] == "fleet-root@example.test", whoami
 
   def hub_command(subcommand, mutation=""):
       return (
-          f"{AOS} --json hub {subcommand} --hub https://aos.andyl.org "
+          f"{AOS} --json hub {subcommand} --hub https://aos.fleet.test "
           f"--token {shlex.quote(session_token)} {mutation}"
       )
 
@@ -874,7 +874,9 @@
 
   trust_key = client.succeed(textwrap.dedent(f"""
       set -eu
-      export HOME=/tmp/hybrid-apr-home
+      export HOME=/var/lib/hybrid-apr-home
+      export TMPDIR="$HOME/.cache/tmp"
+      mkdir -p "$TMPDIR"
       mkdir -p "$HOME"
       {APR} keys generate initial --registry containers 2>&1 | \\
         ${pkgs.gawk}/bin/awk '/Public key:/ {{print $NF; exit}}'
@@ -910,7 +912,7 @@
   )
   reviewed(
       "hybrid-oci-domain",
-      "domain add aos.andyl.org --org fleet",
+      "domain add aos.fleet.test --org fleet",
   )
   reviewed_control(
       "hybrid-oci-controller-account",
@@ -940,12 +942,12 @@
       f"-H 'Authorization: Bearer {controller_secret}' "
       "--data-urlencode "
       "'grant_type=urn:aos:params:oauth:grant-type:provisioning-token' "
-      "https://aos.andyl.org/oauth2/token",
+      "https://aos.fleet.test/oauth2/token",
       timeout=60,
   ))["access_token"]
   reviewed(
       "hybrid-oci-endpoint",
-      "endpoint add https://aos.andyl.org --stable-id hybrid-oci --org fleet "
+      "endpoint add https://aos.fleet.test --stable-id hybrid-oci --org fleet "
       "--network-policy instance:public@1 --ingress layer7 "
       "--listener-provider layer7 --listener-resource-id hybrid-worker "
       "--tls-provider external --certificate-ref hybrid-fleet "
@@ -974,7 +976,7 @@
       "-H 'Connect-Protocol-Version: 1' "
       f"-H 'Authorization: Bearer {controller_token}' "
       f"--data {shlex.quote(json.dumps(observation))} "
-      "https://aos.andyl.org/aos.hub.v1.DeliveryControllerService/ReportEndpoint",
+      "https://aos.fleet.test/aos.hub.v1.DeliveryControllerService/ReportEndpoint",
       timeout=60,
   )
   reviewed(
@@ -993,7 +995,7 @@
       f"--if-version {shlex.quote(oci_route['resource_version'])}",
   )
   client.wait_until_succeeds(
-      f"{CURL} -fsS https://aos.andyl.org/v2/",
+      f"{CURL} -fsS https://aos.fleet.test/v2/",
       timeout=180,
   )
   print("hybrid OCI route ready through public Worker")
@@ -1125,7 +1127,7 @@
               f"{CHROOT} ${pkgs.aos-hub}/bin/aos-hub-authority-bootstrap "
               "--database-url-file /var/lib/aos-hub/fleet-credentials/database-url "
               f"stage-credential --operation-id {shlex.quote(validation_operation_id)} "
-              "--deployment-id fleet-hybrid-v1 --worker-url https://aos.andyl.org "
+              "--deployment-id fleet-hybrid-v1 --worker-url https://aos.fleet.test "
               "--storage-work-key-file /var/lib/aos-hub/fleet-credentials/storage-key "
               "--secret-version-manifest /var/lib/aos-hub/fleet-credentials/secret-version-manifest "
               f"--output /var/lib/aos-hub/fleet-credentials/{purpose}-stage",
@@ -1188,7 +1190,7 @@
       "route enable hybrid-external-cache-route "
       f"--if-version {shlex.quote(external_route['resource_version'])}",
   )
-  external_url = f"https://aos.andyl.org/external-cache/{external_cache_path}"
+  external_url = f"https://aos.fleet.test/external-cache/{external_cache_path}"
   delivered = client.wait_until_succeeds(
       f"{CURL} -fsS {external_url}", timeout=180,
   )
@@ -1212,11 +1214,11 @@
       f"-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
       f"-H 'Authorization: Bearer {session_token}' "
       f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'path': cache_path, 'size': cache_size}))} "
-      "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
+      "https://aos.fleet.test/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
       timeout=60,
   ))
   assert cache_upload["uploadUrl"].startswith(
-      "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/UploadObject/"
+      "https://aos.fleet.test/aos.hub.v1.BinaryCacheService/UploadObject/"
   ), cache_upload
   assert cache_upload["uploadTicketId"], cache_upload
   client.succeed(
@@ -1272,12 +1274,12 @@
       f"-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
       f"-H 'Authorization: Bearer {session_token}' "
       f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'path': 'web/multipart.bin', 'byteSize': multipart_size, 'sha256': multipart_digest}))} "
-      "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/BeginCacheMultipartUpload",
+      "https://aos.fleet.test/aos.hub.v1.BinaryCacheService/BeginCacheMultipartUpload",
       timeout=60,
   ))
   assert int(multipart_upload["partSize"]) == multipart_part_size, multipart_upload
   assert multipart_upload["partUploadUrl"].startswith(
-      "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/UploadPart/"
+      "https://aos.fleet.test/aos.hub.v1.BinaryCacheService/UploadPart/"
   ), multipart_upload
   multipart_parts = []
   for part_number in (1, 2):
@@ -1303,7 +1305,7 @@
       f"-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
       f"-H 'Authorization: Bearer {session_token}' "
       f"--data {shlex.quote(json.dumps({'uploadId': multipart_upload['uploadId'], 'parts': multipart_parts}))} "
-      "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/CompleteCacheMultipartUpload",
+      "https://aos.fleet.test/aos.hub.v1.BinaryCacheService/CompleteCacheMultipartUpload",
       timeout=180,
   ))
   assert multipart_completion["state"] == "completed", multipart_completion
@@ -1322,7 +1324,9 @@
   # Complete source evidence exceeds /tmp's memory-backed capacity.
   finalized_container = json.loads(client.succeed(textwrap.dedent(f"""
       set -euo pipefail
-      export HOME=/tmp/hybrid-apr-home USER=fleet-publisher
+      export HOME=/var/lib/hybrid-apr-home USER=fleet-publisher
+      export TMPDIR="$HOME/.cache/tmp"
+      mkdir -p "$TMPDIR"
       export PATH=${pkgs.git}/bin:${pkgs.openssh}/bin:$PATH
       key="$HOME/.config/apm/keys/containers-initial.key"
       {AOS} --json --progress off --color never container prepare-signature \\
@@ -1338,7 +1342,9 @@
   assert finalized_container["release_identity"] == "1.0.0", finalized_container
   client.succeed(textwrap.dedent(f"""
       set -eu
-      export HOME=/tmp/hybrid-apr-home USER=fleet-publisher
+      export HOME=/var/lib/hybrid-apr-home USER=fleet-publisher
+      export TMPDIR="$HOME/.cache/tmp"
+      mkdir -p "$TMPDIR"
       export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
       export NIX_REMOTE=""
       export NIX_CONF_DIR="$HOME/.config/nix"
@@ -1376,14 +1382,14 @@
       f"{CURL} -fsS -X POST -H 'Content-Type: application/x-www-form-urlencoded' "
       f"-H 'Authorization: Bearer {publisher_secret}' "
       "--data-urlencode 'grant_type=urn:aos:params:oauth:grant-type:provisioning-token' "
-      "https://aos.andyl.org/oauth2/token",
+      "https://aos.fleet.test/oauth2/token",
   ))["access_token"]
   # The VM agent has no login HOME. Give each publication an explicit private
   # retry journal so uploads exercise the same durable custody as real users.
   client.succeed("${pkgs.coreutils}/bin/install -d -m 0700 /var/lib/hybrid-client/publication-journals")
   bootstrap = json.loads(client.succeed(
       f"{AOS} --json --progress off --color never hub registry publish upload fleet/containers "
-      "--root /tmp/hybrid-bootstrap-surface --hub https://aos.andyl.org "
+      "--root /tmp/hybrid-bootstrap-surface --hub https://aos.fleet.test "
       "--direct-upload-journal /var/lib/hybrid-client/publication-journals/bootstrap.sqlite "
       f"--token {shlex.quote(publisher_token)}",
       timeout=900,
@@ -1392,7 +1398,9 @@
 
   client.succeed(textwrap.dedent(f"""
       set -euo pipefail
-      export HOME=/tmp/hybrid-apr-home USER=fleet-publisher
+      export HOME=/var/lib/hybrid-apr-home USER=fleet-publisher
+      export TMPDIR="$HOME/.cache/tmp"
+      mkdir -p "$TMPDIR"
       export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
       export NIX_REMOTE="" NIX_CONF_DIR="$HOME/.config/nix"
       registry="$HOME/.local/share/apm/registries/containers"
@@ -1404,8 +1412,8 @@
         --container-signature-input /var/lib/hybrid-container-final/signature-input.json \\
         --container-layout /var/lib/hybrid-container-final/layout \\
         --key-id initial \\
-        --cache-url https://aos.andyl.org/fleet/containers/ \\
-        --upload-url https://aos.andyl.org/fleet/containers \\
+        --cache-url https://aos.fleet.test/fleet/containers/ \\
+        --upload-url https://aos.fleet.test/fleet/containers \\
         --token {shlex.quote(publisher_token)}
       {APR} --json stage show hybrid-container --registry containers \\
         > /var/lib/hybrid-container-registry-stage.json
@@ -1422,14 +1430,14 @@
   container_stage = json.loads(client.succeed(
       "XDG_CACHE_HOME=/var/lib/hybrid-container-upload-state "
       f"{AOS} --json --progress off --color never container publish aos "
-      "aos.andyl.org/aos:parity "
+      "aos.fleet.test/aos:parity "
       f"--release {shlex.quote(finalized_container['release'])} "
       f"--release-layout {shlex.quote(finalized_container['layout'])} "
       f"--signature-input {shlex.quote(finalized_container['signature_input'])} "
-      "--registry fleet/containers --registry-origin https://aos.andyl.org "
+      "--registry fleet/containers --registry-origin https://aos.fleet.test "
       f"--registry-token {shlex.quote(session_token)} "
       "--registry-stage /var/lib/hybrid-container-registry-stage.json "
-      "--hub https://aos.andyl.org "
+      "--hub https://aos.fleet.test "
       f"--token {shlex.quote(session_token)} "
       "--idempotency-key hybrid-container-parity-stage --stage-only",
       timeout=900,
@@ -1440,12 +1448,14 @@
   assert container_stage["missing_paths"] == [], container_stage
   client.succeed(textwrap.dedent(f"""
       set -eu
-      export HOME=/tmp/hybrid-apr-home USER=fleet-publisher
+      export HOME=/var/lib/hybrid-apr-home USER=fleet-publisher
+      export TMPDIR="$HOME/.cache/tmp"
+      mkdir -p "$TMPDIR"
       export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
       export NIX_REMOTE="" NIX_CONF_DIR="$HOME/.config/nix"
       registry="$HOME/.local/share/apm/registries/containers"
       {APR} release 1.0.0 --registry containers --from-stage hybrid-container \\
-        --stage-revision 1 --upload-url https://aos.andyl.org/fleet/containers \\
+        --stage-revision 1 --upload-url https://aos.fleet.test/fleet/containers \\
         --token {shlex.quote(publisher_token)}
       # The next release has no container; remove its predecessor's sidecar
       # through a real commit rather than carrying a mismatched identity.
@@ -1456,12 +1466,12 @@
       {APR} release 2.0.0 --registry containers \\
         --key-id initial \\
         --channel stable --init-channel \\
-        --cache-url https://aos.andyl.org/fleet/containers \\
-        --upload-url file:///tmp/hybrid-publication-surface
+        --cache-url https://aos.fleet.test/fleet/containers \\
+        --upload-url file:///var/tmp/hybrid-publication-surface
       {APR} verify --registry containers
-      mkdir -p /tmp/hybrid-publication-surface/web
+      mkdir -p /var/tmp/hybrid-publication-surface/web
       ${pkgs.coreutils}/bin/head -c {publication_size} /dev/zero \\
-        > /tmp/hybrid-publication-surface/{publication_path}
+        > /var/tmp/hybrid-publication-surface/{publication_path}
   """), timeout=600)
   # Authoring and uploading the signed channel can each exceed a browser
   # token lifetime. Resume only the exact publication after JWT expiry.
@@ -1472,7 +1482,7 @@
           client,
           lambda token: (
               f"{AOS} --json hub registry publish upload fleet/containers "
-              "--root /tmp/hybrid-publication-surface --hub https://aos.andyl.org "
+              "--root /var/tmp/hybrid-publication-surface --hub https://aos.fleet.test "
               "--direct-upload-journal /var/lib/hybrid-client/publication-journals/containers.sqlite "
               f"--token {shlex.quote(token)}"
           ),
@@ -1544,7 +1554,7 @@
       output = native.succeed(
           "HUB_DATABASE_URL_FILE=/var/lib/aos-hub/fleet-index/database-url "
           "HUB_TOPOLOGY=hybrid HUB_DEPLOYMENT_ID=fleet-hybrid-v1 "
-          "HUB_HYBRID_WORKER_URL=https://aos.andyl.org "
+          "HUB_HYBRID_WORKER_URL=https://aos.fleet.test "
           "HUB_STORAGE_WORK_KEY_FILE=/var/lib/aos-hub/fleet-index/storage-key "
           "HUB_SECRET_VERSION_MANIFEST_FILE=/var/lib/aos-hub/fleet-index/secret-version-manifest "
           f"{CHROOT} ${pkgs.aos-hub}/bin/aos-hub index {shlex.quote(slug)} 2>&1",
@@ -1582,7 +1592,7 @@
   assert len(indexed_releases) == 2, indexed_releases
   for version, row in zip(("1.0.0", "2.0.0"), indexed_releases):
       expected_tag = client.succeed(
-          f"${pkgs.git}/bin/git -C /tmp/hybrid-apr-home/.local/share/apm/registries/containers "
+          f"${pkgs.git}/bin/git -C /var/lib/hybrid-apr-home/.local/share/apm/registries/containers "
           f"rev-parse refs/tags/{version}"
       ).strip()
       semver, tag_oid, signer = row.split("|")
@@ -1608,7 +1618,9 @@
   # whose immutable releases contain package metadata and no image roots.
   metadata_trust_key = client.succeed(textwrap.dedent(f"""
       set -eu
-      export HOME=/tmp/hybrid-apr-home
+      export HOME=/var/lib/hybrid-apr-home
+      export TMPDIR="$HOME/.cache/tmp"
+      mkdir -p "$TMPDIR"
       {APR} keys generate initial --registry metadata 2>&1 | \\
         ${pkgs.gawk}/bin/awk '/Public key:/ {{print $NF; exit}}'
   """), timeout=120).strip()
@@ -1644,7 +1656,9 @@
   )
   client.succeed(textwrap.dedent(f"""
       set -eu
-      export HOME=/tmp/hybrid-apr-home
+      export HOME=/var/lib/hybrid-apr-home
+      export TMPDIR="$HOME/.cache/tmp"
+      mkdir -p "$TMPDIR"
       export PATH=${pkgs.git}/bin:${pkgs.openssh}/bin:$PATH
       key="$HOME/.config/apm/keys/metadata-initial.key"
       {APR} create metadata --trust-key {shlex.quote(metadata_trust_key)} \\
@@ -1657,7 +1671,7 @@
       {APR} release 1.0.0 --registry metadata \\
         --key-id initial \\
         --channel stable --init-channel \\
-        --cache-url https://aos.andyl.org/fleet/objects \\
+        --cache-url https://aos.fleet.test/fleet/objects \\
         --upload-url file:///tmp/hybrid-metadata-surface
       {APR} verify --registry metadata
   """), timeout=180)
@@ -1666,7 +1680,7 @@
       client,
       lambda token: (
           f"{AOS} --json hub registry publish upload fleet/metadata "
-          "--root /tmp/hybrid-metadata-surface --hub https://aos.andyl.org "
+          "--root /tmp/hybrid-metadata-surface --hub https://aos.fleet.test "
           "--direct-upload-journal /var/lib/hybrid-client/publication-journals/metadata.sqlite "
           f"--token {shlex.quote(token)}"
       ),
@@ -1721,7 +1735,7 @@
       f"-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
       f"-H 'Authorization: Bearer {session_token}' "
       f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'paths': parallel_paths, 'sizes': [parallel_size] * len(parallel_paths)}))} "
-      "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
+      "https://aos.fleet.test/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
       timeout=60,
   ).strip()
   if parallel_admission_status != "200":
@@ -1768,7 +1782,7 @@
           "expires_at": issued_at + 30,
           "request_id": f"fleet-native-load-{issued_at}-{index}",
           "scheme": "https",
-          "authority": "aos.andyl.org",
+          "authority": "aos.fleet.test",
           "method": "GET",
           "path_and_query": "/-/instance",
           "body_sha256": hashlib.sha256(b"").hexdigest(),
@@ -1785,7 +1799,7 @@
       native_page_commands.append(
           f"{CURL} -sS -o /dev/null -w {shlex.quote(PAGE_PERF_WRITEOUT)} "
           f"-H 'x-aos-hybrid-ingress: {compact}' -H \"Cookie: $cookie\" "
-          "https://aos.staging.andyl.org/-/instance"
+          "https://aos-origin.fleet.test/-/instance"
       )
 
   parallel_commands.extend([
@@ -1796,7 +1810,7 @@
       'while test "$attempt" -lt 25; do',
       f"{CURL} -sS -o /dev/null -w {shlex.quote(PAGE_PERF_WRITEOUT)} "
       "-H 'cf-connecting-ip: 192.0.2.10' -H \"Cookie: $cookie\" "
-      "https://aos.andyl.org/-/instance >> /tmp/hybrid-parallel-pages",
+      "https://aos.fleet.test/-/instance >> /tmp/hybrid-parallel-pages",
       'attempt=$((attempt + 1))',
       'done',
   ])
@@ -1934,14 +1948,14 @@
 
   oci_token = json.loads(client.succeed(
       f"{CURL} -fsS -H 'Authorization: Bearer {session_token}' "
-      "'https://aos.andyl.org/v2/token?"
-      "service=aos.andyl.org&scope=repository:aos:pull,push'",
+      "'https://aos.fleet.test/v2/token?"
+      "service=aos.fleet.test&scope=repository:aos:pull,push'",
       timeout=60,
   ))["token"]
   client.succeed(
       f"{CURL} -fsS -X POST -D /tmp/hybrid-oci-start.headers "
       f"-H 'Authorization: Bearer {oci_token}' -H 'Content-Length: 0' "
-      "https://aos.andyl.org/v2/aos/blobs/uploads/ "
+      "https://aos.fleet.test/v2/aos/blobs/uploads/ "
       "-o /dev/null",
       timeout=60,
   )
@@ -1951,7 +1965,7 @@
   assert "/blobs/uploads/" in location, location
   upload_id = location.rsplit("/", 1)[-1]
   assert re.fullmatch(r"[0-9a-f-]{32,36}", upload_id), upload_id
-  upload_url = f"https://aos.andyl.org/v2/aos/blobs/uploads/{upload_id}"
+  upload_url = f"https://aos.fleet.test/v2/aos/blobs/uploads/{upload_id}"
   invalid_range_status = client.succeed(
       f"{CURL} -sS -o /dev/null -w '%{{http_code}}' -X PATCH "
       f"-H 'Authorization: Bearer {oci_token}' "
@@ -1974,7 +1988,7 @@
   )
   client.succeed(
       f"{CURL} -fsS -H 'Authorization: Bearer {oci_token}' "
-      f"'https://aos.andyl.org/v2/aos/blobs/sha256:{cache_digest}' "
+      f"'https://aos.fleet.test/v2/aos/blobs/sha256:{cache_digest}' "
       "-o /tmp/hybrid-oci-downloaded",
       timeout=180,
   )
@@ -1997,7 +2011,7 @@
   client.succeed(
       f"{CURL} -fsS -X POST -D /tmp/hybrid-oci-final-start.headers "
       f"-H 'Authorization: Bearer {oci_token}' -H 'Content-Length: 0' "
-      "https://aos.andyl.org/v2/aos/blobs/uploads/ "
+      "https://aos.fleet.test/v2/aos/blobs/uploads/ "
       "-o /dev/null",
       timeout=60,
   )
@@ -2007,7 +2021,7 @@
   final_upload_id = final_location.rsplit("/", 1)[-1]
   assert re.fullmatch(r"[0-9a-f-]{32,36}", final_upload_id), final_upload_id
   final_upload_url = (
-      f"https://aos.andyl.org/v2/aos/blobs/uploads/{final_upload_id}"
+      f"https://aos.fleet.test/v2/aos/blobs/uploads/{final_upload_id}"
   )
   client.succeed(
       f"{CURL} -fsS -X PATCH -H 'Authorization: Bearer {oci_token}' "
@@ -2024,7 +2038,7 @@
   )
   client.succeed(
       f"{CURL} -fsS -H 'Authorization: Bearer {oci_token}' "
-      f"{shlex.quote('https://aos.andyl.org/v2/aos/blobs/sha256:' + final_digest)} "
+      f"{shlex.quote('https://aos.fleet.test/v2/aos/blobs/sha256:' + final_digest)} "
       "-o /tmp/hybrid-oci-final-downloaded",
       timeout=180,
   )
@@ -2042,7 +2056,7 @@
   client.succeed(
       f"{CURL} -fsS -X POST -D /tmp/hybrid-oci-large-start.headers "
       f"-H 'Authorization: Bearer {oci_token}' -H 'Content-Length: 0' "
-      "https://aos.andyl.org/v2/aos/blobs/uploads/ -o /dev/null",
+      "https://aos.fleet.test/v2/aos/blobs/uploads/ -o /dev/null",
       timeout=60,
   )
   large_location = client.succeed(
@@ -2051,11 +2065,11 @@
   ).strip()
   large_upload_id = large_location.rsplit("/", 1)[-1]
   assert re.fullmatch(r"[0-9a-f-]{32,36}", large_upload_id), large_upload_id
-  large_upload_url = f"https://aos.andyl.org/v2/aos/blobs/uploads/{large_upload_id}"
+  large_upload_url = f"https://aos.fleet.test/v2/aos/blobs/uploads/{large_upload_id}"
   try:
       client.succeed(
           f"{CURL} -fsS -X PATCH -H 'Authorization: Bearer {oci_token}' "
-          f"--data-binary @/tmp/hybrid-publication-surface/{publication_path} "
+          f"--data-binary @/var/tmp/hybrid-publication-surface/{publication_path} "
           f"{shlex.quote(large_upload_url)} -o /dev/null",
           timeout=180,
       )
@@ -2081,7 +2095,7 @@
   )
   client.succeed(
       f"{CURL} -fsS -H 'Authorization: Bearer {oci_token}' "
-      f"{shlex.quote('https://aos.andyl.org/v2/aos/blobs/sha256:' + publication_digest)} "
+      f"{shlex.quote('https://aos.fleet.test/v2/aos/blobs/sha256:' + publication_digest)} "
       "-o /tmp/hybrid-oci-large-downloaded",
       timeout=180,
   )
@@ -2365,7 +2379,7 @@
       f"{CURL} -fsS -X POST -H 'content-type: application/json' "
       f"-H 'x-aos-storage-work-signature: {signature}' "
       f"--data-binary {shlex.quote(body.decode())} "
-      "https://aos.andyl.org/_internal/storage/v1/execute",
+      "https://aos.fleet.test/_internal/storage/v1/execute",
       timeout=60,
   )
   assert len(cache_verification_bytes) < 2048, len(cache_verification_bytes)
@@ -2394,7 +2408,7 @@
           f"{CURL} -fsS -X POST -H 'content-type: application/json' "
           f"-H 'x-aos-storage-work-signature: {request_signature}' "
           f"--data-binary {shlex.quote(request_body.decode())} "
-          "https://aos.andyl.org/_internal/storage/v1/execute",
+          "https://aos.fleet.test/_internal/storage/v1/execute",
           timeout=60,
       ))["outcome"]
 
@@ -2579,7 +2593,7 @@
               f"{CURL} -fsS -X POST -H 'content-type: application/json' "
               f"-H 'x-aos-storage-work-signature: {head_signature}' "
               f"--data-binary {shlex.quote(head_body.decode())} "
-              "https://aos.andyl.org/_internal/storage/v1/execute",
+              "https://aos.fleet.test/_internal/storage/v1/execute",
               timeout=60,
           ))
           break
@@ -2615,7 +2629,7 @@
       "-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
       f"-H 'Authorization: Bearer {session_token}' "
       f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'path': gc_nar_path, 'size': len(gc_nar_bytes)}))} "
-      "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
+      "https://aos.fleet.test/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
       timeout=60,
   ).strip()
   if gc_upload_status != "200":
@@ -2650,7 +2664,7 @@
       "-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
       f"-H 'Authorization: Bearer {session_token}' "
       f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'narinfos': [{'storeHash': gc_store_hash, 'narinfo': gc_narinfo}]}))} "
-      "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/RegisterCacheNarinfos",
+      "https://aos.fleet.test/aos.hub.v1.BinaryCacheService/RegisterCacheNarinfos",
       timeout=60,
   ))
   assert int(gc_registration["registered"]) == 1, gc_registration
@@ -2838,7 +2852,7 @@
           "-H 'content-type: application/json' "
           f"-H 'x-aos-storage-work-signature: {rejected_signature}' "
           f"--data-binary {shlex.quote(rejected_body.decode())} "
-          "https://aos.andyl.org/_internal/storage/v1/execute",
+          "https://aos.fleet.test/_internal/storage/v1/execute",
           timeout=60,
       ).strip()
       assert rejected_status == "401", (rejected_plan, rejected_status)
@@ -2856,7 +2870,7 @@
       f"{CURL} -fsS -X POST -H 'content-type: application/json' "
       f"-H 'x-aos-storage-work-signature: {outage_signature}' "
       f"--data-binary {shlex.quote(outage_body.decode())} "
-      "https://aos.andyl.org/_internal/storage/v1/execute",
+      "https://aos.fleet.test/_internal/storage/v1/execute",
       timeout=60,
   ))
   assert outage_result["outcome"]["kind"] == "sha256_evidence", outage_result
@@ -2864,36 +2878,36 @@
 
   client.succeed(textwrap.dedent(f"""
       set -eu
-      {CURL} -fsS https://aos.andyl.org/_assets/style.css \
+      {CURL} -fsS https://aos.fleet.test/_assets/style.css \
         > /tmp/hybrid-origin-outage.css
       {GREP} -q 'Geist Sans' /tmp/hybrid-origin-outage.css
       asset_code=$({CURL} -sS -I -o /tmp/hybrid-origin-outage-font.headers \
         -w '%{{http_code}}' \
-        https://aos.andyl.org/_assets/geist-sans-variable.woff2)
+        https://aos.fleet.test/_assets/geist-sans-variable.woff2)
       test "$asset_code" = 200
       {GREP} -qi '^content-type: font/woff2' \
         /tmp/hybrid-origin-outage-font.headers
       cookie=$(cat /tmp/hybrid-cookie)
       code=$({CURL} -sS -o /tmp/hybrid-origin-outage.html -w '%{{http_code}}' \\
         -H 'cf-connecting-ip: 192.0.2.10' -H "Cookie: $cookie" \\
-        https://aos.andyl.org/-/instance)
+        https://aos.fleet.test/-/instance)
       test "$code" -ge 500
       code=$({CURL} -sS -o /dev/null -w '%{{http_code}}' -X PUT \\
         --data-binary 'storage-body-must-stay-at-worker' \\
-        https://aos.andyl.org/aos.hub.v1.PublishService/UploadPart/missing/1)
+        https://aos.fleet.test/aos.hub.v1.PublishService/UploadPart/missing/1)
       test "$code" = 503
       code=$({CURL} -sS -o /dev/null -w '%{{http_code}}' -X PATCH \\
         --data-binary 'oci-chunk-must-stay-at-worker' \\
-        https://aos.andyl.org/v2/aos/blobs/uploads/missing)
+        https://aos.fleet.test/v2/aos/blobs/uploads/missing)
       test "$code" = 503
       code=$({CURL} -sS -o /dev/null -w '%{{http_code}}' -X DELETE \\
         --data-binary 'delete-body-must-stay-at-worker' \\
-        https://aos.andyl.org/v2/aos/blobs/uploads/missing)
+        https://aos.fleet.test/v2/aos/blobs/uploads/missing)
       test "$code" = 400
   """), timeout=60)
   native.succeed("systemctl start aos-hub.service")
   client.wait_until_succeeds(
-      f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.andyl.org/-/health",
+      f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.fleet.test/-/health",
       timeout=180,
   )
 
@@ -2906,11 +2920,11 @@
       cookie=$(cat /tmp/hybrid-cookie)
       {CURL} -sS -o /dev/null -w '%{{http_code}}' \\
         -H 'cf-connecting-ip: 192.0.2.10' -H "Cookie: $cookie" \\
-        https://aos.andyl.org/-/instance
+        https://aos.fleet.test/-/instance
   """), timeout=60).strip()
   assert int(database_outage_status) >= 500, database_outage_status
   client.succeed(
-      f"{CURL} -fsS https://aos.andyl.org/_assets/style.css > /dev/null",
+      f"{CURL} -fsS https://aos.fleet.test/_assets/style.css > /dev/null",
       timeout=60,
   )
   database_machine.succeed(
@@ -2922,7 +2936,7 @@
   client.wait_until_succeeds(
       f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' "
       "-H \"Cookie: $(cat /tmp/hybrid-cookie)\" "
-      "https://aos.andyl.org/-/instance | "
+      "https://aos.fleet.test/-/instance | "
       f"{GREP} -q '<html'",
       timeout=180,
   )

@@ -132,7 +132,7 @@ def install_direct_storage_boundaries(native, worker, tools):
         root.mkdir(mode=0o700, exist_ok=False)
         native = socket.gethostbyname('native')
         worker = socket.gethostbyname('worker')
-        before_worker = socket.gethostbyname('aos.andyl.org')
+        before_worker = socket.gethostbyname('aos.fleet.test')
         if native == worker or before_worker != worker or any(
                 not ipaddress.ip_address(value).is_private for value in (native, worker)):
             raise ValueError('fresh fixture Worker/Native routing differs')
@@ -143,10 +143,10 @@ def install_direct_storage_boundaries(native, worker, tools):
             content, separator, comment = line.partition('#')
             fields = content.split()
             if len(fields) > 1:
-                fields = [fields[0], *[value for value in fields[1:] if value != 'aos.andyl.org']]
+                fields = [fields[0], *[value for value in fields[1:] if value != 'aos.fleet.test']]
                 content = ' '.join(fields) if len(fields) > 1 else ''
             lines.append(content + (separator + comment if separator else ''))
-        after = ('\\n'.join(lines) + '\\n' + native + ' aos.andyl.org\\n').encode()
+        after = ('\\n'.join(lines) + '\\n' + native + ' aos.fleet.test\\n').encode()
         for name, body in (('hosts.before', before), ('hosts.selected', after)):
             descriptor = os.open(root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, 'wb') as output:
@@ -156,10 +156,10 @@ def install_direct_storage_boundaries(native, worker, tools):
         with os.fdopen(descriptor, 'wb') as output:
             output.write(after)
         os.replace(temporary, path)
-        if socket.gethostbyname('aos.andyl.org') != native or socket.gethostbyname('worker') != worker:
+        if socket.gethostbyname('aos.fleet.test') != native or socket.gethostbyname('worker') != worker:
             raise ValueError('fixture routing did not preserve the actual Worker upstream')
         print(json.dumps({'version': 1, 'nativeAddress': native, 'workerAddress': worker,
-            'configuredOrigin': 'https://aos.andyl.org',
+            'configuredOrigin': 'https://aos.fleet.test',
             'hostsBeforeSha256': hashlib.sha256(before).hexdigest(),
             'hostsSelectedSha256': hashlib.sha256(after).hexdigest(),
             'scope': 'fresh Native VM only; actual Worker and client resolution unchanged'}))

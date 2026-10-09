@@ -208,6 +208,29 @@ pub async fn router_with_hybrid_ingress_and_direct(
     work: Arc<crate::storage_work::RemoteStorageWorkClient>,
     direct: Option<Arc<dyn crate::direct_upload::DirectUploadTransportFactory>>,
 ) -> Router {
+    router_with_hybrid_upload_mode(
+        state,
+        key,
+        deployment_id,
+        work,
+        direct,
+        aos_hub_core::hybrid_upload::HybridUploadMode::default(),
+    )
+    .await
+}
+
+/// Builds a paired Native origin with an explicitly selected upload transport.
+///
+/// Worker proxy mode changes client discovery only. Signed ingress, remote
+/// storage execution, and rejection of bulk bodies at Native remain enforced.
+pub async fn router_with_hybrid_upload_mode(
+    state: Arc<AppState>,
+    key: Arc<aos_hub_core::hybrid_ingress::HybridIngressKey>,
+    deployment_id: String,
+    work: Arc<crate::storage_work::RemoteStorageWorkClient>,
+    direct: Option<Arc<dyn crate::direct_upload::DirectUploadTransportFactory>>,
+    upload_mode: aos_hub_core::hybrid_upload::HybridUploadMode,
+) -> Router {
     let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> = Arc::new(
         crate::storage_work::HybridSurfaceProvider::new(Arc::clone(&state.db), Arc::clone(&work)),
     );
@@ -216,7 +239,15 @@ pub async fn router_with_hybrid_ingress_and_direct(
     );
     let ingress_db = Arc::clone(&state.db);
     let control_url = state.external_url.clone();
-    let app = router_with_ports(state, None, Some(surface), Some(writes), direct).await;
+    let app = router_with_ports(
+        state,
+        None,
+        Some(surface),
+        Some(writes),
+        direct,
+        upload_mode,
+    )
+    .await;
     Router::new()
         .fallback_service(app)
         .layer(axum::middleware::from_fn(move |request, next| {
@@ -517,7 +548,15 @@ pub async fn router_with_transport(
     state: Arc<AppState>,
     transport: Option<aos_hub_core::connect::DeliveryTransportEvidence>,
 ) -> Router {
-    router_with_ports(state, transport, None, None, None).await
+    router_with_ports(
+        state,
+        transport,
+        None,
+        None,
+        None,
+        aos_hub_core::hybrid_upload::HybridUploadMode::default(),
+    )
+    .await
 }
 
 async fn router_with_ports(
@@ -526,6 +565,7 @@ async fn router_with_ports(
     surface_override: Option<Arc<dyn aos_hub_core::fetch::SurfaceProvider>>,
     write_override: Option<Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>>,
     direct_factory: Option<Arc<dyn crate::direct_upload::DirectUploadTransportFactory>>,
+    upload_mode: aos_hub_core::hybrid_upload::HybridUploadMode,
 ) -> Router {
     let hybrid_delivery = surface_override.is_some();
     let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
@@ -611,6 +651,7 @@ async fn router_with_ports(
         // This branch is reached only with the actual paired RemoteStorageWorkClient.
         rpc_service = rpc_service
             .with_hybrid_delivery()
+            .with_hybrid_upload_mode(upload_mode)
             .with_worker_credential_registration();
     }
     if let Some(provider) = &state.domain_probe_terminator {
@@ -1314,6 +1355,71 @@ mod hybrid_ingress_tests {
     use axum::http::Method;
     use sha2::{Digest as _, Sha256};
     use tower::ServiceExt as _;
+
+    #[tokio::test]
+    async fn both_hybrid_upload_modes_reject_bulk_before_polling_native_body() {
+        use aos_hub_core::hybrid_ingress::HYBRID_UPLOAD_PHASE_HEADER;
+        use aos_hub_core::hybrid_upload::HybridUploadMode;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        for mode in [HybridUploadMode::Direct, HybridUploadMode::WorkerProxy] {
+            let db = Arc::new(Database::open_in_memory().await.unwrap());
+            let state = Arc::new(AppState::new(db, "https://hub.example.test".into()).await);
+            let key = Arc::new(HybridIngressKey::new([9; 32]).unwrap());
+            let work = Arc::new(
+                crate::storage_work::RemoteStorageWorkClient::new(
+                    "https://worker.example.test",
+                    "deployment-1".into(),
+                    &[8; 32],
+                )
+                .unwrap(),
+            );
+            let app = router_with_hybrid_upload_mode(
+                state,
+                Arc::clone(&key),
+                "deployment-1".into(),
+                work,
+                None,
+                mode,
+            )
+            .await;
+            let path = "/aos.hub.v1.PublishService/UploadPart/ticket/1";
+            let now = aos_hub_core::clock::now_unix_secs();
+            let assertion = HybridIngressAssertion {
+                version: 1,
+                deployment_id: "deployment-1".into(),
+                issued_at: now,
+                expires_at: now + 30,
+                request_id: "bulk-body-refusal".into(),
+                scheme: "https".into(),
+                authority: "hub.example.test".into(),
+                method: "PUT".into(),
+                path_and_query: path.into(),
+                body_sha256: hex::encode(Sha256::digest([])),
+                upload_phase: Some("admit".into()),
+                client_ip: "192.0.2.7".into(),
+            };
+            let polled = Arc::new(AtomicBool::new(false));
+            let observed = Arc::clone(&polled);
+            let body = axum::body::Body::from_stream(futures_util::stream::poll_fn(move |_| {
+                observed.store(true, Ordering::SeqCst);
+                std::task::Poll::Ready(None::<Result<axum::body::Bytes, std::io::Error>>)
+            }));
+            let request = axum::http::Request::builder()
+                .method(Method::PUT)
+                .uri(path)
+                .header(HYBRID_INGRESS_HEADER, key.sign(&assertion).unwrap())
+                .header(HYBRID_UPLOAD_PHASE_HEADER, "admit")
+                .header(header::CONTENT_LENGTH, "2147483648")
+                .body(body)
+                .unwrap();
+
+            let response = app.oneshot(request).await.unwrap();
+
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE, "{mode:?}");
+            assert!(!polled.load(Ordering::SeqCst), "{mode:?}");
+        }
+    }
 
     #[tokio::test]
     async fn hybrid_origin_preserves_console_scope_and_replaces_transport_evidence() {

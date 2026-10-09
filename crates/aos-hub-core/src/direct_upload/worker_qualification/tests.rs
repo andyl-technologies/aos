@@ -11,6 +11,35 @@ fn resign(artifact: &mut DirectWorkerQualificationArtifact) {
 }
 
 #[test]
+fn queued_runtime_acceptance_does_not_require_foreground_verification() {
+    let (mut artifact, key) = fixtures::direct_worker_qualification_fixture();
+    artifact.evidence.runtime.maximum_verification_seconds = WireInteger::new(180);
+    artifact.evidence.runtime.settlement_reserve_seconds = WireInteger::new(30);
+    artifact
+        .evidence
+        .runtime_measurement
+        .maximum_verification_millis = WireInteger::new(101_104);
+    artifact.evidence.runtime.qualification_digest =
+        direct_qualification_digest(&artifact.evidence.runtime_measurement).unwrap();
+    resign(&mut artifact);
+
+    artifact
+        .verify("deployment-1", "https://hub.example.test", &key, 100)
+        .unwrap();
+    assert!(artifact
+        .evidence
+        .runtime
+        .validate_foreground_window(30, 1)
+        .is_err());
+
+    artifact.evidence.runtime.maximum_verification_seconds = WireInteger::new(870);
+    resign(&mut artifact);
+    assert!(artifact
+        .verify("deployment-1", "https://hub.example.test", &key, 100)
+        .is_err());
+}
+
+#[test]
 fn expired_guard_history_verifies_original_facts_without_qualifying_dispatch() {
     let (original, reviewer) = fixtures::direct_worker_qualification_fixture();
     let expiry = original.evidence.valid_until.get();

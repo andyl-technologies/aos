@@ -138,6 +138,7 @@
     // lib.optionalAttrs cfg.hybrid.enable {
       HUB_HYBRID_WORKER_URL = cfg.hybrid.workerUrl;
       HUB_HYBRID_ORIGIN_URL = cfg.hybrid.originUrl;
+      HUB_HYBRID_UPLOAD_MODE = cfg.hybrid.uploadMode;
     }
     // lib.optionalAttrs releaseEvidenceComplete {
       HUB_RELEASE_RECEIPT_KEY_ID = cfg.releaseReceiptKeyId;
@@ -298,6 +299,11 @@ in {
       description = "Persistent directory containing the hub database and local storage bindings.";
     };
     hybrid = {
+      uploadMode = lib.mkOption {
+        type = types.enum ["direct" "worker_proxy"];
+        default = "direct";
+        description = "Client upload transport. Worker proxy compatibility keeps upload bytes in Workers; direct requires signed provider URLs.";
+      };
       enable = lib.mkOption {
         type = types.bool;
         default = false;

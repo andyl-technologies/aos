@@ -83,7 +83,7 @@ let
       qualificationKeys = "hub-qualification-keys";
     };
   };
-  hybrid = evaluate {
+  hybridConfiguration = {
     enable = true;
     deploymentId = "hub-hybrid-v1";
     externalUrl = "https://hub.example.test";
@@ -102,7 +102,13 @@ let
       domainProbeSignerManifest = "hub-probe-manifest";
     };
   };
+  hybrid = evaluate hybridConfiguration;
   hybridService = builtins.head (builtins.filter (node: node.input ? service && node.input.service == "aos-hub") (builtins.attrValues hybrid.config.aos.activation.graph.nodes));
+  hybridProxy = evaluate (hybridConfiguration
+    // {
+      hybrid = hybridConfiguration.hybrid // {uploadMode = "worker_proxy";};
+    });
+  hybridProxyService = builtins.head (builtins.filter (node: node.input ? service && node.input.service == "aos-hub") (builtins.attrValues hybridProxy.config.aos.activation.graph.nodes));
   hybridWithoutDatabase = evaluate {
     enable = true;
     hybrid.enable = true;
@@ -166,6 +172,8 @@ let
     hubRejectsMissingAuthority = !(assertionsPass invalid);
     hubRejectsPartialReleaseAuthority = !(assertionsPass incompleteRelease);
     hubHybridConfigurationPasses = assertionsPass hybrid;
+    hubHybridDefaultsToSignedDirect = hybridService.input.environment.variables.HUB_HYBRID_UPLOAD_MODE == "direct";
+    hubHybridExplicitWorkerProxy = assertionsPass hybridProxy && hybridProxyService.input.environment.variables.HUB_HYBRID_UPLOAD_MODE == "worker_proxy";
     hubHybridUsesRemoteWork =
       builtins.elem "hybrid" (builtins.head hybridService.input.lifecycle.start).executable.arguments
       && hybridService.input.environment.variables.HUB_HYBRID_WORKER_URL == "https://storage.example.test"

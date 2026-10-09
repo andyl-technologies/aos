@@ -550,6 +550,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn checked_batch_waits_for_a_busy_writer_before_mutating() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("concurrent.sqlite");
+        let original = SqlxBackend::connect_sqlite(path.to_str().unwrap())
+            .await
+            .unwrap();
+        original
+            .execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER NOT NULL);")
+            .await
+            .unwrap();
+
+        let SqlxBackend::Sqlite(pool) = original else {
+            panic!("fixture must use SQLite");
+        };
+        let options = pool
+            .connect_options()
+            .as_ref()
+            .clone()
+            .busy_timeout(Duration::from_millis(30));
+        let competing_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap();
+        let backend = Arc::new(SqlxBackend::Sqlite(competing_pool));
+        let blocker = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        let writer = Arc::clone(&backend);
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let pending = tokio::spawn(async move {
+            started.send(()).unwrap();
+            writer
+                .checked_batch(&[CheckedStatement::exact(
+                    "INSERT INTO t (id, v) VALUES (1, 1)",
+                    vec![],
+                    1,
+                )])
+                .await
+        });
+
+        waiting.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(!pending.is_finished(), "writer contention must be retried");
+        assert!(backend
+            .query("SELECT id FROM t", &[])
+            .await
+            .unwrap()
+            .is_empty());
+        blocker.commit().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), pending)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        let rows = backend.query("SELECT v FROM t", &[]).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get::<i64>(0).unwrap(), 1);
+    }
+
+    #[tokio::test]
     async fn checked_batch_rolls_back_on_an_affected_row_mismatch() {
         let backend = batch_fixture().await;
         let error = backend

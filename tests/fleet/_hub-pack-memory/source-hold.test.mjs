@@ -28,7 +28,7 @@ async function setup(bytes, span = 4000) {
     files[role] = { file, bytes: body.length, sha256: createHash("sha256").update(body).digest("hex"),
       path: `/fleet-mirror/${runId}/releases/memory/${runId}/live36/${role}` };
   }
-  const selected = { version: 1, host: "aos.andyl.org:4778", port: 4778,
+  const selected = { version: 1, host: "aos.fleet.test:4778", port: 4778,
     frontedBySelectedMirror: true, runId, privateRoot: root, controlSocket: `${root}/source.sock`,
     bootId: (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim(),
     cutoffUptimeMillis: uptime() * 1000 + span, files, ...tls };
@@ -69,7 +69,7 @@ function fetch(selected, role, rangeOverride = undefined) {
     const headers = { Host: selected.host };
     if (role.startsWith("metadata")) headers.Range = `bytes=0-${row.bytes - 1}`;
     if (rangeOverride !== undefined) headers.Range = rangeOverride;
-    const request = https.get({ hostname: "127.0.0.1", port: 4780, servername: "aos.andyl.org",
+    const request = https.get({ hostname: "127.0.0.1", port: 4780, servername: "aos.fleet.test",
       path: row.path, headers, ca, agent: false, timeout: 4500 }, response => {
       const parts = [];
       response.on("data", chunk => parts.push(chunk));

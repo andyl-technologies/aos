@@ -97,6 +97,7 @@ pub mod gc_controller;
 pub mod git;
 pub mod gitwrite;
 pub mod hybrid_ingress;
+pub mod hybrid_upload;
 pub mod image_catalog;
 pub mod image_http;
 pub mod indexer;
