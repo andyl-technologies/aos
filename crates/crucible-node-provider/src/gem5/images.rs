@@ -102,6 +102,7 @@ pub struct Gem5CapturedImage {
     pub(crate) completed: BTreeMap<Id, Gem5Completion>,
     pub(crate) pending: Option<Id>,
     pub(crate) last_acknowledged: Option<Id>,
+    source_supplementary_files_root: PathBuf,
     image_files: Vec<CapturedFile>,
     resource_files: Vec<CapturedFile>,
 }
@@ -195,6 +196,60 @@ impl Gem5CapturedImage {
         &self.source
     }
 
+    /// Returns the original native supplementary saved-file directory spelling.
+    ///
+    /// This is inert source lineage, not a path to open. It is retained from the
+    /// actual checkpoint roster so a restore can relocate DMTCP's saved-copy
+    /// references after the complete source namespace has been destroyed.
+    pub fn source_supplementary_files_root(&self) -> &Path {
+        &self.source_supplementary_files_root
+    }
+
+    /// Resolves the actual private supplementary directory in preserved image storage.
+    ///
+    /// The complete original role-qualified roster determines this directory.
+    /// It remains separate from the fresh incarnation's future checkpoint root.
+    ///
+    /// # Errors
+    /// Refuses ambiguous prefixes, changed image geometry, split namespaces or
+    /// a directory outside canonical owned private materialization.
+    pub fn materialized_supplementary_files_root(&self) -> Result<PathBuf, ProviderError> {
+        let prefix =
+            supplementary_prefix(self.image_files.iter().map(|file| file.relative.as_path()))?;
+        let mut namespace = None;
+        for file in &self.image_files {
+            if !file.artifact.path.ends_with(&file.relative) {
+                return Err(ProviderError::Correlation(
+                    "gem5 materialized image geometry differs",
+                ));
+            }
+            let root = file
+                .artifact
+                .path
+                .ancestors()
+                .nth(file.relative.components().count())
+                .ok_or(ProviderError::Frame(
+                    "gem5 materialized image namespace omitted",
+                ))?;
+            if namespace
+                .as_ref()
+                .is_some_and(|old: &PathBuf| old.as_path() != root)
+            {
+                return Err(ProviderError::Correlation(
+                    "gem5 materialized image namespace is split",
+                ));
+            }
+            namespace = Some(root.to_owned());
+        }
+        let root = namespace.ok_or(ProviderError::Frame(
+            "gem5 materialized image roster omitted",
+        ))?;
+        validate_private_directory(&root)?;
+        let target = root.join(prefix);
+        validate_private_directory(&target)?;
+        Ok(target)
+    }
+
     /// Verifies every original image and writable-resource artifact before allocation.
     ///
     /// # Errors
@@ -247,6 +302,13 @@ impl Gem5CapturedImage {
                 "gem5 capture requires one genuine owner process image",
             ));
         }
+        let supplementary =
+            supplementary_prefix(original_images.iter().map(|file| file.relative.as_path()))?;
+        let source_supplementary_files_root = tools.image_root.join(&supplementary);
+        validate_supplementary_source_root(
+            &source_supplementary_files_root,
+            original_images.iter().map(|file| file.relative.as_path()),
+        )?;
         let original_resources = inventory(&source.resource_root, false)?;
         if original_images
             .len()
@@ -270,6 +332,9 @@ impl Gem5CapturedImage {
         fs::create_dir(&resource_root)?;
         fs::set_permissions(&image_root, fs::Permissions::from_mode(0o700))?;
         fs::set_permissions(&resource_root, fs::Permissions::from_mode(0o700))?;
+        let supplementary_target = image_root.join(&supplementary);
+        fs::create_dir(&supplementary_target)?;
+        fs::set_permissions(&supplementary_target, fs::Permissions::from_mode(0o700))?;
         let mut image_files = Vec::new();
         for file in original_images {
             let target = image_root.join(&file.relative);
@@ -307,6 +372,7 @@ impl Gem5CapturedImage {
             completed,
             pending,
             last_acknowledged,
+            source_supplementary_files_root,
             image_files,
             resource_files,
         };
@@ -341,6 +407,80 @@ impl Gem5CapturedImage {
                 "gem5 original process image omitted",
             ))
     }
+}
+
+fn supplementary_prefix<'a>(
+    paths: impl Iterator<Item = &'a Path>,
+) -> Result<PathBuf, ProviderError> {
+    let mut prefixes = std::collections::BTreeSet::new();
+    let mut primary = std::collections::BTreeSet::new();
+    for path in paths {
+        let mut parts = path.components();
+        let Some(std::path::Component::Normal(first)) = parts.next() else {
+            return Err(ProviderError::Frame(
+                "gem5 supplementary image name is invalid",
+            ));
+        };
+        if parts.next().is_none() {
+            // Top-level primary images and operational restart scripts do not
+            // determine supplementary saved-file relocation.
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "dmtcp")
+            {
+                let stem = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .ok_or(ProviderError::Frame("gem5 primary image name is invalid"))?;
+                primary.insert(PathBuf::from(format!("{stem}_files")));
+            }
+            continue;
+        }
+        if !first.to_str().is_some_and(|name| name.ends_with("_files")) {
+            return Err(ProviderError::Frame(
+                "gem5 supplementary file prefix is invalid",
+            ));
+        }
+        prefixes.insert(PathBuf::from(first));
+    }
+    if prefixes.len() != 1 || primary != prefixes {
+        return Err(ProviderError::Correlation(
+            "gem5 supplementary file directory omitted or ambiguous",
+        ));
+    }
+    prefixes.into_iter().next().ok_or(ProviderError::Frame(
+        "gem5 supplementary file prefix omitted",
+    ))
+}
+
+fn validate_supplementary_source_root<'a>(
+    root: &Path,
+    paths: impl Iterator<Item = &'a Path>,
+) -> Result<(), ProviderError> {
+    let prefix = supplementary_prefix(paths)?;
+    let text = root.to_str().ok_or(ProviderError::Frame(
+        "gem5 supplementary source path is not UTF-8",
+    ))?;
+    if !root.is_absolute()
+        || root.as_os_str().len() > 4096
+        || text.contains('\0')
+        || text
+            .split('/')
+            .skip(1)
+            .any(|part| part.is_empty() || matches!(part, "." | ".."))
+        || root.components().any(|part| {
+            !matches!(
+                part,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        })
+        || root.file_name() != prefix.file_name()
+    {
+        return Err(ProviderError::Correlation(
+            "gem5 original supplementary directory differs from captured roster",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_private_directory(root: &Path) -> Result<(), ProviderError> {

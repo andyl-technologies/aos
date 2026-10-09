@@ -9,7 +9,51 @@ use std::os::unix::process::ExitStatusExt;
 
 use super::*;
 use crucible_node_contract::canonical;
-use rustix::process::{Pid, Signal, getpgid, kill_process_group};
+use rustix::process::{
+    Pid, Signal, WaitId, WaitIdOptions, WaitIdStatus, getpgid, kill_process_group, waitid,
+};
+
+// A retained Child alone identifies its PID, but /proc identity disappears
+// after waiting. Preserve the private group anchor before any wait can reap it.
+#[derive(Debug)]
+pub(super) struct KernelIdentity {
+    pid: u32,
+    start_ticks: String,
+}
+
+pub(super) fn capture_identity(child: &Child) -> Result<KernelIdentity, ProviderError> {
+    let pid = child.id();
+    let identity = KernelIdentity {
+        pid,
+        start_ticks: closure::kernel_start_ticks(pid)?,
+    };
+    let native_pid = kernel_pid(pid)?;
+    if getpgid(Some(native_pid)).map_err(std::io::Error::from)? != native_pid {
+        return Err(ProviderError::Correlation(
+            "gem5 child lacks its original private launch group",
+        ));
+    }
+    Ok(identity)
+}
+
+fn kernel_pid(pid: u32) -> Result<Pid, ProviderError> {
+    Pid::from_raw(
+        i32::try_from(pid)
+            .map_err(|_| ProviderError::Correlation("gem5 kernel pid exceeds native range"))?,
+    )
+    .ok_or(ProviderError::Correlation(
+        "gem5 kernel pid is unrepresentable",
+    ))
+}
+
+pub(super) fn observe_exit(child: &Child) -> Result<Option<WaitIdStatus>, ProviderError> {
+    waitid(
+        WaitId::Pid(kernel_pid(child.id())?),
+        WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+    )
+    .map_err(std::io::Error::from)
+    .map_err(ProviderError::from)
+}
 
 /// Retains original containment scope when custody moves to supervision.
 #[derive(Debug)]
@@ -77,7 +121,13 @@ impl Gem5NativeProcess {
         let child = self.child.as_mut().ok_or(ProviderError::Correlation(
             "gem5 quarantine omits original child",
         ))?;
-        begin_quarantine(child, &self.launch, &mut self.stream, &mut self.quarantine)
+        begin_quarantine(
+            child,
+            self.kernel_identity.as_ref(),
+            &self.launch,
+            &mut self.stream,
+            &mut self.quarantine,
+        )
     }
 
     /// Polls actual child and auxiliary-group reclamation without servicing events.
@@ -107,6 +157,7 @@ impl Gem5NativeCustody {
     pub fn begin_quarantine(&mut self) -> Result<(), ProviderError> {
         begin_quarantine(
             &mut self.child,
+            self.kernel_identity.as_ref(),
             &self.launch,
             &mut self.stream,
             &mut self.quarantine,
@@ -128,6 +179,7 @@ impl Gem5NativeCustody {
 
 fn begin_quarantine(
     child: &mut Child,
+    identity: Option<&KernelIdentity>,
     launch: &Gem5Launch,
     stream: &mut Option<UnixStream>,
     quarantine: &mut Option<Gem5QuarantineCustody>,
@@ -135,29 +187,55 @@ fn begin_quarantine(
     if quarantine.is_some() {
         return Ok(());
     }
-    let pid = child.id();
-    let start_ticks = closure::kernel_start_ticks(pid)?;
-    let native_pid = Pid::from_raw(
-        i32::try_from(pid)
-            .map_err(|_| ProviderError::Correlation("gem5 kernel pid exceeds native range"))?,
-    )
-    .ok_or(ProviderError::Correlation(
-        "gem5 kernel pid is unrepresentable",
+    let identity = identity.ok_or(ProviderError::Correlation(
+        "gem5 quarantine omits authenticated original kernel identity",
     ))?;
-    if getpgid(Some(native_pid)).map_err(std::io::Error::from)? != native_pid {
+    if child.id() != identity.pid {
         return Err(ProviderError::Correlation(
-            "gem5 native process escaped its private launch group",
+            "gem5 quarantine child differs from original kernel identity",
         ));
     }
+    let native_pid = kernel_pid(identity.pid)?;
+    let deadline = super::deadline(launch.timeout)?;
+    let reaped = match observe_exit(child) {
+        Ok(_) => {
+            if closure::kernel_start_ticks(identity.pid)? != identity.start_ticks
+                || getpgid(Some(native_pid)).map_err(std::io::Error::from)? != native_pid
+            {
+                return Err(ProviderError::Correlation(
+                    "gem5 native kernel identity or private group changed",
+                ));
+            }
+            // NOWAIT keeps the original leader alive or waitable here. Its PID
+            // cannot be recycled between identity validation and group signal.
+            kill_process_group(native_pid, Signal::KILL).map_err(std::io::Error::from)?;
+            None
+        }
+        Err(ProviderError::Io(error))
+            if error.raw_os_error() == Some(rustix::io::Errno::CHILD.raw_os_error()) =>
+        {
+            let status = child.try_wait()?.ok_or(ProviderError::Correlation(
+                "gem5 original child wait ownership is unavailable",
+            ))?;
+            // A previously reaped leader no longer anchors a safe group signal.
+            // Only a genuine cached Child status and complete empty census may
+            // settle this case; never signal a potentially recycled group ID.
+            if !group_members(identity.pid)?.is_empty() {
+                return Err(ProviderError::Conflict(
+                    "gem5 reaped leader still has unresolved private group members",
+                ));
+            }
+            Some(status)
+        }
+        Err(error) => return Err(error),
+    };
     *quarantine = Some(Gem5QuarantineCustody {
-        pid,
-        start_ticks,
-        deadline: super::deadline(launch.timeout)?,
-        reaped: None,
+        pid: identity.pid,
+        start_ticks: identity.start_ticks.clone(),
+        deadline,
+        reaped,
         proof: None,
     });
-    // Before actual reaping the child/group identity cannot be recycled.
-    kill_process_group(native_pid, Signal::KILL).map_err(std::io::Error::from)?;
     if let Some(stream) = stream.take() {
         stream.shutdown(std::net::Shutdown::Both)?;
     }
@@ -259,3 +337,7 @@ fn group_members(group: u32) -> Result<Vec<u32>, ProviderError> {
     members.sort_unstable();
     Ok(members)
 }
+
+#[cfg(test)]
+#[path = "containment_tests.rs"]
+mod tests;

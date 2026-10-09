@@ -34,6 +34,11 @@ pub struct Gem5ArchiveImport {
     /// The original resource root remains part of source lineage and the controlled
     /// DMTCP path mapping; import never accesses that historical host path.
     pub source: Gem5Launch,
+    /// Retains the authentic original native supplementary saved-file root.
+    ///
+    /// This inert spelling is bound to the signed original *_files roster. The
+    /// importer never accesses the vanished source path or infers it from tools.
+    pub source_supplementary_files_root: PathBuf,
     /// Retains the actual original stopped native and coordinator positions.
     pub boundary: Gem5Boundary,
     /// Retains all original native prefix receipts, including acknowledged entries.
@@ -108,6 +113,7 @@ impl Gem5CapturedImage {
                 .collect(),
             pending: source.pending,
             last_acknowledged: source.last_acknowledged,
+            source_supplementary_files_root: source.source_supplementary_files_root,
             image_files,
             resource_files,
         })
@@ -260,6 +266,14 @@ fn validate_boundary(boundary: &Gem5Boundary) -> Result<(), ProviderError> {
 }
 
 fn validate_archive_files(source: &Gem5ArchiveImport) -> Result<(), ProviderError> {
+    validate_supplementary_source_root(
+        &source.source_supplementary_files_root,
+        source
+            .artifacts
+            .iter()
+            .filter(|file| file.role == Gem5CapturedArtifactRole::Image)
+            .map(|file| file.relative.as_path()),
+    )?;
     let mut names = BTreeSet::new();
     let mut total = 0;
     let mut primary = 0usize;

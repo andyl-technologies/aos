@@ -7,7 +7,7 @@ use std::{
     os::{
         fd::OwnedFd,
         unix::{
-            fs::{MetadataExt, PermissionsExt},
+            fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
             net::{UnixListener, UnixStream},
             process::CommandExt,
         },
@@ -53,6 +53,10 @@ pub use closure::{Gem5DiagnosticObject, Gem5OpaqueProfileVerifier, Gem5ProcessCl
 #[path = "publication_tests.rs"]
 mod publication_tests;
 
+#[cfg(test)]
+#[path = "installation_tests.rs"]
+mod installation_tests;
+
 /// Binds a trusted launch path to its exact measured immutable contents.
 #[derive(Clone, Debug)]
 pub struct Gem5LaunchArtifact {
@@ -91,6 +95,8 @@ pub struct Gem5Launch {
 
 /// Transfers actual native handles and every original obligation to supervision.
 pub struct Gem5NativeCustody {
+    // Sealed at spawn before any exit observation can release the kernel PID.
+    kernel_identity: Option<containment::KernelIdentity>,
     /// Retains the real child until actual reaping, never merely a kill request.
     pub child: Child,
     /// Retains the genuine control session rather than making the native owner exit.
@@ -134,6 +140,7 @@ pub trait Gem5CustodySlot {
 /// independently audited complete opaque capture and installed closed policy.
 pub struct Gem5NativeProcess {
     child: Option<Child>,
+    kernel_identity: Option<containment::KernelIdentity>,
     launch: Gem5Launch,
     stream: Option<UnixStream>,
     // Keeps the installed private endpoint reserved for this native incarnation.
@@ -202,6 +209,17 @@ impl Gem5NativeProcess {
         } else {
             Command::new(&launch.executable.path)
         };
+        let bootstrap = Bootstrap {
+            schema: GEM5_NATIVE_PROTOCOL,
+            owner: launch.owner.clone(),
+            incarnation: launch.incarnation.clone(),
+            generation: launch.generation,
+            controller_uid: U64::new(u64::from(rustix::process::getuid().as_raw())),
+            guest_isa: launch.guest_isa.clone(),
+            executable: path_text(&guest)?,
+            resource_root: path_text(&launch.resource_root)?,
+            control_socket: path_text(&socket)?,
+        };
         let mut child = command
             .current_dir(
                 launch
@@ -219,18 +237,9 @@ impl Gem5NativeProcess {
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .spawn()?;
-        let bootstrap = Bootstrap {
-            schema: GEM5_NATIVE_PROTOCOL,
-            owner: launch.owner.clone(),
-            incarnation: launch.incarnation.clone(),
-            generation: launch.generation,
-            controller_uid: U64::new(u64::from(rustix::process::getuid().as_raw())),
-            guest_isa: launch.guest_isa.clone(),
-            executable: path_text(&guest)?,
-            resource_root: path_text(&launch.resource_root)?,
-            control_socket: path_text(&socket)?,
-        };
+        let mut kernel_identity = None;
         let ready = (|| {
+            kernel_identity = Some(containment::capture_identity(&child)?);
             write_frame(
                 &mut private,
                 &serde_json::to_value(bootstrap)
@@ -265,6 +274,7 @@ impl Gem5NativeProcess {
             Ok(ready) => ready,
             Err(error) => {
                 supervisor.retain(Gem5NativeCustody {
+                    kernel_identity,
                     child,
                     stream: None,
                     listener: Some(listener),
@@ -282,6 +292,7 @@ impl Gem5NativeProcess {
             }
         };
         Ok(Self {
+            kernel_identity,
             child: Some(child),
             launch,
             stream: Some(stream),
@@ -560,6 +571,7 @@ impl Drop for Gem5NativeProcess {
         // only Drop consumes them. The reserved slot transfers custody once.
         if let (Some(child), Some(supervisor)) = (self.child.take(), self.supervisor.take()) {
             supervisor.retain(Gem5NativeCustody {
+                kernel_identity: self.kernel_identity.take(),
                 child,
                 stream: self.stream.take(),
                 listener: self.listener.take(),
@@ -758,7 +770,13 @@ fn preflight(launch: &Gem5Launch) -> Result<(), ProviderError> {
 fn install(artifact: &Gem5LaunchArtifact, target: &Path) -> Result<PathBuf, ProviderError> {
     let bytes = fs::read(&artifact.path)?;
     artifact.content.verify(&bytes)?;
-    let mut file = File::options().write(true).create_new(true).open(target)?;
+    // The native checkpoint records these permissions. A later reconstruction
+    // must not inherit broader access from the launching process's umask.
+    let mut file = File::options()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(target)?;
     file.write_all(&bytes)?;
     file.sync_all()?;
     Ok(target.to_owned())
@@ -793,7 +811,10 @@ fn connect(
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(error) => return Err(error.into()),
         }
-        if child.try_wait()?.is_some() {
+        // Keep the exited leader waitable until containment has authenticated
+        // and signalled its original private group. Child::try_wait would reap
+        // it here and release the only kernel anchor before fallback custody.
+        if containment::observe_exit(child)?.is_some() {
             return Err(ProviderError::Correlation(
                 "gem5 native child exited before controller readiness",
             ));

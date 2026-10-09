@@ -19,6 +19,9 @@ use crate::gem5::{
     Gem5RestoreTarget,
 };
 
+#[path = "saved_files_manifest.rs"]
+mod saved_files_manifest;
+
 impl Gem5NativeProcess {
     /// Captures genuine native process custody at the unchanged stopped boundary.
     ///
@@ -149,6 +152,13 @@ impl Gem5NativeProcess {
             }
         }
         let image_path = image.process_image()?;
+        // DMTCP's saved-file copy paths belong to the original image, whereas
+        // the next capture directory belongs to this new incarnation. Only the
+        // authenticated complete image supplies the old spelling and the
+        // privately materialized destination; no old path is opened here.
+        let supplementary_root = image.materialized_supplementary_files_root()?;
+        let supplementary_manifest =
+            saved_files_manifest::write(image, &supplementary_root, &target.temporary_root)?;
         let socket = target.resource_root.join("control.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket)?;
         use std::os::unix::fs::PermissionsExt;
@@ -172,6 +182,18 @@ impl Gem5NativeProcess {
             .arg(&target.temporary_root)
             .arg(image_path)
             .env("CRUCIBLE_RESTORE_RESOURCE_ROOT", &target.resource_root)
+            .env(
+                "CRUCIBLE_RESTORE_SAVED_FILES_SOURCE_ROOT",
+                image.source_supplementary_files_root(),
+            )
+            .env(
+                "CRUCIBLE_RESTORE_SAVED_FILES_TARGET_ROOT",
+                &supplementary_root,
+            )
+            .env(
+                "CRUCIBLE_RESTORE_SAVED_FILES_MANIFEST",
+                &supplementary_manifest,
+            )
             .env("CRUCIBLE_GEM5_OPERATIONAL_ROOT", &target.temporary_root)
             .env("CRUCIBLE_GEM5_CONTROL_SOCKET", &socket)
             .env(
@@ -186,6 +208,8 @@ impl Gem5NativeProcess {
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .spawn()?;
+        let identity = super::containment::capture_identity(&child);
+        let mut kernel_identity = None;
         let mut launch = image.source.clone();
         launch.resource_root = target.resource_root;
         launch.incarnation = target.incarnation;
@@ -199,6 +223,7 @@ impl Gem5NativeProcess {
         launch.model_script.path = launch.resource_root.join("native-owner-model.py");
         launch.guest.path = launch.resource_root.join("guest.elf");
         let ready = (|| {
+            kernel_identity = Some(identity?);
             let mut stream = connect(&listener, &mut child, launch.timeout)?;
             verify_restored_code(child.id(), &image.source)?;
             let mut io = super::DeadlineIo {
@@ -234,6 +259,7 @@ impl Gem5NativeProcess {
             Ok(stream) => stream,
             Err(error) => {
                 supervisor.retain(Gem5NativeCustody {
+                    kernel_identity,
                     child,
                     stream: None,
                     listener: Some(listener),
@@ -251,6 +277,7 @@ impl Gem5NativeProcess {
             }
         };
         Ok(Self {
+            kernel_identity,
             child: Some(child),
             launch,
             stream: Some(stream),

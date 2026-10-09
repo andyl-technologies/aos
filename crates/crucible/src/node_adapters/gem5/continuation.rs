@@ -162,6 +162,13 @@ impl Gem5ContinuationRecord {
     pub fn source_layout_root(&self) -> &str {
         &self.wire.source_layout_root
     }
+    /// Returns the original checkpoint-file directory as inert relocation data.
+    ///
+    /// Its spelling is bound to the authenticated complete supplementary image
+    /// roster. It grants no permission to open a source-host directory.
+    pub fn source_supplementary_files_root(&self) -> &str {
+        &self.wire.source_supplementary_files_root
+    }
     /// Returns every original immutable native receipt in operation ID order.
     pub fn native_prefixes(&self) -> impl ExactSizeIterator<Item = &Gem5Completion> {
         self.prefixes.values()
@@ -212,6 +219,7 @@ pub(super) struct Wire {
     pub native_boundary: Gem5Boundary,
     pub guest_isa: String,
     pub source_layout_root: String,
+    pub source_supplementary_files_root: String,
     pub maximum_microsteps: U64,
     pub node: Id,
     pub owners: Vec<OwnerIdentity>,
@@ -241,7 +249,7 @@ impl Validate for Wire {
             field: "gem5-native-continuation",
             reason: "invalid closed codec, finite bounds or original native identities".to_owned(),
         };
-        if self.schema_version != 1
+        if self.schema_version != 2
             || self.owners.len() != 1
             || self.maximum_microsteps.get() < 2
             || !matches!(self.guest_isa.as_str(), "x86_64" | "aarch64")
@@ -254,6 +262,13 @@ impl Validate for Wire {
         {
             return Err(invalid());
         }
+        super::supplementary::validate_supplementary_root(
+            &self.source_supplementary_files_root,
+            self.artifacts
+                .iter()
+                .map(|artifact| (artifact.role.as_str(), artifact.name.as_str())),
+        )
+        .map_err(|_| invalid())?;
         for operation in &self.operations {
             if operation.prefixes.len() != operation.prefix_scopes.len()
                 || operation.prefixes.len() > 65_536

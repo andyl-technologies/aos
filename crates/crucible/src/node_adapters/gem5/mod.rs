@@ -25,6 +25,7 @@ mod observations;
 mod positions;
 mod reconciliation;
 mod restore;
+mod supplementary;
 
 pub use capture::{
     GEM5_NATIVE_CONTINUATION_SPECIFICATION, Gem5ArchiveInstallation, Gem5NativeContinuation,

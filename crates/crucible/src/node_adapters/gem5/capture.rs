@@ -26,7 +26,7 @@ use crate::{node_contract::*, node_scheduling::InputPayload};
 use super::{GEM5_OPAQUE_PRESERVATION_PROFILE, QualifiedGem5Node, node::native_refusal, refusal};
 
 /// Defines the backend-specific small ledger and complete native artifact codec.
-pub const GEM5_NATIVE_CONTINUATION_SPECIFICATION: &str = "crucible/gem5-native-continuation-v1: bounded canonical source world activation and original common operation scopes; each actual native Poll prefix and immutable native stdout payload is a separately hash-bound original evidence object; native image and resource files preserve their exact role and relative reconstruction name and stream separately. Source coordinator cut and actual native full-position frontier are distinct when an original operation is pending. Native receipt diagnostic summaries are commitment leaves, not typed completeness claims or blob access authority. Complete state authority requires authentic original parked process capture and independent installed full-process closure. Fresh native incarnation and coordinator permissions are never serialized authority and require installed unchanged-cut restoration and genuine fresh opaque reattachment.";
+pub const GEM5_NATIVE_CONTINUATION_SPECIFICATION: &str = "crucible/gem5-native-continuation-v2: bounded canonical source world activation and original common operation scopes; each actual native Poll prefix and immutable native stdout payload is a separately hash-bound original evidence object; native image and resource files preserve their exact role and relative reconstruction name and stream separately. The required original supplementary checkpoint-files root is captured from the actual native checkpoint directory and its unique measured *_files roster; its spelling is inert authenticated relocation data and never authorizes opening an old source path. Source coordinator cut and actual native full-position frontier are distinct when an original operation is pending. Native receipt diagnostic summaries are commitment leaves, not typed completeness claims or blob access authority. Complete state authority requires authentic original parked process capture and independent installed full-process closure. Fresh native incarnation and coordinator permissions are never serialized authority and require installed unchanged-cut restoration and genuine fresh opaque reattachment. Edition 1 cannot supply the required source-file relocation identity and is not reinterpreted as edition 2.";
 
 /// Supplies installed independent capture policy and preallocated private roots.
 ///
@@ -104,9 +104,9 @@ struct CaptureRequest<'a> {
 /// Returns a portable identity or content construction failure.
 pub fn gem5_native_continuation_schema() -> Result<SchemaRef, OperationFailure> {
     Ok(SchemaRef {
-        id: Id::new("crucible/gem5-native-continuation-v1")
+        id: Id::new("crucible/gem5-native-continuation-v2")
             .map_err(|error| refusal(&error.to_string()))?,
-        version: 1,
+        version: 2,
         definition: canonical::content_ref(
             GEM5_NATIVE_CONTINUATION_SPECIFICATION.as_bytes(),
             "text/plain",
@@ -423,6 +423,7 @@ impl QualifiedGem5Node {
             native_boundary: &'a crucible_node_provider::gem5::Gem5Boundary,
             guest_isa: &'a str,
             source_layout_root: &'a str,
+            source_supplementary_files_root: &'a str,
             maximum_microsteps: crucible_node_contract::U64,
             node: &'a Id,
             owners: &'a [OwnerIdentity],
@@ -445,7 +446,7 @@ impl QualifiedGem5Node {
             .collect::<Result<Vec<_>, _>>()?;
         let wire =
             Wire {
-                schema_version: 1,
+                schema_version: 2,
                 source_activation: &source.source_activation,
                 common_cut: source.capture_cut,
                 native_boundary: image.boundary(),
@@ -455,6 +456,12 @@ impl QualifiedGem5Node {
                 // hint; it never authorizes opening an old source-host path.
                 source_layout_root: image.source().resource_root.to_str().ok_or_else(|| {
                     refusal("gem5 original native layout root is not portable text")
+                })?,
+                source_supplementary_files_root: image
+                    .source_supplementary_files_root()
+                    .to_str()
+                    .ok_or_else(|| {
+                    refusal("gem5 original supplementary checkpoint root is not portable text")
                 })?,
                 maximum_microsteps: self.authority.maximum_microsteps(),
                 node: &self.preparation.route.node,
@@ -475,6 +482,13 @@ impl QualifiedGem5Node {
                     })
                     .collect(),
             };
+        super::supplementary::validate_supplementary_root(
+            wire.source_supplementary_files_root,
+            wire.artifacts
+                .iter()
+                .map(|artifact| (artifact.role.as_str(), artifact.name)),
+        )
+        .map_err(refusal)?;
         let bytes = bounded_canonical(&wire, limits.maximum_record_bytes)?;
         let reference = canonical::content_ref(&bytes, "application/json")
             .map_err(|error| refusal(&error.to_string()))?;

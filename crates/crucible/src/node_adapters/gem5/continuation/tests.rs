@@ -36,7 +36,7 @@ fn fixture() -> (Wire, RuntimeSnapshot, Vec<InputPayload>) {
     let bytes = b"model-only consistency body, not qualification".to_vec();
     let reference = canonical::content_ref(&bytes, "application/octet-stream").unwrap();
     let wire = Wire {
-        schema_version: 1,
+        schema_version: 2,
         source_activation: source.source_activation.clone(),
         common_cut: cut,
         native_boundary: Gem5Boundary {
@@ -51,6 +51,7 @@ fn fixture() -> (Wire, RuntimeSnapshot, Vec<InputPayload>) {
         },
         guest_isa: "aarch64".to_owned(),
         source_layout_root: "/historical/removed/source".to_owned(),
+        source_supplementary_files_root: "/historical/removed/images/ckpt_model_files".to_owned(),
         maximum_microsteps: 1_000_000.into(),
         node: Id::new("node").unwrap(),
         owners: vec![owner],
@@ -61,7 +62,18 @@ fn fixture() -> (Wire, RuntimeSnapshot, Vec<InputPayload>) {
         native_pending: None,
         native_acknowledged: None,
         output_sequence: 0.into(),
-        artifacts: Vec::new(),
+        artifacts: vec![
+            SavedArtifact {
+                role: Id::new("image").unwrap(),
+                name: "image/ckpt_model.dmtcp".to_owned(),
+                content: reference.clone(),
+            },
+            SavedArtifact {
+                role: Id::new("image").unwrap(),
+                name: "image/ckpt_model_files/fd-info.txt".to_owned(),
+                content: reference.clone(),
+            },
+        ],
     };
     (wire, source, vec![InputPayload { reference, bytes }])
 }
@@ -92,6 +104,46 @@ fn latent_native_frontier_is_preserved_without_relabeling_the_common_cut() {
     assert_eq!(record.common_cut(), source.capture_cut);
     assert_eq!(record.native_boundary().logical_position.time_ps.get(), 150);
     assert_eq!(record.source_layout_root(), "/historical/removed/source");
+    assert_eq!(
+        record.source_supplementary_files_root(),
+        "/historical/removed/images/ckpt_model_files"
+    );
+}
+
+#[test]
+fn legacy_codec_cannot_guess_the_missing_original_checkpoint_root() {
+    let (wire, source, evidence) = fixture();
+    let mut legacy = serde_json::to_value(&wire).unwrap();
+    legacy["schema_version"] = serde_json::json!(1);
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("source_supplementary_files_root");
+    let encoded = canonical::canonical_json(&legacy).unwrap();
+
+    assert!(
+        decode_gem5_continuation(
+            &encoded,
+            &source,
+            &wire.node,
+            wire.maximum_microsteps,
+            &evidence,
+            16 * 1024 * 1024,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn original_checkpoint_root_must_match_the_complete_preserved_roster() {
+    let (mut wire, source, evidence) = fixture();
+    wire.source_supplementary_files_root = "/historical/removed/images/foreign_files".to_owned();
+    assert!(decode(&wire, &source, &evidence).is_err());
+
+    wire.source_supplementary_files_root = "/historical/removed/images/ckpt_model_files".to_owned();
+    wire.artifacts
+        .retain(|artifact| artifact.name.ends_with(".dmtcp"));
+    assert!(decode(&wire, &source, &evidence).is_err());
 }
 
 #[test]
