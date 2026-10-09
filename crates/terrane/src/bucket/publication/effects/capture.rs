@@ -12,6 +12,7 @@ use terrane_core::bucket::BucketKey;
 use terrane_core::gc::publication::BackendBinding;
 
 #[cfg(all(test, feature = "tokio", unix))]
+#[path = "capture/predicate_tests.rs"]
 mod predicate_tests;
 
 /// Preserves exact native binding bytes without a Unicode conversion.
