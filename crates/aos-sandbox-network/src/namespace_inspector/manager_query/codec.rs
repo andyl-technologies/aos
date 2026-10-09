@@ -276,6 +276,7 @@ impl Encoder {
 }
 
 pub(in crate::namespace_inspector) struct Decoder<'bytes> {
+    // Outer frame mechanics map to InvalidFrame; field limits remain grammar-owned.
     reader: BoundedReader<'bytes, NamespaceInspectorManagerQueryError>,
 }
 
@@ -701,6 +702,7 @@ fn project_exec_command(
         decode_exec_command_projection(&mut decoder)?;
         validate_exec_command(bytes)?;
     }
+    // Retain the original static prefix only after the full runtime leaf validates.
     Ok(bytes[..bytes.len() - decoder.reader.remaining()].to_vec())
 }
 
@@ -719,6 +721,7 @@ fn dbus_object_path_is_valid(path: &str) -> bool {
 }
 
 struct LeafDecoder<'bytes> {
+    // Leaf mechanics map to PropertyTableMismatch independently of outer framing.
     reader: BoundedReader<'bytes, NamespaceInspectorManagerQueryError>,
 }
 
