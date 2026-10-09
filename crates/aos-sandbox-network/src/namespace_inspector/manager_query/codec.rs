@@ -24,6 +24,8 @@
 //! table selects exactly one of these layouts and fixes the actual systemd 259
 //! signature against which the helper must decode its received variant.
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
+
 use super::{
     CanonicalManagerPropertyValueV1, MANAGER_PROPERTY_TABLE_V1, ManagerPropertyBindingV1,
     ManagerPropertyDescriptorV1, ManagerPropertyObservationV1, NamespaceInspectorManagerQueryError,
@@ -58,7 +60,7 @@ pub(in crate::namespace_inspector) fn decode_contract(
 ) -> Result<NamespaceInspectorDeploymentContractV1, NamespaceInspectorManagerQueryError> {
     let mut decoder = decode_frame(bytes, contract_magic(), contract_kind())?;
     let contract = decode_contract_body(&mut decoder)?;
-    decoder.finish()?;
+    decoder.reader.finish()?;
     if encode_contract(&contract)? != bytes {
         return Err(NamespaceInspectorManagerQueryError::InvalidFrame);
     }
@@ -106,7 +108,7 @@ pub(super) fn decode_snapshot(
         connecting_uid: decoder.u32()?,
         properties: decoder.properties(false)?,
     };
-    decoder.finish()?;
+    decoder.reader.finish()?;
     snapshot.validate()?;
     if encode_snapshot(&snapshot)? != bytes {
         return Err(NamespaceInspectorManagerQueryError::InvalidFrame);
@@ -150,8 +152,10 @@ fn decode_frame<'bytes>(
         return Err(NamespaceInspectorManagerQueryError::InvalidFrame);
     }
 
-    let mut decoder = Decoder { bytes, offset: 0 };
-    if decoder.take(8)? != magic
+    let mut decoder = Decoder {
+        reader: BoundedReader::new(bytes, |_| NamespaceInspectorManagerQueryError::InvalidFrame),
+    };
+    if decoder.reader.bytes(8)? != magic
         || decoder.u16()? != VERSION
         || decoder.u8()? != kind
         || decoder.u8()? != 0
@@ -272,48 +276,36 @@ impl Encoder {
 }
 
 pub(in crate::namespace_inspector) struct Decoder<'bytes> {
-    bytes: &'bytes [u8],
-    offset: usize,
+    reader: BoundedReader<'bytes, NamespaceInspectorManagerQueryError>,
 }
 
 impl<'bytes> Decoder<'bytes> {
-    pub(in crate::namespace_inspector) fn finish(
-        &self,
-    ) -> Result<(), NamespaceInspectorManagerQueryError> {
-        if self.offset != self.bytes.len() {
-            return Err(NamespaceInspectorManagerQueryError::InvalidFrame);
-        }
-        Ok(())
-    }
-
     pub(in crate::namespace_inspector) fn u8(
         &mut self,
     ) -> Result<u8, NamespaceInspectorManagerQueryError> {
-        Ok(self.take(1)?[0])
+        self.reader.u8()
     }
 
     pub(in crate::namespace_inspector) fn u16(
         &mut self,
     ) -> Result<u16, NamespaceInspectorManagerQueryError> {
-        Ok(u16::from_le_bytes(self.array()?))
+        Ok(u16::from_le_bytes(self.reader.array()?))
     }
 
     pub(in crate::namespace_inspector) fn u32(
         &mut self,
     ) -> Result<u32, NamespaceInspectorManagerQueryError> {
-        Ok(u32::from_le_bytes(self.array()?))
+        Ok(u32::from_le_bytes(self.reader.array()?))
     }
 
     fn u64(&mut self) -> Result<u64, NamespaceInspectorManagerQueryError> {
-        Ok(u64::from_le_bytes(self.array()?))
+        Ok(u64::from_le_bytes(self.reader.array()?))
     }
 
     pub(in crate::namespace_inspector) fn array<const SIZE: usize>(
         &mut self,
     ) -> Result<[u8; SIZE], NamespaceInspectorManagerQueryError> {
-        self.take(SIZE)?
-            .try_into()
-            .map_err(|_| NamespaceInspectorManagerQueryError::InvalidFrame)
+        self.reader.array()
     }
 
     pub(in crate::namespace_inspector) fn count(
@@ -332,10 +324,10 @@ impl<'bytes> Decoder<'bytes> {
         maximum_bytes: usize,
     ) -> Result<String, NamespaceInspectorManagerQueryError> {
         let length = usize::from(self.u16()?);
-        if length > maximum_bytes || length > self.remaining() {
+        if length > maximum_bytes || length > self.reader.remaining() {
             return Err(NamespaceInspectorManagerQueryError::FieldTooLarge);
         }
-        let text = std::str::from_utf8(self.take(length)?)
+        let text = std::str::from_utf8(self.reader.bytes(length)?)
             .map_err(|_| NamespaceInspectorManagerQueryError::InvalidText)?;
         validate_text(text)?;
         Ok(text.to_owned())
@@ -347,7 +339,7 @@ impl<'bytes> Decoder<'bytes> {
         maximum_element_bytes: usize,
     ) -> Result<Vec<String>, NamespaceInspectorManagerQueryError> {
         let count = self.count(maximum_elements)?;
-        if count > self.remaining() / 2 {
+        if count > self.reader.remaining() / 2 {
             return Err(NamespaceInspectorManagerQueryError::InvalidFrame);
         }
 
@@ -369,7 +361,7 @@ impl<'bytes> Decoder<'bytes> {
             })
             .count();
         let count = self.count(expected_count)?;
-        if count != expected_count || count > self.remaining() / 3 {
+        if count != expected_count || count > self.reader.remaining() / 3 {
             return Err(NamespaceInspectorManagerQueryError::PropertyTableMismatch);
         }
 
@@ -397,15 +389,15 @@ impl<'bytes> Decoder<'bytes> {
         if length > MAXIMUM_PROPERTY_ELEMENT_BYTES {
             return Err(NamespaceInspectorManagerQueryError::FieldTooLarge);
         }
-        if length > self.remaining() {
+        if length > self.reader.remaining() {
             return Err(NamespaceInspectorManagerQueryError::InvalidFrame);
         }
-        Ok(self.take(length)?.to_vec())
+        Ok(self.reader.bytes(length)?.to_vec())
     }
 
     fn elements(&mut self) -> Result<Vec<Vec<u8>>, NamespaceInspectorManagerQueryError> {
         let count = self.count(MAXIMUM_COLLECTION_ELEMENTS)?;
-        if count > self.remaining() / 4 {
+        if count > self.reader.remaining() / 4 {
             return Err(NamespaceInspectorManagerQueryError::InvalidFrame);
         }
 
@@ -414,23 +406,6 @@ impl<'bytes> Decoder<'bytes> {
             elements.push(self.blob()?);
         }
         Ok(elements)
-    }
-
-    fn take(&mut self, length: usize) -> Result<&'bytes [u8], NamespaceInspectorManagerQueryError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(NamespaceInspectorManagerQueryError::InvalidFrame)?;
-        let bytes = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(NamespaceInspectorManagerQueryError::InvalidFrame)?;
-        self.offset = end;
-        Ok(bytes)
-    }
-
-    fn remaining(&self) -> usize {
-        self.bytes.len() - self.offset
     }
 }
 
@@ -574,35 +549,35 @@ fn validate_job_tuple(bytes: &[u8]) -> Result<(), NamespaceInspectorManagerQuery
     if !dbus_object_path_is_valid(object_path) {
         return Err(NamespaceInspectorManagerQueryError::PropertyTableMismatch);
     }
-    decoder.finish()
+    decoder.reader.finish()
 }
 
 fn validate_bool_string_tuple(bytes: &[u8]) -> Result<(), NamespaceInspectorManagerQueryError> {
     let mut decoder = LeafDecoder::new(bytes);
     decoder.boolean()?;
     decoder.text()?;
-    decoder.finish()
+    decoder.reader.finish()
 }
 
 fn validate_bool_string_set_tuple(bytes: &[u8]) -> Result<(), NamespaceInspectorManagerQueryError> {
     let mut decoder = LeafDecoder::new(bytes);
     decoder.boolean()?;
     decoder.string_array(true)?;
-    decoder.finish()
+    decoder.reader.finish()
 }
 
 fn validate_string_bool_tuple(bytes: &[u8]) -> Result<(), NamespaceInspectorManagerQueryError> {
     let mut decoder = LeafDecoder::new(bytes);
     decoder.text()?;
     decoder.boolean()?;
-    decoder.finish()
+    decoder.reader.finish()
 }
 
 fn validate_string_string_tuple(bytes: &[u8]) -> Result<(), NamespaceInspectorManagerQueryError> {
     let mut decoder = LeafDecoder::new(bytes);
     decoder.text()?;
     decoder.text()?;
-    decoder.finish()
+    decoder.reader.finish()
 }
 
 fn validate_exec_command(bytes: &[u8]) -> Result<(), NamespaceInspectorManagerQueryError> {
@@ -614,7 +589,7 @@ fn validate_exec_command(bytes: &[u8]) -> Result<(), NamespaceInspectorManagerQu
     decoder.u32()?;
     decoder.i32()?;
     decoder.i32()?;
-    decoder.finish()
+    decoder.reader.finish()
 }
 
 fn validate_exec_command_ex(bytes: &[u8]) -> Result<(), NamespaceInspectorManagerQueryError> {
@@ -626,7 +601,7 @@ fn validate_exec_command_ex(bytes: &[u8]) -> Result<(), NamespaceInspectorManage
     decoder.u32()?;
     decoder.i32()?;
     decoder.i32()?;
-    decoder.finish()
+    decoder.reader.finish()
 }
 
 fn validate_exec_command_projection(
@@ -634,7 +609,7 @@ fn validate_exec_command_projection(
 ) -> Result<(), NamespaceInspectorManagerQueryError> {
     let mut decoder = LeafDecoder::new(bytes);
     decode_exec_command_projection(&mut decoder)?;
-    decoder.finish()
+    decoder.reader.finish()
 }
 
 fn validate_exec_command_ex_projection(
@@ -642,7 +617,7 @@ fn validate_exec_command_ex_projection(
 ) -> Result<(), NamespaceInspectorManagerQueryError> {
     let mut decoder = LeafDecoder::new(bytes);
     decode_exec_command_ex_projection(&mut decoder)?;
-    decoder.finish()
+    decoder.reader.finish()
 }
 
 fn decode_exec_command_projection(
@@ -660,7 +635,7 @@ pub(in crate::namespace_inspector) fn decode_fixed_exec_command_projection(
     let executable = decoder.text()?;
     let arguments = decoder.string_array_values(false)?;
     let ignore_failure = decoder.boolean_value()?;
-    decoder.finish()?;
+    decoder.reader.finish()?;
     Ok((executable, arguments, ignore_failure))
 }
 
@@ -670,7 +645,7 @@ pub(in crate::namespace_inspector) fn decode_string_pair(
     let mut decoder = LeafDecoder::new(bytes);
     let first = decoder.text()?;
     let second = decoder.text()?;
-    decoder.finish()?;
+    decoder.reader.finish()?;
     Ok((first, second))
 }
 
@@ -726,7 +701,7 @@ fn project_exec_command(
         decode_exec_command_projection(&mut decoder)?;
         validate_exec_command(bytes)?;
     }
-    Ok(bytes[..decoder.offset].to_vec())
+    Ok(bytes[..bytes.len() - decoder.reader.remaining()].to_vec())
 }
 
 fn dbus_object_path_is_valid(path: &str) -> bool {
@@ -744,28 +719,24 @@ fn dbus_object_path_is_valid(path: &str) -> bool {
 }
 
 struct LeafDecoder<'bytes> {
-    bytes: &'bytes [u8],
-    offset: usize,
+    reader: BoundedReader<'bytes, NamespaceInspectorManagerQueryError>,
 }
 
 impl<'bytes> LeafDecoder<'bytes> {
     fn new(bytes: &'bytes [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    fn finish(&self) -> Result<(), NamespaceInspectorManagerQueryError> {
-        if self.offset != self.bytes.len() {
-            return Err(NamespaceInspectorManagerQueryError::PropertyTableMismatch);
+        Self {
+            reader: BoundedReader::new(bytes, |_| {
+                NamespaceInspectorManagerQueryError::PropertyTableMismatch
+            }),
         }
-        Ok(())
     }
 
     fn boolean(&mut self) -> Result<(), NamespaceInspectorManagerQueryError> {
-        validate_bool(self.take(1)?)
+        validate_bool(self.reader.bytes(1)?)
     }
 
     fn boolean_value(&mut self) -> Result<bool, NamespaceInspectorManagerQueryError> {
-        match self.take(1)? {
+        match self.reader.bytes(1)? {
             [0] => Ok(false),
             [1] => Ok(true),
             _ => Err(NamespaceInspectorManagerQueryError::PropertyTableMismatch),
@@ -773,27 +744,27 @@ impl<'bytes> LeafDecoder<'bytes> {
     }
 
     fn u16(&mut self) -> Result<u16, NamespaceInspectorManagerQueryError> {
-        Ok(u16::from_le_bytes(self.array()?))
+        Ok(u16::from_le_bytes(self.reader.array()?))
     }
 
     fn u32(&mut self) -> Result<u32, NamespaceInspectorManagerQueryError> {
-        Ok(u32::from_le_bytes(self.array()?))
+        Ok(u32::from_le_bytes(self.reader.array()?))
     }
 
     fn i32(&mut self) -> Result<i32, NamespaceInspectorManagerQueryError> {
-        Ok(i32::from_le_bytes(self.array()?))
+        Ok(i32::from_le_bytes(self.reader.array()?))
     }
 
     fn u64(&mut self) -> Result<u64, NamespaceInspectorManagerQueryError> {
-        Ok(u64::from_le_bytes(self.array()?))
+        Ok(u64::from_le_bytes(self.reader.array()?))
     }
 
     fn text(&mut self) -> Result<&'bytes str, NamespaceInspectorManagerQueryError> {
         let length = usize::from(self.u16()?);
-        if length > MAXIMUM_TEXT_BYTES || length > self.remaining() {
+        if length > MAXIMUM_TEXT_BYTES || length > self.reader.remaining() {
             return Err(NamespaceInspectorManagerQueryError::PropertyTableMismatch);
         }
-        let text = std::str::from_utf8(self.take(length)?)
+        let text = std::str::from_utf8(self.reader.bytes(length)?)
             .map_err(|_| NamespaceInspectorManagerQueryError::PropertyTableMismatch)?;
         validate_text(text)
             .map_err(|_| NamespaceInspectorManagerQueryError::PropertyTableMismatch)?;
@@ -805,7 +776,7 @@ impl<'bytes> LeafDecoder<'bytes> {
         require_sorted: bool,
     ) -> Result<(), NamespaceInspectorManagerQueryError> {
         let count = usize::from(self.u16()?);
-        if count > MAXIMUM_COLLECTION_ELEMENTS || count > self.remaining() / 2 {
+        if count > MAXIMUM_COLLECTION_ELEMENTS || count > self.reader.remaining() / 2 {
             return Err(NamespaceInspectorManagerQueryError::PropertyTableMismatch);
         }
 
@@ -827,7 +798,7 @@ impl<'bytes> LeafDecoder<'bytes> {
         require_sorted: bool,
     ) -> Result<Vec<&'bytes str>, NamespaceInspectorManagerQueryError> {
         let count = usize::from(self.u16()?);
-        if count > MAXIMUM_COLLECTION_ELEMENTS || count > self.remaining() / 2 {
+        if count > MAXIMUM_COLLECTION_ELEMENTS || count > self.reader.remaining() / 2 {
             return Err(NamespaceInspectorManagerQueryError::PropertyTableMismatch);
         }
 
@@ -844,31 +815,6 @@ impl<'bytes> LeafDecoder<'bytes> {
             values.push(current);
         }
         Ok(values)
-    }
-
-    fn array<const SIZE: usize>(
-        &mut self,
-    ) -> Result<[u8; SIZE], NamespaceInspectorManagerQueryError> {
-        self.take(SIZE)?
-            .try_into()
-            .map_err(|_| NamespaceInspectorManagerQueryError::PropertyTableMismatch)
-    }
-
-    fn take(&mut self, length: usize) -> Result<&'bytes [u8], NamespaceInspectorManagerQueryError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(NamespaceInspectorManagerQueryError::PropertyTableMismatch)?;
-        let bytes = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(NamespaceInspectorManagerQueryError::PropertyTableMismatch)?;
-        self.offset = end;
-        Ok(bytes)
-    }
-
-    fn remaining(&self) -> usize {
-        self.bytes.len() - self.offset
     }
 }
 
