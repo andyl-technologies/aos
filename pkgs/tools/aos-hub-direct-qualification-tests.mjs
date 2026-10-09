@@ -123,7 +123,7 @@ async function pumpMixed(output) {
         selection: { target: "/bulk-payload", host: "s3.fleet.test", etag: '"actual-etag"' },
         expectedSourceSha256: digest(payload), expectedSourceBytes: String(payload.length),
         expectedPrefixSha256: digest(payload.subarray(0, 65536)), selectionContextSha256: digest(Buffer.from(JSON.stringify(sorted(arming)))),
-        selectionDeadlineUnixMillis: Date.now() + 15000, pauseMillis: 15000 };
+        selectionDeadlineUnixMillis: Date.now() + 15000, pauseMillis: 15000, streamMillis: 15000 };
       assert.equal((await mixedFixture.listener.command(arm)).status, "armed");
       await save("mixed-arm-release.json", { version: 1, runId: arming.runId,
         readySha256: digest(Buffer.from(JSON.stringify(sorted(arming)))), heldReceiptSha256: digest(Buffer.from(JSON.stringify(arm))) });
