@@ -64,7 +64,7 @@ use crucible_control_api::streaming::{
 };
 use crucible_control_api::*;
 use crucible_control_api::{DEBUG_RELAY_CHUNK_MAX_BYTES, DebugRelayId};
-use crucible_control_client::{ControlClientError, RpcControlClient};
+use crucible_control_client::ControlClientError;
 
 mod resource_limit;
 type SharedLifecycleControlPlane<L, F> = Arc<Mutex<LifecycleControlPlane<L, F>>>;
@@ -2149,3 +2149,37 @@ mod debug_wire;
 use debug_reposition::*;
 use debug_wire::*;
 use query_wire::*;
+
+/// Starts an authenticated shared lifecycle server on the current Tokio runtime.
+///
+/// The returned task retains listener and registry ownership until shutdown;
+/// callers can join or cancel it using the ordinary Tokio task interface.
+///
+/// # Panics
+///
+/// Panics if no Tokio runtime is active.
+pub fn spawn_shared_lifecycle_http2_mtls_with_mode_until_shutdown<L, F, S>(
+    listener: TcpListener,
+    control_plane: SharedLifecycleControlPlane<L, F>,
+    mode: LifecycleServerMode,
+    tls_acceptor: TlsAcceptor,
+    debug_authorization: DebugAuthorizationPolicy,
+    shutdown: S,
+) -> tokio::task::JoinHandle<Result<(), std::io::Error>>
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+    S: Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown(
+        listener,
+        control_plane,
+        mode,
+        tls_acceptor,
+        debug_authorization,
+        shutdown,
+    ))
+}

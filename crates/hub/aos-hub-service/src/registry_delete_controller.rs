@@ -35,20 +35,20 @@ use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::clock;
-use crate::db::{
+use crate::fetch::SurfaceProvider;
+use crate::oci_inventory_controller::{
+    OciInventoryDispatchBudget, OciPlacementInventoryProgress, OciProviderInventoryController,
+};
+use aos_hub_db::db::{
     Database, NewTopologyOperation, NewTopologyOperationTarget, NewTopologyOperationTargetRef,
     PlacementDeletionState, PrepareRegistryDeletion, RegistryDeletionCommit,
     RegistryDeletionOperationCompletion, RegistryDeletionOutcome, RegistryDeletionPlacement,
     RegistryDeletionReadiness, TopologyOperationRecord, TopologyPlanRecord,
 };
-use crate::domain::Permission;
-use crate::fetch::SurfaceProvider;
-use crate::oci_inventory_controller::{
-    OciInventoryDispatchBudget, OciPlacementInventoryProgress, OciProviderInventoryController,
-};
+use aos_hub_model::clock;
+use aos_hub_model::domain::Permission;
 
-pub use crate::db::REGISTRY_DELETION_OPERATION_KIND;
+pub use aos_hub_db::db::REGISTRY_DELETION_OPERATION_KIND;
 
 /// Lease held by one controller pass; a pass is bounded well below it.
 const CLAIM_LEASE_SECONDS: i64 = 300;
@@ -696,11 +696,11 @@ pub fn registry_deletion_operation_id(plan_id: &str) -> String {
 #[must_use]
 pub fn readiness_message(
     readiness: &RegistryDeletionReadiness,
-) -> aos_proto_types::RegistryDeletionReadiness {
+) -> aos_hub_api::RegistryDeletionReadiness {
     let blockers = &readiness.blockers;
-    aos_proto_types::RegistryDeletionReadiness {
+    aos_hub_api::RegistryDeletionReadiness {
         verdict: readiness.verdict().as_str().to_string(),
-        blockers: Some(aos_proto_types::RegistryDeletionBlockers {
+        blockers: Some(aos_hub_api::RegistryDeletionBlockers {
             repositories: blockers.repositories,
             catalog_objects: blockers.catalog_objects,
             active_sessions: blockers.active_sessions,
@@ -722,7 +722,7 @@ pub fn readiness_message(
         placements: readiness
             .placements
             .iter()
-            .map(|placement| aos_proto_types::RegistryDeletionPlacement {
+            .map(|placement| aos_hub_api::RegistryDeletionPlacement {
                 placement_name: placement.name.clone(),
                 inventory_state: placement.state.as_str().to_string(),
                 detail: placement.detail.clone(),

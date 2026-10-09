@@ -229,7 +229,7 @@ impl RpcService {
         let scope = Scope::parse(&org.stable_id);
         self.require_permission(&claims, Permission::IamAdmin, &scope)
             .await?;
-        let record = crate::db::OrgDomainRecord {
+        let record = aos_hub_db::db::OrgDomainRecord {
             domain: input.domain,
             org_id: org.id,
             txt_challenge: input.txt_challenge,

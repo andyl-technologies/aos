@@ -11,7 +11,7 @@ use aos_oci_types::{
 };
 
 use super::{clock, Permission, RpcError, RpcService};
-use crate::db::{
+use aos_hub_db::db::{
     oci_blob_object_key, oci_catalog_declaration_digest, oci_publication_confirmation_hash,
     AddOciPublicationObject, BeginOciPublication, ContainerReleaseDescriptorRole, OciCatalogObject,
     OciCatalogProjection, OciPublicationRecord, OciPublicationRequiredPlacement,
@@ -30,7 +30,7 @@ impl RpcService {
     /// unavailable topology, or database failure.
     pub(crate) async fn staged_container_progress(
         &self,
-        registry: &crate::db::RegistryRecord,
+        registry: &aos_hub_db::db::RegistryRecord,
         revision: &aos_registry_format::staging::StageRevision,
     ) -> Result<(u64, u64, Vec<String>), RpcError> {
         let Some(container) = &revision.container else {
@@ -565,9 +565,9 @@ impl RpcService {
 
     async fn authorize_container_publication(
         &self,
-        claims: &crate::auth::jwt::Claims,
+        claims: &aos_hub_model::auth::jwt::Claims,
         publication: &OciPublicationRecord,
-    ) -> Result<(crate::db::RegistryRecord, OciRepositoryRecord), RpcError> {
+    ) -> Result<(aos_hub_db::db::RegistryRecord, OciRepositoryRecord), RpcError> {
         let registry = self
             .db
             .registry_by_id(publication.registry_id)
@@ -620,7 +620,7 @@ impl RpcService {
     }
 }
 
-use crate::db::OciRepositoryRecord;
+use aos_hub_db::db::OciRepositoryRecord;
 
 fn verified_publication_unavailable() -> RpcError {
     RpcError::Unavailable("verified container publication rollout is disabled".to_string())
@@ -946,7 +946,7 @@ mod staging_tests {
               ON state.registry_id = registry.id WHERE registry.id = ?1";
         let before_epoch: i64 = db
             .fixture_backend()
-            .query_opt(epoch_sql, &[crate::value::Value::Int(registry_id)])
+            .query_opt(epoch_sql, &[aos_hub_db::value::Value::Int(registry_id)])
             .await
             .unwrap()
             .unwrap()
@@ -957,7 +957,7 @@ mod staging_tests {
             .unwrap();
         let after_epoch: i64 = db
             .fixture_backend()
-            .query_opt(epoch_sql, &[crate::value::Value::Int(registry_id)])
+            .query_opt(epoch_sql, &[aos_hub_db::value::Value::Int(registry_id)])
             .await
             .unwrap()
             .unwrap()
@@ -1003,7 +1003,7 @@ mod staging_tests {
         let descriptor = &container.descriptors[0];
         for (offset, tail) in [(1_i64, "61"), (2_i64, "6162")] {
             let upload = db
-                .begin_oci_upload(&crate::db::BeginOciUpload {
+                .begin_oci_upload(&aos_hub_db::db::BeginOciUpload {
                     registry_id,
                     repository_id: repository.id,
                     publication_id: None,
@@ -1025,9 +1025,9 @@ mod staging_tests {
                     "UPDATE oci_upload_sessions SET uploaded_size = ?2,
                        sha256_total_bytes = ?2, sha256_tail_hex = ?3 WHERE id = ?1",
                     &[
-                        crate::value::Value::Text(upload.id),
-                        crate::value::Value::Int(offset),
-                        crate::value::Value::Text(tail.into()),
+                        aos_hub_db::value::Value::Text(upload.id),
+                        aos_hub_db::value::Value::Int(offset),
+                        aos_hub_db::value::Value::Text(tail.into()),
                     ],
                 )
                 .await

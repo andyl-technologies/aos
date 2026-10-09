@@ -5,8 +5,6 @@ use super::*;
 #[tokio::test(flavor = "current_thread")]
 async fn reference_client_conformance_drives_full_lifecycle_across_transports_with_simdouble_backend()
  {
-    assert_qemu_node_implements_simulation_backend_contract();
-
     let sim_double_client = InProcessLifecycleClient::new(reference_lifecycle_control_plane(
         "crucible-reference-simdouble",
         |_scenario, _seed| ReferenceSimDoubleLoop::new(),

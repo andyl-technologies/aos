@@ -38,10 +38,10 @@
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use aos_cli_ui::output::Printer;
 use aos_nix_cache::backend::{
     self, AuthOptions, CacheBackend, IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL,
 };
-use aos_cli_ui::output::Printer;
 use futures_util::stream::{StreamExt, TryStreamExt};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
@@ -1794,10 +1794,8 @@ mod tests {
             b"P pack-demo.pack\n",
         )
         .unwrap();
-        let disk_key = aos_registry_format::manifest::immutable_image_object_key(
-            &image_sha,
-            "aos-test.qcow2",
-        );
+        let disk_key =
+            aos_registry_format::manifest::immutable_image_object_key(&image_sha, "aos-test.qcow2");
         let info_key = aos_registry_format::manifest::immutable_image_contract_object_key(
             &image_sha,
             &info_sha,

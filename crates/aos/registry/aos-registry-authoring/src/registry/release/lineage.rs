@@ -27,7 +27,11 @@ pub(super) fn predecessor(directory: &Path, release: &semver::Version) -> Result
         .map(|key| key.key)
         .chain(roster.revoked.into_iter().filter_map(|key| key.key))
         .collect::<Vec<_>>();
-    if !aos_registry_client::security::verify_tag_signature(directory, &version.to_string(), &trusted_keys)? {
+    if !aos_registry_client::security::verify_tag_signature(
+        directory,
+        &version.to_string(),
+        &trusted_keys,
+    )? {
         bail!(
             "published release predecessor {version} is not signed by a known registry authority"
         );

@@ -1371,7 +1371,7 @@ fn install_preemption(
             node: NodeId {
                 name: String::from("plugin-flight-node"),
             },
-            at: crucible::SimInstant { ticks: at },
+            at: crucible_engine::SimInstant { ticks: at },
             kind,
         }),
         current,

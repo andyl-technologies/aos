@@ -74,16 +74,17 @@ pub(crate) fn run_finding_bundle_midpoint(
             .await
             .map_err(|error| backend_error(format!("finding midpoint restore failed: {error}")))?;
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
-        let mut server = tokio::spawn(serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown(
-            listener,
-            session.shared_control_plane(),
-            LifecycleServerMode::read_write(),
-            transport.acceptor,
-            policy,
-            async move {
-                let _ = stopped.await;
-            },
-        ));
+        let mut server =
+            crucible_control_server::spawn_shared_lifecycle_http2_mtls_with_mode_until_shutdown(
+                listener,
+                session.shared_control_plane(),
+                LifecycleServerMode::read_write(),
+                transport.acceptor,
+                policy,
+                async move {
+                    let _ = stopped.await;
+                },
+            );
         let relay = async {
             print_midpoint_report(&report, cli.output_format())?;
             crate::cli_triage_debug::run_private_unix_debug_relay_with_client_async(
@@ -413,75 +414,5 @@ pub(super) fn print_midpoint_report(report: &Value, format: OutputFormat) -> Res
 }
 
 #[cfg(test)]
-// crucible-lint: allow panic-shortcut -- midpoint fixtures use expect for precise failure localization.
-#[allow(clippy::expect_used)]
-mod tests {
-    use std::time::Duration;
-
-    use super::*;
-
-    async fn handshake_is_accepted(
-        acceptor: tokio_rustls::TlsAcceptor,
-        ca_pem: String,
-        client_identity_pem: String,
-    ) -> bool {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind private TLS test listener");
-        let address = listener.local_addr().expect("private TLS test address");
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("accept TLS test peer");
-            acceptor.accept(stream).await.is_ok()
-        });
-        let client = RpcControlClient::new_mtls(
-            RpcEndpoint::http2(format!("https://{address}")),
-            RpcMutualTlsConfig::from_pem(ca_pem, client_identity_pem),
-        )
-        .expect("construct TLS test client");
-
-        let _ = tokio::time::timeout(Duration::from_secs(5), client.list_sessions()).await;
-        tokio::time::timeout(Duration::from_secs(5), server)
-            .await
-            .expect("TLS handshake completed")
-            .expect("TLS test server completed")
-    }
-
-    #[tokio::test]
-    async fn private_midpoint_transport_denies_an_unrelated_local_certificate() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let directory = private_bundle_tempdir().expect("private TLS directory");
-        assert_eq!(
-            std::fs::metadata(directory.path())
-                .expect("private TLS directory metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
-        let transport = private_midpoint_transport(directory.path()).expect("private TLS setup");
-        let unrelated = rcgen::generate_simple_self_signed(vec![String::from("unrelated-client")])
-            .expect("unrelated identity");
-
-        assert!(
-            handshake_is_accepted(
-                transport.acceptor.clone(),
-                transport.ca_pem.clone(),
-                transport.client_identity_pem,
-            )
-            .await
-        );
-        assert!(
-            !handshake_is_accepted(
-                transport.acceptor,
-                transport.ca_pem,
-                format!(
-                    "{}{}",
-                    unrelated.cert.pem(),
-                    unrelated.signing_key.serialize_pem()
-                ),
-            )
-            .await
-        );
-    }
-}
+#[path = "midpoint_tests.rs"]
+mod tests;

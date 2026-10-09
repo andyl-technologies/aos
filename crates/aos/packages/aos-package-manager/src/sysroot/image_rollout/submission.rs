@@ -13,11 +13,12 @@ use aos_cli_ui::output::Printer;
 use serde_json::Value;
 
 use super::{ImageRolloutRequest, RolloutImageIdentity, is_qualified_image_rollout};
-use aos_registry_client::config::ApmConfig;
-use aos_deployment::evaluation::Evaluation;
 use crate::profile::{Generation, Profile};
 use crate::sysroot::{SystemTransitionMode, running_image_generation};
-use crate::types::{ImageGeneration, ProfileScope};
+use crate::types::ImageGeneration;
+use aos_deployment::evaluation::Evaluation;
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::types::ProfileScope;
 
 pub(super) fn evaluation(config: &ApmConfig) -> Result<(Evaluation, PathBuf)> {
     ensure!(

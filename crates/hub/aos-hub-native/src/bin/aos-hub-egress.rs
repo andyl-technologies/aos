@@ -38,8 +38,8 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let key_file = aos_hub_native::auth::seal::read_secret_file(&args.gateway_key_file)
         .context("loading hardened-egress shared key")?;
-    let key =
-        aos_hub_native::auth::seal::parse_key(&key_file).context("parsing hardened-egress shared key")?;
+    let key = aos_hub_native::auth::seal::parse_key(&key_file)
+        .context("parsing hardened-egress shared key")?;
     let mut keys = vec![(args.key_id, key)];
     match (args.next_key_id, args.next_key_file) {
         (Some(key_id), Some(path)) => {

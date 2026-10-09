@@ -1,11 +1,10 @@
 //! Registry publication pack generation and compression policy.
 
-use std::path::{Path, PathBuf};
-use anyhow::{Context,Result,bail};
-use tokio::process::Command;
 use crate::registry::thinpack;
-use aos_registry_client::registry::pack::{ZSTD_LONG,ZSTD_LEVEL};
-#[cfg(test)] use aos_registry_client::registry::pack::{index_pack,index_pack_fix_thin,zstd_decompress};
+use anyhow::{Context, Result, bail};
+use aos_registry_client::registry::pack::{ZSTD_LEVEL, ZSTD_LONG};
+use std::path::{Path, PathBuf};
+use tokio::process::Command;
 /// Kind of a semver release for the guaranteed delta scheme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseKind {
@@ -17,7 +16,6 @@ pub enum ReleaseKind {
     Patch,
 }
 
-
 /// Classify a release by its semver triple.
 pub fn release_kind(version: &semver::Version) -> ReleaseKind {
     if version.minor == 0 && version.patch == 0 {
@@ -28,8 +26,6 @@ pub fn release_kind(version: &semver::Version) -> ReleaseKind {
         ReleaseKind::Patch
     }
 }
-
-
 
 /// Return the guaranteed delta bases for `release`, newest to oldest.
 ///
@@ -84,8 +80,6 @@ pub fn scheme_deltas(
     bases
 }
 
-
-
 /// Generate a self-contained full pack over `release_commit`.
 ///
 /// # Errors
@@ -103,8 +97,6 @@ pub async fn full_pack(repo: &Path, release_commit: &str, out_dir: &Path) -> Res
         .await
         .context("full-pack task panicked")?
 }
-
-
 
 /// Build a self-contained pack of everything reachable from `release_commit`
 /// with libgit2's pack builder and indexer, named `pack-<hash>.pack` after its
@@ -142,8 +134,6 @@ fn full_pack_blocking(repo: &Path, release_commit: &str, out_dir: &Path) -> Resu
     Ok(path)
 }
 
-
-
 /// Generate a thin delta pack from `from_commit` to `to_commit`.
 ///
 /// The output filename is `delta-<from_semver>.pack`. The pack references base
@@ -175,8 +165,6 @@ pub async fn thin_delta(
     Ok(out)
 }
 
-
-
 /// Compress `path` with zstd, producing `<path>.zst`.
 ///
 /// Uses the module's fixed ultra level ([`ZSTD_LEVEL`]) and long-distance
@@ -203,8 +191,6 @@ pub async fn zstd_compress(path: &Path, dict: Option<&Path>) -> Result<PathBuf> 
     Ok(out)
 }
 
-
-
 /// Train a zstd dictionary over a release line's delta packs.
 ///
 /// # Errors
@@ -225,8 +211,6 @@ pub async fn train_dictionary(packs: &[PathBuf], out: &Path) -> Result<PathBuf> 
     Ok(out.to_path_buf())
 }
 
-
-
 /// Append `candidate` to `bases` if it is published and not already present.
 fn push_if_published(
     bases: &mut Vec<semver::Version>,
@@ -237,8 +221,6 @@ fn push_if_published(
         bases.push(candidate);
     }
 }
-
-
 
 /// Run a command and fail with its stderr if it exits non-zero.
 async fn run_status(mut cmd: Command, label: &str) -> Result<()> {
@@ -253,7 +235,8 @@ async fn run_status(mut cmd: Command, label: &str) -> Result<()> {
         );
     }
     Ok(())
-}#[cfg(test)]
+}
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -5,8 +5,7 @@
 //! of reachable Rust hot-path owners plus targeted QEMU patch artifacts and
 //! fails if socket, QMP, or plugin-control APIs enter that scoped surface.
 
-#[path = "../support/workspace.rs"]
-mod workspace;
+use crate::workspace;
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -30,27 +29,27 @@ struct QemuPatchOwner {
 // replacing an enumerated owner requires updating the perf gate.
 const HOT_PATH_OWNERS: &[HotPathOwner] = &[
     owner(
-        "crucible-qemu/src/async_driver/driver.rs",
+        "crucible/qemu/crucible-qemu-host/src/async_driver/driver.rs",
         &["pub fn run_bounded_qemu_node_step"],
         &[],
     ),
     owner(
-        "crucible-qemu/src/async_driver/hot_path.rs",
+        "crucible/qemu/crucible-qemu-host/src/async_driver/hot_path.rs",
         &["pub fn assert_async_driver_quantum_hot_path_is_shmem_only"],
         &[],
     ),
     owner(
-        "crucible-qemu/src/supervision/host_io_runtime.rs",
+        "crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime.rs",
         &["pub struct QemuLiveHostIoRuntime"],
         &[],
     ),
     owner(
-        "crucible-qemu/src/supervision/host_io_runtime/control.rs",
+        "crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime/control.rs",
         &["fn signal_wake("],
         &["wake.write_all(&1_u64.to_ne_bytes())"],
     ),
     owner(
-        "crucible-qemu/src/supervision/block_io_servicer.rs",
+        "crucible/qemu/crucible-qemu-host/src/supervision/block_io_servicer.rs",
         &[
             "pub struct QemuLiveBlockIoServicer",
             "pub fn service(",
@@ -60,12 +59,12 @@ const HOT_PATH_OWNERS: &[HotPathOwner] = &[
         &["wake.write_all(&1_u64.to_ne_bytes())"],
     ),
     owner(
-        "crucible-qemu/src/supervision/ninep_io_servicer.rs",
+        "crucible/qemu/crucible-qemu-host/src/supervision/ninep_io_servicer.rs",
         &["pub struct QemuLive9pIoServicer", "pub fn service("],
         &[],
     ),
     scoped_owner(
-        "crucible-qemu/src/host_setup.rs",
+        "crucible/qemu/crucible-qemu-host/src/host_setup.rs",
         &[
             "pub struct QemuHostPluginSetup",
             "pub fn signal_plugin_wake(&self)",
@@ -77,32 +76,32 @@ const HOT_PATH_OWNERS: &[HotPathOwner] = &[
         ),
     ),
     owner(
-        "crucible-qemu/src/quantum.rs",
+        "crucible/qemu/crucible-qemu-host/src/quantum.rs",
         &["pub struct QemuQuantumShmemHotPath"],
         &[],
     ),
     owner(
-        "crucible-qemu/src/mapped_quantum.rs",
+        "crucible/qemu/crucible-qemu-host/src/mapped_quantum.rs",
         &["pub struct QemuMappedQuantumShmemHotPath"],
         &[],
     ),
     owner(
-        "crucible-qemu/src/mapped_quantum/support.rs",
+        "crucible/qemu/crucible-qemu-host/src/mapped_quantum/support.rs",
         &["pub(super) fn mapped_view"],
         &[],
     ),
     owner(
-        "crucible-qemu/src/mapped_quantum/preemption.rs",
+        "crucible/qemu/crucible-qemu-host/src/mapped_quantum/preemption.rs",
         &["pub fn publish_preemption_command"],
         &[],
     ),
     owner(
-        "crucible-shmem/src/shmem/frame_node/runtime.rs",
+        "crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/runtime.rs",
         &["pub fn publish_scheduler_inbox_and_advance"],
         &[],
     ),
     owner(
-        "crucible-shmem/src/shmem/frame_node/futex.rs",
+        "crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/futex.rs",
         &[
             "pub fn wake_for_frame_delivery",
             "pub fn wake_for_device_io_release",
@@ -111,7 +110,7 @@ const HOT_PATH_OWNERS: &[HotPathOwner] = &[
         &[],
     ),
     owner(
-        "crucible-device/src/subnode.rs",
+        "crucible/engine/crucible-device/src/subnode.rs",
         &[
             "pub fn process_one_shmem_request",
             "pub fn advance_to_shmem",
@@ -120,72 +119,72 @@ const HOT_PATH_OWNERS: &[HotPathOwner] = &[
         &[],
     ),
     owner(
-        "crucible-shmem/src/shmem/region/allocation_io.rs",
+        "crucible/protocol/crucible-qemu-shmem/src/shmem/region/allocation_io.rs",
         &["pub fn enqueue_directed_frame"],
         &[],
     ),
     owner(
-        "crucible-shmem/src/shmem/region/allocation_scheduler.rs",
+        "crucible/protocol/crucible-qemu-shmem/src/shmem/region/allocation_scheduler.rs",
         &["pub fn dequeue_directed_frame"],
         &[],
     ),
     owner(
-        "crucible-shmem/src/shmem/ring_coverage.rs",
+        "crucible/protocol/crucible-qemu-shmem/src/shmem/ring_coverage.rs",
         &["pub struct RingHeader"],
         &[],
     ),
     owner(
-        "crucible-qemu-plugin/src/shmem_ordering.rs",
+        "crucible/qemu/crucible-qemu-plugin/src/shmem_ordering.rs",
         &["pub struct PluginShmemOrdering"],
         &[],
     ),
     owner(
-        "crucible-qemu-plugin/src/time_control.rs",
+        "crucible/qemu/crucible-qemu-plugin/src/time_control.rs",
         &["pub struct PluginVirtualClock"],
         &[],
     ),
     owner(
-        "crucible-qemu-plugin/src/idle_loop.rs",
+        "crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs",
         &["pub struct PluginIdleHotLoop"],
         &[],
     ),
     owner(
-        "crucible-qemu-plugin/src/network_rx.rs",
+        "crucible/qemu/crucible-qemu-plugin/src/network_rx.rs",
         &["pub struct PluginNetworkRx"],
         &[],
     ),
     owner(
-        "crucible-qemu-plugin/src/network_tx.rs",
+        "crucible/qemu/crucible-qemu-plugin/src/network_tx.rs",
         &["pub struct PluginNetworkTx"],
         &[],
     ),
     owner(
-        "crucible-qemu-plugin/src/device_io.rs",
+        "crucible/qemu/crucible-qemu-plugin/src/device_io.rs",
         &["pub struct PluginDeviceIoFreeze"],
         &[],
     ),
     owner(
-        "crucible-qemu-plugin/src/block_io.rs",
+        "crucible/qemu/crucible-qemu-plugin/src/block_io.rs",
         &["pub struct PluginBlockIo"],
         &[],
     ),
     owner(
-        "crucible-qemu-plugin/src/ninep_io.rs",
+        "crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs",
         &["pub struct PluginNinePIo"],
         &[],
     ),
     owner(
-        "crucible-qemu-plugin/src/preemption.rs",
+        "crucible/qemu/crucible-qemu-plugin/src/preemption.rs",
         &["pub struct PluginPreemptionInjector"],
         &[],
     ),
     owner(
-        "crucible-qemu-plugin/src/runtime/live_callbacks/devices.rs",
+        "crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks/devices.rs",
         &["pub(super) struct LiveDeviceCallbackState"],
         &[],
     ),
     owner(
-        "crucible-qemu-plugin/src/runtime/live_callbacks.rs",
+        "crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks.rs",
         &[
             "pub(crate) struct LiveVcpuTimeCallbackState",
             "fn wait_for_scheduler_release_or_inbound(",
@@ -199,7 +198,7 @@ const HOT_PATH_OWNERS: &[HotPathOwner] = &[
 // branch. It is absent here, but pre-registration ensures that once merged it
 // cannot silently enter the scoped hot path without this gate scanning it.
 const FUTURE_HOT_PATH_OWNERS: &[HotPathOwner] = &[owner(
-    "crucible-qemu-plugin/src/runtime/live_whitebox/api.rs",
+    "crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs",
     &[
         "pub(crate) struct LiveWhiteboxApis",
         "pub(crate) fn resolve()",

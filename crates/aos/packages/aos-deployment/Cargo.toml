@@ -6,6 +6,7 @@ license.workspace = true
 description = "Authenticated AOS module evaluation, store retention, and journaled activation"
 
 [dependencies]
+aos-module-docs.workspace = true
 aos-activation.workspace = true
 aos-core.workspace = true
 aos-deployment-format.workspace = true

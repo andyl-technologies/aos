@@ -30,7 +30,8 @@ impl RpcService {
         } else {
             selected_platform.to_owned()
         };
-        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry_id));
+        let fetch =
+            self.topology_surface_fetcher(aos_hub_db::db::SurfaceTarget::Registry(registry_id));
         let mut references = Vec::new();
         let mut commit = None;
         for document in documents

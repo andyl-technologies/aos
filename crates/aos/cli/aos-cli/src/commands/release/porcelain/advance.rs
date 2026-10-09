@@ -267,7 +267,7 @@ pub(super) async fn publish(args: &ReleaseDestinationArgs, printer: &Printer) ->
         );
     }
     if let Some(expected) = args.stage_revision {
-        let stage: aos_registry_surface::staging::StageRecord =
+        let stage: aos_registry_format::staging::StageRecord =
             serde_json::from_slice(&capture::control_file(
                 &session
                     .work
@@ -371,7 +371,7 @@ pub(super) fn publication_step(step: &Step) -> bool {
 
 /// Rejects upload-only continuation once a destination is publicly released.
 fn require_unpublished_upload_target(
-    state: Option<aos_release::state::ReleaseState>,
+    state: Option<aos_release_format::state::ReleaseState>,
     destination: &str,
 ) -> Result<()> {
     if state.is_some() {
@@ -385,7 +385,7 @@ fn require_unpublished_upload_target(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_release::state::ReleaseState;
+    use aos_release_format::state::ReleaseState;
 
     #[test]
     fn upload_only_resumption_rejects_every_published_distribution_state() {

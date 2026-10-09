@@ -271,7 +271,7 @@
   abiOwners =
     lib.sort builtins.lessThan (map (target: target.package) (builtins.filter (target: target.gate == "gate:abi-conformance") targets));
   expectedAbiOwners = ["crucible-control-api" "crucible-test-support" "crucible-qemu-protocol" "crucible-qemu-shmem"];
-  abiOwnerFailures = lib.optionals (abiOwners != expectedAbiOwners) [
+  abiOwnerFailures = lib.optionals (abiOwners != lib.sort builtins.lessThan expectedAbiOwners) [
     "gate:abi-conformance owner package mismatch: expected [${builtins.concatStringsSep ", " expectedAbiOwners}], found [${builtins.concatStringsSep ", " abiOwners}]"
   ];
 

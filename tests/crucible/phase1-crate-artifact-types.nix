@@ -165,8 +165,8 @@
         lib.optionals (binCount != 1) [
           "${spec.package}: CLI must declare exactly one [[bin]] target, found ${builtins.toString binCount}"
         ]
-        ++ lib.optionals (binCount == 1 && (!(bin ? name) || bin.name != "crucible-engine")) [
-          "${spec.package}: CLI [[bin]] name must be `crucible-engine`"
+        ++ lib.optionals (binCount == 1 && (!(bin ? name) || bin.name != "crucible")) [
+          "${spec.package}: CLI [[bin]] name must be `crucible`"
         ]
         ++ lib.optionals (binCount == 1 && (!(bin ? path) || bin.path != "src/main.rs")) [
           "${spec.package}: CLI [[bin]] path must be `src/main.rs`"
@@ -205,7 +205,7 @@
         ++ lib.optionals (binCount != 1) [
           "${spec.package}: ${artifactLabel} must declare exactly one [[bin]] target, found ${builtins.toString binCount}"
         ]
-        ++ lib.optionals (binCount == 1 && (!(bin ? name) || bin.name != spec.package)) [
+        ++ lib.optionals (binCount == 1 && (!(bin ? name) || bin.name != (if spec.expected == "guest-emitter" then spec.package else "crucible-debug-gateway"))) [
           "${spec.package}: ${artifactLabel} [[bin]] name must be `${spec.package}`"
         ]
         ++ lib.optionals (binCount == 1 && (!(bin ? path) || bin.path != "src/main.rs")) [
@@ -240,8 +240,8 @@
         ++ lib.optionals (binCount != 1) [
           "${spec.package}: gateway package must declare exactly one [[bin]] target, found ${builtins.toString binCount}"
         ]
-        ++ lib.optionals (binCount == 1 && (!(bin ? name) || bin.name != "crucible-qemu-debug-gateway")) [
-          "${spec.package}: gateway [[bin]] name must be `crucible-qemu-debug-gateway`"
+        ++ lib.optionals (binCount == 1 && (!(bin ? name) || bin.name != "crucible-debug-gateway")) [
+          "${spec.package}: gateway [[bin]] name must be `crucible-debug-gateway`"
         ]
         ++ lib.optionals (binCount == 1 && (!(bin ? path) || bin.path != "src/main.rs")) [
           "${spec.package}: gateway [[bin]] path must be `src/main.rs`"

@@ -31,15 +31,17 @@ use std::path::Path;
 use anyhow::{Context, Result, bail, ensure};
 use aos_cli_ui::output::{OutputMode, Printer};
 
-use aos_registry_client::config::ApmConfig;
 use crate::download::{
     DownloadRequest, default_engine, download_nars, fetch_narinfos, resolve_mirror_chain,
     split_mirror_chain,
 };
-use aos_registry_format::platform::native_platform;
-use aos_registry_client::registry::{RegistrySet, store_path_hash};
-use crate::types::{ImageGeneration, ImageGenerationState, ImageRollout, PackageMeta, ProfileScope};
+use crate::types::{ImageGeneration, ImageGenerationState, ImageRollout};
 use crate::verify::verify_download_hash;
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::registry::{RegistrySet, store_path_hash};
+use aos_registry_client::types::ProfileScope;
+use aos_registry_format::consumer::PackageMeta;
+use aos_registry_format::platform::native_platform;
 
 mod activatability;
 mod image_prepare;

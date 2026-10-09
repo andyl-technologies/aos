@@ -25,7 +25,7 @@ impl RpcService {
         &self,
         auth: Option<&str>,
         operation_id: &str,
-    ) -> Result<crate::db::TopologyOperationRecord, RpcError> {
+    ) -> Result<aos_hub_db::db::TopologyOperationRecord, RpcError> {
         let claims = self.require_claims(auth)?;
         let operation = self
             .db
@@ -79,7 +79,7 @@ impl RpcService {
         &self,
         auth: Option<&str>,
         operation_id: &str,
-    ) -> Result<crate::db::TopologyOperationRecord, RpcError> {
+    ) -> Result<aos_hub_db::db::TopologyOperationRecord, RpcError> {
         let operation = self.authorized_operation(auth, operation_id).await?;
         let claims = self.require_claims(auth)?;
         let scope = Scope::try_parse(&operation.authorization_scope_key).ok_or_else(|| {
@@ -87,7 +87,7 @@ impl RpcService {
                 "operation has non-canonical authorization scope"
             ))
         })?;
-        let permission = crate::auth::permission_from_str(&operation.control_permission)
+        let permission = aos_hub_model::auth::permission_from_str(&operation.control_permission)
             .ok_or_else(|| {
                 RpcError::internal(anyhow::anyhow!(
                     "operation has unknown persisted control permission"

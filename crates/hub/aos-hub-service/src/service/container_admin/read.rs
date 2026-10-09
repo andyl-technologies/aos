@@ -4,7 +4,7 @@ use aos_hub_api as pb;
 use aos_oci_types::ManifestReference;
 
 use super::*;
-use crate::db::{OciRepositoryListFilter, OciTagListFilter};
+use aos_hub_db::db::{OciRepositoryListFilter, OciTagListFilter};
 
 impl RpcService {
     /// Lists container repositories visible through one registry.
@@ -852,7 +852,7 @@ impl RpcService {
             .oci_registry_purge_fence_status_for_actor(
                 &req.plan_id,
                 &claims.sub,
-                crate::clock::now_unix_secs(),
+                aos_hub_model::clock::now_unix_secs(),
             )
             .await
             .map_err(RpcError::internal)?

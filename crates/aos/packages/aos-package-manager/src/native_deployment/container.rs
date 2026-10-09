@@ -8,20 +8,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
-use aos_module_format::graph::GRAPH_LIMITS;
 use aos_activation::activation::ExecutionPolicy;
 use aos_activation::adapter::CancellationToken;
 use aos_core::Sha256Digest;
+use aos_module_format::graph::GRAPH_LIMITS;
 
 use super::{
     EvaluationInputs, NativeDeploymentCommand, configure_profile_observer, persist_receipt,
     prepare, read_immutable_document_in, read_retained_evaluation_in,
 };
+use crate::profile::{Profile, deployment::ProfileDeployment};
 use aos_deployment::retention::NixStore;
 use aos_deployment::transaction::journal_limits;
-use crate::profile::{Profile, deployment::ProfileDeployment};
-use aos_deployment_format::inventory::{InstalledPackageRecord};
-use crate::types::{ProfileScope};
+use aos_deployment_format::inventory::InstalledPackageRecord;
+use aos_registry_client::types::ProfileScope;
 
 pub(crate) fn prepare_profile(
     image_input: &Path,

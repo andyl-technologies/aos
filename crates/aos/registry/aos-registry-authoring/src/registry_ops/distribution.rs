@@ -1,7 +1,6 @@
 //! Static cache, web, and origin publication with upload configuration.
 
-use aos_registry_client::config::ApmConfig;
-use aos_registry_client::registry::membership::{CacheMembership, HeadMembership};
+use crate::registry::membership::{CacheMembership, HeadMembership};
 use crate::registry::webgen::WebConfig;
 use crate::registry::{nixcache, objectstore, state, static_upload, webgen};
 use crate::registry_ops::config::{
@@ -12,13 +11,20 @@ use crate::registry_ops::git::{commit_registry, refresh_registry_object_store};
 use crate::registry_ops::publish::RegistryPublishLock;
 use crate::registry_ops::signing::ResolvedSigningKey;
 use crate::registry_ops::store_commands::resolve_cache_pointer_signing_key;
-use aos_registry_client::types::{RegistryFile, RegistryUploadAuthConfig};
 use crate::{CacheCommand, OriginCommand, UploadConfigField, WebCommand};
 use anyhow::{Context, Result, bail};
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_registry_client::config::ApmConfig;
+use aos_registry_format::consumer::{RegistryFile, RegistryUploadAuthConfig};
 use clap::ValueEnum as _;
 use std::path::Path;
 
+/// Dispatches static cache generation and upload operations.
+///
+/// # Errors
+///
+/// Returns an error when registry selection, signing, cache generation,
+/// committed cache configuration, or upload operations fail.
 pub async fn run_cache(
     config: &ApmConfig,
     command: &CacheCommand,

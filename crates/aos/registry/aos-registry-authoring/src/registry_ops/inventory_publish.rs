@@ -21,7 +21,7 @@ use super::store_paths::{
 };
 use aos_registry_client::config::ApmConfig;
 use aos_registry_client::registry::store;
-use aos_registry_client::types::validate_registry_name;
+use aos_registry_format::consumer::validate_registry_name;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn publish_evaluated_package(

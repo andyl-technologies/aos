@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use aos_cli_ui::output::Printer;
-use aos_registry_client::registry::{fetch, objectstore, pack};
+use aos_registry_client::registry::{fetch, objectstore};
 use semver::Version;
 
 use common::{RegistryFixture, StaticHttpServer};
@@ -45,25 +45,30 @@ async fn registry_pack_delta_perf_harness_reports_metrics() -> Result<()> {
     fixture.publish_bare_origin()?;
 
     let scratch = tempfile::TempDir::new()?;
-    let (full_pack, full_pack_time) = timed_async(pack::full_pack(
-        fixture.source_path(),
-        "1.0.0",
-        scratch.path(),
-    ))
-    .await?;
+    let (full_pack, full_pack_time) =
+        timed_async(aos_registry_authoring::registry::pack::full_pack(
+            fixture.source_path(),
+            "1.0.0",
+            scratch.path(),
+        ))
+        .await?;
     let full_pack_name = copy_full_pack_to_origin(&fixture, &v("1.0.0"), &full_pack)?;
     let full_pack_bytes = fs::metadata(&full_pack)?.len();
 
-    let (delta_pack, delta_pack_time) = timed_async(pack::thin_delta(
-        fixture.source_path(),
-        &base_commit,
-        &target_commit,
-        &v("1.0.0"),
-        scratch.path(),
-    ))
-    .await?;
+    let (delta_pack, delta_pack_time) =
+        timed_async(aos_registry_authoring::registry::pack::thin_delta(
+            fixture.source_path(),
+            &base_commit,
+            &target_commit,
+            &v("1.0.0"),
+            scratch.path(),
+        ))
+        .await?;
     let delta_pack_bytes = fs::metadata(&delta_pack)?.len();
-    let (compressed_delta, zstd_time) = timed_async(pack::zstd_compress(&delta_pack, None)).await?;
+    let (compressed_delta, zstd_time) = timed_async(
+        aos_registry_authoring::registry::pack::zstd_compress(&delta_pack, None),
+    )
+    .await?;
     let compressed_delta_name =
         copy_delta_pack_to_origin(&fixture, &v("1.0.1"), &compressed_delta)?;
     let compressed_delta_bytes = fs::metadata(&compressed_delta)?.len();

@@ -54,10 +54,10 @@
 //!
 //! # Configuration
 //!
-//! An [`IdpConfig`] mirrors the `org_idp_configs` row (see [`crate::db`]). The
+//! An [`IdpConfig`] mirrors the `org_idp_configs` row (see [`aos_hub_db::db`]). The
 //! client secret is held **sealed**; it is unsealed through a [`SecretSealer`]
 //! only at the token exchange. Production seals with
-//! [`AesGcmSealer`](crate::auth::seal::AesGcmSealer) (AES-256-GCM, keyed by the
+//! [`AesGcmSealer`](aos_hub_model::auth::seal::AesGcmSealer) (AES-256-GCM, keyed by the
 //! persisted instance key); [`XorSealer`] is a deliberately **placeholder**
 //! sealer (see its docs) used only under `--dev` and in tests.
 
@@ -69,10 +69,10 @@ use rand::Rng;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::auth::seal::SecretSealer;
-use crate::db::{Database, IdpConfigRecord};
-use crate::domain::{Principal, Role, Scope};
+use aos_hub_model::auth::seal::SecretSealer;
 use crate::web::console::ports::HttpClient;
+use aos_hub_db::db::{Database, IdpConfigRecord};
+use aos_hub_model::domain::{Principal, Role, Scope};
 
 /// Lifetime of an in-flight OIDC authorization-code request (10 minutes).
 ///
@@ -475,7 +475,7 @@ pub async fn complete_login(
     Ok(OidcLogin {
         user_id,
         email,
-        provisioned: matches!(link, crate::db::IdentityLink::Created(_)),
+        provisioned: matches!(link, aos_hub_db::db::IdentityLink::Created(_)),
         redirect_after: flow.redirect_after.clone(),
     })
 }

@@ -49,10 +49,9 @@ fn PublicationBegin(
     let busy = RwSignal::new(false);
     let on_submit = move |event: SubmitEvent| {
         event.prevent_default();
-        let mut request = match serde_json::from_str::<
-            aos_hub_api::BeginRegistryPublicationRequest,
-        >(&manifest.get_untracked())
-        {
+        let mut request = match serde_json::from_str::<aos_hub_api::BeginRegistryPublicationRequest>(
+            &manifest.get_untracked(),
+        ) {
             Ok(request) => request,
             Err(failure) => {
                 error.set(Some(format!(

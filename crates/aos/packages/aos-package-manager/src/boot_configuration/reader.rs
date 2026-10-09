@@ -9,17 +9,16 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, ensure};
-use aos_module_format::graph::GRAPH_LIMITS;
 use aos_core::Sha256Digest;
+use aos_module_format::graph::GRAPH_LIMITS;
 use aos_storage_layout::AuthorizedProvisioningInput;
 
 use super::proof::{
     ImageAdmission, InitrdDecision, MetadataBinding, PreparationResult, validate_authorized_bytes,
 };
-use aos_deployment_format::model::{Deployment, ResolvedPackages};
+use crate::native_deployment::NativeDeploymentCommand;
 use aos_deployment::transaction::{self, Snapshot};
-use aos_deployment_format::input::EvaluationInput;
-use crate::native_deployment::{NativeDeploymentCommand};
+use aos_deployment_format::model::{Deployment, ResolvedPackages};
 
 const INITRD_INPUT: &str = "/usr/lib/aos/initrd/deployment";
 const INITRD_STATE: &str = "/run/aos-boot-transaction-storage/aos/initrd-stage-journal";

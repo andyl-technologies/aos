@@ -8,7 +8,7 @@
 //! roots fail closed before that transaction begins.
 //!
 //! The reviewed deletion operation (see
-//! [`registry_delete_controller`](crate::registry_delete_controller)) drives
+//! the service registry-deletion controller) drives
 //! the automatic preconditions and then calls
 //! [`Database::commit_registry_deletion`]. A precondition that changes between
 //! its readiness check and this transaction is reported as

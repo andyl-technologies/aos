@@ -12,10 +12,10 @@ use axum::extract::Request;
 use axum::http::{Method, StatusCode, Uri};
 use axum::response::Response;
 
-use crate::db::{InboundEndpointHost, InboundInstanceOciRoute};
 use crate::oci::namespace::{OciNamespaceCatalog, OciNamespaceError, OciNamespaceMatch};
 use crate::oci::{self, OciRequest, ResolvedOciRoute};
 use crate::service::RpcService;
+use aos_hub_db::db::{InboundEndpointHost, InboundInstanceOciRoute};
 
 /// Rewrites one `/v2` request on an instance OCI route for the internal handler.
 ///

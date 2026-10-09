@@ -919,9 +919,9 @@ fn validate_replayed_failure_boundary(
         let record = repository.load_finding_triage_replay_evidence(replay_id)?;
         let reproduction = repository.load_reproduction_artifact(record.reproduction())?;
         let artifact =
-            crucible_core::ReproductionArtifact::from_compact_binary(reproduction.payload())?;
+            crucible_engine::ReproductionArtifact::from_compact_binary(reproduction.payload())?;
         let replay = artifact.replay()?;
-        let configuration = crucible_core::Configuration {
+        let configuration = crucible_engine::Configuration {
             def: artifact.scenario_def(),
             schedule: artifact.schedule().clone(),
         }
@@ -933,16 +933,16 @@ fn validate_replayed_failure_boundary(
         {
             return Err("campaign replay reproduction identity is inconsistent".into());
         }
-        let native_finding = crucible_core::FindingReproductionArtifact {
-            discovery_path: crucible_core::FindingDiscoveryPath::StateSpaceSearch,
-            finding_fingerprint: crucible_core::ContentHash {
+        let native_finding = crucible_engine::FindingReproductionArtifact {
+            discovery_path: crucible_engine::FindingDiscoveryPath::StateSpaceSearch,
+            finding_fingerprint: crucible_engine::ContentHash {
                 bytes: reproduction.finding_fingerprint().as_bytes(),
             },
             configuration,
             artifact,
             replay,
         };
-        let native_replay = crucible_core::FailureTriageReplayEvidence::from_compact_binary(
+        let native_replay = crucible_engine::FailureTriageReplayEvidence::from_compact_binary(
             native_finding,
             record.payload(),
         )?;
@@ -956,7 +956,7 @@ fn validate_replayed_failure_boundary(
         {
             return Err("campaign replay payload disagrees with its authenticated record".into());
         }
-        let crucible_core::FailureClusterReportFailure::Property(property) =
+        let crucible_engine::FailureClusterReportFailure::Property(property) =
             native_replay.failure()
         else {
             return Err("campaign finding replay did not retain a property violation".into());

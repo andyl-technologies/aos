@@ -81,7 +81,7 @@ impl RpcService {
                 .await
         };
         result.map_err(|error| {
-            if crate::db::is_last_owner_error(&error) {
+            if aos_hub_db::db::is_last_owner_error(&error) {
                 RpcError::FailedPrecondition(
                     "an organization must retain at least one human owner".to_string(),
                 )
@@ -214,7 +214,7 @@ impl RpcService {
         })?;
         self.require_membership_grant_ceiling(&claims, &scope, None, Some(role))
             .await?;
-        let (secret, token_hash) = crate::auth::token::generate_invitation_token();
+        let (secret, token_hash) = aos_hub_model::auth::token::generate_invitation_token();
         let sealer = self.sealer.as_ref().ok_or_else(|| {
             RpcError::FailedPrecondition(
                 "invitation creation requires durable secret sealing".into(),
@@ -253,8 +253,8 @@ impl RpcService {
         }
         let plan_uuid = uuid::Uuid::parse_str(&plan.plan_id).map_err(RpcError::internal)?;
         let created_at = clock::now_unix_secs();
-        let record = crate::db::InvitationRecord {
-            id: crate::db::portable_relational_id(plan_uuid),
+        let record = aos_hub_db::db::InvitationRecord {
+            id: aos_hub_db::db::portable_relational_id(plan_uuid),
             org_id: org.id,
             email: input.email,
             scope: input.scope,
@@ -427,7 +427,7 @@ impl RpcService {
         if req.secret.is_empty() {
             return Err(RpcError::invalid("invitation secret is required"));
         }
-        let token_hash = crate::auth::token::sha256_hex(&req.secret);
+        let token_hash = aos_hub_model::auth::token::sha256_hex(&req.secret);
         let event_id = hex::encode(Sha256::digest(
             format!("invitation:accept:{token_hash}").as_bytes(),
         ));

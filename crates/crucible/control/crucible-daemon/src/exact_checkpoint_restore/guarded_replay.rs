@@ -97,7 +97,7 @@ where
 
     /// Compares one authenticated fat snapshot with replay from baked genesis.
     ///
-    /// Runtime observations stay opaque outside `crucible-qemu`; this session
+    /// Runtime observations stay opaque outside `crucible-qemu-host`; this session
     /// may sequence guarded operations but cannot manufacture comparison
     /// evidence. The authenticated choice closure routes each selection to
     /// its owning node; a local reply requires the matching physical guest

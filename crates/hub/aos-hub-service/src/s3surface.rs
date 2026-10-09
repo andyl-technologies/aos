@@ -35,7 +35,7 @@
 //!   unsigned `GET` of the public origin URL; writes are refused (there is
 //!   nothing to sign with).
 
-use crate::db::BindingRecord;
+use aos_hub_db::db::BindingRecord;
 
 /// Maximum in-memory S3 object read used by metadata/indexing operations.
 /// Large machine objects use [`crate::fetch::SurfaceFetch::fetch_stream`].
@@ -260,7 +260,7 @@ impl S3Surface {
         // `..` can never sign (or directly request) an object outside this
         // resource's prefix — the same containment the filesystem and R2 writers
         // enforce, applied here before the key reaches the origin.
-        crate::url_guard::validate_http_surface_path(path)?;
+        aos_hub_model::url_guard::validate_http_surface_path(path)?;
         // Avoid a doubled slash when `key_prefix` is empty (a binding whose root
         // and sub-prefix are both empty) or carries a trailing slash — an
         // `s3://host/bucket//key` URL is rejected (R2 returns 400).
@@ -319,7 +319,7 @@ impl S3Surface {
         part_number: Option<u32>,
         now: i64,
     ) -> Result<String> {
-        crate::url_guard::validate_http_surface_path(path)?;
+        aos_hub_model::url_guard::validate_http_surface_path(path)?;
         let creds = self.creds.as_ref().context("public binding is read-only")?;
         let key = if self.key_prefix.is_empty() {
             path.to_string()
@@ -370,7 +370,7 @@ impl S3Surface {
     ///
     /// Returns an error for an unsafe path, public binding, or signing failure.
     pub fn list_multipart_uploads_url(&self, path: &str, now: i64) -> Result<String> {
-        crate::url_guard::validate_http_surface_path(path)?;
+        aos_hub_model::url_guard::validate_http_surface_path(path)?;
         let creds = self
             .creds
             .as_ref()
@@ -412,7 +412,7 @@ impl S3Surface {
     /// Returns an error for malformed/truncated XML, more than 1000 uploads,
     /// or any upload whose key is not exactly the requested probe identity.
     pub fn parse_exact_multipart_uploads(&self, path: &str, xml: &str) -> Result<Vec<String>> {
-        crate::url_guard::validate_http_surface_path(path)?;
+        aos_hub_model::url_guard::validate_http_surface_path(path)?;
         anyhow::ensure!(
             xml.matches("<ListMultipartUploadsResult").count() == 1
                 && xml.matches("</ListMultipartUploadsResult>").count() == 1
@@ -533,7 +533,7 @@ impl S3Surface {
     #[must_use]
     pub fn relative_from_key(&self, key: &str) -> Option<String> {
         let (_, in_bucket) = self.bucket_split();
-        crate::keymap::relative_key(in_bucket, key)
+        aos_hub_model::keymap::relative_key(in_bucket, key)
     }
 }
 

@@ -17,7 +17,7 @@
 //!   ([`p256`], [`ed25519_dalek`], [`rsa`], [`sha2`]).
 //!
 //! The on-disk system of record (`webauthn_credentials`, `webauthn_challenges`;
-//! migration v17) lives in [`crate::db`]; this module owns the wire-format
+//! migration v17) lives in [`aos_hub_db::db`]; this module owns the wire-format
 //! parsing and the two ceremonies ([`begin_registration`]/[`finish_registration`]
 //! and [`begin_assertion`]/[`finish_assertion`]).
 //!
@@ -78,7 +78,7 @@ use ed25519_dalek::Verifier as _;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::db::Database;
+use aos_hub_db::db::Database;
 
 /// How long a WebAuthn ceremony challenge stays valid, in seconds (5 minutes).
 pub const CHALLENGE_TTL_SECS: i64 = 5 * 60;

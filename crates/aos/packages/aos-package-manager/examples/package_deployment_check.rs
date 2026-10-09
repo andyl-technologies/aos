@@ -14,13 +14,13 @@ use std::process::Command;
 use anyhow::{Context, Result, ensure};
 use aos_activation::adapter::CancellationToken;
 use aos_activation::journal::JournalLimits;
-use aos_module_docs::runtime::RuntimeDocument;
 use aos_deployment::evaluation::{Evaluation, PackageResolver, resolve_packages};
-use aos_deployment_format::model::{Deployment, Envelope, ModuleDependency};
 use aos_deployment::retention::{AdmittedArtifact, ArtifactAdmission, NixStore};
 use aos_deployment::transaction::{DeploymentStore as _, Transactions};
 use aos_deployment_format::input::EvaluationInput;
-use aos_package_manager::native_deployment::{evaluate_input};
+use aos_deployment_format::model::{Deployment, Envelope, ModuleDependency};
+use aos_module_docs::runtime::RuntimeDocument;
+use aos_package_manager::native_deployment::evaluate_input;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -218,10 +218,8 @@ fn main() -> Result<()> {
                 .to_str()
                 .context("fixture library is not UTF-8")?,
         )?;
-        let (library_nar_hash, _) = aos_nix::identity::hash_nar_command(
-            store_command,
-            std::time::Duration::from_secs(60),
-        )?;
+        let (library_nar_hash, _) =
+            aos_nix::identity::hash_nar_command(store_command, std::time::Duration::from_secs(60))?;
         let descriptor = EvaluationInput {
             os_release: None,
             package_envelopes: package_envelopes
@@ -246,9 +244,18 @@ fn main() -> Result<()> {
             runtime_configuration: Vec::new(),
             supplemental_inputs: Vec::new(),
         };
-        let imported = aos_deployment::input::import_evaluation_input(&descriptor, &nix_store, directory.path(), &cancellation)?;
+        let imported = aos_deployment::input::import_evaluation_input(
+            &descriptor,
+            &nix_store,
+            directory.path(),
+            &cancellation,
+        )?;
         ensure!(
-            aos_deployment::input::read_evaluation_input_in(&imported.path, &nix_store, &cancellation)? == descriptor,
+            aos_deployment::input::read_evaluation_input_in(
+                &imported.path,
+                &nix_store,
+                &cancellation
+            )? == descriptor,
             "immutable evaluation descriptor changed during import"
         );
         let replay = evaluate_input(

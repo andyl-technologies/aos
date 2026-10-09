@@ -1,14 +1,14 @@
 //! Release tag creation, verification, and SSH signature formatting.
 
-use aos_registry_client::config::ApmConfig;
 use crate::registry_ops::config::resolve_registry_name;
 use crate::registry_ops::git::{
     ensure_commit_identity, git, git2_identity, refresh_registry_object_store,
 };
 use crate::registry_ops::signing::resolve_producer_signing_key;
-use aos_registry_client::types::validate_git_ref_name;
 use anyhow::{Context, Result, bail};
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_registry_client::config::ApmConfig;
+use aos_registry_format::consumer::validate_git_ref_name;
 use std::path::Path;
 
 /// `apr tag <NAME>` — creates an SSH-signed annotated tag at HEAD in the
@@ -274,7 +274,11 @@ pub(in crate::registry_ops) fn sign_tag(
     payload.extend_from_slice(message.as_bytes());
     payload.push(b'\n');
 
-    let armored = aos_registry_client::security::sign_payload_signature(Path::new(signing_key), "git", &payload)?;
+    let armored = aos_registry_client::security::sign_payload_signature(
+        Path::new(signing_key),
+        "git",
+        &payload,
+    )?;
     payload.extend_from_slice(armored.as_bytes());
 
     let odb = repo.odb().context("opening object database")?;

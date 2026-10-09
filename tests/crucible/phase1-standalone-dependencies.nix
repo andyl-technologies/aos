@@ -5,23 +5,7 @@
   inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
 
-  packages = [
-    "crucible-store"
-    "crucible-determinism"
-    "crucible-test-support"
-    "crucible-qemu-shmem"
-    "crucible-qemu-protocol"
-    "crucible-device"
-    "crucible-qemu-host"
-    "crucible-qemu-plugin"
-    "crucible-guest"
-    "crucible-engine"
-    "crucible-session"
-    "crucible-control-api"
-    "crucible-daemon"
-    "crucible-cli"
-    "crucible-test-support"
-  ];
+  packages = cruciblePackages;
 
   forbiddenPrefixes = ["ratchet-" "aos-nix-"];
   forbiddenExactNames = ["ratchet" "aos-nix"];

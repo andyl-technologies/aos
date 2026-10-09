@@ -43,7 +43,9 @@ pub(super) fn RegistryDelete(
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
         if confirmation.get_untracked() != required {
-            error.set(Some("Type the exact registry stable ID to continue".to_string()));
+            error.set(Some(
+                "Type the exact registry stable ID to continue".to_string(),
+            ));
             return;
         }
         let client = plan_client.clone();

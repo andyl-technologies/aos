@@ -11,8 +11,8 @@ use anyhow::{Context, Result, ensure};
 use aos_core::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
-use aos_deployment::retention::ArtifactAdmission;
 use crate::runtime_modules::RuntimeModuleSnapshot;
+use aos_deployment::retention::ArtifactAdmission;
 
 /// Records the original domain proof for caller-authorized source artifacts.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -157,7 +157,7 @@ pub fn recover_profile_publication(
     super::validate_state_location(command)?;
     let inspection = crate::profile::Profile {
         path: path.clone(),
-        scope: crate::types::ProfileScope::System,
+        scope: aos_registry_client::types::ProfileScope::System,
     };
     let _guard = inspection.lock_mutation()?;
     if !command.state_directory.join("generations.journal").exists() {
@@ -169,8 +169,10 @@ pub fn recover_profile_publication(
     }
     let (_, _, receipt) = super::prepare(command)?;
     super::persist_receipt(&command.state_directory.join("admissions"), &receipt)?;
-    let profile =
-        crate::profile::Profile::open_at(path.clone(), crate::types::ProfileScope::System)?;
+    let profile = crate::profile::Profile::open_at(
+        path.clone(),
+        aos_registry_client::types::ProfileScope::System,
+    )?;
     let admission = crate::native_registry::RegistryAdmission::new(
         command.nix_store.clone(),
         &command.state_directory.join("registry-admissions"),

@@ -1,7 +1,5 @@
 //! Authoring-clone discovery, protection against data loss, and registry creation.
 
-use aos_registry_client::config::ApmConfig;
-use aos_registry_client::registry::keys::{KeysToml, RosterKey};
 use crate::registry::{keys, objectstore};
 use crate::registry_ops::git::{
     commit_registry, current_git_head, ensure_commit_identity, git, refresh_registry_object_store,
@@ -10,10 +8,12 @@ use crate::registry_ops::git::{
 use crate::registry_ops::signing::resolve_producer_signing_key;
 use crate::registry_ops::trust::validate_roster_key_id;
 use crate::registry_ops::workflow::{current_git_branch, git_branch_entries};
-use aos_registry_client::security::parse_signing_key;
-use aos_registry_client::types::validate_registry_name;
 use anyhow::{Context, Result, bail};
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::registry::keys::{KeysToml, RosterKey};
+use aos_registry_client::security::parse_signing_key;
+use aos_registry_format::consumer::validate_registry_name;
 use std::path::{Path, PathBuf};
 
 /// A registry clone present in the scope's registry-storage directory but

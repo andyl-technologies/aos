@@ -7,9 +7,9 @@ use aos_cli_ui::output::{OutputMode, Printer};
 
 use super::config::{registry_upload_auth_config, resolve_registry_name, resolve_upload_urls};
 use crate::RegistryStageCommand;
-use aos_registry_client::config::ApmConfig;
 use crate::registry::hub_stage::HubStageClient;
 use crate::registry::staging::{LocalStageStore, hub};
+use aos_registry_client::config::ApmConfig;
 
 /// Lists, inspects, or discards candidates at the configured registry destination.
 ///

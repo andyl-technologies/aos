@@ -133,7 +133,7 @@
     }
     {
       gate = "gate:control-responsive";
-      package = "crucible-control-api";
+      package = "crucible-control-server";
       testTarget = "gate_control_responsive";
       requiredFeatures = [];
     }
@@ -266,7 +266,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
 
   targetFailuresWithManifest = target: manifest: let
-    packageDir = cratesDir + "/${target.package}";
+    packageDir = (import ./_workspace-packages.nix {inherit lib;}).packageDir target.package;
     testPath = packageDir + "/tests/${target.testTarget}.rs";
     content =
       if builtins.pathExists testPath
@@ -326,7 +326,7 @@
     ];
 
   targetFailures = target: let
-    packageDir = cratesDir + "/${target.package}";
+    packageDir = (import ./_workspace-packages.nix {inherit lib;}).packageDir target.package;
     manifest = builtins.fromTOML (builtins.readFile (packageDir + "/Cargo.toml"));
   in
     targetFailuresWithManifest target manifest;

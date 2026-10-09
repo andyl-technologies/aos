@@ -8,7 +8,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crucible_session::engine as crucible;
 use serde_json::Value;
 use tempfile::TempDir;
 

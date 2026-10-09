@@ -9,9 +9,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, ensure};
-use aos_module_format::ABILITY_LIMITS_V1;
 use aos_activation::adapter::CancellationToken;
 use aos_core::Sha256Digest;
+use aos_module_format::ABILITY_LIMITS_V1;
 use aos_storage_layout::{
     AuthorizedProvisioningInput, CanonicalProvisioningSource, ProvisioningIntent,
     ProvisioningMarkerObservation, ProvisioningMarkerState, ProvisioningPlan,
@@ -23,8 +23,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use aos_deployment::evaluation::Evaluation;
-use aos_deployment_format::input::EvaluationInput;
 use aos_deployment::store::verification::dump_store_path_identity_in;
+use aos_deployment_format::input::EvaluationInput;
 
 use super::provisioning_sources::{
     add_fixed_eval_host_source, add_fixed_input_to_store, store_executable,
@@ -80,8 +80,11 @@ pub(crate) fn evaluate(
         aos_core::json::from_slice(&authorized_bytes, "authorized provisioning input")?;
     validate_authorized_provisioning_input(&authorized)?;
 
-    let descriptor =
-        aos_deployment::input::read_evaluation_input_in(&parameters.evaluation_context, &nix_store, cancellation)?;
+    let descriptor = aos_deployment::input::read_evaluation_input_in(
+        &parameters.evaluation_context,
+        &nix_store,
+        cancellation,
+    )?;
     temporary_roots.retain(projection_source_roots(&descriptor)?, cancellation)?;
     let (library_root, _) = aos_deployment::nix::store_root_and_suffix(&descriptor.library)?;
     ensure!(
@@ -268,8 +271,7 @@ mod tests {
             .parent()
             .context("boot fixture must have a parent directory")?
             .join("provisioning-wire-graph.json");
-        let graph =
-            aos_module_format::graph::CheckedModuleGraph::decode(&fs::read(graph_path)?)?;
+        let graph = aos_module_format::graph::CheckedModuleGraph::decode(&fs::read(graph_path)?)?;
         let operation = |ability: &str| {
             graph
                 .graph()

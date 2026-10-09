@@ -11,11 +11,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use sha2::{Digest as _, Sha256};
 
-use crate::db::{
+use crate::surface_write::{SurfaceDeleteOutcome, SurfaceDeletePrecondition, SurfaceWriteProvider};
+use aos_hub_db::db::{
     Database, ObjectDeletionAttemptReceipt, ObjectDeletionJobRecord,
     RecordObjectDeletionAttemptResponse,
 };
-use crate::surface_write::{SurfaceDeleteOutcome, SurfaceDeletePrecondition, SurfaceWriteProvider};
 
 /// Aggregate result of one bounded controller pass.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

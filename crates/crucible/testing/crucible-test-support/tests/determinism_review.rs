@@ -12,7 +12,7 @@ mod workspace;
 
 use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const DETERMINISM_CHECKLIST_COUNT: usize = 15;
 

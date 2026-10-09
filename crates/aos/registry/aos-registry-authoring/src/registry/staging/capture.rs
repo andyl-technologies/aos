@@ -133,7 +133,7 @@ impl LocalStageStore {
         )?;
         let default = refs::parse_head(std::str::from_utf8(&head)?)
             .context("stage destination HEAD must identify its public default branch")?;
-        aos_registry_client::types::validate_channel_name(&default)?;
+        aos_registry_format::consumer::validate_channel_name(&default)?;
         if default == source_branch {
             bail!("candidate authoring branch is the destination's public default branch");
         }
@@ -323,7 +323,8 @@ async fn authenticated_hub_reader(
     auth: &AuthOptions,
 ) -> Result<RegistryTransport> {
     aos_registry_client::hub_auth::authenticated_hub_client(origin, auth.token.as_deref()).await?;
-    let (_, token) = aos_registry_client::hub_auth::resolve_access(Some(origin), auth.token.as_deref())?;
+    let (_, token) =
+        aos_registry_client::hub_auth::resolve_access(Some(origin), auth.token.as_deref())?;
     let token = token.context("candidate destination requires authenticated Hub credentials")?;
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(

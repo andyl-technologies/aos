@@ -1,12 +1,12 @@
 //! Nix store introspection, release-policy checks, and realisation graph publication.
 
-use aos_registry_format::platform::native_platform;
+use anyhow::{Context, Result, bail};
+use aos_cli_ui::output::Printer;
+use aos_nix::configure_aos_nix_store;
 use aos_registry_client::registry::store;
 use aos_registry_client::registry::store::{DepEdge, NarBytes, Realisation, UpsertOutcome};
-use aos_registry_client::types::{package_name_bucket, validate_platform_name};
-use anyhow::{Context, Result, bail};
-use aos_nix::configure_aos_nix_store;
-use aos_cli_ui::output::Printer;
+use aos_registry_format::consumer::{package_name_bucket, validate_platform_name};
+use aos_registry_format::platform::native_platform;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;

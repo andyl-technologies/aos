@@ -510,8 +510,7 @@ pub fn verify(
     );
     let (descriptor_root, _) =
         aos_deployment::nix::store_root_and_suffix(&record.evaluation_input)?;
-    let (library_root, _) =
-        aos_deployment::nix::store_root_and_suffix(&record.evaluation.library)?;
+    let (library_root, _) = aos_deployment::nix::store_root_and_suffix(&record.evaluation.library)?;
     let runtime_roots = record
         .evaluation
         .runtime_configuration

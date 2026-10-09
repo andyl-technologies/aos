@@ -8,13 +8,13 @@ use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
-use aos_module_format::graph::GRAPH_LIMITS;
 use aos_core::Sha256Digest;
 use aos_module_docs::runtime::OsRelease;
+use aos_module_format::graph::GRAPH_LIMITS;
 
-use aos_deployment_format::model::Deployment;
 use aos_deployment_format::admission::AdmissionCatalog;
 use aos_deployment_format::input::EvaluationInput;
+use aos_deployment_format::model::Deployment;
 
 const ROOT_PROFILE: &str = "/var/lib/profiles/per-user/root";
 
@@ -169,15 +169,15 @@ fn path_present(path: &Path) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use anyhow::bail;
-    use aos_module_format::graph::Effect;
     use aos_activation::adapter::CancellationToken;
+    use aos_module_format::graph::Effect;
     use serde_json::json;
 
     use super::*;
+    use crate::profile::{Profile, deployment::ProfileDeployment};
     use aos_deployment::handler::HandlerArtifacts;
     use aos_deployment::transaction::{DeploymentStore, journal_limits};
-    use crate::profile::{Profile, deployment::ProfileDeployment};
-    use crate::types::ProfileScope;
+    use aos_registry_client::types::ProfileScope;
 
     const SOURCE: &str = "/nix/store/00000000000000000000000000000000-native-container-input";
     const RECEIPT: &str = "/nix/store/11111111111111111111111111111111-image-admission";

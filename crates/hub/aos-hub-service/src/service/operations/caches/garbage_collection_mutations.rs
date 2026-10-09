@@ -59,7 +59,7 @@ impl RpcService {
                     .map_err(|_| RpcError::invalid("schedule must be integer seconds"))?,
             )
         };
-        let policy = crate::db::CacheGcPolicyRecord {
+        let policy = aos_hub_db::db::CacheGcPolicyRecord {
             cache_id: cache.id,
             unreferenced_grace_secs: desired.unreferenced_grace_seconds,
             soft_max_bytes: desired
@@ -138,7 +138,7 @@ impl RpcService {
             format!("gc:{}:{}", req.plan_id, req.idempotency_key).as_bytes(),
         ));
         self.db
-            .apply_cache_gc_plan_topology(&crate::db::ApplyCacheGcPlan {
+            .apply_cache_gc_plan_topology(&aos_hub_db::db::ApplyCacheGcPlan {
                 plan_id: req.plan_id,
                 claim_id: hex::encode(Sha256::digest(format!("claim:{operation_id}").as_bytes())),
                 operation_id: operation_id.clone(),

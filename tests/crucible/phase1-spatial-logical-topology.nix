@@ -143,11 +143,11 @@
       }
       {
         label = "test uses actual shmem region config";
-        needle = "crucible_shmem::RegionConfig::new";
+        needle = "crucible_qemu_shmem::RegionConfig::new";
       }
       {
         label = "test uses actual shmem region layout";
-        needle = "crucible_shmem::RegionLayout::for_config";
+        needle = "crucible_qemu_shmem::RegionLayout::for_config";
       }
       {
         label = "test poisons world id with physical layout";

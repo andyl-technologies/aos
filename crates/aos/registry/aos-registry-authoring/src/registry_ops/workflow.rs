@@ -1,6 +1,5 @@
 //! Registry status, changes, branches, commits, and remote synchronization.
 
-use aos_registry_client::config::ApmConfig;
 use crate::registry_ops::channels::{CHANGE_ID_TRAILER, HUB_CHANGES_NS};
 use crate::registry_ops::config::{registry_dir, resolve_registry_name};
 use crate::registry_ops::git::{
@@ -11,10 +10,11 @@ use crate::registry_ops::publish::ensure_writable_registry_clone;
 use crate::registry_ops::signing::{ResolvedSigningKey, resolve_producer_signing_key};
 use crate::registry_ops::store_paths::first_letter;
 use crate::registry_ops::trust::{load_committed_roster, resolve_roster_commit_key};
-use aos_registry_client::types::{validate_branch_name, validate_package_name};
 use crate::{BranchCommand, ChangeCommand};
 use anyhow::{Context, Result, bail};
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_registry_client::config::ApmConfig;
+use aos_registry_format::consumer::{validate_branch_name, validate_package_name};
 use std::path::{Path, PathBuf};
 
 /// `apr diff` — shows pending changes in the registry clone.

@@ -10,7 +10,7 @@ use anyhow::Result;
 
 use aos_nix_cache::backend::{self, AuthOptions};
 use aos_cli_ui::output::Printer;
-use aos_package_manager::types::validate_platform_name;
+use aos_registry_format::consumer::validate_platform_name;
 
 use crate::cli::{CacheAuthArgs, CacheCmd};
 

@@ -4,10 +4,10 @@ use super::{
     InitialRoster, authoring_clone_precious, extra_roster_key_ids, initial_keys_roster,
     local_registries,
 };
-use aos_registry_client::registry::keys;
 use crate::registry_ops::require_active_registry_key;
 use crate::registry_ops::test_support::init_authoring_clone;
 use crate::testutil;
+use aos_registry_client::registry::keys;
 use std::fs;
 use tempfile::TempDir;
 

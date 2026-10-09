@@ -5,7 +5,7 @@
 //! availability and authorization are rechecked by the API on every action.
 
 use aos_hub_api::StagedRelease;
-use aos_registry_format::staging::wire::{MAX_DECODED_REVISION_BYTES, decode_revision};
+use aos_registry_format::staging::wire::{decode_revision, MAX_DECODED_REVISION_BYTES};
 use aos_registry_format::staging::{StageObject, StageRecord, StageRevision};
 
 /// Maximum artifact rows rendered at once in candidate reviews.
@@ -197,7 +197,7 @@ pub(crate) fn progress_percent(stage: &StagedRelease) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_registry_format::staging::{STAGE_SCHEMA, StageObject, inventory_digest};
+    use aos_registry_format::staging::{inventory_digest, StageObject, STAGE_SCHEMA};
 
     fn revision() -> StageRevision {
         let inventory = vec![StageObject {
@@ -307,10 +307,8 @@ mod tests {
         let revision = revision();
         assert!(resume_command(&revision, "").ends_with("--registry YOUR-CONFIGURED-REGISTRY"));
         assert!(resume_command(&revision, "main-local").ends_with("--registry main-local"));
-        assert!(
-            resume_command(&revision, "main'; echo injected")
-                .ends_with("--registry 'main'\\''; echo injected'")
-        );
+        assert!(resume_command(&revision, "main'; echo injected")
+            .ends_with("--registry 'main'\\''; echo injected'"));
     }
 
     #[test]

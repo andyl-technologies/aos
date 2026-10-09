@@ -14,12 +14,12 @@ use sha2::{Digest as _, Sha256};
 use super::{
     claims_principal, parse_resource_version, RouteReservationPlanSeal, RpcError, RpcService,
 };
-use crate::auth::jwt::Claims;
-use crate::db::{
+use aos_hub_model::auth::jwt::Claims;
+use aos_hub_db::db::{
     InstanceOciRouteRecord, InstanceOciRouteReservation, InstanceOciRouteSpec, RegistryRecord,
     SurfaceTarget,
 };
-use crate::domain::{Permission, Scope};
+use aos_hub_model::domain::{Permission, Scope};
 
 const CREATE_PLAN: &str = "create_instance_oci_route";
 const UPDATE_PLAN: &str = "update_instance_oci_route";
@@ -126,7 +126,7 @@ impl RpcService {
     async fn instance_oci_route_spec(
         &self,
         spec: &pb::InstanceOciRouteSpec,
-    ) -> Result<(InstanceOciRouteSpec, String, crate::db::EndpointRecord), RpcError> {
+    ) -> Result<(InstanceOciRouteSpec, String, aos_hub_db::db::EndpointRecord), RpcError> {
         let endpoint = self
             .db
             .endpoint(&spec.endpoint_id)

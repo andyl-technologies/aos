@@ -220,9 +220,21 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "crucible-guest",
                 "gate_abi_conformance"
             ),
-            ("gate:abi-conformance", "crucible-engine", "gate_abi_conformance"),
-            ("gate:replay-oracle", "crucible-engine", "gate_replay_oracle"),
-            ("gate:content-address", "crucible-engine", "gate_content_address"),
+            (
+                "gate:abi-conformance",
+                "crucible-engine",
+                "gate_abi_conformance"
+            ),
+            (
+                "gate:replay-oracle",
+                "crucible-engine",
+                "gate_replay_oracle"
+            ),
+            (
+                "gate:content-address",
+                "crucible-engine",
+                "gate_content_address"
+            ),
             (
                 "gate:content-address",
                 "crucible-determinism",
@@ -248,7 +260,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "crucible-campaign",
                 "gate_campaign_replay"
             ),
-            ("gate:campaign-replay", "crucible-engine", "gate_campaign_replay"),
+            (
+                "gate:campaign-replay",
+                "crucible-engine",
+                "gate_campaign_replay"
+            ),
             (
                 "gate:campaign-statistics",
                 "crucible-campaign",
@@ -311,7 +327,7 @@ fn crate_structure_gate_targets_match_rfc_table() {
             ),
             (
                 "gate:control-responsive",
-                "crucible-control-api",
+                "crucible-control-server",
                 "gate_control_responsive"
             ),
             (
@@ -319,7 +335,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "crucible-daemon",
                 "gate_control_responsive"
             ),
-            ("gate:any-guest", "crucible-qemu-host", "deterministic_launch"),
+            (
+                "gate:any-guest",
+                "crucible-qemu-host",
+                "deterministic_launch"
+            ),
             ("gate:qemu-inert", "crucible-qemu-host", "gate_qemu_inert"),
             ("gate:qemu-inert", "crucible-qemu-plugin", "gate_qemu_inert"),
             (
@@ -387,7 +407,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "crucible-engine",
                 "gate_signal_fault_system"
             ),
-            ("gate:perf-bench", "crucible-test-support", "gate_perf_bench"),
+            (
+                "gate:perf-bench",
+                "crucible-test-support",
+                "gate_perf_bench"
+            ),
         ])
     );
 }

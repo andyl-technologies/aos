@@ -8,9 +8,9 @@
 //!   image objects with their committed byte identities
 //! ```
 
-use aos_registry_client::registry::objectstore;
-use aos_registry_client::types::RegistryRootConfig;
 use anyhow::{Context, Result, bail};
+use aos_registry_client::registry::objectstore;
+use aos_registry_format::consumer::RegistryRootConfig;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fs;

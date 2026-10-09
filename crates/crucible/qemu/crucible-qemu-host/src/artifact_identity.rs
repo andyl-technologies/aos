@@ -485,7 +485,7 @@ mod tests {
     }
 
     fn required_abi_version() -> String {
-        crucible::SHMEM_ABI_VERSION.to_string()
+        crucible_engine::SHMEM_ABI_VERSION.to_string()
     }
 
     #[test]

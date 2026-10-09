@@ -5,8 +5,8 @@ use super::{
     resolve_publish_platform, store_dir_from_store_path,
     validate_store_path_release_policy_in_closure,
 };
-use aos_registry_format::platform::native_platform;
 use crate::registry_ops::test_support::{release_policy_info, write_internal_release_policy};
+use aos_registry_format::platform::native_platform;
 use std::fs;
 use tempfile::TempDir;
 

@@ -1,8 +1,5 @@
 //! Trust pins, committed signing-key rosters, and retirement re-signing.
 
-use aos_registry_client::config::ApmConfig;
-use aos_registry_client::registry::keys::{KeysToml, RevokedKey, RosterKey};
-use aos_registry_client::registry::verify::parse_tag_object;
 use crate::registry::{channel, keys, objectstore, state};
 use crate::registry_ops::channels::{
     read_channel_partition_map, semver_tag_object_map, update_channel_frontier,
@@ -10,6 +7,9 @@ use crate::registry_ops::channels::{
 };
 use crate::registry_ops::config::{configured_registry_names, resolve_registry_name};
 use crate::registry_ops::git::{commit_registry, git, refresh_registry_object_store};
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::registry::keys::{KeysToml, RevokedKey, RosterKey};
+use aos_registry_client::registry::verify::parse_tag_object;
 
 use crate::registry_ops::provenance::{
     PACKAGE_PROVENANCE_TRANSPARENCY_LOG, read_package_provenance_transparency_log_state,
@@ -19,13 +19,13 @@ use crate::registry_ops::signing::{
     trusted_key_from_line,
 };
 use crate::registry_ops::tags::release_tag_version;
-use aos_registry_client::security::{
-    KeyStore, key_fingerprint, parse_signing_key, verify_payload_signature, verify_tag_signature,
-};
-use aos_registry_client::types::{SigningKeySource, SigningKeySpec, validate_registry_name};
 use crate::{KeysCommand, TrustCommand, sshkey};
 use anyhow::{Context, Result, bail};
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_registry_client::security::{
+    KeyStore, key_fingerprint, parse_signing_key, verify_payload_signature, verify_tag_signature,
+};
+use aos_registry_format::consumer::{SigningKeySource, SigningKeySpec, validate_registry_name};
 use std::path::Path;
 
 /// `apr trust` subcommands for the consumer-side pinned trust store.

@@ -36,7 +36,7 @@ use crate::security::{KeySource, KeyStore, TrustedKey, key_fingerprint, parse_si
 // `KEYS_TOML_SCHEMA` version) moved to the wasm-clean `aos-registry-format`
 // crate (RFC-0004 Phase 5) so the registry hub's indexer and the Cloudflare
 // Worker can deserialize a committed roster — to extend the trusted key set
-// during a verified walk — without pulling `aos-package` (native-only).
+// during a verified walk — without pulling the native client.
 // Re-exported here so `aos_registry_client::registry::keys::{KeysToml, RosterKey,
 // RevokedKey, KEYS_TOML_SCHEMA}` paths are unchanged; the native load/validate/
 // pin helpers below layer on top.

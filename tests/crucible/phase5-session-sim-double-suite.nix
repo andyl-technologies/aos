@@ -41,12 +41,12 @@
 
   qemuBackendForbidden = [
     {
-      label = "crucible-qemu crate import";
-      needle = "crucible-qemu";
+      label = "QEMU host implementation import";
+      needle = "crucible-qemu-host";
     }
     {
-      label = "crucible-qemu crate import";
-      needle = "crucible_qemu";
+      label = "QEMU host implementation import";
+      needle = "crucible_qemu_host";
     }
     {
       label = "QemuNode backend construction";
@@ -141,11 +141,11 @@
     ++ failuresFor "crates/crucible/control/crucible-session/Cargo.toml" sessionManifest [
       {
         label = "session test-double and test-support dev features";
-        needle = "crucible = { path = \"../crucible\", features = [\"test-double\", \"test-support\"] }";
+        needle = "crucible-engine = { path = \"../../engine/crucible-engine\", features = [\"test-double\", \"test-support\"] }";
       }
       {
-        label = "session protocol dev dependency";
-        needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
+        label = "session protocol dependency";
+        needle = "crucible-qemu-protocol = { path = \"../../protocol/crucible-qemu-protocol\" }";
       }
     ]
     ++ failuresFor "crates/crucible/control/crucible-session/tests/gate_control_responsive.rs" sessionGateTest [
@@ -221,16 +221,16 @@
     ++ forbiddenFor "crates/crucible/control/crucible-session/tests/gate_exploration_lifecycle.rs" sessionExplorationLifecycleTest qemuBackendForbidden
     ++ failuresFor "crates/crucible/control/crucible-control-api/Cargo.toml" apiManifest [
       {
-        label = "API test-double and test-support dev features";
-        needle = "crucible = { path = \"../crucible\", features = [\"test-double\", \"test-support\"] }";
+        label = "control transport test-double and test-support dev features";
+        needle = "crucible-engine = { path = \"../../engine/crucible-engine\", features = [\"test-double\", \"test-support\"] }";
       }
       {
         label = "API session test-support dev feature";
         needle = "crucible-session = { path = \"../crucible-session\", features = [\"test-support\"] }";
       }
       {
-        label = "API protocol dev dependency";
-        needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
+        label = "control transport protocol dependency";
+        needle = "crucible-qemu-protocol = { path = \"../../protocol/crucible-qemu-protocol\" }";
       }
     ]
     ++ failuresFor "crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs" apiGateTest [
@@ -263,11 +263,11 @@
     ++ failuresFor "crates/crucible/control/crucible-daemon/Cargo.toml" daemonManifest [
       {
         label = "daemon test-double dev feature";
-        needle = "crucible = { path = \"../crucible\", features = [\"test-double\"] }";
+        needle = "crucible-engine = { path = \"../../engine/crucible-engine\", features = [\"test-double\"] }";
       }
       {
-        label = "daemon protocol dev dependency";
-        needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
+        label = "daemon protocol dependency";
+        needle = "crucible-qemu-protocol = { path = \"../../protocol/crucible-qemu-protocol\" }";
       }
     ]
     ++ failuresFor "crates/crucible/control/crucible-daemon/tests/gate_control_responsive.rs" daemonGateTest [
@@ -350,8 +350,8 @@
         needle = "-p crucible-session";
       }
       {
-        label = "control-responsive API target";
-        needle = "-p crucible-control-api -p crucible-control-client -p crucible-control-server";
+        label = "control-responsive server target";
+        needle = "-p crucible-control-server";
       }
       {
         label = "control-responsive daemon target";

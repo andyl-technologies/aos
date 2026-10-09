@@ -22,7 +22,7 @@ use super::{
     DistributionErrorCode, OciRepositoryRecord, RpcService, SurfaceTarget,
     COMPLETION_LEASE_SECONDS, UPLOAD_SESSION_SECONDS,
 };
-use crate::db::{
+use aos_hub_db::db::{
     oci_blob_object_key, AppendOciUploadChunk, BeginOciUpload, ClaimOciUpload, CompleteOciUpload,
     IndexOciRepositoryCatalog, OciBlobClaimOutcome, OciCatalogObject, OciCatalogProjection,
     OciImageConfigProjection, OciLayerProjection, OciUploadChunkRecord, OciUploadCleanupRecord,
@@ -39,7 +39,7 @@ enum ParsedDocument {
 impl RpcService {
     pub(super) async fn put_manifest(
         &self,
-        registry: &crate::db::RegistryRecord,
+        registry: &aos_hub_db::db::RegistryRecord,
         repository: &OciRepositoryRecord,
         owner: String,
         reference: ManifestReference,
@@ -128,7 +128,7 @@ impl RpcService {
             tag,
             source_kind: "manual".to_string(),
             actor_id: owner,
-            observed_at: crate::clock::now_unix_secs(),
+            observed_at: aos_hub_model::clock::now_unix_secs(),
         };
         let mut admitted = false;
         for attempt in 0..20 {
@@ -140,7 +140,7 @@ impl RpcService {
                 Err(_) => {}
             }
             if attempt < 19 {
-                crate::clock::sleep(std::time::Duration::from_millis(5)).await;
+                aos_hub_model::clock::sleep(std::time::Duration::from_millis(5)).await;
             }
         }
         if !admitted {
@@ -160,7 +160,7 @@ impl RpcService {
         registry_id: i64,
         repository_id: i64,
         owner: &str,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         digest: Sha256Digest,
         bytes: &[u8],
     ) -> Result<(OciUploadRecord, Vec<OciUploadChunkRecord>), Response> {
@@ -316,7 +316,7 @@ impl RpcService {
     async fn complete_staged_manifest(
         &self,
         owner: &str,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         digest: Sha256Digest,
         upload: OciUploadRecord,
         chunks: &[OciUploadChunkRecord],
@@ -350,7 +350,7 @@ impl RpcService {
             if outcome != OciBlobClaimOutcome::InProgress {
                 break;
             }
-            crate::clock::sleep(std::time::Duration::from_millis(5)).await;
+            aos_hub_model::clock::sleep(std::time::Duration::from_millis(5)).await;
             claim.now = now();
             claim.lease_expires_at = claim.now + COMPLETION_LEASE_SECONDS;
             // Preserve the prior InProgress outcome across an ambiguous
@@ -512,7 +512,11 @@ impl RpcService {
         };
         match self
             .db
-            .delete_oci_repository_manifest(repository.id, digest, crate::clock::now_unix_secs())
+            .delete_oci_repository_manifest(
+                repository.id,
+                digest,
+                aos_hub_model::clock::now_unix_secs(),
+            )
             .await
         {
             Ok(()) => {
@@ -533,7 +537,7 @@ impl RpcService {
     async fn manifest_graph(
         &self,
         repository: &OciRepositoryRecord,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         root: Descriptor,
         document: ParsedDocument,
     ) -> Result<(Sha256Digest, Vec<OciCatalogObject>), Response> {
@@ -624,7 +628,7 @@ impl RpcService {
     async fn require_raw_dependency(
         &self,
         repository: &OciRepositoryRecord,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         descriptor: &Descriptor,
     ) -> Result<(), Response> {
         let blob = self
@@ -651,7 +655,7 @@ impl RpcService {
     async fn require_graph_placement(
         &self,
         repository: &OciRepositoryRecord,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         objects: &[OciCatalogObject],
     ) -> Result<(), Response> {
         for object in objects {
@@ -668,7 +672,7 @@ impl RpcService {
     async fn repository_object_has_placement(
         &self,
         repository: &OciRepositoryRecord,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         descriptor: &Descriptor,
     ) -> Result<bool, Response> {
         let exact = self
@@ -704,7 +708,7 @@ impl RpcService {
     async fn read_image_config_projection(
         &self,
         repository: &OciRepositoryRecord,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         manifest: &ImageManifest,
     ) -> Result<(Platform, OciImageConfigProjection), Response> {
         let descriptor = &manifest.config;
@@ -720,7 +724,7 @@ impl RpcService {
             .map_err(|_| unavailable_response("registry reader is unavailable", false))?;
         let bytes = fetcher
             .fetch_bounded(
-                &crate::db::oci_blob_object_key(descriptor.digest),
+                &aos_hub_db::db::oci_blob_object_key(descriptor.digest),
                 MAX_MANIFEST_BYTES,
             )
             .await
@@ -766,7 +770,7 @@ impl RpcService {
 
     async fn read_layer_unpacked_size(
         &self,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         descriptor: &Descriptor,
     ) -> Result<u64, Response> {
         match descriptor.media_type {
@@ -799,7 +803,7 @@ impl RpcService {
 
     async fn read_layer_range(
         &self,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         descriptor: &Descriptor,
         range: (u64, u64),
         limit: usize,

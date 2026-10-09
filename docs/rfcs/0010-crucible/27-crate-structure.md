@@ -27,107 +27,102 @@ that crate.
 
 ## 1. The crate map (L0–L4)
 
-Crucible is **eighteen runtime crates** plus the test-only `crucible-harness`
-package in the AOS Rust workspace, partitioned into five Crucible layers. The
-`CRATE-*` "exactly" and "only" requirements in this file are scoped to the
-Crucible package set, not to the pre-existing `aos-*` packages that share the
-repository workspace. Lower Crucible layers never depend on higher Crucible
-layers (`ARCH-3`). The engine crate and the CLI binary are *both* named
-`crucible`: the L3 library crate is the package `crucible` (the engine), and the
-L4 binary crate `crucible-cli` produces the binary named `crucible`. (The
-umbrella/library is `crucible`; the shipped executable is `crucible` via
-`[[bin]] name = "crucible"` in `crucible-cli`. See §7 for the `[bin]`/`[lib]`
-split.)
+Crucible occupies a scoped project subtree in the AOS Rust monorepo. Cargo
+package names identify each responsibility independently of directory placement.
+The current runtime packages follow five Crucible layers, plus the test-only
+`crucible-test-support` package. Shared ecosystem capabilities, such as
+`aos-linux-project-quota`, sit outside the Crucible ownership set.
+
+The L3 library is `crucible-engine`. The `crucible-cli` package produces the
+public executable named `crucible`; package renames preserve that command.
+The former assertion crate's determinism gate vocabulary now belongs to
+`crucible-test-support::assertion`. Production assertion semantics and evaluation
+remain in `crucible-engine`.
 
 ```text
   L4  CONTROL PLANE
     crucible-session   actor owning one live RuntimeState; control at quanta
-    crucible-api       versioned programmatic surface (session lifecycle, query)
+    crucible-control-api    portable versioned control messages and codecs
+    crucible-control-client client transport and lifecycle operations
+    crucible-control-server session service and server stream orchestration
     crucible-daemon    long-lived host process hosting sessions over the API
-    crucible-cli       the `crucible` binary; thin client over crucible-api
-    crucible-s3-store  bounded AWS SDK adapter for campaign object storage
+    crucible-cli       the `crucible` binary; thin client over crucible-control-client
+    crucible-store-s3  bounded AWS SDK adapter for campaign object storage
 
   L3  ENGINE
-    crucible           scenario model, the single scheduler, faults, assertions,
+    crucible-engine           scenario model, the single scheduler, faults, assertions,
                        temporal graph, event log; the pure reduction
-    crucible-cas       standalone content-addressed store, fleet store, and
+    crucible-store       standalone content-addressed store, fleet store, and
                        campaign-continuity substrate
     crucible-campaign  portable campaign model, repository, and service contracts
 
   L2  QEMU INTEGRATION
-    crucible-qemu        host-side launch/control of QEMU; concrete VM driver
+    crucible-qemu-host        host-side launch/control of QEMU; concrete VM driver
     crucible-qemu-plugin in-VM cdylib (-plugin); owns virtual-time control + hooks
     crucible-guest       OPTIONAL in-guest white-box agent (doorbell client)
-    crucible-debug-gateway mediated debugger transport without scheduler authority
-    crucible-linux-resource pinned Linux quota/cgroup resource capabilities
+    crucible-qemu-debug-gateway mediated debugger transport without scheduler authority
 
   L1  CO-SIM TRANSPORT
-    crucible-shmem     the public #[repr(C)] shared-memory process protocol
-    crucible-protocol  the IPC wire protocol (framing, versioning, golden vectors)
+    crucible-qemu-shmem     the public #[repr(C)] shared-memory process protocol
+    crucible-qemu-protocol  the IPC wire protocol (framing, versioning, golden vectors)
     crucible-device    disk / 9p / net I/O sub-nodes (deterministic completion)
 
   L0  DETERMINISTIC CORE
-    crucible-sim       deterministic runtime/scheduler primitives (seeded RNG,
+    crucible-determinism       deterministic runtime/scheduler primitives (seeded RNG,
                        ordered collections, deterministic select, content hash)
-    crucible-assert    the assertion vocabulary types (Always/Sometimes/...)
 ```
 
 One-line responsibilities:
 
 | Layer | Crate | Responsibility (one line) |
 | --- | --- | --- |
-| L0 | `crucible-sim` | Deterministic runtime/scheduler primitives: seeded decision RNG, ordered collections, deterministic `select`, content-hashing — the substrate every higher layer must use. |
-| L0 | `crucible-assert` | The assertion vocabulary *types* — `Always`/`Sometimes`/`Eventually`/`AfterQuiescence`/`Reachable` and their (de)serialization — with no evaluation engine. |
-| L1 | `crucible-shmem` | The public `#[repr(C)]` shared-memory process protocol (per-node clocks, status, SPSC frame queues), with generated language views and golden vectors. |
-| L1 | `crucible-protocol` | The host↔plugin IPC protocol: message framing, explicit version field, encode/decode, golden vectors. |
+| L0 | `crucible-determinism` | Deterministic runtime/scheduler primitives: seeded decision RNG, ordered collections, deterministic `select`, content-hashing — the substrate every higher layer must use. |
+| L1 | `crucible-qemu-shmem` | The public `#[repr(C)]` shared-memory process protocol (per-node clocks, status, SPSC frame queues), with generated language views and golden vectors. |
+| L1 | `crucible-qemu-protocol` | The host↔plugin IPC protocol: message framing, explicit version field, encode/decode, golden vectors. |
 | L1 | `crucible-device` | Disk (CoW overlay), 9p (read-only, path-hashed QIDs), and net-link I/O sub-nodes with deterministic completion events. |
-| L2 | `crucible-qemu` | Host-side QEMU process launch/control and the concrete VM driver wrapped by higher layers. |
+| L2 | `crucible-qemu-host` | Host-side QEMU process launch/control and the concrete VM driver wrapped by higher layers. |
 | L2 | `crucible-qemu-plugin` | The in-VM `cdylib` loaded via `-plugin`; owns virtual-time control (`qemu_plugin_request_time_control`) and the device/channel callbacks. |
 | L2 | `crucible-guest` | OPTIONAL in-guest agent for white-box markers via the doorbell; never required for any core capability (`G-3`). |
-| L2 | `crucible-debug-gateway` | Mediated debugger transport and capability checks without scheduler or campaign authority. |
-| L2 | `crucible-linux-resource` | Pinned Linux kernel resource capabilities shared by host-side QEMU and daemon composition. |
-| L3 | `crucible` | The engine: scenario model, the single authoritative scheduler, fault injection, assertion evaluation, temporal graph, event log — the pure `reduce`. |
-| L3 | `crucible-cas` | The standalone content-addressed store, fleet-visible DAG store, and campaign-continuity substrate. |
+| L2 | `crucible-qemu-debug-gateway` | Mediated debugger transport and capability checks without scheduler or campaign authority. |
+| L3 | `crucible-engine` | The engine: scenario model, the single authoritative scheduler, fault injection, assertion evaluation, temporal graph, event log — the pure `reduce`. |
+| L3 | `crucible-store` | The standalone content-addressed store, fleet-visible DAG store, and campaign-continuity substrate. |
 | L3 | `crucible-campaign` | RFC-0020's portable campaign model, authenticated repository, and component-message contracts. |
 | L4 | `crucible-session` | The session actor: owns one live `RuntimeState`, drives the engine quantum loop, services control messages at quantum boundaries. |
-| L4 | `crucible-api` | The versioned programmatic API surface (session lifecycle, stepping, event-log query, temporal-graph ops). |
+| L4 | `crucible-control-api` | The versioned programmatic API surface (session lifecycle, stepping, event-log query, temporal-graph ops). |
+| L4 | `crucible-control-client` | Client transport and lifecycle operations over the versioned API; no production QEMU dependency. |
+| L4 | `crucible-control-server` | Session service and server-side stream orchestration; native launch belongs to daemon composition. |
 | L4 | `crucible-daemon` | The long-lived host process that hosts sessions and serves the API over a transport. |
-| L4 | `crucible-cli` | The `crucible` binary: a thin client over `crucible-api`; scenario authoring, run, reproduce, query. |
-| L4 | `crucible-s3-store` | The bounded AWS SDK implementation of campaign object-store capabilities. |
+| L4 | `crucible-cli` | The `crucible` binary: a thin client over `crucible-control-client`; scenario authoring, run, reproduce, query. |
+| L4 | `crucible-store-s3` | The bounded AWS SDK implementation of campaign object-store capabilities. |
 
 ### The dependency graph (acyclic; lower layers never depend on higher)
 
-```text
-                        crucible-cli ─────────────┐
-                              │                    │
-                        crucible-daemon            │
-                              │                    │
-                        crucible-api               │
-                              │                    │
-                        crucible-session           │  (all L4 → crucible-api)
-                              │                    │
-   ──────────────────────────┼────────────────────┘
-                              ▼
-                          crucible            (L3 engine)
-                         /    │    \
-                        /     │     \
-        crucible-qemu         │      └► (engine uses VM drivers only via
-              │               │           Backend trait adapters declared
-              ▼               ▼           outside lower-layer crates)
-        crucible-device  crucible-protocol
-              │               │
-              └──────┬────────┘
-                     ▼
-               crucible-shmem            (L1 ABI)
-                     │
-        ─────────────┼─────────────
-                     ▼
-            crucible-sim   crucible-assert     (L0 core)
-
-   crucible-qemu-plugin (L2 cdylib)  ── depends on ──► crucible-shmem,
-                                                       crucible-protocol  (L1 only)
-   crucible-guest       (L2 agent)   ── depends on ──► crucible-shmem      (L1 only)
+```mermaid
+graph TD
+  cli[crucible-cli] --> client[crucible-control-client]
+  cli --> daemon[crucible-daemon]
+  daemon --> server[crucible-control-server]
+  daemon --> host[crucible-qemu-host]
+  daemon --> campaign[crucible-campaign]
+  server --> api[crucible-control-api]
+  client --> api
+  server --> session[crucible-session]
+  session --> engine[crucible-engine]
+  api --> engine
+  host --> engine
+  engine --> campaign
+  engine --> device[crucible-device]
+  engine --> determinism[crucible-determinism]
+  host --> protocol[crucible-qemu-protocol]
+  host --> shmem[crucible-qemu-shmem]
+  plugin[crucible-qemu-plugin] --> protocol
+  plugin --> shmem
 ```
+
+The host adapter depends on the engine's public backend traits. The engine does
+not depend on the host implementation. The client imports the shared API
+contract; native VM lifecycle and launch composition belong to the daemon.
+
 
 The QEMU-loaded plugin's **internal Crucible dependencies are only the
 dual-licensed L1 boundary crates** (the ABI + protocol), never the engine. Its
@@ -135,13 +130,13 @@ external production dependency graph is separately checked for a
 GPL-2.0-compatible license choice. The optional guest crate uses only its
 versioned boundary protocol. They run inside
 a different address space (or process) and must share *only* the wire/memory
-contract. The host-side `crucible-qemu` is the sole L2 exception: it may depend
-on `crucible` to implement the concrete host adapter for the engine `Backend`
+contract. The host-side `crucible-qemu-host` is the sole L2 exception: it may depend
+on `crucible-engine` to implement the concrete host adapter for the engine `Backend`
 trait and QEMU realization flow, but no in-VM crate may do so and no other
 upward edge is allowed. The layer lint encodes this named exception.
 
 - **[CRATE-1]** The AOS Rust workspace's Crucible package set MUST contain
-  exactly the eighteen runtime crates above, partitioned into the five layers
+  the complete declared runtime ownership set above, partitioned into the five layers
   L0–L4 as listed. Pre-existing non-Crucible `aos-*` workspace members are outside
   this count. *Gate:* `gate:harness-lint` (workspace-shape lint). *Spec:* §1.
 - **[CRATE-2]** Each crate MUST depend only on crates in its own layer or a lower
@@ -151,7 +146,7 @@ upward edge is allowed. The layer lint encodes this named exception.
   *Satisfies* `ARCH-3`, `G-5`. *Spec:* §1, [`03-architecture-overview.md`](03-architecture-overview.md) §4.
 - **[CRATE-3]** The two in-VM L2 crates (`crucible-qemu-plugin`, `crucible-guest`)
   MUST depend only on L1 crates (and L0 transitively through them); they MUST NOT
-  depend on `crucible` (L3) or any L4 crate, so the in-VM code shares only the
+  depend on `crucible-engine` (L3) or any L4 crate, so the in-VM code shares only the
   versioned ABI/protocol. *Gate:* `gate:harness-lint`, `gate:abi-conformance`.
   *Satisfies* `G-8`. *Spec:* §1.
 
@@ -174,46 +169,42 @@ discipline of [`28-engineering-standards.md`](28-engineering-standards.md).
 
 | Crate | Fence | Why |
 | --- | --- | --- |
-| `crucible-sim` | **SAFE** `#![forbid(unsafe_code)]` | Pure deterministic primitives; no FFI, no raw memory. |
-| `crucible-assert` | **SAFE** | Plain data types + serde; no FFI. |
-| `crucible-shmem` | **UNSAFE** `#![deny(unsafe_op_in_unsafe_fn)]` | `mmap` of the shared region, `#[repr(C)]` field access across the boundary, lock-free SPSC atomics. |
-| `crucible-protocol` | **UNSAFE** | Byte (de)serialization is pure, but `Setup` descriptor handover uses Unix `sendmsg`/`recvmsg` and `SCM_RIGHTS` ancillary buffers. |
+| `crucible-determinism` | **SAFE** `#![forbid(unsafe_code)]` | Pure deterministic primitives; no FFI, no raw memory. |
+| `crucible-qemu-shmem` | **UNSAFE** `#![deny(unsafe_op_in_unsafe_fn)]` | `mmap` of the shared region, `#[repr(C)]` field access across the boundary, lock-free SPSC atomics. |
+| `crucible-qemu-protocol` | **UNSAFE** | Byte (de)serialization is pure, but `Setup` descriptor handover uses Unix `sendmsg`/`recvmsg` and `SCM_RIGHTS` ancillary buffers. |
 | `crucible-device` | **SAFE** | Pure I/O-sub-node models over owned buffers / CoW page maps. |
-| `crucible-qemu` | **UNSAFE** | Host-side process control may touch FFI for QMP/monitor and shared-memory file descriptors; reads raw VM memory via the plugin transport. |
+| `crucible-qemu-host` | **UNSAFE** | Host-side process control may touch FFI for QMP/monitor and shared-memory file descriptors; reads raw VM memory via the plugin transport. |
 | `crucible-qemu-plugin` | **UNSAFE** | The `cdylib` is the QEMU TCG plugin C ABI: `extern "C"` entry points, raw QEMU/guest memory, time-control FFI. |
-| `crucible-debug-gateway` | **SAFE** | Mediated debugger protocol and process orchestration use safe owned capabilities. |
+| `crucible-qemu-debug-gateway` | **SAFE** | Mediated debugger protocol and process orchestration use safe owned capabilities. |
 | `crucible-guest` | **UNSAFE** | The in-guest agent issues the trapped doorbell instruction and touches the shmem ABI directly; bare-metal/no-std-ish concerns. |
-| `crucible-linux-resource` | **UNSAFE** | Narrow raw Linux quota/cgroup syscall wrappers validate pinned kernel-resource identities. |
-| `crucible` | **SAFE** `#![forbid(unsafe_code)]` | The engine is a pure reduction; it must be a clean island. All unsafe is *below* it behind traits. |
-| `crucible-cas` | **SAFE** | Content-addressed store and fleet/campaign data structures; no raw memory or FFI. |
+| `crucible-engine` | **SAFE** `#![forbid(unsafe_code)]` | The engine is a pure reduction; it must be a clean island. All unsafe is *below* it behind traits. |
+| `crucible-store` | **SAFE** | Content-addressed store and fleet/campaign data structures; no raw memory or FFI. |
 | `crucible-campaign` | **SAFE** | Portable canonical campaign state and authenticated repository logic. |
 | `crucible-session` | **SAFE** | Actor over channels; no raw memory. |
-| `crucible-api` | **SAFE** | Versioned API types + dispatch. |
+| `crucible-control-api` | **SAFE** | Versioned request, response, and stream contracts. |
+| `crucible-control-client` | **SAFE** | Client transport and lifecycle request dispatch. |
+| `crucible-control-server` | **SAFE** | Session service and server stream orchestration. |
 | `crucible-daemon` | **SAFE** | Host process; transport via safe libraries. |
 | `crucible-cli` | **SAFE** | Thin client. |
-| `crucible-s3-store` | **SAFE** | Bounded SDK adapter over owned buffers and async operations. |
+| `crucible-store-s3` | **SAFE** | Bounded SDK adapter over owned buffers and async operations. |
 
-So: **six UNSAFE crates** (`crucible-shmem`, `crucible-protocol`,
-`crucible-qemu`, `crucible-qemu-plugin`, `crucible-guest`,
-`crucible-linux-resource`) — exactly the crates
-that touch raw QEMU/guest memory, the mmap/atomics ABI, Unix descriptor
-handover, kernel resource syscalls, or FFI — and **twelve SAFE crates**,
-including the entire engine and the entire control plane. The unsafe surface is
-small, named, and confined to L1/L2.
+The named unsafe Crucible boundary crates touch QEMU/guest memory, the
+mmap/atomics ABI, Unix descriptor handover, or FFI. The shared
+`aos-linux-project-quota` utility separately owns Linux quota syscalls and is
+classified in the AOS workspace. The engine and control plane remain safe.
 
-- **[CRATE-4]** Every SAFE crate (`crucible-sim`, `crucible-assert`,
-  `crucible-device`, `crucible-debug-gateway`, `crucible`, `crucible-cas`,
-  `crucible-campaign`, `crucible-session`, `crucible-api`, `crucible-daemon`,
-  `crucible-cli`, `crucible-s3-store`) MUST carry
+- **[CRATE-4]** Every SAFE crate (`crucible-determinism`,
+  `crucible-device`, `crucible-qemu-debug-gateway`, `crucible-engine`, `crucible-store`,
+  `crucible-campaign`, `crucible-session`, `crucible-control-api`, `crucible-control-client`,
+  `crucible-control-server`, `crucible-daemon`,
+  `crucible-cli`, `crucible-store-s3`) MUST carry
   `#![forbid(unsafe_code)]` at its crate root. A CI lint asserts the attribute is
   present. *Gate:* `gate:harness-lint`. *Spec:* §2.
-- **[CRATE-5]** Every UNSAFE crate (`crucible-shmem`, `crucible-protocol`,
-  `crucible-qemu`, `crucible-qemu-plugin`, `crucible-guest`,
-  `crucible-linux-resource`) MUST carry
+- **[CRATE-5]** Every UNSAFE crate (`crucible-qemu-shmem`, `crucible-qemu-protocol`,
+  `crucible-qemu-host`, `crucible-qemu-plugin`, `crucible-guest`) MUST carry
   `#![deny(unsafe_op_in_unsafe_fn)]` at its crate root, and every `unsafe` block
-  MUST be preceded by a `// SAFETY:` comment stating the upheld invariant. There
-  MUST be no sixth UNSAFE crate: any new use of `unsafe` outside these five is a
-  build error. *Gate:* `gate:harness-lint`. *Satisfies* `INV-9`. *Spec:* §2.
+  MUST be preceded by a `// SAFETY:` comment stating the upheld invariant. A new unsafe boundary requires an explicit ownership review and corresponding
+  fence and compatibility checks. Unsafe in a SAFE crate is a build error. *Gate:* `gate:harness-lint`. *Satisfies* `INV-9`. *Spec:* §2.
 
 ## 3. Crate boundaries — what each owns, and what it does NOT
 
@@ -222,7 +213,7 @@ entry states the crate's responsibility and, critically, its *anti-scope*.
 
 ### L0 — deterministic core
 
-**`crucible-sim`** owns the determinism substrate: the seeded **decision RNG**
+**`crucible-determinism`** owns the determinism substrate: the seeded **decision RNG**
 (per-entity streams forked by name-hash so adding a node does not perturb
 others, [`04-determinism-contract.md`](04-determinism-contract.md)), ordered
 collections (a `DetMap`/`DetSet` whose iteration order is content-defined, never
@@ -233,14 +224,12 @@ canonical content-hash function (`INV-6`). It owns *no* policy: it knows nothing
 of scenarios, nodes, QEMU, or faults. *Not in it:* the scheduler algorithm
 (that is L3, built *on* these primitives), any I/O, any wall-clock.
 
-**`crucible-assert`** owns the assertion *vocabulary as data*: the five property
-kinds and their parameters, serde, and content hashing. *Not in it:* the
-*evaluation* of assertions against an event log (that is the engine, L3), and
-the event-log schema itself (L3).
+The engine owns production assertion vocabulary and evaluation. Test-only
+determinism assertion labels live in `crucible-test-support::assertion`.
 
 ### L1 — co-sim transport
 
-**`crucible-shmem`** owns the `#[repr(C)]` shared-memory layout — the
+**`crucible-qemu-shmem`** owns the `#[repr(C)]` shared-memory layout — the
 **mechanically checked implementation schema for a public process protocol**
 ([`13-shmem-abi.md`](13-shmem-abi.md)). It defines the region header (per-node
 clocks, status words), the SPSC ring buffers, the `FrameEntry` layout, the
@@ -248,17 +237,17 @@ version constant, and the `unsafe` accessors that map and read/write the region.
 The C side of the atomic QEMU integration is generated from / checked against
 these definitions (a `cbindgen`-style header emit + the
 `gate:abi-conformance` golden vectors). *Not in it:* any message *semantics* or framing (that is
-`crucible-protocol`), any scheduling, any QEMU process control.
+`crucible-qemu-protocol`), any scheduling, any QEMU process control.
 It is `MIT OR Apache-2.0`, contains no QEMU dependency or header, and may expose
 only protocol-shaped values allowed by 37/[BOUND-6].
 
-**`crucible-protocol`** owns the IPC **wire protocol**
+**`crucible-qemu-protocol`** owns the IPC **wire protocol**
 ([`14-protocol.md`](14-protocol.md)): message kinds, framing, the explicit
 version field, encode/decode, setup descriptor handover, and the golden-vector
 corpus. It is an unsafe-boundary crate only for the Unix `SCM_RIGHTS`
 `sendmsg`/`recvmsg` edge; the frame codec itself remains pure and operates over
-owned byte buffers. *Not in it:* shmem mapping (that is `crucible-shmem`), QEMU
-process control (that is `crucible-qemu`), or the meaning of a delivered frame
+owned byte buffers. *Not in it:* shmem mapping (that is `crucible-qemu-shmem`), QEMU
+process control (that is `crucible-qemu-host`), or the meaning of a delivered frame
 to the scheduler (L3).
 It is `MIT OR Apache-2.0` and contains no QEMU implementation dependency.
 
@@ -273,15 +262,15 @@ bytes' transport into the VM (the plugin/shmem path).
 
 ### L2 — QEMU integration
 
-**`crucible-qemu`** owns **host-side QEMU**: building the argv (internal fixed
+**`crucible-qemu-host`** owns **host-side QEMU**: building the argv (internal fixed
 `-icount shift=0` under the fixed 1 ps `sim` clock (50 ps per retired
 instruction), `-plugin`, fixed `-smp N`,
 sealed-entropy flags), launching and supervising
 the process, mapping the shmem region, and exposing a concrete host-driver API
 that can advance a VM, read its fingerprint, snapshot, and restore it. The
-engine-facing `Backend` trait remains in `crucible` (`CRATE-6`) and is adapted by
+engine-facing `Backend` trait remains in `crucible-engine` (`CRATE-6`) and is adapted by
 higher-layer wiring that may depend on both crates; the current host driver crate
-is allowed to carry that `crucible-qemu` → `crucible` adapter edge, but the
+is allowed to carry that `crucible-qemu-host` → `crucible-engine` adapter edge, but the
 exception is confined to host-side QEMU and never applies to the in-VM crates.
 *Not in it:* scheduler policy, decision-making about *which* node to advance
 (all L3); the in-VM time-control logic (that is the plugin).
@@ -292,7 +281,7 @@ entry points, virtual-time control via `qemu_plugin_request_time_control`
 (suppressing warp), the per-TB/exec callbacks that drive the shmem clock and feed
 basic-block coverage, and the device/channel callbacks. It is built as a separate
 `cdylib` artifact loaded by QEMU. *Not in it:* host policy of any kind; it is a
-mechanism that the host (`crucible-qemu`) configures over the ABI.
+mechanism that the host (`crucible-qemu-host`) configures over the ABI.
 Because it loads into QEMU and calls QEMU APIs, it is GPL-2.0-only and may depend
 only on GPL-compatible code, including the dual-licensed L1 boundary crates.
 
@@ -304,7 +293,7 @@ core capability; black-box observation must suffice without it.
 
 ### L3 — engine
 
-**`crucible`** owns everything that makes a run a pure reduction: the scenario
+**`crucible-engine`** owns everything that makes a run a pure reduction: the scenario
 model surface (the in-engine view of `ScenarioDef`,
 [`06-spatial-graph.md`](06-spatial-graph.md)), the **single authoritative
 scheduler** (the quantum loop, horizon/lookahead, the total order `(virtual_time,
@@ -320,10 +309,10 @@ event log ([`18-assertions-properties.md`](18-assertions-properties.md)), the
 
 The engine has **no QEMU knowledge**: it talks to L2 only through a `Backend`
 trait (`CRATE-6`) that it declares itself. The concrete QEMU driver lives in
-`crucible-qemu`; a higher-layer adapter wraps that driver in the engine trait
+`crucible-qemu-host`; a higher-layer adapter wraps that driver in the engine trait
 without adding a lower-to-higher Cargo edge. An in-process test double lives
 behind the same trait (§4, `CRATE-7`). This is the load-bearing boundary: it is
-*why* `crucible` can be `#![forbid(unsafe_code)]` and `miri`-clean, and *why*
+*why* `crucible-engine` can be `#![forbid(unsafe_code)]` and `miri`-clean, and *why*
 `gate:layer0-determinism` and the engine-level gates can run with no QEMU
 present.
 
@@ -333,9 +322,9 @@ planning semantics. It depends on the L3 content store but contains no live
 process handles or QEMU-private state. The L4 daemon composes it with local
 executor and QEMU adapters.
 
-- **[CRATE-6]** The engine (`crucible`) MUST interact with any VM backend solely
+- **[CRATE-6]** The engine (`crucible-engine`) MUST interact with any VM backend solely
   through a `Backend` trait that it declares; the engine MUST NOT name
-  `crucible-qemu`, `qemu`, or any process/FFI type in its public or private API.
+  `crucible-qemu-host`, `qemu`, or any process/FFI type in its public or private API.
   The trait abstracts: advance-to-horizon, read execution fingerprint, deliver an
   input, snapshot, restore, and shutdown. *Gate:* `gate:harness-lint`,
   `gate:layer0-determinism`. *Satisfies* `ARCH-3`, `G-5`, `G-8`. *Spec:* §3, §4.
@@ -350,30 +339,38 @@ messages (pause/resume/step/snapshot/fork/query) at quantum boundaries (`INV-8`,
 it:* the scheduler algorithm (it *drives* the engine's loop; it does not
 re-implement it).
 
-**`crucible-api`** owns the **versioned programmatic surface**
-([`21-api.md`](21-api.md), `G-8`): session lifecycle, stepping modes, the
-event-log query interface, and temporal-graph operations, with an explicit
-version field and conformance vectors. *Not in it:* any policy or scheduling; it
-is the contract between client and daemon. Its lifecycle adapter may implement
-and drive the public L3 `QuantumLoop` boundary, including the deterministic
-quiescent test loop and production lifecycle wrapper, but it does not own or
-reimplement scheduler ordering policy.
+**`crucible-control-api`** owns the **versioned programmatic contract**
+([`21-api.md`](21-api.md), `G-8`): lifecycle requests and responses, stepping
+modes, event-log query schemas, temporal-graph operations, explicit protocol
+versions, and conformance vectors. It has no session service, transport client,
+server orchestration, or production VM lifecycle implementation.
+
+**`crucible-control-client`** owns **client transport and lifecycle calls** over
+that contract, including in-process and HTTP/2 clients and stream decoding. Its
+production dependency graph excludes the QEMU host implementation.
+
+**`crucible-control-server`** owns the **session service and transport server**:
+session admission, lifecycle dispatch, runtime actor orchestration, and bounded
+server streams. Concrete VM launch and backend lifecycle construction are
+supplied by daemon composition.
 
 **`crucible-daemon`** owns the **long-lived host process** that hosts sessions,
-serves `crucible-api` over a transport, and composes host-side executor workers
+serves the API through `crucible-control-server`, and owns the production VM
+lifecycle adapters and host-side executor workers
 that drive the L3 `QuantumLoop` boundary without owning scheduler policy. RFC-0020
 adds the campaign coordinator and local executor composition to this crate. *Not
-in it:* the API *definition* (that's `crucible-api`), canonical campaign state
+in it:* the API *definition* (that's `crucible-control-api`), canonical campaign state
 (that's `crucible-campaign`), scheduler algorithms, or the CLI.
 
 **`crucible-cli`** owns the **`crucible` binary**: scenario authoring helpers,
 `run`/`verify`/`save`/`resume`/`replay`/`search`/`fuzz` subcommands
 ([`23-cli.md`](23-cli.md)),
-talking to the daemon (or an embedded session) over `crucible-api`. It is a thin
+talking to the daemon (or an embedded session) through `crucible-control-client`. It is a thin
 client; it owns no algorithms.
 
 - **[CRATE-8]** The CLI (`crucible-cli`) MUST reach lower-layer execution only
-  through `crucible-api`, `crucible-session`, `crucible-campaign`, or the
+  through the `crucible-control-api`, `crucible-control-client`, and
+  `crucible-control-server` interfaces, `crucible-session`, `crucible-campaign`, or the
   packaged `crucible-daemon` composition. The daemon MAY depend on lower-layer
   host crates and drive the public L3 `QuantumLoop` boundary for an admitted
   attempt, but MUST NOT reimplement scheduler policy or call private reduction
@@ -386,7 +383,7 @@ The single most important seam is the `Backend` trait (`CRATE-6`). It has a
 production-safe local implementation and a feature-gated shared-memory test
 double so that the engine's own test suites need no QEMU:
 
-- The **real QEMU driver** (`crucible-qemu`) drives a patched QEMU process.
+- The **real QEMU driver** (`crucible-qemu-host`) drives a patched QEMU process.
 - The **in-process double** (`SimBackend`) is a deterministic model of a VM-like
   node — it advances an icount, returns a deterministic fingerprint, accepts
   delivered inputs, and snapshots/restores its small state — entirely in SAFE
@@ -398,12 +395,12 @@ double so that the engine's own test suites need no QEMU:
 Feature layout:
 
 ```toml
-# crucible (the L3 engine) Cargo.toml — features
+# crucible-engine (the L3 engine) Cargo.toml — features
 [features]
 default = []
 # Compile the shared-memory plugin-side SimDouble used by focused integration
 # gates. The production-safe SimBackend remains available without this feature.
-test-double = ["dep:crucible-shmem"]
+test-double = ["dep:crucible-qemu-shmem"]
 ```
 
 ```toml
@@ -421,7 +418,7 @@ default = []
   in-process, SAFE-Rust `SimBackend` implementing the `Backend` trait of
   `CRATE-6`, sufficient to run `gate:layer0-determinism`, `gate:replay-oracle`,
   and `gate:scheduler-liveness` with no QEMU present. The double MUST be
-  deterministic by the same `crucible-sim` primitives the engine uses. *Gate:*
+  deterministic by the same `crucible-determinism` primitives the engine uses. *Gate:*
   `gate:layer0-determinism`, `gate:replay-oracle`. *Satisfies* `G-5`. *Spec:*
   §4, [`24-determinism-harness-testing.md`](24-determinism-harness-testing.md).
 - **[CRATE-9]** Feature flags MUST be **additive** (purely additive cargo
@@ -443,10 +440,10 @@ construction* (and are gated for it) and crates that are *allowed* to be
 nondeterministic because they are host-side diagnostics or process plumbing.
 
 **MUST pass `gate:harness-lint` (deterministic engine, `INV-9`):** every crate
-on the reduction path — `crucible-sim`, `crucible-assert`, `crucible`,
-`crucible-protocol`, `crucible-device`, and the in-engine glue of
+on the reduction path — `crucible-determinism`, `crucible-engine`,
+`crucible-qemu-protocol`, `crucible-device`, and the in-engine glue of
 `crucible-session`. These crates MUST NOT: iterate an unordered map on an
-ordering-significant path (use `crucible-sim`'s ordered collections), read the
+ordering-significant path (use `crucible-determinism`'s ordered collections), read the
 host wall-clock, draw from a thread/global RNG, or use a nondeterministic
 `select`. The lint is a `clippy`/custom-lint pass plus a deny-list of imports
 (`std::time::SystemTime`, `Instant` on ordering paths, `rand::thread_rng`,
@@ -455,10 +452,10 @@ host wall-clock, draw from a thread/global RNG, or use a nondeterministic
 **Nondeterministic-allowed (host diagnostics / plumbing):** `crucible-daemon`
 (it serves clients, logs with timestamps, schedules background work),
 `crucible-cli` (it prints progress, reads the host clock for human-facing
-output), and the host-supervision *non-reduction* parts of `crucible-qemu`
+output), and the host-supervision *non-reduction* parts of `crucible-qemu-host`
 (process spawn timing, retry/backoff). These MUST keep their nondeterminism
 **off the reduction path**: any value that influences `State` MUST flow through
-the seeded decision source in `crucible-sim`, never from these crates. The
+the seeded decision source in `crucible-determinism`, never from these crates. The
 boundary is enforced by `CRATE-6`/`CRATE-8` (the engine cannot even *name* these
 crates) plus the harness lint applied to the reduction-path crates only.
 
@@ -469,16 +466,16 @@ determinism is **Contract A** (intra-VM hermeticity), gated by
 static lint). Their job is to *seal* entropy, and they are proven by the
 execution-fingerprint gate, not by import-deny-listing.
 
-- **[CRATE-11]** The reduction-path crates (`crucible-sim`, `crucible-assert`,
-  `crucible`, `crucible-protocol`, `crucible-device`, `crucible-session`) MUST
+- **[CRATE-11]** The reduction-path crates (`crucible-determinism`,
+  `crucible-engine`, `crucible-qemu-protocol`, `crucible-device`, `crucible-session`) MUST
   pass `gate:harness-lint`: no host wall-clock, no thread/global RNG, no
   unordered-map iteration on ordering-significant paths, deterministic `select`
   only. *Gate:* `gate:harness-lint`. *Satisfies* `INV-9`, `INV-10`. *Spec:* §5.
 - **[CRATE-12]** Nondeterminism is permitted only in `crucible-daemon`,
-  `crucible-cli`, and the non-reduction supervision code of `crucible-qemu`, and
+  `crucible-cli`, and the non-reduction supervision code of `crucible-qemu-host`, and
   only off the reduction path: no value produced by host wall-clock, host RNG, or
   host-scheduling order in these crates MUST influence `State`. Any such value
-  that *must* affect the run MUST be routed through the `crucible-sim` decision
+  that *must* affect the run MUST be routed through the `crucible-determinism` decision
   source. *Gate:* `gate:harness-lint`, `gate:adversarial-determinism`.
   *Satisfies* `INV-1`, `INV-9`. *Spec:* §5.
 
@@ -490,25 +487,26 @@ contract and which crate realizes a file.
 
 | Crate | Owning RFC file(s) | Determinism gate(s) |
 | --- | --- | --- |
-| `crucible-sim` | [`04`](04-determinism-contract.md), [`08`](08-scheduling.md), [`09`](09-virtual-time-icount.md) | `gate:layer0-determinism`, `gate:harness-lint` |
-| `crucible-assert` | [`18`](18-assertions-properties.md) | `gate:layer0-determinism`, `gate:harness-lint` |
-| `crucible-shmem` | [`13`](13-shmem-abi.md) | `gate:abi-conformance`, `gate:license-boundary` |
-| `crucible-protocol` | [`14`](14-protocol.md), [`16`](16-guest-host-channel.md) | `gate:abi-conformance`, `gate:harness-lint`, `gate:license-boundary` |
+| `crucible-determinism` | [`04`](04-determinism-contract.md), [`08`](08-scheduling.md), [`09`](09-virtual-time-icount.md) | `gate:layer0-determinism`, `gate:harness-lint` |
+| `crucible-qemu-shmem` | [`13`](13-shmem-abi.md) | `gate:abi-conformance`, `gate:license-boundary` |
+| `crucible-qemu-protocol` | [`14`](14-protocol.md), [`16`](16-guest-host-channel.md) | `gate:abi-conformance`, `gate:harness-lint`, `gate:license-boundary` |
 | `crucible-device` | [`15`](15-io-subnodes.md) | `gate:layer1-injection`, `gate:harness-lint` |
-| `crucible-qemu` | [`10`](10-qemu-integration.md), [`11`](11-qemu-patches.md) | `gate:single-vm-fingerprint`, `gate:any-guest`, `gate:qemu-inert`, `gate:license-boundary` |
+| `crucible-qemu-host` | [`10`](10-qemu-integration.md), [`11`](11-qemu-patches.md) | `gate:single-vm-fingerprint`, `gate:any-guest`, `gate:qemu-inert`, `gate:license-boundary` |
 | `crucible-qemu-plugin` | [`11`](11-qemu-patches.md), [`12`](12-qemu-plugin.md) | `gate:single-vm-fingerprint`, `gate:patch-microtests`, `gate:license-boundary` |
-| `crucible-debug-gateway` | [`36`](36-time-travel-debugging.md) | `gate:license-boundary` |
+| `crucible-qemu-debug-gateway` | [`36`](36-time-travel-debugging.md) | `gate:license-boundary` |
 | `crucible-guest` | [`16`](16-guest-host-channel.md) | `gate:single-vm-fingerprint` (markers excluded from comparison) |
-| `crucible` | [`05`](05-execution-model.md), [`06`](06-spatial-graph.md), [`07`](07-temporal-graph.md), [`08`](08-scheduling.md), [`17`](17-fault-injection.md), [`18`](18-assertions-properties.md), [`19`](19-observability-event-log.md) | `gate:replay-oracle`, `gate:content-address`, `gate:scheduler-liveness`, `gate:divergence-bisect`, `gate:checkpoint-materialization`, `gate:state-space-search`, `gate:signal-fault-system`, `gate:harness-lint` |
-| `crucible-cas` | [`35`](35-distributed-continuous-exploration.md) | `gate:fleet-equivalence`, `gate:campaign-continuity`, `gate:content-address` |
+| `crucible-engine` | [`05`](05-execution-model.md), [`06`](06-spatial-graph.md), [`07`](07-temporal-graph.md), [`08`](08-scheduling.md), [`17`](17-fault-injection.md), [`18`](18-assertions-properties.md), [`19`](19-observability-event-log.md) | `gate:replay-oracle`, `gate:content-address`, `gate:scheduler-liveness`, `gate:divergence-bisect`, `gate:checkpoint-materialization`, `gate:state-space-search`, `gate:signal-fault-system`, `gate:harness-lint` |
+| `crucible-store` | [`35`](35-distributed-continuous-exploration.md) | `gate:fleet-equivalence`, `gate:campaign-continuity`, `gate:content-address` |
 | `crucible-session` | [`20`](20-session-control-plane.md) | `gate:control-responsive`, `gate:harness-lint` |
-| `crucible-api` | [`21`](21-api.md) | `gate:abi-conformance`, `gate:control-responsive` |
+| `crucible-control-api` | [`21`](21-api.md) | `gate:abi-conformance`, `gate:control-responsive` |
+| `crucible-control-client` | [`21`](21-api.md) | `gate:abi-conformance`, `gate:control-responsive` |
+| `crucible-control-server` | [`21`](21-api.md) | `gate:abi-conformance`, `gate:control-responsive` |
 | `crucible-daemon` | [`20`](20-session-control-plane.md), [`21`](21-api.md) | `gate:control-responsive` |
 | `crucible-cli` | [`23`](23-cli.md) | `gate:e2e-determinism` (top-level) |
 
 Cross-cutting concerns spread across crates: virtual time
-([`09`](09-virtual-time-icount.md)) is *defined* in `crucible-sim` and *consumed*
-by `crucible` and `crucible-qemu`; the determinism harness
+([`09`](09-virtual-time-icount.md)) is *defined* in `crucible-determinism` and *consumed*
+by `crucible-engine` and `crucible-qemu-host`; the determinism harness
 ([`24`](24-determinism-harness-testing.md)) is a test-only crate-spanning suite
 (§7); packaging ([`26`](26-packaging-aos-integration.md)) wraps the whole
 workspace and the AOS QEMU package; engineering standards
@@ -528,35 +526,35 @@ the per-layer lints. The Crucible package set is the subset of workspace members
 listed below.
 
 ```toml
-# Cargo.toml (workspace root) — illustrative
+# crates/Cargo.toml (workspace root) — illustrative
 [workspace]
 resolver = "2"
 members = [
   # L0
-  "crates/crucible/engine/crucible-determinism",
-  "crates/crucible/testing/crucible-assert",
+  "crucible/engine/crucible-determinism",
   # L1
-  "crates/crucible/protocol/crucible-qemu-shmem",
-  "crates/crucible/protocol/crucible-qemu-protocol",
-  "crates/crucible/engine/crucible-device",
+  "crucible/protocol/crucible-qemu-shmem",
+  "crucible/protocol/crucible-qemu-protocol",
+  "crucible/engine/crucible-device",
   # L2
-  "crates/crucible/qemu/crucible-qemu-host",
-  "crates/crucible/qemu/crucible-qemu-plugin",
-  "crates/crucible/qemu/crucible-qemu-debug-gateway",
-  "crates/crucible/guest/crucible-guest",
-  "crates/shared/aos-linux-project-quota",
+  "crucible/qemu/crucible-qemu-host",
+  "crucible/qemu/crucible-qemu-plugin",
+  "crucible/qemu/crucible-qemu-debug-gateway",
+  "crucible/guest/crucible-guest",
   # L3
-  "crates/crucible/engine/crucible-engine",
-  "crates/crucible/storage/crucible-store",
-  "crates/crucible/engine/crucible-campaign",
+  "crucible/engine/crucible-engine",
+  "crucible/storage/crucible-store",
+  "crucible/engine/crucible-campaign",
   # L4
-  "crates/crucible/control/crucible-session",
-  "crates/crucible/control/crucible-control-api",
-  "crates/crucible/control/crucible-daemon",
-  "crates/crucible/control/crucible-cli",
-  "crates/crucible/storage/crucible-store-s3",
+  "crucible/control/crucible-session",
+  "crucible/control/crucible-control-api",
+  "crucible/control/crucible-control-client",
+  "crucible/control/crucible-control-server",
+  "crucible/control/crucible-daemon",
+  "crucible/control/crucible-cli",
+  "crucible/storage/crucible-store-s3",
   # test-only harness (not a layer; spans crates)
-  "crates/crucible/testing/crucible-test-support",
+  "crucible/testing/crucible-test-support",
 ]
 
 [workspace.lints.rust]
@@ -569,26 +567,26 @@ edition = "2021"
 ```
 
 `crucible-qemu-plugin` builds a `cdylib`; most crates build `lib`s.
-`crucible-cli` builds the `crucible` binary, and `crucible-cas` builds the
+`crucible-cli` builds the `crucible` binary, and `crucible-store` builds the
 supporting `crucible-fleet-store` binary:
 
 ```toml
-# crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml
+# crates/crucible-qemu-plugin/Cargo.toml
 [lib]
 crate-type = ["cdylib"]
 
-# crates/crucible/control/crucible-cli/Cargo.toml
+# crates/crucible-cli/Cargo.toml
 [[bin]]
 name = "crucible"
 path = "src/main.rs"
 
-# crates/crucible/storage/crucible-store/Cargo.toml
+# crates/crucible-store/Cargo.toml
 [[bin]]
 name = "crucible-fleet-store"
 path = "src/bin/crucible-fleet-store.rs"
 ```
 
-There is a **nineteenth, test-only crate**, `crucible-harness` (not part of the
+There is a **nineteenth, test-only crate**, `crucible-test-support` (not part of the
 L0–L4 layering and not shipped), that hosts the cross-crate determinism gates of
 [`24`](24-determinism-harness-testing.md): the execution-fingerprint comparator,
 the divergence bisector, the replay-oracle checker, the ABI golden-vector runner,
@@ -604,32 +602,31 @@ enters a release build.
 
 | Gate | Lives in | Run as |
 | --- | --- | --- |
-| `gate:harness-lint` | `crucible-harness` + workspace `cargo` lints | every PR (Phase 0) |
-| `gate:layer0-determinism` | `crucible-sim` `tests/`, `crucible-assert` `tests/`, `crucible` `tests/` (`--features test-double`) | reduce-twice equality |
-| `gate:single-vm-fingerprint` | `crucible-qemu` + `crucible-qemu-plugin` `tests/` | one-VM fingerprint match |
-| `gate:layer1-injection` | `crucible-device` + `crucible-protocol` `tests/` | injection-icount purity |
-| `gate:abi-conformance` | `crucible-harness` golden vectors over `crucible-shmem`/`crucible-protocol`/`crucible-api` plus `crucible-qemu-plugin`/`crucible-guest` ABI tests | frozen golden vectors |
+| `gate:harness-lint` | `crucible-test-support` + workspace `cargo` lints | every PR (Phase 0) |
+| `gate:single-vm-fingerprint` | `crucible-qemu-host` + `crucible-qemu-plugin` `tests/` | one-VM fingerprint match |
+| `gate:layer1-injection` | `crucible-device` + `crucible-qemu-protocol` `tests/` | injection-icount purity |
+| `gate:abi-conformance` | `crucible-test-support` golden vectors over `crucible-qemu-shmem`/`crucible-qemu-protocol`/`crucible-control-api` plus `crucible-qemu-plugin`/`crucible-guest` ABI tests | frozen golden vectors |
 | `gate:typed-choice` | `crucible-campaign` `tests/gate_typed_choice.rs` plus the Phase-2 guest/protocol selectable suites | canonical typed domains, exact branch selection, and negative replay checks |
 | `gate:campaign-statistics` | `crucible-campaign` `tests/gate_campaign_statistics.rs` plus focused owner-level repository regressions | finite static and version-four SMC `P`/`Q` support, full path weights, exact resampling, genealogy, multiplicity, restart, and intervention exclusion |
-| `gate:license-boundary` | `crucible-harness` dependency/license/protocol/package checks | Always; every boundary change and release construction |
-| `gate:replay-oracle` | `crucible` `tests/` (`--features test-double`) | fat-hash == thin-hash |
-| `gate:content-address` | `crucible` + `crucible-sim` `tests/` | hash equality/collision |
-| `gate:scheduler-liveness` | `crucible` `tests/` (`--features test-double`) | reaches quiescence/limit |
-| `gate:control-responsive` | `crucible-session` + `crucible-api` `tests/` | bounded-quantum ack |
-| `gate:any-guest` | `crucible-qemu` `tests/` (guest matrix) | unmodified-guest boot |
+| `gate:license-boundary` | `crucible-test-support` dependency/license/protocol/package checks | Always; every boundary change and release construction |
+| `gate:replay-oracle` | `crucible-engine` `tests/` (`--features test-double`) | fat-hash == thin-hash |
+| `gate:content-address` | `crucible-engine` + `crucible-determinism` `tests/` | hash equality/collision |
+| `gate:scheduler-liveness` | `crucible-engine` `tests/` (`--features test-double`) | reaches quiescence/limit |
+| `gate:control-responsive` | `crucible-session` + `crucible-control-server` `tests/` | bounded-quantum ack |
+| `gate:any-guest` | `crucible-qemu-host` `tests/` (guest matrix) | unmodified-guest boot |
 | `gate:qemu-inert` / `gate:patch-microtests` | AOS QEMU package tests ([`26`](26-packaging-aos-integration.md)) + `crucible-qemu-plugin` | sim-control inertness, pinned-corpus identity, and patch capability evidence |
-| `gate:divergence-bisect` | `crucible-harness` | first-differing-step localization |
-| `gate:adversarial-determinism` | `crucible-harness` (host-hostile driver) | N-run byte-identical logs |
-| `gate:e2e-determinism` | `crucible-harness` + `crucible-cli` (final acceptance) | full multi-VM reproduce |
+| `gate:divergence-bisect` | `crucible-test-support` | first-differing-step localization |
+| `gate:adversarial-determinism` | `crucible-test-support` (host-hostile driver) | N-run byte-identical logs |
+| `gate:e2e-determinism` | `crucible-test-support` + `crucible-cli` (final acceptance) | full multi-VM reproduce |
 
 - **[CRATE-14]** The Crucible package set MUST live in the single AOS virtual
   Cargo workspace that pins one toolchain and one dependency-version set. Within
   the Crucible package set, the only `cdylib` MUST be `crucible-qemu-plugin`, and
-  the shipped Crucible binaries MUST be exactly `crucible` (from
-  `crucible-cli`) and `crucible-fleet-store` (from `crucible-cas`).
+  the shipped Crucible binaries MUST be exactly `crucible-engine` (from
+  `crucible-cli`) and `crucible-fleet-store` (from `crucible-store`).
   Pre-existing `aos-*` binaries are outside this Crucible binary count. *Gate:*
   `gate:harness-lint`. *Satisfies* `G-7`, `G-8`. *Spec:* §7.
-- **[CRATE-15]** A test-only crate `crucible-harness` MUST host the cross-crate
+- **[CRATE-15]** A test-only crate `crucible-test-support` MUST host the cross-crate
   determinism gates (fingerprint comparator, divergence bisector, replay-oracle
   checker, ABI golden-vector runner, adversarial driver) and MUST be a
   dev-dependency-only member that never enters a release build. *Gate:*
@@ -656,13 +653,13 @@ mirrors ratchet's *crate-level fence convention* (one root attribute per crate,
 no module-level ambiguity) but ships standalone. Any shared content-addressed-store
 substrate is gated behind a future integration
 ([`26-packaging-aos-integration.md`](26-packaging-aos-integration.md) §"ratchet
-gate"); until then `crucible-cas` carries the standalone content-addressed store
-surface and marks the seam, while `crucible-sim` carries deterministic core
+gate"); until then `crucible-store` carries the standalone content-addressed store
+surface and marks the seam, while `crucible-determinism` carries deterministic core
 primitives.
 
 - **[CRATE-18]** No Crucible crate MUST depend on any `ratchet-*` / `aos-nix-*`
   crate; the content-addressed store primitives Crucible needs MUST live in
-  `crucible-cas` (marked as a candidate seam for a later ratchet integration).
+  `crucible-store` (marked as a candidate seam for a later ratchet integration).
   *Gate:* `gate:harness-lint`. *Satisfies* `NG-7`. *Spec:* §7, README §"Relationship
   to RFC-0007".
 
@@ -675,25 +672,25 @@ primitives.
 > wiring so every later subsystem lands in a fixed frame.
 
 - [x] **T-CRATE-1** Create the Crucible package-set skeleton in the AOS Cargo
-  virtual workspace with the eighteen L0–L4 crates plus the test-only
-  `crucible-harness`, each as an empty, compiling crate carrying its `//!` crate
+  virtual AOS workspace with scoped L0–L4 Crucible crates plus the test-only
+  `crucible-test-support`, each as an empty, compiling crate carrying its `//!` crate
   doc naming its owning RFC file(s). — satisfies [CRATE-1], [CRATE-13],
   [CRATE-14]; spec §1, §6, §7.
 - [x] **T-CRATE-2** Apply the crate-level safe/unsafe fence: `#![forbid(unsafe_code)]`
-  on the twelve SAFE crates, `#![deny(unsafe_op_in_unsafe_fn)]` on the six UNSAFE
+  on SAFE crates, `#![deny(unsafe_op_in_unsafe_fn)]` on the named UNSAFE
   crates, with a CI lint asserting the attribute on every crate root. — satisfies
   [CRATE-4], [CRATE-5]; spec §2.
 - [x] **T-CRATE-3** Implement the layer-dependency + acyclicity lint that reads
   each crate's `[dependencies]` and rejects upward edges or cycles, with the
-  named host-side `crucible-qemu` → `crucible` adapter exception and the
+  named host-side `crucible-qemu-host` → `crucible-engine` adapter exception and the
   L2-in-VM-crates-depend-only-on-L1 rule. — satisfies [CRATE-2], [CRATE-3];
   spec §1.
-- [x] **T-CRATE-4** Declare the `Backend` trait in `crucible` (advance-to-horizon,
+- [x] **T-CRATE-4** Declare the `Backend` trait in `crucible-engine` (advance-to-horizon,
   fingerprint, deliver-input, snapshot, restore, shutdown), object-safe or single
   generic, with no QEMU/FFI types named in the engine. — satisfies [CRATE-6],
   [CRATE-10]; spec §3, §4.
 - [x] **T-CRATE-5** Implement the in-process `SimBackend` in SAFE Rust,
-  deterministic via `crucible-sim`, sufficient to run the engine determinism
+  deterministic via `crucible-determinism`, sufficient to run the engine determinism
   gates with no QEMU; keep only the shared-memory `SimDouble` behind
   `test-double`. — satisfies [CRATE-7];
   spec §4.
@@ -706,8 +703,8 @@ primitives.
   host wall-clock, thread/global RNG, unordered-map iteration on ordering paths,
   and nondeterministic `select`. — satisfies [CRATE-11]; spec §5.
 - [x] **T-CRATE-8** Confine nondeterminism to `crucible-daemon`, `crucible-cli`,
-  and `crucible-qemu` supervision code, with a check that no value from these
-  reaches `State` except via the `crucible-sim` decision source. — satisfies
+  and `crucible-qemu-host` supervision code, with a check that no value from these
+  reaches `State` except via the `crucible-determinism` decision source. — satisfies
   [CRATE-12]; spec §5.
 - [x] **T-CRATE-9** Enforce the control-plane boundary: `crucible-cli` reaches
   execution through the API/session/campaign/daemon composition, while
@@ -715,10 +712,10 @@ primitives.
   owns scheduler policy or private reduction internals. — satisfies [CRATE-8];
   spec §3 and RFC-0020 file 04a.
 - [x] **T-CRATE-10** Configure crate artifact types: `crucible-qemu-plugin` as the
-  sole `cdylib`, `crucible-cli` as `[[bin]] name = "crucible"`, `crucible-cas` as
+  sole `cdylib`, `crucible-cli` as `[[bin]] name = "crucible"`, `crucible-store` as
   `[[bin]] name = "crucible-fleet-store"`, and the rest as libs. — satisfies
   [CRATE-14]; spec §7.
-- [x] **T-CRATE-11** Stand up the `crucible-harness` test crate hosting the
+- [x] **T-CRATE-11** Stand up the `crucible-test-support` test crate hosting the
   cross-crate gates (fingerprint comparator, divergence bisector, replay-oracle
   checker, ABI golden-vector runner, adversarial driver) as a dev-dependency-only
   member. — satisfies [CRATE-15]; spec §7.
@@ -734,16 +731,17 @@ primitives.
   [`26-packaging-aos-integration.md`](26-packaging-aos-integration.md).
 - [x] **T-CRATE-15** Add a lint forbidding any dependency on `ratchet-*` /
   `aos-nix-*`, while keeping the content-addressing primitives in
-  `crucible-sim`. — satisfies [CRATE-18]; spec §7.
+  `crucible-determinism`. — satisfies [CRATE-18]; spec §7.
 - [x] **T-CRATE-16** Remove the test-only surface from the production dependency
-  graph: no shipped crate may depend on `crucible` with the `test-double`
+  graph: no shipped crate may depend on `crucible-engine` with the `test-double`
   feature, and no feature may be declared without a `cfg` that consumes it.
   — satisfies [CRATE-11], [CRATE-12]; spec §5.
-  - Defect (audit 2026-07-28): `crucible-api`, `crucible-daemon`, and
-    `crucible-qemu` each depend on `crucible` with `features = ["test-double"]`
+  - Defect (audit 2026-07-28): `crucible-control-api`, `crucible-control-client`,
+  `crucible-control-server`, `crucible-daemon`, and
+    `crucible-qemu-host` each depend on `crucible-engine` with `features = ["test-double"]`
     outside `[dev-dependencies]`, so the in-process double is compiled into the
     shipped closure and is reachable from production code paths. Separately
-    `crates/crucible/engine/crucible-engine/Cargo.toml` declares `qemu-backend = []` and no
+    `crates/crucible-engine/Cargo.toml` declares `qemu-backend = []` and no
     `#[cfg(feature = "qemu-backend")]` exists anywhere in the workspace — the
     feature is a label that suggests a compile-time backend split that does not
     exist.
@@ -752,14 +750,14 @@ primitives.
     non-test module; (2) either implement the `qemu-backend` split behind real
     `cfg` gates or delete the feature; (3) add a workspace lint asserting that
     every declared feature is referenced by at least one `cfg`.
-  - Gate: extend `checks.crucible.phase1.crateFeaturePowerset` to build the
+  - Gate: extend `checks.crucible-engine.phase1.crateFeaturePowerset` to build the
     shipped feature set with `test-double` disabled and fail if any production
     crate requires it.
-  Completed by `checks.crucible.phase1.crateFeaturePowerset`: `SimBackend` is
+  Completed by `checks.crucible-engine.phase1.crateFeaturePowerset`: `SimBackend` is
   now an always-available local backend while the shmem-backed `SimDouble`
-  remains behind `crucible/test-double`; shipped crates use plain `crucible`,
+  remains behind `crucible-engine/test-double`; shipped crates use plain `crucible-engine`,
   and the live QEMU comparison examples opt into a consumed
-  `crucible-qemu/test-support` feature. The Nix and Rust mirrors reject any
+  `crucible-qemu-host/test-support` feature. The Nix and Rust mirrors reject any
   production dependency that enables `test-double`, exercise the production
   no-default-feature build, and reject declared features with no consuming
   `cfg`.

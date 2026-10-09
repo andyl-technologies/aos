@@ -187,7 +187,7 @@ fn gpl_side_internal_dependencies_are_only_permissive_boundary_crates() -> Resul
     let mut failures = Vec::new();
 
     for gpl_package in [PLUGIN_PACKAGE, DEBUG_GATEWAY_PACKAGE] {
-        let manifest_path = crates.join(gpl_package).join("Cargo.toml");
+        let manifest_path = workspace::package_directory(&crates, gpl_package)?.join("Cargo.toml");
         let manifest: Value = fs::read_to_string(&manifest_path)?.parse()?;
         dependencies::visit_production_dependency_tables(
             &manifest,
@@ -211,8 +211,10 @@ fn gpl_side_internal_dependencies_are_only_permissive_boundary_crates() -> Resul
     }
 
     for boundary in BOUNDARY_PACKAGES {
-        let boundary_manifest: Value =
-            fs::read_to_string(crates.join(boundary).join("Cargo.toml"))?.parse()?;
+        let boundary_manifest: Value = fs::read_to_string(
+            workspace::package_directory(&crates, boundary)?.join("Cargo.toml"),
+        )?
+        .parse()?;
         assert_eq!(
             boundary_manifest["package"]["license"].as_str(),
             Some(BOUNDARY_LICENSE),
@@ -239,7 +241,7 @@ fn gpl_side_internal_dependencies_are_only_permissive_boundary_crates() -> Resul
     for marker in [
         "LICENSES/GPL-2.0-only.txt",
         "share/licenses/crucible-debug-gateway/COMPONENT",
-        "crucible-protocol is used under its MIT option",
+        "crucible-qemu-protocol is used under its MIT option",
     ] {
         assert!(
             gateway_package.contains(marker),
@@ -430,8 +432,10 @@ fn independent_fixture_parser_matches_all_abi_views() -> Result<(), Box<dyn Erro
 #[test]
 fn boundary_artifacts_and_code_docs_remain_explicit() -> Result<(), Box<dyn Error>> {
     let crates = workspace_crates_dir()?;
-    let plugin: Value =
-        fs::read_to_string(crates.join(PLUGIN_PACKAGE).join("Cargo.toml"))?.parse()?;
+    let plugin: Value = fs::read_to_string(
+        workspace::package_directory(&crates, PLUGIN_PACKAGE)?.join("Cargo.toml"),
+    )?
+    .parse()?;
     let plugin_artifacts = plugin["lib"]["crate-type"]
         .as_array()
         .ok_or("plugin crate-type must be an array")?;
@@ -441,8 +445,10 @@ fn boundary_artifacts_and_code_docs_remain_explicit() -> Result<(), Box<dyn Erro
     );
 
     for boundary in BOUNDARY_PACKAGES {
-        let manifest: Value =
-            fs::read_to_string(crates.join(boundary).join("Cargo.toml"))?.parse()?;
+        let manifest: Value = fs::read_to_string(
+            workspace::package_directory(&crates, boundary)?.join("Cargo.toml"),
+        )?
+        .parse()?;
         assert!(
             manifest
                 .get("lib")
@@ -453,7 +459,7 @@ fn boundary_artifacts_and_code_docs_remain_explicit() -> Result<(), Box<dyn Erro
 
     let docs = [
         (
-            "crucible-qemu-plugin/src/lib.rs",
+            "crucible/qemu/crucible-qemu-plugin/src/lib.rs",
             [
                 "SPDX-License-Identifier: GPL-2.0-only",
                 "versioned socket control protocol",
@@ -461,7 +467,7 @@ fn boundary_artifacts_and_code_docs_remain_explicit() -> Result<(), Box<dyn Erro
             .as_slice(),
         ),
         (
-            "crucible-debug-gateway/src/lib.rs",
+            "crucible/qemu/crucible-qemu-debug-gateway/src/lib.rs",
             [
                 "SPDX-License-Identifier: GPL-2.0-only",
                 "versioned owned-byte protocol",
@@ -470,7 +476,7 @@ fn boundary_artifacts_and_code_docs_remain_explicit() -> Result<(), Box<dyn Erro
             .as_slice(),
         ),
         (
-            "crucible-shmem/src/lib.rs",
+            "crucible/protocol/crucible-qemu-shmem/src/lib.rs",
             [
                 "SPDX-License-Identifier: MIT OR Apache-2.0",
                 "independently implementable process ABI",
@@ -479,7 +485,7 @@ fn boundary_artifacts_and_code_docs_remain_explicit() -> Result<(), Box<dyn Erro
             .as_slice(),
         ),
         (
-            "crucible-protocol/src/lib.rs",
+            "crucible/protocol/crucible-qemu-protocol/src/lib.rs",
             [
                 "SPDX-License-Identifier: MIT OR Apache-2.0",
                 "public host/plugin process protocol",

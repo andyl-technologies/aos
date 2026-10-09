@@ -1,7 +1,7 @@
-//! The transport-free registry-hub service layer.
+//! Shared Hub RPC orchestration and service composition.
 //!
 //! [`RpcService`] holds the `aos.hub.v1` method bodies once, decoupled
-//! from any HTTP framework or wire protocol. Both deployment targets call it:
+//! from either deployment runtime. Both deployment targets call it:
 //!
 //! - the **native hub** mounts it behind `axum` (served via `axum::serve`);
 //! - the **Cloudflare Worker** mounts the *same* handlers via
@@ -10,10 +10,13 @@
 //! Because the `connectrpc` server runtime cannot target `wasm32`, the hub does
 //! not run it; instead these methods are served as **Connect-JSON** — plain
 //! JSON over HTTP, `POST /aos.hub.v1.{Service}/{Method}` — by a thin `axum`
-//! layer (see the worker/native shells). The method bodies here are wholly
-//! transport-agnostic: each takes the caller's raw `Authorization` header (so
+//! layer (see the Worker/native shells). RPC methods accept the caller's raw
+//! `Authorization` header (so
 //! the JWT is verified once, here, against [`JwtKeys`]) plus a request struct
-//! from [`aos_hub_api`], and returns a response struct or an [`RpcError`].
+//! from [`aos_hub_api`], and return a response struct or an [`RpcError`].
+//! Capability methods live under `operations`; sealed plan inputs, failure
+//! codes and reservation keys have separate modules. Streaming object methods
+//! additionally use shared HTTP body types without owning an HTTP server.
 //!
 //! # Error model
 //!
@@ -27,6 +30,16 @@
 //!   -> 200 { "registry": { "slug": "acme/cdn", "index_state": "fresh", … } }
 //!   -> 404 { "code": "not_found", "message": "registry not found" }
 //! ```
+
+mod error;
+mod plan_inputs;
+mod reservation_keys;
+
+pub use error::RpcError;
+use plan_inputs::*;
+pub use reservation_keys::{
+    ConfiguredRouteReservationKeyring, RouteReservationKey, RouteReservationKeyring,
+};
 
 mod container;
 mod container_admin;
@@ -58,14 +71,9 @@ use base64::Engine as _;
 use futures_util::{StreamExt as _, TryStreamExt as _};
 use sha2::{Digest as _, Sha256};
 
-use crate::auth::jwt::{Claims, JwtKeys};
-use crate::clock;
-use crate::db::{Database, IndexStatus, PlacementReadRequirement, RegistryRecord, SurfaceTarget};
-use crate::domain::iam::{self, claims_principal, token_allows};
-use crate::domain::{Permission, Principal, PrincipalKind, Role, Scope};
+use aos_hub_model::auth::jwt::{Claims, JwtKeys};
 use crate::fetch::{SurfaceFetch, SurfaceProvider};
 use crate::jobs::Job;
-use crate::keymap;
 use crate::lease::PublishLease;
 use crate::placement_read::{self, PlacementReadOutcome};
 use crate::ratelimit::{RateClass, RateDecision, RateLimiter, MAX_ORGS_PER_OWNER};
@@ -73,6 +81,13 @@ use crate::reindex::Reindexer;
 use crate::storage_credential::{DatabaseStorageCredentialResolver, StorageCredentialResolver};
 use crate::surface_write::{PartTag, SurfaceWrite, SurfaceWriteProvider};
 use crate::topology_probe::TopologyProbeScheduler;
+use aos_hub_db::db::{
+    Database, IndexStatus, PlacementReadRequirement, RegistryRecord, SurfaceTarget,
+};
+use aos_hub_model::clock;
+use aos_hub_model::domain::iam::{self, claims_principal, token_allows};
+use aos_hub_model::domain::{Permission, Principal, PrincipalKind, Role, Scope};
+use aos_hub_model::keymap;
 
 /// Default page size when a list request leaves `page_size` at zero.
 const DEFAULT_PAGE_SIZE: u32 = 500;
@@ -241,854 +256,9 @@ fn collect_plan_pin_impacts(
     }
 }
 
-/// Stored preconditions for one placement write-authority promotion.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct PlacementPromotionPlanInput {
-    request: pb::PlacementMutationRequest,
-    registry_id: Option<i64>,
-    cache_id: Option<i64>,
-    candidate_placement_id: i64,
-    candidate_placement_name: String,
-    candidate_resource_version: i64,
-    candidate_write_spec_version: i64,
-    candidate_binding_write_revision: i64,
-    authority_incarnation_id: String,
-    authority_id: Option<i64>,
-    authority_resource_version: Option<i64>,
-    authority_desired_generation: Option<i64>,
-    observed_placement_id: Option<i64>,
-    observed_placement_name: Option<String>,
-}
-
-/// Exact authority tuple sealed by a promotion-cancellation plan.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct CancelPlacementPromotionPlanInput {
-    request: pb::SurfaceMutationRequest,
-    registry_id: Option<i64>,
-    cache_id: Option<i64>,
-    authority_id: i64,
-    authority_incarnation_id: String,
-    authority_resource_version: i64,
-    desired_generation: i64,
-    desired_placement_id: i64,
-    observed_placement_id: i64,
-}
-
-/// Immutable preconditions and desired state for placement creation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct PlacementCreatePlanInput {
-    request: pb::PlanCreatePlacementRequest,
-    registry_id: Option<i64>,
-    cache_id: Option<i64>,
-    org_id: Option<i64>,
-    binding_db_id: i64,
-}
-
-/// Immutable preconditions and replacement desired state for a placement.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct PlacementUpdatePlanInput {
-    request: pb::PlanUpdatePlacementRequest,
-    registry_id: Option<i64>,
-    cache_id: Option<i64>,
-    placement_id: i64,
-    baseline_resource_version: i64,
-}
-
-/// Immutable preconditions for placement metadata deletion.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct PlacementDeletePlanInput {
-    request: pb::PlacementMutationRequest,
-    registry_id: Option<i64>,
-    cache_id: Option<i64>,
-    placement_id: i64,
-    baseline_resource_version: i64,
-}
-
-/// Immutable preconditions for a placement lifecycle transition.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct PlacementLifecyclePlanInput {
-    request: pb::PlacementMutationRequest,
-    registry_id: Option<i64>,
-    cache_id: Option<i64>,
-    placement_id: i64,
-    baseline_resource_version: i64,
-    resulting_state: String,
-    resulting_read_enabled: bool,
-}
-
-/// One exact placement member sealed into a policy mutation plan.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct PlacementPolicyMemberPlanSeal {
-    name: String,
-    placement_id: i64,
-    resource_version: i64,
-    kind: String,
-}
-
-/// One normalized immutable replica group sealed into a policy plan.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct PlacementPolicyGroupPlanSeal {
-    group_id: String,
-    purpose: String,
-    range_start: Option<i64>,
-    range_end: Option<i64>,
-    members: Vec<PlacementPolicyMemberPlanSeal>,
-}
-
-/// Complete reviewed input for creating or revising a placement policy.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct PlacementPolicyMutationPlanInput {
-    request: pb::PlanPlacementPolicyMutationRequest,
-    registry_id: Option<i64>,
-    cache_id: Option<i64>,
-    owner_scope_key: String,
-    baseline_policy_resource_version: Option<i64>,
-    kind: String,
-    local_boundary_id: Option<String>,
-    local_boundary_revision: Option<i64>,
-    local_boundary_content_digest: Option<String>,
-    allow_remote_fallback: Option<bool>,
-    retry_on: Vec<String>,
-    groups: Vec<PlacementPolicyGroupPlanSeal>,
-}
-
-/// Exact physical and observation evidence for equivalence confirmation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct PlacementEquivalencePlanInput {
-    request: pb::PlanPlacementEquivalenceRequest,
-    registry_id: Option<i64>,
-    cache_id: Option<i64>,
-    placement_a_id: i64,
-    placement_a_version: i64,
-    placement_a_observation_version: i64,
-    placement_a_inventory_digest: String,
-    placement_b_id: i64,
-    placement_b_version: i64,
-    placement_b_observation_version: i64,
-    placement_b_inventory_digest: String,
-    physical_identity_fingerprint: String,
-    evidence_digest: String,
-    stable_id: String,
-}
-
-/// Exact preconditions for deleting a placement equivalence.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct PlacementEquivalenceDeletePlanInput {
-    stable_id: String,
-    registry_id: Option<i64>,
-    cache_id: Option<i64>,
-    baseline_resource_version: i64,
-}
-
-/// Immutable inputs for creating or replacing a storage-binding spec.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct BindingMutationPlanInput {
-    request: pb::PlanBindingMutationRequest,
-    org_id: Option<i64>,
-    binding_db_id: Option<i64>,
-    baseline_resource_version: Option<i64>,
-}
-
-/// Immutable preconditions for storage-binding deletion.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct BindingDeletePlanInput {
-    stable_id: String,
-    owner_scope_key: String,
-    org_id: Option<i64>,
-    binding_db_id: i64,
-    baseline_resource_version: i64,
-}
-
-/// Immutable preconditions for setting or rotating one credential purpose.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct BindingCredentialPlanInput {
-    request: pb::PlanBindingCredentialRequest,
-    binding_db_id: i64,
-    owner_scope_key: String,
-    credential_fingerprint: String,
-}
-
-/// Immutable preconditions for granting or revoking binding consumption.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct BindingGrantPlanInput {
-    request: pb::PlanConsumerScopeGrantRequest,
-    binding_db_id: i64,
-    owner_scope_key: String,
-    baseline_grant_resource_version: Option<i64>,
-    pin_resolutions: Vec<GrantPinResolutionSeal>,
-}
-
-/// Exact source and optional replacement target sealed for grant revocation.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-struct GrantPinResolutionSeal {
-    source: crate::db::ConsumerScopeGrantPinRecord,
-    action_kind: String,
-    replacement: Option<pb::PinResolutionTarget>,
-    replacement_resource_version: Option<i64>,
-}
-
-/// Durable, replay-safe grant revocation handed to the topology controller.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct GrantRevocationOperationDetail {
-    resource_kind: String,
-    resource_stable_id: String,
-    resource_generation: i64,
-    consumer_scope_key: String,
-    expected_grant_resource_version: i64,
-    resolutions: Vec<GrantPinResolutionSeal>,
-    actor: String,
-    request_id: String,
-}
-
-/// Immutable preconditions for instance or organization topology defaults.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct TopologyDefaultsPlanInput {
-    defaults: pb::TopologyDefaults,
-    org_id: Option<i64>,
-    baseline_resource_version: Option<i64>,
-}
-
-/// Immutable preconditions for organization creation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct OrganizationCreatePlanInput {
-    request: pb::PlanCreateOrganizationRequest,
-}
-
-/// Immutable preconditions for organization profile mutation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct OrganizationUpdatePlanInput {
-    request: pb::PlanUpdateOrganizationRequest,
-    org_id: i64,
-    baseline_resource_version: i64,
-}
-
-/// Immutable preconditions for organization deletion.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct OrganizationDeletePlanInput {
-    request: pb::PlanDeleteOrganizationRequest,
-    org_id: i64,
-    baseline_resource_version: i64,
-}
-
-/// Immutable preconditions for enrolling or rotating one signing-key generation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct SigningKeyMutationPlanInput {
-    request: pb::PlanSigningKeyMutationRequest,
-    baseline: Option<crate::db::SigningKeyRecord>,
-}
-
-/// Immutable preconditions for retiring one signing-key head.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct SigningKeyRetirementPlanInput {
-    request: pb::PlanRetireSigningKeyRequest,
-    baseline: crate::db::SigningKeyRecord,
-}
-
-/// Immutable preconditions for replacing one typed signing-key usage.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct SigningKeyUsagePlanInput {
-    request: pb::PlanSigningKeyUsageRequest,
-    baseline: Option<crate::db::SigningKeyUsageRecord>,
-    consumer: crate::db::SigningKeyConsumerRecord,
-    key: crate::db::SigningKeyRecord,
-}
-
-/// Immutable preconditions for replacing deployment-wide instance settings.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct InstanceSettingsPlanInput {
-    writes: Vec<(String, Option<String>)>,
-    baseline_digest: String,
-}
-
-/// Immutable preconditions for creating an organization-owned automation principal.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct ServiceAccountCreatePlanInput {
-    org_id: i64,
-    org_slug: String,
-    name: String,
-    baseline_principal_id: Option<i64>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct ServiceAccountUpdatePlanInput {
-    org_id: i64,
-    org_slug: String,
-    service_account_id: i64,
-    current_name: String,
-    new_name: String,
-    baseline_resource_version: String,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct ServiceAccountDeletePlanInput {
-    org_id: i64,
-    org_slug: String,
-    service_account_id: i64,
-    name: String,
-    baseline_resource_version: String,
-}
-
-/// Immutable preconditions for replacing one direct membership grant.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct MembershipPlanInput {
-    principal_kind: String,
-    principal_ref: String,
-    principal_id: i64,
-    scope: String,
-    desired_role: Option<String>,
-    baseline_role: Option<String>,
-}
-
-/// Immutable preconditions for creating one invitation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct InvitationCreatePlanInput {
-    org_id: i64,
-    org_slug: String,
-    email: String,
-    scope: String,
-    role: String,
-    ttl_secs: i64,
-}
-
-/// Immutable preconditions for cancelling one pending invitation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct InvitationCancelPlanInput {
-    org_id: i64,
-    org_slug: String,
-    invitation_id: i64,
-    baseline_resource_version: String,
-    baseline_created_at: i64,
-}
-
-/// Sealed desired state and exact baseline for one organization IdP mutation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct IdentityProviderSetPlanInput {
-    org_id: i64,
-    org_slug: String,
-    issuer: String,
-    authorization_endpoint: String,
-    token_endpoint: String,
-    jwks_uri: String,
-    client_id: String,
-    client_secret_enc: Option<String>,
-    client_secret_action: String,
-    scopes: String,
-    groups_claim: Option<String>,
-    role_map_json: String,
-    allow_jit: bool,
-    enforce_sso: bool,
-    default_role: String,
-    baseline_resource_version: Option<i64>,
-    baseline_incarnation_id: Option<String>,
-    incarnation_id: String,
-}
-
-/// Exact baseline for removing one organization IdP configuration.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct IdentityProviderRemovePlanInput {
-    org_id: i64,
-    org_slug: String,
-    baseline_resource_version: i64,
-    baseline_incarnation_id: Option<String>,
-}
-
-/// Exact ownership and revision sealed by an organization-domain plan.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct OrganizationDomainPlanInput {
-    org_id: i64,
-    org_slug: String,
-    domain: String,
-    txt_challenge: String,
-    baseline_resource_version: Option<i64>,
-    baseline_incarnation_id: Option<String>,
-    incarnation_id: String,
-}
-
-/// Immutable preconditions for issuing one scoped access-token generation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct AccessTokenIssuePlanInput {
-    owner_kind: String,
-    owner_ref: String,
-    owner_id: i64,
-    scope: String,
-    permissions: Vec<String>,
-    ttl_secs: i64,
-    comment: Option<String>,
-}
-
-/// Immutable preconditions for retiring one access-token generation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct AccessTokenRetirementPlanInput {
-    token_id: String,
-}
-
-/// Immutable enrollment identities and CAS state sealed by a reporter plan.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct AbilityDeploymentReporterPlanInput {
-    registry_id: i64,
-    registry_slug: String,
-    scope_key: String,
-    deployment: String,
-    principal_kind: String,
-    principal_id: i64,
-    principal_ref: String,
-    enabled: bool,
-    baseline_resource_version: u64,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct DomainCreatePlanInput {
-    request: pb::PlanDomainMutationRequest,
-    org_id: Option<i64>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct DomainConfigurationPlanInput {
-    stable_id: String,
-    owner_scope_key: String,
-    baseline_resource_version: i64,
-    dns: Option<crate::db::DeliveryDnsConfigurationSpec>,
-    certificate: Option<crate::db::DeliveryCertificateConfigurationSpec>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct DomainDeletePlanInput {
-    stable_id: String,
-    owner_scope_key: String,
-    baseline_resource_version: i64,
-}
-
-/// Immutable inputs sealed by a network-boundary creation plan.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct NetworkPolicyCreatePlanInput {
-    request: pb::PlanNetworkPolicyMutationRequest,
-    org_id: Option<i64>,
-}
-
-/// Immutable inputs sealed by a network-boundary revision plan.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct NetworkPolicyRevisionPlanInput {
-    request: pb::PlanNetworkPolicyRevisionRequest,
-    expected_boundary_version: i64,
-}
-
-/// Immutable inputs sealed by a network-boundary lifecycle plan.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct NetworkPolicyLifecyclePlanInput {
-    request: pb::PlanNetworkPolicyLifecycleRequest,
-    expected_lifecycle_version: i64,
-    expected_consumer_version: i64,
-    default_cas: Option<NetworkPolicyDefaultPlanSeal>,
-    coordination_operation_id: Option<String>,
-    coordination_impacts: Vec<crate::db::NetworkPolicyServingPinRecord>,
-    coordination_revisions: Vec<crate::db::NetworkPolicyCoordinationRevisionSeal>,
-    coordination_resolutions: Vec<crate::db::NetworkPolicyPinResolutionSeal>,
-}
-
-/// Serializable form of the exact default-pointer CAS sealed by a lifecycle plan.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct NetworkPolicyDefaultPlanSeal {
-    boundary_resource_version: i64,
-    previous_revision: Option<i64>,
-    previous_resource_version: Option<i64>,
-}
-
-/// Immutable inputs sealed by a network-boundary grant plan.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct NetworkPolicyGrantPlanInput {
-    request: pb::PlanConsumerScopeGrantRequest,
-    owner_scope_key: String,
-    baseline_grant_resource_version: Option<i64>,
-    pin_resolutions: Vec<GrantPinResolutionSeal>,
-}
-
-/// Immutable inputs sealed by a network-boundary deletion plan.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct NetworkPolicyDeletePlanInput {
-    request: pb::PlanDeleteTopologyResourceRequest,
-    owner_scope_key: String,
-    expected_resource_version: i64,
-}
-
-/// Immutable endpoint creation/update inputs with exact grant carry-forward seals.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct EndpointMutationPlanInput {
-    request: pb::PlanEndpointMutationRequest,
-    org_id: Option<i64>,
-    expected_resource_version: Option<i64>,
-    owner_grant: Option<EndpointGrantPlanSeal>,
-    carried_grants: Vec<EndpointGrantPlanSeal>,
-    affected_resources: Vec<crate::db::EndpointImpactRecord>,
-    old_boundary_revision: Option<DeliveryBoundaryRevisionPlanSeal>,
-    new_boundary_revision: DeliveryBoundaryRevisionPlanSeal,
-}
-
-/// Exact source and target seals for selecting a staged endpoint generation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct EndpointActivationPlanInput {
-    endpoint_id: String,
-    source_generation: i64,
-    source_content_digest: String,
-    target_generation: i64,
-    target_content_digest: String,
-    expected_resource_version: i64,
-    affected_resources: Vec<crate::db::EndpointImpactRecord>,
-}
-
-/// Exact source grant copied into a new endpoint generation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct EndpointGrantPlanSeal {
-    consumer_scope_key: String,
-    grant_generation: i64,
-    resource_version: i64,
-}
-
-/// Exact desired/observed/lifecycle fence for an endpoint boundary revision.
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct DeliveryBoundaryRevisionPlanSeal {
-    boundary_id: String,
-    revision: i64,
-    content_digest: String,
-    observation_state: String,
-    observed_at: i64,
-    lifecycle_state: String,
-    consumer_version: i64,
-    resource_version: i64,
-}
-
-/// Immutable endpoint scope-grant plan inputs.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct EndpointScopeGrantPlanInput {
-    request: pb::PlanConsumerScopeGrantRequest,
-    owner_scope_key: String,
-    endpoint_generation: i64,
-    baseline_grant_resource_version: Option<i64>,
-    pin_resolutions: Vec<GrantPinResolutionSeal>,
-}
-
-/// Immutable endpoint deletion inputs.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct EndpointDeletePlanInput {
-    request: pb::PlanDeleteTopologyResourceRequest,
-    owner_scope_key: String,
-    expected_resource_version: i64,
-}
-
-/// Immutable gateway enable/disable/delete plan inputs.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct GatewayLifecyclePlanInput {
-    request: pb::PlanDeleteTopologyResourceRequest,
-    owner_scope_key: String,
-    expected_resource_version: i64,
-}
-
-/// Immutable gateway creation/update inputs with exact grant carry-forward seals.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct GatewayMutationPlanInput {
-    request: pb::PlanGatewayMutationRequest,
-    org_id: Option<i64>,
-    binding_id: i64,
-    expected_resource_version: Option<i64>,
-    owner_grant: Option<GatewayGrantPlanSeal>,
-    carried_grants: Vec<GatewayGrantPlanSeal>,
-}
-
-/// Exact source gateway grant copied into a new immutable generation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct GatewayGrantPlanSeal {
-    consumer_scope_key: String,
-    grant_generation: i64,
-    resource_version: i64,
-}
-
-/// Immutable gateway consumer-scope grant plan inputs.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct GatewayScopeGrantPlanInput {
-    request: pb::PlanConsumerScopeGrantRequest,
-    owner_scope_key: String,
-    gateway_generation: i64,
-    baseline_grant_resource_version: Option<i64>,
-    pin_resolutions: Vec<GrantPinResolutionSeal>,
-}
-
-/// Immutable create/update route inputs and exact URL-reservation candidates.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RouteMutationPlanInput {
-    request: pb::PlanRouteMutationRequest,
-    predecessor_route_id: Option<String>,
-    predecessor_resource_version: Option<i64>,
-    surface: RouteSurfacePlanSeal,
-    canonical_url: String,
-    reservation: Option<RouteReservationPlanSeal>,
-    expected_resource_version: Option<i64>,
-}
-
-/// Stable typed surface identity sealed into route and canonical plans.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RouteSurfacePlanSeal {
-    registry_id: Option<i64>,
-    cache_id: Option<i64>,
-}
-
-/// Privacy-minimized candidate reservation digests under every retained key.
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct RouteReservationPlanSeal {
-    active_version: i64,
-    candidates: Vec<RouteReservationDigestPlanSeal>,
-}
-
-/// One versioned HMAC digest safe to persist in a topology plan.
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct RouteReservationDigestPlanSeal {
-    key_version: i64,
-    digest: String,
-}
-
-/// Immutable route enable/disable/delete plan inputs.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RouteLifecyclePlanInput {
-    request: pb::PlanDeleteTopologyResourceRequest,
-    expected_resource_version: i64,
-}
-
-/// Immutable canonical-route selection plan inputs.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RouteAdvertisementPlanInput {
-    request: pb::PlanRouteAdvertisementRequest,
-    surface: RouteSurfacePlanSeal,
-    baseline_resource_version: Option<i64>,
-}
-
-/// Immutable preconditions for managed-registry identity creation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RegistryCreatePlanInput {
-    request: pb::PlanCreateRegistryRequest,
-    org_id: i64,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RegistryUpdatePlanInput {
-    request: pb::PlanUpdateRegistryRequest,
-    registry_id: i64,
-    owner_scope_key: String,
-    expected_resource_version: i64,
-}
-
-/// Immutable preconditions for project identity creation.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct ProjectCreatePlanInput {
-    request: pb::PlanCreateProjectRequest,
-    org_id: i64,
-    owner_scope_key: String,
-}
-
-/// Immutable preconditions for deleting one empty project identity.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct ProjectDeletePlanInput {
-    org_slug: String,
-    org_id: i64,
-    project_id: i64,
-    stable_id: String,
-    path: String,
-    expected_resource_version: i64,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct WebhookCreatePlanInput {
-    request: pb::PlanCreateWebhookRequest,
-    org_id: i64,
-    owner_scope_key: String,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct WebhookDeletePlanInput {
-    webhook_id: i64,
-    org_id: i64,
-    owner_scope_key: String,
-    expected_resource_version: i64,
-}
-
-/// Immutable preconditions and desired state for registry-owned mirroring.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RegistryMirrorMutationPlanInput {
-    request: pb::PlanRegistryMirrorMutationRequest,
-    registry_db_id: i64,
-    baseline_resource_version: Option<i64>,
-}
-
-/// Immutable preconditions for deleting registry-owned mirroring.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RegistryMirrorDeletePlanInput {
-    request: pb::PlanDeleteTopologyResourceRequest,
-    registry_db_id: i64,
-    baseline_resource_version: i64,
-}
-
-/// Stored preconditions for making a surface explicitly read-only.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RemoveWriteAuthorityPlanInput {
-    registry_id: Option<i64>,
-    cache_id: Option<i64>,
-    authority_id: i64,
-    authority_incarnation_id: String,
-    authority_resource_version: i64,
-    observed_generation: i64,
-    observed_placement_name: String,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct BinaryCacheMutationPlanInput {
-    request: pb::PlanBinaryCacheMutationRequest,
-    org_id: i64,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct BinaryCacheDeletePlanInput {
-    cache_id: i64,
-    stable_id: String,
-    expected_resource_version: i64,
-}
-
-/// A registry-hub method failure, tagged with a Connect error code.
-///
-/// Mirrors the subset of `connectrpc::ErrorCode` the hub uses. The transport
-/// renders it as the Connect-JSON error envelope plus an HTTP status. The
-/// [`RpcError::Internal`] variant carries no public detail — the underlying
-/// error is logged at construction (see [`RpcError::internal`]) and the wire
-/// message is the generic `"internal error"`, so a database error never leaks
-/// its internals to a caller.
-#[derive(Debug)]
-pub enum RpcError {
-    /// An unexpected server-side failure; detail already logged, not exposed.
-    Internal,
-    /// The request was malformed (bad argument, bad page token, …).
-    InvalidArgument(String),
-    /// The addressed resource does not exist (or is hidden from the caller).
-    NotFound(String),
-    /// The caller is authenticated but lacks the required permission.
-    PermissionDenied(String),
-    /// The caller presented no, or an invalid, credential.
-    Unauthenticated(String),
-    /// The resource already exists (unique-constraint conflict).
-    AlreadyExists(String),
-    /// A precondition on system state was not met.
-    FailedPrecondition(String),
-    /// The caller exceeded a rate limit or quota.
-    ResourceExhausted(String),
-    /// Every eligible backend was temporarily unavailable.
-    Unavailable(String),
-    /// The requested protocol feature is not implemented by this server.
-    Unimplemented(String),
-}
-
-impl RpcError {
-    /// Build an [`RpcError::Internal`], logging `err` for operators.
-    ///
-    /// The returned error exposes only `"internal error"` on the wire; the full
-    /// chain is written to the `tracing` log so the detail is recoverable
-    /// server-side without leaking to the caller.
-    #[must_use]
-    pub fn internal<E>(err: E) -> Self
-    where
-        E: Into<anyhow::Error>,
-    {
-        let err = err.into();
-        tracing::error!(error = %format!("{err:#}"), "rpc failed");
-        RpcError::Internal
-    }
-
-    /// Build a [`RpcError::NotFound`] reading `"{what} not found"`.
-    #[must_use]
-    pub fn not_found(what: &str) -> Self {
-        RpcError::NotFound(format!("{what} not found"))
-    }
-
-    /// Build a [`RpcError::InvalidArgument`] from any message.
-    #[must_use]
-    pub fn invalid(msg: impl Into<String>) -> Self {
-        RpcError::InvalidArgument(msg.into())
-    }
-
-    /// The Connect error code string (e.g. `"not_found"`) for the wire envelope.
-    #[must_use]
-    pub fn code(&self) -> &'static str {
-        match self {
-            RpcError::Internal => "internal",
-            RpcError::InvalidArgument(_) => "invalid_argument",
-            RpcError::NotFound(_) => "not_found",
-            RpcError::PermissionDenied(_) => "permission_denied",
-            RpcError::Unauthenticated(_) => "unauthenticated",
-            RpcError::AlreadyExists(_) => "already_exists",
-            RpcError::FailedPrecondition(_) => "failed_precondition",
-            RpcError::ResourceExhausted(_) => "resource_exhausted",
-            RpcError::Unavailable(_) => "unavailable",
-            RpcError::Unimplemented(_) => "unimplemented",
-        }
-    }
-
-    /// The human-readable message for the wire envelope.
-    ///
-    /// [`RpcError::Internal`] returns the generic `"internal error"`; all other
-    /// variants return their carried message.
-    #[must_use]
-    pub fn message(&self) -> &str {
-        match self {
-            RpcError::Internal => "internal error",
-            RpcError::InvalidArgument(m)
-            | RpcError::NotFound(m)
-            | RpcError::PermissionDenied(m)
-            | RpcError::Unauthenticated(m)
-            | RpcError::AlreadyExists(m)
-            | RpcError::FailedPrecondition(m)
-            | RpcError::ResourceExhausted(m)
-            | RpcError::Unavailable(m)
-            | RpcError::Unimplemented(m) => m,
-        }
-    }
-
-    /// The HTTP status the Connect protocol maps this code to.
-    #[must_use]
-    pub fn http_status(&self) -> u16 {
-        match self {
-            RpcError::Internal => 500,
-            RpcError::InvalidArgument(_) => 400,
-            RpcError::NotFound(_) => 404,
-            RpcError::PermissionDenied(_) => 403,
-            RpcError::Unauthenticated(_) => 401,
-            RpcError::AlreadyExists(_) => 409,
-            RpcError::FailedPrecondition(_) => 400,
-            RpcError::ResourceExhausted(_) => 429,
-            RpcError::Unavailable(_) => 503,
-            RpcError::Unimplemented(_) => 501,
-        }
-    }
-
-    /// Maps a topology read failure without turning temporary exhaustion into 500.
-    fn surface_read(error: anyhow::Error) -> Self {
-        if crate::placement_read::classify_read_error(&error)
-            == crate::placement_read::ReadFailureClass::Retryable
-        {
-            tracing::warn!(error = %format!("{error:#}"), "all eligible surface backends unavailable");
-            RpcError::Unavailable(
-                "all eligible storage backends are temporarily unavailable".into(),
-            )
-        } else {
-            RpcError::internal(error)
-        }
-    }
-}
-
-impl std::fmt::Display for RpcError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code(), self.message())
-    }
-}
-
-impl std::error::Error for RpcError {}
-
 /// Projects authenticated native locator coordinates into the release identity envelope.
 fn native_documentation_identity(
-    locator: &crate::db::NativeDocumentationLocator,
+    locator: &aos_hub_db::db::NativeDocumentationLocator,
 ) -> pb::PackageDocumentationIdentity {
     pb::PackageDocumentationIdentity {
         registry_commit: locator.commit.clone(),
@@ -1108,7 +278,7 @@ fn native_documentation_identity(
 }
 
 fn package_ability_reference_identity(
-    locator: &crate::db::NativeDocumentationLocator,
+    locator: &aos_hub_db::db::NativeDocumentationLocator,
 ) -> pb::PackageAbilityReferenceIdentity {
     pb::PackageAbilityReferenceIdentity {
         registry_commit: locator.commit.clone(),
@@ -1123,7 +293,7 @@ fn package_ability_reference_identity(
 }
 
 fn stored_ability_deployment_response(
-    stored: crate::db::StoredAbilityDeploymentOverlay,
+    stored: aos_hub_db::db::StoredAbilityDeploymentOverlay,
 ) -> pb::PackageAbilityDeploymentResponse {
     pb::PackageAbilityDeploymentResponse {
         canonical_json: stored.canonical_json,
@@ -1138,7 +308,7 @@ fn stored_ability_deployment_response(
 }
 
 fn decode_stored_package_ability_deployment(
-    stored: &crate::db::StoredAbilityDeploymentOverlay,
+    stored: &aos_hub_db::db::StoredAbilityDeploymentOverlay,
     reference: &aos_module_docs::runtime::deployment::ReleasedReference,
 ) -> anyhow::Result<aos_module_docs::runtime::deployment::NativeDeploymentReport> {
     let report = aos_module_docs::runtime::deployment::NativeDeploymentReport::decode(
@@ -1242,10 +412,10 @@ fn paginate<T>(items: Vec<T>, page_size: u32, token: &str) -> Result<(Vec<T>, St
     Ok((page, next))
 }
 
-/// Project a [`ChannelSummary`](crate::db::ChannelSummary) onto the wire
+/// Project a [`ChannelSummary`](aos_hub_db::db::ChannelSummary) onto the wire
 /// [`pb::Channel`], dropping empty partition buckets and tagging each present
 /// bucket with its index.
-fn channel_message(channel: crate::db::ChannelSummary) -> pb::Channel {
+fn channel_message(channel: aos_hub_db::db::ChannelSummary) -> pb::Channel {
     pb::Channel {
         name: channel.name,
         frontier: channel.frontier.unwrap_or_default(),
@@ -1292,15 +462,9 @@ fn image_compression_name(compression: ImageCompression) -> &'static str {
     }
 }
 
-/// The store-hash component of a store path or reference entry.
-///
-/// `"/nix/store/abc123-foo-1.0"` and `"abc123-foo-1.0"` both yield `"abc123"`.
-fn narinfo_store_hash(entry: &str) -> String {
-    let base = entry.rsplit('/').next().unwrap_or(entry);
-    base.split('-').next().unwrap_or(base).to_string()
-}
-
-fn canonical_git_object_id(value: &str) -> anyhow::Result<crate::retention::CanonicalGitObjectId> {
+fn canonical_git_object_id(
+    value: &str,
+) -> anyhow::Result<aos_hub_model::retention::CanonicalGitObjectId> {
     if !matches!(value.len(), 40 | 64)
         || !value
             .bytes()
@@ -1310,19 +474,19 @@ fn canonical_git_object_id(value: &str) -> anyhow::Result<crate::retention::Cano
     }
     let digest = hex::decode(value)?;
     let algorithm = match digest.len() {
-        20 => crate::retention::GitObjectIdAlgorithm::Sha1,
-        32 => crate::retention::GitObjectIdAlgorithm::Sha256,
+        20 => aos_hub_model::retention::GitObjectIdAlgorithm::Sha1,
+        32 => aos_hub_model::retention::GitObjectIdAlgorithm::Sha256,
         length => anyhow::bail!("verified tag object id has invalid {length}-byte length"),
     };
-    Ok(crate::retention::CanonicalGitObjectId::new(
+    Ok(aos_hub_model::retention::CanonicalGitObjectId::new(
         algorithm, digest,
     )?)
 }
 
 fn add_release_retention_reasons(
-    reasons: &mut BTreeMap<String, crate::db::RetentionRefreshReason>,
+    reasons: &mut BTreeMap<String, aos_hub_db::db::RetentionRefreshReason>,
     selector_term: &str,
-    release: &crate::db::RetentionReleaseSnapshotRecord,
+    release: &aos_hub_db::db::RetentionReleaseSnapshotRecord,
 ) {
     for artifact in &release.artifacts {
         insert_retention_reason(
@@ -1347,7 +511,7 @@ fn add_release_retention_reasons(
 }
 
 fn insert_retention_reason(
-    reasons: &mut BTreeMap<String, crate::db::RetentionRefreshReason>,
+    reasons: &mut BTreeMap<String, aos_hub_db::db::RetentionRefreshReason>,
     source_kind: &str,
     source_ref: String,
     store_hash: String,
@@ -1362,7 +526,7 @@ fn insert_retention_reason(
     let reason_key = format!("{source_kind}:{digest}");
     reasons
         .entry(reason_key.clone())
-        .or_insert_with(|| crate::db::RetentionRefreshReason {
+        .or_insert_with(|| aos_hub_db::db::RetentionRefreshReason {
             reason_id: digest.clone(),
             reason_key,
             store_hash,
@@ -1481,7 +645,7 @@ pub(crate) fn exact_image_body(body: axum::body::Body, remaining: u64) -> axum::
 }
 
 /// Projects a normalized logical cache object onto the wire contract.
-fn cache_object_message(o: crate::db::CacheObjectRecord) -> pb::CacheObject {
+fn cache_object_message(o: aos_hub_db::db::CacheObjectRecord) -> pb::CacheObject {
     pb::CacheObject {
         store_hash: o.store_hash,
         store_name: o.store_name,
@@ -1500,7 +664,7 @@ fn cache_object_message(o: crate::db::CacheObjectRecord) -> pb::CacheObject {
 }
 
 /// Projects an organization without exposing its database identity.
-fn organization_message(org: &crate::db::OrgRecord) -> pb::Organization {
+fn organization_message(org: &aos_hub_db::db::OrgRecord) -> pb::Organization {
     pb::Organization {
         stable_id: org.stable_id.clone(),
         slug: org.slug.clone(),
@@ -1515,10 +679,10 @@ fn organization_message(org: &crate::db::OrgRecord) -> pb::Organization {
 
 fn delivery_dns_spec(
     configuration: pb::DnsConfiguration,
-) -> Result<crate::db::DeliveryDnsConfigurationSpec, RpcError> {
+) -> Result<aos_hub_db::db::DeliveryDnsConfigurationSpec, RpcError> {
     match configuration.configuration {
         Some(pb::dns_configuration::Configuration::HubManaged(value)) => {
-            Ok(crate::db::DeliveryDnsConfigurationSpec::HubManaged {
+            Ok(aos_hub_db::db::DeliveryDnsConfigurationSpec::HubManaged {
                 provider: value.provider,
                 zone_id: value.zone_id,
                 record_mode: value.record_mode,
@@ -1527,7 +691,7 @@ fn delivery_dns_spec(
             })
         }
         Some(pb::dns_configuration::Configuration::External(value)) => {
-            Ok(crate::db::DeliveryDnsConfigurationSpec::External {
+            Ok(aos_hub_db::db::DeliveryDnsConfigurationSpec::External {
                 expected_target: value.expected_target,
             })
         }
@@ -1537,26 +701,28 @@ fn delivery_dns_spec(
 
 fn delivery_certificate_spec(
     configuration: pb::CertificateConfiguration,
-) -> Result<crate::db::DeliveryCertificateConfigurationSpec, RpcError> {
+) -> Result<aos_hub_db::db::DeliveryCertificateConfigurationSpec, RpcError> {
     match configuration.configuration {
         Some(pb::certificate_configuration::Configuration::HubManaged(value)) => Ok(
-            crate::db::DeliveryCertificateConfigurationSpec::HubManaged {
+            aos_hub_db::db::DeliveryCertificateConfigurationSpec::HubManaged {
                 issuer: value.issuer,
                 dns_challenge_provider: value.dns_challenge_provider,
             },
         ),
-        Some(pb::certificate_configuration::Configuration::External(value)) => {
-            Ok(crate::db::DeliveryCertificateConfigurationSpec::External {
+        Some(pb::certificate_configuration::Configuration::External(value)) => Ok(
+            aos_hub_db::db::DeliveryCertificateConfigurationSpec::External {
                 certificate_secret_ref: value.certificate_secret_ref,
-            })
-        }
+            },
+        ),
         None => Err(RpcError::invalid("certificate configuration is required")),
     }
 }
 
-fn delivery_dns_message(value: crate::db::DeliveryDnsConfigurationSpec) -> pb::DnsConfiguration {
+fn delivery_dns_message(
+    value: aos_hub_db::db::DeliveryDnsConfigurationSpec,
+) -> pb::DnsConfiguration {
     let configuration = match value {
-        crate::db::DeliveryDnsConfigurationSpec::HubManaged {
+        aos_hub_db::db::DeliveryDnsConfigurationSpec::HubManaged {
             provider,
             zone_id,
             record_mode,
@@ -1569,7 +735,7 @@ fn delivery_dns_message(value: crate::db::DeliveryDnsConfigurationSpec) -> pb::D
             target,
             ttl_seconds,
         }),
-        crate::db::DeliveryDnsConfigurationSpec::External { expected_target } => {
+        aos_hub_db::db::DeliveryDnsConfigurationSpec::External { expected_target } => {
             pb::dns_configuration::Configuration::External(pb::ExternalDnsConfiguration {
                 expected_target,
             })
@@ -1581,10 +747,10 @@ fn delivery_dns_message(value: crate::db::DeliveryDnsConfigurationSpec) -> pb::D
 }
 
 fn delivery_certificate_message(
-    value: crate::db::DeliveryCertificateConfigurationSpec,
+    value: aos_hub_db::db::DeliveryCertificateConfigurationSpec,
 ) -> pb::CertificateConfiguration {
     let configuration = match value {
-        crate::db::DeliveryCertificateConfigurationSpec::HubManaged {
+        aos_hub_db::db::DeliveryCertificateConfigurationSpec::HubManaged {
             issuer,
             dns_challenge_provider,
         } => pb::certificate_configuration::Configuration::HubManaged(
@@ -1593,7 +759,7 @@ fn delivery_certificate_message(
                 dns_challenge_provider,
             },
         ),
-        crate::db::DeliveryCertificateConfigurationSpec::External {
+        aos_hub_db::db::DeliveryCertificateConfigurationSpec::External {
             certificate_secret_ref,
         } => pb::certificate_configuration::Configuration::External(
             pb::ExternalCertificateConfiguration {
@@ -1607,7 +773,7 @@ fn delivery_certificate_message(
 }
 
 /// Build the wire [`pb::Project`] for a project at `path`/`name` under `org_slug`.
-fn project_message(org_slug: String, project: crate::db::ProjectRecord) -> pb::Project {
+fn project_message(org_slug: String, project: aos_hub_db::db::ProjectRecord) -> pb::Project {
     pb::Project {
         org_slug,
         path: project.path,
@@ -1679,7 +845,7 @@ fn normalize_instance_value(key: &str, value: &str) -> Result<Option<String>, Rp
             Ok(Some(trimmed.to_string()))
         }
         "default_crawl_policy" => {
-            let policy = crate::crawl::CrawlPolicy::parse(trimmed)
+            let policy = aos_hub_model::crawl::CrawlPolicy::parse(trimmed)
                 .map_err(|e| RpcError::invalid(e.to_string()))?;
             Ok(Some(policy.as_str().to_string()))
         }
@@ -1696,7 +862,7 @@ fn normalize_instance_value(key: &str, value: &str) -> Result<Option<String>, Rp
             Ok(Some(if on { "on" } else { "off" }.to_string()))
         }
         "tos_url" | "privacy_url" | "support_url" => {
-            crate::url_guard::require_http_scheme(trimmed)
+            aos_hub_model::url_guard::require_http_scheme(trimmed)
                 .map_err(|_| RpcError::invalid(format!("{key} must be an http(s) URL")))?;
             Ok(Some(trimmed.to_string()))
         }
@@ -1730,7 +896,7 @@ fn normalize_instance_value(key: &str, value: &str) -> Result<Option<String>, Rp
 ///
 /// Unset optionals (`session_lifetime_secs`/`max_upload_bytes`) map to `0`,
 /// which the wire contract documents as "use the built-in default".
-fn instance_settings_to_pb(s: &crate::db::InstanceSettings) -> pb::InstanceSettings {
+fn instance_settings_to_pb(s: &aos_hub_db::db::InstanceSettings) -> pb::InstanceSettings {
     pb::InstanceSettings {
         site_title: s.site_title.clone().unwrap_or_default(),
         tagline: s.tagline.clone().unwrap_or_default(),
@@ -1749,14 +915,14 @@ fn instance_settings_to_pb(s: &crate::db::InstanceSettings) -> pb::InstanceSetti
 }
 
 /// Returns the canonical content revision for one effective settings bundle.
-fn instance_settings_digest(s: &crate::db::InstanceSettings) -> Result<String, RpcError> {
+fn instance_settings_digest(s: &aos_hub_db::db::InstanceSettings) -> Result<String, RpcError> {
     let message = instance_settings_to_pb(s);
     let canonical = serde_json::to_vec(&message).map_err(RpcError::internal)?;
     Ok(hex::encode(Sha256::digest(canonical)))
 }
 
 fn service_account_resource_version(
-    record: &crate::db::ServiceAccountRecord,
+    record: &aos_hub_db::db::ServiceAccountRecord,
 ) -> Result<String, RpcError> {
     let canonical =
         serde_json::to_vec(&(record.id, record.org_id, &record.name, record.created_at))
@@ -1766,7 +932,7 @@ fn service_account_resource_version(
 
 fn service_account_message(
     org_slug: &str,
-    record: crate::db::ServiceAccountRecord,
+    record: aos_hub_db::db::ServiceAccountRecord,
 ) -> Result<pb::ServiceAccount, RpcError> {
     let resource_version = service_account_resource_version(&record)?;
     Ok(pb::ServiceAccount {
@@ -1778,7 +944,9 @@ fn service_account_message(
     })
 }
 
-fn invitation_resource_version(record: &crate::db::InvitationRecord) -> Result<String, RpcError> {
+fn invitation_resource_version(
+    record: &aos_hub_db::db::InvitationRecord,
+) -> Result<String, RpcError> {
     let canonical = serde_json::to_vec(&(
         record.id,
         record.org_id,
@@ -1796,7 +964,7 @@ fn invitation_resource_version(record: &crate::db::InvitationRecord) -> Result<S
 
 fn invitation_message(
     org_slug: &str,
-    record: crate::db::InvitationRecord,
+    record: aos_hub_db::db::InvitationRecord,
 ) -> Result<pb::Invitation, RpcError> {
     let resource_version = invitation_resource_version(&record)?;
     let state = if record.accepted_at.is_some() {
@@ -1825,7 +993,7 @@ fn invitation_message(
 
 fn identity_provider_message(
     org_slug: &str,
-    record: crate::db::IdpConfigRecord,
+    record: aos_hub_db::db::IdpConfigRecord,
 ) -> pb::IdentityProvider {
     pb::IdentityProvider {
         org_slug: org_slug.to_string(),
@@ -1850,7 +1018,7 @@ fn identity_provider_message(
 
 fn organization_domain_message(
     org_slug: &str,
-    record: crate::db::OrgDomainRecord,
+    record: aos_hub_db::db::OrgDomainRecord,
 ) -> pb::OrganizationDomain {
     pb::OrganizationDomain {
         org_slug: org_slug.to_string(),
@@ -1940,9 +1108,9 @@ fn webhook_message(
     }
 }
 
-/// Project a [`ChangesetRow`](crate::db::ChangesetRow) onto the wire
+/// Project a [`ChangesetRow`](aos_hub_db::db::ChangesetRow) onto the wire
 /// [`pb::Changeset`], flattening its optional summary/applied/revert fields.
-fn changeset_message(row: crate::db::ChangesetRow) -> pb::Changeset {
+fn changeset_message(row: aos_hub_db::db::ChangesetRow) -> pb::Changeset {
     pb::Changeset {
         change_id: row.change_id,
         actor_label: row.actor_label,
@@ -2005,123 +1173,6 @@ pub enum ReadAuthorization<'a> {
     PreauthorizedSession,
 }
 
-/// One externally managed URL-reservation HMAC key version.
-#[derive(Clone)]
-pub struct RouteReservationKey {
-    /// Positive immutable key version persisted with reservations.
-    pub version: i64,
-    /// Secret HMAC key bytes.
-    pub secret: Vec<u8>,
-    /// Whether new reservations use this version.
-    pub active: bool,
-}
-
-/// Supplies the active and retained URL-reservation keys to both Hub runtimes.
-pub trait RouteReservationKeyring: crate::backend::BackendBounds {
-    /// Returns a complete point-in-time keyring snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when secret configuration cannot be loaded safely.
-    fn snapshot(&self) -> anyhow::Result<Vec<RouteReservationKey>>;
-}
-
-/// Validated in-memory keyring loaded by a runtime from its secret provider.
-pub struct ConfiguredRouteReservationKeyring {
-    keys: Vec<RouteReservationKey>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RouteReservationKeyringManifest {
-    active_version: i64,
-    keys: Vec<RouteReservationKeyManifestEntry>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RouteReservationKeyManifestEntry {
-    version: i64,
-    key_base64: String,
-}
-
-impl ConfiguredRouteReservationKeyring {
-    /// Parses and validates the shared native/Worker secret manifest.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for malformed JSON/base64, duplicate or non-positive
-    /// versions, an absent active version, or a key shorter than 32 bytes.
-    pub fn from_json(json: &str) -> anyhow::Result<Self> {
-        let manifest: RouteReservationKeyringManifest =
-            serde_json::from_str(json).context("decoding route reservation keyring")?;
-        anyhow::ensure!(
-            manifest.active_version > 0,
-            "activeVersion must be positive"
-        );
-        anyhow::ensure!(!manifest.keys.is_empty(), "at least one key is required");
-        let mut versions = BTreeSet::new();
-        let mut keys = Vec::with_capacity(manifest.keys.len());
-        for entry in manifest.keys {
-            anyhow::ensure!(entry.version > 0, "key versions must be positive");
-            anyhow::ensure!(versions.insert(entry.version), "duplicate key version");
-            let secret = base64::engine::general_purpose::STANDARD
-                .decode(entry.key_base64)
-                .context("decoding route reservation key")?;
-            anyhow::ensure!(
-                secret.len() >= 32,
-                "route reservation keys must be at least 32 bytes"
-            );
-            keys.push(RouteReservationKey {
-                version: entry.version,
-                secret,
-                active: entry.version == manifest.active_version,
-            });
-        }
-        anyhow::ensure!(
-            versions.contains(&manifest.active_version),
-            "activeVersion does not identify a retained key"
-        );
-        keys.sort_by_key(|key| key.version);
-        Ok(Self { keys })
-    }
-
-    /// Fails closed when storage references a key version absent from this keyring.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure or for any missing retained key.
-    pub async fn validate_referenced_versions(&self, db: &Database) -> anyhow::Result<()> {
-        let referenced = db.route_reservation_key_versions().await?;
-        let missing = self.missing_referenced_versions(&referenced);
-        anyhow::ensure!(
-            missing.is_empty(),
-            "route reservation keyring is missing referenced versions: {missing:?}"
-        );
-        Ok(())
-    }
-
-    /// Returns persisted key versions that are absent from this keyring.
-    fn missing_referenced_versions(&self, referenced: &[i64]) -> Vec<i64> {
-        let configured = self
-            .keys
-            .iter()
-            .map(|key| key.version)
-            .collect::<BTreeSet<_>>();
-        referenced
-            .iter()
-            .copied()
-            .filter(|version| !configured.contains(version))
-            .collect()
-    }
-}
-
-impl RouteReservationKeyring for ConfiguredRouteReservationKeyring {
-    fn snapshot(&self) -> anyhow::Result<Vec<RouteReservationKey>> {
-        Ok(self.keys.clone())
-    }
-}
-
 /// Maximum body accepted by one buffered object or multipart-part request.
 ///
 /// Single-object PUTs, multipart parts, and multipart completion documents use
@@ -2138,7 +1189,7 @@ pub const MAX_CACHE_NARINFO_REGISTRATION_BATCH: usize = 256;
 const CACHE_NARINFO_REGISTRATION_CONCURRENCY: usize = 8;
 /// Maximum object-upload admissions accepted by one bulk cache request.
 pub const MAX_CACHE_UPLOAD_ADMISSION_BATCH: usize =
-    crate::db::MAX_CACHE_WRITE_TICKET_ADMISSION_BATCH;
+    aos_hub_db::db::MAX_CACHE_WRITE_TICKET_ADMISSION_BATCH;
 
 /// Maximum encoded length of one registry publication object key.
 pub const MAX_REGISTRY_PUBLICATION_PATH_BYTES: usize = 512;
@@ -2157,7 +1208,7 @@ fn complete_upload_bytes(configured_limit: usize) -> usize {
 }
 
 struct RegistryPublicationUploadPlacement {
-    placement: crate::db::SurfacePlacementRecord,
+    placement: aos_hub_db::db::SurfacePlacementRecord,
     writer: Box<dyn SurfaceWrite>,
 }
 
@@ -2173,7 +1224,7 @@ fn pack_validation_gate() -> Arc<futures_util::lock::Mutex<()>> {
 }
 
 fn multipart_next_part(
-    upload: &crate::db::RegistryPublicationMultipartUploadRecord,
+    upload: &aos_hub_db::db::RegistryPublicationMultipartUploadRecord,
     expected_size: u64,
 ) -> Result<u32, RpcError> {
     if upload.state == "completing" {
@@ -2246,7 +1297,7 @@ fn advance_multipart_sha256(
 #[cfg(test)]
 mod multipart_digest_tests {
     use super::{advance_multipart_sha256, multipart_next_part, REGISTRY_PUBLICATION_PART_BYTES};
-    use crate::db::RegistryPublicationMultipartUploadRecord;
+    use aos_hub_db::db::RegistryPublicationMultipartUploadRecord;
     use sha2::{Digest as _, Sha256};
 
     const INITIAL_STATE: &str = "6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19";
@@ -2328,7 +1379,7 @@ async fn collect_exact_publication_body(
 }
 
 fn verify_publication_bytes(
-    object: &crate::db::RegistryPublicationUploadObjectRecord,
+    object: &aos_hub_db::db::RegistryPublicationUploadObjectRecord,
     bytes: &[u8],
 ) -> Result<(), RpcError> {
     if bytes.len() as i64 != object.expected_size
@@ -2498,15 +1549,15 @@ pub struct RpcService {
     pub reindexer: Arc<dyn Reindexer>,
     /// Durable typed queue for domain, boundary, endpoint, and route probes.
     pub topology_probes: Arc<dyn TopologyProbeScheduler>,
-    /// The secret sealer ([`SecretSealer`](crate::auth::seal::SecretSealer)) used
+    /// The secret sealer ([`SecretSealer`](aos_hub_model::auth::seal::SecretSealer)) used
     /// to unseal a cache's hosted Ed25519 key for server-side narinfo signing.
     ///
     /// `None` disables hub-side signing — a key-bearing cache then relies on the
     /// uploader's own `Sig:` lines (BYO signing). Both shells wire their sealer
     /// (the native `HUB_SEAL_KEY` sealer; the Worker's `HUB_SEAL_KEY` binding).
-    pub sealer: Option<Arc<dyn crate::auth::seal::SecretSealer>>,
+    pub sealer: Option<Arc<dyn aos_hub_model::auth::seal::SecretSealer>>,
     /// Runtime provider for immutable secret-version references.
-    pub secret_versions: Option<Arc<dyn crate::secret_version::SecretVersionResolver>>,
+    pub secret_versions: Option<Arc<dyn aos_hub_model::secret_version::SecretVersionResolver>>,
     /// The authenticated-origin proxy-read fetcher
     /// ([`OriginFetch`](crate::fetch::OriginFetch)), used to stream a private
     /// external origin's bytes through the hub instead of `302`-redirecting the
@@ -2601,7 +1652,7 @@ macro_rules! reviewed_external_operation {
 /// The KV key a session resolution is cached under: `sess:` + the SHA-256 hex of
 /// the cookie secret (never the raw secret, which must not appear in a key).
 fn session_cache_key(secret: &str) -> String {
-    format!("sess:{}", crate::auth::token::sha256_hex(secret))
+    format!("sess:{}", aos_hub_model::auth::token::sha256_hex(secret))
 }
 
 /// The serializable projection of a [`ResolvedSession`](crate::web::session::ResolvedSession)
@@ -2623,7 +1674,8 @@ struct CachedSession {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PlannedConsumerCacheChange {
     request: pb::PlanCreateConsumerCacheChangesetRequest,
-    ready_routes: std::collections::BTreeMap<String, crate::db::ReadyRouteAdvertisementIdentity>,
+    ready_routes:
+        std::collections::BTreeMap<String, aos_hub_db::db::ReadyRouteAdvertisementIdentity>,
 }
 
 impl CachedSession {
@@ -2649,7 +1701,7 @@ impl CachedSession {
         }
         Some(crate::web::session::ResolvedSession {
             secret: secret.to_string(),
-            auth: crate::db::SessionAuth {
+            auth: aos_hub_db::db::SessionAuth {
                 user_id: self.user_id,
                 auth_level: self.auth_level,
                 last_authenticated_at: self.last_authenticated_at,
@@ -2747,15 +1799,6 @@ impl RpcService {
     );
 }
 
-
-
-
-
-
-
-
-
-
 fn control_confirmation_hash(value: &impl serde::Serialize) -> Result<String, RpcError> {
     Ok(hex::encode(Sha256::digest(
         serde_json::to_vec(value).map_err(RpcError::internal)?,
@@ -2841,8 +1884,8 @@ fn validate_signing_usage_identity(
 
 /// Requires a signing key to be owned by either the consumer or its infrastructure owner.
 fn validate_signing_key_consumer_compatibility(
-    key: &crate::db::SigningKeyRecord,
-    consumer: &crate::db::SigningKeyConsumerRecord,
+    key: &aos_hub_db::db::SigningKeyRecord,
+    consumer: &aos_hub_db::db::SigningKeyConsumerRecord,
 ) -> Result<(), RpcError> {
     if key.scope_key == consumer.scope_key || key.scope_key == consumer.owner_scope_key {
         Ok(())
@@ -2853,7 +1896,7 @@ fn validate_signing_key_consumer_compatibility(
     }
 }
 
-fn signing_key_message(record: crate::db::SigningKeyRecord) -> pb::SigningKey {
+fn signing_key_message(record: aos_hub_db::db::SigningKeyRecord) -> pb::SigningKey {
     pb::SigningKey {
         stable_id: record.stable_id,
         scope_key: record.scope_key,
@@ -2874,7 +1917,7 @@ fn signing_key_message(record: crate::db::SigningKeyRecord) -> pb::SigningKey {
     }
 }
 
-fn signing_key_usage_message(record: crate::db::SigningKeyUsageRecord) -> pb::SigningKeyUsage {
+fn signing_key_usage_message(record: aos_hub_db::db::SigningKeyUsageRecord) -> pb::SigningKeyUsage {
     pb::SigningKeyUsage {
         stable_id: record.stable_id,
         consumer_stable_id: record.consumer_stable_id,
@@ -2949,15 +1992,15 @@ fn require_exact_identity_version(
 }
 
 fn canonical_identity_domain(value: &str) -> Result<String, RpcError> {
-    crate::db::canonical_delivery_hostname(value.trim())
+    aos_hub_db::db::canonical_delivery_hostname(value.trim())
         .map_err(|error| RpcError::invalid(format!("invalid organization domain: {error:#}")))
 }
 
 fn idp_record_from_plan(
     input: &IdentityProviderSetPlanInput,
     resource_version: i64,
-) -> crate::db::IdpConfigRecord {
-    crate::db::IdpConfigRecord {
+) -> aos_hub_db::db::IdpConfigRecord {
+    aos_hub_db::db::IdpConfigRecord {
         org_id: input.org_id,
         issuer: input.issuer.clone(),
         authorization_endpoint: input.authorization_endpoint.clone(),
@@ -3010,7 +2053,7 @@ fn validate_registry_trust_keys(keys: &[String]) -> Result<(), RpcError> {
 
 /// Verifies completion names every confirmed durable part and exactly the declared bytes.
 fn multipart_completion_matches(
-    durable: &[crate::db::WriteTicketPartRecord],
+    durable: &[aos_hub_db::db::WriteTicketPartRecord],
     requested: &[crate::surface_write::PartTag],
     declared_size: i64,
 ) -> bool {
@@ -3045,7 +2088,7 @@ fn multipart_completion_matches(
 /// Verifies that placement evidence is the exact deterministic multipart result.
 fn cache_multipart_evidence_matches(
     evidence: &crate::fetch::SurfaceObjectEvidence,
-    ticket: &crate::db::CacheWriteTicketRecord,
+    ticket: &aos_hub_db::db::CacheWriteTicketRecord,
     expected_etag: &str,
 ) -> bool {
     let observed_etag = evidence
@@ -3062,8 +2105,8 @@ fn cache_multipart_evidence_matches(
 
 fn write_object_identity(
     evidence: crate::fetch::SurfaceObjectEvidence,
-) -> crate::db::WriteObjectIdentity {
-    crate::db::WriteObjectIdentity {
+) -> aos_hub_db::db::WriteObjectIdentity {
+    aos_hub_db::db::WriteObjectIdentity {
         size: evidence.size,
         sha256: hex::encode(evidence.sha256),
         strong_etag: evidence.strong_etag,
@@ -3341,7 +2384,7 @@ mod publication_upload_limit_tests {
 }
 
 #[cfg(test)]
-#[path = "service_tests/mod.rs"]
+#[path = "service/tests/mod.rs"]
 pub(crate) mod cache_upload_tests;
 
 mod operations;

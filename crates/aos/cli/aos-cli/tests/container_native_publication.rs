@@ -835,7 +835,7 @@ fn publish_signed_registry_surface(
     };
     fs::create_dir_all(surface)?;
     for file in
-        aos_package::registry::static_upload::collect_static_origin_files(authoring_registry)?
+        aos_registry_authoring::registry::static_upload::collect_static_origin_files(authoring_registry)?
     {
         let destination = surface.join(file.relative_path);
         fs::create_dir_all(destination.parent().context("publication object parent")?)?;

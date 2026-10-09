@@ -7,9 +7,7 @@
 //! `aos_registry_client::registry::tuf`, and `crate::registry::nixcache`.
 
 use crate::CacheUploadAuthArgs;
-use aos_registry_client::config::ApmConfig;
-use aos_registry_client::registry::channel::PartitionMap;
-use aos_registry_client::registry::membership::{CacheMembership, HeadMembership};
+use crate::registry::membership::{CacheMembership, HeadMembership};
 use crate::registry::{keys, nixcache, objectstore, tuf};
 use crate::registry_ops::channels::{
     channel_advance_dir, channel_init_dir, select_partitions_for_advance,
@@ -19,7 +17,7 @@ use crate::registry_ops::config::{
     resolve_effective_release_cache_url, resolve_registry_name, resolve_upload_urls,
     warn_on_cache_gc,
 };
-use crate::registry_ops::git::{git, git2_identity, git_try};
+use crate::registry_ops::git::{git, git_try, git2_identity};
 use crate::registry_ops::publish::{
     publish_to_registry_directory, validate_release_publish_metadata,
     validate_release_publish_signing_identity,
@@ -31,15 +29,17 @@ use crate::registry_ops::signing::{
 use crate::registry_ops::store_paths::{StoreQueries, validate_store_path_release_policy};
 use crate::registry_ops::tags::release_commit;
 use crate::registry_ops::trust::derive_trust_key;
-use aos_registry_client::security::{key_fingerprint, parse_signing_key};
 use anyhow::{Context, Result, bail};
-use aos_nix_cache::AuthOptions;
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_nix_cache::AuthOptions;
 use aos_oci_types::limits::MAX_JSON_BYTES;
 use aos_oci_types::{
     CONTAINER_RELEASE_SIDECAR_PATH, ContainerRelease, ContainerSignatureInput,
     definition_attribute_matches_image,
 };
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::registry::channel::PartitionMap;
+use aos_registry_client::security::{key_fingerprint, parse_signing_key};
 use sha2::{Digest as _, Sha256};
 use std::collections::HashSet;
 use std::fs;
@@ -1280,7 +1280,7 @@ fn resolve_tuf_metadata_signing_keys(
                  omit --rotate-from when not rotating the root key"
             );
         }
-        let previous_key_id = tuf::worktree_root_role_keys(dir)?
+        let previous_key_id = aos_registry_client::registry::tuf::worktree_root_role_keys(dir)?
             .into_iter()
             .find(|(_, public)| *public == rotate_public)
             .map(|(key_id, _)| key_id)
@@ -1334,7 +1334,7 @@ fn resolve_tuf_metadata_signing_keys(
         });
         owners.push(resolved);
     }
-    for key_id in tuf::worktree_root_role_key_ids(dir)? {
+    for key_id in aos_registry_client::registry::tuf::worktree_root_role_key_ids(dir)? {
         if active_key_ids.contains(&key_id) || metadata_keys.iter().any(|key| key.key_id == key_id)
         {
             continue;

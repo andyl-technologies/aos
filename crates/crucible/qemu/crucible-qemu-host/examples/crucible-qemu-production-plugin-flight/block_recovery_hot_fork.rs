@@ -163,7 +163,7 @@ pub(super) fn run(
     })
 }
 
-fn await_recovery_readiness(node: &mut crucible_qemu::QemuNode) -> Result<u64, Box<dyn Error>> {
+fn await_recovery_readiness(node: &mut crucible_qemu_host::QemuNode) -> Result<u64, Box<dyn Error>> {
     let readiness_slice_ticks = virtual_nanos_to_ticks(READINESS_SLICE_NANOS)?;
     let mut console = Vec::new();
     let mut last_reached = node.now().ticks;
@@ -265,7 +265,7 @@ struct PrimaryEvidence {
 }
 
 fn exercise_recovery_and_prepare_hot_fork(
-    node: &mut crucible_qemu::QemuNode,
+    node: &mut crucible_qemu_host::QemuNode,
     recovery_deadline_tick: u64,
 ) -> Result<PrimaryEvidence, Box<dyn Error>> {
     let mut console = Vec::new();
@@ -357,7 +357,7 @@ fn exercise_recovery_and_prepare_hot_fork(
 
 fn virtual_nanos_to_ticks(nanos: u64) -> Result<u64, Box<dyn Error>> {
     nanos
-        .checked_mul(crucible::SIM_TICKS_PER_NS)
+        .checked_mul(crucible_engine::SIM_TICKS_PER_NS)
         .ok_or_else(|| "block recovery virtual-time conversion overflowed".into())
 }
 
@@ -380,7 +380,7 @@ pub(super) fn recovery_transition() -> ResolvedBlockControllerTransition {
 
 fn append_console_bytes(
     console: &mut Vec<u8>,
-    events: &[crucible::ObservableEvent],
+    events: &[crucible_engine::ObservableEvent],
 ) -> Result<(), Box<dyn Error>> {
     for bytes in events.iter().filter_map(|event| match event.payload() {
         ObservableEventPayload::ConsoleOutput { bytes, .. } => Some(bytes.as_slice()),

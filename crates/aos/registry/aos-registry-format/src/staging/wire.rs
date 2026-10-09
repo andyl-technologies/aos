@@ -12,7 +12,7 @@
 
 use std::io::Read as _;
 
-use anyhow::{ensure, Context as _, Result};
+use anyhow::{Context as _, Result, ensure};
 
 use super::StageRevision;
 
@@ -171,7 +171,7 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     use super::*;
-    use crate::staging::{inventory_digest, StageObject, StagePointer, STAGE_SCHEMA};
+    use crate::staging::{STAGE_SCHEMA, StageObject, StagePointer, inventory_digest};
 
     fn revision(inventory: Vec<StageObject>, publication: Vec<StagePointer>) -> StageRevision {
         StageRevision {

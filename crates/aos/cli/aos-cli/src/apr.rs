@@ -3,5 +3,5 @@
 /// Runs the `apr` CLI.
 #[tokio::main]
 async fn main() {
-    aos::entry::apr_main().await;
+    aos_cli::entry::apr_main().await;
 }

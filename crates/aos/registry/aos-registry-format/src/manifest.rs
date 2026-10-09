@@ -5,7 +5,7 @@
 //! `[[versions]]`, and each version's per-platform artifacts and pre-compiled
 //! images. They carry no I/O and no dependency on the package manager itself,
 //! so they live in this wasm-clean surface crate (RFC-0004 Phase 5) and are
-//! shared by `aos-package` (which re-exports them and provides the directory
+//! shared by `aos-registry-client` (which provides the directory
 //! parsers), the registry hub's `Database`/indexer, and the Cloudflare Worker.
 //!
 //! ```toml
@@ -1143,9 +1143,9 @@ tools = {store_path = "/aos/store/server-tools"}
 // ---------------------------------------------------------------------------
 //
 // These pure serde structs and their inherent helpers moved here from
-// `aos-package`'s `types` module (RFC-0004 Phase 5) so the wasm-clean indexer
+// the former package monolith (RFC-0004 Phase 5) so the wasm-clean indexer
 // and the Cloudflare Worker can deserialize the RFC-0001 package metadata
-// that the producer publishes. `aos-package` re-exports the shared types.
+// that the producer publishes. Native readers and producers import these shared types directly.
 
 /// A pre-compiled image format entry within a sysroot package version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1219,7 +1219,7 @@ use crate::stack::{self, StackNode};
 /// the unified `[caches]` cache stack (RFC-0004) — the single source of truth
 /// for which binary caches the registry advertises to consumers. A pure,
 /// deserialize-only schema with no I/O, so the wasm-clean indexer and the
-/// Cloudflare Worker share it with `aos-package`'s native git-CLI path (which
+/// Cloudflare Worker share it with `aos-registry-client`'s native git path (which
 /// re-exports it).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryRootConfig {
@@ -1415,7 +1415,7 @@ pub struct RevokedKey {
 ///
 /// A pure, serde-only schema (no I/O, no key parsing) so the wasm-clean
 /// indexer can deserialize a committed roster and extend its trusted set;
-/// `aos-package` re-exports this and layers the native load/validate/pin
+/// `aos-registry-client` layers the native load/validate/pin
 /// helpers on top.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeysToml {

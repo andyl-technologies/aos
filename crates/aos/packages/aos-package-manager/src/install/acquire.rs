@@ -11,10 +11,10 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result, ensure};
 use aos_cli_ui::output::Printer;
 
-use aos_registry_client::config::ApmConfig;
-use aos_registry_client::registry::{RegistrySet, store_path_hash};
 use crate::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
 use aos_deployment::store::temp_roots::TemporaryRoots;
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::registry::{RegistrySet, store_path_hash};
 
 /// Resolves and imports signed package closures while retaining their inputs.
 ///
@@ -158,8 +158,9 @@ pub(crate) async fn acquire(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_registry_client::registry::tests::make_registry;
-    use crate::types::{NativeArtifactMeta, ProfileScope};
+    use aos_registry_client::registry::test_support::make_registry;
+    use aos_registry_client::types::ProfileScope;
+    use aos_registry_format::consumer::NativeArtifactMeta;
 
     fn config() -> ApmConfig {
         ApmConfig {
@@ -170,7 +171,8 @@ mod tests {
     }
 
     fn native_package() -> String {
-        let mut document: toml::Value = toml::from_str(aos_registry_client::registry::parse::ZLIB_TOML).unwrap();
+        let mut document: toml::Value =
+            toml::from_str(aos_registry_client::registry::parse::ZLIB_TOML).unwrap();
         let platform = document["versions"][0]["platforms"]["x86_64-linux"]
             .as_table_mut()
             .unwrap();

@@ -9,15 +9,14 @@ use aos_oci_types::{
     ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity, Descriptor, MediaType,
     NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest, to_canonical_json,
 };
-use aos_registry_client::registry::{
-    Registry, fetch, git, keys, objectstore, pack, static_upload, store_path_hash, tuf,
-};
+use aos_registry_authoring::registry::static_upload;
 use aos_registry_authoring::registry_ops::{
     ContainerReleaseAttachment, ReleaseTreeOptions, release_registry_tree,
-    resolve_mirrors_for_registry,
 };
+use aos_registry_client::registry::mirrors::resolve_mirrors_for_registry;
+use aos_registry_client::registry::{Registry, fetch, git, keys, objectstore, store_path_hash};
 use aos_registry_client::security::{verify_commit_signature, verify_tag_signature};
-use aos_package_manager::types::{CacheEntry, RegistryState, TrackingMode};
+use aos_registry_format::consumer::{CacheEntry, RegistryState, TrackingMode};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -123,11 +122,11 @@ fn publish_release(
 }
 
 fn commit_tuf_release_metadata(fixture: &RegistryFixture, version: &str) -> Result<String> {
-    let changed = tuf::write_release_metadata_worktree(
+    let changed = aos_registry_authoring::registry::tuf::write_release_metadata_worktree(
         fixture.source_path(),
         fixture.name(),
         &v(version),
-        &[tuf::MetadataSigningKey {
+        &[aos_registry_authoring::registry::tuf::MetadataSigningKey {
             key_id: "initial".into(),
             key_path: fixture.private_key_path().to_path_buf(),
             key: fixture.trusted_key().to_string(),
@@ -141,7 +140,12 @@ fn commit_tuf_release_metadata(fixture: &RegistryFixture, version: &str) -> Resu
 async fn publish_full_pack(fixture: &RegistryFixture, version: &str) -> Result<String> {
     let version_semver = semver::Version::parse(version)?;
     let tmp = tempfile::TempDir::new()?;
-    let pack_path = pack::full_pack(fixture.source_path(), version, tmp.path()).await?;
+    let pack_path = aos_registry_authoring::registry::pack::full_pack(
+        fixture.source_path(),
+        version,
+        tmp.path(),
+    )
+    .await?;
     let pack_name = pack_path
         .file_name()
         .and_then(|name| name.to_str())
@@ -178,7 +182,7 @@ async fn publish_delta_pack(
     let target_semver = semver::Version::parse(target)?;
     let base_semver = semver::Version::parse(base)?;
     let tmp = tempfile::TempDir::new()?;
-    let delta = pack::thin_delta(
+    let delta = aos_registry_authoring::registry::pack::thin_delta(
         fixture.source_path(),
         from_commit,
         to_commit,
@@ -187,7 +191,7 @@ async fn publish_delta_pack(
     )
     .await?;
     let artifact = if compressed {
-        pack::zstd_compress(&delta, None).await?
+        aos_registry_authoring::registry::pack::zstd_compress(&delta, None).await?
     } else {
         delta
     };
@@ -637,7 +641,10 @@ async fn release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer() ->
         .and_then(|rest| rest.split_once('-'))
         .map(|(hash, _)| hash)
         .context("fixture store path has a hash")?;
-    fs::write(uploaded.path().join(format!("{store_hash}.narinfo")), b"narinfo")?;
+    fs::write(
+        uploaded.path().join(format!("{store_hash}.narinfo")),
+        b"narinfo",
+    )?;
     let options = ReleaseTreeOptions {
         version: v("1.1.0"),
         signing_key: fixture.private_key_path().to_string_lossy().into_owned(),

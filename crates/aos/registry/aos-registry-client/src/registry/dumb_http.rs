@@ -51,8 +51,8 @@ use aos_cli_ui::output::TransferProgress;
 use futures_util::stream::{self, StreamExt};
 use sha2::{Digest, Sha256};
 
-use crate::registry::transport::join_cache_url;
 use crate::registry::repo;
+use crate::registry::transport::join_cache_url;
 use crate::registry::transport::{RegistryRead, RegistryTransport};
 
 /// Upper bound on objects fetched in a single sync, a backstop against a

@@ -4,8 +4,8 @@ use std::io::Read as _;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
-use aos_nix_cache::backend::{self, AuthOptions, CacheBackend};
 use aos_cli_ui::output::Printer;
+use aos_nix_cache::backend::{self, AuthOptions, CacheBackend};
 use sha2::{Digest as _, Sha256};
 
 use super::static_upload::{

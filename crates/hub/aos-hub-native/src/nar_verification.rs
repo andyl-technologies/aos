@@ -26,8 +26,7 @@ pub fn verify_narinfo_signature(narinfo: &str, trusted_keys: &[String]) -> Resul
         anyhow::bail!("cannot verify narinfo signature: trusted key set is empty");
     }
 
-    let info =
-        aos_nar::info::parse(narinfo).context("parsing narinfo for signature check")?;
+    let info = aos_nar::info::parse(narinfo).context("parsing narinfo for signature check")?;
     if info.signatures.is_empty() {
         anyhow::bail!("narinfo for {} carries no Sig", info.store_path);
     }
@@ -264,15 +263,13 @@ mod tests {
         secret.extend_from_slice(&key.to_bytes());
         secret.extend_from_slice(key.verifying_key().as_bytes());
         let secret = base64::engine::general_purpose::STANDARD.encode(secret);
-        let signer =
-            aos_nar::cache::NarInfoSigner::from_key_content(&format!("demo:{secret}"))
-                .expect("fixture signing key is valid");
+        let signer = aos_nar::cache::NarInfoSigner::from_key_content(&format!("demo:{secret}"))
+            .expect("fixture signing key is valid");
 
         let store_path = "/var/lib/store/abc123-pkg";
         let hash = format!("sha256:{}", hex::encode(Sha256::digest(nar_bytes)));
         let size = nar_bytes.len() as i64;
-        let fingerprint =
-            aos_nar::cache::NarInfoSigner::fingerprint(store_path, &hash, size, &[]);
+        let fingerprint = aos_nar::cache::NarInfoSigner::fingerprint(store_path, &hash, size, &[]);
         let signature = signer.sign(&fingerprint).expect("fixture signing succeeds");
         let narinfo = format!(
             "StorePath: {store_path}\nURL: nar/abc.nar\nCompression: none\n\

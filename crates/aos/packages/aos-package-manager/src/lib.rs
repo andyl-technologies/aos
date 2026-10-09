@@ -11,7 +11,7 @@
 //! and `aos-deployment` respectively. This crate owns package policy and its
 //! integration with image generations, credentials, and TPM attestation.
 //!
-//! [`types::ProfileScope`] distinguishes user paths from system generations.
+//! [`aos_registry_client::types::ProfileScope`] distinguishes user paths from system generations.
 //! [`install`], [`remove`], [`upgrade`], and [`rollback`] implement profile
 //! mutations; [`update`], [`query`], [`deps`], [`hold`], [`clean`], [`verify`],
 //! and [`source`] provide acquisition, discovery, and maintenance operations.
@@ -25,9 +25,8 @@ pub mod clean;
 use aos_registry_client::config;
 pub mod config_eval;
 pub mod config_trust;
+pub mod container_admission;
 mod container_environment;
-pub mod error;
-pub(crate) mod container_admission;
 mod container_runtime;
 pub(crate) mod credential;
 pub mod deployment;
@@ -36,15 +35,10 @@ pub mod desired;
 pub mod documentation;
 mod documentation_lsp;
 pub mod download;
+pub mod error;
 use aos_registry_client::dry_run;
 pub mod environment;
-/// Test-only helpers that shell out to the host `git` to set up fixtures; the
-/// production registry paths use libgit2 ([`registry::repo`],
-/// [`registry::porcelain`]) and never exec `git`.
-#[cfg(test)]
-pub(crate) mod gitcmd;
 pub mod hold;
-use aos_registry_client::hub_auth;
 pub mod images;
 pub mod install;
 
@@ -79,11 +73,9 @@ use aos_registry_format::platform;
 
 pub mod profile;
 use aos_registry_client::provenance;
-#[doc(hidden)]
-pub use provenance::{DSSE_SIGNATURE_NAMESPACE, ProvenanceSignature, ProvenanceSigner};
 pub mod query;
-use aos_registry_client::registry;
 use aos_registry_authoring::registry_ops;
+use aos_registry_client::registry;
 pub mod remove;
 pub mod resolve;
 pub mod rollback;
@@ -92,7 +84,6 @@ mod runtime_boundary;
 pub(crate) mod runtime_modules;
 use aos_registry_client::security;
 pub mod source;
-use aos_registry_client::sshkey;
 pub mod store;
 pub mod sysroot;
 pub mod sysroot_lock;
@@ -101,31 +92,14 @@ pub mod update;
 pub mod upgrade;
 pub mod verify;
 
-#[cfg(test)]
-pub(crate) mod testutil;
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Subcommand, ValueEnum};
 
-use crate::error::PackageError;
 use aos_cli_ui::output::{OutputMode, Printer};
 use sysroot::SystemTransitionMode;
-#[cfg(test)]
-use types::ProfileScope;
-
-use types::{
-    RegistryUploadAuthConfig, validate_branch_name, validate_channel_name, validate_commit_hash,
-    validate_git_ref_name, validate_registry_name,
-};
-
-/// Returns the SHA-256 identity of a value in the canonical AOS JSON dialect.
-fn canonical_json_digest(value: &serde_json::Value) -> Result<String> {
-    let canonical = aos_core::json::canonical_json(value)?;
-    Ok(aos_core::Sha256Digest::of_bytes(canonical).to_string())
-}
 
 /// Environment-variable documentation appended to `apm`/`apr` long help.
 pub const ENVIRONMENT_HELP: &str = "Environment:
@@ -1192,7 +1166,7 @@ pub enum ApmRegistryCommand {
     },
 }
 
-use aos_registry_authoring::{RegistryCommand, RegistryStageCommand, BranchCommand, CacheCommand, ChangeCommand, ChannelCommand, KeysCommand, OriginCommand, StoreCommand, TrustCommand};
+use aos_registry_authoring::{RegistryCommand, TrustCommand};
 
 /// Validates transition flags before loading package-manager state.
 ///
@@ -1516,7 +1490,7 @@ async fn apply_runtime_worktree(
 /// Main entry point for package-consumer and private runtime operations.
 ///
 /// Loads the [`config::ApmConfig`] for the scope implied by the command
-/// (`--system` selects [`types::ProfileScope::System`] on machines and aliases the
+/// (`--system` selects [`aos_registry_client::types::ProfileScope::System`] on machines and aliases the
 /// image's user profile in containers) and dispatches to the
 /// matching module. Private configuration evaluation, materialization,
 /// checked activation, and stage commands are dispatched before generic
@@ -2455,7 +2429,7 @@ fn load_package_attestation_catalog(
 }
 
 fn package_attestation_catalog_from_sources(
-    registry_packages: &[types::PackageMeta],
+    registry_packages: &[aos_registry_format::consumer::PackageMeta],
     embedded_packages: &[package_attestation::PackageMeasurementCatalogEntry],
     catalog_files: &[PathBuf],
 ) -> Result<Vec<package_attestation::PackageMeasurementCatalogEntry>> {
@@ -2631,7 +2605,10 @@ async fn run_apm_registry(
             name,
             keep_local,
             force,
-        } => aos_registry_authoring::registry_remove(config, name, *keep_local, *force, printer).await,
+        } => {
+            aos_registry_authoring::registry_remove(config, name, *keep_local, *force, printer)
+                .await
+        }
         ApmRegistryCommand::Enable { name } => {
             aos_registry_authoring::registry_set_enabled(config, name, true, printer).await
         }
@@ -2670,8 +2647,7 @@ pub async fn run_apr(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_registry_client::config::ApmConfig;
-    use aos_registry_client::types::*;
+    use aos_registry_format::consumer::{AttestationMeta, PACKAGE_META_FORMAT, PackageMeta};
     use tempfile::TempDir;
 
     #[test]
@@ -2734,8 +2710,6 @@ mod tests {
         }
     }
 
-
-
     fn preverified_generation_quote() -> (PreverifiedGenerationQuote, [u8; 32]) {
         (
             PreverifiedGenerationQuote {
@@ -2756,8 +2730,6 @@ mod tests {
         )
     }
 
-
-
     fn embedded_generation_quote(
         checker: &PreverifiedGenerationQuote,
         nonce: &[u8],
@@ -2774,8 +2746,6 @@ mod tests {
         })
     }
 
-
-
     #[test]
     fn generation_quote_adapter_rejects_tampered_embedded_quote() {
         let (checker, nonce) = preverified_generation_quote();
@@ -2788,8 +2758,6 @@ mod tests {
         assert!(attestation::QuoteChecker::check(&checker, &tampered, &nonce).is_err());
     }
 
-
-
     #[test]
     fn generation_quote_adapter_rejects_unrelated_bundle_and_nonce() {
         let (checker, nonce) = preverified_generation_quote();
@@ -2801,68 +2769,6 @@ mod tests {
         let exact = serde_json::to_vec(&embedded_generation_quote(&checker, &nonce)).unwrap();
         assert!(attestation::QuoteChecker::check(&checker, &exact, &[0x55; 32]).is_err());
     }
-
-
-
-    fn make_config(
-        tmp: &TempDir,
-        registries: Vec<(RegistryConfig, Option<types::RegistryState>)>,
-    ) -> ApmConfig {
-        let config_dir = tmp.path().join("config");
-        let registries_dir = config_dir.join("registries.d");
-        fs::create_dir_all(&registries_dir).unwrap();
-
-        for (reg_config, _) in &registries {
-            let content = format!(
-                "[registry]\nname = \"{}\"\nurl = \"{}\"\npriority = {}\n",
-                reg_config.name, reg_config.url, reg_config.priority,
-            );
-            fs::write(
-                registries_dir.join(format!("{}.toml", reg_config.name)),
-                &content,
-            )
-            .unwrap();
-        }
-
-        let profile_dir = tmp.path().join("profile");
-        fs::create_dir_all(profile_dir.join("meta")).unwrap();
-        fs::write(
-            profile_dir.join("state.json"),
-            r#"{"current_generation": 0, "next_generation": 1}"#,
-        )
-        .unwrap();
-
-        ApmConfig {
-            settings: ApmSettings::default(),
-            registries,
-            scope: ProfileScope::User,
-        }
-    }
-
-
-
-    fn reg_config(name: &str, priority: u32) -> RegistryConfig {
-        RegistryConfig {
-            name: name.into(),
-            url: format!("https://registry.example.com/{name}"),
-            priority,
-            enabled: true,
-            commit: None,
-            branch: None,
-            channel: None,
-            tag: None,
-            version: None,
-            pin: None,
-            max_staleness_seconds: None,
-            caches: Vec::new(),
-            cache: Default::default(),
-            upload_auth: None,
-            signing_keys: Default::default(),
-            signing: None,
-        }
-    }
-
-
 
     fn attested_package_meta(
         name: &str,
@@ -2907,8 +2813,6 @@ mod tests {
         }
     }
 
-
-
     fn write_catalog_file(
         path: &Path,
         name: &str,
@@ -2925,8 +2829,6 @@ mod tests {
         fs::write(path, serde_json::to_vec(&content).expect("catalog JSON"))
             .expect("write catalog");
     }
-
-
 
     #[test]
     fn query_commands_honor_system_flag() {
@@ -3029,8 +2931,6 @@ mod tests {
         );
     }
 
-
-
     #[tokio::test]
     async fn attest_quote_dispatches_before_registry_configuration() {
         let temporary = TempDir::new().expect("private quote test directory");
@@ -3050,8 +2950,6 @@ mod tests {
         assert!(format!("{error:#}").contains("requires --nonce or --nonce-file"));
         assert!(!output_dir.exists());
     }
-
-
 
     #[tokio::test]
     async fn attest_enroll_dispatches_before_registry_configuration() {
@@ -3076,8 +2974,6 @@ mod tests {
         assert!(!catalog_file.exists());
     }
 
-
-
     #[test]
     fn attest_nonce_reader_accepts_inline_or_file() {
         assert_eq!(
@@ -3098,8 +2994,6 @@ mod tests {
                 .unwrap_err();
         assert!(format!("{conflict:#}").contains("either --nonce or --nonce-file"));
     }
-
-
 
     #[test]
     fn attest_verify_measurement_args_require_one_source() {
@@ -3137,8 +3031,6 @@ mod tests {
         assert!(format!("{stray_trust:#}").contains("--quote-identity-file"));
     }
 
-
-
     #[test]
     fn package_attestation_catalog_file_parses_entries() {
         let tmp = TempDir::new().expect("tempdir");
@@ -3155,8 +3047,6 @@ mod tests {
         assert_eq!(entries[0].name, "web");
         assert_eq!(entries[0].version, "1.0");
     }
-
-
 
     #[test]
     fn package_attestation_catalog_sources_merge_registry_embedded_and_files() {
@@ -3192,8 +3082,6 @@ mod tests {
         assert_eq!(catalog[2].measurement, web_measurement);
     }
 
-
-
     #[test]
     fn package_attestation_catalog_sources_reject_conflicting_explicit_file() {
         let tmp = TempDir::new().expect("tempdir");
@@ -3212,8 +3100,6 @@ mod tests {
         assert!(format!("{err:#}").contains("conflicting golden measurements"));
     }
 
-
-
     #[test]
     fn attestation_baseline_file_requires_bytes_and_trims_line_endings() {
         let tmp = TempDir::new().unwrap();
@@ -3229,8 +3115,6 @@ mod tests {
         assert!(read_attestation_baseline(&baseline).is_err());
     }
 
-
-
     #[test]
     fn attestation_result_atomically_replaces_complete_json() {
         let tmp = TempDir::new().unwrap();
@@ -3244,8 +3128,6 @@ mod tests {
             "{\"verified\":true}\n"
         );
     }
-
-
 
     #[test]
     fn attestation_result_invalidation_removes_stale_success() {

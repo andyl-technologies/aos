@@ -1,13 +1,14 @@
 //! HTTP cache reachability validation and removal of missing catalog entries.
 
-use aos_registry_client::config::ApmConfig;
-use aos_registry_client::registry::store::{NarBytes, StoreMap};
-use crate::registry_ops::config::{registry_dir, resolve_mirrors};
+use crate::registry_ops::config::registry_dir;
 use crate::registry_ops::store_paths::extract_hash;
-use aos_registry_client::types::{CacheEntry, validate_package_name};
 use anyhow::{Context, Result, bail};
-use aos_nar::info as narinfo;
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_nar::info as narinfo;
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::registry::mirrors::resolve_mirrors;
+use aos_registry_client::registry::store::{NarBytes, StoreMap};
+use aos_registry_format::consumer::{CacheEntry, validate_package_name};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
@@ -601,8 +602,10 @@ async fn validate_cache_entry(
     let mut details = Vec::new();
     for cache in mirrors {
         let base = cache.url.trim_end_matches('/');
-        let narinfo_url =
-            aos_registry_client::registry::transport::join_cache_url(base, &format!("{}.narinfo", entry.store_hash));
+        let narinfo_url = aos_registry_client::registry::transport::join_cache_url(
+            base,
+            &format!("{}.narinfo", entry.store_hash),
+        );
 
         let narinfo = match client.get(&narinfo_url).send().await {
             Ok(response) if response.status().is_success() => match response.text().await {

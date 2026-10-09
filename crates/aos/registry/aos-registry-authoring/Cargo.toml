@@ -43,4 +43,5 @@ flate2 = { workspace = true }
 rustix = { workspace = true, features = ["event", "net", "process"] }
 
 [dev-dependencies]
+aos-registry-client = { workspace = true, features = ["test-support"] }
 crc32fast = { workspace = true }

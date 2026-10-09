@@ -6,7 +6,7 @@
 //! roster-signed state. So a web edit cannot be applied directly: instead the
 //! hub commits it to `refs/hub/changes/<change_id>`, signed by the
 //! per-instance **draft-signing key**
-//! ([`crate::db::Database::get_or_create_draft_signing_key`]). That key is
+//! ([`aos_hub_db::db::Database::get_or_create_draft_signing_key`]). That key is
 //! deliberately *not* in any roster, so the draft never verifies for consumers
 //! — clients follow only signed tags and partitions, never branches. Promotion
 //! is a maintainer running `apr change merge <change_id>`, which fetches the
@@ -44,12 +44,12 @@
 
 use anyhow::{bail, Context, Result};
 
-use crate::auth::seal::SecretSealer;
+use aos_hub_model::auth::seal::SecretSealer;
 use crate::config::ChangeId;
-use crate::db::{Database, RegistryRecord};
 use crate::fetch::SurfaceFetch;
 use crate::git::{ObjectReader, CHANGE_ID_TRAILER};
 use crate::surface_write::SurfaceWrite;
+use aos_hub_db::db::{Database, RegistryRecord};
 
 use aos_registry_format::object::{
     decode_loose, encode_loose, encode_tree, hash_object, tree_map, ObjectKind, Oid, TreeEntry,

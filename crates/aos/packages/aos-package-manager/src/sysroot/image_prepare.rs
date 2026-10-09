@@ -8,13 +8,14 @@
 use anyhow::{Context as _, Result, ensure};
 use aos_cli_ui::output::Printer;
 
-use aos_registry_client::config::ApmConfig;
 use crate::environment::RuntimeRequirement;
 use crate::profile::Profile;
-use aos_registry_client::registry::RegistrySet;
 use crate::resolve::{ResolvedClosure, resolve_multiple};
-use crate::types::{ImageGeneration, ProfileScope};
+use crate::types::ImageGeneration;
 use crate::{AbilityCancellationGuard, ImageCommand, PackageCommand};
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::registry::RegistrySet;
+use aos_registry_client::types::ProfileScope;
 
 /// Selects the checks applied before candidate image staging.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

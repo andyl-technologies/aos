@@ -923,6 +923,7 @@ fn discover_production_sources(root: &Path) -> Result<Vec<(String, String)>, Con
     let crates_root = root.join("crates");
     let mut pending = vec![
         crates_root,
+        root.join("api"),
         root.join("modules"),
         root.join("pkgs"),
         root.join("systems"),
@@ -1671,7 +1672,7 @@ mod tests {
         let duplicate = vec![descriptor[0].clone(), descriptor[0].clone()];
         assert!(!validate_descriptor_coverage(&methods, &duplicate).is_empty());
         assert!(api_methods_from_generated_descriptors(&[
-            aos_proto_types::ConnectMethodDescriptor {
+            aos_hub_api::ConnectMethodDescriptor {
                 path: "/aos.hub.v1.InstanceService/GetBranding",
                 service: "InstanceService",
                 method: "GetBranding",
@@ -1679,7 +1680,7 @@ mod tests {
                 output_type: ".aos.hub.v1.BrandingResponse",
                 input_fields: &["instance_id"],
             },
-            aos_proto_types::ConnectMethodDescriptor {
+            aos_hub_api::ConnectMethodDescriptor {
                 path: "/aos.hub.v1.InstanceService/GetBranding",
                 service: "InstanceService",
                 method: "GetBranding",

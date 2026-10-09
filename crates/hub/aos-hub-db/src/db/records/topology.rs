@@ -996,7 +996,10 @@ impl SurfacePlacementCreateFailure {
     }
 
     /// Builds a classified failure without backend error detail.
-    pub(in crate::db) fn new(kind: SurfacePlacementCreateFailureKind, message: impl Into<String>) -> Self {
+    pub(in crate::db) fn new(
+        kind: SurfacePlacementCreateFailureKind,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             kind,
             message: message.into(),

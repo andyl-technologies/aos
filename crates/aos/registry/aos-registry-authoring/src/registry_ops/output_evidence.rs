@@ -16,7 +16,7 @@ use super::provenance::{
 };
 use super::store_paths::{StoreQueries, first_letter};
 use aos_registry_client::provenance::{ProvenanceSigner, sign_statement_dsse_jsonl_external};
-use aos_registry_client::types::{AttestationMeta, NativeArtifactMeta};
+use aos_registry_format::consumer::{AttestationMeta, NativeArtifactMeta};
 
 /// Updates exact output facts without copying another output's authority.
 ///
@@ -100,7 +100,7 @@ pub(super) fn record_output_facts(
             entry
                 .as_table_mut()
                 .context("platform metadata is not a table")?,
-            aos_registry_client::types::FEATURE_ATTESTATION_V1,
+            aos_registry_format::consumer::FEATURE_ATTESTATION_V1,
         )?;
     }
     Ok(toml::to_string_pretty(&document)?)
@@ -305,13 +305,14 @@ store_path = "/nix/store/22222222222222222222222222222222-example-tools"
                 Some(&attestation),
             )
             .unwrap();
-            let meta = aos_registry_client::registry::parse::parse_package_toml(&encoded, "x86_64-linux")
-                .unwrap()
-                .unwrap();
-            aos_registry_client::types::validate_supported_package_meta(&meta).unwrap();
+            let meta =
+                aos_registry_client::registry::parse::parse_package_toml(&encoded, "x86_64-linux")
+                    .unwrap()
+                    .unwrap();
+            aos_registry_format::consumer::validate_supported_package_meta(&meta).unwrap();
             let expected = vec![
-                aos_registry_client::types::FEATURE_ATTESTATION_V1.to_string(),
-                aos_registry_client::types::FEATURE_NATIVE_PACKAGE_MODULES_V1.to_string(),
+                aos_registry_format::consumer::FEATURE_ATTESTATION_V1.to_string(),
+                aos_registry_format::consumer::FEATURE_NATIVE_PACKAGE_MODULES_V1.to_string(),
             ];
             assert_eq!(meta.requires_features, expected);
             let parsed = parse_package_file(&encoded).unwrap();
@@ -530,7 +531,8 @@ store_path = "/nix/store/22222222222222222222222222222222-example-tools"
                 fs::read_to_string(directory.path().join(evidence.provenance.as_ref().unwrap()))
                     .unwrap();
             let (statement, key) =
-                aos_registry_client::provenance::verify_statement_dsse_jsonl(&jsonl, &trusted).unwrap();
+                aos_registry_client::provenance::verify_statement_dsse_jsonl(&jsonl, &trusted)
+                    .unwrap();
             assert_eq!(key, "builder");
             assert_eq!(statement["subject"][0]["name"], *path);
             assert_eq!(

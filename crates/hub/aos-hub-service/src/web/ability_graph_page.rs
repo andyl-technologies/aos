@@ -4,9 +4,9 @@ use super::browse_pages::{registry_crumbs, state_line};
 use super::console_render::{page_with_session, urlencode, SessionIndicator};
 use super::release_browse::ReleaseContext;
 use super::render::escape;
-use crate::clock::Instant;
-use crate::db::{IndexStatus, RegistryRecord};
 use anyhow::Result;
+use aos_hub_db::db::{IndexStatus, RegistryRecord};
+use aos_hub_model::clock::Instant;
 use aos_module_docs::runtime::deployment::NativeReleaseGraph;
 use std::fmt::Write as _;
 

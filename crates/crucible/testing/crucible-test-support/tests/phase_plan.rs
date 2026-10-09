@@ -8,7 +8,7 @@ mod workspace;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crucible_test_support::phase_plan::{
     ADVANCED_FEATURE_TASK_ORDER, AdvancedFeatureRung, AdvancedFeatureScheduleFailureKind,
@@ -147,7 +147,7 @@ fn sim_double_is_available_before_dependent_gate_occurrences() -> Result<(), Box
 
     assert_eq!(SIM_DOUBLE_AVAILABLE_PHASE, PhasePlanPhase::Phase1);
     assert!(default_checks.contains("simDouble = import ./phase1-sim-double.nix"));
-    assert!(sim_double_check.contains("Completed by `crucible::SimDouble`"));
+    assert!(sim_double_check.contains("Completed by `crucible_engine::SimDouble`"));
 
     let phase1_dependencies: BTreeSet<&str> = phase_gate_order()
         .iter()

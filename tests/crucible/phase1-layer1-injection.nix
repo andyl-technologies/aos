@@ -158,7 +158,7 @@
       }
       {
         label = "crucible-protocol layer1 target implemented";
-        needle = "package: \"crucible-protocol\",\n        test_target: \"gate_layer1_injection\",\n        required_features: &[],";
+        needle = "package: \"crucible-qemu-protocol\",\n        test_target: \"gate_layer1_injection\",\n        required_features: &[],";
       }
     ]
     ++ failuresFor "crates/crucible/testing/crucible-test-support/src/lib.rs" gateCatalog [

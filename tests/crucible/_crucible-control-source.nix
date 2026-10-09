@@ -21,6 +21,8 @@
       (api + "/src/wire_model.rs")
       (server + "/src/in_process.rs")
     ];
+    lifecycle_values = [(api + "/src/lifecycle.rs")];
+    streaming_values = [(api + "/src/streaming.rs")];
     lifecycle = [
       (api + "/src/lifecycle.rs")
       (server + "/src/lifecycle.rs")

@@ -24,8 +24,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::db::{Database, IndexStatus, RegistryRecord};
 use crate::kv::KvStore;
+use aos_hub_db::db::{Database, IndexStatus, RegistryRecord};
 
 /// The KV key the directory projection is stored under.
 pub const DIRECTORY_KEY: &str = "dir:registries";
@@ -172,8 +172,8 @@ pub async fn read(kv: &dyn KvStore) -> Result<Option<Vec<DirectoryEntry>>> {
 #[cfg(test)]
 mod tests {
     use super::{read, rebuild};
-    use crate::db::Database;
     use crate::kv::InMemoryKv;
+    use aos_hub_db::db::Database;
 
     #[tokio::test]
     async fn rebuild_then_read_lists_public_registries() {

@@ -12,7 +12,7 @@ impl RpcService {
         platform: &str,
     ) -> Result<
         (
-            crate::db::NativeDocumentationLocator,
+            aos_hub_db::db::NativeDocumentationLocator,
             aos_module_docs::runtime::deployment::ReleasedReference,
         ),
         RpcError,
@@ -42,7 +42,7 @@ impl RpcService {
                 continue;
             };
             let fetch =
-                self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry_id));
+                self.topology_surface_fetcher(aos_hub_db::db::SurfaceTarget::Registry(registry_id));
             let (bytes, _) =
                 crate::indexer::native_documentation::fetch_native_documentation_content(
                     fetch.as_ref(),

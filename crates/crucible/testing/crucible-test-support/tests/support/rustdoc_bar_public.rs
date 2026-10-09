@@ -1,7 +1,6 @@
 //! Shared support for `rustdoc_bar_public`.
 
-#[path = "workspace.rs"]
-mod workspace;
+use crate::workspace;
 
 use super::*;
 

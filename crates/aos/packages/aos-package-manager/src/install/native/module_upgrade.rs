@@ -8,12 +8,11 @@ use std::collections::{BTreeSet, HashSet};
 use anyhow::{Context, Result, ensure};
 
 use super::{Prepared, discover_modules, packaged_path, prepare};
-use aos_registry_client::config::ApmConfig;
-use aos_deployment_format::input::EvaluationInput;
 use crate::profile::Profile;
+use aos_deployment_format::inventory::InstalledPackageRecord;
+use aos_registry_client::config::ApmConfig;
 use aos_registry_client::registry::RegistrySet;
-use aos_deployment_format::inventory::{InstalledPackageRecord};
-use crate::types::{PackageMeta};
+use aos_registry_format::consumer::PackageMeta;
 
 /// Discovers trusted release alternatives for selected retained interface owners.
 ///
@@ -186,7 +185,9 @@ fn same_lock(
     previous: &Option<aos_deployment_format::resolution_lock::ResolutionLock>,
     next: &Option<aos_deployment_format::resolution_lock::ResolutionLock>,
 ) -> Result<bool> {
-    fn canonical(lock: &Option<aos_deployment_format::resolution_lock::ResolutionLock>) -> Result<Vec<u8>> {
+    fn canonical(
+        lock: &Option<aos_deployment_format::resolution_lock::ResolutionLock>,
+    ) -> Result<Vec<u8>> {
         let mut lock = lock.clone();
         if let Some(lock) = &mut lock {
             let mut edges = lock
@@ -209,7 +210,7 @@ mod tests {
     use super::has_refreshable_ranges;
     use aos_deployment_format::model::{Artifact, ModuleDependency, ModuleSource};
     use aos_deployment_format::resolution_lock::LockedEdge;
-use aos_deployment_format::resolution_lock::ResolutionLock;
+    use aos_deployment_format::resolution_lock::ResolutionLock;
 
     #[test]
     fn exact_only_or_unreachable_ranges_skip_upgrade_evaluation() {

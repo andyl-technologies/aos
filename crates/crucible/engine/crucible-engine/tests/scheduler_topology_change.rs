@@ -645,7 +645,7 @@ fn base_scenario(
     )
 }
 
-fn drive_one_quantum(scheduler: &mut SingleScheduler) -> crucible::QuantumOutcome {
+fn drive_one_quantum(scheduler: &mut SingleScheduler) -> crucible_engine::QuantumOutcome {
     scheduler
         .drive_quantum(QuantumRequest {
             configuration: scheduler.configuration().clone(),

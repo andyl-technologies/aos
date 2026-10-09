@@ -25,16 +25,10 @@
 //! from [`crate::web::render`] and [`crate::web::console_render`] so the browse
 //! surface, the producer console, and the worker render byte-identically.
 
-use crate::clock::Instant;
+use aos_hub_model::clock::Instant;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use crate::db::{
-    ChannelSummary, IndexStatus, IndexedSystemImage, PackageDetail, PackageRow, RegistryRecord,
-    ReleaseRow,
-};
-#[cfg(test)]
-use crate::db::{PlatformDetail, VersionDetail};
 use crate::stack::StackNode;
 use crate::web::console_render::{
     ago, live_table, page_with_session, table_raw_headers, urlencode, Pager, SessionIndicator,
@@ -45,6 +39,12 @@ use crate::web::release_browse::ReleaseContext;
 use crate::web::render::{
     escape, hash_value, hash_value_link, human_size, key_fingerprint, table, trust_key_value,
 };
+use aos_hub_db::db::{
+    ChannelSummary, IndexStatus, IndexedSystemImage, PackageDetail, PackageRow, RegistryRecord,
+    ReleaseRow,
+};
+#[cfg(test)]
+use aos_hub_db::db::{PlatformDetail, VersionDetail};
 use aos_registry_format::manifest::{ImageCompression, ImageTarget};
 
 /// Glyph palette for the partition grid: one glyph per release, assigned
@@ -1561,9 +1561,9 @@ fn release_glyphs(channel: &ChannelSummary) -> (Vec<String>, BTreeMap<String, us
 /// and the substituter setup snippet. No-JS, index-data only.
 #[allow(clippy::too_many_arguments)]
 pub fn cache_home(
-    cache: &crate::db::BinaryCache,
-    usage: &crate::db::CacheUsage,
-    policy: Option<&crate::db::CacheGcPolicyRecord>,
+    cache: &aos_hub_db::db::BinaryCache,
+    usage: &aos_hub_db::db::CacheUsage,
+    policy: Option<&aos_hub_db::db::CacheGcPolicyRecord>,
     subscription_count: usize,
     root_count: usize,
     external_url: &str,
@@ -1648,8 +1648,8 @@ pub fn cache_home(
 
 /// A managed cache's object list, with a server-side search box (`?q=`).
 pub fn cache_objects(
-    cache: &crate::db::BinaryCache,
-    objects: &[crate::db::CacheObjectRecord],
+    cache: &aos_hub_db::db::BinaryCache,
+    objects: &[aos_hub_db::db::CacheObjectRecord],
     query: Option<&str>,
     started: Instant,
     session: &SessionIndicator,
@@ -1699,8 +1699,8 @@ pub fn cache_objects(
 
 /// One cache object's narinfo metadata and its immediate references.
 pub fn cache_object(
-    cache: &crate::db::BinaryCache,
-    object: &crate::db::CacheObjectRecord,
+    cache: &aos_hub_db::db::BinaryCache,
+    object: &aos_hub_db::db::CacheObjectRecord,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -1786,7 +1786,7 @@ pub fn cache_object(
 /// A cache object's full transitive closure as a no-JS table (the dependency
 /// "graph" in flat form); each present node links to its own object page.
 pub fn cache_closure(
-    cache: &crate::db::BinaryCache,
+    cache: &aos_hub_db::db::BinaryCache,
     root_hash: &str,
     nodes: &[aos_hub_api::CacheClosureNode],
     total_size: i64,
@@ -2973,7 +2973,7 @@ mod tests {
 
     fn release_context(version: &str) -> ReleaseContext {
         ReleaseContext::select(
-            vec![crate::db::ReleaseRow {
+            vec![aos_hub_db::db::ReleaseRow {
                 semver: version.into(),
                 tag_oid: "a".repeat(40),
                 commit_oid: "b".repeat(40),
@@ -3974,7 +3974,7 @@ mod tests {
             description: None,
             readme: None,
             support: None,
-            indexed_at: Some(crate::clock::now_unix_secs() - 2 * 86_400),
+            indexed_at: Some(aos_hub_model::clock::now_unix_secs() - 2 * 86_400),
             generation: 1,
             content_digest: None,
         };

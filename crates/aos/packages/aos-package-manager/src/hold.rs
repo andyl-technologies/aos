@@ -12,8 +12,8 @@ use super::config::ApmConfig;
 use super::profile::Profile;
 use super::profile::meta;
 use super::registry::store_path_hash;
-use super::types::InstalledPackageRecord;
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_deployment_format::inventory::InstalledPackageRecord;
 
 /// Run `apm hold <package>` -- prevent a package from being upgraded.
 ///
@@ -111,7 +111,10 @@ pub async fn run_held(config: &ApmConfig, printer: &Printer) -> Result<()> {
 ///
 /// Iterates all metadata entries in the profile and returns the hash
 /// component of the matching package's store path.
-fn find_installed_by_name(profile: &Profile, name: &str) -> Result<(String, InstalledPackageRecord)> {
+fn find_installed_by_name(
+    profile: &Profile,
+    name: &str,
+) -> Result<(String, InstalledPackageRecord)> {
     let all = meta::list_meta(profile)?;
     select_installed_by_name(all, name)
 }
@@ -181,8 +184,8 @@ fn hold_result_json(
 mod tests {
     use super::*;
     use crate::profile::Profile;
-    use aos_deployment_format::inventory::{PackageInventoryDetails, InstalledPackageRecord};
-use crate::types::{ProfileScope};
+    use aos_deployment_format::inventory::{InstalledPackageRecord, PackageInventoryDetails};
+    use aos_registry_client::types::ProfileScope;
     use tempfile::TempDir;
 
     fn test_profile(tmp: &TempDir) -> Profile {

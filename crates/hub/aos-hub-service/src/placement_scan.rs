@@ -15,18 +15,18 @@ use anyhow::{bail, Context as _, Result};
 use base64::Engine as _;
 use futures_util::TryStreamExt as _;
 
-use crate::clock;
-use crate::db::{
-    Database, PlacementScanPresence, ReusablePlacementEvidence, SurfaceObjectRecord,
-    SurfacePlacementRecord, SurfaceTarget, TopologyOperationRecord,
-    MAX_PLACEMENT_SCAN_PRESENCE_BATCH,
-};
 use crate::fetch::{
     SurfaceFetch, SurfaceListedEvidence, SurfaceListingBudget, SurfaceProvider,
     MAX_SURFACE_LIST_PAGES, MAX_SURFACE_LIST_PAGE_OBJECTS, WORKER_MAX_SURFACE_LIST_PAGES,
     WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS,
 };
 use crate::surface_write::{PartTag, SurfaceWrite, SurfaceWriteProvider};
+use aos_hub_db::db::{
+    Database, PlacementScanPresence, ReusablePlacementEvidence, SurfaceObjectRecord,
+    SurfacePlacementRecord, SurfaceTarget, TopologyOperationRecord,
+    MAX_PLACEMENT_SCAN_PRESENCE_BATCH,
+};
+use aos_hub_model::clock;
 
 const CLAIM_LEASE_SECONDS: i64 = 600;
 const CLAIM_HEARTBEAT_SECONDS: u64 = 60;
@@ -786,13 +786,13 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use crate::db::{
+    use crate::fetch::{SurfaceFetch, SurfaceListPage};
+    use crate::surface_write::SurfaceWrite;
+    use aos_hub_db::db::{
         NewSurfacePlacementSpec, NewTopologyOperation, NewTopologyOperationTarget,
         NewTopologyOperationTargetRef, SetSurfaceObject,
     };
-    use crate::domain::Permission;
-    use crate::fetch::{SurfaceFetch, SurfaceListPage};
-    use crate::surface_write::SurfaceWrite;
+    use aos_hub_model::domain::Permission;
     use sha2::{Digest as _, Sha256};
 
     struct EmptySurfaceProvider;
@@ -997,7 +997,7 @@ mod tests {
         async fn placement_writer_at_revision(
             &self,
             placement: &SurfacePlacementRecord,
-            _revision: &crate::db::BindingWriteRevisionRecord,
+            _revision: &aos_hub_db::db::BindingWriteRevisionRecord,
         ) -> Result<Box<dyn SurfaceWrite>> {
             self.placement_writer(placement).await
         }

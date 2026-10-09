@@ -81,7 +81,8 @@ fn gate_evidence_rejects_checklist_state_needles() {
 fn user_reference_names_every_executable_effect_kind() -> Result<(), Box<dyn Error>> {
     let reference = fs::read_to_string(repo_root().join("docs/users/crucible/reference.md"))?;
     let registry = fs::read_to_string(
-        workspace_root().join("crucible/engine/crucible-engine/src/model/fault_signal/effect_registry.rs"),
+        workspace_root()
+            .join("crucible/engine/crucible-engine/src/model/fault_signal/effect_registry.rs"),
     )?;
     let missing = registry
         .lines()
@@ -159,7 +160,7 @@ fn terminal_outcome_rules_distinguish_patterns_from_construction() {
 fn reduction_path_sources_have_no_banned_nondeterminism() -> Result<(), Box<dyn Error>> {
     let mut findings = Vec::new();
     for package in REDUCTION_PATH_PACKAGES {
-        let src_dir = workspace_root().join(package).join("src");
+        let src_dir = workspace::package_path(&workspace_root(), package).join("src");
         for source in rust_sources(&src_dir)? {
             let content = fs::read_to_string(&source)?;
             findings.extend(scan_content(&source, &content));
@@ -435,7 +436,7 @@ fn binary_entry_modules_share_the_process_error_boundary() {
 #[test]
 fn harness_lint_rejects_error_and_logging_drift() {
     let library_findings = error_logging_failures(
-        Path::new("crucible-sim/src/lib.rs"),
+        Path::new("crucible/determinism/crucible-determinism/src/lib.rs"),
         r#"
             pub fn bad() -> Result<(), Box<dyn Error>> {
                 let value = maybe().unwrap();
@@ -480,7 +481,7 @@ fn harness_lint_rejects_error_and_logging_drift() {
     assert!(cli_module_findings.is_empty(), "{cli_module_findings:?}");
 
     let cfg_all_test_findings = error_logging_failures(
-        Path::new("crucible-shmem/src/lib.rs"),
+        Path::new("crucible/protocol/crucible-qemu-shmem/src/lib.rs"),
         r#"
             #[cfg(all(test, target_os = "linux"))]
             mod tests {
@@ -498,7 +499,7 @@ fn harness_lint_rejects_error_and_logging_drift() {
     );
 
     let standard_error_source = error_logging_failures(
-        Path::new("crucible-sim/src/error.rs"),
+        Path::new("crucible/determinism/crucible-determinism/src/error.rs"),
         r#"
             impl Error for TypedError {
                 fn source(&self) -> Option<&(dyn Error + 'static)> {

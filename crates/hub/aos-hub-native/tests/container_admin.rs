@@ -3,6 +3,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use aos_hub_api as pb;
 use aos_hub_native::auth::extract::AuthState;
 use aos_hub_native::auth::jwt::JwtKeys;
 use aos_hub_native::db::{
@@ -10,7 +11,6 @@ use aos_hub_native::db::{
 };
 use aos_hub_native::domain::{Permission, Principal, Scope};
 use aos_hub_native::server::{router, AppState};
-use aos_hub_api as pb;
 use reqwest::StatusCode;
 
 const TEST_JWT_SECRET: &[u8] = b"native-container-admin-test-secret";
@@ -270,7 +270,8 @@ async fn publication_inventory_requires_publish_permission_even_for_public_regis
 }
 
 async fn spawn_hub() -> RunningHub {
-    spawn_hub_with_rollout(aos_hub_service::container_rollout::ContainerRollout::all_enabled()).await
+    spawn_hub_with_rollout(aos_hub_service::container_rollout::ContainerRollout::all_enabled())
+        .await
 }
 
 async fn spawn_hub_with_rollout(
@@ -346,9 +347,10 @@ async fn spawn_hub_with_rollout(
 
 #[tokio::test]
 async fn direct_connect_requests_cannot_bypass_container_rollout_gates() {
-    let hub =
-        spawn_hub_with_rollout(aos_hub_service::container_rollout::ContainerRollout::all_disabled())
-            .await;
+    let hub = spawn_hub_with_rollout(
+        aos_hub_service::container_rollout::ContainerRollout::all_disabled(),
+    )
+    .await;
     let owner = hub
         .bearer("rollout-owner@example.test", "rollout-owner")
         .await;
@@ -614,9 +616,10 @@ async fn direct_connect_requests_cannot_bypass_container_rollout_gates() {
 
 #[tokio::test]
 async fn gc_apply_masks_actor_and_registry_authorization_before_disabled_rollout() {
-    let hub =
-        spawn_hub_with_rollout(aos_hub_service::container_rollout::ContainerRollout::all_disabled())
-            .await;
+    let hub = spawn_hub_with_rollout(
+        aos_hub_service::container_rollout::ContainerRollout::all_disabled(),
+    )
+    .await;
     let owner = hub.bearer("gc-owner@example.test", "gc-owner-token").await;
     let other = hub.bearer("gc-other@example.test", "gc-other-token").await;
     let reader = hub
@@ -676,9 +679,10 @@ async fn gc_apply_masks_actor_and_registry_authorization_before_disabled_rollout
 
 #[tokio::test]
 async fn purge_fence_apply_masks_actor_and_registry_authorization_before_disabled_rollout() {
-    let hub =
-        spawn_hub_with_rollout(aos_hub_service::container_rollout::ContainerRollout::all_disabled())
-            .await;
+    let hub = spawn_hub_with_rollout(
+        aos_hub_service::container_rollout::ContainerRollout::all_disabled(),
+    )
+    .await;
     let owner = hub
         .bearer("purge-owner@example.test", "purge-owner-token")
         .await;
@@ -784,7 +788,9 @@ async fn enabled_gc_plan_replay_returns_the_same_actor_bound_review() {
 #[tokio::test]
 async fn gc_cancel_requires_configuration_and_returns_terminal_runs_unchanged() {
     let hub = spawn_hub().await;
-    let owner = hub.bearer("gc-cancel@example.test", "gc-cancel-token").await;
+    let owner = hub
+        .bearer("gc-cancel@example.test", "gc-cancel-token")
+        .await;
     let reader = hub
         .bearer_with_permissions(
             "gc-cancel-reader@example.test",
@@ -812,7 +818,10 @@ async fn gc_cancel_requires_configuration_and_returns_terminal_runs_unchanged() 
     let cancelled: pb::ContainerGcRunResponse =
         hub.call("CancelContainerGcRun", &owner, &request).await;
     let run = cancelled.run.unwrap();
-    assert_eq!((run.run_id.as_str(), run.state.as_str()), (run_id.as_str(), "failed"));
+    assert_eq!(
+        (run.run_id.as_str(), run.state.as_str()),
+        (run_id.as_str(), "failed")
+    );
     assert!(!cancelled.blockers.is_empty());
 
     let missing = pb::CancelContainerGcRunRequest {

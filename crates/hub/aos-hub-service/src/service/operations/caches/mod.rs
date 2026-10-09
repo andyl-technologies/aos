@@ -22,5 +22,5 @@ mod retention_mutations;
 mod retention_plans;
 mod retention_reads;
 mod uploads_helpers;
-mod uploads_mutations_upload_cache_object;
 mod uploads_mutations_complete_upload;
+mod uploads_mutations_upload_cache_object;

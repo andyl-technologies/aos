@@ -23,6 +23,7 @@ use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
+use crate::crucible_engine::{ScenarioDefForm, Schedule};
 use crucible_campaign::{
     CandidateGeneratorAlgorithm, CandidateGeneratorSpec, CandidateGeneratorSpecId,
     ConfigurationArtifactId,
@@ -32,7 +33,6 @@ use crucible_daemon::{
     decode_crucible_configuration_artifact, decode_crucible_scenario_artifact,
     encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
 };
-use crucible_engine::{ScenarioDefForm, Schedule};
 use rustix::fs::{Mode, OFlags};
 use serde::Deserialize;
 

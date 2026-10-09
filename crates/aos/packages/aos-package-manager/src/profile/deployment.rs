@@ -15,8 +15,8 @@ use aos_activation::journal::JournalLimits;
 use serde::{Deserialize, Serialize};
 
 use super::{Generation, Profile, atomic_write};
-use aos_deployment_format::model::Deployment;
 use aos_deployment::transaction::{DeploymentStore, Transactions, journal_limits};
+use aos_deployment_format::model::Deployment;
 
 /// Reads one explicitly selected checked result from a committed profile generation.
 ///
@@ -496,7 +496,7 @@ mod tests {
     use super::*;
     use aos_deployment::handler::HandlerArtifacts;
     use aos_deployment_format::model::ResolvedPackages;
-    use crate::types::ProfileScope;
+    use aos_registry_client::types::ProfileScope;
 
     #[derive(Default)]
     struct Store {

@@ -44,8 +44,10 @@ fn run() -> Result<()> {
         remove_file_if_present(result_path)?;
         remove_file_if_present(temporary_result_path)?;
 
-        let quote =
-            aos_package_manager::produce_local_package_attestation_quote(nonce.trim(), output_directory)?;
+        let quote = aos_package_manager::produce_local_package_attestation_quote(
+            nonce.trim(),
+            output_directory,
+        )?;
         let mut encoded =
             serde_json::to_vec(&quote).context("serializing package-attestation result")?;
         encoded.push(b'\n');

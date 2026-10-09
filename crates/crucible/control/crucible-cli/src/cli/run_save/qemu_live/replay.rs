@@ -289,33 +289,26 @@ fn run_interactive_control_artifact_replay(
         resources,
     )
     .map_err(|error| backend_error(format!("build guarded interactive replay session: {error}")))?;
-    let checkpoint = crucible_engine::Checkpoint::from_recorded_configuration(
-        &initial_configuration,
-        None,
-        crucible_engine::VirtualTime::default(),
-        std::collections::BTreeMap::new(),
-        crucible_engine::CheckpointKind::Fat,
-        std::collections::BTreeMap::new(),
-    )
-    .map_err(|error| artifact_error(format!("build interactive replay genesis: {error}")))?;
-    let graph = crucible_engine::TemporalGraph::empty()
-        .with_baked_genesis(
-            &initial_configuration.def,
-            crucible_engine::GenesisCheckpoint { checkpoint },
-        )
-        .map_err(|error| artifact_error(format!("build interactive replay graph: {error}")))?;
-    let engine = crucible_session::Engine::new(initial_configuration, graph, quantum_loop);
-    let (sender, receiver) = tokio::sync::mpsc::channel(64);
     let nodes = captured_scenario
         .world()
         .vm_nodes()
         .iter()
         .map(|node| node.id.clone())
         .collect::<Vec<_>>();
-    let (actor, execution_fingerprints) =
-        replay_interactive_terminal_actor(engine, receiver, &replay_artifact, &nodes)?;
+    let replay = crucible_daemon::prepare_interactive_replay(
+        initial_configuration,
+        quantum_loop,
+        &replay_artifact,
+        &nodes,
+    )
+    .map_err(|error| match error {
+        crucible_daemon::InteractiveReplayError::Genesis(_)
+        | crucible_daemon::InteractiveReplayError::Graph(_) => artifact_error(error.to_string()),
+        _ => backend_error(error.to_string()),
+    })?;
+    let execution_fingerprints = replay.execution_fingerprints().to_vec();
 
-    let event_log = actor.event_log();
+    let event_log = replay.event_log();
     let mut stream = event_log.subscribe(crucible_session::EventLogCursor::default());
     let mut streamed_event_frames = Vec::with_capacity(event_log_len);
     for _ in 0..event_log_len {
@@ -326,35 +319,17 @@ fn run_interactive_control_artifact_replay(
         let frame = crucible_control_api::StreamingEventFrame::from(frame);
         streamed_event_frames.push(canonical_streaming_event_frame_bytes(&frame));
     }
-    let reproduction_commands = actor
-        .reproduction_log()
-        .snapshot()
+    let reproduction_commands = replay
+        .reproduction_commands()
         .into_iter()
         .map(crucible_control_api::ReproductionCommandRecord::from)
         .collect::<Vec<_>>();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(async move {
-        let actor_task = tokio::spawn(async move { actor.run().await });
-        let (reply, receiver) = crucible_session::CommandReply::channel();
-        sender
-            .send(crucible_session::SessionCommand::acknowledged(
-                crucible_session::SessionCommand::Stop,
-                reply,
-            ))
-            .await
-            .map_err(|_| backend_error("replay actor closed before terminal shutdown"))?;
-        receiver
-            .await
-            .map_err(|_| backend_error("replay shutdown reply channel closed"))?
-            .map_err(|error| backend_error(format!("shutdown replay actor: {error}")))?;
-        actor_task
-            .await
-            .map_err(|error| backend_error(format!("join replay actor: {error}")))?
-            .map_err(|error| backend_error(format!("replay actor failed: {error}")))?;
-        Ok::<_, CliError>(())
-    })?;
+    runtime
+        .block_on(replay.shutdown())
+        .map_err(|error| backend_error(error.to_string()))?;
 
     Ok(RunWorkflowReport {
         status: BackendCommandStatus::Passed,
@@ -384,22 +359,8 @@ fn run_interactive_control_artifact_replay(
     })
 }
 
-fn replay_interactive_terminal_actor<L: crucible_engine::QuantumLoop>(
-    engine: crucible_session::Engine<L>,
-    receiver: tokio::sync::mpsc::Receiver<crucible_session::SessionCommand>,
-    artifact: &crucible_session::SessionControlReplayArtifact,
-    nodes: &[crucible_engine::NodeId],
-) -> Result<
-    (
-        crucible_session::SessionActor<L>,
-        Vec<crucible_engine::FingerprintSample>,
-    ),
-    CliError,
-> {
-    crucible_session::SessionActor::new(engine, receiver)
-        .with_control_replay_artifact_and_terminal_fingerprints(artifact, nodes)
-        .map_err(|error| backend_error(format!("replay interactive control artifact: {error}")))
-}
+#[cfg(test)]
+use crucible_daemon::replay_interactive_terminal_actor;
 
 pub(crate) fn validate_live_qemu_campaign_owner(
     contract: &LiveQemuReplayContract,

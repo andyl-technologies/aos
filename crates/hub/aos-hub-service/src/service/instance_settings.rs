@@ -1,7 +1,7 @@
 //! Field-level effects for immutable instance-settings plans.
 
 use super::RpcError;
-use crate::db::InstanceSettings;
+use aos_hub_db::db::InstanceSettings;
 
 /// Shows normalized changes only, including the effective value after a reset.
 ///
@@ -118,7 +118,7 @@ fn on_off(value: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::Database;
+    use aos_hub_db::db::Database;
 
     #[tokio::test]
     async fn effects_show_changes_and_resets_without_unchanged_fields() {

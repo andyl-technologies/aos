@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::crucible_engine::DagStore;
 use crucible_campaign::{
     AttemptResourceLimits, CampaignArchiveManifestId, CampaignRepository, FindingId, StopCondition,
     StopOutcome,
@@ -14,7 +15,6 @@ use crucible_daemon::finding_production_replay::{
 use crucible_daemon::qemu_campaign_lifecycle::{
     GuardedCampaignReplayClosure, GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
 };
-use crucible_engine::DagStore;
 use serde::Serialize;
 
 use super::*;

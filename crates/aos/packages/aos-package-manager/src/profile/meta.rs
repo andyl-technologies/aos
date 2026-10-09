@@ -25,9 +25,8 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use super::{Generation, Profile, atomic_write};
+use aos_deployment_format::inventory::{InstalledPackageRecord, PackageInventoryDetails};
 use aos_registry_client::registry::{RegistrySet, store_path_hash};
-use aos_deployment_format::inventory::{PackageInventoryDetails, InstalledPackageRecord};
-
 
 // ---------------------------------------------------------------------------
 // Write / read / delete individual metadata entries
@@ -138,7 +137,11 @@ pub fn snapshot_profile_meta_to_generation(
 }
 
 /// Write one snapshot entry to `gen-N/meta/<hash>.json` atomically.
-fn write_generation_meta(generation: &Generation, hash: &str, meta: &InstalledPackageRecord) -> Result<()> {
+fn write_generation_meta(
+    generation: &Generation,
+    hash: &str,
+    meta: &InstalledPackageRecord,
+) -> Result<()> {
     let meta_dir = generation.path.join("meta");
     std::fs::create_dir_all(&meta_dir)
         .with_context(|| format!("creating generation meta directory {}", meta_dir.display()))?;
@@ -255,7 +258,10 @@ fn apply_current_flags(profile: &Profile, meta: &mut InstalledPackageRecord) -> 
 /// # Errors
 ///
 /// Returns an error if the metadata directory cannot be listed.
-pub fn meta_by_registry(profile: &Profile, registry_name: &str) -> Result<Vec<InstalledPackageRecord>> {
+pub fn meta_by_registry(
+    profile: &Profile,
+    registry_name: &str,
+) -> Result<Vec<InstalledPackageRecord>> {
     let all = list_meta(profile)?;
     Ok(all
         .into_iter()
@@ -487,13 +493,18 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    use crate::types::ProfileScope;
+    use aos_registry_client::types::ProfileScope;
 
     fn test_profile(tmp: &TempDir) -> Profile {
         Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap()
     }
 
-    fn sample_meta(name: &str, registry: &str, explicit: bool, held: bool) -> InstalledPackageRecord {
+    fn sample_meta(
+        name: &str,
+        registry: &str,
+        explicit: bool,
+        held: bool,
+    ) -> InstalledPackageRecord {
         InstalledPackageRecord {
             store_path: format!("/var/lib/store/abc123-{name}-1.0"),
             pushed_at: 1707800000,

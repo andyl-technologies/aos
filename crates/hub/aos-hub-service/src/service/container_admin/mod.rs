@@ -13,7 +13,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use super::{Permission, RpcError, RpcService};
-use crate::db::{
+use aos_hub_db::db::{
     OciAdminLayerRecord, OciAdminManifestRecord, OciAdminPlatformRecord, OciAdminProvenanceRecord,
     OciAdminPublicationRecord, OciAdminReferrerRecord, OciAdminRepositoryRecord,
     OciAdminTagHistoryRecord, OciAdminTagRecord, OciGcBlockerRecord, OciGcCandidateRecord,
@@ -52,7 +52,7 @@ impl RpcService {
         auth: Option<&str>,
         identifier: &str,
         permission: Permission,
-    ) -> Result<(crate::auth::jwt::Claims, RegistryRecord), RpcError> {
+    ) -> Result<(aos_hub_model::auth::jwt::Claims, RegistryRecord), RpcError> {
         let claims = self.require_claims(auth)?;
         let registry = self.registry_or_not_found(identifier).await?;
         let scope = self.registry_scope(&registry).await?;
@@ -396,13 +396,13 @@ mod tests {
         encode_untracked_inventory_cursor, gc_placement_action_message, gc_run_message,
         registry_purge_fence_message, untracked_inventory_message, untracked_repair_message,
     };
-    use crate::db::{
+    use crate::service::pb;
+    use aos_hub_db::db::{
         OciGcGenerationRecord, OciGcPlacementActionRecord, OciRegistryPurgeBlockers,
         OciRegistryPurgeFenceAction, OciRegistryPurgeFencePlanRecord, OciRegistryPurgeFenceRecord,
         OciRegistryPurgeFenceStatus, OciUntrackedInventoryCursor, OciUntrackedInventoryRecord,
         OciUntrackedRepairKind, OciUntrackedRepairOutcome, OciUntrackedRepairPlanRecord,
     };
-    use crate::service::pb;
 
     #[test]
     fn distribution_authority_is_a_copyable_registry_reference_authority() {

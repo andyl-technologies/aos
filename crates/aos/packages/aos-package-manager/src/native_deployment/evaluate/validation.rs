@@ -10,10 +10,10 @@ use std::path::Path;
 use anyhow::{Context as _, Result, ensure};
 use aos_activation::adapter::CancellationToken;
 
-use aos_deployment_format::model::Envelope;
-use aos_deployment_format::input::EvaluationInput;
-use aos_deployment::document::read_regular_store_document_in;
 use crate::native_registry::{same_package_context, solver};
+use aos_deployment::document::read_regular_store_document_in;
+use aos_deployment_format::input::EvaluationInput;
+use aos_deployment_format::model::Envelope;
 
 /// Validates retained declarations before importing any configuration modules.
 ///
@@ -170,7 +170,9 @@ fn validate_with(
                     .get(dependency.seed().name.as_str())
                     .context("replay exact module dependency is absent")?;
                 ensure!(
-                    solver::matches_requirement(dependency, selected)?,
+                    aos_deployment_format::resolution_lock::matches_requirement(
+                        dependency, selected
+                    )?,
                     "replay exact module dependency differs from its retained source"
                 );
             }

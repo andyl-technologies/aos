@@ -1,16 +1,13 @@
 //! Signed catalog generation for registry publication candidates.
 
-use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::fs;
 use anyhow::{Context, Result, bail};
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-pub use aos_registry_format::tuf::*;
-use aos_registry_client::security::verify_payload_signature;
-use futures_util::FutureExt as _;
 use aos_registry_client::registry::tuf::*;
+use aos_registry_format::tuf::*;
+use futures_util::FutureExt as _;
+use serde::Serialize;
+use std::collections::{BTreeMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 /// Local private key material available for signing TUF metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetadataSigningKey {
@@ -34,8 +31,6 @@ struct MetadataContext<'a> {
     registry: &'a str,
     release: &'a semver::Version,
 }
-
-
 
 /// Generate and write release TUF metadata in a registry authoring clone.
 ///
@@ -63,8 +58,6 @@ pub fn write_release_metadata_worktree(
         .context("synchronous catalog metadata signer unexpectedly yielded")?
 }
 
-
-
 /// Regenerates catalog metadata over an isolated candidate's current files.
 ///
 /// The candidate's `HEAD` may still name its frozen base. The producer hashes
@@ -83,8 +76,6 @@ pub async fn write_release_metadata_worktree_with_signer(
 ) -> Result<bool> {
     write_metadata_with_signer(repo_dir, registry, release, signer, true).await
 }
-
-
 
 async fn write_metadata_with_signer(
     repo_dir: &Path,
@@ -303,19 +294,13 @@ async fn write_metadata_with_signer(
     Ok(changed)
 }
 
-
-
 fn next_version(previous: Option<u64>) -> u64 {
     previous.unwrap_or(0).saturating_add(1)
 }
 
-
-
 fn version_floor(workspace: Option<u64>, published: Option<u64>) -> Option<u64> {
     workspace.into_iter().chain(published).max()
 }
-
-
 
 fn root_policy_for_signers(
     existing_root: Option<&Envelope<RootSigned>>,
@@ -357,8 +342,6 @@ fn root_policy_for_signers(
     }
     (keys, roles)
 }
-
-
 
 async fn sign_root_envelope<T: Serialize>(
     signed: T,
@@ -411,8 +394,6 @@ async fn sign_root_envelope<T: Serialize>(
     Ok(Envelope { signed, signatures })
 }
 
-
-
 async fn sign_envelope<T: Serialize>(
     signed: T,
     role: &str,
@@ -453,7 +434,6 @@ async fn sign_envelope<T: Serialize>(
     Ok(Envelope { signed, signatures })
 }
 
-
 fn metadata_signing_request<T: Serialize>(
     signed: &T,
     context: &MetadataContext<'_>,
@@ -476,8 +456,6 @@ fn metadata_signing_request<T: Serialize>(
     })
 }
 
-
-
 fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<bool> {
     if path.exists() {
         let existing = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
@@ -491,10 +469,10 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_registry_client::sshkey::Ed25519Keypair;
     use crate::testutil;
     use aos_registry_client::security::sign_payload_signature;
-    use aos_registry_client::types::RegistryState;
+    use aos_registry_client::sshkey::Ed25519Keypair;
+    use aos_registry_format::consumer::RegistryState;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -1207,10 +1185,4 @@ mod tests {
         let root: Envelope<RootSigned> = parse_envelope(&root_bytes, ROOT_JSON).unwrap();
         assert_eq!(root.signed.roles[ROLE_ROOT].key_ids, vec!["b".to_string()]);
     }
-}
-
-fn semver_tag_versions(directory: &Path) -> Result<Vec<semver::Version>> {
- let repo = git2::Repository::open(directory)?;
- let mut versions = repo.tag_names(None)?.iter().flatten().filter_map(|tag| semver::Version::parse(tag).ok()).collect::<Vec<_>>();
- versions.sort(); versions.dedup(); Ok(versions)
 }

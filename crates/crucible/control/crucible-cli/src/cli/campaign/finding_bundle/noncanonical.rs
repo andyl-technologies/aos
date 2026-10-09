@@ -73,16 +73,17 @@ pub(crate) fn run_finding_bundle_fork_write(
                 backend_error(format!("finding midpoint pair restore failed: {error}"))
             })?;
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
-        let mut server = tokio::spawn(serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown(
-            listener,
-            sessions.shared_control_plane(),
-            LifecycleServerMode::read_write(),
-            transport.acceptor,
-            policy,
-            async move {
-                let _ = stopped.await;
-            },
-        ));
+        let mut server =
+            crucible_control_server::spawn_shared_lifecycle_http2_mtls_with_mode_until_shutdown(
+                listener,
+                sessions.shared_control_plane(),
+                LifecycleServerMode::read_write(),
+                transport.acceptor,
+                policy,
+                async move {
+                    let _ = stopped.await;
+                },
+            );
         let result = async {
             if sessions.canonical() == sessions.branch() {
                 return Err(backend_error(

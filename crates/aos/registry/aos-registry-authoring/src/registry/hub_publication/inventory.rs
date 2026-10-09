@@ -139,9 +139,8 @@ fn validate_publication_nar_urls(
                 anyhow::bail!("publication narinfo uses unsupported compression '{value}': {path}")
             }
         };
-        let expected_url =
-            aos_nar::cache::nar_url(&narinfo.store_path, file_hash, compression)
-                .with_context(|| format!("publication narinfo FileHash is not SHA-256: {path}"))?;
+        let expected_url = aos_nar::cache::nar_url(&narinfo.store_path, file_hash, compression)
+            .with_context(|| format!("publication narinfo FileHash is not SHA-256: {path}"))?;
         anyhow::ensure!(
             narinfo.url == expected_url,
             "publication narinfo URL does not identify its compressed FileHash: {path}"
@@ -654,13 +653,14 @@ mod tests {
 
         let pinned = publication_from_root(root, "andyl/main").unwrap();
         for object in &pinned.request.objects {
-            let expected = if aos_registry_client::registry::surface_keymap::cache_control(&object.path)
-                == aos_registry_client::registry::surface_keymap::MUTABLE_CACHE_CONTROL
-            {
-                "mutable_pointer"
-            } else {
-                "immutable"
-            };
+            let expected =
+                if aos_registry_client::registry::surface_keymap::cache_control(&object.path)
+                    == aos_registry_client::registry::surface_keymap::MUTABLE_CACHE_CONTROL
+                {
+                    "mutable_pointer"
+                } else {
+                    "immutable"
+                };
             assert_eq!(object.kind, expected, "{}", object.path);
             assert_eq!(
                 object.media_type,

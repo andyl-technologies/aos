@@ -25,7 +25,7 @@
 //! base64 is the full SSH wire public-key blob — the same encoding embedded
 //! in the signature, so trust comparison is byte equality.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256, Sha512};

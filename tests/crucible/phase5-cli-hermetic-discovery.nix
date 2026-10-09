@@ -56,7 +56,7 @@
       }
       {
         label = "plugin ABI derives from shmem";
-        needle = "crucible::SHMEM_ABI_VERSION";
+        needle = "crucible_engine::SHMEM_ABI_VERSION";
       }
       {
         label = "required plugin ABI helper";
@@ -186,7 +186,7 @@
     ++ failuresFor "crates/crucible/control/crucible-cli/Cargo.toml" cliCargo [
       {
         label = "CLI depends on the API-owned guest-host protocol surface";
-        needle = "crucible-api = { path = \"../crucible-api\" }";
+        needle = "crucible-control-api = { path = \"../crucible-control-api\" }";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePkg [
@@ -208,13 +208,13 @@
       }
       {
         label = "separate suite runtime closure";
-        needle = "runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux pkgs.sqlite]";
+        needle = "[controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]";
       }
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPkg [
       {
         label = "plugin build-info reads shmem source";
-        needle = "done < crucible-shmem/src/lib.rs";
+        needle = "done < crucible/protocol/crucible-qemu-shmem/src/lib.rs";
       }
       {
         label = "plugin build-info ABI prefix";

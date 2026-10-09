@@ -7,7 +7,7 @@
 //! module is the engine that makes *every* SQL-backed mutation a reviewed,
 //! revertible **change-set**, recorded in the append-only
 //! `change_requests` / `change_request_revisions` / `audit_log` tables (see the
-//! [`crate::db`] module docs for the schema).
+//! [`aos_hub_db::db`] module docs for the schema).
 //!
 //! # The change-set lifecycle
 //!
@@ -19,7 +19,7 @@
 //!    terraform-plan view), via [`semantic_diff`].
 //! 4. [`apply`] runs the caller-supplied live mutation for each revision
 //!    inside one transaction, stamps the change-set `applied`, and writes
-//!    one [`crate::db::Database::record_audit`] row carrying the
+//!    one [`aos_hub_db::db::Database::record_audit`] row carrying the
 //!    `change_id`.
 //!
 //! [`change_membership`] is a direct consumer that wires identity mutations
@@ -55,8 +55,8 @@
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
-use crate::db::{Database, RevisionRow};
-use crate::domain::{Principal, PrincipalKind, Role, Scope};
+use aos_hub_db::db::{Database, RevisionRow};
+use aos_hub_model::domain::{Principal, PrincipalKind, Role, Scope};
 
 /// A stable change-set identifier (a UUID v4 string).
 ///
@@ -368,7 +368,7 @@ pub async fn review(
 /// Applies a change-set atomically, then records one audit row.
 ///
 /// Runs `apply_fn` for each revision in `seq` order inside a transaction
-/// (see [`Database::apply_changeset`](crate::db::Database::apply_changeset)),
+/// (see [`Database::apply_changeset`](aos_hub_db::db::Database::apply_changeset)),
 /// stamps the change-set `applied`, and writes exactly one audit-log row
 /// tied to the `change_id`. `apply_fn` is the caller's live-object
 /// mutation; the engine supplies each [`Revision`] in turn.

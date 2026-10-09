@@ -1,10 +1,10 @@
 //! Tests for realisation graph maintenance and store signing-key selection.
 
 use super::resolve_cache_pointer_signing_key;
-use aos_registry_client::config::ApmConfig;
 use crate::registry_ops::test_support::{
     test_config_with_signing_key, test_registry_config, write_seeded_signing_key, write_test_roster,
 };
+use aos_registry_client::config::ApmConfig;
 use aos_registry_client::types::{ApmSettings, ProfileScope};
 use tempfile::TempDir;
 

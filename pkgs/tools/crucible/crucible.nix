@@ -6,7 +6,7 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceVendor,
   rust,
   openssl,
   pkg-config,
@@ -29,8 +29,19 @@
 }: let
   version = "0.1.0";
   platformSupport = {
-    build = [{abi = ["gnu"]; os = ["linux"];}];
-    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+    build = [
+      {
+        abi = ["gnu"];
+        os = ["linux"];
+      }
+    ];
+    host = [
+      {
+        abi = ["gnu"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["linux"];
+      }
+    ];
     target = [];
     role = "public-package";
   };
@@ -60,7 +71,7 @@
     if stdenv.hostPlatform.system == "x86_64-linux"
     then "x86_64"
     else "aarch64";
-  cargoDepsHash = import ./_cargo-deps-hash.nix;
+  cargoDepsHash = import ./_cargo-deps-hash.nix {cargoDeps = aosWorkspaceVendor;};
   liveDebuggerMatrixScript = ./live-debugger-matrix.sh;
   src = import ./_source.nix {inherit lib;};
   cargoDependencySource = mkCargoDummySource {
@@ -68,23 +79,13 @@
     name = "crucible-apache-host-dummy-source";
     cargoRoot = "crates";
   };
-  cargoDeps = fetchCargoVendor {
-    src = cargoDependencySource;
-    name = "crucible-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = cargoDepsHash;
-  };
+  # One monorepo lockfile owns the pinned third-party dependency set.
+  cargoDeps = aosWorkspaceVendor;
+  cargoWorkspaceMembers = import ./_workspace.nix {inherit lib;};
   packages = import ./_packages.nix;
-  workspaceMembers = (builtins.fromTOML (builtins.readFile ../../../crates/Cargo.toml)).workspace.members;
-  workspacePackages = map (member:
-    (builtins.fromTOML (builtins.readFile (../../../crates + "/${member}/Cargo.toml"))).package.name
-  ) workspaceMembers;
-  nonCrucibleWorkspacePackages = builtins.filter (package: !(builtins.elem package packages)) workspacePackages;
   gplSidePackages = ["crucible-qemu-plugin" "crucible-qemu-debug-gateway"];
   controllerPackages = builtins.filter (package: !(builtins.elem package gplSidePackages)) packages;
-  workspaceCargoFlags = builtins.concatStringsSep " " (
-    ["--workspace"] ++ map (package: "--exclude ${package}") (nonCrucibleWorkspacePackages ++ gplSidePackages)
-  );
+  workspaceCargoFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") controllerPackages);
   packageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") controllerPackages);
   docPackages = builtins.filter (package: package != "crucible-cli") controllerPackages;
   docPackageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") docPackages);
@@ -146,7 +147,7 @@
   };
   controllerArtifacts = mkCargoArtifacts {
     pname = "crucible-apache-host-artifacts";
-    inherit version cargoDeps;
+    inherit version cargoDeps cargoWorkspaceMembers;
     cargoEnv = controllerCargoEnv;
     cargoArtifactContract = controllerArtifactContract;
     src = cargoDependencySource;
@@ -169,7 +170,7 @@
   debugGatewayCargoEnv = {LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";};
   debugGatewayArtifacts = mkCargoArtifacts {
     pname = "crucible-debug-gateway-artifacts";
-    inherit version cargoDeps;
+    inherit version cargoDeps cargoWorkspaceMembers;
     cargoArtifactContract = debugGatewayArtifactContract;
     cargoEnv = debugGatewayCargoEnv;
     src = mkCargoDummySource {
@@ -240,7 +241,7 @@
 
     inherit version src;
 
-    inherit cargoDeps;
+    inherit cargoDeps cargoWorkspaceMembers;
     cargoArtifacts = controllerArtifacts;
     cargoArtifactContract = controllerArtifactContract;
     cargoEnv = controllerCargoEnv;
@@ -437,7 +438,7 @@
       cargo_nextest_open_files_limit=4096
       cargo_doc=warning-free
       cargo_doctest=hermetic
-      gate_license_boundary=crucible-harness/gate_license_boundary
+      gate_license_boundary=crucible-test-support/gate_license_boundary
       rustdocflags=-D warnings -D missing_docs
       qemu_package=none
       plugin_package=none
@@ -463,7 +464,7 @@
     pname = "crucible-debug-gateway";
     inherit version src;
 
-    inherit cargoDeps;
+    inherit cargoDeps cargoWorkspaceMembers;
     cargoArtifacts = debugGatewayArtifacts;
     cargoArtifactContract = debugGatewayArtifactContract;
     cargoEnv = debugGatewayCargoEnv;
@@ -485,7 +486,7 @@
       cat > "$out/share/licenses/crucible-debug-gateway/COMPONENT" <<'LICENSE_SCOPE'
       crucible-debug-gateway is a standalone QEMU RSP mediation process.
       SPDX-License-Identifier: GPL-2.0-only
-      crucible-protocol is used under its MIT option.
+      crucible-qemu-protocol is used under its MIT option.
       LICENSE_SCOPE
     '';
 
@@ -660,7 +661,7 @@
           package=crucible
           component=suite
           component_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause,BSD-3-Clause
-          boundary_crates=crucible-protocol,crucible-shmem
+          boundary_crates=crucible-qemu-protocol,crucible-qemu-shmem
           boundary_crates_license=MIT
           controller_package=crucible-controller
           controller_path=${controller}

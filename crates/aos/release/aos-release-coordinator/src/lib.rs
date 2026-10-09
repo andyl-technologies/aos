@@ -3,6 +3,8 @@
 //! [`capture`] bounds and snapshots untrusted filesystem inputs; [`projection`]
 //! prepares consumer-facing publication layouts, and [`readback`] verifies
 //! published objects anonymously. [`journal`] owns durable transition output.
+//! [`registry_entries`] converts frozen outputs and retained source evidence
+//! into registry publication entries.
 //! [`config`] and [`credentials`] resolve operator configuration, while
 //! [`tooling`] locates installed qualification tools and [`signer`] implements
 //! the bounded external-signing process protocol.

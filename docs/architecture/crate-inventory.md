@@ -86,6 +86,12 @@ change dependency identity. The authoritative membership is
 | `aos-systemd-client` | [shared/aos-systemd-client](../../crates/shared/aos-systemd-client/Cargo.toml) | aos-systemd — a typed, async client for org.freedesktop.systemd1 over |
 | `aos-transfer` | [shared/aos-transfer](../../crates/shared/aos-transfer/Cargo.toml) | aos-net -- Low-level networking/transport library |
 
+The initrd preparation artifact is compiled directly by its Nix recipe from
+`aos/boot/aos-boot-runtime/standalone/initrd_preparation.rs`. It deliberately is
+not a Cargo target: its existing `env!` tool paths bind the exact production
+closure during compilation. The owning boot runtime README documents this
+exception; its installed name remains `aos-boot-preparations`.
+
 ## Merges and extractions
 
 - `aos-contract` is merged into the portable `aos-core::{json,digest,limits}`.

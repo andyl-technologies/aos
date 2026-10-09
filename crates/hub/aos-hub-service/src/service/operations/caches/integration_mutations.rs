@@ -15,7 +15,7 @@ impl RpcService {
     /// Nix-cache route.
     pub async fn cache_consumer_url(
         &self,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
     ) -> Result<String, RpcError> {
         self.db
             .ready_cache_canonical_url(cache.id)
@@ -248,7 +248,9 @@ impl RpcService {
                         row.stack_path
                     ));
                 }
-            } else if let Err(error) = crate::url_guard::is_safe_remote_url(&row.committed_url) {
+            } else if let Err(error) =
+                aos_hub_model::url_guard::is_safe_remote_url(&row.committed_url)
+            {
                 errors.push(format!(
                     "external entry '{}' has an unsafe URL: {error:#}",
                     row.stack_path

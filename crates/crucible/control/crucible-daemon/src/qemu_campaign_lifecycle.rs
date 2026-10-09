@@ -72,6 +72,12 @@ mod failure_classification;
 pub(crate) use failure_classification::{
     classify_production_lifecycle_failure, production_lifecycle_failure_class,
 };
+use failure_classification::{
+    cleanup_after_fresh_runner_failure, map_checkpoint_capture_failure,
+    map_checkpoint_handoff_failure, map_fresh_driver_failure, map_fresh_lifecycle_failure,
+    map_start_replay_scheduler_failure, map_terminal_fingerprint_capture_failure,
+    start_replay_limit_failure,
+};
 
 mod remote_observation_resume;
 pub use remote_observation_resume::RemoteObservationResumeFactory;
@@ -2847,154 +2853,6 @@ fn append_start_replay_events<F, D>(
     replay.event_log.extend_from_slice(entries);
     replay.event_log_bytes = bytes;
     Ok(())
-}
-
-fn start_replay_limit_failure<F, D>(
-    limit: &'static str,
-) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
-        QemuFreshStartReplayError::LimitExceeded { limit },
-    ))
-}
-
-fn map_start_replay_scheduler_failure<F, D>(
-    error: SchedulerError,
-) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    let class = match &error {
-        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::Backend(_)
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::ResourceLimit { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
-    };
-    let error =
-        QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Scheduler(error));
-    match class {
-        Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
-        Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
-        Some(SchedulerOperationalFailureClass::Terminal) | None => {
-            AttemptWorkerFailure::Terminal(error)
-        }
-    }
-}
-
-fn map_checkpoint_capture_failure<F, D>(
-    error: SchedulerError,
-) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    let class = match &error {
-        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::Backend(_)
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::ResourceLimit { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
-    };
-    let error = QemuFreshExecutionRunnerError::CheckpointCapture(error);
-    match class {
-        Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
-        Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
-        Some(SchedulerOperationalFailureClass::Terminal) | None => {
-            AttemptWorkerFailure::Terminal(error)
-        }
-    }
-}
-
-fn map_terminal_fingerprint_capture_failure<F, D>(
-    error: SchedulerError,
-) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    let class = match &error {
-        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::Backend(_)
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::ResourceLimit { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
-    };
-    let error = QemuFreshExecutionRunnerError::TerminalFingerprintCapture(error);
-    match class {
-        Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
-        Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
-        Some(SchedulerOperationalFailureClass::Terminal) | None => {
-            AttemptWorkerFailure::Terminal(error)
-        }
-    }
-}
-
-fn map_checkpoint_handoff_failure<F, D>(
-    failure: AttemptWorkerFailure<CheckpointHandoffFailure>,
-) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    match failure {
-        AttemptWorkerFailure::Retryable(error) => {
-            AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::CheckpointHandoff(error))
-        }
-        AttemptWorkerFailure::Canceled(error) => {
-            AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::CheckpointHandoff(error))
-        }
-        AttemptWorkerFailure::Terminal(error) => {
-            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::CheckpointHandoff(error))
-        }
-    }
-}
-
-fn map_fresh_lifecycle_failure<F, D>(
-    failure: AttemptWorkerFailure<F>,
-) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    match failure {
-        AttemptWorkerFailure::Retryable(error) => {
-            AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::Lifecycle(error))
-        }
-        AttemptWorkerFailure::Canceled(error) => {
-            AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::Lifecycle(error))
-        }
-        AttemptWorkerFailure::Terminal(error) => {
-            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Lifecycle(error))
-        }
-    }
-}
-
-fn map_fresh_driver_failure<F, D>(
-    failure: AttemptWorkerFailure<D>,
-) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    match failure {
-        AttemptWorkerFailure::Retryable(error) => {
-            AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::Driver(error))
-        }
-        AttemptWorkerFailure::Canceled(error) => {
-            AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::Driver(error))
-        }
-        AttemptWorkerFailure::Terminal(error) => {
-            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Driver(error))
-        }
-    }
-}
-
-fn cleanup_after_fresh_runner_failure<F, D>(
-    failure: AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>,
-    cleanup: SchedulerError,
-) -> QemuFreshExecutionRunnerError<F, D>
-where
-    D: std::fmt::Display,
-{
-    let driver = match failure {
-        AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::Driver(error))
-        | AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::Driver(error))
-        | AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Driver(error)) => error,
-        AttemptWorkerFailure::Retryable(error)
-        | AttemptWorkerFailure::Canceled(error)
-        | AttemptWorkerFailure::Terminal(error) => {
-            return QemuFreshExecutionRunnerError::CleanupAfterRunner {
-                failure: Box::new(error),
-                cleanup,
-            };
-        }
-    };
-    let driver_diagnostic = bounded_driver_failure(&driver);
-    QemuFreshExecutionRunnerError::CleanupAfterDriver {
-        driver,
-        driver_diagnostic,
-        cleanup,
-    }
 }
 
 #[cfg(test)]

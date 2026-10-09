@@ -5,7 +5,7 @@ use super::*;
 impl RpcService {
     pub(in crate::service) fn cache_proxy_upload_url(
         &self,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
         ticket_id: &str,
         path: &str,
     ) -> String {
@@ -23,7 +23,7 @@ impl RpcService {
         &self,
         cache_id: &str,
         delivery_url: &str,
-    ) -> Result<crate::db::BinaryCache, RpcError> {
+    ) -> Result<aos_hub_db::db::BinaryCache, RpcError> {
         match (!cache_id.is_empty(), !delivery_url.is_empty()) {
             (true, false) => self.binary_cache_or_not_found(cache_id).await,
             (false, true) => self
@@ -41,7 +41,7 @@ impl RpcService {
     /// Byte-verifies and records one direct-origin cache upload.
     pub(in crate::service) async fn observe_presigned_cache_upload(
         &self,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
         path: &str,
         upload_ticket_id: &str,
     ) -> Result<pb::CacheUploadObservationResponse, RpcError> {
@@ -97,9 +97,9 @@ impl RpcService {
 
     pub(in crate::service) async fn prepare_registry_publication_object_upload(
         &self,
-        publication: &crate::db::RegistryPublicationRecord,
-        registry: &crate::db::RegistryRecord,
-        object: &crate::db::RegistryPublicationUploadObjectRecord,
+        publication: &aos_hub_db::db::RegistryPublicationRecord,
+        registry: &aos_hub_db::db::RegistryRecord,
+        object: &aos_hub_db::db::RegistryPublicationUploadObjectRecord,
     ) -> Result<(), RpcError> {
         if let Some(state) = self
             .db
@@ -196,8 +196,8 @@ impl RpcService {
         upload_id: &str,
     ) -> Result<
         (
-            crate::db::RegistryPublicationMultipartUploadRecord,
-            crate::db::RegistryPublicationUploadObjectRecord,
+            aos_hub_db::db::RegistryPublicationMultipartUploadRecord,
+            aos_hub_db::db::RegistryPublicationUploadObjectRecord,
             Vec<RegistryPublicationMultipartBackend>,
         ),
         RpcError,
@@ -275,7 +275,7 @@ impl RpcService {
     pub(in crate::service) async fn abort_registry_publication_multipart_record(
         &self,
         auth: Option<&str>,
-        upload: crate::db::RegistryPublicationMultipartUploadRecord,
+        upload: aos_hub_db::db::RegistryPublicationMultipartUploadRecord,
     ) -> Result<(), RpcError> {
         let (_, registry, object) = self
             .registry_publication_object_context(
@@ -372,7 +372,7 @@ impl RpcService {
     /// Mints a ticket-fenced presigned PUT for one cache object.
     pub(in crate::service) async fn mint_presigned_cache_write(
         &self,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
         path: &str,
         size: u64,
         now: i64,
@@ -546,8 +546,8 @@ impl RpcService {
         allow_completing: bool,
     ) -> Result<
         Option<(
-            crate::db::BinaryCache,
-            crate::db::CacheWriteTicketRecord,
+            aos_hub_db::db::BinaryCache,
+            aos_hub_db::db::CacheWriteTicketRecord,
             Box<dyn crate::surface_write::SurfaceWrite>,
         )>,
         SurfaceWriteOutcome,
@@ -623,7 +623,7 @@ impl RpcService {
         &self,
         writer: &dyn crate::surface_write::SurfaceWrite,
         path: &str,
-        ticket: &crate::db::CacheWriteTicketRecord,
+        ticket: &aos_hub_db::db::CacheWriteTicketRecord,
     ) -> Result<String, SurfaceWriteOutcome> {
         if writer.abandoned_multipart_lifetime_secs().is_none() {
             return Err(SurfaceWriteOutcome::NotWritable(
@@ -742,7 +742,7 @@ impl RpcService {
     pub(in crate::service) async fn cache_multipart_identity(
         &self,
         upload_id: &str,
-    ) -> Result<(crate::db::BinaryCache, String), RpcError> {
+    ) -> Result<(aos_hub_db::db::BinaryCache, String), RpcError> {
         let ticket = self
             .db
             .cache_write_ticket(upload_id)
@@ -766,7 +766,7 @@ impl RpcService {
         &self,
         publication_id: &str,
         object_kind: &str,
-    ) -> Result<Vec<crate::db::SurfacePlacementRecord>, RpcError> {
+    ) -> Result<Vec<aos_hub_db::db::SurfacePlacementRecord>, RpcError> {
         let progress = self
             .db
             .registry_publication_placement_records(publication_id)

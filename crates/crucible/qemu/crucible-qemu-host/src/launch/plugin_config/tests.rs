@@ -99,7 +99,7 @@ fn authored_storage_history_limits_are_explicit_and_fail_closed() {
     );
     assert_eq!(config.validate(), Ok(()));
 
-    let hard = crucible::model::FaultResourceLimits::compiled_maximum();
+    let hard = crucible_engine::model::FaultResourceLimits::compiled_maximum();
     let invalid = config.clone().with_storage_completed_history_limits(
         hard.storage_completed_history_epochs + 1,
         hard.storage_completed_history_gaps,
@@ -139,11 +139,11 @@ fn campaign_marker_parking_requires_explicit_whitebox_launch() {
 
 #[test]
 fn app_random_branch_plan_must_name_the_launched_node() -> Result<(), Box<dyn std::error::Error>> {
-    let stream = crucible_protocol::app_random_transport::app_random_stream_name("b", "draw");
-    let entry = crucible_protocol::app_random_branch_plan::AppRandomBranchPlanEntry::new(
+    let stream = crucible_qemu_protocol::app_random_transport::app_random_stream_name("b", "draw");
+    let entry = crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlanEntry::new(
         0, 7, 9, [0x5a; 32], stream,
     )?;
-    let plan = crucible_protocol::app_random_branch_plan::AppRandomBranchPlan::new(vec![entry])?;
+    let plan = crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan::new(vec![entry])?;
     let config = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0)
         .with_whitebox(QemuLaunchPluginSwitch::On)
         .with_whitebox_setup(
@@ -162,7 +162,7 @@ fn app_random_branch_plan_must_name_the_launched_node() -> Result<(), Box<dyn st
 
 #[test]
 fn selectable_catalog_requires_whitebox_mode() -> Result<(), Box<dyn std::error::Error>> {
-    use crucible_protocol::selectable_catalog_plan::{
+    use crucible_qemu_protocol::selectable_catalog_plan::{
         SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
         SelectablePlanLimits, SelectablePlanPresence,
     };

@@ -8,8 +8,9 @@ use super::{PLUGIN_PACKAGE, display_repo_path, visit_rust_sources, workspace_cra
 #[test]
 fn guest_assertion_evaluation_stays_in_the_host() -> Result<(), Box<dyn Error>> {
     let crates = workspace_crates_dir()?;
-    let host_evaluator =
-        fs::read_to_string(crates.join("crucible/engine/crucible-engine/src/trigger/guest_assertion_observation.rs"))?;
+    let host_evaluator = fs::read_to_string(
+        crates.join("crucible/engine/crucible-engine/src/trigger/guest_assertion_observation.rs"),
+    )?;
     for marker in [
         "observe_guest_marker_assertion_state",
         "HostAssertionOutcomeKind::Violated",

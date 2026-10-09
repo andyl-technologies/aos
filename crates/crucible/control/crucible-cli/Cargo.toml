@@ -54,7 +54,7 @@ zeroize = { workspace = true }
 [dev-dependencies]
 crucible-control-api = { path = "../crucible-control-api" }
 crucible-store = { path = "../../storage/crucible-store" }
-crucible-core = { package = "crucible-engine", path = "../../engine/crucible-engine", features = ["test-support"] }
+crucible-engine = { path = "../../engine/crucible-engine", features = ["test-support"] }
 crucible-daemon = { path = "../crucible-daemon", features = ["test-support"] }
 crucible-device = { path = "../../engine/crucible-device" }
 crucible-test-support = { path = "../../testing/crucible-test-support" }

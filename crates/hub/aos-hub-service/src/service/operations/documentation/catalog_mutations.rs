@@ -17,7 +17,7 @@ impl RpcService {
         release: Option<&str>,
     ) -> Result<
         (
-            crate::db::NativeDocumentationLocator,
+            aos_hub_db::db::NativeDocumentationLocator,
             aos_module_docs::runtime::RuntimeDocument,
         ),
         RpcError,
@@ -28,7 +28,8 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("native package documentation"))?;
-        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry_id));
+        let fetch =
+            self.topology_surface_fetcher(aos_hub_db::db::SurfaceTarget::Registry(registry_id));
         let document = crate::indexer::native_documentation::fetch_native_documentation(
             fetch.as_ref(),
             &locator.package,

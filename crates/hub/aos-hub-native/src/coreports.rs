@@ -29,15 +29,15 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 
-use aos_hub_model::binding::BindingKind;
 use aos_hub_db::db::{Database, RegistryRecord, SurfacePlacementRecord};
+use aos_hub_model::binding::BindingKind;
+use aos_hub_model::secret_version::{
+    validate_secret_version_ref, ResolvedSecretVersion, SecretVersionResolver,
+};
 use aos_hub_service::fetch as core_fetch;
 use aos_hub_service::ratelimit as core_rl;
 use aos_hub_service::reindex as core_reindex;
 use aos_hub_service::s3surface::{Method as S3Method, S3Surface};
-use aos_hub_model::secret_version::{
-    validate_secret_version_ref, ResolvedSecretVersion, SecretVersionResolver,
-};
 use aos_hub_service::storage_credential::{
     DatabaseStorageCredentialResolver, StorageCredentialResolver,
 };
@@ -266,7 +266,9 @@ impl CloudflareControlPlaneClient {
 }
 
 #[async_trait]
-impl aos_hub_service::topology_probe::CloudflareControlPlaneClient for CloudflareControlPlaneClient {
+impl aos_hub_service::topology_probe::CloudflareControlPlaneClient
+    for CloudflareControlPlaneClient
+{
     async fn get(&self, path: &str) -> Result<Vec<u8>> {
         anyhow::ensure!(
             path.starts_with("/client/v4/") && !path.contains(['?', '#']),
@@ -816,16 +818,18 @@ impl core_fetch::SurfaceProvider for HubSurfaceProvider {
                 }
                 Ok(Box::new(fetch))
             }
-            Some(BindingKind::DeploymentR2) => {
-                Err(aos_hub_service::placement_read::terminal_read_error(format!(
+            Some(BindingKind::DeploymentR2) => Err(
+                aos_hub_service::placement_read::terminal_read_error(format!(
                     "placement '{}' uses Worker-only deployment R2 storage",
                     placement.name
-                )))
-            }
-            None => Err(aos_hub_service::placement_read::terminal_read_error(format!(
-                "placement '{}' uses unknown binding kind '{}'",
-                placement.name, binding.kind
-            ))),
+                )),
+            ),
+            None => Err(aos_hub_service::placement_read::terminal_read_error(
+                format!(
+                    "placement '{}' uses unknown binding kind '{}'",
+                    placement.name, binding.kind
+                ),
+            )),
         }
     }
 
@@ -2074,9 +2078,9 @@ impl core_fetch::SurfaceFetch for S3Fetch {
             cursor.is_none_or(|value| value.len() <= core_fetch::MAX_SURFACE_LIST_CURSOR_BYTES),
             "S3 listing cursor is too large"
         );
-        let url = self
-            .surface
-            .list_url(prefix, cursor, limit, aos_hub_model::clock::now_unix_secs())?;
+        let url =
+            self.surface
+                .list_url(prefix, cursor, limit, aos_hub_model::clock::now_unix_secs())?;
         let response = send_s3_request(&self.http, reqwest::Method::GET, &url, None, None, None)
             .await
             .with_context(|| format!("s3 list {}", self.surface.describe()))?;
@@ -2142,7 +2146,11 @@ impl core_fetch::SurfaceFetch for S3Fetch {
             .and_then(|value| value.to_str().ok())
             .map(str::trim)
             .map(str::to_string);
-        Ok(etag.filter(|value| aos_hub_service::surface_write::strong_if_match_etag(value).is_ok()))
+        Ok(
+            etag.filter(|value| {
+                aos_hub_service::surface_write::strong_if_match_etag(value).is_ok()
+            }),
+        )
     }
 
     fn describe(&self) -> String {

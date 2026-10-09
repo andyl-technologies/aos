@@ -49,14 +49,14 @@ use super::remove::retained_installed_indexes;
 use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
 use super::store::{closure_paths, create_gc_roots, filter_missing};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
-use super::types::{
-    PackageInventoryDetails, InstalledPackageRecord, PackageMeta, RegistryRootConfig, validate_attestation_provenance_ref,
-    validate_registry_name,
-};
 use super::verify::verify_downloads;
 use crate::error::PackageError;
-use aos_nar::info as narinfo;
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_deployment_format::inventory::{InstalledPackageRecord, PackageInventoryDetails};
+use aos_nar::info as narinfo;
+use aos_registry_format::consumer::{
+    PackageMeta, RegistryRootConfig, validate_attestation_provenance_ref, validate_registry_name,
+};
 
 pub(crate) mod acquire;
 pub(crate) mod native;
@@ -1279,7 +1279,10 @@ fn resolve_install_closures(
 }
 
 /// The registry an installed package was originally installed from, if any.
-fn installed_source_registry<'a>(package: &str, installed: &'a [InstalledPackageRecord]) -> Option<&'a str> {
+fn installed_source_registry<'a>(
+    package: &str,
+    installed: &'a [InstalledPackageRecord],
+) -> Option<&'a str> {
     let mut fallback = None;
 
     for meta in installed {
@@ -1370,7 +1373,10 @@ fn ensure_reinstall_targets_installed(
 }
 
 /// Look up the apm metadata record for a store-path hash, if installed.
-fn installed_apm_for_hash<'a>(installed: &'a [InstalledPackageRecord], hash: &str) -> Option<&'a PackageInventoryDetails> {
+fn installed_apm_for_hash<'a>(
+    installed: &'a [InstalledPackageRecord],
+    hash: &str,
+) -> Option<&'a PackageInventoryDetails> {
     installed.iter().find_map(|meta| {
         if store_path_hash(&meta.store_path) == hash {
             meta.apm.as_ref()
@@ -1958,7 +1964,7 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::profile::Generation;
-    use crate::types::AttestationMeta;
+    use aos_registry_format::consumer::AttestationMeta;
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
 
@@ -2080,7 +2086,7 @@ mod tests {
     #[test]
     fn platform_returns_valid() {
         let p = native_platform();
-        crate::types::validate_platform_name(&p).unwrap();
+        aos_registry_format::consumer::validate_platform_name(&p).unwrap();
     }
 
     fn sample_package(name: &str, version: &str, store_path: &str) -> PackageMeta {
@@ -2196,7 +2202,7 @@ mod tests {
         let root_hash = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
         let binding_digest =
             "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
-        let measurement = crate::package_attestation::package_measurement_digest(
+        let measurement = aos_registry_format::measurement::package_measurement_digest(
             "web",
             "1.0.0",
             root_hash,
@@ -2667,13 +2673,13 @@ source_nar_hash = ""
         let low_path = "/nix/store/llllllllllllllllllllllllllllllll-switch-tool-1.0.0";
         let high_toml = package_toml("switch-tool", "1.0.0", high_path);
         let low_toml = package_toml("switch-tool", "1.0.0", low_path);
-        let high = aos_registry_client::registry::tests::make_registry(
+        let high = aos_registry_client::registry::test_support::make_registry(
             &tmp,
             "high-priority",
             900,
             &[("switch-tool", high_toml.as_str())],
         );
-        let low = aos_registry_client::registry::tests::make_registry(
+        let low = aos_registry_client::registry::test_support::make_registry(
             &tmp,
             "low-priority",
             100,
@@ -2703,13 +2709,13 @@ source_nar_hash = ""
         let low_path = "/nix/store/llllllllllllllllllllllllllllllll-priority-tool-9.0.0";
         let high_toml = package_toml("priority-tool", "2.0.0", high_path);
         let low_toml = package_toml("priority-tool", "9.0.0", low_path);
-        let high = aos_registry_client::registry::tests::make_registry(
+        let high = aos_registry_client::registry::test_support::make_registry(
             &tmp,
             "high-priority",
             900,
             &[("priority-tool", high_toml.as_str())],
         );
-        let low = aos_registry_client::registry::tests::make_registry(
+        let low = aos_registry_client::registry::test_support::make_registry(
             &tmp,
             "low-priority",
             100,

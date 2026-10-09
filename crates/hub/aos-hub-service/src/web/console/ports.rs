@@ -6,12 +6,12 @@
 
 use std::sync::Arc;
 
-use crate::auth::jwt::JwtKeys;
+use aos_hub_model::auth::jwt::JwtKeys;
 use crate::auth::magic::Mailer;
-use crate::auth::seal::SecretSealer;
-use crate::backend::BackendBounds;
-use crate::db::Database;
+use aos_hub_model::auth::seal::SecretSealer;
 use crate::ratelimit::RateLimiter;
+use aos_hub_db::backend::BackendBounds;
+use aos_hub_db::db::Database;
 
 /// Dependencies carried by the shared authentication and app-shell router.
 #[derive(Clone)]

@@ -184,7 +184,7 @@ impl RpcService {
         let owner = input.owner_grant.ok_or_else(|| {
             RpcError::internal(anyhow::anyhow!("stage plan has no owner grant seal"))
         })?;
-        let owner = crate::db::EndpointGrantCarryForward {
+        let owner = aos_hub_db::db::EndpointGrantCarryForward {
             consumer_scope_key: owner.consumer_scope_key,
             grant_generation: owner.grant_generation,
             resource_version: owner.resource_version,
@@ -192,7 +192,7 @@ impl RpcService {
         let carried = input
             .carried_grants
             .into_iter()
-            .map(|seal| crate::db::EndpointGrantCarryForward {
+            .map(|seal| aos_hub_db::db::EndpointGrantCarryForward {
                 consumer_scope_key: seal.consumer_scope_key,
                 grant_generation: seal.grant_generation,
                 resource_version: seal.resource_version,

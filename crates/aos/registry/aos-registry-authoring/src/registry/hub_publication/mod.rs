@@ -2,13 +2,13 @@
 
 use anyhow::{Context as _, Result};
 use aos_cli_ui::output::Printer;
+use aos_hub_client::{HubClient, hub_rpc as HubTopologyMethod, hub_types};
 use aos_transfer::retry::{RetryConfig, compute_retry_delay};
 use aos_transfer::{
     MultipartAdmission, MultipartBackend, MultipartFailurePolicy, MultipartSessionState,
     MultipartSource, MultipartUploadRequest, TransferEvent, TransferManager, TransferManagerConfig,
     TransferObserver,
 };
-use aos_hub_client::{HubClient, hub_rpc as HubTopologyMethod, hub_types};
 use futures_util::stream;
 use futures_util::stream::{StreamExt as _, TryStreamExt as _};
 use inventory::{
@@ -225,8 +225,10 @@ async fn upload_registry_publication_with_commit(
                 .filter(|namespace| !namespace.is_empty());
             let wire_repository =
                 super::container_stage::namespaced_repository(namespace, &container.repository)?;
-            let (_, token) =
-                aos_registry_client::hub_auth::resolve_access(access.hub.as_deref(), access.token.as_deref())?;
+            let (_, token) = aos_registry_client::hub_auth::resolve_access(
+                access.hub.as_deref(),
+                access.token.as_deref(),
+            )?;
             let state_directory = super::container_stage::container_upload_state_directory(
                 &origin,
                 &wire_repository,
@@ -803,6 +805,12 @@ async fn bind_publication_parent(
     Ok(())
 }
 
+/// Reserves a Hub publication through bounded manifest upload chunks.
+///
+/// # Errors
+///
+/// Returns an error for an empty or oversized manifest, inconsistent object
+/// identities, or a failed Hub manifest-session request.
 pub async fn begin_registry_publication_chunked(
     client: &HubClient,
     request: &hub_types::BeginRegistryPublicationRequest,

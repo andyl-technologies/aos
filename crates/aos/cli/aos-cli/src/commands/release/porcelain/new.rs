@@ -269,7 +269,7 @@ pub(super) async fn run(args: &ReleaseNewArgs, nix: &NixRunner, printer: &Printe
     }
 
     let plan_bytes = capture::control_file(&work.plan(), "release plan")?;
-    let plan: aos_release::plan::ReleasePlan = canonical::from_slice(&plan_bytes, "release plan")?;
+    let plan: aos_release_format::plan::ReleasePlan = canonical::from_slice(&plan_bytes, "release plan")?;
     printer.kv("Plan digest", &digest_string(&plan_bytes));
     if let Some(scope) = &plan.change_scope {
         printer.kv("Change scope", &scope.reason);
@@ -701,14 +701,14 @@ pub(super) fn predecessor(
     };
     let captured = capture::bundle(bundle)?;
     let trusted = super::super::verify::load_trusted_keys(&keys::trusted(config)?)?;
-    let summary = aos_release::verify::verify_release(
+    let summary = aos_release_format::verify::verify_release(
         &captured.plan_bytes,
         &captured.manifest_bytes,
         &captured.files,
         &trusted,
     )
     .with_context(|| format!("verifying predecessor bundle {}", bundle.display()))?;
-    let plan: aos_release::plan::ReleasePlan =
+    let plan: aos_release_format::plan::ReleasePlan =
         canonical::from_slice(&captured.plan_bytes, "predecessor plan")?;
     if plan.registry != config.registry {
         bail!("predecessor bundle belongs to registry {}", plan.registry);

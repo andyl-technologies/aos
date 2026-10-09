@@ -425,18 +425,15 @@ impl RpcService {
                 "placement already exists".to_string(),
             ));
         }
-        let hash_range =
-            input
-                .request
-                .hash_range
-                .as_ref()
-                .map(|range| crate::db::SurfacePlacementHashRange {
-                    start: i64::from(range.start),
-                    end: i64::from(range.end),
-                });
+        let hash_range = input.request.hash_range.as_ref().map(|range| {
+            aos_hub_db::db::SurfacePlacementHashRange {
+                start: i64::from(range.start),
+                end: i64::from(range.end),
+            }
+        });
         let placement = self
             .db
-            .create_surface_placement(&crate::db::NewSurfacePlacementSpec {
+            .create_surface_placement(&aos_hub_db::db::NewSurfacePlacementSpec {
                 surface,
                 name: input.request.name.clone(),
                 binding_id: input.binding_db_id,
@@ -527,7 +524,7 @@ impl RpcService {
             self.db
                 .update_surface_placement(
                     current.id,
-                    &crate::db::UpdateSurfacePlacementSpec {
+                    &aos_hub_db::db::UpdateSurfacePlacementSpec {
                         expected_version: input.baseline_resource_version,
                         desired_state: input.request.desired_state.clone(),
                         desired_read_enabled: input.request.desired_read_enabled.unwrap_or(false),
@@ -817,13 +814,15 @@ impl RpcService {
             Some(operation) => operation,
             None => self
                 .db
-                .create_topology_operation(&crate::db::NewTopologyOperation {
+                .create_topology_operation(&aos_hub_db::db::NewTopologyOperation {
                     operation_id,
                     operation_kind: "drain_placement".to_string(),
                     control_permission: Permission::StorageManage,
-                    targets: vec![crate::db::NewTopologyOperationTarget {
+                    targets: vec![aos_hub_db::db::NewTopologyOperationTarget {
                         role: "primary".to_string(),
-                        target: crate::db::NewTopologyOperationTargetRef::Placement(placement.id),
+                        target: aos_hub_db::db::NewTopologyOperationTargetRef::Placement(
+                            placement.id,
+                        ),
                         generation_key: placement.resource_version,
                         configuration_digest: String::new(),
                     }],
@@ -1042,7 +1041,7 @@ impl RpcService {
             .db
             .update_surface_placement(
                 placement_id,
-                &crate::db::UpdateSurfacePlacementSpec {
+                &aos_hub_db::db::UpdateSurfacePlacementSpec {
                     expected_version,
                     desired_state: "draining".to_string(),
                     desired_read_enabled: false,
@@ -1069,22 +1068,26 @@ impl RpcService {
         }
         let operation = self
             .db
-            .create_topology_operation(&crate::db::NewTopologyOperation {
+            .create_topology_operation(&aos_hub_db::db::NewTopologyOperation {
                 operation_id: hex::encode(Sha256::digest(
                     format!("evict:{}:{}", req.plan_id, req.idempotency_key).as_bytes(),
                 )),
                 operation_kind: "placement_eviction".to_string(),
                 control_permission: Permission::CacheGcExecute,
                 targets: vec![
-                    crate::db::NewTopologyOperationTarget {
+                    aos_hub_db::db::NewTopologyOperationTarget {
                         role: "primary".to_string(),
-                        target: crate::db::NewTopologyOperationTargetRef::BinaryCache(cache.id),
+                        target: aos_hub_db::db::NewTopologyOperationTargetRef::BinaryCache(
+                            cache.id,
+                        ),
                         generation_key: 0,
                         configuration_digest: String::new(),
                     },
-                    crate::db::NewTopologyOperationTarget {
+                    aos_hub_db::db::NewTopologyOperationTarget {
                         role: "placement".to_string(),
-                        target: crate::db::NewTopologyOperationTargetRef::Placement(placement_id),
+                        target: aos_hub_db::db::NewTopologyOperationTargetRef::Placement(
+                            placement_id,
+                        ),
                         generation_key: updated.resource_version,
                         configuration_digest: String::new(),
                     },

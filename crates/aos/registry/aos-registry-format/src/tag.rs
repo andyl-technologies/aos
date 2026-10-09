@@ -10,10 +10,10 @@
 //! `aos_registry_client::registry::verify` re-exports) so the two readers cannot
 //! drift on the format.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use super::sshsig;
-use super::tagobject::{parse_tag_object, verify_name_binding, TagObject};
+use super::tagobject::{TagObject, parse_tag_object, verify_name_binding};
 
 const ARMOR_BEGIN: &str = "-----BEGIN SSH SIGNATURE-----";
 

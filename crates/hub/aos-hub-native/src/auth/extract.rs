@@ -11,7 +11,7 @@
 //!   plane); [`MaybeSession`] is its optional sibling for anonymous-capable
 //!   pages.
 //! OAuth device, refresh, and provisioning grants are handled by the shared
-//! runtime-neutral router in `aos-hub-core` so native and Worker deployments
+//! runtime-neutral router in `aos-hub-service` so native and Worker deployments
 //! expose one contract.
 //!
 //! # Two authorization paths

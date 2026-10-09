@@ -7,16 +7,16 @@
 
 use std::fmt::Write as _;
 
-use crate::clock::Instant;
-use crate::db::{
-    IndexStatus, OciAdminManifestRecord, OciAdminPlatformRecord, OciAdminRepositoryRecord,
-    OciAdminTagRecord, RegistryRecord,
-};
 use crate::web::browse::BrowseQuery;
 use crate::web::browse_pages::{catalog_select, registry_crumbs, registry_nav, state_line};
 use crate::web::console_render::{page_with_session, urlencode, Pager, SessionIndicator};
 use crate::web::release_browse::ReleaseContext;
 use crate::web::render::{escape, human_size, table};
+use aos_hub_db::db::{
+    IndexStatus, OciAdminManifestRecord, OciAdminPlatformRecord, OciAdminRepositoryRecord,
+    OciAdminTagRecord, RegistryRecord,
+};
+use aos_hub_model::clock::Instant;
 use aos_oci_types::RepositoryName;
 
 fn repository_href(slug: &str, repository: &RepositoryName) -> String {
@@ -50,7 +50,7 @@ pub(crate) fn release_index(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     context: &ReleaseContext,
-    containers: &[crate::db::ReleaseContainerRow],
+    containers: &[aos_hub_db::db::ReleaseContainerRow],
     authority: Option<&str>,
     browse: &BrowseQuery,
     started: Instant,
@@ -649,7 +649,7 @@ mod tests {
         let registry = test_registry();
         let releases = ["1.0.0", "2.0.0", "3.0.0"]
             .into_iter()
-            .map(|version| crate::db::ReleaseRow {
+            .map(|version| aos_hub_db::db::ReleaseRow {
                 semver: version.into(),
                 tag_oid: format!("tag-{version}"),
                 commit_oid: format!("commit-{version}"),
@@ -660,7 +660,7 @@ mod tests {
             .collect();
         let context = ReleaseContext::select_among(
             releases,
-            vec![crate::db::ChannelSummary {
+            vec![aos_hub_db::db::ChannelSummary {
                 name: "stable".into(),
                 frontier: Some("2.0.0".into()),
                 partitions: vec![Some("1.0.0".into())],
@@ -671,7 +671,7 @@ mod tests {
         )
         .unwrap();
         let mut containers = (0..30)
-            .map(|index| crate::db::ReleaseContainerRow {
+            .map(|index| aos_hub_db::db::ReleaseContainerRow {
                 release: "1.0.0".into(),
                 repository: RepositoryName::parse(&format!("web{index:02}")).unwrap(),
                 package: format!("web{index:02}"),

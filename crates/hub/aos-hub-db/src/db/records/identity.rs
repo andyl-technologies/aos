@@ -63,7 +63,7 @@ pub struct OidcFlowRecord {
 
 /// A registered passkey / WebAuthn credential (system-of-record row).
 ///
-/// Created at [`aos_hub_model::auth::webauthn::finish_registration`] and looked up by
+/// Created at the service WebAuthn registration flow and looked up by
 /// [`Database::webauthn_credential_by_id`] on every assertion. The hub stores
 /// only the public key (the `attestation: none` policy means no attestation
 /// statement is ever persisted), so a database leak yields nothing usable for

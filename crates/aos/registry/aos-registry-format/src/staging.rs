@@ -8,7 +8,7 @@
 //! {"schema":"aos.registry-stage/v1","id":"candidate","registry":"example/main","revision":1,"release_id":"1.0.0","source_branch":"maintainer/candidate","commit":"0000000000000000000000000000000000000000","inventory_digest":"sha256:...","inventory":[],"store_roots":[]}
 //! ```
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 

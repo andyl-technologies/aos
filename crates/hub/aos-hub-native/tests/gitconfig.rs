@@ -166,10 +166,11 @@ async fn surface_ports(
         .into_iter()
         .next()
         .unwrap();
-    let fetch = aos_hub_native::coreports::HubSurfaceProvider::new(Arc::clone(db), http.clone(), None)
-        .placement_fetcher(&placement)
-        .await
-        .unwrap();
+    let fetch =
+        aos_hub_native::coreports::HubSurfaceProvider::new(Arc::clone(db), http.clone(), None)
+            .placement_fetcher(&placement)
+            .await
+            .unwrap();
     let writer = aos_hub_native::coreports::HubSurfaceWriteProvider::new(Arc::clone(db), http)
         .placement_writer(&placement)
         .await

@@ -11,10 +11,12 @@ use std::ffi::OsStr;
 use anyhow::{Result, bail};
 
 use crate::{
-    ApmRegistryCommand, AttestCommand, BranchCommand, CacheCommand, ChangeCommand, ChannelCommand,
-    CredentialCommand, DocumentationCacheCommand, DocumentationCommand, ImageCommand, KeysCommand,
-    OriginCommand, PackageCommand, RegistryCommand, RegistryStageCommand, RuntimeConfigCommand,
-    StoreCommand, TrustCommand,
+    ApmRegistryCommand, AttestCommand, CredentialCommand, DocumentationCacheCommand,
+    DocumentationCommand, ImageCommand, PackageCommand, RuntimeConfigCommand,
+};
+use aos_registry_authoring::{
+    BranchCommand, CacheCommand, ChangeCommand, ChannelCommand, KeysCommand, OriginCommand,
+    RegistryCommand, RegistryStageCommand, StoreCommand, TrustCommand,
 };
 
 const RUNTIME_ENV: &str = "AOS_RUNTIME";
@@ -44,15 +46,15 @@ impl RuntimeBoundary {
         }
     }
 
-    fn profile_scope(self, system: bool) -> crate::types::ProfileScope {
+    fn profile_scope(self, system: bool) -> aos_registry_client::types::ProfileScope {
         if system && !self.container {
-            crate::types::ProfileScope::System
+            aos_registry_client::types::ProfileScope::System
         } else {
-            crate::types::ProfileScope::User
+            aos_registry_client::types::ProfileScope::User
         }
     }
 
-    fn configuration_scope(self) -> crate::types::ProfileScope {
+    fn configuration_scope(self) -> aos_registry_client::types::ProfileScope {
         self.profile_scope(true)
     }
 
@@ -84,7 +86,7 @@ pub(crate) fn is_container() -> bool {
 /// Container package and registry operations share the user profile seeded by
 /// their image. `--system` aliases that same profile rather than creating a
 /// separate namespace that container startup cannot recover or activate.
-pub(crate) fn profile_scope(system: bool) -> crate::types::ProfileScope {
+pub(crate) fn profile_scope(system: bool) -> aos_registry_client::types::ProfileScope {
     RuntimeBoundary::from_env().profile_scope(system)
 }
 
@@ -92,7 +94,7 @@ pub(crate) fn profile_scope(system: bool) -> crate::types::ProfileScope {
 ///
 /// Container configuration extends the ordinary user package profile seeded by
 /// the image. Machine configuration continues to own the system profile.
-pub(crate) fn configuration_scope() -> crate::types::ProfileScope {
+pub(crate) fn configuration_scope() -> aos_registry_client::types::ProfileScope {
     RuntimeBoundary::from_env().configuration_scope()
 }
 
@@ -476,7 +478,7 @@ mod tests {
 
     #[test]
     fn requested_scopes_share_the_container_runtime_profile() {
-        use crate::types::ProfileScope;
+        use aos_registry_client::types::ProfileScope;
 
         let machine = RuntimeBoundary::default();
         let container = RuntimeBoundary::from_values(Some(OsStr::new("container")), None);
@@ -499,7 +501,7 @@ mod tests {
 
     #[test]
     fn operator_configuration_uses_the_profile_seeded_by_its_runtime() {
-        use crate::types::ProfileScope;
+        use aos_registry_client::types::ProfileScope;
 
         let container = RuntimeBoundary::from_values(Some(OsStr::new("container")), None);
         let read_only =

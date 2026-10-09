@@ -48,17 +48,16 @@ tokio-rustls = { workspace = true }
 async-trait = { workspace = true }
 tempfile = { workspace = true }
 aos-core = { workspace = true }
-aos-package-manager = { workspace = true }
 aos-hub-service = { workspace = true }
 aos-registry-format = { workspace = true }
 
 [features]
 default = []
 # Enable the postgres / mysql sqlx Database backends (RFC-0004 phase 5). sqlite
-# is always compiled in; these delegate to aos-hub-core, where the
-# SqlxBackend driver and its feature-gated enum arms now live.
-postgres = ["aos-hub-service/postgres"]
-mysql = ["aos-hub-service/mysql"]
+# is always compiled in; native drivers and their gated enum arms live in
+# aos-hub-db.
+postgres = ["aos-hub-db/postgres"]
+mysql = ["aos-hub-db/mysql"]
 # Makes live-dialect configuration mandatory for the hermetic parity gate.
 # This is a test-only assertion switch; it does not change database behavior.
 required-live-dialects = ["aos-hub-service/do-e2e-test-support"]
@@ -74,7 +73,7 @@ aos-oci-types = { workspace = true }
 aos-hub-api = { workspace = true }
 aos-nix-cache = { workspace = true }
 aos-hub-client = { workspace = true }
-# The OIDC SSO verifier moved to aos-hub-core (RFC-0004 Phase 5,
+# The OIDC SSO verifier moved to aos-hub-service (RFC-0004 Phase 5,
 # console-dedup stage F), so the hub no longer needs jsonwebtoken at build time.
 # The OIDC e2e test (`tests/oidc.rs`) still uses it to *encode* the signed
 # id_tokens its fake IdP serves, so it stays as a dev-dependency only.

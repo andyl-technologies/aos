@@ -1,7 +1,5 @@
 //! Package publication orchestration and its exclusive authoring-clone lock.
 
-use aos_registry_client::config::ApmConfig;
-use aos_registry_client::provenance::ProvenanceSigner;
 use crate::registry::{objectstore, store};
 use crate::registry_ops::config::{format_size, registry_content_addressed, resolve_registry_name};
 use crate::registry_ops::git::{
@@ -16,9 +14,11 @@ use crate::registry_ops::store_paths::{
     resolve_publish_platform, validate_store_path_release_policy, write_store_files,
 };
 use crate::registry_ops::workflow::{current_git_branch, git_branch_entries};
-use aos_registry_client::types::{validate_package_name, validate_registry_name};
 use anyhow::{Context, Result, bail};
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::provenance::ProvenanceSigner;
+use aos_registry_format::consumer::{validate_package_name, validate_registry_name};
 use std::collections::BTreeSet;
 use std::fs;
 use std::fs::OpenOptions;
@@ -536,7 +536,7 @@ pub(crate) async fn publish_canonical_release_entry(
 pub(crate) fn preload_canonical_release_entries(
     store: &StoreQueries,
     dir: &Path,
-    entries: &[crate::registry::release::RegistryReleaseEntry],
+    entries: &[aos_registry_format::release::RegistryReleaseEntry],
     printer: &Printer,
 ) -> Result<()> {
     // Frozen entries include payloads and native publication companions.

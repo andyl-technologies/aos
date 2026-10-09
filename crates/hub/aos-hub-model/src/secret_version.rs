@@ -13,7 +13,7 @@ use anyhow::{Context as _, Result};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-use crate::runtime::RuntimeBounds as BackendBounds;
+use crate::runtime::RuntimeBounds;
 
 /// Drop-zeroed bytes owned only by runtime secret adapters.
 struct SecretBytes {
@@ -69,7 +69,7 @@ impl ResolvedSecretVersion {
 /// Resolves one exact opaque provider version without consulting Hub storage.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-pub trait SecretVersionResolver: BackendBounds {
+pub trait SecretVersionResolver: RuntimeBounds {
     /// Resolves `version_ref` to its current provider value.
     ///
     /// # Errors
@@ -81,7 +81,7 @@ pub trait SecretVersionResolver: BackendBounds {
 /// Test-only byte map for exercising exact-version consumers.
 ///
 /// Production native and Worker adapters retain only provider handles and
-/// resolve bytes on demand. This map is compiled only for core unit tests.
+/// resolve bytes on demand. This map is compiled only for model tests and explicit downstream fixtures.
 #[cfg(any(test, feature = "test-fixtures"))]
 pub struct BoundSecretVersionResolver {
     versions: BTreeMap<String, SecretBytes>,

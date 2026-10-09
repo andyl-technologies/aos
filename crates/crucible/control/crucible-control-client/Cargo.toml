@@ -23,7 +23,6 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }
-crucible-qemu-host = { path = "../../qemu/crucible-qemu-host" }
 crucible-control-server = { path = "../crucible-control-server" }
 crucible-engine = { path = "../../engine/crucible-engine", features = ["test-double", "test-support"] }
 crucible-session = { path = "../crucible-session", features = ["test-support"] }

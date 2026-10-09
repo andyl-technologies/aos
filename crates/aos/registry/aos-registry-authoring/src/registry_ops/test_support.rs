@@ -1,11 +1,5 @@
 //! Shared fixtures for registry operation tests.
 
-use aos_registry_client::config::ApmConfig;
-use aos_registry_client::provenance::TrustedProvenanceKey;
-#[cfg(test)]
-use aos_registry_client::provenance::sign_statement_dsse_jsonl;
-use aos_registry_client::registry::keys::{KeysToml, RevokedKey, RosterKey};
-use aos_registry_client::registry::store::{DepEdge, NarBytes, Realisation};
 use crate::registry::{keys, store};
 use crate::registry_ops::attestation::package_nar_root_digest;
 use crate::registry_ops::git::git;
@@ -20,10 +14,6 @@ use crate::registry_ops::provenance::{
 use crate::registry_ops::release::ReleaseTreeOptions;
 use crate::registry_ops::store_paths::{RELEASE_POLICY_RELATIVE_PATH, StorePathInfo, extract_hash};
 use crate::testutil;
-use aos_registry_client::types::{
-    ApmSettings, AttestationMeta, ProfileScope, RegistryConfig, RegistryUploadAuthConfig,
-    SigningKeySource,
-};
 use anyhow::{Context, Result};
 use aos_nix_cache::AuthOptions;
 use aos_oci_types::{
@@ -33,6 +23,16 @@ use aos_oci_types::{
     ContainerOciRelease, ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity,
     ContainerSignatureInput, ContainerSignatureInputEvidence, Descriptor, MediaType,
     NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest,
+};
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::provenance::TrustedProvenanceKey;
+#[cfg(test)]
+use aos_registry_client::provenance::sign_statement_dsse_jsonl;
+use aos_registry_client::registry::keys::{KeysToml, RevokedKey, RosterKey};
+use aos_registry_client::registry::store::{DepEdge, NarBytes, Realisation};
+use aos_registry_client::types::{ApmSettings, ProfileScope};
+use aos_registry_format::consumer::{
+    AttestationMeta, RegistryConfig, RegistryUploadAuthConfig, SigningKeySource,
 };
 use serde_json::Value;
 use std::fs;
@@ -407,7 +407,8 @@ pub(in crate::registry_ops) fn signed_provenance_statement(
         retired_before_sequence: None,
     }];
     let (statement, key_id) =
-        aos_registry_client::provenance::verify_statement_dsse_jsonl(&artifact.jsonl, &trusted).unwrap();
+        aos_registry_client::provenance::verify_statement_dsse_jsonl(&artifact.jsonl, &trusted)
+            .unwrap();
     assert_eq!(key_id, TEST_PROVENANCE_KEY_ID);
     statement
 }

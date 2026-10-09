@@ -122,3 +122,62 @@ fn narinfo_store_hash(entry: &str) -> String {
 
 /// Initial cursor preceding all exact JavaScript Unix timestamps.
 pub const CACHE_WRITE_RECOVERY_CURSOR_START: i64 = -9_007_199_254_740_991;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn narinfo_store_hash_strips_path_and_name() {
+        assert_eq!(narinfo_store_hash("/nix/store/abc123-foo-1.0"), "abc123");
+        assert_eq!(narinfo_store_hash("abc123-foo-1.0"), "abc123");
+        assert_eq!(narinfo_store_hash("abc123"), "abc123");
+    }
+
+    #[test]
+    fn parse_narinfo_extracts_fields_and_refs() {
+        let text = "StorePath: /nix/store/abc-foo-1.0\n\
+                        URL: nar/deadbeef.nar.zst\n\
+                        Compression: zstd\n\
+                        NarHash: sha256:aaa\n\
+                        NarSize: 100\n\
+                        FileHash: sha256:bbb\n\
+                        FileSize: 50\n\
+                        References: abc-foo-1.0 def-bar-2.0\n\
+                        Deriver: ghi-foo.drv\n\
+                        Sig: key:sigvalue\n";
+        let o = parse_cache_narinfo(7, "abc", text, 123).unwrap();
+        assert_eq!(o.cache_id, 7);
+        assert_eq!(o.store_hash, "abc");
+        assert_eq!(o.store_name, "abc-foo-1.0");
+        assert_eq!(o.nar_url, "nar/deadbeef.nar.zst");
+        assert_eq!(o.compression, "zstd");
+        assert_eq!(o.nar_size, 100);
+        assert_eq!(o.file_size, 50);
+        assert_eq!(o.references, vec!["abc".to_string(), "def".to_string()]);
+        assert_eq!(o.deriver.as_deref(), Some("ghi-foo.drv"));
+        assert_eq!(o.signature.as_deref(), Some("key:sigvalue"));
+        assert_eq!(o.published_at, 123);
+    }
+
+    #[test]
+    fn parse_narinfo_keeps_multiple_sig_lines() {
+        let text = "StorePath: /nix/store/x-a\nURL: nar/y.nar\nSig: k1:a\nSig: k2:b\n";
+        let o = parse_cache_narinfo(1, "x", text, 0).unwrap();
+        assert_eq!(o.signature.as_deref(), Some("k1:a\nk2:b"));
+    }
+
+    #[test]
+    fn parse_narinfo_empty_compression_keeps_default() {
+        let text = "StorePath: /nix/store/x-a\nURL: nar/y.nar\nCompression:\n";
+        let o = parse_cache_narinfo(1, "x", text, 0).unwrap();
+        assert_eq!(o.compression, "none");
+    }
+
+    #[test]
+    fn parse_narinfo_requires_storepath_and_url() {
+        assert!(parse_cache_narinfo(1, "x", "Compression: zstd\n", 0).is_none());
+        assert!(parse_cache_narinfo(1, "x", "StorePath: /nix/store/x-a\n", 0).is_none());
+    }
+
+}

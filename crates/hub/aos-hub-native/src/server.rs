@@ -86,7 +86,7 @@ pub struct AppState {
     /// Verifier for short-lived assertions from an explicitly configured TLS,
     /// VPN, or layer-7 ingress adapter.
     pub delivery_attestation_verifier:
-        Option<Arc<aos_hub_model::delivery_attestation::DeliveryAttestationVerifier>>,
+        Option<Arc<aos_hub_service::delivery_attestation::DeliveryAttestationVerifier>>,
     /// Runtime-owned signer material for the domain-probe well-known route.
     pub domain_probe_terminator:
         Option<Arc<dyn aos_hub_service::topology_probe::DomainProbeTerminatorProvider>>,
@@ -94,11 +94,13 @@ pub struct AppState {
     pub identity_domain_verifier:
         Option<Arc<dyn aos_hub_service::topology_probe::IdentityDomainVerifier>>,
     /// Active and retained privacy keys for permanent route URL reservations.
-    pub route_reservation_keyring: Option<Arc<dyn aos_hub_service::service::RouteReservationKeyring>>,
+    pub route_reservation_keyring:
+        Option<Arc<dyn aos_hub_service::service::RouteReservationKeyring>>,
     /// Independent, fail-closed OCI container rollout policy.
     pub container_rollout: aos_hub_service::container_rollout::ContainerRollout,
     /// Deployment-owned release receipt authority.
-    pub release_evidence: Option<Arc<dyn aos_hub_service::release_evidence::ReleaseEvidenceAuthority>>,
+    pub release_evidence:
+        Option<Arc<dyn aos_hub_service::release_evidence::ReleaseEvidenceAuthority>>,
 }
 
 impl AppState {
@@ -384,7 +386,8 @@ async fn resolve_session(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let email = match aos_hub_service::web::session::session_secret_from_headers(request.headers()) {
+    let email = match aos_hub_service::web::session::session_secret_from_headers(request.headers())
+    {
         Some(secret) => state.db.session_email(&secret).await.ok().flatten(),
         None => None,
     };

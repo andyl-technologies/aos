@@ -1,7 +1,6 @@
 //! Shared support for `common`.
 
-#[path = "../workspace.rs"]
-mod workspace;
+use crate::workspace;
 
 use super::*;
 
@@ -21,7 +20,8 @@ pub(super) const NONDETERMINISTIC_BOUNDARY_PACKAGES: &[&str] = &[
     "crucible-store-s3",
 ];
 pub(super) const BINARY_BOUNDARY_PACKAGE: &str = "crucible-cli";
-pub(super) const BINARY_ENTRY_PACKAGES: &[&str] = &["crucible-qemu-debug-gateway", "crucible-guest"];
+pub(super) const BINARY_ENTRY_PACKAGES: &[&str] =
+    &["crucible-qemu-debug-gateway", "crucible-guest"];
 pub(super) const CLIPPY_DISALLOWED_METHODS: &[&str] = &[
     "std::time::Instant::now",
     "std::time::Instant::elapsed",

@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::db::{Database, InboundRouteRecord, RegistryRecord, SurfaceTarget};
+use aos_hub_db::db::{Database, InboundRouteRecord, RegistryRecord, SurfaceTarget};
 
 /// The registries one exact request host serves through enabled routes.
 ///

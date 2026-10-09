@@ -463,6 +463,44 @@ const STAGED_SELECT: &str = "SELECT stage.registry_id,
     ON revision.registry_id = stage.registry_id AND revision.stage_id = stage.stage_id
    AND revision.revision = stage.current_revision";
 
+/// A bounded persistence projection of one staged release's progress.
+///
+/// The application combines this record with OCI and multipart progress before
+/// constructing a transport response; persistence never constructs API messages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedReleaseSummary {
+    /// Stable draft-stage identity.
+    pub stage_id: String,
+    /// Current immutable stage revision.
+    pub revision: u64,
+    /// Release identity bound to the draft.
+    pub release_id: String,
+    /// Source branch selected for publication.
+    pub source_branch: String,
+    /// Verified source commit identity.
+    pub commit: String,
+    /// Digest of the retained object inventory.
+    pub inventory_digest: String,
+    /// Total number of declared objects.
+    pub object_count: u64,
+    /// Objects not yet verified at every required placement.
+    pub missing_object_count: u64,
+    /// Total size of the declared inventory.
+    pub total_bytes: u64,
+    /// Bytes verified at every required placement.
+    pub uploaded_bytes: u64,
+    /// Draft lifecycle state, including derived readiness.
+    pub state: String,
+    /// Associated publication identity, or an empty string.
+    pub publication_id: String,
+    /// Final published version, or an empty string.
+    pub released_version: String,
+    /// Creation time in Unix seconds.
+    pub created_at: i64,
+    /// Last lifecycle transition in Unix seconds.
+    pub updated_at: i64,
+}
+
 impl Database {
     /// Reconstructs an exact revision from bounded ordered provider pages.
     async fn staged_record(&self, row: &Row) -> Result<StagedReleaseRecord> {
@@ -638,7 +676,7 @@ impl Database {
         registry_id: i64,
         after: &str,
         limit: u32,
-    ) -> Result<Vec<aos_hub_api::StagedRelease>> {
+    ) -> Result<Vec<StagedReleaseSummary>> {
         self.backend.query(
             "SELECT stage.stage_id, stage.current_revision, stage.release_id,
                     stage.source_branch, stage.source_commit, stage.inventory_digest,
@@ -699,7 +737,7 @@ impl Database {
             let object_count = u64::try_from(row.get::<i64>(6)?)?;
             let publication_id: Option<String> = row.get(9)?;
             let state: String = row.get(8)?;
-            Ok(aos_hub_api::StagedRelease {
+            Ok(StagedReleaseSummary {
                 stage_id: row.get(0)?,
                 revision: u64::try_from(row.get::<i64>(1)?)?,
                 release_id: row.get(2)?,
@@ -719,7 +757,6 @@ impl Database {
                 released_version: row.get::<Option<String>>(10)?.unwrap_or_default(),
                 created_at: row.get(11)?,
                 updated_at: row.get(12)?,
-                ..Default::default()
             })
         }).collect()
     }

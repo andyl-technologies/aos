@@ -8,20 +8,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crucible_engine::{
-    Action, Checkpoint, CheckpointKind, Configuration, ContentHash, ControlOperationKind,
-    DebugAttachReport, DebugGdbEndpoint, Decision, DeliveryOrderDecision, EngineError,
-    EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogOffset, ExecutionFingerprint,
-    FingerprintSample, GdbListen, GenesisCheckpoint, LogLevel, NodeId, QuantumLoop, QuantumOutcome,
-    QuantumRequest, ScenarioDef, ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogEntry,
-    SchedulerOperationalFailureClass, SchedulerQuiescence, Seed, TemporalGraph, VirtualTime,
-    WhiteBoxPolicy, bake,
+    Checkpoint, CheckpointKind, Configuration, ContentHash, DebugAttachReport, DebugGdbEndpoint,
+    Decision, DeliveryOrderDecision, EngineError, EventAttributeValue, EventDiagnosticPayload,
+    EventLevel, EventLogOffset, ExecutionFingerprint, FingerprintSample, GdbListen,
+    GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef,
+    ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogEntry, SchedulerQuiescence, Seed,
+    TemporalGraph, VirtualTime, WhiteBoxPolicy, bake,
 };
+#[cfg(test)]
+use crucible_session::CheckpointRef;
 use crucible_session::{
-    BreakpointDisposition, BreakpointPolicy, CheckpointRef, CommandReply, DebugCapability,
-    DebugClientId, DebugControllerLease, DebugCoordinator, DebugCoordinatorError, DebugRole,
-    Engine, LiveSnapshot, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionActor,
-    SessionCommand, SessionCommandKind, SessionControlLogEntry, SessionControlPayload,
-    SessionControlResult, SessionError, SessionReproductionLog, SessionRunReport,
+    CommandReply, DebugCapability, DebugClientId, DebugControllerLease, DebugCoordinator,
+    DebugRole, Engine, LiveSnapshot, LiveStateKind, QueryKind, QueryResult, SessionActor,
+    SessionCommand, SessionCommandKind, SessionError, SessionReproductionLog, SessionRunReport,
     SessionStateTransitionBus,
 };
 use thiserror::Error;

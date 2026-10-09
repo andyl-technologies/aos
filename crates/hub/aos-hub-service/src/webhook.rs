@@ -1,6 +1,6 @@
 //! Commits portable webhook events to the durable delivery outbox.
 
-use crate::db::Database;
+use aos_hub_db::db::Database;
 pub use aos_hub_model::webhook::*;
 
 /// Commits one operational event to the canonical topology outbox.

@@ -4,7 +4,7 @@ use super::{
     CacheValidationEntry, collect_cache_validation_entries, remove_missing_cache_entries,
     validate_cache_entry,
 };
-use aos_registry_client::types::CacheEntry;
+use aos_registry_format::consumer::CacheEntry;
 use std::fs;
 use tempfile::TempDir;
 

@@ -12,6 +12,7 @@ python3 tools/dev/crate-migrate.py          # preview the initial migration
 python3 tools/dev/crate-migrate.py --apply  # apply it once
 python3 tools/dev/crate-migrate.py --check  # validate mapped targets and members
 python3 tools/dev/crate-migrate.py --report # classify remaining old names
+python3 tools/dev/tests/crate-migration.py  # validate lexical rewrite boundaries
 ```
 
 The initial migration has already been applied. Use `--check` and `--report` for

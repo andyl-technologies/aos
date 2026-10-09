@@ -30,7 +30,9 @@ impl Database {
             .transpose()?
             .flatten();
         match json {
-            Some(json) => Ok(Some(aos_registry_format::stack::StackNode::from_json(&json)?)),
+            Some(json) => Ok(Some(aos_registry_format::stack::StackNode::from_json(
+                &json,
+            )?)),
             None => Ok(None),
         }
     }

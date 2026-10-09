@@ -1,5 +1,9 @@
 //! Exercises dependency decisions without substituting publication authority.
 
+use std::path::PathBuf;
+
+use aos_deployment_format::model::Artifact;
+
 use super::*;
 
 fn envelope(name: &str, version: &str, hash: char) -> Envelope {

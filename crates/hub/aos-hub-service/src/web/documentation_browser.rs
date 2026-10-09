@@ -6,8 +6,8 @@
 
 use super::browse::{browse_rate_limited, load_visible, session_indicator, BrowseQuery, Rendered};
 use super::release_browse::{unavailable_page, ReleaseContext};
-use crate::clock::Instant;
 use crate::service::RpcService;
+use aos_hub_model::clock::Instant;
 use axum::http::HeaderMap;
 
 /// Renders native indexed reference entries for the authorized release.
@@ -161,7 +161,7 @@ async fn native_package_reference(
     let fetch = crate::placement_read::TopologySurfaceFetch::new(
         std::sync::Arc::clone(&svc.db),
         std::sync::Arc::clone(&svc.surface),
-        crate::db::SurfaceTarget::Registry(registry_id),
+        aos_hub_db::db::SurfaceTarget::Registry(registry_id),
     );
     let document = crate::indexer::native_documentation::fetch_native_documentation(
         &fetch, package, version, platform, artifact,
@@ -192,8 +192,8 @@ fn native_index_page(
     slug: &str,
     release: &str,
     query: &BrowseQuery,
-    documents: &[crate::db::NativeDocumentationIndex],
-    status: Option<&crate::db::IndexStatus>,
+    documents: &[aos_hub_db::db::NativeDocumentationIndex],
+    status: Option<&aos_hub_db::db::IndexStatus>,
     started: Instant,
     session: &super::console_render::SessionIndicator,
 ) -> Rendered {

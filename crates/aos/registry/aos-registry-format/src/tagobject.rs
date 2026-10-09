@@ -20,7 +20,7 @@
 //! tagger Name <email> 1770000000 +0000
 //! ```
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 /// The target type recorded in a git tag object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

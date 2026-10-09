@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn signing_usage_rejects_cross_organization_key_ownership() {
-    let key = crate::db::SigningKeyRecord {
+    let key = aos_hub_db::db::SigningKeyRecord {
         stable_id: "signing-key:one".into(),
         scope_key: "org:11111111111111111111111111111111".into(),
         name: "release".into(),
@@ -20,7 +20,7 @@ fn signing_usage_rejects_cross_organization_key_ownership() {
         updated_at: 1,
         retired_at: None,
     };
-    let consumer = crate::db::SigningKeyConsumerRecord {
+    let consumer = aos_hub_db::db::SigningKeyConsumerRecord {
         stable_id: "registry:33333333333333333333333333333333".into(),
         kind: "registry".into(),
         scope_key: "registry:33333333333333333333333333333333".into(),

@@ -62,7 +62,7 @@ impl RpcService {
         auth: Option<&str>,
         stable_id: &str,
         permission: Permission,
-    ) -> Result<crate::db::RouteRecord, RpcError> {
+    ) -> Result<aos_hub_db::db::RouteRecord, RpcError> {
         let route = self
             .db
             .route(stable_id)
@@ -99,7 +99,7 @@ impl RpcService {
 
     pub(in crate::service) async fn rendered_route_url(
         &self,
-        endpoint: &crate::db::EndpointRecord,
+        endpoint: &aos_hub_db::db::EndpointRecord,
         base_path: &str,
     ) -> Result<String, RpcError> {
         let host = if let Some(domain_id) = endpoint.domain_stable_id.as_deref() {
@@ -136,7 +136,7 @@ impl RpcService {
 
     pub(in crate::service) async fn route_reservation_plan_seal(
         &self,
-        endpoint: &crate::db::EndpointRecord,
+        endpoint: &aos_hub_db::db::EndpointRecord,
         base_path: &str,
         canonical_url: &str,
     ) -> Result<RouteReservationPlanSeal, RpcError> {
@@ -181,7 +181,7 @@ impl RpcService {
             .ok_or_else(|| RpcError::internal(anyhow::anyhow!("active key disappeared")))?;
         let mut candidates = Vec::with_capacity(keys.len());
         for key in keys {
-            let digest = crate::db::Database::route_reservation_digest(
+            let digest = aos_hub_db::db::Database::route_reservation_digest(
                 &key.secret,
                 &endpoint_digest,
                 base_path,
@@ -301,7 +301,14 @@ impl RpcService {
         surface: SurfaceTarget,
         owner_scope_key: &str,
         mut spec: pb::RouteSpec,
-    ) -> Result<(crate::db::RouteSpec, String, crate::db::EndpointRecord), RpcError> {
+    ) -> Result<
+        (
+            aos_hub_db::db::RouteSpec,
+            String,
+            aos_hub_db::db::EndpointRecord,
+        ),
+        RpcError,
+    > {
         if spec.surface.as_ref() != Some(&self.route_surface_message(surface).await?) {
             return Err(RpcError::invalid(
                 "route spec surface does not match request surface",
@@ -391,7 +398,7 @@ impl RpcService {
                 // database rejects any other path, so deriving here lets a
                 // client omit what it cannot choose.
                 if base_path.is_empty() {
-                    base_path = crate::db::join_route_segments(
+                    base_path = aos_hub_db::db::join_route_segments(
                         &gateway.spec.client_base_path,
                         &placement.prefix,
                     )
@@ -430,7 +437,7 @@ impl RpcService {
             .ok_or_else(|| RpcError::invalid("capabilities are required"))?;
         let canonical_url = self.rendered_route_url(&endpoint, &base_path).await?;
         Ok((
-            crate::db::RouteSpec {
+            aos_hub_db::db::RouteSpec {
                 consumer_scope_key: owner_scope_key.to_string(),
                 endpoint_id: endpoint.id.clone(),
                 endpoint_generation: spec.endpoint_generation,
@@ -465,7 +472,7 @@ impl RpcService {
 
     pub(in crate::service) async fn route_message(
         &self,
-        route: crate::db::RouteRecord,
+        route: aos_hub_db::db::RouteRecord,
     ) -> Result<pb::Route, RpcError> {
         let snapshot = self
             .db
@@ -531,8 +538,8 @@ impl RpcService {
     }
 
     pub(in crate::service) fn route_message_from_parts(
-        route: crate::db::RouteRecord,
-        snapshot: crate::db::RouteSnapshotRecord,
+        route: aos_hub_db::db::RouteRecord,
+        snapshot: aos_hub_db::db::RouteSnapshotRecord,
         target: pb::route_target::Target,
         surface: pb::SurfaceRef,
     ) -> Result<pb::Route, RpcError> {

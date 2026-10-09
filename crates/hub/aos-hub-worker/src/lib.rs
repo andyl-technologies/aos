@@ -463,7 +463,10 @@ mod index_build_identity_tests {
 
         let first = registry_deletion_follow_up(&root, true).unwrap().unwrap();
         let replay = registry_deletion_follow_up(&root, true).unwrap().unwrap();
-        assert_eq!(first, replay, "a redelivered parent must not fork the chain");
+        assert_eq!(
+            first, replay,
+            "a redelivered parent must not fork the chain"
+        );
         assert_eq!(first.job, Job::RunTopologyProbes);
         assert_eq!(first.continuation.as_ref().unwrap().sequence, 1);
 
@@ -532,10 +535,10 @@ mod entry {
         Result, ScheduleContext, ScheduledEvent, State,
     };
 
-    use aos_hub_model::auth::jwt::JwtKeys;
     use aos_hub_db::db::Database;
     #[cfg(feature = "do-e2e")]
     use aos_hub_db::db::TokenAuth;
+    use aos_hub_model::auth::jwt::JwtKeys;
     #[cfg(feature = "do-e2e")]
     use aos_hub_model::domain::{Permission, Principal, Role, Scope};
     use aos_hub_service::fetch::SurfaceProvider as _;
@@ -629,7 +632,9 @@ mod entry {
         }
     }
 
-    fn container_rollout(env: &Env) -> Result<aos_hub_service::container_rollout::ContainerRollout> {
+    fn container_rollout(
+        env: &Env,
+    ) -> Result<aos_hub_service::container_rollout::ContainerRollout> {
         Ok(aos_hub_service::container_rollout::ContainerRollout {
             pull: rollout_flag(env, HUB_OCI_PULL_ENABLED)?,
             push: rollout_flag(env, HUB_OCI_PUSH_ENABLED)?,
@@ -869,7 +874,9 @@ mod entry {
             lease,
             Arc::new(DoE2eReindexer),
             Arc::new(
-                aos_hub_service::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(&db)),
+                aos_hub_service::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(
+                    &db,
+                )),
             ),
             None,
         )
@@ -948,7 +955,7 @@ mod entry {
         Router,
         Arc<RpcService>,
         ConsoleDeps,
-        Option<Arc<aos_hub_model::delivery_attestation::DeliveryAttestationVerifier>>,
+        Option<Arc<aos_hub_service::delivery_attestation::DeliveryAttestationVerifier>>,
     )> {
         let secret = env.secret(HUB_JWT_SECRET)?.to_string();
         if secret.is_empty() {
@@ -1041,7 +1048,7 @@ mod entry {
             .secret(HUB_DELIVERY_ATTESTATION_KEY)
             .ok()
             .map(|secret| {
-                aos_hub_model::delivery_attestation::DeliveryAttestationVerifier::new(
+                aos_hub_service::delivery_attestation::DeliveryAttestationVerifier::new(
                     secret.to_string().as_bytes(),
                 )
                 .map(Arc::new)
@@ -1109,14 +1116,15 @@ mod entry {
         // accepting verification work that a later queue consumer cannot run.
         let route_http: Arc<dyn aos_hub_service::web::console::ports::HttpClient> =
             Arc::new(WorkerHttpClient::new(Arc::clone(&egress)));
-        let mut domain_probe_readiness = aos_hub_service::topology_probe::DomainProbeController::new(
-            Arc::clone(&db),
-            Arc::clone(&route_http),
-            tls_probe_verifier,
-            dns_endpoint.to_string(),
-            "cloudflare-worker",
-        )
-        .map_err(|error| worker::Error::RustError(format!("domain probes: {error:#}")))?;
+        let mut domain_probe_readiness =
+            aos_hub_service::topology_probe::DomainProbeController::new(
+                Arc::clone(&db),
+                Arc::clone(&route_http),
+                tls_probe_verifier,
+                dns_endpoint.to_string(),
+                "cloudflare-worker",
+            )
+            .map_err(|error| worker::Error::RustError(format!("domain probes: {error:#}")))?;
         let mut route_adapters =
             aos_hub_service::topology_probe::ControllerOwnedRouteObservationProvider::new()
                 .with_external(Arc::new(
@@ -1209,8 +1217,10 @@ mod entry {
             Arc::clone(&lease),
             Arc::clone(&reindexer),
             Arc::new(
-                aos_hub_service::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(&db))
-                    .with_wakeup(Arc::new(crate::workerqueue::WorkerQueue::from_env(env)?)),
+                aos_hub_service::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(
+                    &db,
+                ))
+                .with_wakeup(Arc::new(crate::workerqueue::WorkerQueue::from_env(env)?)),
             ),
             Some(Arc::clone(&sealer)),
         )
@@ -1793,7 +1803,8 @@ mod entry {
             (
                 "pending",
                 Some(
-                    now_for_worker().saturating_add(aos_hub_service::webhook::backoff_secs(attempts)),
+                    now_for_worker()
+                        .saturating_add(aos_hub_service::webhook::backoff_secs(attempts)),
                 ),
             )
         };
@@ -1979,11 +1990,16 @@ mod entry {
                     secret_versions,
                     egress,
                 );
-                aos_hub_service::oci::recover_expired_oci_work(&db, &writers, now_for_worker(), 100)
-                    .await
-                    .map_err(|error| {
-                        worker::Error::RustError(format!("job recover OCI uploads: {error:#}"))
-                    })?;
+                aos_hub_service::oci::recover_expired_oci_work(
+                    &db,
+                    &writers,
+                    now_for_worker(),
+                    100,
+                )
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!("job recover OCI uploads: {error:#}"))
+                })?;
             }
             Job::RunCacheGc => {
                 let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
@@ -2031,14 +2047,16 @@ mod entry {
                         secret_versions,
                         egress,
                     ));
-                aos_hub_service::oci_gc_controller::OciGcDeletionController::new(db, surfaces, writes)
-                    .run_due(
-                        &format!("worker:{}", envelope.operation_id),
-                        now_for_worker(),
-                        25,
-                    )
-                    .await
-                    .map_err(|error| worker::Error::RustError(format!("job OCI GC: {error:#}")))?;
+                aos_hub_service::oci_gc_controller::OciGcDeletionController::new(
+                    db, surfaces, writes,
+                )
+                .run_due(
+                    &format!("worker:{}", envelope.operation_id),
+                    now_for_worker(),
+                    25,
+                )
+                .await
+                .map_err(|error| worker::Error::RustError(format!("job OCI GC: {error:#}")))?;
             }
             Job::InventoryOciProviders => {
                 let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
@@ -2355,9 +2373,7 @@ mod entry {
                     return Ok(());
                 };
                 let placement = db
-                    .reconciled_surface_reader(aos_hub_db::db::SurfaceTarget::Registry(
-                        registry.id,
-                    ))
+                    .reconciled_surface_reader(aos_hub_db::db::SurfaceTarget::Registry(registry.id))
                     .await
                     .map_err(|error| {
                         worker::Error::RustError(format!(
@@ -2543,9 +2559,7 @@ mod entry {
         .map_err(|error| worker::Error::RustError(format!("registry deletions: {error:#}")))?;
         if let Some(next) = crate::registry_deletion_follow_up(envelope, stats.follow_up_due)
             .map_err(|error| {
-                worker::Error::RustError(format!(
-                    "build registry deletion follow-up: {error:#}"
-                ))
+                worker::Error::RustError(format!("build registry deletion follow-up: {error:#}"))
             })?
         {
             crate::workerqueue::WorkerQueue::from_env(env)?
@@ -2640,23 +2654,24 @@ mod entry {
         }
         match env.bucket(crate::handlers::bindings::R2) {
             Ok(bucket) => {
-                let placement_scans = aos_hub_service::placement_scan::PlacementScanController::new(
-                    Arc::clone(&db),
-                    Arc::new(crate::surface::R2SurfaceProvider::new(
-                        bucket.clone(),
+                let placement_scans =
+                    aos_hub_service::placement_scan::PlacementScanController::new(
                         Arc::clone(&db),
-                        Arc::clone(&secret_versions),
-                        Arc::clone(&egress),
-                    )),
-                )
-                .with_writes(Arc::new(
-                    crate::surface::R2SurfaceWriteProvider::new(
-                        bucket,
-                        Arc::clone(&db),
-                        secret_versions,
-                        Arc::clone(&egress),
-                    ),
-                ));
+                        Arc::new(crate::surface::R2SurfaceProvider::new(
+                            bucket.clone(),
+                            Arc::clone(&db),
+                            Arc::clone(&secret_versions),
+                            Arc::clone(&egress),
+                        )),
+                    )
+                    .with_writes(Arc::new(
+                        crate::surface::R2SurfaceWriteProvider::new(
+                            bucket,
+                            Arc::clone(&db),
+                            secret_versions,
+                            Arc::clone(&egress),
+                        ),
+                    ));
                 if let Err(error) = placement_scans.run_due(5).await {
                     worker::console_error!("placement scans: {error:#}");
                 }
@@ -2676,7 +2691,7 @@ mod entry {
         console_deps: ConsoleDeps,
         remote_sql_metrics: crate::remotebackend::RemoteSqlMetrics,
         delivery_attestation_verifier:
-            Option<Arc<aos_hub_model::delivery_attestation::DeliveryAttestationVerifier>>,
+            Option<Arc<aos_hub_service::delivery_attestation::DeliveryAttestationVerifier>>,
     }
 
     async fn shard_request_runtime(
@@ -2863,7 +2878,7 @@ mod entry {
         console_deps: ConsoleDeps,
         sql_metrics: crate::sqldobackend::SqlDoMetrics,
         delivery_attestation_verifier:
-            Option<Arc<aos_hub_model::delivery_attestation::DeliveryAttestationVerifier>>,
+            Option<Arc<aos_hub_service::delivery_attestation::DeliveryAttestationVerifier>>,
     }
 
     fn recovery_identity(env: &Env) -> Result<(String, String)> {

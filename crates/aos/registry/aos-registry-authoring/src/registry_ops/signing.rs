@@ -1,11 +1,11 @@
 //! Producer signing-key resolution and ephemeral command-backed key material.
 
+use crate::registry_ops::trust::{load_committed_roster, validate_roster_key_id};
+use anyhow::{Context, Result, bail};
 use aos_registry_client::config::ApmConfig;
 use aos_registry_client::registry::keys;
-use crate::registry_ops::trust::{load_committed_roster, validate_roster_key_id};
 use aos_registry_client::security::{KeySource, TrustedKey, key_fingerprint, parse_signing_key};
-use aos_registry_client::types::{RegistryConfig, SigningKeySource};
-use anyhow::{Context, Result, bail};
+use aos_registry_format::consumer::{RegistryConfig, SigningKeySource};
 use std::path::{Path, PathBuf};
 
 /// Parse a `registry:Algorithm:<base64>` line into a [`TrustedKey`] pinned

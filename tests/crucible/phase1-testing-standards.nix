@@ -2,6 +2,7 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir;
   cratesDir = ../../crates;
   testingStandardsRust = import ./_rust-module-source.nix {
     inherit lib;
@@ -266,7 +267,7 @@
     }
     {
       gate = "gate:control-responsive";
-      package = "crucible-control-api";
+      package = "crucible-control-server";
       testTarget = "gate_control_responsive";
       requiredFeatures = [];
     }
@@ -397,7 +398,7 @@
     }
     {
       gate = "gate:control-responsive";
-      ownerPackages = ["crucible-session" "crucible-control-api" "crucible-daemon"];
+      ownerPackages = ["crucible-session" "crucible-control-server" "crucible-daemon"];
       layers = ["L4"];
       shape = "responsiveness-bound";
       backend = "sim-double";
@@ -520,7 +521,11 @@
     }
     {
       package = "crucible-control-api";
-      gates = ["gate:control-responsive" "gate:abi-conformance"];
+      gates = ["gate:abi-conformance"];
+    }
+    {
+      package = "crucible-control-server";
+      gates = ["gate:control-responsive"];
     }
     {
       package = "crucible-daemon";
@@ -537,15 +542,15 @@
   ];
 
   packageLayer = package:
-    if builtins.elem package ["crucible-determinism" "crucible-test-support"]
+    if builtins.elem package ["crucible-determinism"]
     then "L0"
     else if builtins.elem package ["crucible-qemu-shmem" "crucible-qemu-protocol" "crucible-device"]
     then "L1"
     else if builtins.elem package ["crucible-qemu-host" "crucible-qemu-plugin" "crucible-guest"]
     then "L2"
-    else if builtins.elem package ["crucible-engine" "crucible-store"]
+    else if builtins.elem package ["crucible-engine" "crucible-store" "crucible-campaign"]
     then "L3"
-    else if builtins.elem package ["crucible-session" "crucible-control-api" "crucible-daemon" "crucible-cli"]
+    else if builtins.elem package ["crucible-session" "crucible-control-api" "crucible-control-client" "crucible-control-server" "crucible-daemon" "crucible-cli"]
     then "L4"
     else if package == "crucible-test-support"
     then "CrossCutting"
@@ -693,7 +698,7 @@
     ) (lib.sort builtins.lessThan (builtins.attrNames entries));
 
   testSourcesForPackage = package: let
-    packageDir = cratesDir + "/${package}";
+    packageDir = (import ./_workspace-packages.nix {inherit lib;}).packageDir package;
     integrationSources = map (
       source:
         source
@@ -768,7 +773,7 @@
   baselineWiringFailures = failuresFor "tests/crucible/testing-standards-baseline.txt" testingStandardsBaseline [
     {
       label = "thread sleep baseline";
-      needle = "crucible-qemu\tsrc/spawn\tthread::sleep\t1";
+      needle = "crucible-qemu-host\tsrc/spawn\tthread::sleep\t1";
     }
   ];
 

@@ -180,7 +180,7 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             types=ScenarioDef,Configuration,Schedule,Decision
             identity=Configuration::id
-            rust_test=crucible::configuration_id_is_content_addressed_by_def_and_schedule
+            rust_test=crucible_engine::configuration_id_is_content_addressed_by_def_and_schedule
             RESULT
           '';
         }

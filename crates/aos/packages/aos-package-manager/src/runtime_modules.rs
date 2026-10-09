@@ -183,7 +183,8 @@ pub fn snapshot(
     // Staging is a sealed private filesystem tree, not an imported store object.
     // Its initial NAR intentionally uses the filesystem serializer; realized
     // store identities below use Nix's selected-store accessor instead.
-    let mut source_command = aos_deployment::store::verification::live_store_command(Some(&executable))?;
+    let mut source_command =
+        aos_deployment::store::verification::live_store_command(Some(&executable))?;
     source_command.arg("--dump").arg(&staging);
     let expected_hash = aos_nix::identity::hash_nar_command(
         source_command,

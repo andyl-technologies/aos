@@ -16,10 +16,10 @@ pub use aos_hub_api as hub_types;
 pub use aos_hub_api::{
     HashRangeV1, Placement, PlacementObservation, PlacementSpec, PlacementStatus,
 };
-pub use hub::{HubClient, HubRpc, HubSurfaceRef, hub_rpc};
+pub use hub::{hub_rpc, HubClient, HubRpc, HubSurfaceRef};
 pub use login::{
-    DeviceAuthorization, DeviceTokenPoll, TokenGrant, exchange_token, poll_device_token,
-    refresh_token, revoke_refresh_token, start_device_authorization,
+    exchange_token, poll_device_token, refresh_token, revoke_refresh_token,
+    start_device_authorization, DeviceAuthorization, DeviceTokenPoll, TokenGrant,
 };
 
 /// Preserves the HTTP URL syntax accepted by existing Hub clients.

@@ -14,7 +14,7 @@ fn validate_registry_publication_manifest_object(
     complete_upload_limit: u64,
 ) -> Result<(), RpcError> {
     if !keymap::is_machine_path(&object.path)
-        || crate::url_guard::validate_http_surface_path(&object.path).is_err()
+        || aos_hub_model::url_guard::validate_http_surface_path(&object.path).is_err()
         || object.path.len() > MAX_REGISTRY_PUBLICATION_PATH_BYTES
         || object.path.split('/').count() > MAX_REGISTRY_PUBLICATION_PATH_COMPONENTS
     {
@@ -156,7 +156,7 @@ fn registry_publication_manifest_chunk_digest(
 }
 
 fn manifest_session_response(
-    session: crate::db::RegistryPublicationManifestSessionRecord,
+    session: aos_hub_db::db::RegistryPublicationManifestSessionRecord,
 ) -> Result<pb::RegistryPublicationManifestSession, RpcError> {
     Ok(pb::RegistryPublicationManifestSession {
         publication_id: session.publication_id,
@@ -248,7 +248,7 @@ impl RpcService {
         } else {
             let publication_id = uuid::Uuid::new_v4().simple().to_string();
             self.db
-                .create_registry_publication(&crate::db::NewRegistryPublication {
+                .create_registry_publication(&aos_hub_db::db::NewRegistryPublication {
                     publication_id: publication_id.clone(),
                     registry_id: registry.id,
                     generation: req.generation,
@@ -306,11 +306,11 @@ impl RpcService {
         self.require_permission(&claims, Permission::Publish, &scope)
             .await?;
         if req.objects.is_empty()
-            || req.objects.len() > crate::db::MAX_REGISTRY_MANIFEST_ADMISSION_BATCH
+            || req.objects.len() > aos_hub_db::db::MAX_REGISTRY_MANIFEST_ADMISSION_BATCH
         {
             return Err(RpcError::invalid(format!(
                 "publication manifest chunks require 1..={} objects",
-                crate::db::MAX_REGISTRY_MANIFEST_ADMISSION_BATCH
+                aos_hub_db::db::MAX_REGISTRY_MANIFEST_ADMISSION_BATCH
             )));
         }
         let complete_upload_limit = self.effective_complete_upload_bytes().await as u64;
@@ -326,7 +326,7 @@ impl RpcService {
         let objects = req
             .objects
             .into_iter()
-            .map(|object| crate::db::RegistryPublicationManifestObject {
+            .map(|object| aos_hub_db::db::RegistryPublicationManifestObject {
                 object_key: object.path,
                 expected_hash: object.sha256,
                 expected_size: object.byte_size,

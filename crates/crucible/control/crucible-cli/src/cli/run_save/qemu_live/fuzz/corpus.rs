@@ -338,7 +338,7 @@ mod tests {
         let artifact =
             crucible_engine::ReproductionArtifact::capture(&scenario, &configuration.schedule)?;
         let coverage_entries = vec![
-            crucible_core::test_support::condition_observation_entry_for_test(
+            ::crucible_engine::test_support::condition_observation_entry_for_test(
                 0,
                 &crucible_engine::ObservableEvent::coverage_block(
                     crucible_engine::Icount { retired: 10 },
@@ -399,7 +399,7 @@ mod tests {
         )?;
         let mut next_events = reopened[0].coverage_entries.clone();
         next_events.push(
-            crucible_core::test_support::condition_observation_entry_for_test(
+            ::crucible_engine::test_support::condition_observation_entry_for_test(
                 1,
                 &crucible_engine::ObservableEvent::coverage_block(
                     crucible_engine::Icount { retired: 20 },

@@ -75,3 +75,65 @@ pub struct PackageInventoryDetails {
     #[serde(default, skip_serializing_if = "AttestationMeta::is_empty")]
     pub attestation: AttestationMeta,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installed_meta_round_trip() {
+        let meta = InstalledPackageRecord {
+            store_path: "/var/lib/store/abc123-curl-8.5.0".into(),
+            pushed_at: 1707800000,
+            pushed_by: "apm".into(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: 1707800000,
+            access_count: 0,
+            apm: Some(PackageInventoryDetails {
+                name: "curl".into(),
+                version: "8.5.0".into(),
+                explicit: true,
+                registry: "aos-core".into(),
+                installed_at: "2026-02-13T10:30:00Z".into(),
+                held: false,
+                source_drv: "/var/lib/store/src123-curl-8.5.0.drv".into(),
+                source_nar_hash: "sha256:source".into(),
+                deployment: None,
+                module_documentation: None,
+                qualification: None,
+                attestation: Default::default(),
+            }),
+        };
+        let json = serde_json::to_string_pretty(&meta).unwrap();
+        let parsed: InstalledPackageRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.store_path, meta.store_path);
+        let parsed_apm = parsed.apm.as_ref().unwrap();
+        assert_eq!(
+            parsed_apm.source_drv,
+            "/var/lib/store/src123-curl-8.5.0.drv"
+        );
+        assert_eq!(parsed_apm.source_nar_hash, "sha256:source");
+        let apm = parsed.apm.unwrap();
+        assert_eq!(apm.name, "curl");
+        assert!(apm.explicit);
+        assert!(!apm.held);
+    }
+
+    #[test]
+    fn installed_meta_without_apm_section() {
+        // Cache server metadata (no apm section) should parse fine
+        let json = r#"{
+            "store_path": "/var/lib/store/abc123-curl-8.5.0",
+            "pushed_at": 1706000000,
+            "pushed_by": "ci-token",
+            "expires_at": 1706604800,
+            "is_root": true,
+            "last_accessed": 1706500000,
+            "access_count": 42
+        }"#;
+        let meta: InstalledPackageRecord = serde_json::from_str(json).unwrap();
+        assert!(meta.apm.is_none());
+        assert_eq!(meta.access_count, 42);
+    }
+}

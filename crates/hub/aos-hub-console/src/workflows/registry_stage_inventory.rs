@@ -9,7 +9,7 @@ use aos_registry_format::staging::StageObject;
 use leptos::prelude::*;
 
 use crate::components::{HashValue, StatusBadge};
-use crate::staging::{INVENTORY_PAGE_SIZE, artifact_label, inventory_page};
+use crate::staging::{artifact_label, inventory_page, INVENTORY_PAGE_SIZE};
 
 /// Renders a searchable, paginated exact inventory with optional upload status.
 #[component]

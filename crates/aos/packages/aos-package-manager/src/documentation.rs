@@ -13,8 +13,8 @@ use aos_cli_ui::output::{OutputMode, Printer};
 use aos_hub_api::SearchPackageDocumentationRequest;
 use aos_hub_client::{HubClient, hub_rpc};
 
-use crate::types::ProfileScope;
 use crate::{DocumentationCommand, OptionsCommand};
+use aos_registry_client::types::ProfileScope;
 
 mod native;
 

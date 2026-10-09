@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     macro_rules! vals {
-        ($($v:expr),* $(,)?) => { vec![$( crate::value::ToValue::to_value(&$v) ),*] };
+        ($($v:expr),* $(,)?) => { vec![$( aos_hub_db::value::ToValue::to_value(&$v) ),*] };
     }
     use std::path::Path;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,11 +11,11 @@ mod tests {
 
     use tokio::sync::Barrier;
 
-    use crate::db::*;
-    use crate::db::{SurfacePlacementRecord, SurfaceTarget};
     use crate::oci::recover_expired_oci_work;
     use crate::surface_write::{SurfaceWrite, SurfaceWriteProvider};
     use anyhow::{bail, Result};
+    use aos_hub_db::db::*;
+    use aos_hub_db::db::{SurfacePlacementRecord, SurfaceTarget};
     use aos_oci_types::{Digest, RepositoryName};
 
     const NOW: i64 = 1_900_000_000;
@@ -62,7 +62,7 @@ mod tests {
         async fn placement_writer_at_revision(
             &self,
             placement: &SurfacePlacementRecord,
-            revision: &crate::db::BindingWriteRevisionRecord,
+            revision: &aos_hub_db::db::BindingWriteRevisionRecord,
         ) -> Result<Box<dyn SurfaceWrite>> {
             assert_eq!(placement.binding_id, revision.binding_id);
             self.placement_writer(placement).await
@@ -113,7 +113,7 @@ mod tests {
             .await
             .unwrap();
         let placement = db
-            .create_surface_placement(&crate::db::NewSurfacePlacementSpec {
+            .create_surface_placement(&aos_hub_db::db::NewSurfacePlacementSpec {
                 surface: SurfaceTarget::Registry(registry_id),
                 name: "primary".to_string(),
                 binding_id,
@@ -152,7 +152,7 @@ mod tests {
         .await
         .unwrap();
         let revision = db
-            .create_binding_write_revision(&crate::db::NewBindingWriteRevision {
+            .create_binding_write_revision(&aos_hub_db::db::NewBindingWriteRevision {
                 binding_id,
                 write_credential_generation: credential.generation,
                 writes_supported: true,
@@ -371,7 +371,7 @@ mod tests {
         let drained = restarted
             .update_surface_placement(
                 placement_id,
-                &crate::db::UpdateSurfacePlacementSpec {
+                &aos_hub_db::db::UpdateSurfacePlacementSpec {
                     expected_version: current_placement.resource_version,
                     desired_state: "draining".to_string(),
                     desired_read_enabled: false,
@@ -515,7 +515,7 @@ mod tests {
         let placement = db.surface_placement(placement_id).await.unwrap().unwrap();
         db.update_surface_placement(
             placement_id,
-            &crate::db::UpdateSurfacePlacementSpec {
+            &aos_hub_db::db::UpdateSurfacePlacementSpec {
                 expected_version: placement.resource_version,
                 desired_state: "draining".to_string(),
                 desired_read_enabled: false,

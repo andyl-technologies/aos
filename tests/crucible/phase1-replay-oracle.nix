@@ -701,13 +701,13 @@
     ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "implemented replay-oracle target";
-        needle = "gate: \"gate:replay-oracle\",\n        package: \"crucible\",\n        test_target: \"gate_replay_oracle\",\n        required_features: &[\"test-double\"],";
+        needle = "gate: \"gate:replay-oracle\",\n        package: \"crucible-engine\",\n        test_target: \"gate_replay_oracle\",\n        required_features: &[\"test-double\"],";
       }
     ]
     ++ failuresFor "crates/crucible/testing/crucible-test-support/src/lib.rs" gateCatalog [
       {
         label = "implemented replay-oracle catalog status";
-        needle = "name: \"gate:replay-oracle\",\n        phase: GatePhase::Phase1,\n        owner: \"crucible\",\n        status: GateStatus::Implemented,";
+        needle = "name: \"gate:replay-oracle\",\n        phase: GatePhase::Phase1,\n        owner: \"crucible-engine\",\n        status: GateStatus::Implemented,";
       }
     ]
     ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs" gateCatalogTest [
@@ -719,7 +719,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "implemented replay-oracle mapping target";
-        needle = "gate = \"gate:replay-oracle\";\n      package = \"crucible\";\n      testTarget = \"gate_replay_oracle\";\n      requiredFeatures = [\"test-double\"];";
+        needle = "gate = \"gate:replay-oracle\";\n      package = \"crucible-engine\";\n      testTarget = \"gate_replay_oracle\";\n      requiredFeatures = [\"test-double\"];";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -825,7 +825,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
       {
         label = "T-PAT-4 completion names materialization policy";
-        needle = "`crucible::MaterializationPolicy`";
+        needle = "`crucible_engine::MaterializationPolicy`";
       }
       {
         label = "T-PAT-4 completion names fat eviction";
@@ -849,7 +849,7 @@
       }
       {
         label = "T-TEMP-4 completion names materialization policy";
-        needle = "`crucible::MaterializationPolicy`";
+        needle = "`crucible_engine::MaterializationPolicy`";
       }
       {
         label = "T-TEMP-4 completion names eviction API";
@@ -1017,7 +1017,7 @@ in
             check=${attrPath}
             gate=gate:replay-oracle
             tasks=${builtins.concatStringsSep "," taskIds}
-            rust_test=crucible::gate_replay_oracle
+            rust_test=crucible_engine::gate_replay_oracle
             harness_rust_test=crucible-harness::replay_oracle
             qemu_rust_test=crucible-qemu::realization::replay_oracle
             oracle=fat-materialized-equals-thin-from-ancestor

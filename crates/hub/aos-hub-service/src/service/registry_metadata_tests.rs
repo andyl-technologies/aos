@@ -1,10 +1,12 @@
 //! Regression tests for metadata preservation and signed draft plan/apply.
 
 use super::*;
-use crate::db::{BindingWriteRevisionRecord, IndexSnapshot, SurfacePlacementRecord, TokenAuth};
-use crate::domain::{Permission, Principal, Scope};
 use crate::fetch::{SurfaceFetch, SurfaceProvider};
 use crate::surface_write::{SurfaceWrite, SurfaceWriteProvider};
+use aos_hub_db::db::{
+    BindingWriteRevisionRecord, IndexSnapshot, SurfacePlacementRecord, TokenAuth,
+};
+use aos_hub_model::domain::{Permission, Principal, Scope};
 use aos_registry_format::object::{encode_loose, encode_tree, hash_object, ObjectKind, TreeEntry};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};

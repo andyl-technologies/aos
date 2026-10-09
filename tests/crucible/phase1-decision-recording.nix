@@ -235,7 +235,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
       {
         label = "T-PAT-5 completion names decision recorder";
-        needle = "`crucible::decision::DecisionRecorder`";
+        needle = "`crucible_engine::decision::DecisionRecorder`";
       }
       {
         label = "T-PAT-5 completion names RngStreamId";
@@ -293,7 +293,7 @@
     ++ forbiddenFor "crates/crucible/engine/crucible-engine/src outside decision module" engineCodeOutsideDecision [
       {
         label = "direct decision RNG import outside recorder";
-        needle = "use crucible_sim::DecisionRng";
+        needle = "use crucible_determinism::DecisionRng";
       }
       {
         label = "direct decision RNG grouped import outside recorder";

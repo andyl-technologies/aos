@@ -34,7 +34,7 @@
 //! performed by each canonical API method after the browser exchanges that
 //! session for its short-lived bearer.
 
-use crate::clock::Instant;
+use aos_hub_model::clock::Instant;
 
 use axum::extract::{Form, Path, Query};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -42,13 +42,13 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Json;
 use base64::Engine as _;
 
-use crate::auth::session::{set_cookie_header, ABSOLUTE_LIFETIME_SECS, COOKIE_NAME};
-use crate::db::{Database, SessionAuth as DbSession};
-use crate::domain::{iam, Permission, Principal, Role, Scope};
+use aos_hub_model::auth::session::{set_cookie_header, ABSOLUTE_LIFETIME_SECS, COOKIE_NAME};
 use crate::web::console::ports::ConsoleDeps;
 use crate::web::console_render as console;
 use crate::web::csrf::{connect_or_csrf_ok, mint_csrf_token, verify_csrf_token};
 use crate::web::session::resolve_session_from_headers;
+use aos_hub_db::db::{Database, SessionAuth as DbSession};
+use aos_hub_model::domain::{iam, Permission, Principal, Role, Scope};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 
@@ -151,10 +151,10 @@ impl Session {
         let ttl = self
             .auth
             .expires_at
-            .saturating_sub(crate::clock::now_unix_secs())
+            .saturating_sub(aos_hub_model::clock::now_unix_secs())
             .clamp(1, BROWSER_ACCESS_TOKEN_TTL_SECS);
         let token = deps.jwt_keys.mint(
-            &crate::db::TokenAuth {
+            &aos_hub_db::db::TokenAuth {
                 token_id: format!("browser-session-{}", self.auth.user_id),
                 owner: self.principal(),
                 scope: Scope::root(),
@@ -213,7 +213,7 @@ pub(crate) async fn session_token(deps: ConsoleDeps, headers: HeaderMap) -> Resp
         Ok(permissions) => permissions,
         Err(error) => return internal(error),
     };
-    let auth = crate::db::TokenAuth {
+    let auth = aos_hub_db::db::TokenAuth {
         token_id: format!("browser-session-{}", session.auth.user_id),
         owner: session.principal(),
         scope: Scope::root(),
@@ -490,7 +490,7 @@ async fn oauth_rate_limit(
     let ip = resolved_client_ip(headers);
     match deps
         .ratelimit
-        .check(class, &ip, crate::clock::now_unix_secs())
+        .check(class, &ip, aos_hub_model::clock::now_unix_secs())
         .await
     {
         crate::ratelimit::RateDecision::Allowed => None,
@@ -547,7 +547,7 @@ pub(crate) async fn device_authorization(
     } else {
         let parsed = permission_names
             .split_ascii_whitespace()
-            .map(crate::auth::permission_from_str)
+            .map(aos_hub_model::auth::permission_from_str)
             .collect::<Option<Vec<_>>>();
         let Some(parsed) = parsed else {
             return oauth_error(
@@ -608,27 +608,27 @@ pub(crate) async fn oauth_token(
                 );
             };
             match deps.db.poll_device(device_code).await {
-                Ok(crate::db::DevicePollResult::Pending) => oauth_error(
+                Ok(aos_hub_db::db::DevicePollResult::Pending) => oauth_error(
                     StatusCode::BAD_REQUEST,
                     "authorization_pending",
                     "the user has not completed authorization",
                 ),
-                Ok(crate::db::DevicePollResult::SlowDown) => oauth_error(
+                Ok(aos_hub_db::db::DevicePollResult::SlowDown) => oauth_error(
                     StatusCode::BAD_REQUEST,
                     "slow_down",
                     "poll no more often than the advertised interval",
                 ),
-                Ok(crate::db::DevicePollResult::Denied) => oauth_error(
+                Ok(aos_hub_db::db::DevicePollResult::Denied) => oauth_error(
                     StatusCode::BAD_REQUEST,
                     "access_denied",
                     "the user denied authorization",
                 ),
-                Ok(crate::db::DevicePollResult::Expired) => oauth_error(
+                Ok(aos_hub_db::db::DevicePollResult::Expired) => oauth_error(
                     StatusCode::BAD_REQUEST,
                     "expired_token",
                     "the device code is expired or already consumed",
                 ),
-                Ok(crate::db::DevicePollResult::Approved(grant)) => {
+                Ok(aos_hub_db::db::DevicePollResult::Approved(grant)) => {
                     oauth_access_grant(&deps, grant, true)
                 }
                 Err(error) => oauth_response(internal(error)),
@@ -650,11 +650,11 @@ pub(crate) async fn oauth_token(
                 );
             };
             match deps.db.rotate_refresh_token(refresh_token).await {
-                Ok(crate::db::RefreshTokenResult::Rotated(grant)) => {
+                Ok(aos_hub_db::db::RefreshTokenResult::Rotated(grant)) => {
                     oauth_access_grant(&deps, grant, true)
                 }
-                Ok(crate::db::RefreshTokenResult::Invalid)
-                | Ok(crate::db::RefreshTokenResult::Reused) => oauth_error(
+                Ok(aos_hub_db::db::RefreshTokenResult::Invalid)
+                | Ok(aos_hub_db::db::RefreshTokenResult::Reused) => oauth_error(
                     StatusCode::BAD_REQUEST,
                     "invalid_grant",
                     "the refresh credential is invalid",
@@ -694,7 +694,7 @@ pub(crate) async fn oauth_token(
 
 fn oauth_access_grant(
     deps: &ConsoleDeps,
-    grant: crate::db::DeviceTokenGrant,
+    grant: aos_hub_db::db::DeviceTokenGrant,
     include_refresh: bool,
 ) -> Response {
     let refresh_token = include_refresh.then_some(grant.refresh_token);
@@ -704,7 +704,7 @@ fn oauth_access_grant(
 
 fn oauth_access_token(
     deps: &ConsoleDeps,
-    auth: &crate::db::TokenAuth,
+    auth: &aos_hub_db::db::TokenAuth,
     refresh_token: Option<String>,
     refresh_token_expires_in: Option<i64>,
 ) -> Response {
@@ -783,7 +783,7 @@ fn check_csrf(session: &Session, csrf: &str) -> Result<(), Box<Response>> {
 /// forbidden until the caller re-authenticates) carrying the "confirm your
 /// identity" form as its body — when the session is not within the sudo window.
 fn require_sudo(session: &Session, headers: &HeaderMap) -> Result<(), Box<Response>> {
-    if session.auth.is_sudo(crate::clock::now_unix_secs()) {
+    if session.auth.is_sudo(aos_hub_model::clock::now_unix_secs()) {
         return Ok(());
     }
     let return_to = same_origin_return_to(headers);
@@ -792,7 +792,7 @@ fn require_sudo(session: &Session, headers: &HeaderMap) -> Result<(), Box<Respon
         &session.csrf(),
         &return_to,
         None,
-        crate::clock::Instant::now(),
+        aos_hub_model::clock::Instant::now(),
     );
     Err(Box::new(
         (StatusCode::FORBIDDEN, Html(page)).into_response(),
@@ -845,7 +845,7 @@ pub(crate) struct ReauthForm {
 ///
 /// The in-place "confirm your identity" step backing [`require_sudo`]: it
 /// verifies the logged-in user's password, elevates the session into a fresh
-/// sudo window via [`Database::elevate_session`](crate::db::Database::elevate_session),
+/// sudo window via [`Database::elevate_session`](aos_hub_db::db::Database::elevate_session),
 /// and redirects back to the (same-origin) `return_to`. A passwordless account
 /// (SSO/magic-link only) is told to re-authenticate through its sign-in provider.
 pub(crate) async fn reauth(
@@ -895,7 +895,7 @@ pub(crate) async fn reauth(
         Err(err) => return internal(err),
     };
     if user_id != session.auth.user_id
-        || !crate::auth::password::verify_password(&form.password, &hash)
+        || !aos_hub_model::auth::password::verify_password(&form.password, &hash)
     {
         return render_err("Incorrect password.");
     }
@@ -1022,7 +1022,7 @@ pub(crate) async fn login_submit(
     }
     // Rate-limit magic-link issuance on both the target email (the email-bomb
     // victim) and the source IP (the sender) — see [`crate::ratelimit`].
-    let now = crate::clock::now_unix_secs();
+    let now = aos_hub_model::clock::now_unix_secs();
     let ip = resolved_client_ip(&headers);
     use crate::ratelimit::RateClass;
     for (class, key) in [
@@ -1134,7 +1134,7 @@ pub(crate) async fn login_password(
     }
     // Rate-limit on both the target email and the source IP before doing the
     // (deliberately expensive) Argon2 verify, so a spray cannot burn CPU.
-    let now = crate::clock::now_unix_secs();
+    let now = aos_hub_model::clock::now_unix_secs();
     let ip = resolved_client_ip(&headers);
     use crate::ratelimit::RateClass;
     for (class, key) in [
@@ -1154,12 +1154,12 @@ pub(crate) async fn login_password(
         // this miss matches that of an existing account — otherwise the
         // short-circuit leaks account existence as a timing oracle (M10).
         Ok(None) => {
-            crate::auth::password::spend_dummy_verify(&form.password);
+            aos_hub_model::auth::password::spend_dummy_verify(&form.password);
             return invalid();
         }
         Err(err) => return internal(err),
     };
-    if !crate::auth::password::verify_password(&form.password, &hash) {
+    if !aos_hub_model::auth::password::verify_password(&form.password, &hash) {
         return invalid();
     }
     // Even with a correct password, a user subject to `enforce_sso` must come
@@ -1607,7 +1607,7 @@ pub(crate) async fn account_set_password(
         ))
         .into_response();
     }
-    let hash = match crate::auth::password::hash_password(&form.password) {
+    let hash = match aos_hub_model::auth::password::hash_password(&form.password) {
         Ok(hash) => hash,
         Err(err) => return internal(err),
     };
@@ -1908,7 +1908,7 @@ pub(crate) async fn passkey_login_finish(
 pub(crate) async fn passkey_login_begin(deps: ConsoleDeps, headers: HeaderMap) -> Response {
     // Rate-limit assertion-challenge issuance per source IP, the same pre-auth
     // spray bound as magic-link issuance.
-    let now = crate::clock::now_unix_secs();
+    let now = aos_hub_model::clock::now_unix_secs();
     let ip = resolved_client_ip(&headers);
     if let crate::ratelimit::RateDecision::Limited { retry_after } = deps
         .ratelimit
@@ -1961,7 +1961,7 @@ async fn activate_rate_limited(
         .check(
             crate::ratelimit::RateClass::DeviceActivate,
             &key,
-            crate::clock::now_unix_secs(),
+            aos_hub_model::clock::now_unix_secs(),
         )
         .await
     {
@@ -2030,7 +2030,7 @@ pub(crate) struct ActivateForm {
 /// `POST /activate` — approve or deny a device grant.
 ///
 /// Approval clamps the minted token to the approver's current grants (the
-/// clamp lives in [`Database::approve_device`](crate::db::Database::approve_device));
+/// clamp lives in [`Database::approve_device`](aos_hub_db::db::Database::approve_device));
 /// denial marks the grant denied. Redirects back to `/activate` with a result
 /// message.
 pub(crate) async fn activate_submit(
@@ -2138,7 +2138,7 @@ pub(crate) async fn invitation_acceptance(
 ) -> Response {
     let clean_path = format!("/-/org/{org_slug}/invitations/accept");
     if let Some(token) = query.token.as_deref().filter(|token| !token.is_empty()) {
-        if !crate::auth::token::is_invitation_token(token) {
+        if !aos_hub_model::auth::token::is_invitation_token(token) {
             return sensitive_browser_response(
                 (StatusCode::BAD_REQUEST, "invalid invitation credential").into_response(),
                 None,
@@ -2206,7 +2206,7 @@ pub(crate) async fn accept_invitation(
     match control
         .accept_invitation(
             Some(&bearer),
-            aos_proto_types::AcceptInvitationRequest {
+            aos_hub_api::AcceptInvitationRequest {
                 org_slug: org_slug.clone(),
                 secret,
             },

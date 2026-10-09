@@ -114,7 +114,7 @@ pub fn allow_local_remotes() -> bool {
                 static WARNED: std::sync::Once = std::sync::Once::new();
                 WARNED.call_once(|| {
                     eprintln!(
-                        "aos-hub-core: SSRF local-remote guard RELAXED via \
+                        "aos-hub-model: SSRF local-remote guard RELAXED via \
                          AOS_HUB_ALLOW_LOCAL_REMOTES (debug build only)"
                     );
                 });

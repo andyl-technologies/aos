@@ -1,7 +1,7 @@
 //! Verified registry pack acquisition and decompression.
 
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
-use anyhow::{Context,Result,bail};
 use tokio::process::Command;
 /// Compression level used for the zstd transport wrapper.
 pub const ZSTD_LEVEL: &str = "-22";
@@ -9,7 +9,6 @@ pub const ZSTD_LEVEL: &str = "-22";
 pub const ZSTD_LONG: &str = "27";
 
 #[cfg(test)]
-
 
 /// Generate a self-contained full pack over `release_commit`.
 ///
@@ -30,7 +29,6 @@ pub async fn full_pack(repo: &Path, release_commit: &str, out_dir: &Path) -> Res
 }
 
 #[cfg(test)]
-
 
 /// Build a self-contained pack of everything reachable from `release_commit`
 /// with libgit2's pack builder and indexer, named `pack-<hash>.pack` after its
@@ -68,8 +66,6 @@ fn full_pack_blocking(repo: &Path, release_commit: &str, out_dir: &Path) -> Resu
     Ok(path)
 }
 
-
-
 /// Decompress a `.zst` file, stripping the `.zst` suffix.
 ///
 /// # Errors
@@ -96,8 +92,6 @@ pub async fn zstd_decompress(path: &Path, dict: Option<&Path>) -> Result<PathBuf
     Ok(out)
 }
 
-
-
 /// Complete a thin pack with bases from `repo`.
 ///
 /// libgit2's pack writer indexes the pack and resolves any thin deltas against
@@ -111,8 +105,6 @@ pub async fn zstd_decompress(path: &Path, dict: Option<&Path>) -> Result<PathBuf
 pub async fn index_pack_fix_thin(repo: &Path, pack: &Path) -> Result<()> {
     index_pack(repo, pack).await
 }
-
-
 
 /// Index a pack into `repo`'s object store via libgit2's pack writer, which
 /// regenerates and verifies the index (and resolves thin deltas against the
@@ -149,8 +141,6 @@ pub async fn index_pack(repo: &Path, pack: &Path) -> Result<()> {
     .await
     .context("index-pack task panicked")?
 }
-
-
 
 /// Run a command and fail with its stderr if it exits non-zero.
 async fn run_status(mut cmd: Command, label: &str) -> Result<()> {

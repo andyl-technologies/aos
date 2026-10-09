@@ -633,7 +633,7 @@ pub struct DeliveryTransportEvidence {
     /// `hub` or `layer7`, matching the immutable endpoint revision.
     pub ingress_kind: String,
     /// TLS-verified DNS/IP identity. Absent for cleartext HTTP.
-    pub tls_identity: Option<crate::db::InboundEndpointHost>,
+    pub tls_identity: Option<aos_hub_db::db::InboundEndpointHost>,
 }
 
 impl DeliveryTransportEvidence {
@@ -680,7 +680,7 @@ pub enum DeliveryAudience {
 #[derive(Debug, Clone)]
 pub struct ResolvedRoute {
     /// Exact immutable route snapshot selected for this request.
-    pub route: crate::db::InboundRouteRecord,
+    pub route: aos_hub_db::db::InboundRouteRecord,
     /// Route-relative canonical path, without a leading slash.
     pub surface_path: String,
     /// Capability selected from the surface kind and path.
@@ -804,7 +804,7 @@ fn canonical_request_path(raw: &str) -> Result<String, ()> {
     Ok(normalized)
 }
 
-fn canonical_endpoint_host(host: &str) -> Result<crate::db::InboundEndpointHost, ()> {
+fn canonical_endpoint_host(host: &str) -> Result<aos_hub_db::db::InboundEndpointHost, ()> {
     use std::net::IpAddr;
     use std::str::FromStr as _;
 
@@ -816,20 +816,20 @@ fn canonical_endpoint_host(host: &str) -> Result<crate::db::InboundEndpointHost,
         return Err(());
     }
     match IpAddr::from_str(host).ok() {
-        Some(IpAddr::V4(address)) => Ok(crate::db::InboundEndpointHost::Ipv4(
+        Some(IpAddr::V4(address)) => Ok(aos_hub_db::db::InboundEndpointHost::Ipv4(
             address.octets().to_vec(),
         )),
         Some(IpAddr::V6(address)) => {
             if address.to_ipv4_mapped().is_some() {
                 return Err(());
             }
-            Ok(crate::db::InboundEndpointHost::Ipv6(
+            Ok(aos_hub_db::db::InboundEndpointHost::Ipv6(
                 address.octets().to_vec(),
             ))
         }
         None => match url::Host::parse(host).map_err(|_| ())? {
             url::Host::Domain(domain) if !domain.is_empty() => {
-                Ok(crate::db::InboundEndpointHost::Domain(domain))
+                Ok(aos_hub_db::db::InboundEndpointHost::Domain(domain))
             }
             _ => Err(()),
         },
@@ -839,7 +839,7 @@ fn canonical_endpoint_host(host: &str) -> Result<crate::db::InboundEndpointHost,
 /// Extracts and canonicalizes the host from an already authenticated authority.
 pub(crate) fn attested_authority_host(
     authority: &str,
-) -> Result<crate::db::InboundEndpointHost, ()> {
+) -> Result<aos_hub_db::db::InboundEndpointHost, ()> {
     let authority = authority
         .parse::<axum::http::uri::Authority>()
         .map_err(|_| ())?;
@@ -852,7 +852,7 @@ pub(crate) fn attested_authority_host(
 /// Parses request authority using only actual listener evidence.
 fn request_endpoint(
     request: &Request,
-) -> Result<Option<(crate::db::InboundEndpointHost, u16, String, String)>, ()> {
+) -> Result<Option<(aos_hub_db::db::InboundEndpointHost, u16, String, String)>, ()> {
     let Some(evidence) = request
         .extensions()
         .get::<DeliveryTransportEvidence>()
@@ -912,7 +912,7 @@ fn is_route_browse_path(surface_path: &str) -> bool {
 /// this host delivers, from the same enabled-route rows dispatch just matched.
 fn admit_to_control_plane(
     mut request: Request,
-    routes: &[crate::db::InboundRouteRecord],
+    routes: &[aos_hub_db::db::InboundRouteRecord],
 ) -> Request {
     request
         .extensions_mut()
@@ -934,7 +934,7 @@ fn strip_route_base_path<'a>(base_path: &str, request_path: &'a str) -> Option<&
     }
 }
 
-fn delivery_audience(surface: crate::db::SurfaceTarget, path: &str) -> DeliveryAudience {
+fn delivery_audience(surface: aos_hub_db::db::SurfaceTarget, path: &str) -> DeliveryAudience {
     let nix = path == "nix-cache-info"
         || path.starts_with("nar/")
         || path
@@ -943,7 +943,7 @@ fn delivery_audience(surface: crate::db::SurfaceTarget, path: &str) -> DeliveryA
     if nix {
         return DeliveryAudience::NixCache;
     }
-    if matches!(surface, crate::db::SurfaceTarget::Registry(_))
+    if matches!(surface, aos_hub_db::db::SurfaceTarget::Registry(_))
         && (matches!(path, "HEAD" | "info/refs")
             || path.starts_with("objects/")
             || path.starts_with("releases/")
@@ -1045,11 +1045,11 @@ async fn domain_probe_handler(
     if scheme != "https" || port != 443 {
         return StatusCode::MISDIRECTED_REQUEST.into_response();
     }
-    let crate::db::InboundEndpointHost::Domain(host) = host else {
+    let aos_hub_db::db::InboundEndpointHost::Domain(host) = host else {
         return StatusCode::MISDIRECTED_REQUEST.into_response();
     };
     match svc
-        .domain_probe_response(&host, &query.nonce, crate::clock::now_unix_secs())
+        .domain_probe_response(&host, &query.nonce, aos_hub_model::clock::now_unix_secs())
         .await
     {
         Ok(body) => (
@@ -1081,7 +1081,7 @@ async fn domain_probe_handler(
 /// client-controlled forwarding metadata.
 fn configured_control_authority(
     external_url: &str,
-) -> Result<(crate::db::InboundEndpointHost, u16, String), ()> {
+) -> Result<(aos_hub_db::db::InboundEndpointHost, u16, String), ()> {
     let url = url::Url::parse(external_url).map_err(|_| ())?;
     if !matches!(url.scheme(), "http" | "https")
         || !url.username().is_empty()
@@ -1106,7 +1106,7 @@ fn configured_control_authority(
 
 async fn require_route_access(
     svc: &RpcService,
-    route: &crate::db::InboundRouteRecord,
+    route: &aos_hub_db::db::InboundRouteRecord,
     headers: HeaderMap,
     attestation: Option<crate::delivery_attestation::VerifiedDeliveryAttestation>,
 ) -> Result<(), RpcError> {
@@ -1189,7 +1189,7 @@ async fn require_route_access(
 
 fn attestation_matches_route(
     attestation: &crate::delivery_attestation::VerifiedDeliveryAttestation,
-    route: &crate::db::InboundRouteRecord,
+    route: &aos_hub_db::db::InboundRouteRecord,
 ) -> bool {
     attestation.route_id == route.id
         && attestation.route_configuration_digest == route.configuration_digest
@@ -1197,7 +1197,7 @@ fn attestation_matches_route(
 
 fn attested_access_matches_route(
     access: &DeliveryAccessEvidence,
-    route: &crate::db::InboundRouteRecord,
+    route: &aos_hub_db::db::InboundRouteRecord,
 ) -> bool {
     match route.access_policy_kind.as_str() {
         "private_network" => access.boundary.as_ref().is_some_and(|boundary| {
@@ -1352,7 +1352,7 @@ pub async fn rewrite_for_route(
                 ));
             }
         };
-        let crate::db::SurfaceTarget::Registry(registry_id) = route.surface else {
+        let aos_hub_db::db::SurfaceTarget::Registry(registry_id) = route.surface else {
             return Err(crate::oci::distribution_error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 aos_oci_types::DistributionErrorCode::Unsupported,
@@ -1558,7 +1558,7 @@ async fn serve_resolved_delivery(
         {
             return error_response(&error);
         }
-        let crate::db::SurfaceTarget::BinaryCache(cache_id) = resolved.route.surface else {
+        let aos_hub_db::db::SurfaceTarget::BinaryCache(cache_id) = resolved.route.surface else {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         };
         let Some(placement_id) = resolved.route.placement_id else {
@@ -1574,7 +1574,7 @@ async fn serve_resolved_delivery(
             .presign_cache_read(
                 &placement,
                 &resolved.surface_path,
-                crate::clock::now_unix_secs(),
+                aos_hub_model::clock::now_unix_secs(),
             )
             .await
         {
@@ -1609,23 +1609,23 @@ async fn serve_resolved_delivery(
         .await;
     }
     match resolved.route.surface {
-        crate::db::SurfaceTarget::Registry(registry_id) => {
+        aos_hub_db::db::SurfaceTarget::Registry(registry_id) => {
             let registry = match svc.db.registry_by_id(registry_id).await {
                 Ok(Some(registry)) => registry,
                 Ok(None) => return StatusCode::NOT_FOUND.into_response(),
                 Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
             };
-            let now = match crate::delivery_http::HttpTimestamp::from_unix_seconds(
-                crate::clock::now_unix_secs(),
+            let now = match aos_hub_model::delivery_http::HttpTimestamp::from_unix_seconds(
+                aos_hub_model::clock::now_unix_secs(),
             ) {
                 Ok(now) => now,
                 Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
             };
             let image_request = crate::image_http::ImageHttpRequest {
                 method: if method == axum::http::Method::HEAD {
-                    crate::delivery_http::DeliveryMethod::Head
+                    aos_hub_model::delivery_http::DeliveryMethod::Head
                 } else {
-                    crate::delivery_http::DeliveryMethod::Get
+                    aos_hub_model::delivery_http::DeliveryMethod::Get
                 },
                 range: headers.get(header::RANGE).map(HeaderValue::as_bytes),
                 if_match: headers.get(header::IF_MATCH).map(HeaderValue::as_bytes),
@@ -1655,7 +1655,7 @@ async fn serve_resolved_delivery(
                 Err(error) => error_response(&error),
             }
         }
-        crate::db::SurfaceTarget::BinaryCache(cache_id) => {
+        aos_hub_db::db::SurfaceTarget::BinaryCache(cache_id) => {
             let cache = match svc.db.binary_cache_by_id(cache_id).await {
                 Ok(Some(cache)) => cache,
                 Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -1704,19 +1704,19 @@ async fn serve_control_image(
         }
     };
     let private = registry.visibility != "public";
-    let now =
-        match crate::delivery_http::HttpTimestamp::from_unix_seconds(crate::clock::now_unix_secs())
-        {
-            Ok(now) => now,
-            Err(_) => {
-                let response = StatusCode::SERVICE_UNAVAILABLE.into_response();
-                return if private {
-                    private_control_response(response)
-                } else {
-                    response
-                };
-            }
-        };
+    let now = match aos_hub_model::delivery_http::HttpTimestamp::from_unix_seconds(
+        aos_hub_model::clock::now_unix_secs(),
+    ) {
+        Ok(now) => now,
+        Err(_) => {
+            let response = StatusCode::SERVICE_UNAVAILABLE.into_response();
+            return if private {
+                private_control_response(response)
+            } else {
+                response
+            };
+        }
+    };
     let auth_header = auth_header(&headers);
     let session_secret = crate::web::session::session_secret_from_headers(&headers);
     let authorization = match (auth_header.as_deref(), session_secret.as_deref()) {
@@ -1726,9 +1726,9 @@ async fn serve_control_image(
     };
     let request = crate::image_http::ImageHttpRequest {
         method: if method == Method::HEAD {
-            crate::delivery_http::DeliveryMethod::Head
+            aos_hub_model::delivery_http::DeliveryMethod::Head
         } else {
-            crate::delivery_http::DeliveryMethod::Get
+            aos_hub_model::delivery_http::DeliveryMethod::Get
         },
         range: headers.get(header::RANGE).map(HeaderValue::as_bytes),
         if_match: headers.get(header::IF_MATCH).map(HeaderValue::as_bytes),
@@ -4759,13 +4759,13 @@ mod tests {
 
     #[test]
     fn attested_access_is_bound_to_exact_route_and_revision() {
-        let route = crate::db::InboundRouteRecord {
+        let route = aos_hub_db::db::InboundRouteRecord {
             id: "route-1".into(),
             configuration_generation: 3,
             configuration_digest:
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             base_path: "/cache".into(),
-            surface: crate::db::SurfaceTarget::BinaryCache(1),
+            surface: aos_hub_db::db::SurfaceTarget::BinaryCache(1),
             target_slug: "cache".into(),
             mode: "hub_proxy".into(),
             access_policy_kind: "private_network".into(),
@@ -4786,7 +4786,7 @@ mod tests {
             transport: DeliveryTransportEvidence {
                 scheme: "https".into(),
                 ingress_kind: "layer7".into(),
-                tls_identity: Some(crate::db::InboundEndpointHost::Domain(
+                tls_identity: Some(aos_hub_db::db::InboundEndpointHost::Domain(
                     "cache.example".into(),
                 )),
             },
@@ -4820,7 +4820,7 @@ mod tests {
             .unwrap();
         assert!(matches!(request_endpoint(&no_evidence), Ok(None)));
 
-        let host = crate::db::InboundEndpointHost::Domain("cache.example".into());
+        let host = aos_hub_db::db::InboundEndpointHost::Domain("cache.example".into());
         let evidence = DeliveryTransportEvidence {
             scheme: "https".into(),
             ingress_kind: "hub".into(),
@@ -4849,7 +4849,7 @@ mod tests {
     #[test]
     fn configured_control_authority_is_an_exact_origin() {
         let expected = (
-            crate::db::InboundEndpointHost::Domain("hub.example".into()),
+            aos_hub_db::db::InboundEndpointHost::Domain("hub.example".into()),
             443,
             "https".to_string(),
         );
@@ -4950,7 +4950,7 @@ mod tests {
 
     #[test]
     fn capability_classifier_separates_registry_git_nix_and_web() {
-        let registry = crate::db::SurfaceTarget::Registry(1);
+        let registry = aos_hub_db::db::SurfaceTarget::Registry(1);
         assert_eq!(
             delivery_audience(registry, "objects/aa/bb"),
             DeliveryAudience::Git
@@ -4974,7 +4974,7 @@ mod tests {
             DeliveryAudience::Web
         );
         assert_eq!(
-            delivery_audience(crate::db::SurfaceTarget::BinaryCache(2), "objects/aa"),
+            delivery_audience(aos_hub_db::db::SurfaceTarget::BinaryCache(2), "objects/aa"),
             DeliveryAudience::Web
         );
     }
@@ -5080,14 +5080,14 @@ mod tests {
     /// Builds `route-probes/route-probes` with one root OCI route on the
     /// `route-probes.example.test:443` endpoint, the shape the topology
     /// controller creates for container delivery.
-    async fn control_host_topology(oci_route_enabled: bool) -> crate::db::Database {
-        use crate::db::{
+    async fn control_host_topology(oci_route_enabled: bool) -> aos_hub_db::db::Database {
+        use aos_hub_db::db::{
             EndpointHostInput, EndpointRevisionSpec, GrantResource, NewSurfacePlacementSpec,
             RouteSpec, SurfaceTarget,
         };
         use sha2::{Digest as _, Sha256};
 
-        let db = crate::db::Database::open_in_memory().await.unwrap();
+        let db = aos_hub_db::db::Database::open_in_memory().await.unwrap();
         let org_id = db.create_org("route-probes", "Route probes").await.unwrap();
         let org = db.org_by_id(org_id).await.unwrap().unwrap();
         db.grant_consumer_scope(

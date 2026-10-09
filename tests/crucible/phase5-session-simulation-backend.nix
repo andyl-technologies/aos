@@ -188,21 +188,21 @@
     ++ failuresFor "crates/crucible/engine/crucible-engine/Cargo.toml" crucibleCargo [
       {
         label = "explicit test-double feature";
-        needle = ''test-double = ["dep:crucible-shmem"]'';
+        needle = ''test-double = ["dep:crucible-qemu-shmem"]'';
       }
     ]
     ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/Cargo.toml" qemuCargo [
       {
         label = "QEMU tests enable the mock only as a dev dependency";
         needle = ''          [dev-dependencies]
-          crucible = { path = "../crucible", features = ["test-double"] }'';
+          crucible-engine = { path = "../../engine/crucible-engine", features = ["test-double"] }'';
       }
     ]
     ++ failuresFor "crates/crucible/control/crucible-daemon/Cargo.toml" daemonCargo [
       {
         label = "daemon tests enable the mock only as a dev dependency";
         needle = ''          [dev-dependencies]
-          crucible = { path = "../crucible", features = ["test-double"] }'';
+          crucible-engine = { path = "../../engine/crucible-engine", features = ["test-double"] }'';
       }
     ]
     ++ failuresFor "crates/crucible/engine/crucible-engine/src/sim_backend.rs" simBackendLib [
@@ -361,10 +361,10 @@ in
               'edition = "2024"' \
               '[workspace]' \
               '[dependencies]' \
-              "crucible = { path = \"$PWD/crucible\" }" \
+              "crucible-engine = { path = \"$PWD/crucible/engine/crucible-engine\" }" \
               > "$negative_consumer/Cargo.toml"
             printf '%s\n' \
-              'use crucible::MockSimulationBackend;' \
+              'use crucible_engine::MockSimulationBackend;' \
               'fn main() { let _ = MockSimulationBackend::new(); }' \
               > "$negative_consumer/src/main.rs"
             cargo generate-lockfile \
@@ -380,7 +380,7 @@ in
               echo 'FAIL: default Crucible features expose MockSimulationBackend' >&2
               exit 1
             fi
-            grep -Fq 'unresolved import `crucible::MockSimulationBackend`' \
+            grep -Fq 'unresolved import `crucible_engine::MockSimulationBackend`' \
               "$negative_consumer/check.log"
             cargo test \
               --frozen \

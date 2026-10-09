@@ -10,7 +10,7 @@ impl RpcService {
     /// completed publication ambiguous to its producer.
     pub(in crate::service) async fn refresh_registry_index_after_publication(
         &self,
-        registry: &crate::db::RegistryRecord,
+        registry: &aos_hub_db::db::RegistryRecord,
         publication_id: &str,
     ) {
         if let Err(error) = self.reindexer.reindex(registry).await {

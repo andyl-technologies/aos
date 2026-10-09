@@ -28,8 +28,9 @@ use super::profile::Profile;
 use super::profile::meta;
 use super::registry::{RegistrySet, store_path_hash};
 use super::store;
-use super::types::{InstalledPackageRecord, PackageMeta};
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_deployment_format::inventory::InstalledPackageRecord;
+use aos_registry_format::consumer::PackageMeta;
 
 // ---------------------------------------------------------------------------
 // Dependency tree node
@@ -563,7 +564,9 @@ async fn installed_closure_contains_any(
 }
 
 /// Index installed packages (those with APM metadata) by store-path hash.
-fn installed_apm_by_hash(installed: &[InstalledPackageRecord]) -> HashMap<String, InstalledPackageRef> {
+fn installed_apm_by_hash(
+    installed: &[InstalledPackageRecord],
+) -> HashMap<String, InstalledPackageRef> {
     installed
         .iter()
         .filter_map(|inst| {
@@ -592,7 +595,10 @@ fn has_installed_package(package: &str, installed: &[InstalledPackageRecord]) ->
 }
 
 /// Comma-joined sorted list of installed versions of `package`, if any.
-fn policy_installed_versions(package: &str, installed: &[InstalledPackageRecord]) -> Option<String> {
+fn policy_installed_versions(
+    package: &str,
+    installed: &[InstalledPackageRecord],
+) -> Option<String> {
     let mut versions = BTreeSet::new();
 
     for inst in installed {
@@ -962,7 +968,7 @@ mod tests {
     use super::*;
     use aos_registry_client::registry::RegistrySet;
     use aos_registry_client::registry::parse::{CURL_TOML, ZLIB_TOML};
-    use aos_registry_client::registry::tests::make_registry;
+    use aos_registry_client::registry::test_support::make_registry;
     use std::fs;
     use tempfile::TempDir;
 

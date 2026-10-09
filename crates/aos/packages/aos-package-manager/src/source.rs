@@ -29,11 +29,12 @@ use super::profile::Profile;
 use super::profile::meta;
 use super::registry::{RegistrySet, store_path_hash};
 use super::store::filter_missing;
-use super::types::{InstalledPackageRecord, PackageMeta};
 use super::verify as hash_verify;
 use crate::error::PackageError;
-use aos_nix::aos_nix_env;
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_deployment_format::inventory::InstalledPackageRecord;
+use aos_nix::aos_nix_env;
+use aos_registry_format::consumer::PackageMeta;
 
 // ---------------------------------------------------------------------------
 // apm verify <package>
@@ -151,7 +152,8 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
             Ok(())
         }
         Err(e) => {
-            if let Some(PackageError::HashMismatch { expected, actual }) = e.downcast_ref::<PackageError>()
+            if let Some(PackageError::HashMismatch { expected, actual }) =
+                e.downcast_ref::<PackageError>()
             {
                 printer.error(&format!("MISMATCH: '{package}' has been modified on disk"));
                 printer.kv("Expected", expected);
@@ -417,12 +419,12 @@ pub async fn run_source(
             );
         }
 
-        let actual_hash = hash_verify::sha256_stream(dump_output.stdout.as_slice())?;
+        let actual_hash = aos_nar::verify::sha256_stream(dump_output.stdout.as_slice())?;
 
         printer.kv("Expected NAR hash", &expected_hash);
         printer.kv("Rebuilt NAR hash", &actual_hash);
 
-        if hash_verify::sha256_hashes_equal(&actual_hash, &expected_hash)? {
+        if aos_nar::verify::sha256_hashes_equal(&actual_hash, &expected_hash)? {
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
                     "package": package,
@@ -606,10 +608,11 @@ fn find_installed_package<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_deployment_format::inventory::{InstalledPackageRecord, PackageInventoryDetails};
     use aos_registry_client::config::ApmConfig;
     use aos_registry_client::registry::parse::CURL_TOML;
-    use aos_deployment_format::inventory::{PackageInventoryDetails, InstalledPackageRecord};
-use crate::types::{ApmSettings, ProfileScope, RegistryConfig};
+    use aos_registry_client::types::{ApmSettings, ProfileScope};
+    use aos_registry_format::consumer::RegistryConfig;
     use tempfile::TempDir;
 
     /// Helper: build a minimal ApmConfig with a temp cache dir containing
@@ -777,16 +780,16 @@ references = []
     #[test]
     fn verify_hash_comparison_match() {
         let data: &[u8] = b"test NAR content";
-        let hash = hash_verify::sha256_stream(data).unwrap();
+        let hash = aos_nar::verify::sha256_stream(data).unwrap();
         // Verify the same data produces the same hash.
-        let hash2 = hash_verify::sha256_stream(b"test NAR content".as_slice()).unwrap();
+        let hash2 = aos_nar::verify::sha256_stream(b"test NAR content".as_slice()).unwrap();
         assert_eq!(hash, hash2);
     }
 
     #[test]
     fn verify_hash_comparison_mismatch() {
-        let hash1 = hash_verify::sha256_stream(b"content A".as_slice()).unwrap();
-        let hash2 = hash_verify::sha256_stream(b"content B".as_slice()).unwrap();
+        let hash1 = aos_nar::verify::sha256_stream(b"content A".as_slice()).unwrap();
+        let hash2 = aos_nar::verify::sha256_stream(b"content B".as_slice()).unwrap();
         assert_ne!(hash1, hash2);
     }
 

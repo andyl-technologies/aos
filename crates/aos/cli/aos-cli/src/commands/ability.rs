@@ -267,8 +267,8 @@ fn render_artifact_consumption_text(explanation: &ArtifactConsumptionExplanation
                 linkage.soname,
                 linkage.loader,
                 match linkage.search_path_kind {
-                    aos_module_format::ElfSearchPathKind::Runpath => "DT_RUNPATH",
-                    aos_module_format::ElfSearchPathKind::Rpath => "DT_RPATH",
+                    aos_artifact_evidence::ElfSearchPathKind::Runpath => "DT_RUNPATH",
+                    aos_artifact_evidence::ElfSearchPathKind::Rpath => "DT_RPATH",
                 },
                 linkage.search_path.join(":"),
                 explanation.provider_elf_compatible.unwrap_or(false),

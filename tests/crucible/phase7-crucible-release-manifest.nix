@@ -17,7 +17,7 @@
   doorbellAbi = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible/control/crucible-control-api/src/rpc_abi.rs;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  crucibleCargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
+  crucibleCargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix {cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;};
 
   firstLineWith = label: prefix: content: let
     matches = builtins.filter (line: lib.hasPrefix prefix line) (lib.splitString "\n" content);
@@ -32,7 +32,7 @@
     lib.removeSuffix "\";"
     (lib.removePrefix prefix (firstLineWith label prefix content));
   crucibleVersion = sourceStringConst "Crucible package version" "  version = \"" cruciblePackageNix;
-  pluginCargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
+  pluginCargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix {cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;};
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
   guestHostProtocolVersion = import ../../pkgs/tools/crucible/_control-protocol-version.nix {};
   doorbellInstructionAbiVersion =
@@ -202,7 +202,7 @@
     ++ lib.optionals (manifest.components.boundaryCrates.license != "MIT") [
       "release manifest does not record the GPL plugin's MIT boundary-crate license selection"
     ]
-    ++ lib.optionals (manifest.components.boundaryCrates.packages != ["crucible-protocol" "crucible-shmem"]) [
+    ++ lib.optionals (manifest.components.boundaryCrates.packages != ["crucible-qemu-protocol" "crucible-qemu-shmem"]) [
       "release manifest boundary-crate inventory is incomplete"
     ]
     ++ lib.optionals (
@@ -387,11 +387,11 @@
       }
       {
         label = "cargo deps hash is shared manifest input";
-        needle = "hash = cargoDepsHash;";
+        needle = "cargoDeps = aosWorkspaceVendor;";
       }
       {
         label = "cargo deps hash comes from the shared pin";
-        needle = "cargoDepsHash = import ./_cargo-deps-hash.nix;";
+        needle = "cargoDepsHash = import ./_cargo-deps-hash.nix {cargoDeps = aosWorkspaceVendor;};";
       }
       {
         label = "release manifest env installed";
@@ -427,15 +427,15 @@
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPackageNix [
       {
         label = "plugin cargo deps vendored";
-        needle = "cargoDeps = fetchCargoVendor";
+        needle = "cargoDeps = aosWorkspaceVendor;";
       }
       {
         label = "plugin cargo deps source root";
-        needle = "sourceRoot = \"source/crates\";";
+        needle = "cargoDeps = aosWorkspaceVendor;";
       }
       {
         label = "plugin cargo deps hash";
-        needle = "hash = import ../tools/crucible/_cargo-deps-hash.nix;";
+        needle = "cargoWorkspaceMembers = import ../tools/crucible/_workspace.nix {inherit lib;};";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/_source.nix" sourceNix [

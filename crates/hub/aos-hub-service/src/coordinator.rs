@@ -36,7 +36,7 @@ use std::sync::Mutex;
 
 use anyhow::Result;
 
-use crate::backend::BackendBounds;
+use aos_hub_db::backend::BackendBounds;
 
 /// A strongly-consistent coordination primitive: atomic counters, leases, floors.
 ///

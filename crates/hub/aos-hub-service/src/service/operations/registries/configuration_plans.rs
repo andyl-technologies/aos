@@ -129,7 +129,7 @@ impl RpcService {
         if !matches!(req.visibility.as_str(), "public" | "internal" | "private") {
             return Err(RpcError::invalid("invalid registry visibility"));
         }
-        crate::crawl::CrawlPolicy::parse(&req.crawl_policy)
+        aos_hub_model::crawl::CrawlPolicy::parse(&req.crawl_policy)
             .map_err(|error| RpcError::invalid(error.to_string()))?;
         validate_registry_trust_keys(&req.trust_keys)?;
         let effects = registry_policy::effects(&registry, &req);

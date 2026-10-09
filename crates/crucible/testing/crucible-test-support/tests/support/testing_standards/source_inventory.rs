@@ -1,7 +1,6 @@
 //! Test-source discovery and flaky-pattern baseline handling.
 
-#[path = "../workspace.rs"]
-mod workspace;
+use crate::workspace;
 
 use super::*;
 
@@ -167,9 +166,7 @@ pub(crate) fn gate_target_source_overrides(
     let mut sources = BTreeMap::new();
 
     for target in gate_targets() {
-        let path = root
-            .join("crates")
-            .join(target.package)
+        let path = workspace::package_path(&root.join("crates"), target.package)
             .join("tests")
             .join(format!("{}.rs", target.test_target));
         sources.insert(

@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::types::ProfileScope;
+use aos_registry_client::types::ProfileScope;
 
 // ---------------------------------------------------------------------------
 // Profile — a system or per-user profile directory
@@ -124,7 +124,7 @@ impl Profile {
     ///
     /// ```no_run
     /// use aos_package_manager::profile::Profile;
-    /// use aos_package_manager::types::ProfileScope;
+    /// use aos_registry_client::types::ProfileScope;
     ///
     /// let profile = Profile::open_readonly(ProfileScope::User);
     /// // Listing metadata is safe even if the profile was never initialized.

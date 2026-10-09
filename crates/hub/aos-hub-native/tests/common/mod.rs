@@ -11,7 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use aos_hub_native::surface::object::{
-    ObjectKind, Oid, TreeEntry, encode_loose, encode_tree, hash_object,
+    encode_loose, encode_tree, hash_object, ObjectKind, Oid, TreeEntry,
 };
 use aos_hub_native::surface::sshsig;
 use aos_hub_native::surface::tag::render_tag_payload;
@@ -414,7 +414,11 @@ pub async fn org_scope(db: &aos_hub_native::db::Database, slug: &str) -> String 
 }
 
 /// Resolve a project path to its canonical stable authorization scope.
-pub async fn project_scope(db: &aos_hub_native::db::Database, org_slug: &str, path: &str) -> String {
+pub async fn project_scope(
+    db: &aos_hub_native::db::Database,
+    org_slug: &str,
+    path: &str,
+) -> String {
     let org = db
         .org_by_slug(org_slug)
         .await
@@ -668,8 +672,7 @@ impl Fixture {
         secret.extend_from_slice(self.key.verifying_key().as_bytes());
         let secret_b64 = base64::engine::general_purpose::STANDARD.encode(&secret);
         let signer =
-            aos_nar::cache::NarInfoSigner::from_key_content(&format!("demo:{secret_b64}"))
-                .unwrap();
+            aos_nar::cache::NarInfoSigner::from_key_content(&format!("demo:{secret_b64}")).unwrap();
         let fingerprint = aos_nar::cache::NarInfoSigner::fingerprint(
             &store_path,
             &nar_hash,
@@ -714,8 +717,7 @@ impl Fixture {
         secret.extend_from_slice(self.key.verifying_key().as_bytes());
         let secret_b64 = base64::engine::general_purpose::STANDARD.encode(&secret);
         let signer =
-            aos_nar::cache::NarInfoSigner::from_key_content(&format!("demo:{secret_b64}"))
-                .unwrap();
+            aos_nar::cache::NarInfoSigner::from_key_content(&format!("demo:{secret_b64}")).unwrap();
 
         let fingerprint =
             aos_nar::cache::NarInfoSigner::fingerprint(store_path, hash, size as i64, refs);
@@ -810,9 +812,9 @@ pub fn standard_registry_with_commit_message(
 #[allow(dead_code)]
 pub fn system_image_registry(root: &Path) -> SystemImageFixture {
     use aos_registry_format::manifest::{
+        immutable_image_contract_object_key, immutable_image_object_key,
         ImageArtifactContractDocumentReference, ImageArtifactContractReference, ImageCompression,
-        ImageDelivery, ImageEntry, ImageTarget, immutable_image_contract_object_key,
-        immutable_image_object_key,
+        ImageDelivery, ImageEntry, ImageTarget,
     };
     use sha2::Digest as _;
 

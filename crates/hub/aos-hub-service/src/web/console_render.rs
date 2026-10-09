@@ -1,7 +1,7 @@
 //! Transport-neutral HTML rendering for browser authentication and account security.
 //!
 //! The retained ceremony pages and their shared chrome are pure string-building
-//! over the `aos.hub.v1` read shapes ([`crate::db`] record types) and the
+//! over the `aos.hub.v1` read shapes ([`aos_hub_db::db`] record types) and the
 //! callers' explicitly-passed identity, so the module is **transport- and
 //! task-local-free**: the signed-in email, the per-session CSRF token, and the
 //! masthead brand are all passed in through the process-wide editable site
@@ -21,13 +21,13 @@
 //! [`crate::web::render`] and are re-used here so the console and the shared
 //! browse surface render byte-identically.
 
-use crate::clock::Instant;
+use aos_hub_model::clock::Instant;
 use std::fmt::Write as _;
 use std::sync::{OnceLock, RwLock};
 
-use crate::db::{ChannelSummary, WebauthnCredentialRecord};
-use crate::domain::Permission;
 use crate::web::render::{authenticated_navigation, escape, masthead, table as render_table};
+use aos_hub_db::db::{ChannelSummary, WebauthnCredentialRecord};
+use aos_hub_model::domain::Permission;
 
 /// Items per page for the console's paginated lists (orgs, members, tokens,
 /// keys, audit). Mirrors the browse tier's list size so both paginate alike.
@@ -107,7 +107,7 @@ pub fn set_site_chrome(
 }
 
 /// Refreshes all shared presentation settings from one database snapshot.
-pub fn apply_instance_settings(settings: &crate::db::InstanceSettings) {
+pub fn apply_instance_settings(settings: &aos_hub_db::db::InstanceSettings) {
     set_site_chrome(
         settings.site_title.as_deref(),
         settings.tagline.as_deref(),
@@ -659,8 +659,8 @@ pub fn ago(unix: i64) -> String {
     // Use the cross-platform clock: `std::time::SystemTime::now()` PANICS on the
     // Worker (wasm32 has no system clock), which would crash every page that
     // renders a relative time (e.g. the audit feed calls this per row). See
-    // `crate::clock`.
-    let now = crate::clock::now_unix_secs();
+    // `aos_hub_model::clock`.
+    let now = aos_hub_model::clock::now_unix_secs();
     let delta = (now - unix).max(0);
     if delta < 60 {
         format!("{delta}s ago")

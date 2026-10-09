@@ -9,21 +9,13 @@ use base64::Engine as _;
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    collect_plan_pin_impacts, multipart_completion_matches, narinfo_store_hash,
-    parse_cache_narinfo, pb, render_nix_cache_info, validate_signing_key_consumer_compatibility,
+    collect_plan_pin_impacts, multipart_completion_matches,
+    pb, render_nix_cache_info, validate_signing_key_consumer_compatibility,
     RpcError, RpcService,
 };
-use crate::auth::jwt::JwtKeys;
-use crate::auth::seal::SecretSealer;
+use aos_hub_model::auth::jwt::JwtKeys;
+use aos_hub_model::auth::seal::SecretSealer;
 use crate::coordinator::InMemoryCoordinator;
-use crate::db::{
-    ChannelSummary, Database, IndexSnapshot, IndexedSystemImage, NewRegistryPublication,
-    NewSurfacePlacementSpec, RegistryRecord, ReleaseImageSnapshot, ReleaseRow,
-    SetRegistryPublicationObject, SetRegistryPublicationPlacement, SetSurfaceObject,
-    SurfacePlacementBlockers, SurfaceTarget, TokenAuth, VerifiedRegistryImageObject,
-    WriteTicketPartRecord,
-};
-use crate::domain::{Permission, Principal, Role, Scope};
 use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceObjectEvidence, SurfaceProvider};
 use crate::lease::InMemoryLease;
 use crate::ratelimit::CoordinatorRateLimiter;
@@ -33,6 +25,14 @@ use crate::surface_write::{
     SurfaceWriteProvider,
 };
 use crate::topology_probe::DatabaseTopologyProbeScheduler;
+use aos_hub_db::db::{
+    ChannelSummary, Database, IndexSnapshot, IndexedSystemImage, NewRegistryPublication,
+    NewSurfacePlacementSpec, RegistryRecord, ReleaseImageSnapshot, ReleaseRow,
+    SetRegistryPublicationObject, SetRegistryPublicationPlacement, SetSurfaceObject,
+    SurfacePlacementBlockers, SurfaceTarget, TokenAuth, VerifiedRegistryImageObject,
+    WriteTicketPartRecord,
+};
+use aos_hub_model::domain::{Permission, Principal, Role, Scope};
 
 #[allow(dead_code)]
 #[derive(Clone)]
@@ -92,7 +92,7 @@ struct CountingRejectingSurfaceProvider {
 impl SurfaceProvider for CountingRejectingSurfaceProvider {
     async fn placement_fetcher(
         &self,
-        _placement: &crate::db::SurfacePlacementRecord,
+        _placement: &aos_hub_db::db::SurfacePlacementRecord,
     ) -> Result<Box<dyn SurfaceFetch>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         bail!("image metadata-only response reached the placement backend")
@@ -103,7 +103,7 @@ impl SurfaceProvider for CountingRejectingSurfaceProvider {
 impl SurfaceProvider for InjectedSurfaceProvider {
     async fn placement_fetcher(
         &self,
-        _placement: &crate::db::SurfacePlacementRecord,
+        _placement: &aos_hub_db::db::SurfacePlacementRecord,
     ) -> Result<Box<dyn SurfaceFetch>> {
         let behavior = self
             .behaviors
@@ -185,7 +185,7 @@ struct InjectedWriteProvider {
 impl SurfaceWriteProvider for InjectedWriteProvider {
     async fn placement_writer(
         &self,
-        _placement: &crate::db::SurfacePlacementRecord,
+        _placement: &aos_hub_db::db::SurfacePlacementRecord,
     ) -> Result<Box<dyn SurfaceWrite>> {
         let behavior = self
             .behaviors
@@ -201,15 +201,15 @@ impl SurfaceWriteProvider for InjectedWriteProvider {
 
     async fn placement_writer_at_revision(
         &self,
-        placement: &crate::db::SurfacePlacementRecord,
-        _revision: &crate::db::BindingWriteRevisionRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
+        _revision: &aos_hub_db::db::BindingWriteRevisionRecord,
     ) -> Result<Box<dyn SurfaceWrite>> {
         self.placement_writer(placement).await
     }
 
     async fn placement_deleter(
         &self,
-        _placement: &crate::db::SurfacePlacementRecord,
+        _placement: &aos_hub_db::db::SurfacePlacementRecord,
         _expected_binding_resource_version: i64,
         _delete_credential_generation: i64,
     ) -> Result<Box<dyn SurfaceWrite>> {
@@ -589,7 +589,7 @@ async fn image_metadata_service(
 }
 
 fn image_http_request(
-    method: crate::delivery_http::DeliveryMethod,
+    method: aos_hub_model::delivery_http::DeliveryMethod,
     range: Option<&[u8]>,
 ) -> crate::image_http::ImageHttpRequest<'_> {
     crate::image_http::ImageHttpRequest {
@@ -600,7 +600,7 @@ fn image_http_request(
         if_none_match: None,
         if_modified_since: None,
         if_range: None,
-        now: crate::delivery_http::HttpTimestamp::from_unix_seconds(1_700_000_000).unwrap(),
+        now: aos_hub_model::delivery_http::HttpTimestamp::from_unix_seconds(1_700_000_000).unwrap(),
     }
 }
 

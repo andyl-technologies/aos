@@ -13,7 +13,7 @@ use crate::error::CliError;
 use aos_build_client::AosClient;
 use aos_cli_ui::output::Printer;
 use aos_nix::NixRunner;
-use aos_package_manager::types::validate_platform_name;
+use aos_registry_format::consumer::validate_platform_name;
 
 /// `aos build <package>` or `aos build --all`.
 ///

@@ -2,11 +2,11 @@
 
 use super::*;
 
+use crate::crucible_engine::{Configuration, ScenarioDefForm, Schedule};
 use crucible_daemon::{
     MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES, decode_crucible_configuration_artifact,
     encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
 };
-use crucible_engine::{Configuration, ScenarioDefForm, Schedule};
 use serde::Serialize;
 
 use super::authoring::{
@@ -178,12 +178,12 @@ fn validate_import_body_size(kind: &str, bytes: usize) -> Result<(), CliError> {
 mod tests {
     use super::*;
 
+    use crate::crucible_engine::{Decision, RngDecision, RngStreamId, SelectionDecision};
     use crucible_campaign::{
         BooleanDomain, CampaignHash, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
         ChoiceOpportunity, ChoiceSource, ChoiceValue, SelectableDeclaration, Selection,
         SelectionOrigin,
     };
-    use crucible_engine::{Decision, RngDecision, RngStreamId, SelectionDecision};
     use std::collections::BTreeSet;
     use tempfile::tempdir;
 

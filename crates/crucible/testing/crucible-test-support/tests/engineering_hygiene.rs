@@ -355,7 +355,7 @@ fn engineering_hygiene_rules_reject_shape_and_boundary_drift() {
 
     let forbidden = qemu_specific_boundary_failures(
         "crucible-engine",
-        Path::new("crucible/src/backend.rs"),
+        Path::new("crucible/engine/crucible-engine/src/backend.rs"),
         "pub struct QemuNode;\n",
     );
     assert_contains(&forbidden, "QEMU-specific token");
@@ -369,7 +369,7 @@ fn engineering_hygiene_rules_reject_shape_and_boundary_drift() {
 
     let commented = qemu_specific_boundary_failures(
         "crucible-engine",
-        Path::new("crucible/src/backend.rs"),
+        Path::new("crucible/engine/crucible-engine/src/backend.rs"),
         r#"
             //! QEMU appears in docs only.
             const TEXT: &str = "QemuNode appears in a diagnostic";
@@ -377,6 +377,20 @@ fn engineering_hygiene_rules_reject_shape_and_boundary_drift() {
         "#,
     );
     assert!(commented.is_empty(), "{commented:?}");
+
+    let protocol_imports = qemu_specific_boundary_failures(
+        "crucible-engine",
+        Path::new("crucible-engine/src/backend.rs"),
+        "use crucible_qemu_protocol::Message; use crucible_qemu_shmem::Header;",
+    );
+    assert!(protocol_imports.is_empty(), "{protocol_imports:?}");
+
+    let implementation_import = qemu_specific_boundary_failures(
+        "crucible-engine",
+        Path::new("crucible-engine/src/backend.rs"),
+        "use crucible_qemu_host::Backend;",
+    );
+    assert_contains(&implementation_import, "QEMU-specific token");
 
     let root_manifest = r#"
         [dependencies]
@@ -397,8 +411,11 @@ fn engineering_hygiene_rules_reject_shape_and_boundary_drift() {
     );
     assert_contains(&target_manifest_findings, "QEMU boundary dependency");
 
-    let allowed_manifest_findings =
-        qemu_manifest_boundary_failures("crucible-qemu-host", Path::new("Cargo.toml"), target_manifest);
+    let allowed_manifest_findings = qemu_manifest_boundary_failures(
+        "crucible-qemu-host",
+        Path::new("Cargo.toml"),
+        target_manifest,
+    );
     assert!(
         allowed_manifest_findings.is_empty(),
         "{allowed_manifest_findings:?}"
@@ -789,7 +806,10 @@ fn qemu_specific_boundary_failures(package: &str, path: &Path, content: &str) ->
         return Vec::new();
     }
 
-    let scrubbed = scrub_comments_and_strings(content);
+    // These crates own the permissive process protocols, not a QEMU implementation.
+    let scrubbed = scrub_comments_and_strings(content)
+        .replace("crucible_qemu_protocol", "permissive_control_protocol")
+        .replace("crucible_qemu_shmem", "permissive_shared_memory_protocol");
     QEMU_SPECIFIC_TOKENS
         .iter()
         .filter(|token| scrubbed.contains(**token))

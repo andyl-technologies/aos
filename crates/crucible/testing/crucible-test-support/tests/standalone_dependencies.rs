@@ -12,7 +12,7 @@ mod workspace;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use toml::Value;
 

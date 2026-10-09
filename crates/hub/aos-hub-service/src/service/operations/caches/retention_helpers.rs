@@ -6,8 +6,8 @@ impl RpcService {
     pub(in crate::service) async fn require_retention_lease_authority(
         &self,
         auth: Option<&str>,
-        cache: &crate::db::BinaryCache,
-        root: &crate::db::ManualRetentionRootRecord,
+        cache: &aos_hub_db::db::BinaryCache,
+        root: &aos_hub_db::db::ManualRetentionRootRecord,
     ) -> Result<Claims, RpcError> {
         let claims = self.require_claims(auth)?;
         let scope = Scope::parse(&cache.scope_key);
@@ -29,7 +29,7 @@ impl RpcService {
     pub(in crate::service) async fn require_retention_root_creation_authority(
         &self,
         auth: Option<&str>,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
         leased: bool,
     ) -> Result<Claims, RpcError> {
         let claims = self.require_claims(auth)?;
@@ -79,20 +79,24 @@ impl RpcService {
         let started_at = clock::now_unix_secs();
         let operation = self
             .db
-            .create_topology_operation(&crate::db::NewTopologyOperation {
+            .create_topology_operation(&aos_hub_db::db::NewTopologyOperation {
                 operation_id: uuid::Uuid::new_v4().to_string(),
                 operation_kind: "retention_refresh".to_string(),
                 control_permission: Permission::CacheRetentionManage,
                 targets: vec![
-                    crate::db::NewTopologyOperationTarget {
+                    aos_hub_db::db::NewTopologyOperationTarget {
                         role: "primary".to_string(),
-                        target: crate::db::NewTopologyOperationTargetRef::BinaryCache(cache.id),
+                        target: aos_hub_db::db::NewTopologyOperationTargetRef::BinaryCache(
+                            cache.id,
+                        ),
                         generation_key: 0,
                         configuration_digest: String::new(),
                     },
-                    crate::db::NewTopologyOperationTarget {
+                    aos_hub_db::db::NewTopologyOperationTarget {
                         role: "source".to_string(),
-                        target: crate::db::NewTopologyOperationTargetRef::Registry(registry.id),
+                        target: aos_hub_db::db::NewTopologyOperationTargetRef::Registry(
+                            registry.id,
+                        ),
                         generation_key: 0,
                         configuration_digest: String::new(),
                     },
@@ -167,7 +171,7 @@ impl RpcService {
 
     pub(in crate::service) async fn materialize_retention_refresh(
         &self,
-        subscription: &crate::db::CacheRetentionSubscriptionRecord,
+        subscription: &aos_hub_db::db::CacheRetentionSubscriptionRecord,
         registry_id: i64,
     ) -> anyhow::Result<(String, i64)> {
         let index = self
@@ -251,10 +255,12 @@ impl RpcService {
             add_release_retention_reasons(&mut reasons, "exact", snapshot);
         }
         if let Some(semver_selector) = selector.semver.as_ref() {
-            let requirement =
-                crate::retention::RetentionSemverRequirement::parse(&semver_selector.requirement)?;
+            let requirement = aos_hub_model::retention::RetentionSemverRequirement::parse(
+                &semver_selector.requirement,
+            )?;
             for release in &all_releases {
-                let Ok(version) = crate::retention::CanonicalSemver::parse(&release.semver) else {
+                let Ok(version) = aos_hub_model::retention::CanonicalSemver::parse(&release.semver)
+                else {
                     continue;
                 };
                 if !requirement.matches(&version, semver_selector.include_prereleases) {
@@ -275,7 +281,7 @@ impl RpcService {
             let candidates = complete
                 .iter()
                 .filter_map(|release| {
-                    Some(crate::retention::VerifiedRelease {
+                    Some(aos_hub_model::retention::VerifiedRelease {
                         release_id: u64::try_from(release.release_id).ok()?,
                         tag: release.tag.clone(),
                         verified_tag_oid: canonical_git_object_id(&release.verified_tag_oid)
@@ -286,7 +292,7 @@ impl RpcService {
                     })
                 })
                 .collect::<Vec<_>>();
-            for selected in crate::retention::select_recent_releases(
+            for selected in aos_hub_model::retention::select_recent_releases(
                 &candidates,
                 recent.count,
                 recent.include_prereleases,
@@ -379,7 +385,7 @@ impl RpcService {
             .await?
             .context("cache GC state is missing")?;
         self.db
-            .begin_retention_refresh_topology(&crate::db::BeginRetentionRefresh {
+            .begin_retention_refresh_topology(&aos_hub_db::db::BeginRetentionRefresh {
                 refresh_id: refresh_id.clone(),
                 subscription_id: subscription.id,
                 expected_subscription_version: subscription.resource_version,
@@ -498,7 +504,7 @@ impl RpcService {
         }
         if let Some(semver) = selector.semver.as_mut() {
             semver.requirement =
-                crate::retention::RetentionSemverRequirement::parse(&semver.requirement)
+                aos_hub_model::retention::RetentionSemverRequirement::parse(&semver.requirement)
                     .map_err(|error| RpcError::invalid(error.to_string()))?
                     .canonical()
                     .to_string();
@@ -507,7 +513,7 @@ impl RpcService {
     }
 
     pub(in crate::service) fn retention_subscription_message(
-        record: &crate::db::CacheRetentionSubscriptionRecord,
+        record: &aos_hub_db::db::CacheRetentionSubscriptionRecord,
         cache_id: &str,
         registry_id: &str,
     ) -> Result<pb::RetentionSubscription, RpcError> {
@@ -533,7 +539,7 @@ impl RpcService {
         cache_id: &str,
         registry_id: &str,
         mutate: bool,
-    ) -> Result<(crate::db::BinaryCache, RegistryRecord), RpcError> {
+    ) -> Result<(aos_hub_db::db::BinaryCache, RegistryRecord), RpcError> {
         let cache = self.binary_cache_or_not_found(cache_id).await?;
         let registry = self.registry_or_not_found(registry_id).await?;
         let claims = if mutate {
@@ -558,7 +564,7 @@ impl RpcService {
     pub(in crate::service) async fn manual_retention_root_message(
         &self,
         cache_id: &str,
-        root: &crate::db::ManualRetentionRootRecord,
+        root: &aos_hub_db::db::ManualRetentionRootRecord,
         include_actor: bool,
     ) -> Result<pb::ManualRetentionRoot, RpcError> {
         let current_lease = if let Some(lease_id) = root.current_lease_id.as_deref() {
@@ -586,7 +592,7 @@ impl RpcService {
     }
 
     pub(in crate::service) fn retention_lease_message(
-        lease: crate::db::RetentionLeaseRecord,
+        lease: aos_hub_db::db::RetentionLeaseRecord,
         include_actor: bool,
     ) -> pb::RetentionLease {
         pb::RetentionLease {
@@ -673,35 +679,36 @@ impl RpcService {
             .list_cache_retention_subscriptions_topology(cache.id)
             .await
             .map_err(RpcError::internal)?;
-        let operation =
-            self.db
-                .create_topology_operation(&crate::db::NewTopologyOperation {
-                    operation_id,
-                    operation_kind: "retention_refresh_all".to_string(),
-                    control_permission: Permission::CacheRetentionManage,
-                    targets: vec![crate::db::NewTopologyOperationTarget {
-                        role: "primary".to_string(),
-                        target: crate::db::NewTopologyOperationTargetRef::BinaryCache(cache.id),
-                        generation_key: 0,
-                        configuration_digest: String::new(),
-                    }],
-                    detail_json: serde_json::json!({
-                        "subscriptionCount": subscriptions.iter().filter(|sub| sub.enabled).count(),
-                        "requestDigest": request_digest,
-                        "expectedResourceVersion": expected_version
-                    })
-                    .to_string(),
-                    progress_total: Some(
-                        i64::try_from(subscriptions.iter().filter(|sub| sub.enabled).count())
-                            .map_err(|_| {
-                                RpcError::internal(anyhow::anyhow!(
-                                    "retention subscription count overflow"
-                                ))
-                            })?,
-                    ),
+        let operation = self
+            .db
+            .create_topology_operation(&aos_hub_db::db::NewTopologyOperation {
+                operation_id,
+                operation_kind: "retention_refresh_all".to_string(),
+                control_permission: Permission::CacheRetentionManage,
+                targets: vec![aos_hub_db::db::NewTopologyOperationTarget {
+                    role: "primary".to_string(),
+                    target: aos_hub_db::db::NewTopologyOperationTargetRef::BinaryCache(cache.id),
+                    generation_key: 0,
+                    configuration_digest: String::new(),
+                }],
+                detail_json: serde_json::json!({
+                    "subscriptionCount": subscriptions.iter().filter(|sub| sub.enabled).count(),
+                    "requestDigest": request_digest,
+                    "expectedResourceVersion": expected_version
                 })
-                .await
-                .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+                .to_string(),
+                progress_total: Some(
+                    i64::try_from(subscriptions.iter().filter(|sub| sub.enabled).count()).map_err(
+                        |_| {
+                            RpcError::internal(anyhow::anyhow!(
+                                "retention subscription count overflow"
+                            ))
+                        },
+                    )?,
+                ),
+            })
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         let started_at = clock::now_unix_secs();
         let running = self
             .db

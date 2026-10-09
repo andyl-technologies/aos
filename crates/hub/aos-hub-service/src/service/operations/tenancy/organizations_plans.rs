@@ -23,7 +23,7 @@ impl RpcService {
         iam::validate_org_slug(&req.slug)
             .map_err(|error| RpcError::invalid(format!("organization slug: {error}")))?;
         if self.db.signup_policy().await.map_err(RpcError::internal)?
-            == crate::db::SignupPolicy::InviteOnly
+            == aos_hub_db::db::SignupPolicy::InviteOnly
             && !self.signup_permitted(&claims).await?
         {
             return Err(RpcError::PermissionDenied(

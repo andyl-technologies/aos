@@ -82,8 +82,9 @@ pub(super) fn validate_narinfo(
             reference_set(&old) == reference_set(&fields),
             "stage narinfo changes existing store references"
         );
-        let old = aos_hub_model::cache::parse_cache_narinfo(0, hash, std::str::from_utf8(current)?, 0)
-            .context("existing narinfo is malformed")?;
+        let old =
+            aos_hub_model::cache::parse_cache_narinfo(0, hash, std::str::from_utf8(current)?, 0)
+                .context("existing narinfo is malformed")?;
         let signatures = parsed.signature.as_deref().unwrap_or_default();
         let signatures = signatures.lines().collect::<BTreeSet<_>>();
         ensure!(

@@ -111,7 +111,7 @@ def manifest(text, path):
 
 # Strings and comments are separate lexical regions. Import identifiers change
 # only in code; arbitrary string values never receive crate-name replacement.
-RUST_REGIONS = re.compile(r'//[^\n]*|/\*[\s\S]*?\*/|r(?P<hashes>\#*)"[\s\S]*?"(?P=hashes)|"(?:\\.|[^"\\])*"')
+RUST_REGIONS = re.compile(r"//[^\n]*|/\*[\s\S]*?\*/|r(?P<hashes>\#*)\"[\s\S]*?\"(?P=hashes)|'(?:\\u\{[0-9a-fA-F_]+\}|\\.|[^'\\\n])'|\"(?:\\.|[^\"\\])*\"")
 RUST_NAMES = {old.replace("-", "_"): new.replace("-", "_") for old, new in NAMES.items() if old != new}
 RUST_NAMES.pop("aos", None)
 RUST_NAMES.pop("crucible", None)
@@ -119,9 +119,23 @@ IDENTIFIERS = re.compile(r"\b(?:" + "|".join(map(re.escape, sorted(RUST_NAMES, k
 
 
 def rust(text, path):
+    code_text = RUST_REGIONS.sub("", text)
+    aliases = {
+        alias
+        for source, alias in re.findall(r"\buse\s+([\w:]+)\s+as\s+(\w+)", code_text)
+        if source != "self"
+    }
+
     def code(region):
-        region = IDENTIFIERS.sub(lambda match: RUST_NAMES[match[0]], region)
-        return re.sub(r"\bcrucible(?=\s*::)", "crucible_engine", region)
+        region = IDENTIFIERS.sub(
+            lambda match: match[0] if match[0] in aliases else RUST_NAMES[match[0]],
+            region,
+        )
+        if "crucible" not in aliases:
+            region = re.sub(r"\bcrucible(?=\s*::)", "crucible_engine", region)
+        region = re.sub(r"\bself as crucible\b", "self as crucible_engine", region)
+        # Root library references change; aos_build_api::aos is a wire namespace.
+        return re.sub(r"(?<![\w:])aos(?=\s*::entry\b)", "aos_cli", region)
 
     output = []
     cursor = 0
@@ -131,6 +145,7 @@ def rust(text, path):
         if region.startswith(("//", "/*")):
             region = IDENTIFIERS.sub(lambda item: RUST_NAMES[item[0]], region)
             region = re.sub(r"\bcrucible(?=::)", "crucible_engine", region)
+            region = re.sub(r"(?<![\w:])aos(?=\s*::entry\b)", "aos_cli", region)
         output.append(region)
         cursor = match.end()
     output.append(code(text[cursor:]))

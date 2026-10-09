@@ -78,7 +78,8 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     use sha2::{Digest as _, Sha256};
 
     let root = tempfile::tempdir().unwrap();
-    let image_snapshots = aos_hub_native::image_snapshot::ImageSnapshotStore::open(root.path()).unwrap();
+    let image_snapshots =
+        aos_hub_native::image_snapshot::ImageSnapshotStore::open(root.path()).unwrap();
     let public_surface = root.path().join("public");
     let private_surface = root.path().join("private");
     std::fs::create_dir_all(&public_surface).unwrap();
@@ -918,7 +919,8 @@ async fn untrusted_key_fails_closed() {
     // committed roster must not rescue it: the roster only extends trust
     // after the commit itself verifies against pinned anchors.
     let other = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
-    let wrong_anchor = aos_hub_native::surface::sshsig::trusted_key_line("demo", &other.verifying_key());
+    let wrong_anchor =
+        aos_hub_native::surface::sshsig::trusted_key_line("demo", &other.verifying_key());
 
     let db = Database::open_in_memory().await.unwrap();
     db.register_registry("demo", &[wrong_anchor], true)

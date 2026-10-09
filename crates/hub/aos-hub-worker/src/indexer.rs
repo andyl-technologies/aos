@@ -38,8 +38,8 @@ use anyhow::{Context as _, Result};
 use worker::Bucket;
 
 use aos_hub_db::db::{Database, SurfaceTarget};
-use aos_hub_service::fetch::SurfaceProvider as _;
 use aos_hub_model::secret_version::SecretVersionResolver;
+use aos_hub_service::fetch::SurfaceProvider as _;
 
 use crate::consoleports::WorkerEgressClient;
 use crate::surface::{R2SurfaceProvider, R2SurfaceWriteProvider};
@@ -145,9 +145,12 @@ pub async fn rescan_all(
         Arc::clone(&egress),
     );
     let writers = R2SurfaceWriteProvider::new(bucket, Arc::clone(&db), secrets, egress);
-    aos_hub_service::cache_scan::reap_due_cache_tombstones(&db, aos_hub_model::clock::now_unix_secs())
-        .await
-        .context("reaping cache tombstones")?;
+    aos_hub_service::cache_scan::reap_due_cache_tombstones(
+        &db,
+        aos_hub_model::clock::now_unix_secs(),
+    )
+    .await
+    .context("reaping cache tombstones")?;
     aos_hub_service::cache_scan::recover_expired_cache_writes(
         &db,
         &provider,

@@ -31,14 +31,14 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use aos_nix_cache::backend::{self, AuthOptions};
+use aos_cli_ui::output::Printer;
 use aos_nar::cache::{
     NarCompression, NarInfoSigner, StaticNarInfoInput, canonical_sha256_hex, nar_url,
     nix_cache_info, render_static_narinfo,
 };
 use aos_nar::info::{basename, store_hash};
 use aos_nix::aos_nix_env;
-use aos_cli_ui::output::Printer;
+use aos_nix_cache::backend::{self, AuthOptions};
 use futures_util::future::join_all;
 use futures_util::stream::{StreamExt, TryStreamExt};
 use serde_json::Value as JsonValue;

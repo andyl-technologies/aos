@@ -179,7 +179,7 @@ impl RpcService {
     }
 
     fn surface_route_target(
-        record: &crate::db::SurfaceRouteProjection,
+        record: &aos_hub_db::db::SurfaceRouteProjection,
     ) -> Result<pb::route_target::Target, RpcError> {
         let spec = &record.snapshot.spec;
         let delivery_kind = if spec.mode == "hub_redirect" {
@@ -230,8 +230,8 @@ impl RpcService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::fixtures::{count_queries, topology_fixture};
-    use crate::db::TokenAuth;
+    use aos_hub_db::db::fixtures::{count_queries, topology_fixture};
+    use aos_hub_db::db::TokenAuth;
     use std::sync::atomic::Ordering;
 
     impl RpcService {

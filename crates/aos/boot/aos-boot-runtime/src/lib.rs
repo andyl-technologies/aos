@@ -1,10 +1,9 @@
 //! Retained boot operations for AOS image activation and initrd recovery.
 //!
 //! The `commands` module exposes installed entry points with `boot-tools` enabled.
-//! Image staging,
-//! measurement evidence, paired recovery payloads, firmware selection, and
-//! journal-owned store transport share one implementation here. [`preparation`]
-//! executes authenticated transaction-scoped preparation artifacts.
+//! Image staging, measurement evidence, paired recovery payloads, firmware
+//! selection, and journal-owned store transport share one implementation here.
+//! [`preparation`] executes authenticated transaction-scoped preparation artifacts.
 //!
 //! Systemd service and credential operations belong to `aos-activation-systemd`.
 //! Executable names and durable boot formats remain independent of Cargo names.

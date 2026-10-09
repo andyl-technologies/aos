@@ -18,7 +18,7 @@
 
 use aos_oci_types::RepositoryName;
 
-use crate::db::OciNamespaceEntry;
+use aos_hub_db::db::OciNamespaceEntry;
 
 /// Enabled namespaces and the default registry of one instance OCI route.
 #[derive(Debug, Clone, PartialEq, Eq)]

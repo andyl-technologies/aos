@@ -11,8 +11,8 @@
 
 use crate::registry_ops::images::PublishedImage;
 use crate::registry_ops::store_paths::StorePathInfo;
-use aos_registry_client::types::{FEATURE_IMAGE_ARTIFACT_CONTRACT_V1, PACKAGE_META_FORMAT};
 use anyhow::{Context, Result, bail};
+use aos_registry_format::consumer::{FEATURE_IMAGE_ARTIFACT_CONTRACT_V1, PACKAGE_META_FORMAT};
 use std::collections::{BTreeSet, HashSet};
 
 /// Build package TOML content, merging with existing content if present.
@@ -282,9 +282,9 @@ pub(crate) fn record_native_artifacts(
     name: &str,
     version: &str,
     platform: &str,
-    deployment: &aos_registry_client::types::NativeArtifactMeta,
-    documentation: Option<&aos_registry_client::types::NativeArtifactMeta>,
-    qualification: Option<&aos_registry_client::types::NativeArtifactMeta>,
+    deployment: &aos_registry_format::consumer::NativeArtifactMeta,
+    documentation: Option<&aos_registry_format::consumer::NativeArtifactMeta>,
+    qualification: Option<&aos_registry_format::consumer::NativeArtifactMeta>,
     version_requirement: Option<&str>,
     os_version: Option<&str>,
     dependencies: &[aos_deployment_format::model::ModuleDependency],
@@ -364,7 +364,9 @@ pub(crate) fn record_native_artifacts(
     // Republishing the native coordinate retires the former projection.
     entry.remove("documentation");
     entry.remove("contract");
-    let features = BTreeSet::from([aos_registry_client::types::FEATURE_NATIVE_PACKAGE_MODULES_V1.to_string()]);
+    let features = BTreeSet::from([
+        aos_registry_format::consumer::FEATURE_NATIVE_PACKAGE_MODULES_V1.to_string(),
+    ]);
     merge_feature_gate(entry, "requires-features", &features)?;
     merge_minimum_format(entry, "platform")?;
     let references = entry.remove("references");

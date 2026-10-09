@@ -39,7 +39,7 @@ pub(crate) fn authenticate_releases(
         let Some(receipt) = &evidence.release else {
             continue;
         };
-        crate::types::validate_registry_name(&receipt.registry)?;
+        aos_registry_format::consumer::validate_registry_name(&receipt.registry)?;
         if releases.iter().any(|release| &release.receipt == receipt) {
             continue;
         }
@@ -64,7 +64,11 @@ pub(crate) fn authenticate_releases(
             &format!("{}^{{tag}}", receipt.release_tag),
         )?;
         ensure!(
-            aos_registry_client::security::verify_tag_signature(&repository, &object, &[signer.key_line()])?,
+            aos_registry_client::security::verify_tag_signature(
+                &repository,
+                &object,
+                &[signer.key_line()]
+            )?,
             "native source release signature failed"
         );
         let tag = aos_registry_client::registry::verify::read_tag_object(&repository, &object)?;
@@ -87,10 +91,14 @@ pub(crate) fn authenticate_releases(
                 .get(..2)
                 .context("native source has an invalid store component")?;
             let path = format!("store/{shard}/{hash}");
-            let bytes =
-                aos_registry_client::registry::repo::read_blob_at_blocking(&repository, &tag.object, &path)?
-                    .context("native source is absent from its authenticated release graph")?;
-            let entry = aos_registry_client::registry::store::parse_entry(std::str::from_utf8(&bytes)?)?;
+            let bytes = aos_registry_client::registry::repo::read_blob_at_blocking(
+                &repository,
+                &tag.object,
+                &path,
+            )?
+            .context("native source is absent from its authenticated release graph")?;
+            let entry =
+                aos_registry_client::registry::store::parse_entry(std::str::from_utf8(&bytes)?)?;
             ensure!(
                 entry.realisations.iter().any(|realisation| {
                     let mut references: Vec<_> = realisation

@@ -99,11 +99,11 @@ in
               ${packages.crucible-controller}/nix-support/crucible-build-info
             grep -q '^cargo_deps=fetchCargoVendor$' \
               ${packages.crucible-controller}/nix-support/crucible-build-info
-            grep -q '^cargo_workspace_flags=--workspace' \
+            grep -q '^cargo_workspace_flags=-p ' \
               ${packages.crucible-controller}/nix-support/crucible-build-info
-            grep -q -- '--exclude aos' \
+            grep -q -- 'cargo_workspace_flags=.*-p crucible-engine' \
               ${packages.crucible-controller}/nix-support/crucible-build-info
-            grep -q -- 'cargo_workspace_flags=.*--exclude crucible-qemu-plugin' \
+            ! grep -q -- 'cargo_workspace_flags=.*-p crucible-qemu-plugin' \
               ${packages.crucible-controller}/nix-support/crucible-build-info
             grep -q '^qemu_package=qemu-crucible$' \
               ${packages.crucible}/nix-support/crucible-build-info
@@ -127,7 +127,7 @@ in
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^ssh_license=BSD-2-Clause$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^boundary_crates=crucible-protocol,crucible-shmem$' \
+            grep -q '^boundary_crates=crucible-qemu-protocol,crucible-qemu-shmem$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^boundary_crates_license=MIT$' \
               ${packages.crucible}/nix-support/crucible-build-info

@@ -26,8 +26,8 @@ use aos_nar::info::{self as narinfo, NarInfo};
 use aos_nix::aos_management_nix_env;
 
 use super::registry::store_path_hash;
-use super::types::PackageMeta;
 use super::verify::verify_store_path;
+use aos_registry_format::consumer::PackageMeta;
 
 // ---------------------------------------------------------------------------
 // NAR import

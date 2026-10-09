@@ -308,6 +308,7 @@
           aos.pkgs.rust
           aos.pkgs.rust.dev
           aos.pkgs.bootstrapTools
+          aos.pkgs.coreutils
           aos.pkgs.perl
           aos.pkgs.pkg-config
           aos.pkgs.openssl

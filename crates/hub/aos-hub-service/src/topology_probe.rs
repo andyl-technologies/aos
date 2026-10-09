@@ -14,17 +14,15 @@ use serde::Deserialize;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-use crate::backend::BackendBounds;
-use crate::db::{
+use crate::web::console::ports::HttpClient;
+use crate::jobs::{Job, Queue};
+use aos_hub_model::clock;
+use aos_hub_db::backend::BackendBounds;
+use aos_hub_db::db::{
     Database, NetworkPolicyCoordinationRevisionSeal, NetworkPolicyDefaultCas, NewTopologyOperation,
     NewTopologyOperationTarget, NewTopologyOperationTargetRef, TopologyOperationRecord,
 };
-use crate::domain::Permission;
-use crate::web::console::ports::HttpClient;
-use crate::{
-    clock,
-    jobs::{Job, Queue},
-};
+use aos_hub_model::domain::Permission;
 
 #[derive(Debug, Deserialize)]
 struct BoundaryCoordinationDetail {
@@ -144,7 +142,7 @@ pub struct RouteProbeEvidence {
 /// Typed fail-closed port for direct and external/CDN route observations.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-pub trait RouteObservationProvider: crate::backend::BackendBounds {
+pub trait RouteObservationProvider: aos_hub_db::backend::BackendBounds {
     /// Observes one exact immutable desired route at its live edge.
     ///
     /// # Errors
@@ -153,7 +151,7 @@ pub trait RouteObservationProvider: crate::backend::BackendBounds {
     /// deployment, access, edge, and publication-manifest evidence.
     async fn observe(
         &self,
-        target: &crate::db::RouteReconciliationTarget,
+        target: &aos_hub_db::db::RouteReconciliationTarget,
     ) -> Result<RouteProbeEvidence>;
 }
 
@@ -176,7 +174,7 @@ pub struct StorageCredentialProbeEvidence {
 /// callers never supply validation results or credential material.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-pub trait StorageCredentialProbeProvider: crate::backend::BackendBounds {
+pub trait StorageCredentialProbeProvider: aos_hub_db::backend::BackendBounds {
     /// Exercises one exact credential revision against its configured origin.
     ///
     /// # Errors
@@ -184,8 +182,8 @@ pub trait StorageCredentialProbeProvider: crate::backend::BackendBounds {
     /// Returns an error when the controller cannot perform a trustworthy probe.
     async fn probe(
         &self,
-        binding: &crate::db::BindingRecord,
-        credential: &crate::db::BindingCredentialRevisionRecord,
+        binding: &aos_hub_db::db::BindingRecord,
+        credential: &aos_hub_db::db::BindingCredentialRevisionRecord,
         probe_token: &str,
     ) -> Result<StorageCredentialProbeEvidence>;
 }
@@ -197,8 +195,8 @@ struct UnavailableStorageCredentialProbeProvider;
 impl StorageCredentialProbeProvider for UnavailableStorageCredentialProbeProvider {
     async fn probe(
         &self,
-        _binding: &crate::db::BindingRecord,
-        _credential: &crate::db::BindingCredentialRevisionRecord,
+        _binding: &aos_hub_db::db::BindingRecord,
+        _credential: &aos_hub_db::db::BindingCredentialRevisionRecord,
         _probe_token: &str,
     ) -> Result<StorageCredentialProbeEvidence> {
         anyhow::bail!("no controller-owned storage credential probe adapter is configured")
@@ -212,7 +210,7 @@ impl StorageCredentialProbeProvider for UnavailableStorageCredentialProbeProvide
 /// not evidence and must never be used to implement this port.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-pub trait ExternalRouteControlPlane: crate::backend::BackendBounds {
+pub trait ExternalRouteControlPlane: aos_hub_db::backend::BackendBounds {
     /// Observes one exact external-provider resource and deployed revision.
     ///
     /// # Errors
@@ -221,14 +219,14 @@ pub trait ExternalRouteControlPlane: crate::backend::BackendBounds {
     /// stale, or disagrees with the exact desired route generation.
     async fn observe_external(
         &self,
-        target: &crate::db::RouteReconciliationTarget,
+        target: &aos_hub_db::db::RouteReconciliationTarget,
     ) -> Result<RouteProbeEvidence>;
 }
 
 /// Authenticated transport for the fixed Cloudflare v4 control-plane API.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-pub trait CloudflareControlPlaneClient: crate::backend::BackendBounds {
+pub trait CloudflareControlPlaneClient: aos_hub_db::backend::BackendBounds {
     /// GETs one absolute-path Cloudflare API resource with controller credentials.
     async fn get(&self, path: &str) -> Result<Vec<u8>>;
 }
@@ -265,7 +263,7 @@ fn cloudflare_snapshot_revision(snapshot: &serde_json::Value) -> Result<String> 
 impl ExternalRouteControlPlane for CloudflareRouteControlPlane {
     async fn observe_external(
         &self,
-        target: &crate::db::RouteReconciliationTarget,
+        target: &aos_hub_db::db::RouteReconciliationTarget,
     ) -> Result<RouteProbeEvidence> {
         anyhow::ensure!(
             target.external_provider_kind.as_deref() == Some("cloudflare"),
@@ -404,7 +402,7 @@ impl Default for ControllerOwnedRouteObservationProvider {
 impl RouteObservationProvider for ControllerOwnedRouteObservationProvider {
     async fn observe(
         &self,
-        target: &crate::db::RouteReconciliationTarget,
+        target: &aos_hub_db::db::RouteReconciliationTarget,
     ) -> Result<RouteProbeEvidence> {
         if target.mode == "direct" {
             return self
@@ -434,7 +432,7 @@ pub struct UnavailableRouteObservationProvider;
 impl RouteObservationProvider for UnavailableRouteObservationProvider {
     async fn observe(
         &self,
-        _target: &crate::db::RouteReconciliationTarget,
+        _target: &aos_hub_db::db::RouteReconciliationTarget,
     ) -> Result<RouteProbeEvidence> {
         anyhow::bail!("no controller-owned delivery-route observation adapter is configured")
     }
@@ -576,7 +574,7 @@ impl SignedManifestRouteObservationProvider {
 impl RouteObservationProvider for SignedManifestRouteObservationProvider {
     async fn observe(
         &self,
-        target: &crate::db::RouteReconciliationTarget,
+        target: &aos_hub_db::db::RouteReconciliationTarget,
     ) -> Result<RouteProbeEvidence> {
         anyhow::ensure!(
             target.mode == "direct",
@@ -658,7 +656,7 @@ fn validated_route_liveness_url(canonical_url: &str, liveness_url: &str) -> Resu
 }
 
 fn validate_route_evidence(
-    target: &crate::db::RouteReconciliationTarget,
+    target: &aos_hub_db::db::RouteReconciliationTarget,
     evidence: &RouteProbeEvidence,
 ) -> Result<()> {
     anyhow::ensure!(
@@ -754,7 +752,7 @@ pub fn sign_domain_probe_response(
     signing_key: &ed25519_dalek::SigningKey,
     mut input: DomainProbeResponseInput,
 ) -> Result<Vec<u8>> {
-    input.hostname = crate::db::canonical_delivery_hostname(&input.hostname)?;
+    input.hostname = aos_hub_db::db::canonical_delivery_hostname(&input.hostname)?;
     anyhow::ensure!(
         input.endpoint_generation > 0,
         "endpoint generation must be positive"
@@ -787,7 +785,7 @@ pub struct DomainProbeTerminatorMaterial {
 }
 
 /// Resolves private signing material inside the TLS terminator's trust boundary.
-pub trait DomainProbeTerminatorProvider: crate::backend::BackendBounds {
+pub trait DomainProbeTerminatorProvider: aos_hub_db::backend::BackendBounds {
     /// Resolves one exact provider-owned secret reference.
     ///
     /// # Errors
@@ -798,7 +796,7 @@ pub trait DomainProbeTerminatorProvider: crate::backend::BackendBounds {
         &self,
         endpoint_id: &str,
         endpoint_generation: i64,
-        identity: &crate::db::EndpointProbeSigningIdentity,
+        identity: &aos_hub_db::db::EndpointProbeSigningIdentity,
     ) -> Result<DomainProbeTerminatorMaterial>;
 }
 
@@ -862,7 +860,7 @@ impl DomainProbeTerminatorProvider for ManifestDomainProbeTerminatorProvider {
         &self,
         endpoint_id: &str,
         endpoint_generation: i64,
-        identity: &crate::db::EndpointProbeSigningIdentity,
+        identity: &aos_hub_db::db::EndpointProbeSigningIdentity,
     ) -> Result<DomainProbeTerminatorMaterial> {
         anyhow::ensure!(
             identity.provider == self.provider_kind,
@@ -912,7 +910,7 @@ pub async fn respond_to_domain_probe(
         authority_url.port_or_known_default() == Some(443),
         "domain probe responder requires HTTPS port 443"
     );
-    let hostname = crate::db::canonical_delivery_hostname(
+    let hostname = aos_hub_db::db::canonical_delivery_hostname(
         authority_url
             .host_str()
             .context("domain probe authority has no hostname")?,
@@ -968,7 +966,7 @@ impl DomainTlsProbeVerifier {
         hostname: &str,
         endpoint_id: &str,
         endpoint_generation: i64,
-        identity: &crate::db::EndpointProbeSigningIdentity,
+        identity: &aos_hub_db::db::EndpointProbeSigningIdentity,
         now: i64,
     ) -> Result<TlsProbeStatement> {
         let envelope: SignedTlsProbeResponse = serde_json::from_slice(response)
@@ -1025,8 +1023,8 @@ impl DomainTlsProbeVerifier {
             "domain TLS proof is outside its freshness window"
         );
         anyhow::ensure!(
-            crate::db::canonical_delivery_hostname(&statement.hostname)?
-                == crate::db::canonical_delivery_hostname(hostname)?,
+            aos_hub_db::db::canonical_delivery_hostname(&statement.hostname)?
+                == aos_hub_db::db::canonical_delivery_hostname(hostname)?,
             "domain TLS proof names another hostname"
         );
         Ok(statement)
@@ -1333,7 +1331,7 @@ impl DomainProbeController {
         probe_location: impl Into<String>,
     ) -> Result<Self> {
         let dns_json_endpoint = dns_json_endpoint.into();
-        crate::url_guard::is_safe_remote_url(&dns_json_endpoint)
+        aos_hub_model::url_guard::is_safe_remote_url(&dns_json_endpoint)
             .context("unsafe domain-probe DNS JSON endpoint")?;
         let endpoint = url::Url::parse(&dns_json_endpoint)
             .context("invalid domain-probe DNS JSON endpoint")?;
@@ -1759,8 +1757,8 @@ impl DomainProbeController {
 
     async fn record_storage_write_evidence(
         &self,
-        binding: &crate::db::BindingRecord,
-        credential: &crate::db::BindingCredentialRevisionRecord,
+        binding: &aos_hub_db::db::BindingRecord,
+        credential: &aos_hub_db::db::BindingCredentialRevisionRecord,
         conditional_writes_supported: bool,
     ) -> Result<()> {
         let capability_fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&(
@@ -1775,7 +1773,7 @@ impl DomainProbeController {
         ))?));
         let revision = self
             .db
-            .create_binding_write_revision(&crate::db::NewBindingWriteRevision {
+            .create_binding_write_revision(&aos_hub_db::db::NewBindingWriteRevision {
                 binding_id: binding.id,
                 write_credential_generation: credential.generation,
                 writes_supported: true,
@@ -2183,18 +2181,18 @@ impl DomainProbeController {
             None
         };
         let resource = match detail.resource_kind.as_str() {
-            "binding" => crate::db::GrantResource::Binding {
+            "binding" => aos_hub_db::db::GrantResource::Binding {
                 id: binding_id.context("grant binding id is absent")?,
                 stable_id: &detail.resource_stable_id,
             },
-            "network_policy" => crate::db::GrantResource::NetworkPolicy {
+            "network_policy" => aos_hub_db::db::GrantResource::NetworkPolicy {
                 id: &detail.resource_stable_id,
             },
-            "endpoint" => crate::db::GrantResource::Endpoint {
+            "endpoint" => aos_hub_db::db::GrantResource::Endpoint {
                 id: &detail.resource_stable_id,
                 generation: detail.resource_generation,
             },
-            "gateway" => crate::db::GrantResource::Gateway {
+            "gateway" => aos_hub_db::db::GrantResource::Gateway {
                 id: &detail.resource_stable_id,
                 generation: detail.resource_generation,
             },
@@ -2372,10 +2370,13 @@ impl DomainProbeController {
         let dns_state = match domain.dns_configuration_json.as_deref() {
             None => "unconfigured",
             Some(json) => {
-                let desired: crate::db::DeliveryDnsConfigurationSpec = serde_json::from_str(json)?;
+                let desired: aos_hub_db::db::DeliveryDnsConfigurationSpec =
+                    serde_json::from_str(json)?;
                 let expected = match desired {
-                    crate::db::DeliveryDnsConfigurationSpec::HubManaged { target, .. } => target,
-                    crate::db::DeliveryDnsConfigurationSpec::External { expected_target } => {
+                    aos_hub_db::db::DeliveryDnsConfigurationSpec::HubManaged { target, .. } => {
+                        target
+                    }
+                    aos_hub_db::db::DeliveryDnsConfigurationSpec::External { expected_target } => {
                         expected_target
                     }
                 };
@@ -2547,7 +2548,7 @@ async fn measure_domain_once(
     nonce: &str,
     endpoint_id: &str,
     endpoint_generation: i64,
-    signing_identity: &crate::db::EndpointProbeSigningIdentity,
+    signing_identity: &aos_hub_db::db::EndpointProbeSigningIdentity,
     dns_json_endpoint: &str,
     probe_location: &str,
 ) -> Result<DomainProbeEvidence> {
@@ -2581,7 +2582,7 @@ async fn measure_domain_once(
     dns_records.sort();
     dns_records.dedup();
     let tls_body = tls.context("TLS identity proof failed")?;
-    let now = crate::clock::now_unix_secs();
+    let now = aos_hub_model::clock::now_unix_secs();
     let tls = tls_verifier.verify(
         &tls_body,
         nonce,
@@ -2627,13 +2628,14 @@ async fn dns_answers(
         "AAAA" => 28,
         _ => anyhow::bail!("unsupported DNS record type"),
     };
-    let canonical_hostname = crate::db::canonical_delivery_hostname(hostname)?;
+    let canonical_hostname = aos_hub_db::db::canonical_delivery_hostname(hostname)?;
     response
         .answer
         .into_iter()
         .filter(|answer| answer.record_type == expected_type)
         .map(|answer| {
-            let owner = crate::db::canonical_delivery_hostname(answer.name.trim_end_matches('.'))?;
+            let owner =
+                aos_hub_db::db::canonical_delivery_hostname(answer.name.trim_end_matches('.'))?;
             anyhow::ensure!(
                 owner == canonical_hostname,
                 "DNS answer owner does not match query"
@@ -2649,7 +2651,9 @@ async fn dns_answers(
                     .parse::<std::net::Ipv6Addr>()
                     .context("invalid AAAA answer")?
                     .to_string(),
-                5 => crate::db::canonical_delivery_hostname(answer.data.trim_end_matches('.'))?,
+                5 => {
+                    aos_hub_db::db::canonical_delivery_hostname(answer.data.trim_end_matches('.'))?
+                }
                 _ => unreachable!(),
             };
             Ok(DnsProbeRecord {
@@ -2689,12 +2693,13 @@ impl IdentityDomainVerifier for DnsJsonIdentityDomainVerifier {
         if response.status != 0 && response.status != 3 {
             anyhow::bail!("DNS TXT query returned status {}", response.status);
         }
-        let canonical_domain = crate::db::canonical_delivery_hostname(domain)?;
+        let canonical_domain = aos_hub_db::db::canonical_delivery_hostname(domain)?;
         for answer in response.answer {
             if answer.record_type != 16 {
                 continue;
             }
-            let owner = crate::db::canonical_delivery_hostname(answer.name.trim_end_matches('.'))?;
+            let owner =
+                aos_hub_db::db::canonical_delivery_hostname(answer.name.trim_end_matches('.'))?;
             if owner == canonical_domain && dns_txt_value(&answer.data)? == challenge {
                 return Ok(true);
             }
@@ -2706,7 +2711,7 @@ impl IdentityDomainVerifier for DnsJsonIdentityDomainVerifier {
 /// Verifies a reviewed organization-domain ownership challenge.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-pub trait IdentityDomainVerifier: crate::backend::BackendBounds {
+pub trait IdentityDomainVerifier: aos_hub_db::backend::BackendBounds {
     /// Returns whether the exact TXT challenge is published at the exact domain.
     ///
     /// # Errors
@@ -2734,8 +2739,8 @@ fn dns_target_eq(observed: &str, desired: &str) -> bool {
     ) {
         (Ok(observed), Ok(desired)) => observed == desired,
         (Err(_), Err(_)) => {
-            crate::db::canonical_delivery_hostname(observed.trim_end_matches('.')).ok()
-                == crate::db::canonical_delivery_hostname(desired.trim_end_matches('.')).ok()
+            aos_hub_db::db::canonical_delivery_hostname(observed.trim_end_matches('.')).ok()
+                == aos_hub_db::db::canonical_delivery_hostname(desired.trim_end_matches('.')).ok()
         }
         _ => false,
     }
@@ -2811,8 +2816,8 @@ mod tests {
         }
     }
 
-    fn cloudflare_target(revision: String) -> crate::db::RouteReconciliationTarget {
-        crate::db::RouteReconciliationTarget {
+    fn cloudflare_target(revision: String) -> aos_hub_db::db::RouteReconciliationTarget {
+        aos_hub_db::db::RouteReconciliationTarget {
             id: "route:cdn".to_string(),
             configuration_generation: 8,
             configuration_digest: "a".repeat(64),
@@ -2837,7 +2842,7 @@ mod tests {
         access: serde_json::Value,
     ) -> (
         CloudflareRouteControlPlane,
-        crate::db::RouteReconciliationTarget,
+        aos_hub_db::db::RouteReconciliationTarget,
     ) {
         let expected_body = vec![9_u8; 4];
         let mut metadata = serde_json::json!({
@@ -2893,8 +2898,8 @@ mod tests {
         )
     }
 
-    fn route_target() -> crate::db::RouteReconciliationTarget {
-        crate::db::RouteReconciliationTarget {
+    fn route_target() -> aos_hub_db::db::RouteReconciliationTarget {
+        aos_hub_db::db::RouteReconciliationTarget {
             id: "route:test".to_string(),
             configuration_generation: 4,
             configuration_digest: "a".repeat(64),
@@ -3048,7 +3053,7 @@ mod tests {
     fn tls_proof_is_signature_nonce_identity_and_freshness_bound() {
         let verifier = DomainTlsProbeVerifier::new();
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[11_u8; 32]);
-        let identity = crate::db::EndpointProbeSigningIdentity {
+        let identity = aos_hub_db::db::EndpointProbeSigningIdentity {
             provider: "native_file".to_string(),
             signer_secret_ref: "test".to_string(),
             public_key: URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes()),
@@ -3101,7 +3106,7 @@ mod tests {
             .is_err());
 
         let other_key = ed25519_dalek::SigningKey::from_bytes(&[12_u8; 32]);
-        let other_identity = crate::db::EndpointProbeSigningIdentity {
+        let other_identity = aos_hub_db::db::EndpointProbeSigningIdentity {
             public_key: URL_SAFE_NO_PAD.encode(other_key.verifying_key().as_bytes()),
             ..identity.clone()
         };

@@ -7,7 +7,8 @@
 //! the engine's deterministic decision stream; deployment resources stay host-owned.
 //!
 //! Module map: [`vm_lifecycle`] owns production QEMU loop construction and exact
-//! checkpoint realization; [`assignment_ledger`] owns crash-safe executor idempotency and
+//! checkpoint realization; [`interactive_replay`] constructs terminal replay actors and
+//! owns their acknowledged shutdown; [`assignment_ledger`] owns crash-safe executor idempotency and
 //! runtime-state records; [`campaign_bootstrap`] composes durable directory
 //! storage, strict policy, managed endpoint, and listener ownership;
 //! [`campaign_endpoint`] owns exact local campaign and executor Unix socket
@@ -83,7 +84,7 @@
 //! [`planner_loopback`] owns
 //! the strict local pure-planner component transport; [`planner_process`]
 //! owns the killable packaged canonical-planner worker.
-//! Future modules split session hosting and API transport.
+//! Session actors and HTTP/2 transport are shared through their control libraries.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -663,4 +664,11 @@ pub use vm_lifecycle::{
     ProductionVmHotForkWorldContinuation,
     authenticate_production_vm_exact_hot_fork_source_boundary,
     build_production_vm_lifecycle_loop_from_hot_fork_with_launcher,
+};
+
+/// Interactive replay construction, evidence, and terminal actor cleanup.
+pub mod interactive_replay;
+pub use interactive_replay::{
+    InteractiveReplayError, PreparedInteractiveReplay, prepare_interactive_replay,
+    replay_interactive_terminal_actor,
 };

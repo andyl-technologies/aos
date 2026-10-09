@@ -12,9 +12,9 @@
 use std::io::Read as _;
 
 use anyhow::{Context, Result, ensure};
-use aos_module_format::graph::GRAPH_LIMITS;
-use aos_module_docs::runtime::RuntimeDocument;
 use aos_deployment_format::model::{Deployment, ResolvedPackages};
+use aos_module_docs::runtime::RuntimeDocument;
+use aos_module_format::graph::GRAPH_LIMITS;
 use serde::Deserialize;
 use serde_json::Value;
 

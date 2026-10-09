@@ -584,7 +584,6 @@ mod tests {
                 );
                 assert_eq!(actual, HELLO_SHA256);
             }
-            _ => panic!("expected HashMismatch error"),
         }
     }
 
@@ -668,7 +667,6 @@ mod tests {
                 let real_hash = sha256_stream(content.as_slice()).unwrap();
                 assert_eq!(actual, &real_hash);
             }
-            _ => panic!("expected HashMismatch error"),
         }
     }
 

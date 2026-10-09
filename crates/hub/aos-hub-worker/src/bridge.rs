@@ -177,7 +177,7 @@ pub async fn dispatch(
     svc: &aos_hub_service::service::RpcService,
     console_deps: aos_hub_service::web::console::ConsoleDeps,
     delivery_attestation_verifier: Option<
-        &aos_hub_model::delivery_attestation::DeliveryAttestationVerifier,
+        &aos_hub_service::delivery_attestation::DeliveryAttestationVerifier,
     >,
     layer7_delivery_hosts: Option<&str>,
     req: Request,
@@ -186,7 +186,7 @@ pub async fn dispatch(
     let axum_req = match aos_hub_service::connect::apply_delivery_attestation(
         axum_req,
         delivery_attestation_verifier,
-        aos_hub_model::delivery_attestation::delivery_attestation_now(),
+        aos_hub_service::delivery_attestation::delivery_attestation_now(),
     ) {
         Ok(request) => request,
         Err(response) => return to_worker(response).await,

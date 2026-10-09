@@ -10,7 +10,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use prost::Message;
-use prost_types::{DescriptorProto, FileDescriptorSet, field_descriptor_proto};
+use prost_types::{field_descriptor_proto, DescriptorProto, FileDescriptorSet};
 
 type BuildResult<T> = Result<T, Box<dyn Error>>;
 

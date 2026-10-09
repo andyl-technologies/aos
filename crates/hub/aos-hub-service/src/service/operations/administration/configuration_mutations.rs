@@ -99,7 +99,9 @@ impl RpcService {
     /// # Errors
     ///
     /// Returns an error on a KV read or database failure.
-    pub async fn instance_settings_cached(&self) -> anyhow::Result<crate::db::InstanceSettings> {
+    pub async fn instance_settings_cached(
+        &self,
+    ) -> anyhow::Result<aos_hub_db::db::InstanceSettings> {
         let Some(kv) = &self.kv else {
             return self.db.instance_settings().await;
         };

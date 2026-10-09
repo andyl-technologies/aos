@@ -177,7 +177,7 @@
     ++ failuresFor "crates/crucible/control/crucible-daemon/Cargo.toml" daemonManifest [
       {
         label = "daemon uses API contract";
-        needle = "crucible-api = { path = \"../crucible-api\" }";
+        needle = "crucible-control-api = { path = \"../crucible-control-api\" }";
       }
     ]
     ++ failuresFor "crates/crucible/control/crucible-daemon/src/lib.rs" daemonLib [
@@ -283,7 +283,7 @@
     ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "API control-responsive target implemented";
-        needle = "package: \"crucible-api\",\n        test_target: \"gate_control_responsive\",\n        required_features: &[],";
+        needle = "package: \"crucible-control-server\",\n        test_target: \"gate_control_responsive\",\n        required_features: &[],";
       }
       {
         label = "daemon control-responsive target implemented";
@@ -293,7 +293,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetNix [
       {
         label = "API control-responsive Nix target implemented";
-        needle = "package = \"crucible-api\";\n      testTarget = \"gate_control_responsive\";\n      requiredFeatures = [];";
+        needle = "package = \"crucible-control-server\";\n      testTarget = \"gate_control_responsive\";\n      requiredFeatures = [];";
       }
       {
         label = "daemon control-responsive Nix target implemented";

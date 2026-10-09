@@ -126,7 +126,9 @@ pub(crate) async fn dispatch_converted_request(
                 .is_some_and(|(_, rest)| !rest.starts_with("api/")));
     if browser_read || console_route {
         match console_deps.db.instance_settings().await {
-            Ok(settings) => aos_hub_service::web::console_render::apply_instance_settings(&settings),
+            Ok(settings) => {
+                aos_hub_service::web::console_render::apply_instance_settings(&settings)
+            }
             Err(error) => {
                 tracing::warn!(error = %error, "loading site presentation");
                 if browser_page {
@@ -229,11 +231,11 @@ mod tests {
 
     #[tokio::test]
     async fn worker_bridge_service_enforces_every_disabled_container_capability() {
+        use aos_hub_api as pb;
         use aos_hub_db::db::TokenAuth;
         use aos_hub_model::domain::{Permission, Principal, Scope};
         use aos_hub_service::oci::{OciRequest, ResolvedOciRoute};
         use aos_oci_types::{RepositoryName, Sha256Digest};
-        use aos_hub_api as pb;
 
         let _presentation = SITE_PRESENTATION.lock().await;
 
@@ -255,12 +257,14 @@ mod tests {
         db.grant_membership("user", user_id, &org.stable_id, "owner")
             .await
             .unwrap();
-        let mut state = aos_hub_native::server::AppState::new(db, "http://worker.test".to_string()).await;
+        let mut state =
+            aos_hub_native::server::AppState::new(db, "http://worker.test".to_string()).await;
         assert_eq!(
             state.container_rollout,
             aos_hub_service::container_rollout::ContainerRollout::all_enabled()
         );
-        state.container_rollout = aos_hub_service::container_rollout::ContainerRollout::all_disabled();
+        state.container_rollout =
+            aos_hub_service::container_rollout::ContainerRollout::all_disabled();
         let state = Arc::new(state);
         let scope = state
             .db
@@ -535,7 +539,11 @@ mod tests {
                 .unwrap(),
         );
         let state = Arc::new(
-            aos_hub_native::server::AppState::new(Arc::clone(&db), "http://worker.test".to_string()).await,
+            aos_hub_native::server::AppState::new(
+                Arc::clone(&db),
+                "http://worker.test".to_string(),
+            )
+            .await,
         );
         let svc = worker_rpc_service(&state);
         let deps = aos_hub_native::server::console_deps_for_worker_test(&state);
@@ -574,9 +582,9 @@ mod tests {
 
     #[tokio::test]
     async fn branding_apply_and_warm_worker_reads_use_current_settings() {
+        use aos_hub_api as pb;
         use aos_hub_db::db::TokenAuth;
         use aos_hub_model::domain::{Permission, Principal, Scope};
-        use aos_hub_api as pb;
 
         let _presentation = SITE_PRESENTATION.lock().await;
 
@@ -586,7 +594,11 @@ mod tests {
             .await
             .unwrap();
         let state = Arc::new(
-            aos_hub_native::server::AppState::new(Arc::clone(&db), "http://worker.test".to_string()).await,
+            aos_hub_native::server::AppState::new(
+                Arc::clone(&db),
+                "http://worker.test".to_string(),
+            )
+            .await,
         );
         let svc = worker_rpc_service(&state);
         let token = state
@@ -824,8 +836,9 @@ mod tests {
         let _presentation = SITE_PRESENTATION.lock().await;
 
         let db = Arc::new(aos_hub_db::db::Database::open_in_memory().await.unwrap());
-        let state =
-            Arc::new(aos_hub_native::server::AppState::new(db, "http://worker.test".to_string()).await);
+        let state = Arc::new(
+            aos_hub_native::server::AppState::new(db, "http://worker.test".to_string()).await,
+        );
         let deps = aos_hub_native::server::console_deps_for_worker_test(&state);
         let svc = worker_rpc_service(&state);
         let router = console_router(deps.clone());

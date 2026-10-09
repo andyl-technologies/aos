@@ -12,14 +12,14 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-use aos_registry_client::config::ApmConfig;
 use crate::install;
 use crate::profile::Profile;
 use crate::profile::meta::list_meta;
 use crate::remove;
 use crate::sysroot_lock::IgnoreSysrootLock;
-use crate::types::validate_package_name;
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_registry_client::config::ApmConfig;
+use aos_registry_format::consumer::validate_package_name;
 
 /// The default host-authored desired package set.
 pub const DEFAULT_DESIRED_PATH: &str = "/etc/aos/packages.d/desired.toml";

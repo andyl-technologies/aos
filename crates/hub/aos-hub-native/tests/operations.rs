@@ -18,7 +18,9 @@ use std::sync::Arc;
 
 use aos_hub_native::auth::extract::AuthState;
 use aos_hub_native::auth::jwt::JwtKeys;
-use aos_hub_native::db::{Database, NewSurfacePlacementSpec, SignupPolicy, SurfaceTarget, TokenAuth};
+use aos_hub_native::db::{
+    Database, NewSurfacePlacementSpec, SignupPolicy, SurfaceTarget, TokenAuth,
+};
 use aos_hub_native::domain::{Permission, Principal, Scope};
 use aos_hub_native::server::{router, AppState};
 use aos_hub_service::service::{ReadAuthorization, RpcError, RpcService};
@@ -843,7 +845,9 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
 
     // The manifest carries the registry + members + token metadata, but no
     // hash/secret.
-    let manifest = aos_hub_native::export::export_org(&db, "acme").await.unwrap();
+    let manifest = aos_hub_native::export::export_org(&db, "acme")
+        .await
+        .unwrap();
     let json = serde_json::to_string(&manifest).unwrap();
     assert!(manifest
         .registries

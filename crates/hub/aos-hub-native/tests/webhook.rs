@@ -11,13 +11,13 @@ mod common;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use aos_hub_model::secret_version::{ResolvedSecretVersion, SecretVersionResolver};
 use aos_hub_native::auth::extract::AuthState;
 use aos_hub_native::auth::jwt::JwtKeys;
 use aos_hub_native::db::{Database, DueDelivery, TokenAuth};
 use aos_hub_native::domain::{Permission, Principal, Scope};
 use aos_hub_native::server::{router, AppState};
 use aos_hub_native::webhook::{self, WebhookEvent};
-use aos_hub_model::secret_version::{ResolvedSecretVersion, SecretVersionResolver};
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{header, HeaderMap, Request, StatusCode};

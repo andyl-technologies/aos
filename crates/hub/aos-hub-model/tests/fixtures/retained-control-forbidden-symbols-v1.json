@@ -6,7 +6,7 @@
       "category": "api",
       "symbol": "AutomationPrincipal",
       "targets": [
-        "crates/aos/packages/aos-build-api/src/proto/aos/hub/v1/hub.proto"
+        "api/proto/aos/hub/v1/hub.proto"
       ]
     },
     {
@@ -14,7 +14,7 @@
       "category": "api",
       "symbol": "GrantMembership",
       "targets": [
-        "crates/aos/packages/aos-build-api/src/proto/aos/hub/v1/hub.proto"
+        "api/proto/aos/hub/v1/hub.proto"
       ]
     },
     {
@@ -22,7 +22,7 @@
       "category": "api",
       "symbol": "MintToken",
       "targets": [
-        "crates/aos/packages/aos-build-api/src/proto/aos/hub/v1/hub.proto"
+        "api/proto/aos/hub/v1/hub.proto"
       ]
     },
     {
@@ -30,7 +30,7 @@
       "category": "api",
       "symbol": "RegistryToken",
       "targets": [
-        "crates/aos/packages/aos-build-api/src/proto/aos/hub/v1/hub.proto"
+        "api/proto/aos/hub/v1/hub.proto"
       ]
     },
     {
@@ -38,7 +38,7 @@
       "category": "api",
       "symbol": "RevertChangeset",
       "targets": [
-        "crates/aos/packages/aos-build-api/src/proto/aos/hub/v1/hub.proto"
+        "api/proto/aos/hub/v1/hub.proto"
       ]
     },
     {
@@ -46,7 +46,7 @@
       "category": "api",
       "symbol": "RevokeMembership",
       "targets": [
-        "crates/aos/packages/aos-build-api/src/proto/aos/hub/v1/hub.proto"
+        "api/proto/aos/hub/v1/hub.proto"
       ]
     },
     {
@@ -54,7 +54,7 @@
       "category": "api",
       "symbol": "RevokeToken",
       "targets": [
-        "crates/aos/packages/aos-build-api/src/proto/aos/hub/v1/hub.proto"
+        "api/proto/aos/hub/v1/hub.proto"
       ]
     },
     {
@@ -62,7 +62,7 @@
       "category": "api",
       "symbol": "UpdateInstanceSettings",
       "targets": [
-        "crates/aos/packages/aos-build-api/src/proto/aos/hub/v1/hub.proto"
+        "api/proto/aos/hub/v1/hub.proto"
       ]
     },
     {
@@ -138,7 +138,7 @@
       "category": "code",
       "symbol": "hosted_key_by_name",
       "targets": [
-        "crates/hub/aos-hub-service/src/db/mod.rs",
+        "crates/hub/aos-hub-db/src/db/mod.rs",
         "crates/hub/aos-hub-native/tests/hosted.rs",
         "crates/hub/aos-hub-native/tests/operations.rs"
       ]
@@ -148,7 +148,7 @@
       "category": "code",
       "symbol": "create_hosted_key",
       "targets": [
-        "crates/hub/aos-hub-service/src/db/mod.rs",
+        "crates/hub/aos-hub-db/src/db/mod.rs",
         "crates/hub/aos-hub-native/tests/hosted.rs",
         "crates/hub/aos-hub-native/tests/operations.rs"
       ]
@@ -158,7 +158,7 @@
       "category": "code",
       "symbol": "list_hosted_keys",
       "targets": [
-        "crates/hub/aos-hub-service/src/db/mod.rs"
+        "crates/hub/aos-hub-db/src/db/mod.rs"
       ]
     },
     {
@@ -166,7 +166,7 @@
       "category": "code",
       "symbol": "load_hosted_signing_key",
       "targets": [
-        "crates/hub/aos-hub-service/src/db/mod.rs",
+        "crates/hub/aos-hub-db/src/db/mod.rs",
         "crates/hub/aos-hub-native/tests/hosted.rs"
       ]
     },
@@ -175,7 +175,7 @@
       "category": "code",
       "symbol": "HostedKeyRecord",
       "targets": [
-        "crates/hub/aos-hub-service/src/db/mod.rs"
+        "crates/hub/aos-hub-db/src/db/mod.rs"
       ]
     },
     {
@@ -183,7 +183,7 @@
       "category": "code",
       "symbol": "row_to_hosted_key",
       "targets": [
-        "crates/hub/aos-hub-service/src/db/mod.rs"
+        "crates/hub/aos-hub-db/src/db/mod.rs"
       ]
     },
     {
@@ -191,7 +191,7 @@
       "category": "code",
       "symbol": "set_registry_hosted_key",
       "targets": [
-        "crates/hub/aos-hub-service/src/db/mod.rs",
+        "crates/hub/aos-hub-db/src/db/mod.rs",
         "crates/hub/aos-hub-native/tests/hosted.rs"
       ]
     },
@@ -200,7 +200,7 @@
       "category": "code",
       "symbol": "fn hosted_key",
       "targets": [
-        "crates/hub/aos-hub-service/src/db/mod.rs"
+        "crates/hub/aos-hub-db/src/db/mod.rs"
       ]
     },
     {
@@ -208,7 +208,7 @@
       "category": "code",
       "symbol": "aos-hub-hosted-key-resolution-v1",
       "targets": [
-        "crates/hub/aos-hub-service/src/retained_control/signing.rs"
+        "crates/hub/aos-hub-model/src/retained_control/signing.rs"
       ]
     },
     {
@@ -216,7 +216,7 @@
       "category": "code",
       "symbol": "HostedKeyResolutionProof",
       "targets": [
-        "crates/hub/aos-hub-service/src/retained_control/signing.rs"
+        "crates/hub/aos-hub-model/src/retained_control/signing.rs"
       ]
     },
     {
@@ -224,7 +224,7 @@
       "category": "code",
       "symbol": "KeyCustody::Hosted",
       "targets": [
-        "crates/hub/aos-hub-service/src/retained_control/signing.rs"
+        "crates/hub/aos-hub-model/src/retained_control/signing.rs"
       ]
     },
     {
@@ -232,7 +232,7 @@
       "category": "schema",
       "symbol": "CREATE TABLE config_changesets",
       "targets": [
-        "crates/hub/aos-hub-service/src/db/schema.sql"
+        "crates/hub/aos-hub-db/src/db/schema.sql"
       ]
     },
     {
@@ -240,7 +240,7 @@
       "category": "schema",
       "symbol": "CREATE TABLE config_revisions",
       "targets": [
-        "crates/hub/aos-hub-service/src/db/schema.sql"
+        "crates/hub/aos-hub-db/src/db/schema.sql"
       ]
     },
     {
@@ -248,7 +248,7 @@
       "category": "schema",
       "symbol": "hosted_key_id",
       "targets": [
-        "crates/hub/aos-hub-service/src/db/schema.sql"
+        "crates/hub/aos-hub-db/src/db/schema.sql"
       ]
     },
     {
@@ -256,8 +256,8 @@
       "category": "schema",
       "symbol": "hosted_keys",
       "targets": [
-        "crates/hub/aos-hub-service/src/db/mod.rs",
-        "crates/hub/aos-hub-service/src/db/schema.sql"
+        "crates/hub/aos-hub-db/src/db/mod.rs",
+        "crates/hub/aos-hub-db/src/db/schema.sql"
       ]
     },
     {

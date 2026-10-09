@@ -52,7 +52,7 @@ type PackageMetaValidator = fn(&PackageMeta) -> Result<()>;
 
 // The pure manifest schema structs moved to the wasm-clean `aos-registry-format`
 // crate (RFC-0004 Phase 5) so the registry hub's `Database`/indexer and the
-// Cloudflare Worker can share them without pulling `aos-package` (which is
+// Cloudflare Worker can share them without depending on the native client (which is
 // native-only). Re-exported here so `aos_registry_client::registry::parse::{PackageToml,
 // …}` paths are unchanged. The canonical structs carry the RFC-0005 `store/`
 // graph fields (`source_drv`/`source_nar_hash`, legacy `nar_hash`/`nar_size`),
@@ -419,13 +419,12 @@ pub fn build_hash_index(packages: &[PackageMeta]) -> HashMap<String, PackageMeta
 /// `"/var/lib/store/abc123def456-curl-8.5.0"` -> `"abc123def456"`.
 /// Inputs without a `/` or `-` are returned unchanged rather than failing.
 pub fn store_path_hash(store_path: &str) -> &str {
-    let basename = store_path.rsplit('/').next().unwrap_or(store_path);
-    // Hash is everything before the first '-'
-    basename.split('-').next().unwrap_or(basename)
+    aos_nar::info::store_hash(store_path)
 }
 
 // Test fixtures used by both parse.rs and mod.rs tests.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+/// Single-platform curl metadata fixture.
 pub const CURL_TOML: &str = r#"
 [package]
 name = "curl"
@@ -456,7 +455,8 @@ source_nar_hash = "sha256:445566"
 references = ["u6v3o4mr1x5z", "w8x9y0z1a2b3"]
 "#;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+/// Two-version zlib metadata fixture.
 pub const ZLIB_TOML: &str = r#"
 [package]
 name = "zlib"
@@ -508,7 +508,8 @@ min-format = 1
 requires-features = ["attestation-v1"]
 "#;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+/// Multi-version package metadata fixture.
 pub const MULTI_VERSION_TOML: &str = r#"
 [package]
 name = "tool"

@@ -8,7 +8,7 @@ impl RpcService {
     /// Phase C, `tok:{hash}` + `tokrev:{token_id}`).
     ///
     /// Token auth runs on every API request; this serves the validated
-    /// [`TokenAuth`](crate::db::TokenAuth) from KV (sub-ms, off the database session
+    /// [`TokenAuth`](aos_hub_db::db::TokenAuth) from KV (sub-ms, off the database session
     /// cost) for [`HOT_TTL_SECS`](crate::cache::HOT_TTL_SECS), and skips the
     /// `last_used_at` write `validate_token` performs on a cache hit.
     ///
@@ -21,7 +21,7 @@ impl RpcService {
     /// database, which already excludes revoked/rotated tokens.)
     ///
     /// With no `kv` attached this is exactly
-    /// [`validate_token`](crate::db::Database::validate_token).
+    /// [`validate_token`](aos_hub_db::db::Database::validate_token).
     ///
     /// # Errors
     ///
@@ -29,13 +29,13 @@ impl RpcService {
     pub async fn validate_token_cached(
         &self,
         secret: &str,
-    ) -> anyhow::Result<Option<crate::db::TokenAuth>> {
+    ) -> anyhow::Result<Option<aos_hub_db::db::TokenAuth>> {
         let Some(kv) = &self.kv else {
             return self.db.validate_token(secret).await;
         };
-        let key = format!("tok:{}", crate::auth::token::sha256_hex(secret));
+        let key = format!("tok:{}", aos_hub_model::auth::token::sha256_hex(secret));
         let db = &self.db;
-        let cached: Option<crate::db::TokenAuth> = crate::cache::read_through(
+        let cached: Option<aos_hub_db::db::TokenAuth> = crate::cache::read_through(
             kv.as_ref(),
             &key,
             Some(crate::cache::HOT_TTL_SECS),
@@ -111,8 +111,8 @@ impl RpcService {
             ));
         }
         let owner = match input.owner_kind.as_str() {
-            "user" => crate::domain::Principal::user(owner_id),
-            "service_account" => crate::domain::Principal::service_account(owner_id),
+            "user" => aos_hub_model::domain::Principal::user(owner_id),
+            "service_account" => aos_hub_model::domain::Principal::service_account(owner_id),
             other => return Err(RpcError::invalid(format!("unknown owner kind '{other}'"))),
         };
         let permissions = input

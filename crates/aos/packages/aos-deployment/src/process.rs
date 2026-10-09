@@ -426,7 +426,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 mod tests {
     use super::*;
 
-    const HELPER_TEST: &str = "deployment::process::tests::bounded_process_helper";
+    const HELPER_TEST: &str = "process::tests::bounded_process_helper";
 
     #[test]
     fn bounded_handler_runs_with_usable_control() {
@@ -510,7 +510,7 @@ mod tests {
         let mut command = Command::new(std::env::current_exe().expect("test executable"));
         command.args([
             "--exact",
-            "deployment::process::tests::diagnostic_process_helper",
+            "process::tests::diagnostic_process_helper",
             "--nocapture",
         ]);
         let control = FixedBudgetControl::new(5_000);
@@ -532,8 +532,7 @@ mod tests {
 
     #[test]
     fn diagnostic_process_helper() {
-        if !std::env::args()
-            .any(|argument| argument == "deployment::process::tests::diagnostic_process_helper")
+        if !std::env::args().any(|argument| argument == "process::tests::diagnostic_process_helper")
         {
             return;
         }

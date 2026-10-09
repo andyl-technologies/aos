@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{bail, Result};
 
-use crate::delivery_http::{
+use aos_hub_model::delivery_http::{
     evaluate_verified_representation, ContentMutability, DeliveryMethod, EntityTag,
     EntityTagCondition, HttpTimestamp, IfRangeCondition, RequestDecision, RequestPreconditions,
     SingleByteRange, VerifiedRepresentation,
@@ -226,8 +226,8 @@ fn immutable_headers(
         (
             "cache-control".into(),
             match access {
-                OciAccess::Public => crate::delivery_http::PUBLIC_IMMUTABLE_CACHE_CONTROL,
-                OciAccess::Private => crate::delivery_http::PRIVATE_CACHE_CONTROL,
+                OciAccess::Public => aos_hub_model::delivery_http::PUBLIC_IMMUTABLE_CACHE_CONTROL,
+                OciAccess::Private => aos_hub_model::delivery_http::PRIVATE_CACHE_CONTROL,
             }
             .into(),
         ),
@@ -252,7 +252,7 @@ fn terminal_headers(access: OciAccess) -> BTreeMap<String, String> {
             "cache-control".into(),
             match access {
                 OciAccess::Public => "no-store",
-                OciAccess::Private => crate::delivery_http::PRIVATE_CACHE_CONTROL,
+                OciAccess::Private => aos_hub_model::delivery_http::PRIVATE_CACHE_CONTROL,
             }
             .into(),
         ),

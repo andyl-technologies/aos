@@ -24,3 +24,9 @@ Service operations and persistence queries are grouped by capability. Their
 regression suites share focused fixtures, while orchestration tests stay with
 the service. Raw SQL fault injection is available only under `test-fixtures`;
 production callers use typed database mutations.
+
+Retained-control contracts and their hard-cut inventory gate belong to the
+model source tree. These modules currently compile only through integration
+fixtures and are not part of the public model library. The planned control-plane
+cutover will enable their production adapters. The inventory gate
+scans the complete production source tree, including canonical API schemas.

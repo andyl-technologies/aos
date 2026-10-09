@@ -54,7 +54,7 @@ pub mod extract;
 pub mod oidc;
 pub mod seal;
 
-// The runtime-agnostic auth primitives moved to aos-hub-core (RFC-0004
+// The runtime-agnostic auth primitives moved to aos-hub-service (RFC-0004
 // Phase 5) so the Worker shares them; re-exported here so every
 // `crate::auth::{token,session,magic,device,password,permission_from_str,
 // webauthn,jwt}::…` path is unchanged. (jwt's HS256 is now hmac/sha2-based —

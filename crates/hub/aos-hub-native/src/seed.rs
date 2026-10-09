@@ -58,7 +58,7 @@ use crate::db::{
 };
 use crate::domain::{Permission, Principal, Role, Scope};
 use crate::fetch::LocalFsFetch;
-use crate::surface::object::{ObjectKind, Oid, TreeEntry, encode_loose, encode_tree, hash_object};
+use crate::surface::object::{encode_loose, encode_tree, hash_object, ObjectKind, Oid, TreeEntry};
 use crate::surface::sshsig;
 use aos_hub_service::service::RouteReservationKey;
 
@@ -974,9 +974,9 @@ fn write_signed_surface(root: &Path, key: &SigningKey, trust_key: &str) -> Resul
 
 fn seed_system_images() -> Result<Vec<aos_registry_format::manifest::ImageEntry>> {
     use aos_registry_format::manifest::{
+        immutable_image_contract_object_key, immutable_image_object_key,
         ImageArtifactContractDocumentReference, ImageArtifactContractReference, ImageCompression,
-        ImageDelivery, ImageEntry, ImageTarget, immutable_image_contract_object_key,
-        immutable_image_object_key,
+        ImageDelivery, ImageEntry, ImageTarget,
     };
     use sha2::{Digest as _, Sha256};
 
@@ -1024,19 +1024,19 @@ fn seed_system_images() -> Result<Vec<aos_registry_format::manifest::ImageEntry>
                 artifact_contract: ImageArtifactContractReference {
                     schema: "aos.demo-boot-artifacts/v1".to_string(),
                     document: ImageArtifactContractDocumentReference {
-                    filename: "image-info.json".to_string(),
+                        filename: "image-info.json".to_string(),
                         object_key: immutable_image_contract_object_key(
                             &sha256,
                             &info_sha256,
                             "image-info.json",
                         ),
-                    store_path: String::new(),
-                    nar_hash: String::new(),
-                    nar_size: 0,
-                    media_type: "application/vnd.aos.image-info+json".to_string(),
-                    byte_size: info.len() as u64,
-                    sha256: info_sha256,
-                },
+                        store_path: String::new(),
+                        nar_hash: String::new(),
+                        nar_size: 0,
+                        media_type: "application/vnd.aos.image-info+json".to_string(),
+                        byte_size: info.len() as u64,
+                        sha256: info_sha256,
+                    },
                     artifacts: None,
                 },
             },

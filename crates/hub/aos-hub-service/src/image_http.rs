@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use anyhow::{bail, Result};
 use base64::Engine as _;
 
-use crate::delivery_http::{
+use aos_hub_model::delivery_http::{
     evaluate_verified_representation, ContentMutability, DeliveryMethod, EntityTag,
     EntityTagCondition, HttpTimestamp, IfRangeCondition, RequestDecision, RequestPreconditions,
     SingleByteRange, VerifiedRepresentation,
@@ -281,7 +281,7 @@ fn immutable_headers(
         (
             "cache-control".into(),
             match access {
-                ImageAccess::Public => crate::delivery_http::PUBLIC_IMMUTABLE_CACHE_CONTROL,
+                ImageAccess::Public => aos_hub_model::delivery_http::PUBLIC_IMMUTABLE_CACHE_CONTROL,
                 ImageAccess::Private => "private, no-store",
             }
             .into(),

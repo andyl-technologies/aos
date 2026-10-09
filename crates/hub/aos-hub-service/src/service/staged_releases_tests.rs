@@ -10,15 +10,15 @@ use aos_registry_format::staging::{
 };
 use sha2::{Digest as _, Sha256};
 
-use crate::db::{
+use crate::fetch::{SurfaceFetch, SurfaceProvider};
+use crate::reindex::Reindexer;
+use crate::surface_write::{SurfaceWrite, SurfaceWriteProvider};
+use aos_hub_db::db::{
     BindingWriteRevisionRecord, NewRegistryPublication, NewSurfacePlacementSpec,
     SetRegistryPublicationObject, SetRegistryPublicationPlacement, SetSurfaceObject,
     SurfacePlacementRecord, SurfaceTarget, TokenAuth,
 };
-use crate::domain::{Permission, Principal, Scope};
-use crate::fetch::{SurfaceFetch, SurfaceProvider};
-use crate::reindex::Reindexer;
-use crate::surface_write::{SurfaceWrite, SurfaceWriteProvider};
+use aos_hub_model::domain::{Permission, Principal, Scope};
 
 use super::{pb, Database, RpcError, RpcService};
 
@@ -96,7 +96,7 @@ struct DeferredIndex;
 
 #[async_trait::async_trait]
 impl Reindexer for DeferredIndex {
-    async fn reindex(&self, _: &crate::db::RegistryRecord) -> anyhow::Result<Option<String>> {
+    async fn reindex(&self, _: &aos_hub_db::db::RegistryRecord) -> anyhow::Result<Option<String>> {
         Ok(None)
     }
 }
@@ -105,7 +105,7 @@ impl Reindexer for DeferredIndex {
 impl Reindexer for InlineIndex {
     async fn reindex(
         &self,
-        registry: &crate::db::RegistryRecord,
+        registry: &aos_hub_db::db::RegistryRecord,
     ) -> anyhow::Result<Option<String>> {
         let outcome = crate::indexer::index_and_record_from_placement(
             &self.db,

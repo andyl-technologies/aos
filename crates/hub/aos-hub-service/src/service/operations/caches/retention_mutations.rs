@@ -72,7 +72,7 @@ impl RpcService {
         let record = self
             .db
             .set_cache_retention_subscription_topology(
-                &crate::db::SetCacheRetentionSubscriptionTopology {
+                &aos_hub_db::db::SetCacheRetentionSubscriptionTopology {
                     cache_id: cache.id,
                     registry_id: registry.id,
                     selector_digest: hex::encode(Sha256::digest(selector_json.as_bytes())),
@@ -225,7 +225,7 @@ impl RpcService {
             .map(|_| uuid::Uuid::new_v4().to_string());
         let root = self
             .db
-            .create_manual_retention_root_topology(&crate::db::CreateManualRetentionRoot {
+            .create_manual_retention_root_topology(&aos_hub_db::db::CreateManualRetentionRoot {
                 root_id,
                 reason_id: uuid::Uuid::new_v4().to_string(),
                 cache_id: cache.id,
@@ -311,7 +311,7 @@ impl RpcService {
             .ok_or_else(|| RpcError::not_found("cache GC state"))?;
         let lease = self
             .db
-            .renew_retention_lease_topology(&crate::db::RenewRetentionLease {
+            .renew_retention_lease_topology(&aos_hub_db::db::RenewRetentionLease {
                 root_id: planned.root_id,
                 lease_id: if planned.lease_id.is_empty() {
                     uuid::Uuid::new_v4().to_string()

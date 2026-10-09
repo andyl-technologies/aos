@@ -60,7 +60,7 @@ pub(super) fn run_imported_canonical_branch(
     );
     let retained = repository.inspect_archived_exact_finding(archive, finding_id)?;
     let reproduction = repository.load_reproduction_artifact(retained.reproduction())?;
-    let model = crucible_core::ReproductionArtifact::from_compact_binary(reproduction.payload())?;
+    let model = crucible_engine::ReproductionArtifact::from_compact_binary(reproduction.payload())?;
     let original = model
         .schedule()
         .decisions()

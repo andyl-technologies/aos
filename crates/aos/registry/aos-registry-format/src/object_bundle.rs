@@ -18,9 +18,9 @@
 
 use std::collections::BTreeSet;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
-use crate::object::{Oid, MAX_PUBLISHED_LOOSE_OBJECT_BYTES};
+use crate::object::{MAX_PUBLISHED_LOOSE_OBJECT_BYTES, Oid};
 
 const MAGIC: &[u8] = b"AOSIDX1\n";
 const ENTRY_HEADER_BYTES: usize = 36;
@@ -215,7 +215,7 @@ fn validate_shard(shard: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::{encode_loose, hash_object, ObjectKind};
+    use crate::object::{ObjectKind, encode_loose, hash_object};
 
     #[test]
     fn round_trip_preserves_ordered_loose_objects() {

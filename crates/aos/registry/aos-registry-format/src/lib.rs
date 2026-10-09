@@ -1,6 +1,6 @@
 //! Pure-Rust, no-IO reader for the AOS registry wire surface (RFC-0004).
 //!
-//! Everything `apm` reads over dumb-HTTP, readable in-process and without
+//! Portable registry records and everything `apm` reads over dumb-HTTP, readable in-process and without
 //! the git CLI — which is what lets the *same code* run on a native
 //! server, a Cloudflare Worker, and a visitor's browser. This crate is the
 //! extracted, dependency-light core of that reader: it does no I/O, pulls
@@ -11,6 +11,11 @@
 //!
 //! # Module map
 //!
+//! - [`consumer`] - package records and registry source configuration.
+//! - [`release`] - planned release coordinates shared by publication projects.
+//! - [`tuf`] - signed catalog metadata envelopes and role policies.
+//! - [`measurement`] - stable package attestation identity framing.
+//! - [`platform`] - target platform normalization.
 //! - [`channel`] - pure rollout selection, floors, frontiers, and partition tags.
 //! - [`object`] — SHA-256 loose objects: inflate, hash-verify, and parse
 //!   commits, trees, and tags.
@@ -37,9 +42,9 @@
 //!
 //! The crate deliberately excludes the surface *transport* (the trait that
 //! fetches loose objects over `file://`/HTTP, or `fetch()` in a browser)
-//! and tree-walking that depends on `aos-package`'s committed-file parsers;
-//! those live in the consumer (`aos-hub`'s `surface::load`, or the
-//! SPA's own fetch glue) so this core stays pure.
+//! and native tree-walking. Those live in `aos-registry-client`,
+//! serving runtimes, or the
+//! SPA's own fetch glue so the shared contracts stay portable.
 
 pub mod channel;
 pub mod keymap;

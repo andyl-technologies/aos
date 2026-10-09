@@ -4,9 +4,10 @@ use super::{
     format_size, registry_upload_auth_config, resolve_effective_release_cache_url,
     resolve_upload_urls,
 };
-use aos_registry_client::config::ApmConfig;
 use crate::registry_ops::test_support::test_registry_config;
-use aos_registry_client::types::{ApmSettings, ProfileScope, RegistryUploadAuthConfig};
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::types::{ApmSettings, ProfileScope};
+use aos_registry_format::consumer::RegistryUploadAuthConfig;
 
 #[test]
 fn resolve_upload_urls_prefers_flags_over_persisted_defaults() {

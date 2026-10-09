@@ -310,7 +310,7 @@ impl RpcService {
         };
         let record = self
             .db
-            .set_cache_population_target(&crate::db::SetCachePopulationTarget {
+            .set_cache_population_target(&aos_hub_db::db::SetCachePopulationTarget {
                 cache_id: cache.id,
                 registry_id: registry.id,
                 trigger_kind: desired.trigger,

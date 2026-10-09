@@ -5,21 +5,20 @@
 
 mod commands;
 mod error;
-use error::RegistryAuthoringError;
 pub use commands::*;
+use error::RegistryAuthoringError;
 pub mod registry;
 pub mod registry_ops;
-use aos_registry_client::{config, dry_run, hub_auth, provenance, security, sshkey, types};
-#[cfg(test)] mod gitcmd;
-#[cfg(test)] mod testutil;
-use std::fs;
-use std::path::{Path, PathBuf};
+use aos_registry_client::{config, security, sshkey, sync as update};
+#[cfg(test)]
+mod gitcmd;
+#[cfg(test)]
+mod testutil;
 use anyhow::{Context, Result, bail};
 use aos_cli_ui::output::{OutputMode, Printer};
-use aos_registry_client::registry::{Registry, RegistrySet};
 use aos_registry_format::consumer::*;
-use aos_registry_client::types::ProfileScope;
-use aos_registry_client::registry::{channel, git, keys, state};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 /// Reports whether a registry subcommand honors the global `--dry-run` flag.
 ///
@@ -704,6 +703,13 @@ fn registry_add_config_toml(config: RegistryAddConfigToml<'_>) -> Result<String>
     Ok(toml::to_string_pretty(&toml::Value::Table(root))?)
 }
 
+/// Adds a layered consumer source and performs its initial registry refresh.
+///
+/// # Errors
+///
+/// Returns an error for invalid source or tracking arguments, duplicate names,
+/// invalid trust pins, or configuration persistence failures. Initial refresh
+/// failures are reported while retaining the new source configuration.
 #[allow(clippy::too_many_arguments)]
 pub async fn registry_add(
     config: &config::ApmConfig,
@@ -1000,8 +1006,9 @@ fn clone_authoring_registry(
         let dir = clone_dir.to_path_buf();
         let fetch_url = url.to_string();
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(aos_registry_client::registry::repo::fetch(&dir, &fetch_url, &refspecs))
+            tokio::runtime::Handle::current().block_on(aos_registry_client::registry::repo::fetch(
+                &dir, &fetch_url, &refspecs,
+            ))
         })
         .context("fetching registry objects")?;
 
@@ -1239,11 +1246,12 @@ pub async fn registry_set_enabled(
     printer: &Printer,
 ) -> Result<()> {
     validate_registry_name(name)?;
-    let (reg_config, _) = config
-        .find_registry(name)
-        .ok_or_else(|| RegistryAuthoringError::RegistryError {
-            message: format!("registry '{name}' not found"),
-        })?;
+    let (reg_config, _) =
+        config
+            .find_registry(name)
+            .ok_or_else(|| RegistryAuthoringError::RegistryError {
+                message: format!("registry '{name}' not found"),
+            })?;
 
     let toml_path = config.registry_overlay_path(name);
     let previous_enabled = reg_config.enabled;
@@ -1416,14 +1424,12 @@ fn registry_defined_by_seed(config: &config::ApmConfig, name: &str) -> bool {
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use aos_registry_client::config::ApmConfig;
-    use aos_registry_client::types::*;
+    use aos_registry_client::types::{ApmSettings, ProfileScope};
     use tempfile::TempDir;
-
 
     #[test]
     fn authoring_repository_uses_sha256_object_format() {
@@ -1435,11 +1441,12 @@ mod tests {
         assert_eq!(repo.path(), clone_dir.path().join(".git"));
     }
 
-
-
     fn make_config(
         tmp: &TempDir,
-        registries: Vec<(RegistryConfig, Option<types::RegistryState>)>,
+        registries: Vec<(
+            RegistryConfig,
+            Option<aos_registry_format::consumer::RegistryState>,
+        )>,
     ) -> ApmConfig {
         let config_dir = tmp.path().join("config");
         let registries_dir = config_dir.join("registries.d");
@@ -1472,8 +1479,6 @@ mod tests {
         }
     }
 
-
-
     fn reg_config(name: &str, priority: u32) -> RegistryConfig {
         RegistryConfig {
             name: name.into(),
@@ -1495,8 +1500,6 @@ mod tests {
         }
     }
 
-
-
     #[test]
     fn derive_name_from_https_url() {
         assert_eq!(
@@ -1504,8 +1507,6 @@ mod tests {
             "core"
         );
     }
-
-
 
     #[test]
     fn derive_name_from_git_url() {
@@ -1515,8 +1516,6 @@ mod tests {
         );
     }
 
-
-
     #[test]
     fn derive_name_trailing_slash() {
         assert_eq!(
@@ -1524,8 +1523,6 @@ mod tests {
             "extra"
         );
     }
-
-
 
     #[tokio::test]
     async fn registry_list_shows_registries() {
@@ -1536,10 +1533,10 @@ mod tests {
                 (reg_config("aos-core", 500), None),
                 (
                     reg_config("aos-extra", 400),
-                    Some(types::RegistryState {
+                    Some(aos_registry_format::consumer::RegistryState {
                         last_commit: Some("deadbeef1234".into()),
                         last_update: Some("2026-02-16T12:00:00Z".into()),
-                        ..types::RegistryState::default()
+                        ..aos_registry_format::consumer::RegistryState::default()
                     }),
                 ),
             ],
@@ -1550,8 +1547,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-
-
     #[tokio::test]
     async fn registry_list_empty() {
         let tmp = TempDir::new().unwrap();
@@ -1561,8 +1556,6 @@ mod tests {
         let result = registry_list(&config, &printer).await;
         assert!(result.is_ok());
     }
-
-
 
     #[tokio::test]
     async fn registry_add_creates_config_file() {
@@ -1587,8 +1580,6 @@ mod tests {
         assert!(content.contains("priority = 500"));
     }
 
-
-
     #[test]
     fn registry_add_config_toml_escapes_url_and_tracking_fields() {
         let content = registry_add_config_toml(RegistryAddConfigToml {
@@ -1605,7 +1596,7 @@ mod tests {
         })
         .unwrap();
 
-        let parsed: types::RegistryFile = toml::from_str(&content).unwrap();
+        let parsed: aos_registry_format::consumer::RegistryFile = toml::from_str(&content).unwrap();
         assert_eq!(parsed.registry.name.as_deref(), Some("quoted-url"));
         assert_eq!(
             parsed.registry.url.as_deref(),
@@ -1619,8 +1610,6 @@ mod tests {
         );
         assert_eq!(parsed.registry.signing.unwrap().required, false);
     }
-
-
 
     #[tokio::test]
     async fn registry_add_rejects_duplicate() {
@@ -1649,8 +1638,6 @@ mod tests {
         assert!(err.contains("already exists"), "got: {err}");
     }
 
-
-
     #[tokio::test]
     async fn registry_remove_not_found() {
         let tmp = TempDir::new().unwrap();
@@ -1663,8 +1650,6 @@ mod tests {
         assert!(err.contains("not found"), "got: {err}");
     }
 
-
-
     #[test]
     fn registry_config_path_for_removal_targets_writable_layer() {
         let tmp = TempDir::new().unwrap();
@@ -1676,8 +1661,6 @@ mod tests {
         assert!(path.starts_with(config.scope.writable_config_dir()));
         assert!(path.ends_with("registries.d/operator-added-xyz.toml"));
     }
-
-
 
     #[test]
     fn cache_upload_auth_args_map_to_backend_options() {
@@ -1708,8 +1691,6 @@ mod tests {
         assert_eq!(auth.ssh_password.as_deref(), Some("ssh-pass"));
         assert!(auth.ssh_ask_pass);
     }
-
-
 
     #[test]
     fn cache_upload_auth_args_merge_config_defaults_and_overrides() {
@@ -1758,15 +1739,11 @@ mod tests {
         assert!(auth.ssh_ask_pass);
     }
 
-
-
     #[test]
     fn count_packages_empty_dir() {
         let tmp = TempDir::new().unwrap();
         assert_eq!(count_packages_in_dir(tmp.path()), 0);
     }
-
-
 
     #[test]
     fn count_packages_with_toml_files() {

@@ -21,12 +21,12 @@ use aos_release_format::receipt::{
     CHANNEL_RECEIPT, PUBLICATION_RECEIPT,
 };
 
-use crate::db::{
+use aos_hub_db::db::{
     is_release_channel_name, NewReleaseBundle, NewReleaseBundlePublication,
     NewReleaseChannelOperation, NewReleasePromotion, NewReleaseQualification,
     NewReleaseTimestampPublication,
 };
-use crate::domain::Permission;
+use aos_hub_model::domain::Permission;
 
 use super::{RpcError, RpcService};
 
@@ -59,7 +59,7 @@ impl RpcService {
             .admit_release_bundle(
                 &input,
                 &req.backing_publication_id,
-                crate::clock::now_unix_secs(),
+                aos_hub_model::clock::now_unix_secs(),
             )
             .await
             .map_err(failed_precondition)?;
@@ -101,7 +101,7 @@ impl RpcService {
             ));
         }
         let authority = self.release_authority(&req.expected_deployment_id)?;
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
         let receipt = PublicationReceipt {
             schema_version: PUBLICATION_RECEIPT.into(),
             destination: req.destination.clone(),
@@ -190,7 +190,7 @@ impl RpcService {
                     qualification_digest: req.qualification_digest.clone(),
                     receipt_json: req.signed_qualification_json,
                 },
-                crate::clock::now_unix_secs(),
+                aos_hub_model::clock::now_unix_secs(),
             )
             .await
             .map_err(failed_precondition)?;
@@ -274,7 +274,7 @@ impl RpcService {
                     qualification_digest: req.qualification_digest.clone(),
                     receipt_json: req.signed_qualification_json.clone(),
                 },
-                crate::clock::now_unix_secs(),
+                aos_hub_model::clock::now_unix_secs(),
             )
             .await
             .map_err(failed_precondition)?;
@@ -298,7 +298,7 @@ impl RpcService {
                 existing.receipt_json,
             ));
         }
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
         let receipt = PublicationReceipt {
             schema_version: PUBLICATION_RECEIPT.into(),
             destination: req.destination.clone(),
@@ -419,7 +419,7 @@ impl RpcService {
                     timestamp_path: req.timestamp_path,
                     snapshot_path: req.snapshot_path,
                 },
-                crate::clock::now_unix_secs(),
+                aos_hub_model::clock::now_unix_secs(),
             )
             .await
             .map_err(failed_precondition)?;
@@ -469,7 +469,7 @@ impl RpcService {
             .release_evidence
             .as_ref()
             .ok_or_else(authority_unavailable)?;
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
         let new_generation = req
             .prior_generation
             .checked_add(1)
@@ -515,7 +515,7 @@ impl RpcService {
                         operation_digest: existing.operation_digest.clone(),
                         receipt_json: existing.receipt_json.clone(),
                     },
-                    crate::clock::now_unix_secs(),
+                    aos_hub_model::clock::now_unix_secs(),
                 )
                 .await
                 .map_err(failed_precondition)?;
@@ -570,7 +570,13 @@ impl RpcService {
         auth: Option<&str>,
         registry_name: &str,
         bundle_digest: &str,
-    ) -> Result<(crate::db::RegistryRecord, crate::db::ReleaseBundleRecord), RpcError> {
+    ) -> Result<
+        (
+            aos_hub_db::db::RegistryRecord,
+            aos_hub_db::db::ReleaseBundleRecord,
+        ),
+        RpcError,
+    > {
         let claims = self.require_claims(auth)?;
         let registry = self.registry_or_not_found(registry_name).await?;
         let scope = self.registry_scope(&registry).await?;

@@ -19,13 +19,13 @@ use anyhow::{Context, Result, bail};
 use aos_cli_ui::output::{ActivityProgress, OutputMode, Printer, TransferProgress};
 use aos_hub_client::hub::{HubClient, hub_rpc};
 use aos_hub_client::hub_types::{ListImagesRequest, ResolveImageRequest, SystemImage};
+use aos_nar::verify::{
+    extract_regular_file_nar_with_compression, verify_download_hash,
+    verify_nar_hash_with_compression,
+};
 use aos_package_manager::download::{
     DownloadRequest as NarDownloadRequest, default_engine as default_nar_engine, download_nars,
     fetch_narinfos,
-};
-use aos_package_manager::verify::{
-    extract_regular_file_nar_with_compression, verify_download_hash,
-    verify_nar_hash_with_compression,
 };
 use aos_transfer::{
     TransferEvent, TransferManager, TransferManagerConfig, TransferObserver, TransferOutput,
@@ -403,8 +403,8 @@ async fn download_store_backed_image(
         .context("image cache returned no narinfo")?
         .narinfo;
     if narinfo.store_path != image.store_path
-        || aos_package_manager::verify::sha256_digest_hex(&narinfo.nar_hash)?
-            != aos_package_manager::verify::sha256_digest_hex(&image.nar_hash)?
+        || aos_nar::verify::sha256_digest_hex(&narinfo.nar_hash)?
+            != aos_nar::verify::sha256_digest_hex(&image.nar_hash)?
         || narinfo.nar_size != image.nar_size
     {
         bail!("cache narinfo disagrees with the signed image store identity");

@@ -5,7 +5,7 @@ use crate::registry_ops::store_paths::StorePathInfo;
 use crate::registry_ops::test_support::{
     inspect_test_image, rewrite_test_image_parent, write_direct_image_output,
 };
-use aos_registry_client::types::{FEATURE_IMAGE_ARTIFACT_CONTRACT_V1, PACKAGE_META_FORMAT};
+use aos_registry_format::consumer::{FEATURE_IMAGE_ARTIFACT_CONTRACT_V1, PACKAGE_META_FORMAT};
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;

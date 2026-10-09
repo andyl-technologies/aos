@@ -13,7 +13,7 @@
 //! provider's key custody passes through the coordinator.
 
 use std::fs::File;
-use std::io::{Read as _, Seek as _, Write as _};
+use std::io::{Read as _, Seek as _};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -66,7 +66,7 @@ impl SignerProgram {
     ///
     /// # Errors
     /// Returns an error for a relative executable or configuration path, an
-    /// executable that fails [`validate_signer_executable`], a missing
+    /// executable that fails immutable-store validation, a missing
     /// configuration for the bundled signer, or a process that does not run
     /// from release tooling that bundles a signer.
     pub fn resolve(executable: Option<&Path>, config: Option<&Path>) -> Result<Self> {
@@ -237,7 +237,7 @@ impl ExternalSigner {
             .context("decoding external SSHSIG armor")?;
         let signature = String::from_utf8(signature_bytes)
             .context("external SSHSIG armor is not valid UTF-8")?;
-        if !aos_package::security::verify_payload_signature(
+        if !aos_registry_client::security::verify_payload_signature(
             payload,
             &signature,
             trusted_key,
@@ -737,7 +737,7 @@ fn immutable_store_file(path: &Path, mode: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use aos_release::signing::{SignatureAlgorithm, SignerRole, SigningContext, SigningOperation};
+    use aos_release_format::signing::{SignatureAlgorithm, SignerRole, SigningContext, SigningOperation};
 
     use super::*;
 
@@ -885,7 +885,7 @@ mod tests {
             schema_version: "aos.release.signing-request/v1".to_owned(),
             request_id: "request-1".to_owned(),
             nonce: "00".repeat(32),
-            registry: aos_release::registry::MAIN_REGISTRY.to_owned(),
+            registry: aos_release_format::registry::MAIN_REGISTRY.to_owned(),
             release_id: "release-1".to_owned(),
             plan_digest: Sha256Digest::of_bytes("plan"),
             manifest_digest: None,

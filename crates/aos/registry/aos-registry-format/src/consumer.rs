@@ -1,9 +1,9 @@
 //! Portable registry package records, source configuration, and validation.
 
-use std::collections::BTreeMap;
-use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::Path;
 
 /// Current registry package metadata format understood by this crate.
 pub const PACKAGE_META_FORMAT: u32 = 1;
@@ -136,9 +136,8 @@ fn validate_git_ref_shorthand(name: &str, kind: &str, allow_slash: bool) -> Resu
 
 // Package-name validation and bucketing moved to the wasm-clean
 // `aos-registry-format` crate (RFC-0004 Phase 5) so the registry hub's indexer
-// and the Cloudflare Worker share the exact rules without pulling `aos-package`.
-// Re-exported here so `aos_package_manager::types::{validate_package_name,
-// package_name_bucket}` paths are unchanged.
+// and serving runtimes share the exact validation rules.
+// The consumer records reuse the manifest validators for consistent parsing.
 pub use crate::manifest::{package_name_bucket, validate_package_name};
 
 /// Validate a platform/system name before using it as a package TOML key.
@@ -243,8 +242,7 @@ pub struct PackageMeta {
     pub store_path: String,
     /// Authenticated available named outputs and their output-specific evidence.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub named_outputs:
-        std::collections::BTreeMap<String, crate::manifest::OutputMeta>,
+    pub named_outputs: std::collections::BTreeMap<String, crate::manifest::OutputMeta>,
     /// Hash of the uncompressed NAR: `"sha256:..."`.
     pub nar_hash: String,
     /// Size of the uncompressed NAR in bytes.
@@ -564,7 +562,12 @@ pub(crate) fn validate_absolute_path(path: &str, kind: &str) -> Result<()> {
     bail!("{kind} must be an absolute path: {path}")
 }
 
-pub(crate) fn validate_credential_ciphertext(ciphertext: &str) -> Result<()> {
+/// Validates the printable token alphabet used for credential ciphertext.
+///
+/// # Errors
+///
+/// Returns an error when the ciphertext is empty or contains unsupported characters.
+pub fn validate_credential_ciphertext(ciphertext: &str) -> Result<()> {
     if !ciphertext.is_empty()
         && ciphertext
             .chars()
@@ -1093,9 +1096,7 @@ pub struct RegistryFileInner {
     pub state: Option<RegistryState>,
 }
 
-pub use crate::manifest::{
-    CacheEntry, CachesConfig, RegistryRootConfig, RegistryRootMeta,
-};
+pub use crate::manifest::{CacheEntry, CachesConfig, RegistryRootConfig, RegistryRootMeta};
 
 // ---------------------------------------------------------------------------
 // Sysroot image entry — a pre-compiled image attached to a sysroot package

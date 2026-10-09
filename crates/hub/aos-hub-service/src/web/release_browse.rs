@@ -10,7 +10,7 @@
 //! releases, and the current selection rather than every historical tag; the
 //! Releases directory lists the rest.
 
-use crate::clock::Instant;
+use aos_hub_model::clock::Instant;
 use std::cmp::Ordering;
 use std::fmt::Write as _;
 
@@ -18,7 +18,7 @@ use super::browse::Rendered;
 use super::browse_pages::{registry_crumbs, registry_nav_at_release, state_line};
 use super::console_render::{page_with_session, urlencode, SessionIndicator};
 use super::render::escape;
-use crate::db::{
+use aos_hub_db::db::{
     ChannelSummary, Database, IndexStatus, PackageDetail, PackageRow, PlatformDetail,
     RegistryRecord, ReleaseRow, VersionDetail,
 };
@@ -427,7 +427,7 @@ pub(crate) fn package_detail(package: &PackageToml) -> PackageDetail {
                     images: entry
                         .images
                         .iter()
-                        .map(|image| crate::db::ImageDetail {
+                        .map(|image| aos_hub_db::db::ImageDetail {
                             format: image.format.clone(),
                             store_path: image.store_path.clone(),
                             nar_hash: image.nar_hash.clone(),

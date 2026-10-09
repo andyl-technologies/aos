@@ -12,6 +12,7 @@ aos-nar.workspace = true
 aos-nix-cache.workspace = true
 aos-release-format.workspace = true
 aos-registry-format.workspace = true
+aos-registry-client.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 ed25519-dalek.workspace = true

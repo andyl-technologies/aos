@@ -27,8 +27,10 @@ use super::profile::meta::{list_meta, orphaned_by_registry};
 use super::registry::{Registry, RegistrySet, store_path_hash};
 use super::store;
 use super::sysroot_lock;
-use super::types::{InstalledPackageRecord, NativeArtifactMeta, PackageMeta, ProfileScope};
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_deployment_format::inventory::InstalledPackageRecord;
+use aos_registry_client::types::ProfileScope;
+use aos_registry_format::consumer::{NativeArtifactMeta, PackageMeta};
 
 // ---------------------------------------------------------------------------
 // Search
@@ -893,7 +895,7 @@ fn unsynced_registry_names(config: &ApmConfig) -> Vec<String> {
 /// cache paths).
 fn unsynced_registry_names_in(
     cache_dir: &std::path::Path,
-    enabled: &[&super::types::RegistryConfig],
+    enabled: &[&aos_registry_format::consumer::RegistryConfig],
 ) -> Vec<String> {
     enabled
         .iter()
@@ -946,7 +948,9 @@ pub(crate) fn warn_unsynced_scope(config: &ApmConfig, printer: &Printer) {
 
 /// Index installed packages by `(name, source registry)` — the same name
 /// may be installed from multiple registries with distinct store paths.
-fn installed_by_source(meta_list: &[InstalledPackageRecord]) -> HashMap<(String, String), &InstalledPackageRecord> {
+fn installed_by_source(
+    meta_list: &[InstalledPackageRecord],
+) -> HashMap<(String, String), &InstalledPackageRecord> {
     meta_list
         .iter()
         .filter_map(|m| {
@@ -959,7 +963,10 @@ fn installed_by_source(meta_list: &[InstalledPackageRecord]) -> HashMap<(String,
 /// Whether an explicitly installed package differs from the registry
 /// candidate by store-path hash (i.e. an upgrade is available). Implicit
 /// (dependency-only) installs are never reported as upgradable.
-fn is_upgradable_installed_root(installed: &InstalledPackageRecord, registry_meta: &PackageMeta) -> bool {
+fn is_upgradable_installed_root(
+    installed: &InstalledPackageRecord,
+    registry_meta: &PackageMeta,
+) -> bool {
     let Some(apm) = installed.apm.as_ref() else {
         return false;
     };
@@ -1059,10 +1066,10 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    use aos_deployment_format::inventory::{InstalledPackageRecord, PackageInventoryDetails};
     use aos_registry_client::registry::Registry;
     use aos_registry_client::registry::parse::{CURL_TOML, ZLIB_TOML};
-    use aos_deployment_format::inventory::{PackageInventoryDetails, InstalledPackageRecord};
-use crate::types::{RegistryConfig};
+    use aos_registry_format::consumer::RegistryConfig;
 
     /// Helper: create a registry in a temp directory from TOML test fixtures.
     fn make_registry(

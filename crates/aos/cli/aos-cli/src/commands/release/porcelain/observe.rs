@@ -190,7 +190,7 @@ pub(super) fn destination(
     let plan_digest = Sha256Digest::of_bytes(&session.plan_bytes);
     for phase in hold_points {
         let has_cases = match &observation.manifest {
-            Some(manifest) => !aos_release::qualification_evidence::cases(
+            Some(manifest) => !aos_release_format::qualification_evidence::cases(
                 plan,
                 &manifest.payload,
                 Some(name),
@@ -479,7 +479,7 @@ pub(super) fn read_admission(signed: &Path) -> Result<Option<QualificationAdmiss
         return Ok(None);
     }
     let bytes = capture::control_file(&path, "qualification admission")?;
-    Ok(Some(aos_release::canonical::from_slice(
+    Ok(Some(aos_release_format::canonical::from_slice(
         &bytes,
         "qualification admission",
     )?))

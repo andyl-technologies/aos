@@ -15,11 +15,12 @@
   crateRoot = ../../../crates;
   workspaceMembers = (builtins.fromTOML (builtins.readFile (crateRoot + "/Cargo.toml"))).workspace.members;
   packageManifests = builtins.listToAttrs (map (member: let
-    manifest = builtins.fromTOML (builtins.readFile (crateRoot + "/${member}/Cargo.toml"));
-  in {
-    name = manifest.package.name;
-    value = manifest;
-  }) workspaceMembers);
+      manifest = builtins.fromTOML (builtins.readFile (crateRoot + "/${member}/Cargo.toml"));
+    in {
+      name = manifest.package.name;
+      value = manifest;
+    })
+    workspaceMembers);
   shmemLib = builtins.readFile (crateRoot + "/crucible/protocol/crucible-qemu-shmem/src/lib.rs");
   doorbellAbi = builtins.readFile (crateRoot + "/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs");
   apiRpcAbi = builtins.readFile (crateRoot + "/crucible/control/crucible-control-api/src/rpc_abi.rs");
@@ -91,7 +92,7 @@
       workspacePackageVersions = packageVersions;
       cargoDeps = {
         kind = "fetchCargoVendor";
-        sourceRoot = "source/crates";
+        sourceRoot = "source";
         hash = cargoDepsHash;
         vendored = true;
       };
@@ -226,7 +227,7 @@
     crucible_version=${version}
     crucible_workspace_packages=${builtins.concatStringsSep "," packages}
     cargo_deps=fetchCargoVendor
-    cargo_deps_source_root=source/crates
+    cargo_deps_source_root=source
     cargo_deps_hash=${cargoDepsHash}
     cargo_deps_vendored=true
     crucible_source_store_name=${sourceStoreName}
@@ -266,7 +267,7 @@
     ssh_path=${manifest.components.ssh.path}
     ssh_license=BSD-2-Clause
     ssh_boundary=operator-guest-bridge-client
-    boundary_crates=crucible-protocol,crucible-shmem
+    boundary_crates=crucible-qemu-protocol,crucible-qemu-shmem
     boundary_crates_license=MIT
     qemu_corresponding_source_package=qemu-crucible-source
     qemu_corresponding_source_path=${manifest.components.correspondingSource.path}

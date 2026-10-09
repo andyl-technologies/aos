@@ -1,10 +1,10 @@
 //! Platform metadata acquisition and authorization for AOS first-boot configuration.
 //!
 //! The acquisition and policy executables share this library for cross-cloud
-//! acquisition and the narrow
-//! first-boot trust boundary. They keep untrusted acquisition bytes in private
-//! transaction scratch, publish authorized values through typed operation
-//! results, and retain recovery input through content-addressed resources.
+//! acquisition and the narrow first-boot trust boundary. They keep untrusted
+//! acquisition bytes in private transaction scratch, publish authorized values
+//! through typed operation results, and retain recovery input through
+//! content-addressed resources.
 //!
 //! # Module map
 //!
@@ -42,6 +42,7 @@ pub mod fetcher;
 pub mod http;
 pub mod mount;
 mod native_handler;
+pub mod network;
 pub mod offline;
 pub mod policy;
 pub mod provider;
@@ -224,6 +225,3 @@ fn civil_from_unix(secs: u64) -> String {
     let y = if m <= 2 { y + 1 } else { y };
     format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
 }
-
-/// Converts checked early-network configuration into semantic platform values.
-pub mod network;

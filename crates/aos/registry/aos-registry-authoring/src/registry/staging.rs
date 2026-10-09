@@ -232,7 +232,7 @@ impl LocalStageStore {
     ///
     /// Returns an error for unsafe names, the public default, or channel branches.
     pub fn require_authoring_branch(&self, branch: &str) -> Result<()> {
-        aos_registry_client::types::validate_branch_name(branch)?;
+        aos_registry_format::consumer::validate_branch_name(branch)?;
         let repository = git2::Repository::open(&self.registry)?;
         let default = repository
             .find_reference("refs/remotes/origin/HEAD")

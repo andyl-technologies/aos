@@ -11,9 +11,9 @@ use std::path::Path;
 use anyhow::Result;
 use common::{RegistryFixture, StaticHttpServer};
 
+use aos_registry_client::registry::Registry;
 use aos_registry_client::registry::git;
-use aos_registry_client::registry::{Registry, tuf};
-use aos_package_manager::types::{RegistryConfig, RegistryState, SigningConfig, TrackingMode};
+use aos_registry_format::consumer::{RegistryConfig, RegistryState, SigningConfig, TrackingMode};
 
 /// Branch-tracking config with verification enforced and the given
 /// bootstrap anchor.
@@ -48,8 +48,13 @@ async fn sync(
     .await
 }
 
-fn tuf_signer(id: &str, key: &str, key_path: &Path, role_key: bool) -> tuf::MetadataSigningKey {
-    tuf::MetadataSigningKey {
+fn tuf_signer(
+    id: &str,
+    key: &str,
+    key_path: &Path,
+    role_key: bool,
+) -> aos_registry_authoring::registry::tuf::MetadataSigningKey {
+    aos_registry_authoring::registry::tuf::MetadataSigningKey {
         key_id: id.to_string(),
         key_path: key_path.to_path_buf(),
         key: key.to_string(),
@@ -61,7 +66,7 @@ fn fixture_tuf_signer(
     fixture: &RegistryFixture,
     id: &str,
     role_key: bool,
-) -> tuf::MetadataSigningKey {
+) -> aos_registry_authoring::registry::tuf::MetadataSigningKey {
     tuf_signer(
         id,
         fixture.trusted_key(),
@@ -73,11 +78,11 @@ fn fixture_tuf_signer(
 fn commit_tuf_metadata(
     fixture: &RegistryFixture,
     version: &str,
-    signers: &[tuf::MetadataSigningKey],
+    signers: &[aos_registry_authoring::registry::tuf::MetadataSigningKey],
     commit_key: Option<&Path>,
 ) -> Result<String> {
     let version = semver::Version::parse(version)?;
-    let changed = tuf::write_release_metadata_worktree(
+    let changed = aos_registry_authoring::registry::tuf::write_release_metadata_worktree(
         fixture.source_path(),
         fixture.name(),
         &version,

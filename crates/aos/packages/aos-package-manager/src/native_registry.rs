@@ -14,25 +14,25 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
-use aos_module_format::graph::GRAPH_LIMITS;
 use aos_core::Sha256Digest;
+use aos_module_format::graph::GRAPH_LIMITS;
 use serde::{Deserialize, Serialize};
 
 use aos_deployment::evaluation::PackageResolver;
-use aos_deployment_format::model::{Envelope, ModuleDependency, ModuleSource};
 use aos_deployment::retention::{AdmittedArtifact, ArtifactAdmission};
-use aos_registry_client::registry::{Registry, RegistrySet, ReleaseTrustReceipt, store_path_hash};
 use aos_deployment::store::verification::{
     dump_store_path_identity_in, query_reference_hashes_in, query_store_paths_in,
     verify_store_object_in,
 };
-use aos_deployment_format::inventory::{InstalledPackageRecord};
-use crate::types::{PackageMeta};
+use aos_deployment_format::inventory::InstalledPackageRecord;
+use aos_deployment_format::model::{Envelope, ModuleDependency, ModuleSource};
+use aos_registry_client::registry::{Registry, RegistrySet, ReleaseTrustReceipt, store_path_hash};
+use aos_registry_format::consumer::PackageMeta;
 
 // Signed catalog NAR hashes use Nix encodings; private admission evidence uses
 // canonical hex. Normalize the representation before comparing the exact bytes.
 fn catalog_nar_hash(hash: &str, artifact: &str) -> Result<Sha256Digest> {
-    let encoded = crate::verify::sha256_digest_hex(hash)
+    let encoded = aos_nar::verify::sha256_digest_hex(hash)
         .with_context(|| format!("invalid {artifact} catalog NAR hash"))?;
     Sha256Digest::parse(&format!("sha256:{encoded}"))
         .with_context(|| format!("invalid {artifact} catalog NAR digest"))
@@ -540,8 +540,7 @@ impl<'a> NativeRegistry<'a> {
             }
             self.resolution_lock = solution.lock;
         }
-        let packages =
-            aos_deployment::evaluation::resolve_packages(system, roots.clone(), self)?;
+        let packages = aos_deployment::evaluation::resolve_packages(system, roots.clone(), self)?;
         let mut selected = BTreeMap::new();
         for mut root in roots {
             root.package = root.package.canonical_catalog();

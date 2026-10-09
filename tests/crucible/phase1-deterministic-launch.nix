@@ -676,7 +676,7 @@ in
             check=checks.crucible.phase1.deterministicLaunch
             gate=gate:layer0-determinism
             tasks=T-DET-1
-            rust_test=crucible-qemu::deterministic_launch,crucible::canonical_material_builds_stable_scenario_identity
+            rust_test=crucible-qemu::deterministic_launch,crucible_engine::canonical_material_builds_stable_scenario_identity
             scenario_hash=crucible.scenario.v1.qemu-launch
             cpu=qemu64,-rdrand,-rdseed
             machine=pc-q35-9.2

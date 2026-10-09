@@ -8,11 +8,11 @@
 use std::collections::BTreeMap;
 use std::io::Read as _;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use sha2::{Digest as _, Sha256};
 
 use crate::keymap::is_git_pack_index_path;
-use crate::object::{hash_object, ObjectKind};
+use crate::object::{ObjectKind, hash_object};
 
 /// Maximum pack-index size accepted by a publication.
 pub const MAX_PUBLISHED_PACK_INDEX_BYTES: u64 = 4 * 1024 * 1024;

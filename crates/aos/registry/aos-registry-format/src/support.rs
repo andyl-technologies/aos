@@ -430,11 +430,13 @@ mod tests {
         policy().validate().unwrap();
         let mut broken = policy();
         broken.trains.get_mut("2026.9").unwrap().supported_until = None;
-        assert!(broken
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("must state"));
+        assert!(
+            broken
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("must state")
+        );
         let mut broken = policy();
         let entry = broken.trains.remove("2026.3").unwrap();
         broken.trains.insert("2026.03".into(), entry);

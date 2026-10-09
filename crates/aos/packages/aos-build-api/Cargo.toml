@@ -5,7 +5,7 @@ edition = "2021"
 license.workspace = true
 
 [package.metadata.aos]
-source_inputs = ["api/proto"]
+source_inputs = ["api/proto/aos/cache", "api/proto/aos/build", "api/proto/aos/gc", "api/proto/aos/auth"]
 
 [dependencies]
 connectrpc = "0.9.1"

@@ -7,7 +7,7 @@
 //! [`RpcService`](crate::service::RpcService) and the request's headers/query,
 //! resolves the caller's session (so a member sees their org's internal and any
 //! granted-private registries while an anonymous visitor sees public only),
-//! reads the rich [`db`](crate::db) record types, and returns a [`Rendered`]
+//! reads the rich [`db`](aos_hub_db::db) record types, and returns a [`Rendered`]
 //! outcome the transport layer ([`crate::connect`]) turns into an HTTP response.
 //! They are free of `axum` extractors (only `axum::http` *types*) so the same
 //! functions drive the native hub and the Cloudflare Worker (whose handler
@@ -67,14 +67,12 @@
 //! [`host_delivery`](crate::web::host_delivery)). Content negotiation keeps a
 //! registry with no enabled route on this host a `404` for machine clients.
 
-use crate::clock::Instant;
+use aos_hub_model::clock::Instant;
 
 use axum::http::{header, HeaderMap};
 
 use aos_hub_api as pb;
 
-use crate::db::{IndexStatus, RegistryRecord};
-use crate::domain::{iam, Permission, Principal, Scope};
 use crate::ratelimit::{RateClass, RateDecision};
 use crate::service::RpcService;
 use crate::web::browse_pages as pages;
@@ -82,6 +80,8 @@ use crate::web::console::handlers::resolved_client_ip;
 use crate::web::console_render::SessionIndicator;
 use crate::web::host_delivery::{self, HostRoutes};
 use crate::web::session;
+use aos_hub_db::db::{IndexStatus, RegistryRecord};
+use aos_hub_model::domain::{iam, Permission, Principal, Scope};
 
 /// The outcome of a browse handler: an HTML page, a JSON document, a redirect,
 /// a rate-limit refusal, or a miss.
@@ -149,7 +149,7 @@ const VALUE_CAP: usize = 500;
 
 /// Current Unix time in seconds.
 fn now_secs() -> i64 {
-    crate::clock::now_unix_secs()
+    aos_hub_model::clock::now_unix_secs()
 }
 
 /// Map any read error to a browse miss, and `None` to a miss.
@@ -988,7 +988,7 @@ pub async fn container_repositories(
     if !svc.container_rollout.pull {
         return Rendered::PageUnavailable("Container browsing is not enabled for this Hub.");
     }
-    let filter = crate::db::OciRepositoryListFilter {
+    let filter = aos_hub_db::db::OciRepositoryListFilter {
         repository_prefix: query.query().map(str::to_string),
         lifecycle_state: Some("active".to_string()),
     };
@@ -997,7 +997,7 @@ pub async fn container_repositories(
         .list_oci_admin_repositories(
             registry.id,
             &filter,
-            crate::db::OCI_ADMIN_MAX_PAGE_SIZE,
+            aos_hub_db::db::OCI_ADMIN_MAX_PAGE_SIZE,
             query.cursor.as_deref(),
         )
         .await
@@ -1104,8 +1104,8 @@ pub async fn container_repository(
         .list_oci_admin_tags(
             registry.id,
             &repository_name,
-            &crate::db::OciTagListFilter::default(),
-            crate::db::OCI_ADMIN_MAX_PAGE_SIZE,
+            &aos_hub_db::db::OciTagListFilter::default(),
+            aos_hub_db::db::OCI_ADMIN_MAX_PAGE_SIZE,
             query.cursor.as_deref(),
         )
         .await
@@ -1177,7 +1177,7 @@ pub async fn container_tag(
             registry.id,
             &repository,
             tag_record.digest,
-            crate::db::OCI_ADMIN_MAX_PAGE_SIZE,
+            aos_hub_db::db::OCI_ADMIN_MAX_PAGE_SIZE,
             query.cursor.as_deref(),
         )
         .await
@@ -1271,7 +1271,7 @@ pub async fn container_manifest(
             registry.id,
             &repository,
             manifest.digest,
-            crate::db::OCI_ADMIN_MAX_PAGE_SIZE,
+            aos_hub_db::db::OCI_ADMIN_MAX_PAGE_SIZE,
             query.cursor.as_deref(),
         )
         .await
@@ -1300,15 +1300,15 @@ pub async fn container_manifest(
 
 /// Render the package index for one registry from the parsed query.
 async fn package_index_html(
-    db: &crate::db::Database,
+    db: &aos_hub_db::db::Database,
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
     query: &BrowseQuery,
     started: Instant,
     session: &SessionIndicator,
 ) -> Rendered {
-    use crate::db::PackageRow;
     use crate::filter::{version_key, Filter};
+    use aos_hub_db::db::PackageRow;
 
     let context = match super::release_browse::ReleaseContext::load(
         db,
@@ -1529,7 +1529,7 @@ pub async fn package(
 async fn native_package_reference_projection(
     svc: &RpcService,
     registry_id: i64,
-    detail: &crate::db::PackageDetail,
+    detail: &aos_hub_db::db::PackageDetail,
     release: &str,
 ) -> anyhow::Result<
     Option<(
@@ -1559,7 +1559,7 @@ async fn native_package_reference_projection(
     let fetch = crate::placement_read::TopologySurfaceFetch::new(
         std::sync::Arc::clone(&svc.db),
         std::sync::Arc::clone(&svc.surface),
-        crate::db::SurfaceTarget::Registry(registry_id),
+        aos_hub_db::db::SurfaceTarget::Registry(registry_id),
     );
     let document = crate::indexer::native_documentation::fetch_native_documentation(
         &fetch,
@@ -1609,7 +1609,7 @@ pub async fn documentation(
 }
 
 fn resolved_cache_urls(
-    entries: Vec<crate::db::RegistryCacheStackEntryRecord>,
+    entries: Vec<aos_hub_db::db::RegistryCacheStackEntryRecord>,
 ) -> Vec<(String, u32)> {
     entries
         .into_iter()
@@ -1802,7 +1802,7 @@ pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Render
         .flatten();
     let route_records = svc
         .db
-        .list_routes(crate::db::SurfaceTarget::Registry(registry.id))
+        .list_routes(aos_hub_db::db::SurfaceTarget::Registry(registry.id))
         .await
         .unwrap_or_default();
     let mut routes = Vec::new();
@@ -1852,7 +1852,7 @@ pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Render
 /// (caches are not org-pathed) or root for an instance-level cache.
 async fn can_read_cache(
     svc: &RpcService,
-    cache: &crate::db::BinaryCache,
+    cache: &aos_hub_db::db::BinaryCache,
     headers: &HeaderMap,
 ) -> bool {
     if cache.deleted_at.is_some() {
@@ -1888,7 +1888,7 @@ async fn load_visible_cache(
     svc: &RpcService,
     headers: &HeaderMap,
     slug: &str,
-) -> Option<crate::db::BinaryCache> {
+) -> Option<aos_hub_db::db::BinaryCache> {
     let cache = svc.db.binary_cache_by_slug(slug).await.ok().flatten()?;
     if !can_read_cache(svc, &cache, headers).await {
         return None;
@@ -2533,7 +2533,7 @@ mod package_index_tests {
 
     #[tokio::test]
     async fn unknown_snapshot_and_database_failure_are_not_empty_catalogs() {
-        let db = crate::db::Database::open_in_memory().await.unwrap();
+        let db = aos_hub_db::db::Database::open_in_memory().await.unwrap();
         db.register_registry("catalog", &[], false).await.unwrap();
         let registry = db.registry_by_slug("catalog").await.unwrap().unwrap();
         let session = SessionIndicator::default();

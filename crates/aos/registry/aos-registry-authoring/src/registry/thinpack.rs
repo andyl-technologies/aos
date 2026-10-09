@@ -859,7 +859,7 @@ mod tests {
     /// Compare our thin pack against `git pack-objects --thin` on a realistic
     /// two-release fixture, both wrapped with the production zstd flags. Prints
     /// raw and zstd sizes; run with:
-    ///   cargo test -p aos-package-manager --lib thinpack::tests::bench_thin_pack -- --ignored --nocapture
+    ///   cargo test -p aos-registry-authoring --lib thinpack::tests::bench_thin_pack -- --ignored --nocapture
     #[test]
     #[ignore]
     fn bench_thin_pack_size_vs_git() {

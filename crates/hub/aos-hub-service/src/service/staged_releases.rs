@@ -12,9 +12,9 @@ use aos_hub_api as pb;
 use aos_registry_format::staging::{StageObject, StageRevision};
 use sha2::{Digest as _, Sha256};
 
-use crate::db::{RegistryRecord, StagedReleaseRecord, SurfacePlacementRecord};
-use crate::domain::Permission;
 use crate::fetch::{SurfaceFetch, SurfaceProvider};
+use aos_hub_db::db::{RegistryRecord, StagedReleaseRecord, SurfacePlacementRecord};
+use aos_hub_model::domain::Permission;
 
 use super::{RpcError, RpcService};
 
@@ -129,7 +129,7 @@ impl RpcService {
                 &revision,
                 req.expected_revision,
                 (!req.publication_id.is_empty()).then_some(req.publication_id.as_str()),
-                crate::clock::now_unix_secs(),
+                aos_hub_model::clock::now_unix_secs(),
             )
             .await
             .map_err(precondition)?;
@@ -191,7 +191,8 @@ impl RpcService {
             String::new()
         };
         let mut stages = Vec::with_capacity(records.len());
-        for mut record in records {
+        for record in records {
+            let mut record = staged_summary_message(record);
             record.registry = registry.slug.clone();
             let (oci_bytes, oci_count) = self
                 .db
@@ -210,7 +211,7 @@ impl RpcService {
                     registry.id,
                     &record.stage_id,
                     record.revision,
-                    crate::clock::now_unix_secs(),
+                    aos_hub_model::clock::now_unix_secs(),
                 )
                 .await
                 .map_err(RpcError::internal)?;
@@ -222,7 +223,7 @@ impl RpcService {
                 .db
                 .staged_registry_partial_upload_progress(
                     &record.publication_id,
-                    crate::clock::now_unix_secs(),
+                    aos_hub_model::clock::now_unix_secs(),
                 )
                 .await
                 .map_err(RpcError::internal)?
@@ -333,7 +334,11 @@ impl RpcService {
                 .await;
         }
         self.lease
-            .acquire(registry.id, publication_id, crate::clock::now_unix_secs())
+            .acquire(
+                registry.id,
+                publication_id,
+                aos_hub_model::clock::now_unix_secs(),
+            )
             .await
             .map_err(|holder| {
                 RpcError::FailedPrecondition(format!(
@@ -371,7 +376,7 @@ impl RpcService {
                     &req.stage_id,
                     req.expected_revision,
                     timestamp.as_ref(),
-                    crate::clock::now_unix_secs(),
+                    aos_hub_model::clock::now_unix_secs(),
                 )
                 .await
             {
@@ -439,7 +444,7 @@ impl RpcService {
                 .complete_staged_release(
                     registry.id,
                     &stage.revision,
-                    crate::clock::now_unix_secs(),
+                    aos_hub_model::clock::now_unix_secs(),
                 )
                 .await
                 .map_err(precondition)?;
@@ -477,7 +482,7 @@ impl RpcService {
                     registry.id,
                     &req.stage_id,
                     req.expected_revision,
-                    crate::clock::now_unix_secs(),
+                    aos_hub_model::clock::now_unix_secs(),
                 )
                 .await
                 .map_err(precondition)?;
@@ -643,7 +648,7 @@ impl RpcService {
         registry: &RegistryRecord,
         revision: &StageRevision,
         publication_id: &str,
-    ) -> Result<Option<crate::db::NewReleaseTimestampPublication>, RpcError> {
+    ) -> Result<Option<aos_hub_db::db::NewReleaseTimestampPublication>, RpcError> {
         let placements = self
             .registry_publication_required_placements(publication_id)
             .await?;
@@ -708,7 +713,7 @@ impl RpcService {
             &metadata,
         )
         .map_err(precondition)?;
-        Ok(Some(crate::db::NewReleaseTimestampPublication {
+        Ok(Some(aos_hub_db::db::NewReleaseTimestampPublication {
             registry_id: registry.id,
             snapshot_digest: binding.snapshot_digest.to_string(),
             snapshot_version: i64::try_from(binding.snapshot_version).map_err(invalid)?,
@@ -798,7 +803,7 @@ impl RpcService {
                 .db
                 .staged_registry_partial_upload_progress(
                     publication_id,
-                    crate::clock::now_unix_secs(),
+                    aos_hub_model::clock::now_unix_secs(),
                 )
                 .await
                 .map_err(RpcError::internal)?
@@ -849,4 +854,26 @@ fn invalid(error: impl std::fmt::Display) -> RpcError {
 
 fn precondition(error: impl std::fmt::Display) -> RpcError {
     RpcError::FailedPrecondition(format!("{error:#}"))
+}
+
+/// Projects persistence summaries into transport values before service enrichment.
+fn staged_summary_message(record: aos_hub_db::db::StagedReleaseSummary) -> pb::StagedRelease {
+    pb::StagedRelease {
+        stage_id: record.stage_id,
+        revision: record.revision,
+        release_id: record.release_id,
+        source_branch: record.source_branch,
+        commit: record.commit,
+        inventory_digest: record.inventory_digest,
+        object_count: record.object_count,
+        missing_object_count: record.missing_object_count,
+        total_bytes: record.total_bytes,
+        uploaded_bytes: record.uploaded_bytes,
+        state: record.state,
+        publication_id: record.publication_id,
+        released_version: record.released_version,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+        ..Default::default()
+    }
 }

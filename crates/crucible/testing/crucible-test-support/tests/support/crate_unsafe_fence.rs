@@ -1,7 +1,6 @@
 //! Shared unsafe-fence scanner support.
 
-#[path = "workspace.rs"]
-mod workspace;
+use crate::workspace;
 
 use super::*;
 

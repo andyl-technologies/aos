@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{clock, pb, Permission, RpcError, RpcService};
-use crate::db::{
+use aos_hub_db::db::{
     DeliveryActivationRoute, DeliveryAudienceBaseline, DeliveryWorkflowRecord, GrantResource,
 };
 
@@ -115,7 +115,7 @@ impl RpcService {
     /// switch, or unreadable persisted workflow state.
     pub(crate) async fn registry_setup_url(
         &self,
-        registry: &crate::db::RegistryRecord,
+        registry: &aos_hub_db::db::RegistryRecord,
     ) -> Result<String, RpcError> {
         let canonical = self.registry_consumer_url(registry).await?;
         let mut cursor = String::new();
@@ -123,7 +123,7 @@ impl RpcService {
             let page = self
                 .db
                 .list_delivery_workflows(
-                    crate::db::SurfaceTarget::Registry(registry.id),
+                    aos_hub_db::db::SurfaceTarget::Registry(registry.id),
                     200,
                     &cursor,
                 )
@@ -181,7 +181,7 @@ impl RpcService {
             if let Some(pb::delivery_endpoint_input::HostnameSource::Hostname(hostname)) =
                 input.hostname_source.as_mut()
             {
-                *hostname = crate::db::canonical_delivery_hostname(hostname)
+                *hostname = aos_hub_db::db::canonical_delivery_hostname(hostname)
                     .map_err(|error| RpcError::invalid(format!("hostname: {error:#}")))?;
             }
         }
@@ -255,7 +255,7 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("storage binding"))?;
         let route_base_path =
-            crate::db::join_route_segments(&intent.client_base_path, &placement.prefix)
+            aos_hub_db::db::join_route_segments(&intent.client_base_path, &placement.prefix)
                 .map_err(|error| RpcError::invalid(format!("delivery path: {error:#}")))?;
         self.require_workflow_grant(
             GrantResource::Binding {
@@ -304,7 +304,7 @@ impl RpcService {
                 self.require_delivery_scope(auth, &scope, Permission::DomainManage)
                     .await?;
                 let revision = Self::endpoint_revision_spec(input.revision.clone())?;
-                crate::db::validate_endpoint_revision_spec(&revision).map_err(|error| {
+                aos_hub_db::db::validate_endpoint_revision_spec(&revision).map_err(|error| {
                     RpcError::invalid(format!("invalid endpoint revision: {error:#}"))
                 })?;
                 if revision.tls_configuration == "{}" {
@@ -326,7 +326,7 @@ impl RpcService {
                 .await?;
                 let hostname = match input.hostname_source.as_mut() {
                     Some(pb::delivery_endpoint_input::HostnameSource::Hostname(hostname)) => {
-                        *hostname = crate::db::canonical_delivery_hostname(hostname)
+                        *hostname = aos_hub_db::db::canonical_delivery_hostname(hostname)
                             .map_err(|error| RpcError::invalid(error.to_string()))?;
                         if self
                             .db
@@ -381,7 +381,7 @@ impl RpcService {
             binding_id: binding.id,
             binding_stable_id: binding.stable_id,
             binding_resource_version: binding.resource_version,
-            origin_prefix: crate::db::join_route_segments(
+            origin_prefix: aos_hub_db::db::join_route_segments(
                 "",
                 binding.object_prefix.as_deref().unwrap_or_default(),
             )

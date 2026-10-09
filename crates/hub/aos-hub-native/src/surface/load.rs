@@ -4,7 +4,7 @@
 //! entries` through loose objects and materializes the committed files the
 //! index needs: `registry.toml`, `keys.toml`, every
 //! `packages/<bucket>/<name>.toml`, and the `closures/` adjacency lists.
-//! All file formats are parsed with `aos-package`'s own parsers, so the hub
+//! All file formats are parsed with the shared registry format and client parsers, so the hub
 //! cannot drift from what `apm` accepts.
 
 use std::collections::BTreeMap;
@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use anyhow::{bail, Context, Result};
 use aos_registry_client::registry::keys::KeysToml;
 use aos_registry_client::registry::parse::{parse_package_file, PackageToml};
-use aos_package_manager::types::RegistryRootConfig;
+use aos_registry_format::manifest::RegistryRootConfig;
 
 use super::object::{self, Commit, ObjectKind, Oid};
 use crate::fetch::SurfaceFetch;

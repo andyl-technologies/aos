@@ -1,7 +1,5 @@
 //! Staged package and store provenance validation before registry commits.
 
-use aos_registry_client::registry::store;
-use aos_registry_client::registry::store::NarBytes;
 use crate::registry_ops::git::{git, git_raw, git_try, registry_relative_path};
 use crate::registry_ops::provenance::statement::{
     ensure_safe_git_index_path, ensure_safe_git_jsonl_index_path,
@@ -18,6 +16,8 @@ use crate::registry_ops::provenance::{
 use crate::registry_ops::sha256_hex;
 use crate::registry_ops::store_paths::extract_hash;
 use anyhow::{Context, Result, bail};
+use aos_registry_client::registry::store;
+use aos_registry_client::registry::store::NarBytes;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
@@ -123,14 +123,16 @@ pub(in crate::registry_ops) fn validate_staged_package_provenance_transparency_l
                 entry.body.statement.path
             )
         })?;
-        let (statement, key_id) =
-            aos_registry_client::provenance::verify_statement_dsse_jsonl(statement_text, &trusted_keys)
-                .with_context(|| {
-                    format!(
-                        "verifying package provenance DSSE envelope '{}'",
-                        entry.body.statement.path
-                    )
-                })?;
+        let (statement, key_id) = aos_registry_client::provenance::verify_statement_dsse_jsonl(
+            statement_text,
+            &trusted_keys,
+        )
+        .with_context(|| {
+            format!(
+                "verifying package provenance DSSE envelope '{}'",
+                entry.body.statement.path
+            )
+        })?;
         aos_registry_client::provenance::verify_key_allowed_for_transparency_sequence(
             &trusted_keys,
             &key_id,

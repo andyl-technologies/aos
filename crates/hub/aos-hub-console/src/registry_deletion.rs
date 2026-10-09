@@ -113,19 +113,55 @@ pub(crate) fn blocker_rows(readiness: &RegistryDeletionReadiness) -> Vec<Blocker
         ("OCI repositories", repositories, blocking),
         ("OCI catalog objects", catalog_objects, blocking),
         ("Active OCI sessions and leases", active_sessions, blocking),
-        ("Active publications or uploads", active_publications, blocking),
-        ("Retained binary-cache roots", retained_cache_roots, blocking),
-        ("Staged container objects", staged_container_objects, blocking),
+        (
+            "Active publications or uploads",
+            active_publications,
+            blocking,
+        ),
+        (
+            "Retained binary-cache roots",
+            retained_cache_roots,
+            blocking,
+        ),
+        (
+            "Staged container objects",
+            staged_container_objects,
+            blocking,
+        ),
         ("Applying OCI GC runs", applying_gc_runs, blocking),
-        ("Pending OCI GC placement actions", pending_gc_actions, blocking),
-        ("Untracked-object repairs", active_untracked_repairs, blocking),
+        (
+            "Pending OCI GC placement actions",
+            pending_gc_actions,
+            blocking,
+        ),
+        (
+            "Untracked-object repairs",
+            active_untracked_repairs,
+            blocking,
+        ),
         ("Snapshot references", snapshot_references, blocking),
         ("Unavailable placements", unavailable_placements, blocking),
         ("Enabled OCI namespace", enabled_oci_namespaces, blocking),
-        ("Instance OCI route defaults", instance_oci_route_defaults, blocking),
-        ("Tracked provider objects", tracked_provider_objects, provider_severity),
-        ("Untracked provider objects", untracked_provider_objects, provider_severity),
-        ("Placements needing an inventory", placements_needing_inventory, automatic),
+        (
+            "Instance OCI route defaults",
+            instance_oci_route_defaults,
+            blocking,
+        ),
+        (
+            "Tracked provider objects",
+            tracked_provider_objects,
+            provider_severity,
+        ),
+        (
+            "Untracked provider objects",
+            untracked_provider_objects,
+            provider_severity,
+        ),
+        (
+            "Placements needing an inventory",
+            placements_needing_inventory,
+            automatic,
+        ),
         ("Planned GC runs to abandon", abandonable_gc_runs, automatic),
     ]
     .into_iter()
@@ -222,7 +258,10 @@ mod tests {
             panic!("operation detail omitted its readiness");
         };
         assert_eq!(readiness.blockers.unwrap_or_default().repositories, 3);
-        assert_eq!(readiness.blocking_reasons, ["3 OCI repositories still exist"]);
+        assert_eq!(
+            readiness.blocking_reasons,
+            ["3 OCI repositories still exist"]
+        );
 
         assert!(deletion_progress("not json").message.contains("unreadable"));
     }

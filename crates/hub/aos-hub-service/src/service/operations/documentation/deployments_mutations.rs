@@ -249,7 +249,7 @@ impl RpcService {
 
     pub(crate) async fn verify_stored_package_ability_deployment(
         &self,
-        stored: &crate::db::StoredAbilityDeploymentOverlay,
+        stored: &aos_hub_db::db::StoredAbilityDeploymentOverlay,
         reference: &aos_module_docs::runtime::deployment::ReleasedReference,
     ) -> Result<(), RpcError> {
         if !self

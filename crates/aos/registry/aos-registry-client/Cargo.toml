@@ -5,7 +5,11 @@ edition = "2024"
 license.workspace = true
 description = "Native registry acquisition, verified catalog reads, trust pins, and provenance verification"
 
+[features]
+test-support = []
+
 [dependencies]
+thiserror.workspace = true
 aos-nar.workspace = true
 aos-cli-ui.workspace = true
 aos-core = { workspace = true }

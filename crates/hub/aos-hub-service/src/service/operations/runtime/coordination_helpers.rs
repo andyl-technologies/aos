@@ -77,7 +77,7 @@ impl RpcService {
         change: &pb::ConsumerCacheChange,
         ready_routes: &std::collections::BTreeMap<
             String,
-            crate::db::ReadyRouteAdvertisementIdentity,
+            aos_hub_db::db::ReadyRouteAdvertisementIdentity,
         >,
     ) -> Result<(), RpcError> {
         let Some(source) = change
@@ -206,7 +206,7 @@ impl RpcService {
     pub(in crate::service) fn system_image_message(
         &self,
         download_base: &str,
-        image: crate::db::IndexedSystemImage,
+        image: aos_hub_db::db::IndexedSystemImage,
         channel: Option<&str>,
         cache_urls: &[String],
         cache_delivery: bool,
@@ -302,13 +302,13 @@ impl RpcService {
         }
         let authority = match endpoint.host.as_mut() {
             Some(pb::storage_endpoint::Host::DnsName(name)) => {
-                *name = crate::db::canonical_delivery_hostname(name)
+                *name = aos_hub_db::db::canonical_delivery_hostname(name)
                     .map_err(|error| RpcError::invalid(format!("endpoint DNS name: {error:#}")))?;
                 name.clone()
             }
             Some(pb::storage_endpoint::Host::Ipv4(bytes)) if bytes.len() == 4 => {
                 let ip = std::net::Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]);
-                if !crate::url_guard::is_global_ip(std::net::IpAddr::V4(ip)) {
+                if !aos_hub_model::url_guard::is_global_ip(std::net::IpAddr::V4(ip)) {
                     return Err(RpcError::invalid(
                         "storage endpoint IP must be globally routable",
                     ));
@@ -321,7 +321,7 @@ impl RpcService {
                     .try_into()
                     .map_err(|_| RpcError::invalid("endpoint IPv6 length is invalid"))?;
                 let ip = std::net::Ipv6Addr::from(octets);
-                if !crate::url_guard::is_global_ip(std::net::IpAddr::V6(ip)) {
+                if !aos_hub_model::url_guard::is_global_ip(std::net::IpAddr::V6(ip)) {
                     return Err(RpcError::invalid(
                         "storage endpoint IP must be globally routable",
                     ));
@@ -331,14 +331,17 @@ impl RpcService {
             Some(_) => return Err(RpcError::invalid("endpoint IP length is invalid")),
             None => return Err(RpcError::invalid("endpoint host is required")),
         };
-        crate::url_guard::is_safe_remote_url(&format!("https://{authority}:{}/", endpoint.port))
-            .map_err(|error| RpcError::invalid(format!("storage endpoint: {error:#}")))?;
+        aos_hub_model::url_guard::is_safe_remote_url(&format!(
+            "https://{authority}:{}/",
+            endpoint.port
+        ))
+        .map_err(|error| RpcError::invalid(format!("storage endpoint: {error:#}")))?;
         Ok(())
     }
 
     /// Maps typed authority preconditions while preserving infrastructure failures.
     pub(in crate::service) fn authority_mutation_error(error: anyhow::Error) -> RpcError {
-        match crate::db::surface_write_authority_mutation_failure(&error) {
+        match aos_hub_db::db::surface_write_authority_mutation_failure(&error) {
             Some(failure) => RpcError::FailedPrecondition(failure.public_message().to_string()),
             None => RpcError::internal(error),
         }
@@ -389,8 +392,8 @@ impl RpcService {
         path: &str,
         request: crate::image_http::ImageHttpRequest<'_>,
     ) -> Result<RegistryServeOutcome, RpcError> {
-        use crate::db::IndexedSystemImageObject;
         use crate::image_http::{plan_image_response, ImageAccess, ImageHttpMetadata};
+        use aos_hub_db::db::IndexedSystemImageObject;
         use axum::body::Body;
         use axum::http::{header, HeaderName, HeaderValue, StatusCode};
 
@@ -599,7 +602,7 @@ impl RpcService {
                     })
             }
             Some(pb::consumer_cache_stack_entry::Source::External(external)) => {
-                crate::url_guard::is_safe_remote_url(&external.url).map_err(|error| {
+                aos_hub_model::url_guard::is_safe_remote_url(&external.url).map_err(|error| {
                     RpcError::invalid(format!("unsafe external cache URL: {error:#}"))
                 })?;
                 Ok(external.url.clone())
@@ -611,7 +614,7 @@ impl RpcService {
     pub(in crate::service) async fn root_reason_message(
         &self,
         cache_id: &str,
-        record: &crate::db::CacheRootReasonRecord,
+        record: &aos_hub_db::db::CacheRootReasonRecord,
     ) -> Result<pb::RootReason, RpcError> {
         let registry_id = match record.registry_id {
             Some(id) => {
@@ -765,7 +768,7 @@ impl RpcService {
         &self,
         cache_id: i64,
         registry_id: i64,
-    ) -> Result<Option<crate::db::CachePopulationTargetRecord>, RpcError> {
+    ) -> Result<Option<aos_hub_db::db::CachePopulationTargetRecord>, RpcError> {
         let matches = self
             .db
             .list_cache_population_targets(cache_id)
@@ -786,14 +789,14 @@ impl RpcService {
         &self,
         cache_id: i64,
         registry_id: i64,
-    ) -> Result<crate::db::CachePopulationTargetRecord, RpcError> {
+    ) -> Result<aos_hub_db::db::CachePopulationTargetRecord, RpcError> {
         self.population_target_for_pair(cache_id, registry_id)
             .await?
             .ok_or_else(|| RpcError::not_found("population target"))
     }
 
     pub(in crate::service) fn population_target_message(
-        record: &crate::db::CachePopulationTargetRecord,
+        record: &aos_hub_db::db::CachePopulationTargetRecord,
         cache_id: &str,
         registry_id: &str,
     ) -> pb::PopulationTarget {
@@ -823,7 +826,7 @@ impl RpcService {
     /// Builds the public desired/observed authority view using placement names.
     pub(in crate::service) async fn write_authority_message(
         &self,
-        authority: crate::db::SurfaceWriteAuthorityRecord,
+        authority: aos_hub_db::db::SurfaceWriteAuthorityRecord,
     ) -> Result<pb::SurfaceWriteAuthority, RpcError> {
         let desired = self
             .db
@@ -852,7 +855,7 @@ impl RpcService {
     }
 
     pub(in crate::service) fn write_authority_message_with_names(
-        authority: crate::db::SurfaceWriteAuthorityRecord,
+        authority: aos_hub_db::db::SurfaceWriteAuthorityRecord,
         desired_placement_name: String,
         observed_placement_name: String,
     ) -> pb::SurfaceWriteAuthority {

@@ -17,7 +17,7 @@ impl RpcService {
         let claims = self.require_claims(auth)?;
         self.require_delivery_scope(auth, &req.owner_scope_key, Permission::DomainManage)
             .await?;
-        req.hostname = crate::db::canonical_delivery_hostname(&req.hostname)
+        req.hostname = aos_hub_db::db::canonical_delivery_hostname(&req.hostname)
             .map_err(|error| RpcError::invalid(format!("hostname: {error:#}")))?;
         let (_kind, org_id, _project_id) = self
             .db

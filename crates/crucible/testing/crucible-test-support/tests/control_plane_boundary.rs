@@ -5,7 +5,7 @@ mod workspace;
 
 use std::collections::BTreeMap;
 use std::error::Error;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use toml::Value;
 
@@ -120,7 +120,7 @@ fn control_plane_boundary_allows_api_and_session_dependencies() -> Result<(), Bo
         edition = "2024"
 
         [dependencies]
-        crucible-api = { path = "../../control/crucible-control-api" }
+        crucible-control-api = { path = "../../control/crucible-control-api" }
         session = { package = "crucible-session", path = "../../control/crucible-session" }
     "#
     .parse()?;
@@ -132,8 +132,10 @@ fn control_plane_boundary_allows_api_and_session_dependencies() -> Result<(), Bo
     Ok(())
 }
 
-const CLI_ALLOWED_CRUCIBLE_DEPENDENCIES: [&str; 4] = [
+const CLI_ALLOWED_CRUCIBLE_DEPENDENCIES: [&str; 6] = [
     "crucible-control-api",
+    "crucible-control-client",
+    "crucible-control-server",
     "crucible-campaign",
     "crucible-daemon",
     "crucible-session",

@@ -332,11 +332,7 @@ pub async fn is_ancestor(repo_dir: &Path, ancestor: &str, descendant: &str) -> R
 /// # Errors
 ///
 /// Returns an error if either OID is malformed or the graph walk fails.
-pub fn is_ancestor_blocking(
-    repo_dir: &Path,
-    ancestor: &str,
-    descendant: &str,
-) -> Result<bool> {
+pub fn is_ancestor_blocking(repo_dir: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
     let repo = open(repo_dir)?;
     let ancestor_oid = resolve_oid(&repo, ancestor)?;
     let descendant_oid = resolve_oid(&repo, descendant)?;
@@ -408,11 +404,7 @@ pub fn read_blob_at_blocking(
 /// # Errors
 ///
 /// Returns an error if the commit cannot be resolved.
-pub fn tree_path_exists_blocking(
-    repo_dir: &Path,
-    commit: &str,
-    tree_path: &str,
-) -> Result<bool> {
+pub fn tree_path_exists_blocking(repo_dir: &Path, commit: &str, tree_path: &str) -> Result<bool> {
     let repo = open(repo_dir)?;
     let tree = commit_tree(&repo, commit)?;
     match tree.get_path(Path::new(tree_path)) {
@@ -752,9 +744,7 @@ mod object_identity_tests {
 /// # Errors
 ///
 /// Returns an error if tags cannot be listed.
-pub async fn semver_tag_object_map(
-    repo_dir: &Path,
-) -> Result<BTreeMap<String, semver::Version>> {
+pub async fn semver_tag_object_map(repo_dir: &Path) -> Result<BTreeMap<String, semver::Version>> {
     blocking(repo_dir, |dir| {
         let repo = open(dir)?;
         let names = repo.tag_names(None).context("listing tags")?;
@@ -789,10 +779,7 @@ pub async fn semver_tag_object_map(
 /// # Errors
 ///
 /// Returns an error if the commit OID cannot be resolved.
-pub fn commit_signature(
-    repo_dir: &Path,
-    commit: &str,
-) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+pub fn commit_signature(repo_dir: &Path, commit: &str) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     let repo = open(repo_dir)?;
     let oid = resolve_oid(&repo, commit)?;
     // NOTE: git2's `extract_signature` returns NotFound for SHA-256 commits

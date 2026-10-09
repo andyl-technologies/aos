@@ -5,18 +5,18 @@ use super::*;
 impl RpcService {
     pub(in crate::service) fn endpoint_host(
         host: Option<pb::EndpointHost>,
-    ) -> Result<crate::db::EndpointHostInput, RpcError> {
+    ) -> Result<aos_hub_db::db::EndpointHostInput, RpcError> {
         use pb::endpoint_host::Host;
         match host.and_then(|value| value.host) {
             Some(Host::DomainId(id)) if !id.is_empty() => {
-                Ok(crate::db::EndpointHostInput::Domain(id))
+                Ok(aos_hub_db::db::EndpointHostInput::Domain(id))
             }
-            Some(Host::Ipv4(bytes)) => Ok(crate::db::EndpointHostInput::Ipv4(
+            Some(Host::Ipv4(bytes)) => Ok(aos_hub_db::db::EndpointHostInput::Ipv4(
                 bytes
                     .try_into()
                     .map_err(|_| RpcError::invalid("ipv4 must contain exactly four bytes"))?,
             )),
-            Some(Host::Ipv6(bytes)) => Ok(crate::db::EndpointHostInput::Ipv6(
+            Some(Host::Ipv6(bytes)) => Ok(aos_hub_db::db::EndpointHostInput::Ipv6(
                 bytes
                     .try_into()
                     .map_err(|_| RpcError::invalid("ipv6 must contain exactly sixteen bytes"))?,
@@ -26,7 +26,7 @@ impl RpcService {
     }
 
     pub(in crate::service) fn endpoint_host_message(
-        record: &crate::db::EndpointRecord,
+        record: &aos_hub_db::db::EndpointRecord,
     ) -> Result<pb::EndpointHost, RpcError> {
         use pb::endpoint_host::Host;
         let host = match (
@@ -48,7 +48,7 @@ impl RpcService {
 
     pub(in crate::service) fn endpoint_revision_spec(
         spec: Option<pb::EndpointRevisionSpec>,
-    ) -> Result<crate::db::EndpointRevisionSpec, RpcError> {
+    ) -> Result<aos_hub_db::db::EndpointRevisionSpec, RpcError> {
         #[derive(serde::Serialize)]
         struct Tls<'a> {
             provider: &'a str,
@@ -71,7 +71,7 @@ impl RpcService {
             .map_err(RpcError::internal)?,
             None => "{}".to_string(),
         };
-        Ok(crate::db::EndpointRevisionSpec {
+        Ok(aos_hub_db::db::EndpointRevisionSpec {
             boundary_revision: spec.boundary_revision,
             ingress_kind: ingress_kind.to_string(),
             listener_configuration: spec.listener_configuration_ref,
@@ -81,7 +81,7 @@ impl RpcService {
     }
 
     pub(in crate::service) fn endpoint_revision_spec_message(
-        spec: &crate::db::EndpointRevisionSpec,
+        spec: &aos_hub_db::db::EndpointRevisionSpec,
     ) -> Result<pb::EndpointRevisionSpec, RpcError> {
         let ingress_kind = match spec.ingress_kind.as_str() {
             "hub" => pb::EndpointIngressKind::Hub as i32,
@@ -126,7 +126,7 @@ impl RpcService {
 
     pub(in crate::service) async fn endpoint_message(
         &self,
-        record: crate::db::EndpointRecord,
+        record: aos_hub_db::db::EndpointRecord,
     ) -> Result<pb::Endpoint, RpcError> {
         let generation = record.desired_generation.ok_or_else(|| {
             RpcError::internal(anyhow::anyhow!("endpoint has no desired generation"))
@@ -144,7 +144,7 @@ impl RpcService {
             .map_err(RpcError::internal)?;
         let grant_records = self
             .db
-            .list_consumer_scope_grants(crate::db::GrantResource::Endpoint {
+            .list_consumer_scope_grants(aos_hub_db::db::GrantResource::Endpoint {
                 id: &record.id,
                 generation,
             })
@@ -194,8 +194,8 @@ impl RpcService {
 
     pub(in crate::service) async fn endpoint_generation_message(
         &self,
-        endpoint: &crate::db::EndpointRecord,
-        revision: crate::db::EndpointRevisionRecord,
+        endpoint: &aos_hub_db::db::EndpointRecord,
+        revision: aos_hub_db::db::EndpointRevisionRecord,
     ) -> Result<pb::EndpointGeneration, RpcError> {
         let observation = self
             .db
@@ -204,7 +204,7 @@ impl RpcService {
             .map_err(RpcError::internal)?;
         let grant_records = self
             .db
-            .list_consumer_scope_grants(crate::db::GrantResource::Endpoint {
+            .list_consumer_scope_grants(aos_hub_db::db::GrantResource::Endpoint {
                 id: &endpoint.id,
                 generation: revision.generation,
             })
@@ -215,7 +215,7 @@ impl RpcService {
             grants.push(
                 self.topology_grant_message(
                     grant,
-                    crate::db::GrantResource::Endpoint {
+                    aos_hub_db::db::GrantResource::Endpoint {
                         id: &endpoint.id,
                         generation: revision.generation,
                     },
@@ -250,7 +250,7 @@ impl RpcService {
         auth: Option<&str>,
         stable_id: &str,
         permission: Permission,
-    ) -> Result<crate::db::EndpointRecord, RpcError> {
+    ) -> Result<aos_hub_db::db::EndpointRecord, RpcError> {
         let record = self
             .db
             .endpoint(stable_id)
@@ -288,7 +288,7 @@ impl RpcService {
             Option<i64>,
             Option<EndpointGrantPlanSeal>,
             Vec<EndpointGrantPlanSeal>,
-            Vec<crate::db::EndpointImpactRecord>,
+            Vec<aos_hub_db::db::EndpointImpactRecord>,
             Option<(String, i64)>,
             String,
         ) = if update {
@@ -370,7 +370,7 @@ impl RpcService {
             }
             let grants = self
                 .db
-                .list_consumer_scope_grants(crate::db::GrantResource::Endpoint {
+                .list_consumer_scope_grants(aos_hub_db::db::GrantResource::Endpoint {
                     id: &current.id,
                     generation,
                 })
@@ -463,7 +463,7 @@ impl RpcService {
             )
         };
         let revision = Self::endpoint_revision_spec(req.revision.clone())?;
-        crate::db::validate_endpoint_revision_spec(&revision)
+        aos_hub_db::db::validate_endpoint_revision_spec(&revision)
             .map_err(|error| RpcError::invalid(format!("invalid endpoint revision: {error:#}")))?;
         if (req.scheme == "http" && revision.tls_configuration != "{}")
             || (req.scheme == "https" && revision.tls_configuration == "{}")
@@ -668,7 +668,7 @@ impl RpcService {
         })?;
         req.resource_generation =
             resolve_endpoint_grant_generation(req.resource_generation, generation)?;
-        let resource = crate::db::GrantResource::Endpoint {
+        let resource = aos_hub_db::db::GrantResource::Endpoint {
             id: &endpoint.id,
             generation,
         };
@@ -797,7 +797,7 @@ impl RpcService {
                 "endpoint owner or desired generation changed after planning".to_string(),
             ));
         }
-        let resource = crate::db::GrantResource::Endpoint {
+        let resource = aos_hub_db::db::GrantResource::Endpoint {
             id: &endpoint.id,
             generation: input.endpoint_generation,
         };
@@ -910,7 +910,7 @@ impl RpcService {
         entry: &pb::ConsumerCacheStackEntry,
         ready_routes: &std::collections::BTreeMap<
             String,
-            crate::db::ReadyRouteAdvertisementIdentity,
+            aos_hub_db::db::ReadyRouteAdvertisementIdentity,
         >,
     ) -> Result<toml::Value, RpcError> {
         let mut endpoint = toml::map::Map::new();

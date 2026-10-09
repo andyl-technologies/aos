@@ -275,7 +275,7 @@
       }
       {
         label = "unwrapped actor task returns missing checkpoint error";
-        needle = "Ok(Err(SessionError::Engine(crucible::EngineError::CheckpointNotRecorded";
+        needle = "Ok(Err(SessionError::Engine(crucible_engine::EngineError::CheckpointNotRecorded";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -362,7 +362,7 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-api-command-status-taxonomy-target" \
-            -p crucible-control-api -p crucible-control-client -p crucible-control-server \
+            -p crucible-control-api \
             --test gate_abi_conformance \
             -- --test-threads=1
           cargo test \

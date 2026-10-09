@@ -14,10 +14,10 @@ use aos_core::Sha256Digest;
 use serde::Deserialize;
 
 use super::{capture, reader, retained};
-use aos_deployment_format::input::EvaluationInput;
-use crate::native_deployment::{NativeDeploymentCommand};
+use crate::native_deployment::NativeDeploymentCommand;
 use crate::profile::Profile;
-use crate::types::ProfileScope;
+use aos_deployment_format::input::EvaluationInput;
+use aos_registry_client::types::ProfileScope;
 
 #[derive(Deserialize)]
 struct Fixture {
@@ -520,7 +520,7 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
     );
     let acquisition_registry = std::env::var_os("AOS_BOOT_ACQUISITION_REGISTRY")
         .context("actual signed acquisition registry is required")?;
-    let registry: crate::types::RegistryConfig =
+    let registry: aos_registry_format::consumer::RegistryConfig =
         serde_json::from_slice(&fs::read(acquisition_registry)?)?;
     ensure!(
         registry

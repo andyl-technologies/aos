@@ -106,6 +106,8 @@ The implemented base is PR [#715](https://github.com/andyl-technologies/aos/pull
 | Contract JSON, identities, decoding | `aos_core::{json,digest,limits,identity}`; `Sha256Digest` also exported at root |
 | NAR/narinfo/cache/signing | `aos_nar::{cache,info,export,pack,verify}` |
 | Nix execution, derivations, store tools | `aos_nix::{drv,env,identity,runner,store,error,executable}`; `NixRunner`, `NixCli`, `PathInfo` at root |
+| Registry readers and producers | `aos_registry_client::{config,registry,security,...}` for verified reads; `aos_registry_authoring::{registry_ops,RegistryCommand,...}` for production and publication |
+| Registry shared contracts | `aos_registry_format::{consumer,release,measurement}`; release entries and package measurement digests are portable format contracts |
 | Terminal presentation and command hints | `aos_cli_ui::{output,invocation}`; command error/exit policy stays with CLI |
 | Ability model and plan | `aos_module_format`; graph validation is `aos_module_format::graph` |
 | Artifact evidence formats/readers | `aos_artifact_evidence::{document,model,identity,consumption,diagnostic,limits}` plus root exports; do not route through module-format |
@@ -115,6 +117,8 @@ The implemented base is PR [#715](https://github.com/andyl-technologies/aos/pull
 | Hub persistence | `aos_hub_db::{backend,db,dialect,value}`; import directly rather than via service facades |
 | Hub orchestration/client/API | `aos_hub_service`, `aos_hub_client::{hub,login}`, and `aos_hub_api::{hub_v1,...}` |
 | Crucible control | `crucible_control_api`, `crucible_control_client`, `crucible_control_server`; VM creation/lifecycle implementation is `crucible_daemon::vm_lifecycle` |
+
+The CLI Rust library is `aos_cli`; installed `aos`, `apm`, `apr`, and private runtime command names remain unchanged. Deployment input acquisition moved from methods to `aos_deployment::input::{read_evaluation_input,read_evaluation_input_in,import_evaluation_input,import_evaluation_input_retained}`. Generic NAR verification is in `aos_nar::verify` behind its optional `compression` feature.
 
 Reuse schemas field by field without changing bytes or acceptance behavior. `InstalledPackageRecord` and `PackageInventoryDetails` now live in `aos_deployment_format::inventory`; supply immutable inventory to deployment/image verification rather than depending on package-manager state APIs. Outer installed records retain their established Serde behavior and defaults for `expires_at` and `apm`. The nested `PackageInventoryDetails` retains `deny_unknown_fields`, including optional deployment/module-documentation/qualification metadata and attestation defaults. Do not tighten the outer record or alter omissions/defaults as a side effect of type movement.
 

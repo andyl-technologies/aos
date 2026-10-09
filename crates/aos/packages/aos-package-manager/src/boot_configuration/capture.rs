@@ -17,9 +17,8 @@ use super::reader::VerifiedAuthorization;
 use crate::config_eval::provisioning_sources::{
     add_fixed_input_to_store, materialize_authorized_host_source,
 };
+use crate::native_deployment::NativeDeploymentCommand;
 use aos_deployment::retention::{AdmittedArtifact, ArtifactAdmission};
-use aos_deployment_format::input::EvaluationInput;
-use crate::native_deployment::{NativeDeploymentCommand};
 use aos_deployment::store::temp_roots::TemporaryRoots;
 use aos_deployment::store::verification::{
     dump_store_path_identity_in, query_reference_hashes_in, verify_store_object_in,

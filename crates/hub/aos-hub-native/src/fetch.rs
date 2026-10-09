@@ -382,10 +382,7 @@ impl LocalFsFetch {
 
     /// Attaches durable in-flight lease storage for snapshot delivery.
     #[must_use]
-    pub fn with_image_snapshot_db(
-        mut self,
-        db: std::sync::Arc<aos_hub_db::db::Database>,
-    ) -> Self {
+    pub fn with_image_snapshot_db(mut self, db: std::sync::Arc<aos_hub_db::db::Database>) -> Self {
         self.image_snapshot_db = Some(db);
         self
     }

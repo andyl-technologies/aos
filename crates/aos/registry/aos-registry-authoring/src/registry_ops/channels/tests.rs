@@ -3,10 +3,10 @@
 use super::{
     ensure_channel_advance_fix_forward, parse_partition_list, select_partitions_for_advance,
 };
-use aos_registry_client::registry::channel::PartitionMap;
 use crate::registry_ops::git::git;
 use crate::registry_ops::tags::sign_tag;
 use crate::registry_ops::test_support::write_seeded_signing_key;
+use aos_registry_client::registry::channel::PartitionMap;
 use std::fs;
 use tempfile::TempDir;
 

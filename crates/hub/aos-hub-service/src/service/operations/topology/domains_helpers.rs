@@ -84,19 +84,19 @@ impl RpcService {
     }
 
     pub(in crate::service) fn delivery_domain_message(
-        record: crate::db::DeliveryDomainRecord,
+        record: aos_hub_db::db::DeliveryDomainRecord,
     ) -> Result<pb::Domain, RpcError> {
         let dns_configuration = record
             .dns_configuration_json
             .as_deref()
-            .map(serde_json::from_str::<crate::db::DeliveryDnsConfigurationSpec>)
+            .map(serde_json::from_str::<aos_hub_db::db::DeliveryDnsConfigurationSpec>)
             .transpose()
             .map_err(RpcError::internal)?
             .map(delivery_dns_message);
         let certificate_configuration = record
             .certificate_configuration_json
             .as_deref()
-            .map(serde_json::from_str::<crate::db::DeliveryCertificateConfigurationSpec>)
+            .map(serde_json::from_str::<aos_hub_db::db::DeliveryCertificateConfigurationSpec>)
             .transpose()
             .map_err(RpcError::internal)?
             .map(delivery_certificate_message);
@@ -141,7 +141,7 @@ impl RpcService {
             .map_err(RpcError::internal)?
         {
             Some(domain) => Some(domain),
-            None if crate::db::canonical_delivery_hostname(&req.stable_id).is_ok() => self
+            None if aos_hub_db::db::canonical_delivery_hostname(&req.stable_id).is_ok() => self
                 .db
                 .delivery_domain_by_hostname(&req.stable_id)
                 .await
@@ -205,8 +205,8 @@ impl RpcService {
         stable_id: String,
         expected_resource_version: String,
         idempotency_key: String,
-        dns: Option<crate::db::DeliveryDnsConfigurationSpec>,
-        certificate: Option<crate::db::DeliveryCertificateConfigurationSpec>,
+        dns: Option<aos_hub_db::db::DeliveryDnsConfigurationSpec>,
+        certificate: Option<aos_hub_db::db::DeliveryCertificateConfigurationSpec>,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
         if dns.is_some() == certificate.is_some() {
@@ -355,10 +355,10 @@ impl RpcService {
 
     pub(in crate::service) async fn organization_domain_revision(
         &self,
-        org: &crate::db::OrgRecord,
+        org: &aos_hub_db::db::OrgRecord,
         domain: &str,
         expected_resource_version: &str,
-    ) -> Result<crate::db::OrgDomainRecord, RpcError> {
+    ) -> Result<aos_hub_db::db::OrgDomainRecord, RpcError> {
         let record = self
             .db
             .org_domain(domain)

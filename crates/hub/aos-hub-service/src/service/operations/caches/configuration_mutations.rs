@@ -156,7 +156,7 @@ impl RpcService {
     /// malformed credential capability, or when the SigV4 signer rejects the inputs.
     pub async fn presign_cache_read(
         &self,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         path: &str,
         now: i64,
     ) -> anyhow::Result<Option<String>> {
@@ -188,7 +188,7 @@ impl RpcService {
     pub async fn cache_serve(
         &self,
         auth: ReadAuthorization<'_>,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
         path: &str,
         range_header: Option<&str>,
     ) -> Result<Option<axum::response::Response>, RpcError> {

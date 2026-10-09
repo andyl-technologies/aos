@@ -8,13 +8,13 @@
 //!
 //! - **Nix workflows** (need a `NixRunner`): `build`, `system`, `show`,
 //!   `graph`, `lint`, `test`, `repl`, `gc`, `why-depends`, `describe`,
-//!   `prefetch`, `fmt`, and `doc` (implemented in the `aos-doc` crate).
+//!   `prefetch`, `fmt`, and `doc` (implemented in the `aos-nix-docs` crate).
 //! - **Server-side**: `serve` (the HTTP binary cache server, implemented
-//!   in `aos-server`) and `token` (provisioning-token management over the
+//!   in `aos-build-server`) and `token` (provisioning-token management over the
 //!   server's bootstrap socket).
 //! - **Client-side**: `cache` (binary cache push/pull/prefetch/list,
-//!   implemented in `aos-cache`) and the `--remote` modes of `build` and
-//!   `gc` (via `aos-remote`).
+//!   implemented in `aos-nix-cache`) and the `--remote` modes of `build` and
+//!   `gc` (via `aos-build-client`).
 //! - **Maintenance**: `maintain` (local, repository-bound package-update
 //!   inventory and workflows).
 //! - **Misc**: `completions` (shell completion scripts).
@@ -29,5 +29,5 @@
 /// Runs the `aos` CLI.
 #[tokio::main]
 async fn main() {
-    aos::entry::aos_main().await;
+    aos_cli::entry::aos_main().await;
 }

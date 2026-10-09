@@ -88,12 +88,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use aos_nix_cache::backend::{self, AuthOptions};
 use aos_cli_ui::output::Printer;
+use aos_nix_cache::backend::{self, AuthOptions};
 use serde::Serialize;
 
 use aos_registry_client::registry::parse::parse_registry;
-use aos_registry_client::types::PackageMeta;
+use aos_registry_format::consumer::PackageMeta;
 
 /// Platforms the generator snapshots when walking the committed registry.
 ///
@@ -756,7 +756,7 @@ fn page(title: &str, body: &str, spa: Option<&SpaAssets>) -> String {
 /// never an off-origin URL — so they satisfy the strict asset policy and a
 /// `default-src 'self'` CSP (the hub additionally allows
 /// `'wasm-unsafe-eval'` on these paths to run the WASM; see
-/// `aos_hub::compat`).
+/// `aos_hub_service::compat`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SpaAssets {
     /// The `web/app-<hash>.js` wasm-bindgen glue path (relative to root).

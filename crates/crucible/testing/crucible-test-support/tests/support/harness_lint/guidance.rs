@@ -32,11 +32,11 @@ pub(super) fn guidance_ordering_float_failures(
 fn guidance_ordering_source(path: &Path, tokens: &[Token]) -> bool {
     let normalized = path.to_string_lossy().replace('\\', "/");
     let source_path = [
-        "crucible/src/model/exploration.rs",
-        "crucible/src/model/adaptive_campaign.rs",
-        "crucible/src/model/runtime.rs",
-        "crucible/src/model/guidance_search.rs",
-        "crucible/src/model/temporal_graph/guided_search.rs",
+        "crucible/engine/crucible-engine/src/model/exploration.rs",
+        "crucible/engine/crucible-engine/src/model/adaptive_campaign.rs",
+        "crucible/engine/crucible-engine/src/model/runtime.rs",
+        "crucible/engine/crucible-engine/src/model/guidance_search.rs",
+        "crucible/engine/crucible-engine/src/model/temporal_graph/guided_search.rs",
     ]
     .iter()
     .any(|suffix| normalized.ends_with(suffix));
@@ -57,7 +57,7 @@ fn guidance_ordering_source(path: &Path, tokens: &[Token]) -> bool {
 
 #[test]
 fn rejects_float_types_but_ignores_comments_and_strings() {
-    let path = Path::new("crucible/src/model/guidance_search.rs");
+    let path = Path::new("crucible/engine/crucible-engine/src/model/guidance_search.rs");
     let findings = super::custom_static_analysis_failures(
         path,
         r#"

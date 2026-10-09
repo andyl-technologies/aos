@@ -1,7 +1,7 @@
 //! Registry authoring command arguments and dispatch vocabulary.
 
-use clap::{Args, Subcommand, ValueEnum};
 use aos_registry_format::consumer::*;
+use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
 /// Registry workspace and authoring commands exposed by `apr`.
@@ -1195,12 +1195,13 @@ impl CacheUploadAuthArgs {
         &self,
         config: Option<&RegistryUploadAuthConfig>,
     ) -> aos_nix_cache::AuthOptions {
-        let mut auth = config
-            .map(upload_auth_options)
-            .unwrap_or_else(|| aos_nix_cache::AuthOptions {
-                view: "default".to_string(),
-                ..aos_nix_cache::AuthOptions::default()
-            });
+        let mut auth =
+            config
+                .map(upload_auth_options)
+                .unwrap_or_else(|| aos_nix_cache::AuthOptions {
+                    view: "default".to_string(),
+                    ..aos_nix_cache::AuthOptions::default()
+                });
 
         if let Some(token) = &self.token {
             auth.token = Some(token.clone());
@@ -1241,22 +1242,20 @@ impl CacheUploadAuthArgs {
     }
 }
 
-
-
-    /// Convert these config defaults into backend [`aos_nix_cache::AuthOptions`],
-    /// substituting the `"default"` view when none is configured.
-    fn upload_auth_options(config: &RegistryUploadAuthConfig) -> aos_nix_cache::AuthOptions {
-        aos_nix_cache::AuthOptions {
-            token: config.token.clone(),
-            view: config.view.clone().unwrap_or_else(|| "default".to_string()),
-            http_user: config.http_user.clone(),
-            http_password: config.http_password.clone(),
-            headers: config.headers.clone(),
-            s3_region: config.s3_region.clone(),
-            s3_profile: config.s3_profile.clone(),
-            s3_endpoint: config.s3_endpoint.clone(),
-            ssh_key: config.ssh_key.clone(),
-            ssh_password: config.ssh_password.clone(),
-            ssh_ask_pass: config.ssh_ask_pass,
-        }
+/// Convert these config defaults into backend [`aos_nix_cache::AuthOptions`],
+/// substituting the `"default"` view when none is configured.
+fn upload_auth_options(config: &RegistryUploadAuthConfig) -> aos_nix_cache::AuthOptions {
+    aos_nix_cache::AuthOptions {
+        token: config.token.clone(),
+        view: config.view.clone().unwrap_or_else(|| "default".to_string()),
+        http_user: config.http_user.clone(),
+        http_password: config.http_password.clone(),
+        headers: config.headers.clone(),
+        s3_region: config.s3_region.clone(),
+        s3_profile: config.s3_profile.clone(),
+        s3_endpoint: config.s3_endpoint.clone(),
+        ssh_key: config.ssh_key.clone(),
+        ssh_password: config.ssh_password.clone(),
+        ssh_ask_pass: config.ssh_ask_pass,
     }
+}

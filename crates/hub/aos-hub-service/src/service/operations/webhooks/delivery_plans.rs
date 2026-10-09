@@ -18,7 +18,7 @@ impl RpcService {
     /// [`RpcError::PermissionDenied`] when the caller lacks `members.manage` on
     /// the org, [`RpcError::NotFound`] for an unknown org,
     /// [`RpcError::InvalidArgument`] for an empty URL or a URL that fails the
-    /// SSRF guard ([`crate::url_guard::is_safe_remote_url`] — loopback/
+    /// SSRF guard ([`aos_hub_model::url_guard::is_safe_remote_url`] — loopback/
     /// link-local/private/non-`http(s)` targets), and [`RpcError::Internal`] on
     /// database failure.
     pub async fn plan_create_webhook(
@@ -41,7 +41,7 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .len()
-            >= crate::db::MAX_WEBHOOKS_PER_ORG
+            >= aos_hub_db::db::MAX_WEBHOOKS_PER_ORG
         {
             return Err(RpcError::FailedPrecondition(
                 "organization webhook limit reached".to_string(),
@@ -54,7 +54,7 @@ impl RpcService {
         // The delivery worker POSTs to this URL from inside the hub network, so
         // reject loopback/link-local/private/non-http(s) targets (create_webhook
         // re-checks; this surfaces a clear invalid-argument error).
-        if let Err(err) = crate::url_guard::is_safe_remote_url(&req.url) {
+        if let Err(err) = aos_hub_model::url_guard::is_safe_remote_url(&req.url) {
             return Err(RpcError::invalid(format!("rejecting webhook url: {err:#}")));
         }
         if req.events.iter().collect::<BTreeSet<_>>().len() != req.events.len() {
@@ -70,7 +70,7 @@ impl RpcService {
             )));
         }
         req.secret_version_ref = req.secret_version_ref.trim().to_string();
-        crate::secret_version::validate_secret_version_ref(&req.secret_version_ref)
+        aos_hub_model::secret_version::validate_secret_version_ref(&req.secret_version_ref)
             .map_err(|error| RpcError::invalid(format!("invalid secret_version_ref: {error:#}")))?;
         req.credential_fingerprint = req.credential_fingerprint.trim().to_ascii_lowercase();
         if req.credential_fingerprint.len() != 64
@@ -94,8 +94,11 @@ impl RpcService {
                     "secret version cannot be resolved: {error:#}"
                 ))
             })?;
-        crate::secret_version::verify_secret_fingerprint(&resolved, &req.credential_fingerprint)
-            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        aos_hub_model::secret_version::verify_secret_fingerprint(
+            &resolved,
+            &req.credential_fingerprint,
+        )
+        .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         drop(resolved);
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
         let input = WebhookCreatePlanInput {

@@ -5,7 +5,7 @@ mod workspace;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use toml::Value;
@@ -65,7 +65,7 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
         &[
             ("default", &[][..]),
             ("test-support", &[][..]),
-            ("test-double", &["dep:crucible-shmem"][..]),
+            ("test-double", &["dep:crucible-qemu-shmem"][..]),
         ],
     );
     assert_features(
@@ -73,7 +73,7 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
         "crucible-qemu-host",
         &[
             ("default", &[][..]),
-            ("test-support", &["crucible/test-double"][..]),
+            ("test-support", &["crucible-engine/test-double"][..]),
         ],
     );
     assert_features(&manifests, "crucible-device", &[("default", &[][..])]);
@@ -270,7 +270,9 @@ fn production_test_double_dependency_findings(
             .get("dependencies")
             .and_then(Value::as_table)
             .unwrap_or(&empty_dependencies);
-        let Some(crucible_dependency) = dependencies.get("crucible-engine").and_then(Value::as_table)
+        let Some(crucible_dependency) = dependencies
+            .get("crucible-engine")
+            .and_then(Value::as_table)
         else {
             continue;
         };
@@ -283,7 +285,7 @@ fn production_test_double_dependency_findings(
             .any(|feature| feature == "test-double");
         if enables_test_double {
             findings.push(format!(
-                "`{package}` enables crucible/test-double in production dependencies"
+                "`{package}` enables crucible-engine/test-double in production dependencies"
             ));
         }
     }

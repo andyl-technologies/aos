@@ -1,24 +1,26 @@
 //! Native verification and historical version floors for registry catalog metadata.
 
-use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::fs;
-use anyhow::{Context, Result, bail};
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-pub use aos_registry_format::tuf::*;
 use crate::security::verify_payload_signature;
 use crate::types::RegistryState;
+use anyhow::{Context, Result, bail};
+use aos_registry_format::tuf::*;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashSet};
+use std::fs;
+use std::path::Path;
+/// Contains the four signed catalog envelopes read from one registry commit.
 pub struct CommitMetadataFiles {
+    /// Root-authority envelope bytes.
     pub root: Vec<u8>,
+    /// Catalog-target envelope bytes.
     pub targets: Vec<u8>,
+    /// Metadata-snapshot envelope bytes.
     pub snapshot: Vec<u8>,
+    /// Freshness-envelope bytes.
     pub timestamp: Vec<u8>,
 }
-
-
-
 
 /// Verify committed TUF metadata for a selected registry commit.
 ///
@@ -242,8 +244,6 @@ pub fn verify_commit_metadata(
     }))
 }
 
-
-
 /// Return root-role key ids from the worktree's current TUF root metadata.
 ///
 /// This lets producers include old root-role private keys as transition-only
@@ -262,8 +262,6 @@ pub fn worktree_root_role_key_ids(repo_dir: &Path) -> Result<Vec<String>> {
         .get(ROLE_ROOT)
         .map_or_else(Vec::new, |role| role.key_ids.clone()))
 }
-
-
 
 /// Return the `(key_id, public_key)` pairs that make up the worktree root's
 /// root-role policy.
@@ -295,17 +293,19 @@ pub fn worktree_root_role_keys(repo_dir: &Path) -> Result<Vec<(String, String)>>
         .collect())
 }
 
-
-
-pub fn state_has_tuf_floors(state: &RegistryState) -> bool {
+fn state_has_tuf_floors(state: &RegistryState) -> bool {
     state.tuf_root_version.is_some()
         || state.tuf_targets_version.is_some()
         || state.tuf_snapshot_version.is_some()
         || state.tuf_timestamp_version.is_some()
 }
 
-
-
+/// Verifies the distinct-key signature threshold for a metadata role.
+///
+/// # Errors
+///
+/// Returns an error when the role policy is invalid, serialization or key
+/// verification fails, or too few authorized signatures verify.
 pub fn verify_envelope<T: Serialize>(
     envelope: &Envelope<T>,
     role: &str,
@@ -347,8 +347,12 @@ pub fn verify_envelope<T: Serialize>(
     Ok(())
 }
 
-
-
+/// Validates the signing keys and all required catalog role policies.
+///
+/// # Errors
+///
+/// Returns an error for missing roles, malformed or duplicate key material,
+/// unknown role keys, or an unsatisfiable signature threshold.
 pub fn validate_root_policy(
     keys: &BTreeMap<String, TufKey>,
     roles: &BTreeMap<String, TufRoleSpec>,
@@ -375,9 +379,7 @@ pub fn validate_root_policy(
     Ok(())
 }
 
-
-
-pub fn validate_role(role: &str, spec: &TufRoleSpec, keys: &BTreeMap<String, TufKey>) -> Result<()> {
+fn validate_role(role: &str, spec: &TufRoleSpec, keys: &BTreeMap<String, TufKey>) -> Result<()> {
     if spec.threshold == 0 {
         bail!("TUF {role} role threshold must be at least 1");
     }
@@ -399,8 +401,6 @@ pub fn validate_role(role: &str, spec: &TufRoleSpec, keys: &BTreeMap<String, Tuf
     }
     Ok(())
 }
-
-
 
 /// Verifies current candidate files through the unchanged APM metadata verifier.
 ///
@@ -466,8 +466,15 @@ pub fn verify_worktree_metadata(
     )
 }
 
-
-
+/// Creates an unreferenced candidate commit for worktree verification.
+///
+/// Updates the index and writes a candidate tree and commit without moving
+/// any repository ref.
+///
+/// # Errors
+///
+/// Returns an error when the repository, index, base commit, or candidate
+/// tree cannot be read or written.
 pub fn snapshot_worktree(repo_dir: &Path) -> Result<git2::Oid> {
     let repo = git2::Repository::open(repo_dir)?;
     let base = repo.head()?.peel_to_commit()?;
@@ -488,9 +495,15 @@ pub fn snapshot_worktree(repo_dir: &Path) -> Result<git2::Oid> {
     .context("snapshotting candidate catalog without moving a ref")
 }
 
-
-
-pub fn collect_commit_catalog(repo_dir: &Path, commit: &str) -> Result<BTreeMap<String, TufFileMeta>> {
+/// Collects byte commitments for all committed files outside the TUF directory.
+///
+/// # Errors
+///
+/// Returns an error when the selected commit or its tree blobs cannot be read.
+pub fn collect_commit_catalog(
+    repo_dir: &Path,
+    commit: &str,
+) -> Result<BTreeMap<String, TufFileMeta>> {
     let mut catalog = BTreeMap::new();
     crate::registry::repo::visit_tree_blobs_blocking(repo_dir, commit, |path, bytes| {
         if !path.starts_with("tuf/") {
@@ -501,24 +514,24 @@ pub fn collect_commit_catalog(repo_dir: &Path, commit: &str) -> Result<BTreeMap<
     Ok(catalog)
 }
 
-
-
+/// Hashes the ordered catalog commitment map using its JSON encoding.
+///
+/// # Errors
+///
+/// Returns an error if the catalog cannot be serialized.
 pub fn catalog_hash(catalog: &BTreeMap<String, TufFileMeta>) -> Result<String> {
     let bytes = serde_json::to_vec(catalog).context("serializing TUF catalog for hashing")?;
     Ok(sha256_digest(&bytes))
 }
 
-
-
-pub fn file_meta(bytes: &[u8]) -> TufFileMeta {
+fn file_meta(bytes: &[u8]) -> TufFileMeta {
     TufFileMeta {
         length: bytes.len() as u64,
         sha256: sha256_digest(bytes),
     }
 }
 
-
-
+/// Records the version, byte length, and SHA-256 identity of an envelope.
 pub fn versioned_meta(version: u64, bytes: &[u8]) -> TufVersionedMeta {
     TufVersionedMeta {
         version,
@@ -527,9 +540,7 @@ pub fn versioned_meta(version: u64, bytes: &[u8]) -> TufVersionedMeta {
     }
 }
 
-
-
-pub fn verify_versioned_meta(
+fn verify_versioned_meta(
     path: &str,
     version: u64,
     bytes: &[u8],
@@ -545,9 +556,7 @@ pub fn verify_versioned_meta(
     verify_file_meta(path, bytes, meta.length, &meta.sha256)
 }
 
-
-
-pub fn verify_file_meta(path: &str, bytes: &[u8], length: u64, sha256: &str) -> Result<()> {
+fn verify_file_meta(path: &str, bytes: &[u8], length: u64, sha256: &str) -> Result<()> {
     if bytes.len() as u64 != length {
         bail!(
             "{path} length mismatch in TUF metadata: expected {}, got {}",
@@ -562,14 +571,12 @@ pub fn verify_file_meta(path: &str, bytes: &[u8], length: u64, sha256: &str) -> 
     Ok(())
 }
 
-
-
+/// Returns the lowercase hexadecimal SHA-256 digest of the supplied bytes.
 pub fn sha256_digest(bytes: &[u8]) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
 }
 
-
-pub fn load_commit_metadata(repo_dir: &Path, commit: &str) -> Result<Option<CommitMetadataFiles>> {
+fn load_commit_metadata(repo_dir: &Path, commit: &str) -> Result<Option<CommitMetadataFiles>> {
     let paths = [ROOT_JSON, TARGETS_JSON, SNAPSHOT_JSON, TIMESTAMP_JSON];
     let mut present = Vec::new();
     for path in paths {
@@ -589,18 +596,19 @@ pub fn load_commit_metadata(repo_dir: &Path, commit: &str) -> Result<Option<Comm
     }))
 }
 
-
-
+/// Loads published metadata envelopes and merges their highest version floors.
+///
+/// # Errors
+///
+/// Returns an error when release tags or their committed catalog envelopes
+/// cannot be resolved, read, or parsed.
 pub fn published_metadata_history(
     repo_dir: &Path,
     candidate: Option<&semver::Version>,
 ) -> Result<Option<(String, CommitMetadataFiles)>> {
     let repo = git2::Repository::open(repo_dir)?;
     let mut history: Option<(String, CommitMetadataFiles)> = None;
-    for version in semver_tag_versions(repo_dir)?
-        .into_iter()
-        .rev()
-    {
+    for version in semver_tag_versions(repo_dir)?.into_iter().rev() {
         if candidate == Some(&version) {
             continue;
         }
@@ -650,9 +658,7 @@ pub fn published_metadata_history(
     Ok(history)
 }
 
-
-
-pub fn merge_metadata_floor<T: DeserializeOwned + Serialize>(
+fn merge_metadata_floor<T: DeserializeOwned + Serialize>(
     retained: &mut Vec<u8>,
     candidate: &[u8],
     path: &str,
@@ -675,9 +681,7 @@ pub fn merge_metadata_floor<T: DeserializeOwned + Serialize>(
     Ok(false)
 }
 
-
-
-pub fn require_history_floor<T: DeserializeOwned + Serialize>(
+fn require_history_floor<T: DeserializeOwned + Serialize>(
     historical: &[u8],
     candidate: &[u8],
     path: &str,
@@ -694,15 +698,16 @@ pub fn require_history_floor<T: DeserializeOwned + Serialize>(
     )
 }
 
-
-
-pub fn commit_path_exists(repo_dir: &Path, commit: &str, path: &str) -> Result<bool> {
+fn commit_path_exists(repo_dir: &Path, commit: &str, path: &str) -> Result<bool> {
     crate::registry::repo::tree_path_exists_blocking(repo_dir, commit, path)
         .with_context(|| format!("checking {commit}:{path}"))
 }
 
-
-
+/// Reads a typed metadata envelope when its worktree path exists.
+///
+/// # Errors
+///
+/// Returns an error when an existing envelope cannot be read or parsed.
 pub fn read_worktree_envelope<T: DeserializeOwned>(path: &Path) -> Result<Option<Envelope<T>>> {
     if !path.exists() {
         return Ok(None);
@@ -711,27 +716,35 @@ pub fn read_worktree_envelope<T: DeserializeOwned>(path: &Path) -> Result<Option
     parse_envelope(&bytes, &path.display().to_string()).map(Some)
 }
 
-
-
+/// Parses a typed JSON metadata envelope with its path in diagnostics.
+///
+/// # Errors
+///
+/// Returns an error when the bytes do not deserialize into the selected
+/// envelope schema.
 pub fn parse_envelope<T: DeserializeOwned>(bytes: &[u8], path: &str) -> Result<Envelope<T>> {
     serde_json::from_slice(bytes).with_context(|| format!("parsing {path}"))
 }
 
-
-
+/// Serializes the compact JSON bytes authenticated by catalog signatures.
+///
+/// # Errors
+///
+/// Returns an error when the payload cannot be serialized.
 pub fn signed_payload_bytes<T: Serialize>(signed: &T) -> Result<Vec<u8>> {
     serde_json::to_vec(signed).context("serializing TUF signed payload")
 }
 
-
-
+/// Serializes a metadata envelope as pretty JSON with a trailing newline.
+///
+/// # Errors
+///
+/// Returns an error when the envelope cannot be serialized.
 pub fn envelope_bytes<T: Serialize>(envelope: &Envelope<T>) -> Result<Vec<u8>> {
     let mut bytes = serde_json::to_vec_pretty(envelope).context("serializing TUF envelope")?;
     bytes.push(b'\n');
     Ok(bytes)
 }
-
-
 
 /// Read the blob at `commit:path` from the registry repository via libgit2.
 ///
@@ -739,32 +752,32 @@ pub fn envelope_bytes<T: Serialize>(envelope: &Envelope<T>) -> Result<Vec<u8>> {
 ///
 /// Returns an error if the commit cannot be resolved or the path is absent or
 /// not a blob.
-pub fn read_commit_blob(repo_dir: &Path, commit: &str, path: &str) -> Result<Vec<u8>> {
+fn read_commit_blob(repo_dir: &Path, commit: &str, path: &str) -> Result<Vec<u8>> {
     crate::registry::repo::read_blob_at_blocking(repo_dir, commit, path)
         .with_context(|| format!("reading {commit}:{path}"))?
         .ok_or_else(|| anyhow::anyhow!("{commit}:{path} is missing"))
 }
 
-
-
-pub fn ensure_schema(actual: &str, expected: &str, path: &str) -> Result<()> {
+fn ensure_schema(actual: &str, expected: &str, path: &str) -> Result<()> {
     if actual != expected {
         bail!("{path} schema mismatch: expected '{expected}', got '{actual}'");
     }
     Ok(())
 }
 
-
-
-pub fn ensure_registry(actual: &str, expected: &str, path: &str) -> Result<()> {
+fn ensure_registry(actual: &str, expected: &str, path: &str) -> Result<()> {
     if actual != expected {
         bail!("{path} registry mismatch: expected '{expected}', got '{actual}'");
     }
     Ok(())
 }
 
-
-
+/// Rejects a metadata envelope whose UTC expiration is no longer fresh.
+///
+/// # Errors
+///
+/// Returns an error for an invalid timestamp or an expiration at or before
+/// the supplied current time.
 pub fn ensure_not_expired(path: &str, expires: &str, now_secs: u64) -> Result<()> {
     let expiry = parse_iso8601_utc_secs(expires)
         .with_context(|| format!("parsing TUF expiry for {path}"))?;
@@ -774,9 +787,7 @@ pub fn ensure_not_expired(path: &str, expires: &str, now_secs: u64) -> Result<()
     Ok(())
 }
 
-
-
-pub fn ensure_version_not_lower(path: &str, floor: Option<u64>, version: u64) -> Result<()> {
+fn ensure_version_not_lower(path: &str, floor: Option<u64>, version: u64) -> Result<()> {
     if let Some(floor) = floor
         && version < floor
     {
@@ -785,8 +796,12 @@ pub fn ensure_version_not_lower(path: &str, floor: Option<u64>, version: u64) ->
     Ok(())
 }
 
-
-
+/// Requires a version increase whenever authenticated metadata bytes change.
+///
+/// # Errors
+///
+/// Returns an error when changed payload bytes retain or lower their
+/// previous metadata version.
 pub fn ensure_replaced_metadata_version_advances(
     path: &str,
     old_version: u64,
@@ -800,8 +815,7 @@ pub fn ensure_replaced_metadata_version_advances(
     Ok(())
 }
 
-
-
+/// Returns the current Unix time in seconds, or zero before the Unix epoch.
 pub fn unix_now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -809,8 +823,7 @@ pub fn unix_now_secs() -> u64 {
         .as_secs()
 }
 
-
-
+/// Formats Unix seconds as the catalog's UTC timestamp representation.
 pub fn format_iso8601_utc(secs: u64) -> String {
     let days = secs / 86400;
     let time_of_day = secs % 86400;
@@ -821,8 +834,17 @@ pub fn format_iso8601_utc(secs: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
-
-
+/// Parses the catalog's UTC timestamp representation into Unix seconds.
+///
+/// # Errors
+///
+/// Returns an error for an invalid timestamp shape or out-of-range date
+/// and time fields.
+///
+/// # Panics
+///
+/// Panics if malformed non-ASCII input places a UTF-8 code point across
+/// one of the fixed timestamp field boundaries.
 pub fn parse_iso8601_utc_secs(input: &str) -> Result<u64> {
     if input.len() != 20
         || !input.ends_with('Z')
@@ -846,9 +868,7 @@ pub fn parse_iso8601_utc_secs(input: &str) -> Result<u64> {
     Ok(ymd_to_days(year, month, day)? * 86_400 + hour * 3_600 + minute * 60 + second)
 }
 
-
-
-pub fn parse_decimal(input: &str, field: &str) -> Result<u64> {
+fn parse_decimal(input: &str, field: &str) -> Result<u64> {
     if input.is_empty() || !input.bytes().all(|byte| byte.is_ascii_digit()) {
         bail!("timestamp {field} is not numeric");
     }
@@ -857,9 +877,7 @@ pub fn parse_decimal(input: &str, field: &str) -> Result<u64> {
         .with_context(|| format!("parsing timestamp {field}"))
 }
 
-
-
-pub fn days_to_ymd(days: u64) -> (u64, u64, u64) {
+fn days_to_ymd(days: u64) -> (u64, u64, u64) {
     let z = days + 719468;
     let era = z / 146097;
     let doe = z - era * 146097;
@@ -873,9 +891,7 @@ pub fn days_to_ymd(days: u64) -> (u64, u64, u64) {
     (y, m, d)
 }
 
-
-
-pub fn ymd_to_days(year: u64, month: u64, day: u64) -> Result<u64> {
+fn ymd_to_days(year: u64, month: u64, day: u64) -> Result<u64> {
     if !(1..=12).contains(&month) {
         bail!("timestamp month is out of range");
     }
@@ -903,9 +919,7 @@ pub fn ymd_to_days(year: u64, month: u64, day: u64) -> Result<u64> {
     Ok(days as u64)
 }
 
-
-
-pub fn days_in_month(year: u64, month: u64) -> u64 {
+fn days_in_month(year: u64, month: u64) -> u64 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
@@ -915,17 +929,24 @@ pub fn days_in_month(year: u64, month: u64) -> u64 {
     }
 }
 
-
-
-pub fn is_leap_year(year: u64) -> bool {
+fn is_leap_year(year: u64) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
-
-
-
+/// Lists parseable semver tags in ascending version order.
+///
+/// # Errors
+///
+/// Returns an error when the Git repository or its tag names cannot be read.
 pub fn semver_tag_versions(directory: &Path) -> Result<Vec<semver::Version>> {
- let repo = git2::Repository::open(directory)?;
- let mut versions = repo.tag_names(None)?.iter().flatten().filter_map(|tag| semver::Version::parse(tag).ok()).collect::<Vec<_>>();
- versions.sort(); versions.dedup(); Ok(versions)
+    let repo = git2::Repository::open(directory)?;
+    let mut versions = repo
+        .tag_names(None)?
+        .iter()
+        .flatten()
+        .filter_map(|tag| tag.and_then(|name| semver::Version::parse(name).ok()))
+        .collect::<Vec<_>>();
+    versions.sort();
+    versions.dedup();
+    Ok(versions)
 }

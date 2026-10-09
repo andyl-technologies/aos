@@ -11,6 +11,7 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
+  cliProduction = import ./_cli-production-source.nix {inherit lib;};
   cliControl = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible/control/crucible-cli/src/cli/control.rs;
@@ -255,7 +256,7 @@
         needle = "cliThinWrapper = import ./phase5-cli-thin-wrapper.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
+    ++ forbiddenFor "crates/crucible/control/crucible-cli/src/main.rs" cliProduction [
       {
         label = "fake API operation outside ControlClient";
         needle = "ServeTransport";

@@ -3,18 +3,17 @@
 use std::fs;
 use std::sync::Arc;
 
-use crucible_campaign::{
-    CampaignAuthorizationError, CampaignClient, CampaignHash, CampaignName, CampaignPrincipal,
-    CampaignPrincipalAuthorizer, CampaignRepository, CampaignServiceOperation,
-    CreateCampaignRequest, RepositoryCampaignService,
-};
-use crucible_core::model::{
+use crate::crucible_engine::{Configuration, VirtualTime};
+use ::crucible_engine::model::{
     EffectSpecification, FaultCoordinate, FaultObjectId, FaultOperation, FaultOpportunity,
     FaultPhase, NetworkAvailabilityState, NetworkEffectSpecification, OpportunityPayload,
     ResolvedFaultTarget,
 };
-use crucible_core::{
-    Configuration, NetworkFaultCampaignReplayPlan, NetworkFaultPhase, VirtualTime,
+use ::crucible_engine::{NetworkFaultCampaignReplayPlan, NetworkFaultPhase};
+use crucible_campaign::{
+    CampaignAuthorizationError, CampaignClient, CampaignHash, CampaignName, CampaignPrincipal,
+    CampaignPrincipalAuthorizer, CampaignRepository, CampaignServiceOperation,
+    CreateCampaignRequest, RepositoryCampaignService,
 };
 use crucible_daemon::CrucibleCampaignArtifactStore;
 use crucible_store::content_store::{MemoryBlobBackend, MemoryRefBackend};
@@ -535,7 +534,7 @@ fn worked_network_fixture_binds_envoy_boot_artifacts_and_scenario_identity() {
         (offline_scenario.world(), 1_000_000),
     ] {
         assert!(world.links().iter().all(|link| {
-            link.latency().ticks == expected_latency * crucible_core::SIM_TICKS_PER_NS
+            link.latency().ticks == expected_latency * ::crucible_engine::SIM_TICKS_PER_NS
         }));
         assert!(
             world

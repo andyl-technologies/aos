@@ -8,9 +8,9 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context as _, Result, ensure};
-use aos_module_format::ABILITY_LIMITS_V1;
 use aos_activation::adapter::{CancellationToken, RuntimeControl};
 use aos_core::Sha256Digest;
+use aos_module_format::ABILITY_LIMITS_V1;
 
 use aos_deployment::store::temp_roots::{TemporaryRoots, fixed_path};
 
@@ -84,7 +84,10 @@ pub(crate) fn materialize_authorized_host_source(payload: &str, root: &Path) -> 
     if let Some(bundle) = aos_platform_metadata::bundle::parse(payload.as_bytes())? {
         bundle.materialize(&root.join(aos_platform_metadata::bundle::SOURCE_DIR))?;
         bundle.verify_tree(&root.join(aos_platform_metadata::bundle::SOURCE_DIR))?;
-        fs::write(root.join(aos_platform_metadata::bundle::BUNDLE_FILE), payload)?;
+        fs::write(
+            root.join(aos_platform_metadata::bundle::BUNDLE_FILE),
+            payload,
+        )?;
         fs::write(
             root.join("host.nix"),
             bundle.host_module(payload.as_bytes()),
@@ -251,7 +254,12 @@ mod tests {
             bundle.host_module(payload.as_bytes())
         );
         assert_eq!(
-            fs::read_to_string(directory.path().join(aos_platform_metadata::bundle::BUNDLE_FILE)).unwrap(),
+            fs::read_to_string(
+                directory
+                    .path()
+                    .join(aos_platform_metadata::bundle::BUNDLE_FILE)
+            )
+            .unwrap(),
             payload
         );
         assert_eq!(

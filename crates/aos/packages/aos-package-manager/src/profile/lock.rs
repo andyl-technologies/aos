@@ -66,7 +66,7 @@ impl Drop for ProfileMutationGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ProfileScope;
+    use aos_registry_client::types::ProfileScope;
 
     #[test]
     fn profile_mutation_ownership_blocks_other_writers_and_releases_inherited_descriptors() {

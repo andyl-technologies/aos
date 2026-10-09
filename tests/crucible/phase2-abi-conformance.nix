@@ -56,7 +56,7 @@
         needle = ''
           name: "gate:abi-conformance",
                   phase: GatePhase::Phase2,
-                  owner: "crucible-harness",
+                  owner: "crucible-test-support",
                   status: GateStatus::Implemented,'';
       }
     ]
@@ -65,7 +65,7 @@
         label = "harness ABI target implemented";
         needle = ''
           gate: "gate:abi-conformance",
-                  package: "crucible-harness",
+                  package: "crucible-test-support",
                   test_target: "gate_abi_conformance",
                   required_features: &[],'';
       }
@@ -73,7 +73,7 @@
         label = "protocol ABI target implemented";
         needle = ''
           gate: "gate:abi-conformance",
-                  package: "crucible-protocol",
+                  package: "crucible-qemu-protocol",
                   test_target: "gate_abi_conformance",
                   required_features: &[],'';
       }
@@ -81,7 +81,7 @@
         label = "API ABI target implemented";
         needle = ''
           gate: "gate:abi-conformance",
-                  package: "crucible-api",
+                  package: "crucible-control-api",
                   test_target: "gate_abi_conformance",
                   required_features: &[],'';
       }
@@ -105,7 +105,7 @@
         label = "engine ABI target implemented";
         needle = ''
           gate: "gate:abi-conformance",
-                  package: "crucible",
+                  package: "crucible-engine",
                   test_target: "gate_abi_conformance",
                   required_features: &["test-double"],'';
       }

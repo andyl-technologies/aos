@@ -131,6 +131,17 @@ fn scheduler_scan_excludes_test_sources_but_keeps_production_calls() -> Result<(
     let temp = tempfile::TempDir::new()?;
     let source_dir = temp.path().join("crates/crucible/control/crucible-cli/src");
     fs::create_dir_all(source_dir.join("tests"))?;
+    fs::write(
+        temp.path().join("crates/Cargo.toml"),
+        "[workspace]\nmembers = [\"crucible/control/crucible-cli\"]\n",
+    )?;
+    fs::write(
+        source_dir
+            .parent()
+            .ok_or("source directory has no package parent")?
+            .join("Cargo.toml"),
+        "[package]\nname = \"crucible-cli\"\n",
+    )?;
     let call = "fn bypass(loop_: &mut dyn QuantumLoop) { loop_.drive_quantum(request); }";
     fs::write(source_dir.join("tests/fixture.rs"), call)?;
     fs::write(source_dir.join("terminal_tests.rs"), call)?;
@@ -222,7 +233,7 @@ fn package_source_scheduler_ownership_findings(
     package: &str,
 ) -> Result<Vec<String>, Box<dyn Error>> {
     let mut findings = Vec::new();
-    let package_dir = root.join("crates").join(package);
+    let package_dir = workspace::package_path(&root.join("crates"), package);
     let src_dir = package_dir.join("src");
     if !src_dir.is_dir() {
         return Ok(findings);

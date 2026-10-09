@@ -40,7 +40,7 @@ impl RpcService {
         // Instance signup policy: `invite_only` requires the caller to already
         // be a member, hold a live invitation, or be an instance admin.
         if self.db.signup_policy().await.map_err(RpcError::internal)?
-            == crate::db::SignupPolicy::InviteOnly
+            == aos_hub_db::db::SignupPolicy::InviteOnly
             && !self.signup_permitted(&claims).await?
         {
             return Err(RpcError::PermissionDenied(
@@ -117,7 +117,7 @@ impl RpcService {
     pub(in crate::service) async fn org_or_not_found(
         &self,
         slug: &str,
-    ) -> Result<crate::db::OrgRecord, RpcError> {
+    ) -> Result<aos_hub_db::db::OrgRecord, RpcError> {
         self.db
             .org_by_slug(slug)
             .await

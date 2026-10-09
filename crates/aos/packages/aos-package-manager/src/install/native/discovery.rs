@@ -9,12 +9,12 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use aos_deployment_format::model::{Artifact, Deployment, Envelope};
-use aos_deployment_format::input::EvaluationInput;
 use crate::native_registry::{NativeRegistry, RegistryAdmission};
 use crate::profile::Profile;
-use aos_registry_client::registry::RegistrySet;
+use aos_deployment_format::input::EvaluationInput;
 use aos_deployment_format::inventory::InstalledPackageRecord;
+use aos_deployment_format::model::{Artifact, Deployment, Envelope};
+use aos_registry_client::registry::RegistrySet;
 
 /// Holds checked current profile context and its original admission receipts.
 pub(super) struct RetainedDiscovery {
@@ -150,7 +150,7 @@ pub(super) fn extend_runtime_artifacts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ProfileScope;
+    use aos_registry_client::types::ProfileScope;
 
     #[test]
     fn absent_profile_is_normal_but_partial_native_state_is_not() {

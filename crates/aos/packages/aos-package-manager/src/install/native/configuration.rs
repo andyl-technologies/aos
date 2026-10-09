@@ -11,16 +11,16 @@ use anyhow::{Context as _, Result};
 use aos_activation::adapter::CancellationToken;
 use aos_cli_ui::output::Printer;
 
-use aos_registry_client::config::ApmConfig;
-use aos_deployment::evaluation::Evaluation;
-use aos_deployment_format::model::Deployment;
-use aos_deployment_format::input::EvaluationInput;
 use crate::profile::{Generation, Profile};
-use aos_registry_client::registry::{RegistrySet, store_path_hash};
 use crate::resolve::ResolvedClosure;
+use aos_deployment::evaluation::Evaluation;
 use aos_deployment::store::temp_roots::TemporaryRoots;
-use aos_deployment_format::inventory::{PackageInventoryDetails, InstalledPackageRecord};
-use crate::types::{PackageMeta};
+use aos_deployment_format::input::EvaluationInput;
+use aos_deployment_format::inventory::{InstalledPackageRecord, PackageInventoryDetails};
+use aos_deployment_format::model::Deployment;
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::registry::{RegistrySet, store_path_hash};
+use aos_registry_format::consumer::PackageMeta;
 
 /// Publishes acquired host roots and authored sources in one generation.
 ///

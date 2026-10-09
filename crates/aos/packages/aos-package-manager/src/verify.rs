@@ -7,7 +7,7 @@
 //!   `.nar.zst` as downloaded — catches corrupted or tampered transfers.
 //! - **Layer 4b** ([`verify_nar_hash`]): SHA-256 of the *decompressed* NAR
 //!   stream — catches a valid-zstd-but-wrong-content substitution.
-//! - **Image extraction** ([`extract_regular_file_nar`]): accepts only one
+//! - **Image extraction** ([`aos_nar::verify::extract_regular_file_nar`]): accepts only one
 //!   canonical, non-executable regular-file root and writes its bytes without
 //!   importing the object into a Nix store.
 //! - **Layer 4c** ([`verify_nar_blessed`]): the decompressed NAR's SHA-256
@@ -23,7 +23,7 @@
 //!   registry — catches on-disk modification after install (`apm verify`).
 //!
 //! Hashes are canonically `sha256:<hex>`, but comparison helpers also accept
-//! the Nix SRI form `sha256-<base64>` (see [`sha256_digest_hex`]). All
+//! the Nix SRI form `sha256-<base64>` (see [`aos_nar::verify::sha256_digest_hex`]). All
 //! hashing is streaming, so arbitrarily large NARs never reside in memory.
 
 use std::fs::File;
@@ -48,11 +48,10 @@ use aos_registry_client::registry::store_path_hash;
 // SHA-256 computation
 // ---------------------------------------------------------------------------
 
-/// Reuses the shared streaming SHA-256 implementation.
-pub use aos_nar::verify::{
-    extract_regular_file_nar, extract_regular_file_nar_with_compression, sha256_digest_hex,
-    sha256_file, sha256_hashes_equal, sha256_stream,
-};
+use aos_nar::verify::{sha256_hashes_equal, sha256_stream};
+
+#[cfg(test)]
+use aos_nar::verify::{extract_regular_file_nar, sha256_file};
 
 /// Verifies a transport payload against its expected download digest.
 ///

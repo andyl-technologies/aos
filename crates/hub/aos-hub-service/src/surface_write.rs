@@ -34,8 +34,8 @@
 use anyhow::Result;
 use md5::{Digest as _, Md5};
 
-use crate::backend::BackendBounds;
-use crate::db::{BindingWriteRevisionRecord, SurfacePlacementRecord};
+use aos_hub_db::backend::BackendBounds;
+use aos_hub_db::db::{BindingWriteRevisionRecord, SurfacePlacementRecord};
 
 /// One multipart-upload part's identity: its 1-based `part_number` and the
 /// backend's entity tag.

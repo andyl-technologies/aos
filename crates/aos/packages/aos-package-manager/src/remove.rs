@@ -23,9 +23,9 @@ use super::profile::merge::build_generation_fhs_tree;
 use super::profile::meta::{list_meta, write_meta};
 use super::registry::store_path_hash;
 use super::store::closure_paths;
-use super::types::InstalledPackageRecord;
 use crate::error::PackageError;
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_deployment_format::inventory::InstalledPackageRecord;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -657,8 +657,9 @@ mod tests {
 
     use crate::profile::Generation;
     use crate::profile::meta::write_meta;
-    use aos_deployment_format::inventory::{PackageInventoryDetails};
-use crate::types::{NativeArtifactMeta, ProfileScope};
+    use aos_deployment_format::inventory::PackageInventoryDetails;
+    use aos_registry_client::types::ProfileScope;
+    use aos_registry_format::consumer::NativeArtifactMeta;
 
     fn test_profile(tmp: &TempDir) -> Profile {
         Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap()
@@ -700,7 +701,10 @@ use crate::types::{NativeArtifactMeta, ProfileScope};
         installed
     }
 
-    fn with_documentation(mut installed: InstalledPackageRecord, hash: &str) -> InstalledPackageRecord {
+    fn with_documentation(
+        mut installed: InstalledPackageRecord,
+        hash: &str,
+    ) -> InstalledPackageRecord {
         installed.apm.as_mut().unwrap().module_documentation = Some(NativeArtifactMeta {
             store_path: format!("/nix/store/{hash}-package-module-docs"),
             nar_hash: format!("sha256:{}", "a".repeat(64)),

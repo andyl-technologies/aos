@@ -31,8 +31,8 @@ impl RpcService {
             .resolve_existing_principal_id(kind, principal_ref)
             .await?;
         let owner = match kind {
-            "user" => crate::domain::Principal::user(owner_id),
-            "service_account" => crate::domain::Principal::service_account(owner_id),
+            "user" => aos_hub_model::domain::Principal::user(owner_id),
+            "service_account" => aos_hub_model::domain::Principal::service_account(owner_id),
             other => return Err(RpcError::invalid(format!("unknown owner kind '{other}'"))),
         };
         let mut perms = Vec::new();

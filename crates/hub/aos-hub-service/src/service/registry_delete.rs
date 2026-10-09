@@ -1,7 +1,7 @@
 //! Reviewed registry deletion as one self-driving operation.
 //!
 //! The plan binds the registry identity and resource version and carries the
-//! exact [`RegistryDeletionReadiness`](crate::db::RegistryDeletionReadiness)
+//! exact [`RegistryDeletionReadiness`](aos_hub_db::db::RegistryDeletionReadiness)
 //! breakdown, so the review already states what blocks deletion or what the
 //! operation will do first. Apply refuses a blocked registry with the same
 //! breakdown and otherwise starts one `delete_registry` operation, which
@@ -11,12 +11,12 @@
 use sha2::Digest;
 
 use super::{clock, parse_resource_version, pb, Permission, RpcError, RpcService, Scope, Sha256};
-use crate::db::{
-    NewTopologyOperation, NewTopologyOperationTarget, NewTopologyOperationTargetRef,
-    RegistryDeletionReadiness, RegistryDeletionVerdict, REGISTRY_DELETION_OPERATION_KIND,
-};
 use crate::registry_delete_controller::{
     readiness_message, registry_deletion_operation_id, RegistryDeletionDetail,
+};
+use aos_hub_db::db::{
+    NewTopologyOperation, NewTopologyOperationTarget, NewTopologyOperationTargetRef,
+    RegistryDeletionReadiness, RegistryDeletionVerdict, REGISTRY_DELETION_OPERATION_KIND,
 };
 
 #[cfg(test)]
@@ -172,7 +172,7 @@ impl RpcService {
         plan_id: &str,
         input: &RegistryDeletePlanInput,
         operation_id: String,
-    ) -> Result<crate::db::TopologyOperationRecord, RpcError> {
+    ) -> Result<aos_hub_db::db::TopologyOperationRecord, RpcError> {
         let registry = self
             .db
             .registry_by_id(input.registry_id)

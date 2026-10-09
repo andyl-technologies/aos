@@ -23,8 +23,8 @@ use std::collections::HashSet;
 use anyhow::{Context, Result};
 
 use super::registry::{RegistrySet, store_path_hash};
-use super::types::PackageMeta;
 use crate::error::PackageError;
+use aos_registry_format::consumer::PackageMeta;
 
 // ---------------------------------------------------------------------------
 // Resolved closure
@@ -77,11 +77,12 @@ pub fn resolve_closure(
         })?;
         (reg.config.name.clone(), meta.clone())
     } else {
-        let (reg, meta) = registries
-            .resolve(name)
-            .ok_or_else(|| PackageError::PackageNotFound {
-                name: name.to_string(),
-            })?;
+        let (reg, meta) =
+            registries
+                .resolve(name)
+                .ok_or_else(|| PackageError::PackageNotFound {
+                    name: name.to_string(),
+                })?;
         (reg.config.name.clone(), meta.clone())
     };
 
@@ -284,7 +285,7 @@ mod tests {
 
     use aos_registry_client::registry::RegistrySet;
     use aos_registry_client::registry::parse::{CURL_TOML, ZLIB_TOML};
-    use aos_registry_client::registry::tests::{
+    use aos_registry_client::registry::test_support::{
         curl_store_record, make_registry, make_registry_with_store, zlib_store_record,
     };
 

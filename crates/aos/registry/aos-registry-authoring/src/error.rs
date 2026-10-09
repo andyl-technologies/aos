@@ -1,11 +1,9 @@
 //! Registry authoring errors presented by the APR dispatcher.
 
+/// Describes a registry operation rejected by the producer dispatcher.
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryAuthoringError {
- /// Reports invalid registry command arguments.
- #[error("{message}")] InvalidArgument { message: String },
- /// Reports an invalid registry operation.
- #[error("{message}")] RegistryError { message: String },
- /// Reports a cancelled operation.
- #[error("operation cancelled")] UserCancelled,
+    /// Reports an invalid registry operation.
+    #[error("registry error: {message}")]
+    RegistryError { message: String },
 }

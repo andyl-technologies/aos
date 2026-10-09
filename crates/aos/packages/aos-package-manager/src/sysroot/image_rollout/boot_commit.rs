@@ -133,7 +133,7 @@ fn commit(
     );
     let profile = crate::profile::Profile::open_at(
         paths.system_profile.clone(),
-        crate::types::ProfileScope::System,
+        aos_registry_client::types::ProfileScope::System,
     )?;
     let generation = profile
         .current_generation()?

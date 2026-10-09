@@ -4,6 +4,7 @@ use super::*;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::crucible_engine::ScenarioDefForm;
 use crucible_campaign::{
     AlternativeId, CampaignAttemptTimeoutPolicy, CampaignHash, CampaignMode, CampaignSeed,
     ChoiceClassContext, ChoiceDomainId, ChoiceDomainSemanticId, ChoiceOpportunityId,
@@ -15,7 +16,6 @@ use crucible_campaign::{
     StatisticalDistribution, StatisticalDrawPlan, StatisticalSamplingDesign,
 };
 use crucible_daemon::MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES;
-use crucible_engine::ScenarioDefForm;
 use serde::{Deserialize, Serialize};
 
 use super::authoring::{read_bounded_utf8, write_new_record};
@@ -853,11 +853,11 @@ fn parse_campaign_seed(encoded: &str) -> Result<CampaignSeed, CliError> {
 mod tests {
     use super::*;
 
+    use crate::crucible_engine::{ScenarioSelectableLimits, ScenarioSelectables};
     use crucible_campaign::{
         BooleanDomain, CampaignPolicy, ChoiceClassContext, ChoiceDomain, ChoiceSource, ChoiceValue,
         SelectableDeclaration,
     };
-    use crucible_engine::{ScenarioSelectableLimits, ScenarioSelectables};
     use crucible_store::content_store::{ContentId, ObjectKind};
     use tempfile::tempdir;
 

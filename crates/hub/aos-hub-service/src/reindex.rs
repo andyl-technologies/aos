@@ -33,9 +33,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::backend::BackendBounds;
-use crate::db::RegistryRecord;
 use crate::jobs::{Job, Queue};
+use aos_hub_db::backend::BackendBounds;
+use aos_hub_db::db::RegistryRecord;
 
 /// Re-indexes a registry after a publish-completing pointer write.
 ///
@@ -100,8 +100,8 @@ impl Reindexer for QueuedReindexer {
 #[cfg(test)]
 mod tests {
     use super::{QueuedReindexer, Reindexer};
-    use crate::db::RegistryRecord;
     use crate::jobs::{InMemoryQueue, Job};
+    use aos_hub_db::db::RegistryRecord;
     use std::sync::Arc;
 
     #[tokio::test]

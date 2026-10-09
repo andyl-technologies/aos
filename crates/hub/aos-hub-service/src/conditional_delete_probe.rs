@@ -12,11 +12,11 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use sha2::{Digest as _, Sha256};
 
-use crate::db::{Database, RecordOciConditionalDeleteCapability, SurfacePlacementRecord};
 use crate::fetch::{SurfaceFetch, SurfaceProvider};
 use crate::surface_write::{
     SurfaceDeleteOutcome, SurfaceDeletePrecondition, SurfaceWrite, SurfaceWriteProvider,
 };
+use aos_hub_db::db::{Database, RecordOciConditionalDeleteCapability, SurfacePlacementRecord};
 
 const PROBE_MAX_BYTES: u64 = 4 * 1024;
 
@@ -113,7 +113,7 @@ impl ConditionalDeleteProbeController {
         &self,
         placement: &SurfacePlacementRecord,
         binding_write_revision: i64,
-        existing: Option<&crate::db::OciConditionalDeleteCapabilityRecord>,
+        existing: Option<&aos_hub_db::db::OciConditionalDeleteCapabilityRecord>,
         now: i64,
     ) -> Result<()> {
         let binding = self
@@ -198,7 +198,7 @@ impl ConditionalDeleteProbeController {
     #[allow(clippy::too_many_arguments)]
     async fn record(
         &self,
-        binding: &crate::db::BindingRecord,
+        binding: &aos_hub_db::db::BindingRecord,
         binding_write_revision: i64,
         delete_credential_purpose: Option<String>,
         delete_credential_generation: Option<i64>,

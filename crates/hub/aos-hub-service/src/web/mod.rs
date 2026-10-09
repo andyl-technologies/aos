@@ -17,7 +17,7 @@
 //!   the native hub (console-dedup stage G): the searchable/sortable package
 //!   index, the data-rich package detail with closure resolution, the channel
 //!   partition grid and bucket calculator, and the per-registry health page.
-//!   It renders from the [`db`](crate::db) record types (richer than the proto
+//!   It renders from the [`db`](aos_hub_db::db) record types (richer than the proto
 //!   read shapes) and threads the signed-in identity via an explicit
 //!   [`SessionIndicator`](console_render::SessionIndicator), superseding the
 //!   anonymous proto-shaped builders in [`render`].
@@ -29,7 +29,7 @@
 //! The browser identity boundary is shared the same way:
 //!
 //! - [`session`] — runtime-neutral session extraction: turn a request's
-//!   `Cookie` header plus a [`Database`](crate::db::Database) into a resolved,
+//!   `Cookie` header plus a [`Database`](aos_hub_db::db::Database) into a resolved,
 //!   validated [`ResolvedSession`](session::ResolvedSession).
 //! - [`csrf`] — the per-session synchronizer-token CSRF defenses
 //!   ([`mint_csrf_token`](csrf::mint_csrf_token),

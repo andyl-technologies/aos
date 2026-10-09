@@ -32,8 +32,7 @@ async fn plan_registry_purge_fence(
 async fn apply_registry_purge_fence(
     client: &ApiClient,
     request: &aos_hub_api::ApplyContainerRegistryPurgeFenceRequest,
-) -> Result<aos_hub_api::ContainerRegistryPurgeFenceResponse, crate::transport::TransportError>
-{
+) -> Result<aos_hub_api::ContainerRegistryPurgeFenceResponse, crate::transport::TransportError> {
     client
         .call::<_, aos_hub_api::ContainerRegistryPurgeFenceResponse>(
             aos_hub_api::CONTAINER_SERVICE_APPLY_CONTAINER_REGISTRY_PURGE_FENCE_PATH,
@@ -45,8 +44,7 @@ async fn apply_registry_purge_fence(
 async fn get_registry_purge_fence(
     client: &ApiClient,
     plan_id: String,
-) -> Result<aos_hub_api::ContainerRegistryPurgeFenceResponse, crate::transport::TransportError>
-{
+) -> Result<aos_hub_api::ContainerRegistryPurgeFenceResponse, crate::transport::TransportError> {
     client
         .call::<_, aos_hub_api::ContainerRegistryPurgeFenceResponse>(
             aos_hub_api::CONTAINER_SERVICE_GET_CONTAINER_REGISTRY_PURGE_FENCE_PATH,

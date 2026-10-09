@@ -51,7 +51,7 @@ pub fn connect_or_csrf_ok(headers: &HeaderMap, session_secret: Option<&str>) -> 
 /// safe to embed in an SSR form. Verify with [`verify_csrf_token`].
 #[must_use]
 pub fn mint_csrf_token(session_secret: &str) -> String {
-    crate::auth::token::sha256_hex(&format!("aos-csrf:{session_secret}"))
+    aos_hub_model::auth::token::sha256_hex(&format!("aos-csrf:{session_secret}"))
 }
 
 /// Verifies a CSRF synchronizer token against a session secret.

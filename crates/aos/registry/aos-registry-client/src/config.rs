@@ -29,7 +29,7 @@
 //! empty or `[registry]`-less file is skipped (this is how blanking an `/etc`
 //! seed removes a registry), a malformed or unreadable file is warned about and
 //! skipped, and a merged registry that still lacks a `url` is an orphaned
-//! override that is dropped (and becomes prune-eligible — see [`crate::clean`]).
+//! override that is dropped (and becomes prune-eligible — see the package manager cleanup policy).
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -454,7 +454,7 @@ fn dedupe_strings(values: &mut Vec<String>) {
 /// adjusts an inherited definition. Returns `false` for a missing, unreadable,
 /// or malformed file. Used to decide registry removal
 /// ([`ApmConfig::registry_config_path_for_update`] is the mutation counterpart)
-/// and orphaned-overlay pruning (see [`crate::clean`]).
+/// and orphaned-overlay pruning (see the package manager cleanup policy).
 pub fn registry_file_has_url(path: &Path) -> bool {
     let Ok(content) = std::fs::read_to_string(path) else {
         return false;

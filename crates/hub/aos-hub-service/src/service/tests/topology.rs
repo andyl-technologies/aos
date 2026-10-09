@@ -9,14 +9,14 @@ async fn registry_without_a_canonical_route_has_no_consumer_url() {
         .ensure_instance_default_binding(
             "deployment_r2",
             None,
-            Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
+            Some(aos_hub_model::binding::DEPLOYMENT_R2_ATTACHMENT),
         )
         .await
         .unwrap();
     let org_id = db.create_org("automatic", "Automatic").await.unwrap();
     let org = db.org_by_id(org_id).await.unwrap().unwrap();
     db.grant_consumer_scope(
-        crate::db::GrantResource::Binding {
+        aos_hub_db::db::GrantResource::Binding {
             id: binding.id,
             stable_id: &binding.stable_id,
         },
@@ -88,7 +88,7 @@ async fn who_am_i_separates_live_grants_from_bearer_authority() {
             "members.manage"
         ]
     );
-    assert!(identity.access_expires_at > crate::clock::now_unix_secs());
+    assert!(identity.access_expires_at > aos_hub_model::clock::now_unix_secs());
 }
 
 #[test]

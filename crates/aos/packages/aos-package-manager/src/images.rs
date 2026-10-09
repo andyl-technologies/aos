@@ -22,10 +22,10 @@ use aos_cli_ui::output::Printer;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use aos_registry_client::config::ApmConfig;
 use crate::download::resolve_mirror_chain;
+use aos_registry_client::config::ApmConfig;
 use aos_registry_client::registry::{git, parse::parse_registry_all_platforms};
-use crate::types::{RegistryState, SysrootImageEntry, TrackingMode};
+use aos_registry_format::consumer::{RegistryState, SysrootImageEntry, TrackingMode};
 
 /// Selects a signed image catalog without changing package registry tracking.
 #[derive(Debug, Clone, Default)]
@@ -93,9 +93,9 @@ pub async fn list(
         .target
         .as_ref()
         .map(|target| {
-            serde_json::from_value::<crate::types::ImageTarget>(serde_json::Value::String(
-                target.clone(),
-            ))
+            serde_json::from_value::<aos_registry_format::consumer::ImageTarget>(
+                serde_json::Value::String(target.clone()),
+            )
         })
         .transpose()
         .context("unsupported image --target")?;
@@ -121,7 +121,7 @@ pub async fn list(
             .context("--release must name a semantic-version release tag")?;
         TrackingMode::Tag(release.clone())
     } else if let Some(channel) = &selection.channel {
-        crate::types::validate_channel_name(channel)?;
+        aos_registry_format::consumer::validate_channel_name(channel)?;
         TrackingMode::Channel(channel.clone())
     } else {
         configured_tracking.clone()

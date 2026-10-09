@@ -13,16 +13,16 @@ use anyhow::{bail, Context, Result};
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
-use crate::clock;
-use crate::db::{
-    BinaryCache, CacheInventoryListedObject, CacheInventoryNarinfoCandidate,
-    CacheObjectPresenceObservation, CacheWriteTicketRecord, Database, ReusablePlacementEvidence,
-    SurfaceObjectRecord, SurfacePlacementRecord, SurfaceTarget, WriteObjectIdentity,
-};
 use crate::fetch::{
     SurfaceListedEvidence, SurfaceListingBudget, SurfaceObjectEvidence, SurfaceProvider,
 };
 use crate::surface_write::{MultipartAbortOutcome, SurfaceWriteProvider};
+use aos_hub_db::db::{
+    BinaryCache, CacheInventoryListedObject, CacheInventoryNarinfoCandidate,
+    CacheObjectPresenceObservation, CacheWriteTicketRecord, Database, ReusablePlacementEvidence,
+    SurfaceObjectRecord, SurfacePlacementRecord, SurfaceTarget, WriteObjectIdentity,
+};
+use aos_hub_model::clock;
 
 /// Maximum expired writes or tombstones cleaned by one scheduled pass.
 pub const MAX_CLEANUP_ITEMS_PER_PASS: i64 = 128;
@@ -1147,7 +1147,7 @@ mod tests {
         async fn placement_writer_at_revision(
             &self,
             _placement: &SurfacePlacementRecord,
-            _revision: &crate::db::BindingWriteRevisionRecord,
+            _revision: &aos_hub_db::db::BindingWriteRevisionRecord,
         ) -> Result<Box<dyn SurfaceWrite>> {
             Ok(Box::new(RecoveryWriter))
         }

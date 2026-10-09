@@ -15,9 +15,9 @@ use aos_cli_ui::output::Printer;
 use serde_json::Value;
 
 use super::{ImageRolloutRequest, RolloutImageIdentity};
-use aos_registry_client::config::ApmConfig;
 use crate::profile::deployment::{committed_result, current_committed_generation};
 use crate::sysroot::running_image_generation;
+use aos_registry_client::config::ApmConfig;
 
 const RECEIPT: &str = "/var/lib/profiles/image/active-native-rollout.json";
 const MAX_RECEIPT_BYTES: u64 = 64 * 1024;

@@ -10,7 +10,7 @@
 //! Two document families live here:
 //!
 //! - **`robots.txt`** ([`render_robots`]) — the crawler-control file, driven by
-//!   the three-valued [`CrawlPolicy`](crate::crawl::CrawlPolicy). The
+//!   the three-valued [`CrawlPolicy`](aos_hub_model::crawl::CrawlPolicy). The
 //!   `allow_no_ai` posture emits an explicit `Disallow` block for every known AI
 //!   crawler ([`AI_CRAWLERS`]).
 //! - **`llms.txt`** ([`render_registry_llms`] / [`render_root_llms`]) — the
@@ -68,7 +68,7 @@
 
 use std::fmt::Write as _;
 
-use crate::crawl::CrawlPolicy;
+use aos_hub_model::crawl::CrawlPolicy;
 
 /// The user-agent tokens of crawlers operated for AI training, retrieval, or
 /// assistant browsing, disallowed under [`CrawlPolicy::AllowNoAi`].

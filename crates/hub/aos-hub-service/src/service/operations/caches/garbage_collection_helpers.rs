@@ -4,7 +4,7 @@ use super::*;
 
 impl RpcService {
     pub(in crate::service) fn cache_gc_policy_message(
-        policy: &crate::db::CacheGcPolicyRecord,
+        policy: &aos_hub_db::db::CacheGcPolicyRecord,
     ) -> pb::CacheGcPolicy {
         pb::CacheGcPolicy {
             unreferenced_grace_seconds: policy.unreferenced_grace_secs,
@@ -30,7 +30,7 @@ impl RpcService {
 
     pub(in crate::service) fn cache_gc_generation_message(
         cache_id: &str,
-        state: &crate::db::CacheGcStateRecord,
+        state: &aos_hub_db::db::CacheGcStateRecord,
     ) -> pb::CacheGcGeneration {
         pb::CacheGcGeneration {
             cache_id: cache_id.to_string(),
@@ -47,7 +47,7 @@ impl RpcService {
 
     pub(in crate::service) fn cache_gc_plan_message(
         cache_id: &str,
-        plan: &crate::db::CacheGcPlanView,
+        plan: &aos_hub_db::db::CacheGcPlanView,
     ) -> pb::CacheGcPlan {
         pb::CacheGcPlan {
             plan_id: plan.plan_id.clone(),
@@ -95,8 +95,8 @@ impl RpcService {
 
     pub(in crate::service) async fn cache_gc_run_message(
         &self,
-        cache: &crate::db::BinaryCache,
-        operation: &crate::db::TopologyOperationRecord,
+        cache: &aos_hub_db::db::BinaryCache,
+        operation: &aos_hub_db::db::TopologyOperationRecord,
     ) -> Result<pb::CacheGcRun, RpcError> {
         let plan_id = self
             .db
@@ -134,7 +134,7 @@ impl RpcService {
     pub(in crate::service) async fn cache_gc_deletion_job_message(
         &self,
         cache_id: i64,
-        job: &crate::db::ObjectDeletionJobRecord,
+        job: &aos_hub_db::db::ObjectDeletionJobRecord,
     ) -> Result<pb::CacheGcDeletionJob, RpcError> {
         Ok(pb::CacheGcDeletionJob {
             job_id: job.job_id.clone(),

@@ -4,5 +4,5 @@
 // cancellation listeners live while it evaluates and dispatches effects.
 #[tokio::main]
 async fn main() {
-    aos::entry::boot_configuration_main();
+    aos_cli::entry::boot_configuration_main();
 }

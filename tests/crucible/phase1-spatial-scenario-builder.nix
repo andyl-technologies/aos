@@ -96,7 +96,7 @@
       }
       {
         label = "test builds through ScenarioBuilder";
-        needle = "crucible::ScenarioBuilder::new()";
+        needle = "crucible_engine::ScenarioBuilder::new()";
       }
       {
         label = "builder output changes with template material";

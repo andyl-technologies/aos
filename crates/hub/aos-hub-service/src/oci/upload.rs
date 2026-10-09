@@ -23,13 +23,13 @@ use super::{
     add_distribution_version, distribution_error_response, unavailable_response,
     DistributionErrorCode, OciRequest, RegistryRecord, RpcService,
 };
-use crate::db::{
+use crate::surface_write::{MultipartAbortOutcome, PartTag, SurfaceWriteProvider};
+use aos_hub_db::db::{
     oci_blob_object_key, AppendOciUploadChunk, BeginOciUpload, BindingWriteRevisionRecord,
     ClaimOciUpload, CompleteOciUpload, Database, OciBlobClaimOutcome, OciRepositoryRecord,
     OciUploadChunkRecord, OciUploadCleanupRecord, SurfacePlacementRecord, SurfaceTarget,
     OCI_MAX_SESSION_SECONDS,
 };
-use crate::surface_write::{MultipartAbortOutcome, PartTag, SurfaceWriteProvider};
 
 /// Maximum body accepted in one resumable PATCH request.
 const MAX_PATCH_BYTES: usize = 20 * 1024 * 1024;
@@ -877,13 +877,13 @@ impl RpcService {
     async fn materialize_blob(
         &self,
         registry_id: i64,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         revision: &BindingWriteRevisionRecord,
-        staging_placement: Option<&crate::db::SurfacePlacementRecord>,
+        staging_placement: Option<&aos_hub_db::db::SurfacePlacementRecord>,
         digest: Sha256Digest,
         byte_size: u64,
         chunks: &[OciUploadChunkRecord],
-    ) -> Result<(crate::db::OciUploadedObjectEvidence, Option<String>), ()> {
+    ) -> Result<(aos_hub_db::db::OciUploadedObjectEvidence, Option<String>), ()> {
         let path = oci_blob_object_key(digest);
         let writer = self
             .surface_write
@@ -974,10 +974,10 @@ impl RpcService {
     async fn probe_materialized_blob(
         &self,
         registry_id: i64,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         digest: Sha256Digest,
         byte_size: u64,
-    ) -> Result<Option<crate::db::OciUploadedObjectEvidence>, ()> {
+    ) -> Result<Option<aos_hub_db::db::OciUploadedObjectEvidence>, ()> {
         let path = oci_blob_object_key(digest);
         let fetcher = self
             .surface
@@ -996,7 +996,7 @@ impl RpcService {
             return Err(());
         }
         let etag = read.strong_etag.ok_or(())?;
-        let mut state = crate::db::OciSha256State::initial();
+        let mut state = aos_hub_db::db::OciSha256State::initial();
         let mut observed = 0_u64;
         let mut stream = read.body.into_data_stream();
         while let Some(chunk) = stream.try_next().await.map_err(|_| ())? {
@@ -1237,7 +1237,7 @@ fn upload_error(
 }
 
 fn now() -> i64 {
-    crate::clock::now_unix_secs()
+    aos_hub_model::clock::now_unix_secs()
 }
 
 #[cfg(test)]

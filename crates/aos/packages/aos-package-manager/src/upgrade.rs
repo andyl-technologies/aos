@@ -37,10 +37,11 @@ use super::remove::retained_installed_indexes;
 use super::resolve::resolve_multiple;
 use super::store::{closure_paths, create_gc_roots, filter_missing};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
-use super::types::{PackageInventoryDetails, InstalledPackageRecord, PackageMeta};
 use super::verify::verify_downloads;
 use crate::error::PackageError;
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_deployment_format::inventory::{InstalledPackageRecord, PackageInventoryDetails};
+use aos_registry_format::consumer::PackageMeta;
 
 mod module_upgrade;
 
@@ -1148,10 +1149,10 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    use aos_deployment_format::inventory::{InstalledPackageRecord, PackageInventoryDetails};
     use aos_registry_client::registry::parse::CURL_TOML;
     use aos_registry_client::registry::{Registry, RegistrySet};
-    use aos_deployment_format::inventory::{PackageInventoryDetails, InstalledPackageRecord};
-use crate::types::{PackageMeta, RegistryConfig};
+    use aos_registry_format::consumer::{PackageMeta, RegistryConfig};
 
     /// Helper: create a registry in a temp directory from TOML test fixtures.
     fn make_registry(

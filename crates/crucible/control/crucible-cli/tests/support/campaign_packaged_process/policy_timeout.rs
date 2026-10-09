@@ -4,7 +4,7 @@ use std::os::unix::net::UnixStream;
 
 use super::*;
 use crucible_campaign::{ObservationId, PolicyTimeoutKind, StopOutcome};
-use crucible_core::{FailureClusterReportFailure, FailureTimeoutBudgetKind};
+use crucible_engine::{FailureClusterReportFailure, FailureTimeoutBudgetKind};
 
 const POLICY_DEADLINE_PS: u64 = 2_000_000;
 const TIMEOUT_FAILURE_CLASS: &str = "qemu.virtual-time-timeout";
@@ -71,22 +71,22 @@ pub(super) fn validate(fixture: &FlightFixture, explanation: &Value) -> Result<(
     let replay_record = repository.load_finding_triage_replay_evidence(replay_id)?;
     let reproduction = repository.load_reproduction_artifact(replay_record.reproduction())?;
     let artifact =
-        crucible_core::ReproductionArtifact::from_compact_binary(reproduction.payload())?;
-    let configuration = crucible_core::Configuration {
+        crucible_engine::ReproductionArtifact::from_compact_binary(reproduction.payload())?;
+    let configuration = crucible_engine::Configuration {
         def: artifact.scenario_def(),
         schedule: artifact.schedule().clone(),
     }
     .id();
-    let native_finding = crucible_core::FindingReproductionArtifact {
-        discovery_path: crucible_core::FindingDiscoveryPath::StateSpaceSearch,
-        finding_fingerprint: crucible_core::ContentHash {
+    let native_finding = crucible_engine::FindingReproductionArtifact {
+        discovery_path: crucible_engine::FindingDiscoveryPath::StateSpaceSearch,
+        finding_fingerprint: crucible_engine::ContentHash {
             bytes: reproduction.finding_fingerprint().as_bytes(),
         },
         configuration,
         replay: artifact.replay()?,
         artifact,
     };
-    let native_replay = crucible_core::FailureTriageReplayEvidence::from_compact_binary(
+    let native_replay = crucible_engine::FailureTriageReplayEvidence::from_compact_binary(
         native_finding,
         replay_record.payload(),
     )?;

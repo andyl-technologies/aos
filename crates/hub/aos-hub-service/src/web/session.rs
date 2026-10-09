@@ -1,7 +1,7 @@
 //! Runtime-neutral session extraction for the cookie-authenticated console.
 //!
 //! Humans reach the browser console with a `__Host-aos_session` cookie (see
-//! [`crate::auth::session`]). This module turns that cookie into a resolved,
+//! [`aos_hub_model::auth::session`]). This module turns that cookie into a resolved,
 //! already-validated identity a handler can trust, independent of any specific
 //! HTTP server or async runtime: it takes a raw `Cookie` header value (or an
 //! [`axum::http::HeaderMap`]) plus a [`Database`], and returns the authenticated
@@ -16,9 +16,9 @@
 
 use axum::http::{header, HeaderMap};
 
-use crate::auth::session::COOKIE_NAME;
-use crate::db::{Database, SessionAuth};
-use crate::domain::Principal;
+use aos_hub_model::auth::session::COOKIE_NAME;
+use aos_hub_db::db::{Database, SessionAuth};
+use aos_hub_model::domain::Principal;
 
 /// A resolved, validated browser session.
 ///

@@ -11,10 +11,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, ensure};
 
+use crate::profile::Profile;
+use aos_deployment::input::ImportControl;
 use aos_deployment::retention::ArtifactAdmission as _;
 use aos_deployment::source_views::SourceViews;
-use aos_deployment::input::ImportControl;
-use crate::profile::Profile;
 
 /// Keeps a fully copied authoring tree private until publication or snapshotting.
 pub(crate) struct StagedRuntime {

@@ -36,8 +36,8 @@ use std::sync::Mutex;
 
 use anyhow::Result;
 
-use crate::backend::BackendBounds;
-use crate::clock::now_unix_secs;
+use aos_hub_db::backend::BackendBounds;
+use aos_hub_model::clock::now_unix_secs;
 
 /// An async key-value store for hot, point-key, eventually-consistent state.
 ///

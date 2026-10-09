@@ -6,7 +6,7 @@ impl RpcService {
     pub(in crate::service) async fn authorize_gateway_binding(
         &self,
         auth: Option<&str>,
-        binding: &crate::db::BindingRecord,
+        binding: &aos_hub_db::db::BindingRecord,
         scope: &str,
     ) -> Result<(), RpcError> {
         self.require_delivery_scope(auth, scope, Permission::BindingRead)
@@ -14,7 +14,7 @@ impl RpcService {
         let grant = self
             .db
             .load_consumer_scope_grant(
-                crate::db::GrantResource::Binding {
+                aos_hub_db::db::GrantResource::Binding {
                     id: binding.id,
                     stable_id: &binding.stable_id,
                 },
@@ -33,7 +33,7 @@ impl RpcService {
         &self,
         auth: Option<&str>,
         reference: Option<pb::BindingRef>,
-    ) -> Result<crate::db::BindingRecord, RpcError> {
+    ) -> Result<aos_hub_db::db::BindingRecord, RpcError> {
         let target = reference
             .and_then(|binding| binding.target)
             .ok_or_else(|| RpcError::invalid("storageBinding reference is required"))?;
@@ -98,7 +98,7 @@ impl RpcService {
             }
             Some(pb::binding_spec::Provider::DeploymentR2(provider)) => {
                 provider.bucket_binding = provider.bucket_binding.trim().to_string();
-                if provider.bucket_binding != crate::binding::DEPLOYMENT_R2_ATTACHMENT {
+                if provider.bucket_binding != aos_hub_model::binding::DEPLOYMENT_R2_ATTACHMENT {
                     return Err(RpcError::invalid(
                         "deployment R2 bucketBinding must name the REGISTRY_BUCKET runtime attachment",
                     ));
@@ -111,7 +111,7 @@ impl RpcService {
 
     /// Reconstructs the final desired spec from one binding record.
     pub(in crate::service) fn binding_spec_from_record(
-        record: &crate::db::BindingRecord,
+        record: &aos_hub_db::db::BindingRecord,
     ) -> Result<pb::BindingSpec, RpcError> {
         let endpoint = match (
             record.endpoint_scheme.clone(),
@@ -186,7 +186,7 @@ impl RpcService {
     /// Projects a storage-binding record without exposing credential material.
     pub(in crate::service) async fn binding_message(
         &self,
-        record: crate::db::BindingRecord,
+        record: aos_hub_db::db::BindingRecord,
     ) -> Result<pb::Binding, RpcError> {
         let spec = Self::binding_spec_from_record(&record)?;
         let credentials = self
@@ -248,7 +248,7 @@ impl RpcService {
         };
         let grant_records = self
             .db
-            .list_consumer_scope_grants(crate::db::GrantResource::Binding {
+            .list_consumer_scope_grants(aos_hub_db::db::GrantResource::Binding {
                 id: record.id,
                 stable_id: &record.stable_id,
             })
@@ -259,7 +259,7 @@ impl RpcService {
             let pins = self
                 .db
                 .consumer_scope_grant_pin_records(
-                    crate::db::GrantResource::Binding {
+                    aos_hub_db::db::GrantResource::Binding {
                         id: record.id,
                         stable_id: &record.stable_id,
                     },
@@ -285,8 +285,8 @@ impl RpcService {
     /// Projects one binding consumer-scope grant and its live pin impacts.
     pub(in crate::service) fn binding_grant_message(
         stable_id: &str,
-        record: crate::db::ConsumerScopeGrantRecord,
-        pins: Vec<crate::db::ConsumerScopeGrantPinRecord>,
+        record: aos_hub_db::db::ConsumerScopeGrantRecord,
+        pins: Vec<aos_hub_db::db::ConsumerScopeGrantPinRecord>,
     ) -> pb::ConsumerScopeGrant {
         let pins = pins
             .into_iter()
@@ -339,7 +339,7 @@ impl RpcService {
         }
         let grants = self
             .db
-            .list_consumer_scope_grants(crate::db::GrantResource::Binding {
+            .list_consumer_scope_grants(aos_hub_db::db::GrantResource::Binding {
                 id: binding.id,
                 stable_id: &req.resource_stable_id,
             })
@@ -354,7 +354,7 @@ impl RpcService {
             let pins = self
                 .db
                 .consumer_scope_grant_pin_records(
-                    crate::db::GrantResource::Binding {
+                    aos_hub_db::db::GrantResource::Binding {
                         id: binding.id,
                         stable_id: &req.resource_stable_id,
                     },
@@ -482,7 +482,7 @@ impl RpcService {
         }
         let claims = self.require_claims(auth)?;
         if revoke && !input.pin_resolutions.is_empty() {
-            let resource = crate::db::GrantResource::Binding {
+            let resource = aos_hub_db::db::GrantResource::Binding {
                 id: binding.id,
                 stable_id: &input.request.resource_stable_id,
             };
@@ -529,7 +529,7 @@ impl RpcService {
         if revoke {
             if let Some((record, pins)) = self
                 .db
-                .list_consumer_scope_grants(crate::db::GrantResource::Binding {
+                .list_consumer_scope_grants(aos_hub_db::db::GrantResource::Binding {
                     id: binding.id,
                     stable_id: &input.request.resource_stable_id,
                 })
@@ -562,7 +562,7 @@ impl RpcService {
         let record = if revoke {
             self.db
                 .revoke_consumer_scope(
-                    crate::db::GrantResource::Binding {
+                    aos_hub_db::db::GrantResource::Binding {
                         id: binding.id,
                         stable_id: &input.request.resource_stable_id,
                     },
@@ -577,7 +577,7 @@ impl RpcService {
         } else {
             self.db
                 .grant_consumer_scope(
-                    crate::db::GrantResource::Binding {
+                    aos_hub_db::db::GrantResource::Binding {
                         id: binding.id,
                         stable_id: &input.request.resource_stable_id,
                     },
@@ -592,7 +592,7 @@ impl RpcService {
         let pins = self
             .db
             .consumer_scope_grant_pin_records(
-                crate::db::GrantResource::Binding {
+                aos_hub_db::db::GrantResource::Binding {
                     id: binding.id,
                     stable_id: &input.request.resource_stable_id,
                 },
@@ -617,7 +617,7 @@ impl RpcService {
     pub(in crate::service) async fn binding_write_revision_message(
         &self,
         stable_id: &str,
-        revision: crate::db::BindingWriteRevisionRecord,
+        revision: aos_hub_db::db::BindingWriteRevisionRecord,
     ) -> Result<pb::BindingWriteRevision, RpcError> {
         let observation = self
             .db
@@ -684,7 +684,7 @@ impl RpcService {
     }
 
     pub(in crate::service) fn placement_message_with_binding(
-        placement: crate::db::SurfacePlacementRecord,
+        placement: aos_hub_db::db::SurfacePlacementRecord,
         binding_name: String,
     ) -> Result<pb::Placement, RpcError> {
         let hash_range = match (placement.hash_range_start, placement.hash_range_end) {

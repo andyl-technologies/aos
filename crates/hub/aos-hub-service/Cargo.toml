@@ -41,8 +41,6 @@ rand = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# Hand-parse a nested-canonical console POST body into a handler's form type,
-# using the same decoder axum's `Form` uses (see `web::console::nested`).
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
@@ -52,8 +50,7 @@ url = { workspace = true }
 unicode-normalization = { workspace = true }
 uuid = { workspace = true }
 # The package-manifest schema (PackageToml etc., shared by the indexer/Database)
-# and the trusted-key fingerprint line; aos-registry-surface is the wasm-clean
-# surface reader already shared with the Worker.
+# and trusted-key fingerprints are portable registry format values.
 aos-registry-format = { workspace = true }
 aos-oci-types = { workspace = true }
 aos-module-format = { workspace = true }
@@ -95,11 +92,7 @@ do-e2e-test-support = ["aos-hub-db/do-e2e-test-support"]
 # mutations remain available only through the reviewed control-plane service.
 test-fixtures = ["aos-hub-db/test-fixtures"]
 
-# The concrete native database driver. `sqlx` does not build for
-# wasm32-unknown-unknown, so it is a native-only dependency: the SqlxBackend
-# Backend impl is compiled out of the Cloudflare Worker target, which supplies a
-# HubDb SQL backend instead (RFC-0004 Phase 5). `runtime-tokio` reuses the existing
-# tokio runtime; the bundled pure-Rust sqlite driver needs no system library.
+# Native service orchestration runs on Tokio; database drivers belong to aos-hub-db.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true }
 
@@ -109,15 +102,12 @@ aos-hub-model = { workspace = true, features = ["test-fixtures"] }
 aos-hub-db = { workspace = true, features = ["test-fixtures"] }
 # Native tests use Tokio, including controlled time for provider deadlines.
 tokio = { workspace = true, features = ["test-util"] }
-# The Database migration tests stage old-schema sqlite files with raw rusqlite,
-# then reopen them through the sqlx Database to assert the upgrade path; other
-# tests use a temp dir for a file-backed hub.db (RFC-0004 Phase 5).
+# Service integration tests use temporary file-backed databases.
 tempfile = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # The staged-release contract test exercises the actual maintainer client
 # against the shared Connect router with an ephemeral native HTTP listener.
-aos-package-manager = { workspace = true }
 axum = { version = "0.8", default-features = false, features = ["tokio", "http1"] }
 
 # The OS CSPRNG (argon2 salt, and the secret/token generators to come) reaches

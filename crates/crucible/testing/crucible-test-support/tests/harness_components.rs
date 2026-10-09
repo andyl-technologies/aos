@@ -8,7 +8,7 @@ mod workspace;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crucible_test_support::abi::{GoldenVectorCase, GoldenVectorMismatchKind, run_golden_vectors};
 use crucible_test_support::adversarial::{
@@ -171,7 +171,8 @@ fn crucible_harness_is_dev_dependency_only() -> Result<(), Box<dyn Error>> {
         .cloned()
         .unwrap_or_default();
     let harness_manifest: Value =
-        fs::read_to_string(crates_dir.join("crucible/testing/crucible-test-support/Cargo.toml"))?.parse()?;
+        fs::read_to_string(crates_dir.join("crucible/testing/crucible-test-support/Cargo.toml"))?
+            .parse()?;
     let normal_dependencies = harness_manifest
         .get("dependencies")
         .and_then(Value::as_table)
@@ -179,7 +180,7 @@ fn crucible_harness_is_dev_dependency_only() -> Result<(), Box<dyn Error>> {
         .unwrap_or_default();
     assert_eq!(
         normal_dependencies, 0,
-        "crucible-harness must keep third-party crates as dev-dependencies only"
+        "crucible-test-support must keep third-party crates as dev-dependencies only"
     );
 
     let mut failures = Vec::new();
@@ -209,7 +210,7 @@ fn crucible_harness_is_dev_dependency_only() -> Result<(), Box<dyn Error>> {
 
     assert!(
         failures.is_empty(),
-        "crucible-harness must not enter release/runtime dependency graphs:\n{}",
+        "crucible-test-support must not enter release/runtime dependency graphs:\n{}",
         failures.join("\n")
     );
 

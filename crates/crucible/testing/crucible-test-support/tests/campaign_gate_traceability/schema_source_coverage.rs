@@ -1,11 +1,9 @@
 //! Source-backed coverage for durable campaign and gate-evidence formats.
 
-#[path = "../support/workspace.rs"]
-mod workspace;
+use crate::workspace;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
 
 const SOURCES: &[(&str, &str)] = &[
     (
@@ -118,9 +116,9 @@ fn versioned_tags(source: &str) -> BTreeSet<(&str, u32)> {
 // independent decoder or compatibility version.
 const VERSION_ANCHORS: &str = r#"
 crucible.api.rpc|crates/crucible/control/crucible-control-api/src/rpc_abi.rs|number|RPC_PROTOCOL_MAJOR
-crucible.production-network-adapter-checkpoint|crates/crucible/control/crucible-control-api/src/vm_lifecycle/network_faults.rs|number|NETWORK_ADAPTER_CHECKPOINT_VERSION
-crucible.production-run-lock|crates/crucible/control/crucible-control-api/src/vm_lifecycle.rs|number|PRODUCTION_RUN_LOCK_VERSION
-crucible.production-run-state|crates/crucible/control/crucible-control-api/src/vm_lifecycle/quantum_loop/lifecycle/persistence.rs|number|PRODUCTION_RUN_STATE_VERSION
+crucible.production-network-adapter-checkpoint|crates/crucible/control/crucible-daemon/src/vm_lifecycle/network_faults.rs|number|NETWORK_ADAPTER_CHECKPOINT_VERSION
+crucible.production-run-lock|crates/crucible/control/crucible-daemon/src/vm_lifecycle.rs|number|PRODUCTION_RUN_LOCK_VERSION
+crucible.production-run-state|crates/crucible/control/crucible-daemon/src/vm_lifecycle/quantum_loop/lifecycle/persistence.rs|number|PRODUCTION_RUN_STATE_VERSION
 crucible.shmem.region|crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs|number|ABI_VERSION
 crucible.shmem.fault-clock-evidence|crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_clock_evidence.rs|magic|FAULT_CLOCK_EVIDENCE_MAGIC_V2
 crucible.shmem.fault-clock-manifest|crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_target_manifest.rs|number|FAULT_CLOCK_MANIFEST_VERSION_V2
@@ -388,7 +386,7 @@ fn owned_qemu_vmstate_sections(patch: &str) -> Result<BTreeMap<String, u32>, Str
             }
             continue;
         };
-        let owned = name.contains("crucible-engine")
+        let owned = name.contains("crucible")
             || name == "virtio-blk/dropped-requests"
             || name.ends_with("-wide")
             || name.ends_with("/wide");
@@ -456,7 +454,7 @@ fn qemu_vmstate_literal_name(expression: &str) -> Result<Option<String>, String>
     if expression == "TYPE_IMX6UL_LCDIF \"/crucible-clock\"" {
         return Ok(Some("imx6ul-lcdif/crucible-clock".to_owned()));
     }
-    if expression.contains("crucible-engine")
+    if expression.contains("crucible")
         || expression.contains("-wide")
         || expression.contains("/wide")
     {

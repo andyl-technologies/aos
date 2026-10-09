@@ -145,14 +145,22 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
     },
     GateTestingStandard {
         gate: "gate:single-vm-fingerprint",
-        owner_packages: &["crucible-qemu-host", "crucible-qemu-plugin", "crucible-guest"],
+        owner_packages: &[
+            "crucible-qemu-host",
+            "crucible-qemu-plugin",
+            "crucible-guest",
+        ],
         layers: &[Layer::L2, Layer::L3],
         shape: TestShape::FingerprintCompare,
         backend: TestBackend::Mixed,
     },
     GateTestingStandard {
         gate: "gate:layer1-injection",
-        owner_packages: &["crucible-device", "crucible-qemu-protocol", "crucible-qemu-shmem"],
+        owner_packages: &[
+            "crucible-device",
+            "crucible-qemu-protocol",
+            "crucible-qemu-shmem",
+        ],
         layers: &[Layer::L1],
         shape: TestShape::ObservedInjectionIcountVectors,
         backend: TestBackend::InProcess,
@@ -299,7 +307,11 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
     },
     GateTestingStandard {
         gate: "gate:control-responsive",
-        owner_packages: &["crucible-session", "crucible-control-api", "crucible-daemon"],
+        owner_packages: &[
+            "crucible-session",
+            "crucible-control-server",
+            "crucible-daemon",
+        ],
         layers: &[Layer::L4],
         shape: TestShape::ResponsivenessBound,
         backend: TestBackend::SimDouble,
@@ -494,7 +506,11 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
     },
     CrateTestingOwnership {
         package: "crucible-control-api",
-        gates: &["gate:control-responsive", "gate:abi-conformance"],
+        gates: &["gate:abi-conformance"],
+    },
+    CrateTestingOwnership {
+        package: "crucible-control-server",
+        gates: &["gate:control-responsive"],
     },
     CrateTestingOwnership {
         package: "crucible-daemon",

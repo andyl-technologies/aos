@@ -161,9 +161,7 @@ impl StoreMap {
     ///
     /// # Errors
     /// Returns an error for invalid hashes, empty records, or missing edges.
-    pub fn from_authenticated_entries(
-        entries: BTreeMap<String, StoreEntry>,
-    ) -> Result<Self> {
+    pub fn from_authenticated_entries(entries: BTreeMap<String, StoreEntry>) -> Result<Self> {
         for (hash, entry) in &entries {
             shard(hash)?;
             anyhow::ensure!(

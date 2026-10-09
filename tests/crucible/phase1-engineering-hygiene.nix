@@ -14,24 +14,6 @@
   legacyShapeLineStaleThreshold = 600;
   cohesionNotRequired = "threshold-not-reached";
 
-  cruciblePackages = [
-    "crucible-determinism"
-    "crucible-test-support"
-    "crucible-qemu-shmem"
-    "crucible-qemu-protocol"
-    "crucible-device"
-    "crucible-qemu-host"
-    "crucible-qemu-plugin"
-    "crucible-guest"
-    "crucible-store"
-    "crucible-campaign"
-    "crucible-engine"
-    "crucible-session"
-    "crucible-control-api"
-    "crucible-daemon"
-    "crucible-cli"
-    "crucible-test-support"
-  ];
   qemuBoundaryPackages = ["crucible-qemu-debug-gateway" "crucible-daemon" "crucible-qemu-host" "crucible-qemu-plugin"];
   qemuSpecificTokens = [
     "qemu"
@@ -559,12 +541,12 @@
     qemuManifestDebt;
 
   packageSourceFailures = package: let
-    files = rustFilesUnder "crates/${package}";
-    implementationFiles = rustFilesUnder "crates/${package}/src";
+    files = rustFilesUnder (lib.removePrefix "${toString root}/" (toString (packageDir package)));
+    implementationFiles = rustFilesUnder (lib.removePrefix "${toString root}/" ((toString (packageDir package)) + "/src"));
   in
     lib.concatMap sourceShapeFailures files
     ++ lib.concatMap (qemuBoundaryFailuresFor package) implementationFiles
-    ++ qemuManifestFailuresFor package "crates/${package}/Cargo.toml";
+    ++ qemuManifestFailuresFor package (lib.removePrefix "${toString root}/" ((toString (packageDir package)) + "/Cargo.toml"));
 
   commitRuleFailures = standards:
     lib.concatMap (

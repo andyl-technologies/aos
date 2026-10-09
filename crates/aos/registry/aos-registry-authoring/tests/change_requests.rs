@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use aos_cli_ui::output::Printer;
 use aos_registry_authoring::ChangeCommand;
 use aos_registry_client::config::ApmConfig;
-use aos_package_manager::types::ProfileScope;
+use aos_registry_client::types::ProfileScope;
 
 /// Serializes the env-var mutation across tests in this binary.
 static ENV_LOCK: Mutex<()> = Mutex::new(());

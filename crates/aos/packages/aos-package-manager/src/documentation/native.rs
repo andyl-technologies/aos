@@ -44,19 +44,19 @@ fn installed(system: bool) -> Result<Vec<InstalledReference>> {
         let Some(artifact) = apm.module_documentation else {
             continue;
         };
-        let bytes = aos_deployment::artifact::read_document(&artifact, "options.json").with_context(
-            || {
+        let bytes = aos_deployment::artifact::read_document(&artifact, "options.json")
+            .with_context(|| {
                 format!(
                     "reading native documentation for {} {}",
                     apm.name, apm.version
                 )
-            },
-        )?;
+            })?;
         let document = RuntimeDocument::from_json(&bytes)?;
         let deployment = apm
             .deployment
             .context("native installed documentation has no retained deployment envelope")?;
-        let envelope_bytes = aos_deployment::artifact::read_document(&deployment, "deployment.json")?;
+        let envelope_bytes =
+            aos_deployment::artifact::read_document(&deployment, "deployment.json")?;
         let envelope = aos_deployment_format::model::Envelope::decode(&envelope_bytes)?;
         ensure!(
             envelope.package.name == apm.name
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn native_document_byte_binding_preserves_identity_and_rejects_modification() {
-        let locator = crate::types::NativeArtifactMeta {
+        let locator = aos_registry_format::consumer::NativeArtifactMeta {
             store_path: "/nix/store/00000000000000000000000000000000-native-docs".into(),
             nar_hash: format!("sha256:{}", "0".repeat(64)),
             nar_size: 512,
@@ -636,8 +636,8 @@ async fn remote_at_release(
     let identity = response
         .identity
         .context("native Hub reference omitted its release identity")?;
-    crate::types::validate_commit_hash(&identity.registry_commit)?;
-    crate::types::validate_commit_hash(&identity.verified_tag_oid)?;
+    aos_registry_format::consumer::validate_commit_hash(&identity.registry_commit)?;
+    aos_registry_format::consumer::validate_commit_hash(&identity.verified_tag_oid)?;
     ensure!(
         !identity.release.is_empty() && !identity.release_snapshot_id.is_empty(),
         "native Hub reference is not bound to a completed signed release"

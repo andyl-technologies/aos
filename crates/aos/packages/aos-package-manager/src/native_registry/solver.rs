@@ -15,7 +15,7 @@ use aos_activation::adapter::CancellationToken;
 
 use anyhow::{Context, Result, bail, ensure};
 
-use aos_deployment_format::model::{Artifact, Envelope, ModuleDependency, ModuleSource};
+use aos_deployment_format::model::{Envelope, ModuleDependency, ModuleSource};
 
 const MAX_SEARCH_STEPS: usize = 100_000;
 const MAX_SEARCH_DEPTH: usize = 512;

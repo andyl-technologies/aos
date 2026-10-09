@@ -876,7 +876,7 @@ fn finding_export_violation(
         crucible_engine::AssertionId::from_name(property),
         crucible_engine::AssertionPhase::Violated,
     );
-    let report = crucible_core::OfflineAssertionChecker::new()
+    let report = ::crucible_engine::OfflineAssertionChecker::new()
         .with_world_white_box_policies(scenario.world())
         .check_run(scenario.properties(), &[entry])?;
     let mut violation = report

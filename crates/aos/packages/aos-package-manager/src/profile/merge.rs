@@ -341,7 +341,7 @@ fn create_fhs_symlink(gen_dir: &Path, rel_path: &str, target: &Path) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_deployment_format::inventory::{PackageInventoryDetails, InstalledPackageRecord};
+    use aos_deployment_format::inventory::{InstalledPackageRecord, PackageInventoryDetails};
 
     use std::fs;
     use tempfile::TempDir;

@@ -2,6 +2,9 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "support/workspace.rs"]
+mod workspace;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;

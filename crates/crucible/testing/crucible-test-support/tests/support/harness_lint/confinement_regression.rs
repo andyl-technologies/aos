@@ -24,7 +24,7 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
         &source_pairs(&[(
             "crucible-cli/src/main.rs",
             r#"
-                use crucible::State;
+                use crucible_engine::State;
 
                 fn bad() {
                     let stamp = std::time::SystemTime::now();
@@ -48,7 +48,7 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
             "crucible-cli/src/main.rs",
             r#"
                 use crucible_session::SessionDriver;
-                use crucible_api::ControlClient;
+                use crucible_control_client::ControlClient;
 
                 fn route(client: ControlClient, driver: SessionDriver<()>) {
                     let stamp = std::time::SystemTime::now();
@@ -95,7 +95,7 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
         "crucible-control-api",
         Path::new("crucible-control-api"),
         &source_pairs(&[(
-            "crucible-api/src/lib.rs",
+            "crucible-control-api/src/lib.rs",
             r#"
                 fn bad() {
                     let stamp = std::time::SystemTime::now();
@@ -115,7 +115,7 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
         "crucible-qemu-host",
         Path::new("crucible-qemu-host"),
         &source_pairs(&[(
-            "crucible-qemu/src/backend.rs",
+            "crucible-qemu-host/src/backend.rs",
             r#"
                 fn bad() {
                     let stamp = std::time::SystemTime::now();
@@ -138,7 +138,7 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
         "crucible-qemu-host",
         Path::new("crucible-qemu-host"),
         &source_pairs(&[(
-            "crucible-qemu/src/supervision/process.rs",
+            "crucible-qemu-host/src/supervision/process.rs",
             r#"
                 fn diagnostic_timestamp() {
                     let stamp = std::time::SystemTime::now();

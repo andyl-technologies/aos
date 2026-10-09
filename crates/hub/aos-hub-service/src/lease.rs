@@ -37,8 +37,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::backend::BackendBounds;
 use crate::coordinator::Coordinator;
+use aos_hub_db::backend::BackendBounds;
 
 /// Grace period, in seconds, after which an idle publish lease expires and
 /// another token may take it.

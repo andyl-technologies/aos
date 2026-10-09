@@ -5,13 +5,13 @@
 //! execution flight does not claim retained-source or hot-fork functionality.
 
 use super::*;
-use crucible_core::model::{
+use crucible_daemon::{AttemptExecutionOrigin, AttemptRuntimeState};
+use crucible_engine::model::{
     Aggregation, BoundarySelector, CohortPolicy, MeasurementDefinition, MeasurementDefinitions,
     MeasurementId, MeasurementInstanceKey, MetricDefinition, MetricId, MetricSource,
     MetricValueType, UnitId,
 };
-use crucible_core::{FramePredicate, LinkId};
-use crucible_daemon::{AttemptExecutionOrigin, AttemptRuntimeState};
+use crucible_engine::{FramePredicate, LinkId};
 use crucible_session::engine::{LinkDef, LinkLossProbability, MarkerId};
 
 const HTTP_VIRTUAL_BUDGET_TICKS: u64 = 2_000_000_000_000;
@@ -444,14 +444,14 @@ fn http_wait_reports_retryable_execution_failure_without_misclassifying_warnings
 fn http_measurement_publication_accepts_only_the_declared_client_marker()
 -> Result<(), Box<dyn Error>> {
     use crucible_campaign::{ConfigurationId, ScenarioDefId};
-    use crucible_core::SchedulerEventLogEntry;
-    use crucible_core::model::{
-        MeasurementAggregateValue, MeasurementEvaluationError, MeasurementSampleValue,
-        MeasurementTerminalState, MeasurementWindowOutcome,
-    };
     use crucible_daemon::{
         CrucibleMeasurementError, evaluate_crucible_measurement_publication,
         verify_crucible_measurement_publication,
+    };
+    use crucible_engine::SchedulerEventLogEntry;
+    use crucible_engine::model::{
+        MeasurementAggregateValue, MeasurementEvaluationError, MeasurementSampleValue,
+        MeasurementTerminalState, MeasurementWindowOutcome,
     };
 
     let client = NodeId {

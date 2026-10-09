@@ -15,5 +15,5 @@
 //! The sealer re-export (`SecretSealer`, `XorSealer`, `dev_sealer`) continues to
 //! come from [`aos_hub_model::auth::seal`].
 
-pub use aos_hub_service::auth::oidc::*;
 pub use aos_hub_model::auth::seal::{dev_sealer, SecretSealer, XorSealer};
+pub use aos_hub_service::auth::oidc::*;

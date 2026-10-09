@@ -12,12 +12,12 @@ use crucible_campaign::{
     DiscreteAlternative, DiscreteDomain, ExactCheckpointId, ExactRational, ExecutionId,
     IntegerDomain, IntegerRepresentation, IntegerValue, SelectableDeclaration,
 };
-use crucible_core::{FramePredicate, LinkId, RegexProgram};
 use crucible_daemon::{
     AttemptExecutionKey, AttemptExecutionOrigin, AttemptRuntimeState,
     CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5, ExactCheckpointStore,
     visit_directory_attempt_states_bounded,
 };
+use crucible_engine::{FramePredicate, LinkId, RegexProgram};
 use crucible_qemu_host::QemuLaunchArtifactIdentity;
 use crucible_session::engine::{LinkDef, LinkLossProbability, MarkerId};
 

@@ -3,5 +3,5 @@
 /// Runs the private package-runtime CLI.
 #[tokio::main]
 async fn main() {
-    aos::entry::package_runtime_main().await;
+    aos_cli::entry::package_runtime_main().await;
 }

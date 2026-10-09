@@ -2,7 +2,6 @@
 {
   lib,
   mkCargoPackage,
-  fetchCargoDeps,
   stdenv,
   buildPackages,
   grep,
@@ -10,9 +9,10 @@
   sqlite,
 }: let
   version = "0.1.0";
-  cargoDepsHash = import ./crucible/_cargo-deps-hash.nix;
   src = import ./crucible/_source.nix {inherit lib;};
+  cargoWorkspaceMembers = import ./crucible/_workspace.nix {inherit lib;};
   cargoArtifacts = crucible-controller.passthru.cargoArtifacts;
+  cargoDepsHash = import ./crucible/_cargo-deps-hash.nix {cargoDeps = crucible-controller.passthru.cargoDeps;};
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   probeProgram =
     if isDarwinCross
@@ -21,9 +21,26 @@
 in
   mkCargoPackage {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
-      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       role = "public-package";
     };
     pname = "crucible-fleet-store";
@@ -80,7 +97,7 @@ in
     inherit version src;
 
     cargoDeps = crucible-controller.passthru.cargoDeps;
-    inherit cargoArtifacts;
+    inherit cargoArtifacts cargoWorkspaceMembers;
     cargoArtifactContract = cargoArtifacts.passthru.cargoArtifactContract;
     cargoEnv = cargoArtifacts.passthru.cargoArtifactContract.cargoEnv;
     cargoRoot = "crates";
@@ -169,9 +186,9 @@ in
       package=crucible-fleet-store
       build_system=mkCargoPackage
       cargo_deps=fetchCargoVendor
-      cargo_deps_source_root=source/crates
+      cargo_deps_source_root=source
       cargo_deps_hash=${cargoDepsHash}
-      cargo_package=crucible-cas
+      cargo_package=crucible-store
       cargo_binary=crucible-fleet-store
       dag_store_backend=SharedDagStore
       store_interface=DagStore::put,DagStore::get,DagStore::has

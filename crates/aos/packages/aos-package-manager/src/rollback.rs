@@ -19,8 +19,8 @@ use super::config::ApmConfig;
 use super::platform::native_platform;
 use super::profile::Profile;
 use super::registry::RegistrySet;
-use super::types::ProfileScope;
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_registry_client::types::ProfileScope;
 
 /// List user package profile generations.
 ///
@@ -412,7 +412,7 @@ fn describe_root(registries: &RegistrySet, hash: &str, target: &std::path::Path)
 #[cfg(test)]
 mod tests {
     use crate::profile::Profile;
-    use crate::types::ProfileScope;
+    use aos_registry_client::types::ProfileScope;
     use tempfile::TempDir;
 
     fn test_profile(tmp: &TempDir) -> Profile {

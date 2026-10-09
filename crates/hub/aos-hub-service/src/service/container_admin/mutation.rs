@@ -3,14 +3,14 @@
 use aos_hub_api as pb;
 
 use super::*;
-use crate::clock;
-use crate::db::{
+use aos_hub_db::db::{
     AppliedOciAdminMutation, ApplyOciAdminMutation, ApplyOciGc, ApplyOciRegistryPurgeFence,
     ApplyOciUntrackedRepair, CancelOciGc, OciAdminMutationRecord, OciManualTagMutationOperation,
     OciRegistryPurgeFenceAction, OciRepositoryMutationOperation, OciUntrackedRepairKind, PlanOciGc,
     PlanOciManualTagMutation, PlanOciRegistryPurgeFence, PlanOciRepositoryMutation,
     PlanOciRetentionPolicy, PlanOciUntrackedRepair, RequeueOciGcPlacementAction,
 };
+use aos_hub_model::clock;
 
 impl RpcService {
     /// Plans creation of an empty container repository.
@@ -1075,8 +1075,8 @@ fn plan_response(
 }
 
 fn gc_topology_plan(
-    run: &crate::db::OciGcGenerationRecord,
-    blockers: &[crate::db::OciGcBlockerRecord],
+    run: &aos_hub_db::db::OciGcGenerationRecord,
+    blockers: &[aos_hub_db::db::OciGcBlockerRecord],
 ) -> pb::TopologyPlan {
     pb::TopologyPlan {
         plan_id: run.id.clone(),
@@ -1105,7 +1105,7 @@ fn gc_topology_plan(
 
 /// Lists the reviewed effects of one GC run; a retiring run additionally
 /// retires the catalog roots that would otherwise protect its candidates.
-fn gc_plan_effects(run: &crate::db::OciGcGenerationRecord) -> Vec<String> {
+fn gc_plan_effects(run: &aos_hub_db::db::OciGcGenerationRecord) -> Vec<String> {
     let mut effects = Vec::with_capacity(4);
     if run.retire_registry {
         effects.push(

@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Read;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
 /// A SHA-256 git object id (64 hex characters).

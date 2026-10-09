@@ -1,7 +1,7 @@
 //! End-to-end service regressions for reviewed, resumable delivery preparation.
 
 use super::*;
-use crate::db::{GrantResource, NewSurfacePlacementSpec, TokenAuth};
+use aos_hub_db::db::{GrantResource, NewSurfacePlacementSpec, TokenAuth};
 use base64::Engine as _;
 
 async fn fixture() -> (RpcService, String, pb::DeliveryDestinationIntent, i64) {
@@ -20,7 +20,7 @@ async fn fixture() -> (RpcService, String, pb::DeliveryDestinationIntent, i64) {
         .ensure_instance_default_binding(
             "deployment_r2",
             None,
-            Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
+            Some(aos_hub_model::binding::DEPLOYMENT_R2_ATTACHMENT),
         )
         .await
         .unwrap();

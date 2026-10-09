@@ -25,7 +25,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::backend::BackendBounds;
+use aos_hub_db::backend::BackendBounds;
 
 /// Builds bounded, non-secret durable failure evidence for a background job.
 ///

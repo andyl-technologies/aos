@@ -1,7 +1,6 @@
 //! Shared support for `rfc_consistency_io`.
 
-#[path = "workspace.rs"]
-mod workspace;
+use crate::workspace;
 
 use super::*;
 

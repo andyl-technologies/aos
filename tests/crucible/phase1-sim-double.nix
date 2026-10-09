@@ -27,7 +27,7 @@
     failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
         label = "T-HARN-3 completion note";
-        needle = "Completed by `crucible::SimDouble`";
+        needle = "Completed by `crucible_engine::SimDouble`";
       }
     ]
     ++ failuresFor "crates/crucible/engine/crucible-engine/Cargo.toml" cargoManifest [
@@ -296,7 +296,7 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             gate=gate:sim-double
-            sim_double=crucible::SimDouble
+            sim_double=crucible_engine::SimDouble
             shared_shmem_abi=true
             shared_spsc_queue=true
             shared_protocol_codec=true

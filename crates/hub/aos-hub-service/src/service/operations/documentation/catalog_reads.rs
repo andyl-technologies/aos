@@ -33,7 +33,8 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("native package documentation"))?;
-        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry.id));
+        let fetch =
+            self.topology_surface_fetcher(aos_hub_db::db::SurfaceTarget::Registry(registry.id));
         let (canonical_json, _) =
             crate::indexer::native_documentation::fetch_native_documentation_content(
                 fetch.as_ref(),
@@ -82,7 +83,8 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("native package reference"))?;
-        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry.id));
+        let fetch =
+            self.topology_surface_fetcher(aos_hub_db::db::SurfaceTarget::Registry(registry.id));
         let (canonical_json, _) =
             crate::indexer::native_documentation::fetch_native_documentation_content(
                 fetch.as_ref(),
@@ -237,8 +239,8 @@ impl RpcService {
                         Some(&release.semver),
                     )
                     .await?;
-                let fetch =
-                    self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry.id));
+                let fetch = self
+                    .topology_surface_fetcher(aos_hub_db::db::SurfaceTarget::Registry(registry.id));
                 let (canonical_json, _) =
                     crate::indexer::native_documentation::fetch_native_documentation_content(
                         fetch.as_ref(),
@@ -284,7 +286,8 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("native package documentation"))?;
-        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry.id));
+        let fetch =
+            self.topology_surface_fetcher(aos_hub_db::db::SurfaceTarget::Registry(registry.id));
         let (canonical_json, _) =
             crate::indexer::native_documentation::fetch_native_documentation_content(
                 fetch.as_ref(),

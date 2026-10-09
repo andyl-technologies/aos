@@ -153,15 +153,15 @@ const CAMPAIGN_CONTROL_RESPONSIVENESS_SELECTORS: &[ExactSelector] = &[ExactSelec
 
 const EXACT_CLOSURE_STREAMING_API_SELECTORS: &[ExactSelector] = &[
     ExactSelector {
-        source: "crates/crucible/control/crucible-control-api/src/vm_lifecycle/checkpoint_store/tests.rs",
+        source: "crates/crucible/control/crucible-daemon/src/vm_lifecycle/checkpoint_store/tests.rs",
         name: "vm_lifecycle::checkpoint_store::tests::portable_closure_inventory_streams_only_authenticated_manifest_objects",
     },
     ExactSelector {
-        source: "crates/crucible/control/crucible-control-api/src/vm_lifecycle/checkpoint_store/tests.rs",
+        source: "crates/crucible/control/crucible-daemon/src/vm_lifecycle/checkpoint_store/tests.rs",
         name: "vm_lifecycle::checkpoint_store::tests::file_artifact_stream_authenticates_sparse_file_contents",
     },
     ExactSelector {
-        source: "crates/crucible/control/crucible-control-api/src/vm_lifecycle/checkpoint_store/tests.rs",
+        source: "crates/crucible/control/crucible-daemon/src/vm_lifecycle/checkpoint_store/tests.rs",
         name: "vm_lifecycle::checkpoint_store::tests::chunked_artifact_stream_recreates_sparse_zero_extents",
     },
 ];
@@ -680,7 +680,10 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
     automated(
         "gate:content-address",
         "crucible-engine",
-        &[integration_target("crucible-engine", "gate_content_address")],
+        &[integration_target(
+            "crucible-engine",
+            "gate_content_address",
+        )],
         "checks.crucible.phase1.gates.contentAddress",
     ),
     automated(
@@ -707,10 +710,10 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
     ),
     automated(
         "gate:exact-closure-streaming",
-        "crucible-control-api",
+        "crucible-daemon",
         &[
             CampaignGateTarget {
-                package: "crucible-control-api",
+                package: "crucible-daemon",
                 kind: CampaignGateTargetKind::LibExact {
                     selectors: EXACT_CLOSURE_STREAMING_API_SELECTORS,
                     nix_source: "tests/crucible/phase5-exact-closure-streaming.nix",

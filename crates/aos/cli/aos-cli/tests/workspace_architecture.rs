@@ -31,8 +31,8 @@ impl Workspace {
 
         for member in members {
             let member = member.as_str().ok_or("workspace member must be a string")?;
-            let manifest: Value = fs::read_to_string(directory.join(member).join("Cargo.toml"))?
-                .parse()?;
+            let manifest: Value =
+                fs::read_to_string(directory.join(member).join("Cargo.toml"))?.parse()?;
             let name = manifest["package"]["name"]
                 .as_str()
                 .ok_or("package.name must be a string")?
@@ -50,7 +50,10 @@ impl Workspace {
     }
 
     fn assert_independent(&self, source: &str, forbidden: &[&str]) {
-        assert!(self.manifests.contains_key(source), "missing package {source}");
+        assert!(
+            self.manifests.contains_key(source),
+            "missing package {source}"
+        );
         let mut pending = vec![source.to_owned()];
         let mut visited = BTreeSet::new();
 
@@ -88,13 +91,12 @@ fn collect_dependencies(
     for section in ["dependencies", "build-dependencies"] {
         if let Some(table) = manifest.get(section).and_then(Value::as_table) {
             for (alias, declaration) in table {
-                let declaration = if declaration.get("workspace").and_then(Value::as_bool)
-                    == Some(true)
-                {
-                    inherited.get(alias).unwrap_or(declaration)
-                } else {
-                    declaration
-                };
+                let declaration =
+                    if declaration.get("workspace").and_then(Value::as_bool) == Some(true) {
+                        inherited.get(alias).unwrap_or(declaration)
+                    } else {
+                        declaration
+                    };
                 let package = declaration
                     .get("package")
                     .and_then(Value::as_str)
@@ -114,7 +116,10 @@ fn collect_dependencies(
 #[test]
 fn shared_foundation_remains_portable_and_project_independent() -> Result<(), Box<dyn Error>> {
     let workspace = Workspace::load()?;
-    let dependencies = workspace.production.get("aos-core").ok_or("missing aos-core")?;
+    let dependencies = workspace
+        .production
+        .get("aos-core")
+        .ok_or("missing aos-core")?;
 
     for dependency in dependencies {
         assert!(
@@ -133,7 +138,10 @@ fn shared_foundation_remains_portable_and_project_independent() -> Result<(), Bo
 fn reusable_project_libraries_do_not_depend_on_their_applications() -> Result<(), Box<dyn Error>> {
     let workspace = Workspace::load()?;
     workspace.assert_independent("aos-deployment", &["aos-package-manager", "aos-cli"]);
-    workspace.assert_independent("aos-registry-authoring", &["aos-package-manager", "aos-cli"]);
+    workspace.assert_independent(
+        "aos-registry-authoring",
+        &["aos-package-manager", "aos-cli"],
+    );
     workspace.assert_independent("aos-hub-db", &["aos-hub-service", "aos-hub-native"]);
     workspace.assert_independent("crucible-control-api", &["crucible-qemu-host"]);
     workspace.assert_independent("crucible-control-client", &["crucible-qemu-host"]);
@@ -145,11 +153,21 @@ fn qemu_boundary_remains_permissive_and_independent() -> Result<(), Box<dyn Erro
     let workspace = Workspace::load()?;
 
     for package in ["crucible-qemu-protocol", "crucible-qemu-shmem"] {
-        let manifest = workspace.manifests.get(package).ok_or("missing boundary package")?;
-        assert_eq!(manifest["package"]["license"].as_str(), Some("MIT OR Apache-2.0"));
+        let manifest = workspace
+            .manifests
+            .get(package)
+            .ok_or("missing boundary package")?;
+        assert_eq!(
+            manifest["package"]["license"].as_str(),
+            Some("MIT OR Apache-2.0")
+        );
         workspace.assert_independent(
             package,
-            &["crucible-qemu-host", "crucible-qemu-plugin", "crucible-qemu-debug-gateway"],
+            &[
+                "crucible-qemu-host",
+                "crucible-qemu-plugin",
+                "crucible-qemu-debug-gateway",
+            ],
         );
     }
     Ok(())

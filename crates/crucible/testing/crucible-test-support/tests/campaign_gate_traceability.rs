@@ -781,9 +781,7 @@ fn integration_target_failures(
         failures.push(format!("{gate}: missing target {package}:{test_target}"));
     }
 
-    let test_path = root
-        .join("crates")
-        .join(package)
+    let test_path = workspace::package_path(&root.join("crates"), package)
         .join("tests")
         .join(format!("{test_target}.rs"));
     if !test_path.is_file() {
@@ -806,7 +804,7 @@ fn library_exact_target_failures(
     ignored: bool,
 ) -> Vec<String> {
     let mut failures = Vec::new();
-    let manifest = root.join("crates").join(package).join("Cargo.toml");
+    let manifest = workspace::package_path(&root.join("crates"), package).join("Cargo.toml");
     if !manifest.is_file() {
         failures.push(format!(
             "{gate}: library package manifest {} is missing",

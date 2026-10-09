@@ -55,7 +55,7 @@ impl RpcService {
     }
 
     pub(in crate::service) fn topology_pin_impact_message(
-        pin: crate::db::ConsumerScopeGrantPinRecord,
+        pin: aos_hub_db::db::ConsumerScopeGrantPinRecord,
     ) -> pb::TopologyPinImpact {
         let allowed_actions = match pin.target_kind.as_str() {
             "endpoint" | "listener" => vec![
@@ -82,8 +82,8 @@ impl RpcService {
 
     pub(in crate::service) async fn topology_grant_message(
         &self,
-        record: crate::db::ConsumerScopeGrantRecord,
-        resource: crate::db::GrantResource<'_>,
+        record: aos_hub_db::db::ConsumerScopeGrantRecord,
+        resource: aos_hub_db::db::GrantResource<'_>,
     ) -> Result<pb::ConsumerScopeGrant, RpcError> {
         let impacts = self
             .db
@@ -94,8 +94,8 @@ impl RpcService {
     }
 
     pub(in crate::service) fn topology_grant_message_with_pins(
-        record: crate::db::ConsumerScopeGrantRecord,
-        impacts: Vec<crate::db::ConsumerScopeGrantPinRecord>,
+        record: aos_hub_db::db::ConsumerScopeGrantRecord,
+        impacts: Vec<aos_hub_db::db::ConsumerScopeGrantPinRecord>,
     ) -> pb::ConsumerScopeGrant {
         let impacts = impacts
             .into_iter()
@@ -124,9 +124,9 @@ impl RpcService {
         auth: Option<&str>,
         boundary_id: &str,
         target_revision: i64,
-        impacts: &[crate::db::NetworkPolicyServingPinRecord],
+        impacts: &[aos_hub_db::db::NetworkPolicyServingPinRecord],
         requested: &[pb::PinResolution],
-    ) -> Result<Vec<crate::db::NetworkPolicyPinResolutionSeal>, RpcError> {
+    ) -> Result<Vec<aos_hub_db::db::NetworkPolicyPinResolutionSeal>, RpcError> {
         let mut by_pin = BTreeMap::new();
         for resolution in requested {
             if resolution.pin_id.is_empty() {
@@ -339,7 +339,7 @@ impl RpcService {
                     Some(version),
                 )
             });
-            sealed.push(crate::db::NetworkPolicyPinResolutionSeal {
+            sealed.push(aos_hub_db::db::NetworkPolicyPinResolutionSeal {
                 source: impact.clone(),
                 action_kind: action_kind.to_string(),
                 source_resource_version,
@@ -356,7 +356,7 @@ impl RpcService {
     pub(in crate::service) async fn seal_grant_pin_resolutions(
         &self,
         auth: Option<&str>,
-        pins: &[crate::db::ConsumerScopeGrantPinRecord],
+        pins: &[aos_hub_db::db::ConsumerScopeGrantPinRecord],
         requested: &[pb::PinResolution],
     ) -> Result<Vec<GrantPinResolutionSeal>, RpcError> {
         let mut by_pin = BTreeMap::new();
@@ -658,10 +658,10 @@ impl RpcService {
             ))
         })?;
         let target = match primary.source.target_kind.as_str() {
-            "endpoint" | "listener" => crate::db::NewTopologyOperationTargetRef::Endpoint(
+            "endpoint" | "listener" => aos_hub_db::db::NewTopologyOperationTargetRef::Endpoint(
                 primary.source.target_stable_id.clone(),
             ),
-            "route" => crate::db::NewTopologyOperationTargetRef::Route(
+            "route" => aos_hub_db::db::NewTopologyOperationTargetRef::Route(
                 primary.source.target_stable_id.clone(),
             ),
             "placement" => {
@@ -676,7 +676,7 @@ impl RpcService {
                     .await
                     .map_err(RpcError::internal)?
                     .ok_or_else(|| RpcError::not_found("binding"))?;
-                crate::db::NewTopologyOperationTargetRef::Binding(binding.id)
+                aos_hub_db::db::NewTopologyOperationTargetRef::Binding(binding.id)
             }
             _ => return Err(RpcError::invalid("unsupported grant pin target kind")),
         };
@@ -700,11 +700,11 @@ impl RpcService {
         };
         let operation = self
             .db
-            .create_topology_operation(&crate::db::NewTopologyOperation {
+            .create_topology_operation(&aos_hub_db::db::NewTopologyOperation {
                 operation_id,
                 operation_kind: "consumer_scope_grant_revocation".to_string(),
                 control_permission: permission,
-                targets: vec![crate::db::NewTopologyOperationTarget {
+                targets: vec![aos_hub_db::db::NewTopologyOperationTarget {
                     role: "primary".to_string(),
                     target,
                     generation_key: target_generation,

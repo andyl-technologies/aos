@@ -1,5 +1,7 @@
 //! Exact integration-selector source and Nix-contract validation.
 
+use crate::workspace;
+
 use super::*;
 
 pub(super) fn integration_exact_target_failures(
@@ -20,16 +22,14 @@ pub(super) fn integration_exact_target_failures(
     };
     let package = target.package;
     let mut failures = Vec::new();
-    let manifest = root.join("crates").join(package).join("Cargo.toml");
+    let manifest = workspace::package_path(&root.join("crates"), package).join("Cargo.toml");
     if !manifest.is_file() {
         failures.push(format!(
             "{gate}: integration package manifest {} is missing",
             manifest.display()
         ));
     }
-    let test_path = root
-        .join("crates")
-        .join(package)
+    let test_path = workspace::package_path(&root.join("crates"), package)
         .join("tests")
         .join(format!("{test_target}.rs"));
     if !test_path.is_file() {

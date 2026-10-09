@@ -63,7 +63,7 @@ impl RpcService {
         lease: Arc<dyn PublishLease>,
         reindexer: Arc<dyn Reindexer>,
         topology_probes: Arc<dyn TopologyProbeScheduler>,
-        sealer: Option<Arc<dyn crate::auth::seal::SecretSealer>>,
+        sealer: Option<Arc<dyn aos_hub_model::auth::seal::SecretSealer>>,
     ) -> Self {
         Self {
             db,
@@ -115,7 +115,7 @@ impl RpcService {
     #[must_use]
     pub fn with_secret_versions(
         mut self,
-        resolver: Arc<dyn crate::secret_version::SecretVersionResolver>,
+        resolver: Arc<dyn aos_hub_model::secret_version::SecretVersionResolver>,
     ) -> Self {
         self.secret_versions = Some(resolver);
         self

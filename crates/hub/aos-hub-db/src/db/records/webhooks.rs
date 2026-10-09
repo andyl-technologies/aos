@@ -1,12 +1,10 @@
 //! Webhooks records returned by typed Hub persistence operations.
 
-use super::*;
-
 /// One webhook subscription (system-of-record row).
 ///
 /// An org's HTTP notification endpoint plus the event types it wants and the
 /// immutable secret-provider version used to sign deliveries (see
-/// [`crate::webhook`]). Plaintext signing material is not persisted.
+/// the service webhook dispatcher). Plaintext signing material is not persisted.
 #[derive(Debug, Clone)]
 pub struct WebhookRecord {
     /// Database id.

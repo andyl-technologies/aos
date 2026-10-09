@@ -5,7 +5,7 @@ use super::*;
 impl RpcService {
     pub(in crate::service) async fn gateway_message(
         &self,
-        record: crate::db::GatewayRecord,
+        record: aos_hub_db::db::GatewayRecord,
     ) -> Result<pb::Gateway, RpcError> {
         let desired = if let Some(generation) = record.desired_generation {
             let revision = self
@@ -38,7 +38,7 @@ impl RpcService {
         let generation = record.desired_generation.unwrap_or_default();
         let grant_records = if generation > 0 {
             self.db
-                .list_consumer_scope_grants(crate::db::GrantResource::Gateway {
+                .list_consumer_scope_grants(aos_hub_db::db::GrantResource::Gateway {
                     id: &record.id,
                     generation,
                 })
@@ -52,7 +52,7 @@ impl RpcService {
             grants.push(
                 self.topology_grant_message(
                     grant,
-                    crate::db::GrantResource::Gateway {
+                    aos_hub_db::db::GrantResource::Gateway {
                         id: &record.id,
                         generation,
                     },
@@ -81,7 +81,7 @@ impl RpcService {
         auth: Option<&str>,
         stable_id: &str,
         permission: Permission,
-    ) -> Result<crate::db::GatewayRecord, RpcError> {
+    ) -> Result<aos_hub_db::db::GatewayRecord, RpcError> {
         let record = self
             .db
             .gateway(stable_id)
@@ -96,7 +96,7 @@ impl RpcService {
     pub(in crate::service) fn gateway_revision_spec(
         spec: Option<pb::GatewayRevisionSpec>,
         binding_id: i64,
-    ) -> Result<crate::db::GatewayRevisionSpec, RpcError> {
+    ) -> Result<aos_hub_db::db::GatewayRevisionSpec, RpcError> {
         use pb::delivery_access_policy::Policy;
 
         let spec = spec.ok_or_else(|| RpcError::invalid("revision is required"))?;
@@ -155,7 +155,7 @@ impl RpcService {
         };
         let access_policy_json =
             serde_json::to_string(&access_policy).map_err(RpcError::internal)?;
-        Ok(crate::db::GatewayRevisionSpec {
+        Ok(aos_hub_db::db::GatewayRevisionSpec {
             binding_id,
             endpoint_id: spec.endpoint_id,
             endpoint_generation: spec.endpoint_generation,
@@ -272,7 +272,7 @@ impl RpcService {
             req.revision = Some(desired);
             let grants = self
                 .db
-                .list_consumer_scope_grants(crate::db::GrantResource::Gateway {
+                .list_consumer_scope_grants(aos_hub_db::db::GrantResource::Gateway {
                     id: &current.id,
                     generation,
                 })
@@ -493,7 +493,7 @@ impl RpcService {
             let owner = input.owner_grant.ok_or_else(|| {
                 RpcError::internal(anyhow::anyhow!("gateway update plan has no owner grant"))
             })?;
-            let owner = crate::db::GatewayGrantCarryForward {
+            let owner = aos_hub_db::db::GatewayGrantCarryForward {
                 consumer_scope_key: owner.consumer_scope_key,
                 grant_generation: owner.grant_generation,
                 resource_version: owner.resource_version,
@@ -501,7 +501,7 @@ impl RpcService {
             let carried = input
                 .carried_grants
                 .into_iter()
-                .map(|seal| crate::db::GatewayGrantCarryForward {
+                .map(|seal| aos_hub_db::db::GatewayGrantCarryForward {
                     consumer_scope_key: seal.consumer_scope_key,
                     grant_generation: seal.grant_generation,
                     resource_version: seal.resource_version,
@@ -571,7 +571,7 @@ impl RpcService {
                 "gateway generation is stale".to_string(),
             ));
         }
-        let resource = crate::db::GrantResource::Gateway {
+        let resource = aos_hub_db::db::GrantResource::Gateway {
             id: &gateway.id,
             generation,
         };
@@ -700,7 +700,7 @@ impl RpcService {
                 "gateway owner or desired generation changed after planning".to_string(),
             ));
         }
-        let resource = crate::db::GrantResource::Gateway {
+        let resource = aos_hub_db::db::GrantResource::Gateway {
             id: &gateway.id,
             generation: input.gateway_generation,
         };

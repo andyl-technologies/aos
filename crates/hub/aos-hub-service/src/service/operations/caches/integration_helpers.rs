@@ -139,7 +139,7 @@ impl RpcService {
         change: &pb::ConsumerCacheChange,
         ready_routes: &std::collections::BTreeMap<
             String,
-            crate::db::ReadyRouteAdvertisementIdentity,
+            aos_hub_db::db::ReadyRouteAdvertisementIdentity,
         >,
     ) -> Result<String, RpcError> {
         let entries = Self::mutated_consumer_cache_entries(stack, change)?;
@@ -231,7 +231,7 @@ impl RpcService {
 
     pub(in crate::service) async fn consumer_cache_entry_message(
         &self,
-        row: &crate::db::RegistryCacheStackEntryRecord,
+        row: &aos_hub_db::db::RegistryCacheStackEntryRecord,
     ) -> Result<pb::ConsumerCacheStackEntry, RpcError> {
         let source = match row.cache_id {
             Some(cache_id) => {
@@ -258,9 +258,9 @@ impl RpcService {
 
     pub(in crate::service) async fn cache_integration_message(
         &self,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
         registry: &RegistryRecord,
-        publication_rows: &[crate::db::RegistryCacheStackEntryRecord],
+        publication_rows: &[aos_hub_db::db::RegistryCacheStackEntryRecord],
     ) -> Result<pb::CacheIntegration, RpcError> {
         let mut publications = Vec::new();
         for row in publication_rows

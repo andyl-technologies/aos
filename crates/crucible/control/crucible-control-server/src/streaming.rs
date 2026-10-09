@@ -5,26 +5,18 @@ use crucible_engine::{
     DebugReverseContinueReport, DebugReverseStepReport, EngineError, SchedulerError,
 };
 use crucible_session::{
-    BreakpointId, CommandReply, LifecycleStateKind, LifecycleTransition, LiveQueryKind,
-    LiveSnapshot, LiveSnapshotView, LiveStateKind, QueryResult, SavepointInfo, SessionCommand,
+    BreakpointId, CommandReply, LifecycleStateKind, LifecycleTransition, LiveSnapshot,
+    LiveSnapshotView, LiveStateKind, QueryResult, SavepointInfo, SessionCommand,
     SessionCommandKind, SessionError, SessionEventLogStream, SessionHandle, SessionReproductionLog,
     SessionStateTransitionBus, SessionStateTransitionFrame, SessionStateTransitionStream,
     lifecycle_transition,
 };
 use std::sync::Arc;
-use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::event_log_stream::{
-    ControlPlaneEventLog, EventLogCursor, SessionEventLogFrame, SessionEventLogSnapshot,
-    SessionEventLogStreamError,
-};
+use crate::event_log_stream::{ControlPlaneEventLog, SessionEventLogStreamError};
 use crucible_control_api::lifecycle::{ReproductionCommandRecord, SessionRef};
-use crucible_control_api::open_set::{OpenSetEventEnvelope, open_set_event_envelope_from_entry};
-use crucible_control_api::rpc_abi::{ProtocolVersion, RPC_PROTOCOL_VERSION, RpcStatusCode};
-use crucible_control_api::session_mapping::{
-    API_COMMAND_MAPPINGS, ApiDispatch, ApiMethod, CommandDispatchCardinality, method_mapping,
-};
+use crucible_control_api::rpc_abi::RPC_PROTOCOL_VERSION;
 
 use crucible_control_api::streaming::*;
 

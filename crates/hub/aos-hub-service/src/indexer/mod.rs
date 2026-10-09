@@ -31,7 +31,7 @@
 //!
 //! This module is the single canonical indexer. It is pure logic over the
 //! [`SurfaceFetch`](crate::fetch::SurfaceFetch) read port and the core
-//! [`Database`](crate::db::Database) write side — no async runtime, filesystem,
+//! [`Database`](aos_hub_db::db::Database) write side — no async runtime, filesystem,
 //! or HTTP client of its own — so it compiles to `wasm32-unknown-unknown` and
 //! runs identically on the native hub (over a `LocalFsFetch`/`HttpFetch`) and in
 //! the Cloudflare Worker's Cron job (over an `R2SurfaceFetch`). The accept/reject
@@ -69,14 +69,14 @@ use futures_util::{future::try_join_all, TryStreamExt as _};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::db::{
+use crate::fetch::SurfaceFetch;
+use aos_hub_db::db::{
     ChannelSummary, ContainerReleaseClosureMemberSnapshot, ContainerReleaseDescriptorRole,
     ContainerReleaseEvidenceSnapshot, ContainerReleaseLayerSnapshot, ContainerReleaseRootSnapshot,
     Database, IndexOciRepositoryCatalog, IndexSnapshot, OciCatalogProjection,
     OciImageConfigProjection, OciLayerProjection, RegistryRecord, ReleaseArtifactSnapshot,
     ReleaseImageSnapshot, ReleaseRow, ReleaseSnapshotArtifact, VerifiedContainerReleaseDescriptor,
 };
-use crate::fetch::SurfaceFetch;
 
 use self::load::{load_registry_tree_with_reader, load_release_tree_with_reader, ObjectReader};
 
@@ -219,7 +219,7 @@ fn is_transient_backend_error(err: &anyhow::Error) -> bool {
 /// This is the entry point callers should use: it wraps [`index_registry`]
 /// so that any failure is persisted as the registry's index state instead
 /// of being lost with the returned error. Transport-level fetch failures
-/// (classified via [`crate::url_guard::is_fetch_error`]) mark the index
+/// (classified via [`aos_hub_model::url_guard::is_fetch_error`]) mark the index
 /// `stale`; everything else marks it `failed`.
 ///
 /// # Errors
@@ -255,7 +255,7 @@ pub async fn index_and_record_from_placement(
         Ok(outcome) => Ok(outcome),
         Err(err) => {
             let detail = format!("{err:#}");
-            if crate::url_guard::is_fetch_error(&err) {
+            if aos_hub_model::url_guard::is_fetch_error(&err) {
                 db.mark_index_stale(registry.id, &detail).await?;
             } else {
                 db.mark_index_failed_if_generation(registry.id, starting_generation, &detail)
@@ -312,7 +312,7 @@ pub async fn reconcile_registry_replica(
                 registry.id,
                 placement_id,
                 &objects,
-                crate::clock::now_unix_secs(),
+                aos_hub_model::clock::now_unix_secs(),
             )
             .await?;
         }
@@ -916,7 +916,7 @@ async fn index_registry_inner(
     let (caches, cache_stack) = resolve_cache_layout(registry, &tree.root);
 
     image_presence.sort_by(|left, right| left.object_key.cmp(&right.object_key));
-    let mut deduplicated_presence: Vec<crate::db::VerifiedRegistryImageObject> =
+    let mut deduplicated_presence: Vec<aos_hub_db::db::VerifiedRegistryImageObject> =
         Vec::with_capacity(image_presence.len());
     for object in image_presence {
         if let Some(previous) = deduplicated_presence.last() {
@@ -988,7 +988,7 @@ async fn index_registry_inner(
             &snapshot,
             placement_id,
             &image_presence,
-            crate::clock::now_unix_secs(),
+            aos_hub_model::clock::now_unix_secs(),
         )
         .await?;
     } else if !image_presence.is_empty() {
@@ -1051,7 +1051,7 @@ async fn reconcile_legacy_oci_admin_projections(
                     reconciliation.repository_id,
                     reconciliation.root.digest,
                     &detail,
-                    crate::clock::now_unix_secs(),
+                    aos_hub_model::clock::now_unix_secs(),
                 )
                 .await?;
                 return Err(error);
@@ -1125,7 +1125,7 @@ async fn reconcile_legacy_oci_admin_root(
         tag: None,
         source_kind: "manual".to_string(),
         actor_id: "system:index-admin-reconciliation".to_string(),
-        observed_at: crate::clock::now_unix_secs(),
+        observed_at: aos_hub_model::clock::now_unix_secs(),
     })
     .await?;
     Ok(())
@@ -1137,7 +1137,7 @@ async fn fetch_exact_oci_semantic_object(
 ) -> Result<Vec<u8>> {
     let bytes = fetch
         .fetch_bounded(
-            &crate::db::oci_blob_object_key(descriptor.digest),
+            &aos_hub_db::db::oci_blob_object_key(descriptor.digest),
             MAX_OCI_JSON_BYTES,
         )
         .await?
@@ -1184,7 +1184,7 @@ async fn fetch_exact_oci_range(
 ) -> Result<Vec<u8>> {
     let read = fetch
         .fetch_stream(
-            &crate::db::oci_blob_object_key(descriptor.digest),
+            &aos_hub_db::db::oci_blob_object_key(descriptor.digest),
             Some(range),
         )
         .await?
@@ -1479,7 +1479,7 @@ async fn signed_container_admin_projection(
     );
     let closure_bytes = fetch
         .fetch_bounded(
-            &crate::db::oci_blob_object_key(closure_payload.digest),
+            &aos_hub_db::db::oci_blob_object_key(closure_payload.digest),
             MAX_OCI_JSON_BYTES,
         )
         .await?
@@ -1663,7 +1663,7 @@ async fn validate_container_dsse(
         .await?,
         "container DSSE payload lacks exact evidence on the frozen indexed placement"
     );
-    let key = crate::db::oci_blob_object_key(payload.descriptor.digest);
+    let key = aos_hub_db::db::oci_blob_object_key(payload.descriptor.digest);
     let bytes = fetch
         .fetch_bounded(&key, MAX_OCI_JSON_BYTES)
         .await?
@@ -1958,8 +1958,8 @@ async fn record_commit_provenance(
         let registry_scope = db.registry_authorization_scope(registry.id).await;
         match (db.changeset(&change_id).await, registry_scope) {
             (Ok(Some(changeset)), Ok(registry_scope))
-                if crate::domain::Scope::try_parse(&changeset.scope).as_ref()
-                    == crate::domain::Scope::try_parse(&registry_scope).as_ref() =>
+                if aos_hub_model::domain::Scope::try_parse(&changeset.scope).as_ref()
+                    == aos_hub_model::domain::Scope::try_parse(&registry_scope).as_ref() =>
             {
                 if let Err(err) = db
                     .mark_changeset_applied_commit(&change_id, commit_oid_hex)
@@ -2075,8 +2075,8 @@ async fn synthesize_external_audit(
 #[derive(Debug)]
 struct VerifiedSystemImageCatalog {
     digest: String,
-    images: Vec<crate::db::IndexedSystemImage>,
-    objects: Vec<crate::db::VerifiedRegistryImageObject>,
+    images: Vec<aos_hub_db::db::IndexedSystemImage>,
+    objects: Vec<aos_hub_db::db::VerifiedRegistryImageObject>,
 }
 
 #[derive(Clone)]
@@ -2157,7 +2157,7 @@ async fn revalidate_reused_release_images(
     publication: Option<&(String, i64)>,
     catalog: &ReleaseImageSnapshot,
     snapshot_leases: &mut Vec<String>,
-) -> Result<Vec<crate::db::VerifiedRegistryImageObject>> {
+) -> Result<Vec<aos_hub_db::db::VerifiedRegistryImageObject>> {
     let publication = publication
         .context("reusing a signed image catalog requires an exact current publication")?;
     verify_system_image_cache_objects(
@@ -2305,7 +2305,7 @@ async fn verify_system_image_objects(
                         continue;
                     }
                     image.validate_delivery(&version.version, platform)?;
-                    let indexed_image = crate::db::IndexedSystemImage {
+                    let indexed_image = aos_hub_db::db::IndexedSystemImage {
                         package: package.package.name.clone(),
                         release: version.version.clone(),
                         platform: platform.clone(),
@@ -2584,7 +2584,7 @@ async fn verify_system_image_cache_objects(
     db: &Database,
     fetch: &dyn SurfaceFetch,
     publication: Option<&(String, i64)>,
-    images: &[crate::db::IndexedSystemImage],
+    images: &[aos_hub_db::db::IndexedSystemImage],
     snapshot_leases: &mut Vec<String>,
 ) -> Result<()> {
     let mut verified_store_paths = std::collections::BTreeSet::new();
@@ -2736,7 +2736,7 @@ async fn verify_published_system_image_object(
     object_key: String,
     sha256: String,
     byte_size: i64,
-) -> Result<crate::db::VerifiedRegistryImageObject> {
+) -> Result<aos_hub_db::db::VerifiedRegistryImageObject> {
     let evidence = db
         .registry_publication_verified_object_at_placement(
             publication_id,
@@ -2911,7 +2911,7 @@ async fn verify_system_image_object(
     sha256: String,
     byte_size: i64,
     snapshot_leases: &mut Vec<String>,
-) -> Result<crate::db::VerifiedRegistryImageObject> {
+) -> Result<aos_hub_db::db::VerifiedRegistryImageObject> {
     let expected_size =
         u64::try_from(byte_size).context("signed image object size cannot be negative")?;
     let before_etag = fetch.inventory_strong_etag(&object_key).await?;
@@ -2961,7 +2961,7 @@ async fn verify_system_image_object(
         "signed image object '{object_key}' backend does not expose a strong version"
     ))?;
 
-    Ok(crate::db::VerifiedRegistryImageObject {
+    Ok(aos_hub_db::db::VerifiedRegistryImageObject {
         object_key,
         sha256,
         byte_size,
@@ -3320,8 +3320,8 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::db::Database;
     use crate::fetch::{StreamedRead, SurfaceFetch};
+    use aos_hub_db::db::Database;
     use aos_oci_types::{
         to_canonical_json, Annotations, ContainerDsseSignature,
         ContainerEvidenceMappingQualification, ContainerEvidenceQualification,

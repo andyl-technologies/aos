@@ -42,7 +42,7 @@ impl RpcService {
     /// attached (RFC-0004 ch.14 Phase C, `roster:{registry_id}`).
     ///
     /// Each entry is `(key_id, public_key, status)` as
-    /// [`Database::list_roster`](crate::db::Database::list_roster) returns. A
+    /// [`Database::list_roster`](aos_hub_db::db::Database::list_roster) returns. A
     /// short-TTL cache off the database; falls back to the database with no `kv`.
     ///
     /// # Errors
@@ -306,7 +306,7 @@ impl RpcService {
     pub(crate) async fn effective_surface_writer(
         &self,
         surface: SurfaceTarget,
-    ) -> Result<crate::db::SurfacePlacementRecord, RpcError> {
+    ) -> Result<aos_hub_db::db::SurfacePlacementRecord, RpcError> {
         self.db
             .reconciled_surface_writer(surface)
             .await
@@ -580,7 +580,7 @@ impl RpcService {
     /// This is *not* a public directory: the caller must present a bearer JWT,
     /// and each org is included only when that caller holds
     /// [`Permission::Read`] covering its scope (soft-deleted orgs are already
-    /// excluded by [`Database::list_orgs`](crate::db::Database::list_orgs)).
+    /// excluded by [`Database::list_orgs`](aos_hub_db::db::Database::list_orgs)).
     ///
     /// # Errors
     ///

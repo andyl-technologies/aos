@@ -580,7 +580,7 @@
           export AOS_TEST_IDENTITY_PRELOAD="$NIX_BUILD_TOP/aos-test-identity.so"
           cc -shared -fPIC -O2 -Wall -Wextra -Werror \
             -o "$AOS_TEST_IDENTITY_PRELOAD" \
-            aos-hub/tests/nix_builder_identity.c
+            hub/aos-hub-native/tests/nix_builder_identity.c
         ''
       }
     '';

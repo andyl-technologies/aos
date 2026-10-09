@@ -19,15 +19,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
-use aos_module_format::graph::GRAPH_LIMITS;
 use aos_activation::adapter::CancellationToken;
 use aos_core::Sha256Digest;
+use aos_module_format::graph::GRAPH_LIMITS;
 use serde::{Deserialize, Serialize};
 
-use aos_deployment_format::model::{Deployment, ResolvedPackages};
 use aos_deployment::retention::{AdmittedArtifact, ArtifactAdmission, NixStore};
-use aos_deployment::transaction::{Transactions, journal_limits};
 use aos_deployment::store::verification::verify_store_object_in;
+use aos_deployment::transaction::{Transactions, journal_limits};
+use aos_deployment_format::model::{Deployment, ResolvedPackages};
 
 use aos_deployment::document::read_immutable_document_in;
 use aos_deployment::document::{read_descriptor_in, read_regular_store_document_in};
@@ -95,8 +95,10 @@ pub struct NativeDeploymentCommand {
     pub admission_sha256: Sha256Digest,
 }
 
+use aos_deployment::input::{
+    import_evaluation_input_retained, read_evaluation_input, read_evaluation_input_in,
+};
 use aos_deployment_format::input::EvaluationInput;
-use aos_deployment::input::{ImportControl, read_evaluation_input, read_evaluation_input_in, import_evaluation_input_retained};
 
 /// Resolves a retained descriptor and checks its exact committed source context.
 ///
@@ -209,8 +211,8 @@ fn apply_profile(
     recovered: Option<&RecoveredPublication>,
 ) -> Result<()> {
     use crate::profile::{Profile, deployment::ProfileDeployment};
-    use aos_deployment_format::inventory::{InstalledPackageRecord};
-use crate::types::{ProfileScope};
+    use aos_deployment_format::inventory::InstalledPackageRecord;
+    use aos_registry_client::types::ProfileScope;
 
     ensure!(
         deployment.scope() == ["profile", "system"],
@@ -343,7 +345,8 @@ use crate::types::{ProfileScope};
             descriptor.supplemental_inputs.sort();
             descriptor.supplemental_inputs.dedup();
             let staging = tempfile::tempdir_in(&profile.path)?;
-            source_descriptor = import_evaluation_input_retained(&descriptor,
+            source_descriptor = import_evaluation_input_retained(
+                &descriptor,
                 &command.nix_store,
                 staging.path(),
                 cancellation,
@@ -951,7 +954,7 @@ pub fn verify(command: &NativeDeploymentCommand) -> Result<()> {
     if let Some(path) = &command.profile {
         let profile = crate::profile::Profile {
             path: path.clone(),
-            scope: crate::types::ProfileScope::System,
+            scope: aos_registry_client::types::ProfileScope::System,
         };
         let generation = profile
             .current_generation()?
@@ -983,7 +986,7 @@ fn validate_state_location(command: &NativeDeploymentCommand) -> Result<()> {
 
 fn prepare(command: &NativeDeploymentCommand) -> Result<(Deployment, Admission, Receipt)> {
     validate_state_location(command)?;
-    let (input, _) = document::read_directory_in(
+    let (input, _) = aos_deployment::document::read_directory_in(
         &command.input,
         &command.nix_store,
         &CancellationToken::default(),

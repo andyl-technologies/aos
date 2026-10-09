@@ -215,7 +215,7 @@ impl RpcService {
     /// or internal registry, or an absent slug, returns `None` → `404`),
     /// consistent with the anonymous browse gate. A registry with a custom
     /// `robots.txt`... is not modeled per-registry; the per-registry document is
-    /// always generated from the registry's [`crate::crawl::CrawlPolicy`].
+    /// always generated from the registry's [`aos_hub_model::crawl::CrawlPolicy`].
     ///
     /// # Errors
     ///
@@ -224,7 +224,7 @@ impl RpcService {
         let Some(registry) = self.public_registry(slug).await? else {
             return Ok(None);
         };
-        let policy = crate::crawl::CrawlPolicy::parse_or_default(&registry.crawl_policy);
+        let policy = aos_hub_model::crawl::CrawlPolicy::parse_or_default(&registry.crawl_policy);
         let base = self.external_url.trim_end_matches('/');
         let llms_url = format!("{base}/{}/llms.txt", registry.slug);
         Ok(Some(crate::robots::render_robots(policy, Some(&llms_url))))
@@ -551,7 +551,7 @@ impl RpcService {
                 return Err(RpcError::invalid("publication paths must be unique"));
             }
             if !keymap::is_machine_path(&object.path)
-                || crate::url_guard::validate_http_surface_path(&object.path).is_err()
+                || aos_hub_model::url_guard::validate_http_surface_path(&object.path).is_err()
                 || object.path.len() > MAX_REGISTRY_PUBLICATION_PATH_BYTES
                 || object.path.split('/').count() > MAX_REGISTRY_PUBLICATION_PATH_COMPONENTS
             {
@@ -715,7 +715,7 @@ impl RpcService {
         } else {
             let publication_id = uuid::Uuid::new_v4().simple().to_string();
             self.db
-                .create_registry_publication(&crate::db::NewRegistryPublication {
+                .create_registry_publication(&aos_hub_db::db::NewRegistryPublication {
                     publication_id: publication_id.clone(),
                     registry_id: registry.id,
                     generation: req.generation,
@@ -733,14 +733,15 @@ impl RpcService {
             let manifest_objects = req
                 .objects
                 .into_iter()
-                .map(|object| crate::db::RegistryPublicationManifestObject {
+                .map(|object| aos_hub_db::db::RegistryPublicationManifestObject {
                     object_key: object.path,
                     expected_hash: object.sha256,
                     expected_size: object.byte_size,
                     object_kind: object.kind,
                 })
                 .collect::<Vec<_>>();
-            for objects in manifest_objects.chunks(crate::db::MAX_REGISTRY_MANIFEST_ADMISSION_BATCH)
+            for objects in
+                manifest_objects.chunks(aos_hub_db::db::MAX_REGISTRY_MANIFEST_ADMISSION_BATCH)
             {
                 self.db
                     .admit_registry_publication_manifest_objects(
@@ -754,7 +755,7 @@ impl RpcService {
             for placement in placements {
                 self.db
                     .set_registry_publication_placement(
-                        &crate::db::SetRegistryPublicationPlacement {
+                        &aos_hub_db::db::SetRegistryPublicationPlacement {
                             publication_id: publication_id.clone(),
                             placement_id: placement.id,
                             required: true,

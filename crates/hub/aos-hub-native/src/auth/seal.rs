@@ -30,7 +30,7 @@ use rand::Rng as _;
 use zeroize::Zeroizing;
 
 pub use aos_hub_model::auth::seal::{
-    AesGcmSealer, KEY_LEN, SecretSealer, XorSealer, dev_sealer, parse_key,
+    dev_sealer, parse_key, AesGcmSealer, SecretSealer, XorSealer, KEY_LEN,
 };
 
 const MAX_SECRET_FILE_BYTES: u64 = 1024 * 1024;
@@ -410,7 +410,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn secret_reader_rejects_symlinks_and_group_permissions() {
-        use std::os::unix::fs::{PermissionsExt as _, symlink};
+        use std::os::unix::fs::{symlink, PermissionsExt as _};
 
         let dir = private_tempdir();
         let key = dir.path().join("key");
@@ -460,7 +460,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn secret_reader_rejects_a_symlinked_parent() {
-        use std::os::unix::fs::{PermissionsExt as _, symlink};
+        use std::os::unix::fs::{symlink, PermissionsExt as _};
 
         let dir = private_tempdir();
         let private = dir.path().join("private");
@@ -489,7 +489,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn secret_reader_rejects_an_intermediate_symlink_component() {
-        use std::os::unix::fs::{PermissionsExt as _, symlink};
+        use std::os::unix::fs::{symlink, PermissionsExt as _};
 
         let dir = private_tempdir();
         let private = dir.path().join("private");
@@ -535,7 +535,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn secret_reader_never_follows_a_racing_symlink() {
-        use std::os::unix::fs::{PermissionsExt as _, symlink};
+        use std::os::unix::fs::{symlink, PermissionsExt as _};
         use std::sync::{Arc, Barrier};
 
         let dir = private_tempdir();

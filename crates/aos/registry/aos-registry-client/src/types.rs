@@ -1,10 +1,9 @@
 //! Native registry configuration scopes and settings.
 
-use std::path::{Path, PathBuf};
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
-pub use aos_registry_format::consumer::*;
+pub(crate) use aos_registry_format::consumer::*;
 
 /// Base directory for per-user and system profiles.
 const PROFILES_BASE: &str = "/var/lib/profiles";
@@ -378,11 +377,9 @@ pub struct ApmConfFile {
     pub settings: ApmSettings,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{BTreeMap, BTreeSet};
     use aos_registry_format::consumer::supported_package_features;
     #[test]
     fn registry_name_validation_accepts_path_safe_names() {

@@ -4,7 +4,7 @@ use super::*;
 
 impl RpcService {
     pub(in crate::service) fn delivery_boundary_revision_plan_seal(
-        record: crate::db::NetworkPolicyRevisionRecord,
+        record: aos_hub_db::db::NetworkPolicyRevisionRecord,
     ) -> DeliveryBoundaryRevisionPlanSeal {
         DeliveryBoundaryRevisionPlanSeal {
             boundary_id: record.boundary_id,
@@ -36,7 +36,7 @@ impl RpcService {
         let expires_at = clock::now_unix_secs() + TOPOLOGY_PLAN_TTL_SECS;
         let plan = self
             .db
-            .create_topology_plan(&crate::db::NewTopologyPlan {
+            .create_topology_plan(&aos_hub_db::db::NewTopologyPlan {
                 plan_id: candidate_plan_id,
                 plan_kind: plan_kind.to_string(),
                 actor_kind: claims.owner_kind.clone(),
@@ -60,7 +60,7 @@ impl RpcService {
         claims: &Claims,
         plan_kind: &str,
         idempotency_key: &str,
-    ) -> Result<Option<(crate::db::TopologyPlanRecord, T)>, RpcError> {
+    ) -> Result<Option<(aos_hub_db::db::TopologyPlanRecord, T)>, RpcError> {
         if idempotency_key.is_empty() {
             return Err(RpcError::invalid("idempotency_key is required"));
         }
@@ -82,7 +82,7 @@ impl RpcService {
     }
 
     pub(in crate::service) fn control_plan_response(
-        plan: crate::db::TopologyPlanRecord,
+        plan: aos_hub_db::db::TopologyPlanRecord,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let effects = serde_json::from_str(&plan.effects_json).map_err(RpcError::internal)?;
         let warnings = serde_json::from_str(&plan.warnings_json).map_err(RpcError::internal)?;
@@ -113,7 +113,7 @@ impl RpcService {
         plan_id: &str,
         plan_kind: &str,
         confirmation_hash: Option<&str>,
-    ) -> Result<(crate::db::TopologyPlanRecord, T), RpcError> {
+    ) -> Result<(aos_hub_db::db::TopologyPlanRecord, T), RpcError> {
         let claims = self.require_claims(auth)?;
         let plan = self
             .db

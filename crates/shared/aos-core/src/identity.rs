@@ -1,4 +1,4 @@
-//! Bounded local names inside authenticated parent scopes.
+//! Bounded local names within caller-defined parent scopes.
 
 use std::borrow::Borrow;
 use std::fmt;
@@ -21,12 +21,12 @@ pub enum IdentityError {
     /// A local key used a character outside the closed grammar.
     #[error("local key contains a character outside [A-Za-z0-9._-]")]
     InvalidLocalKey,
-    /// An artifact-relative path was empty, absolute, or non-normalized.
+    /// A relative path was empty, absolute, or non-normalized.
     #[error("relative path must be a nonempty normalized path of at most {limit} bytes")]
     InvalidRelativePath { limit: usize },
 }
 
-/// Identifies one bounded local name inside an authenticated parent scope.
+/// Represents one bounded local name within a caller-defined parent scope.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct LocalKey(String);
 

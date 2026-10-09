@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  fetchCargoVendor,
+  aosWorkspaceVendor,
   lib,
   qemu-crucible,
 }: let
@@ -78,18 +78,24 @@
       # characterization store paths.
       && !lib.hasPrefix characterizationGoldens pathString;
   };
-  cargoDepsHash = import ../tools/crucible/_cargo-deps-hash.nix;
-  crucibleCargoDeps = fetchCargoVendor {
-    src = crucibleSource;
-    name = "crucible-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = cargoDepsHash;
-  };
+  cargoDepsHash = import ../tools/crucible/_cargo-deps-hash.nix {cargoDeps = aosWorkspaceVendor;};
+  crucibleCargoDeps = aosWorkspaceVendor;
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };

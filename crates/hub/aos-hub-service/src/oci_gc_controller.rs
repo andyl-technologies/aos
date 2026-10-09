@@ -13,15 +13,15 @@ use std::sync::Arc;
 use anyhow::Result;
 use sha2::{Digest as _, Sha256};
 
-use crate::db::{
-    Database, OciGcDeleteOutcome, OciGcPlacementActionClaim, RecordOciGcDeletionFailure,
-    RecordOciGcDeletionSuccess,
-};
 use crate::fetch::{SurfaceFetch, SurfaceProvider};
 use crate::jobs::redacted_job_failure;
 use crate::surface_write::{
     FrozenSurfaceAccess, SurfaceDeleteOutcome, SurfaceDeletePrecondition, SurfaceWrite,
     SurfaceWriteProvider,
+};
+use aos_hub_db::db::{
+    Database, OciGcDeleteOutcome, OciGcPlacementActionClaim, RecordOciGcDeletionFailure,
+    RecordOciGcDeletionSuccess,
 };
 
 // LocalFS may hash, quarantine, unlink, and fsync one inventory-bounded 1 GiB
@@ -197,7 +197,7 @@ impl OciGcDeletionController {
 }
 
 fn controller_now(floor: i64) -> i64 {
-    crate::clock::now_unix_secs().max(floor)
+    aos_hub_model::clock::now_unix_secs().max(floor)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -336,7 +336,7 @@ fn success_record(
         )
         .as_bytes(),
     ));
-    let evidence_digest = crate::db::oci_gc_deletion_evidence_digest(
+    let evidence_digest = aos_hub_db::db::oci_gc_deletion_evidence_digest(
         &claim.action_id,
         &response_idempotency_key,
         success.outcome,

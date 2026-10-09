@@ -31,9 +31,18 @@ use rustdoc_bar_docs::*;
 use rustdoc_bar_public::*;
 
 const FORMAT_OWNING_SOURCES: &[(&str, &str)] = &[
-    ("crucible-shmem/src/lib.rs", "shared-memory ABI"),
-    ("crucible-protocol/src/lib.rs", "wire protocol"),
-    ("crucible-harness/src/abi.rs", "ABI golden-vector records"),
+    (
+        "crucible/protocol/crucible-qemu-shmem/src/lib.rs",
+        "shared-memory ABI",
+    ),
+    (
+        "crucible/protocol/crucible-qemu-protocol/src/lib.rs",
+        "wire protocol",
+    ),
+    (
+        "crucible/testing/crucible-test-support/src/abi.rs",
+        "ABI golden-vector records",
+    ),
 ];
 const RUSTDOC_FENCE_TAGS: &[&str] = &["text", "rust", "toml", "no_run", "ignore"];
 const DOCTESTED_RUSTDOC_FENCE_TAGS: &[&str] = &["rust", "no_run"];

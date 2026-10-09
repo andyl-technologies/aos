@@ -27,12 +27,12 @@ use base64::Engine as _;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-use crate::auth::jwt::{OciRepositoryGrant, OciTokenGrant};
-use crate::db::{InboundEndpointHost, RegistryRecord};
-use crate::delivery_http::{DeliveryMethod, HttpTimestamp};
+use aos_hub_model::auth::jwt::{OciRepositoryGrant, OciTokenGrant};
 use crate::oci_http::{OciAccess, OciHttpMetadata, OciHttpRequest};
 use crate::placement_read::PlacementReadOutcome;
 use crate::service::{RpcError, RpcService};
+use aos_hub_db::db::{InboundEndpointHost, RegistryRecord};
+use aos_hub_model::delivery_http::{DeliveryMethod, HttpTimestamp};
 
 /// Distribution API version advertised on every OCI response.
 pub const DISTRIBUTION_API_VERSION: &str = "registry/2.0";
@@ -601,7 +601,7 @@ impl RpcService {
             access_token: token.clone(),
             token,
             expires_in: OCI_PULL_TOKEN_TTL_SECONDS,
-            issued_at: format_rfc3339_utc(crate::clock::now_unix_secs()),
+            issued_at: format_rfc3339_utc(aos_hub_model::clock::now_unix_secs()),
         })
     }
 
@@ -927,7 +927,7 @@ impl RpcService {
                     .ensure_oci_repository(
                         registry.id,
                         repository_name,
-                        crate::clock::now_unix_secs(),
+                        aos_hub_model::clock::now_unix_secs(),
                     )
                     .await
                 {
@@ -1074,7 +1074,7 @@ impl RpcService {
         private: bool,
         allow_direct_delivery: bool,
     ) -> Response {
-        let now = match HttpTimestamp::from_unix_seconds(crate::clock::now_unix_secs()) {
+        let now = match HttpTimestamp::from_unix_seconds(aos_hub_model::clock::now_unix_secs()) {
             Ok(now) => now,
             Err(_) => {
                 return unavailable_response(
@@ -1311,7 +1311,7 @@ fn method_not_allowed_response(message: &'static str, head: bool) -> Response {
 async fn serve_tags(
     service: &RpcService,
     method: &Method,
-    repository: &crate::db::OciRepositoryRecord,
+    repository: &aos_hub_db::db::OciRepositoryRecord,
     wire_name: &RepositoryName,
     query: Option<&str>,
     private: bool,
@@ -1383,7 +1383,7 @@ async fn serve_tags(
 async fn serve_referrers(
     service: &RpcService,
     method: &Method,
-    repository: &crate::db::OciRepositoryRecord,
+    repository: &aos_hub_db::db::OciRepositoryRecord,
     digest: Sha256Digest,
     query: Option<&str>,
     private: bool,
@@ -1455,10 +1455,10 @@ fn parse_tag_query(query: Option<&str>) -> Result<(u32, Option<Tag>)> {
             _ => bail!("unsupported or duplicate OCI tag pagination field"),
         }
     }
-    if limit == 0 || limit > crate::db::OCI_MAX_TAG_PAGE {
+    if limit == 0 || limit > aos_hub_db::db::OCI_MAX_TAG_PAGE {
         bail!(
             "OCI tag page size must be between 1 and {}",
-            crate::db::OCI_MAX_TAG_PAGE
+            aos_hub_db::db::OCI_MAX_TAG_PAGE
         );
     }
     Ok((limit, last))

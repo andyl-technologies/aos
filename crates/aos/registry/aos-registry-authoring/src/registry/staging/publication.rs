@@ -1,11 +1,11 @@
 //! Transfers exact staged inventories and installs withheld pointers on release.
 
-use aos_nix_cache::backend::{self, AuthOptions, CacheBackend, ConditionalOutcome, Expectation};
 use aos_cli_ui::output::Printer;
+use aos_nix_cache::backend::{self, AuthOptions, CacheBackend, ConditionalOutcome, Expectation};
 use aos_registry_format::{keymap, object, refs};
 
 use super::*;
-use aos_registry_client::registry::transport::{
+use crate::registry::transport::{
     ImmutableUpload, ImmutableUploadPhase, RegistryStorage, pointer_upload_rank,
     upload_immutable_inventory,
 };

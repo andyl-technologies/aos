@@ -5,7 +5,7 @@ use super::*;
 impl RpcService {
     pub(in crate::service) async fn placement_physical_identity_fingerprint(
         &self,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
     ) -> Result<String, RpcError> {
         let binding = self
             .db
@@ -79,7 +79,7 @@ impl RpcService {
 
     /// Checks whether a prior successful create is the exact reviewed outcome.
     pub(in crate::service) fn placement_matches_create(
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         input: &PlacementCreatePlanInput,
     ) -> bool {
         let range = input
@@ -100,9 +100,9 @@ impl RpcService {
     /// Finds one placement by its stable name within an already-resolved surface.
     pub(in crate::service) async fn topology_placement(
         &self,
-        surface: crate::db::SurfaceTarget,
+        surface: aos_hub_db::db::SurfaceTarget,
         name: &str,
-    ) -> Result<crate::db::SurfacePlacementRecord, RpcError> {
+    ) -> Result<aos_hub_db::db::SurfacePlacementRecord, RpcError> {
         if name.is_empty() {
             return Err(RpcError::invalid("placement name must not be empty"));
         }
@@ -119,7 +119,7 @@ impl RpcService {
     /// caller must pin when creating an observing write ticket.
     pub(in crate::service) async fn placement_write_snapshot(
         &self,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
     ) -> Result<(i64, i64), RpcError> {
         let binding_revision = placement
             .authority_observed_binding_write_revision
@@ -136,7 +136,7 @@ impl RpcService {
     /// Parses and verifies an opaque placement resource version.
     pub(in crate::service) fn expected_placement_version(
         expected: &str,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
     ) -> Result<i64, RpcError> {
         let version = expected.parse::<i64>().map_err(|_| {
             RpcError::invalid("expectedResourceVersion must be a positive opaque version")
@@ -164,17 +164,17 @@ impl RpcService {
 
     /// Maps typed placement-create failures without parsing SQL-driver text.
     pub(in crate::service) fn placement_create_error(error: anyhow::Error) -> RpcError {
-        let Some(failure) = crate::db::surface_placement_create_failure(&error) else {
+        let Some(failure) = aos_hub_db::db::surface_placement_create_failure(&error) else {
             return RpcError::internal(error);
         };
         match failure.kind() {
-            crate::db::SurfacePlacementCreateFailureKind::InvalidArgument => {
+            aos_hub_db::db::SurfacePlacementCreateFailureKind::InvalidArgument => {
                 RpcError::invalid(failure.public_message())
             }
-            crate::db::SurfacePlacementCreateFailureKind::AlreadyExists => {
+            aos_hub_db::db::SurfacePlacementCreateFailureKind::AlreadyExists => {
                 RpcError::AlreadyExists(failure.public_message().to_string())
             }
-            crate::db::SurfacePlacementCreateFailureKind::Conflict => {
+            aos_hub_db::db::SurfacePlacementCreateFailureKind::Conflict => {
                 RpcError::FailedPrecondition(failure.public_message().to_string())
             }
         }
@@ -182,7 +182,7 @@ impl RpcService {
 
     /// Returns a stable route-pin precondition without backend constraint text.
     pub(in crate::service) fn placement_route_pin_error(
-        blockers: crate::db::SurfacePlacementBlockers,
+        blockers: aos_hub_db::db::SurfacePlacementBlockers,
     ) -> Option<RpcError> {
         if blockers.direct_route {
             Some(RpcError::FailedPrecondition(
@@ -199,7 +199,7 @@ impl RpcService {
 
     /// Returns the first stable metadata-deletion precondition.
     pub(in crate::service) fn placement_delete_blocker_error(
-        blockers: crate::db::SurfacePlacementBlockers,
+        blockers: aos_hub_db::db::SurfacePlacementBlockers,
         registry_placement: bool,
     ) -> Option<RpcError> {
         if blockers.direct_route {
@@ -239,7 +239,7 @@ impl RpcService {
     /// or backend-specific shard configuration.
     pub(in crate::service) async fn placement_message(
         &self,
-        placement: crate::db::SurfacePlacementRecord,
+        placement: aos_hub_db::db::SurfacePlacementRecord,
     ) -> Result<pb::Placement, RpcError> {
         let binding = self
             .db
@@ -258,7 +258,7 @@ impl RpcService {
 
     pub(in crate::service) async fn placement_policy_message(
         &self,
-        identity: crate::db::PlacementPolicyIdentityRecord,
+        identity: aos_hub_db::db::PlacementPolicyIdentityRecord,
     ) -> Result<pb::PlacementPolicy, RpcError> {
         let current = match identity.current_revision_id.as_deref() {
             Some(id) => self
@@ -291,7 +291,7 @@ impl RpcService {
 
     pub(in crate::service) async fn placement_policy_revision_message(
         &self,
-        revision: crate::db::PlacementPolicyRevisionRecord,
+        revision: aos_hub_db::db::PlacementPolicyRevisionRecord,
     ) -> Result<pb::PlacementPolicyRevision, RpcError> {
         let (groups, members) = self
             .db
@@ -722,9 +722,9 @@ impl RpcService {
         plan_kind: &str,
     ) -> Result<
         (
-            crate::db::TopologyPlanRecord,
-            crate::db::PlacementPolicyIdentityRecord,
-            crate::db::PlacementPolicyRevisionRecord,
+            aos_hub_db::db::TopologyPlanRecord,
+            aos_hub_db::db::PlacementPolicyIdentityRecord,
+            aos_hub_db::db::PlacementPolicyRevisionRecord,
         ),
         RpcError,
     > {
@@ -864,7 +864,7 @@ impl RpcService {
                 "placement policy changed after planning".to_string(),
             ));
         }
-        let revision_spec = crate::db::PlacementPolicyRevisionSpec {
+        let revision_spec = aos_hub_db::db::PlacementPolicyRevisionSpec {
             kind: input.kind.clone(),
             local_boundary_id: input.local_boundary_id.clone(),
             local_boundary_revision: input.local_boundary_revision,
@@ -992,7 +992,7 @@ impl RpcService {
 
     pub(in crate::service) async fn placement_equivalence_message(
         &self,
-        record: crate::db::PlacementEquivalenceRecord,
+        record: aos_hub_db::db::PlacementEquivalenceRecord,
     ) -> Result<pb::PlacementEquivalence, RpcError> {
         Ok(pb::PlacementEquivalence {
             stable_id: record.id,
@@ -1093,8 +1093,8 @@ impl RpcService {
         plan_kind: &str,
     ) -> Result<
         (
-            crate::db::TopologyPlanRecord,
-            crate::db::SurfacePlacementRecord,
+            aos_hub_db::db::TopologyPlanRecord,
+            aos_hub_db::db::SurfacePlacementRecord,
         ),
         RpcError,
     > {
@@ -1164,7 +1164,7 @@ impl RpcService {
             .db
             .update_surface_placement(
                 current.id,
-                &crate::db::UpdateSurfacePlacementSpec {
+                &aos_hub_db::db::UpdateSurfacePlacementSpec {
                     expected_version: input.baseline_resource_version,
                     desired_state: input.resulting_state,
                     desired_read_enabled: input.resulting_read_enabled,
@@ -1181,7 +1181,7 @@ impl RpcService {
         &self,
         operation_kind: &str,
         idempotency_key: &str,
-        targets: Vec<(String, crate::db::SurfacePlacementRecord)>,
+        targets: Vec<(String, aos_hub_db::db::SurfacePlacementRecord)>,
     ) -> Result<pb::OperationResponse, RpcError> {
         if idempotency_key.is_empty() {
             return Err(RpcError::invalid("idempotencyKey is required"));
@@ -1203,20 +1203,22 @@ impl RpcService {
             Some(operation) => operation,
             None => self
                 .db
-                .create_topology_operation(&crate::db::NewTopologyOperation {
+                .create_topology_operation(&aos_hub_db::db::NewTopologyOperation {
                     operation_id,
                     operation_kind: operation_kind.to_string(),
                     control_permission: Permission::StorageManage,
                     targets: targets
                         .into_iter()
-                        .map(|(role, placement)| crate::db::NewTopologyOperationTarget {
-                            role,
-                            target: crate::db::NewTopologyOperationTargetRef::Placement(
-                                placement.id,
-                            ),
-                            generation_key: placement.resource_version,
-                            configuration_digest: String::new(),
-                        })
+                        .map(
+                            |(role, placement)| aos_hub_db::db::NewTopologyOperationTarget {
+                                role,
+                                target: aos_hub_db::db::NewTopologyOperationTargetRef::Placement(
+                                    placement.id,
+                                ),
+                                generation_key: placement.resource_version,
+                                configuration_digest: String::new(),
+                            },
+                        )
                         .collect(),
                     detail_json: serde_json::json!({"phase":"pending"}).to_string(),
                     progress_total: None,
@@ -1268,7 +1270,7 @@ impl RpcService {
     /// Pins the destination's current validated binding revision for physical copies.
     pub(in crate::service) async fn bind_placement_copy_capability(
         &self,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
     ) -> Result<(), RpcError> {
         if self
             .db
@@ -1459,7 +1461,7 @@ impl RpcService {
     pub(in crate::service) async fn registry_publication_required_placements(
         &self,
         publication_id: &str,
-    ) -> Result<Vec<crate::db::SurfacePlacementRecord>, RpcError> {
+    ) -> Result<Vec<aos_hub_db::db::SurfacePlacementRecord>, RpcError> {
         let progress = self
             .db
             .registry_publication_placement_records(publication_id)

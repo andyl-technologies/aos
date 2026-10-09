@@ -771,20 +771,21 @@ pub(super) fn cli_verify_live_event_evidence_decodes_production_event_frames()
 -> Result<(), Box<dyn Error>> {
     let assertion = crucible_engine::AssertionId::from_name("request-succeeded");
     let mut event_log = crucible_engine::EventLog::new();
-    let fault = event_log.append_fault_observations([crucible_core::model::FaultObservation {
-        semantic_version: crucible_core::model::FAULT_RUNTIME_STATE_VERSION,
-        kind: crucible_core::model::FaultObservationKind::EffectApplied,
-        coordinate: crucible_core::model::FaultCoordinate {
-            virtual_ticks: 11,
-            retired_instructions: Some(7),
-        },
-        binding: Some(crucible_core::model::FaultObjectId::parse(
-            "partition-server",
-        )?),
-        target: None,
-        opportunity: None,
-        evidence: crucible_engine::ContentHash::from_bytes(b"native-fault-evidence"),
-    }])?;
+    let fault =
+        event_log.append_fault_observations([::crucible_engine::model::FaultObservation {
+            semantic_version: ::crucible_engine::model::FAULT_RUNTIME_STATE_VERSION,
+            kind: ::crucible_engine::model::FaultObservationKind::EffectApplied,
+            coordinate: ::crucible_engine::model::FaultCoordinate {
+                virtual_ticks: 11,
+                retired_instructions: Some(7),
+            },
+            binding: Some(::crucible_engine::model::FaultObjectId::parse(
+                "partition-server",
+            )?),
+            target: None,
+            opportunity: None,
+            evidence: crucible_engine::ContentHash::from_bytes(b"native-fault-evidence"),
+        }])?;
     let assertions = event_log.append_observable_events([
         crucible_engine::ObservableEvent::assertion_evaluated(
             crucible_engine::VirtualTime { ticks: 12 },

@@ -32,12 +32,13 @@ use anyhow::{Context, Result, bail};
 use tokio::sync::Semaphore;
 
 use super::store::filter_missing;
-use super::types::RegistryConfig;
-use super::verify::{sha256_digest_hex, verify_download_hash};
+use super::verify::verify_download_hash;
 use crate::error::PackageError;
+use aos_cli_ui::output::{Printer, TransferProgress};
 use aos_nar::cache::canonical_sha256_hex;
 use aos_nar::info::{self as narinfo, NarInfo};
-use aos_cli_ui::output::{Printer, TransferProgress};
+use aos_nar::verify::sha256_digest_hex;
+use aos_registry_format::consumer::RegistryConfig;
 use aos_transfer::{
     DownloadRequest as ManagedDownloadRequest, HashAlgorithm, ResumePolicy, TransferEngine,
     TransferEngineConfig, TransferEvent, TransferObserver, TransferRequest,
@@ -165,11 +166,14 @@ pub fn narinfo_url(mirror_url: &str, store_path: &str) -> String {
 /// it to locate the clone. Passing the scope path rather than deriving one
 /// from `$HOME` keeps user- and system-scope lookups consistent.
 ///
-/// [`ProfileScope::registries_path`]: crate::types::ProfileScope::registries_path
+/// [`ProfileScope::registries_path`]: aos_registry_client::types::ProfileScope::registries_path
 pub fn resolve_mirror(registries_base: &Path, registry: &RegistryConfig) -> String {
     let registries_dir = registries_base.join(&registry.name);
 
-    let mirrors = aos_registry_authoring::registry_ops::resolve_mirrors_for_registry(&registries_dir, registry);
+    let mirrors = aos_registry_client::registry::mirrors::resolve_mirrors_for_registry(
+        &registries_dir,
+        registry,
+    );
     if let Some(cache) = mirrors.first() {
         return cache.url.trim_end_matches('/').to_string();
     }
@@ -191,7 +195,10 @@ pub fn resolve_mirror(registries_base: &Path, registry: &RegistryConfig) -> Stri
 /// [`fallback_mirrors`]: DownloadRequest::fallback_mirrors
 pub fn resolve_mirror_chain(registries_base: &Path, registry: &RegistryConfig) -> Vec<String> {
     let registries_dir = registries_base.join(&registry.name);
-    let mirrors = aos_registry_authoring::registry_ops::resolve_mirrors_for_registry(&registries_dir, registry);
+    let mirrors = aos_registry_client::registry::mirrors::resolve_mirrors_for_registry(
+        &registries_dir,
+        registry,
+    );
 
     let mut chain: Vec<String> = Vec::new();
     for cache in &mirrors {

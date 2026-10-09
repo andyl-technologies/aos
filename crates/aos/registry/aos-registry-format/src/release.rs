@@ -21,4 +21,6 @@ pub struct RegistryReleaseEntry {
     pub store_path: String,
 }
 
-fn default_output_name() -> String { "out".to_string() }
+fn default_output_name() -> String {
+    "out".to_string()
+}

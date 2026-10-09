@@ -17,11 +17,11 @@
 //!
 //! Runtime capability gating (which kinds the *serving* process can actually
 //! serve) is the caller's responsibility — see
-//! [`RuntimeKind`](crate::binding::RuntimeKind); this module validates only that
+//! [`RuntimeKind`](aos_hub_model::binding::RuntimeKind); this module validates only that
 //! the inputs form a coherent, persistable binding.
 
-use crate::binding::BindingKind;
-use crate::db::Database;
+use aos_hub_db::db::Database;
+use aos_hub_model::binding::BindingKind;
 use thiserror::Error;
 
 /// A request to create a binding.
@@ -221,7 +221,7 @@ pub async fn provision_binding(db: &Database, req: NewBinding<'_>) -> Result<i64
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::Database;
+    use aos_hub_db::db::Database;
 
     async fn db_with_org() -> (Database, i64) {
         let db = Database::open_in_memory().await.unwrap();

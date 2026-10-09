@@ -570,7 +570,7 @@ fn execute_qemu_fuzz_iterations(
         );
         execution.new_coverage += usize::from(admitted > 0);
         if let Some((evidence, reproduction)) = finding {
-            let store = crucible::LocalDagStore::new(context.plan.store_root.clone());
+            let store = crucible_engine::LocalDagStore::new(context.plan.store_root.clone());
             let stored = evidence
                 .finding
                 .store_artifact(&store)
@@ -590,7 +590,7 @@ fn execute_qemu_fuzz_iterations(
 }
 
 fn qemu_fuzz_finding_evidence(
-    form: &crucible::ScenarioDefForm,
+    form: &crucible_engine::ScenarioDefForm,
     report: &RunWorkflowReport,
     stop: &StopOutcome,
     sequence: u64,
@@ -605,7 +605,7 @@ fn qemu_fuzz_finding_evidence(
             "QEMU fuzz iteration {sequence} did not retain a terminal configuration"
         ))
     })?;
-    let finding_fingerprint = crucible::ContentHash::from_canonical_material(
+    let finding_fingerprint = crucible_engine::ContentHash::from_canonical_material(
         "crucible.live-qemu-fuzz-finding.v2",
         &format!(
             "configuration={}\noutcome={}",
@@ -613,8 +613,8 @@ fn qemu_fuzz_finding_evidence(
             report.status.label()
         ),
     );
-    let finding = crucible::FindingReproductionArtifact::capture(
-        crucible::FindingDiscoveryPath::CoverageGuidedFuzzing,
+    let finding = crucible_engine::FindingReproductionArtifact::capture(
+        crucible_engine::FindingDiscoveryPath::CoverageGuidedFuzzing,
         finding_fingerprint,
         form,
         terminal,
@@ -640,7 +640,7 @@ fn qemu_fuzz_finding_evidence(
                 budget_kind,
                 configured_limit,
                 report.final_quanta,
-                crucible::VirtualTime {
+                crucible_engine::VirtualTime {
                     ticks: report.final_frontier_ticks,
                 },
                 None,
@@ -746,7 +746,10 @@ fn push_qemu_fuzz_finding(
     Ok(())
 }
 
-fn qemu_fuzz_iteration_plan(sequence: u64, form: crucible::ScenarioDefForm) -> RunInvocationPlan {
+fn qemu_fuzz_iteration_plan(
+    sequence: u64,
+    form: crucible_engine::ScenarioDefForm,
+) -> RunInvocationPlan {
     let scenario = form.scenario_def();
     RunInvocationPlan {
         request_seed: Some(scenario.seed()),
@@ -787,9 +790,10 @@ mod finding_tests {
     #[test]
     fn qemu_fuzz_reproduction_checks_reduced_state_identity()
     -> Result<(), Box<dyn std::error::Error>> {
-        let scenario = crucible::happy_path_scenario()?.scenario;
-        let configuration = crucible::Configuration::genesis(scenario.scenario_def());
-        let expected_state = crucible::reduce(&configuration.def, &configuration.schedule)?.id;
+        let scenario = crucible_engine::happy_path_scenario()?.scenario;
+        let configuration = crucible_engine::Configuration::genesis(scenario.scenario_def());
+        let expected_state =
+            crucible_engine::reduce(&configuration.def, &configuration.schedule)?.id;
 
         assert_ne!(configuration.id(), expected_state);
         let artifact = capture_qemu_fuzz_reproduction(&scenario, &configuration)?;
@@ -799,16 +803,16 @@ mod finding_tests {
         );
         assert!(artifact.verify_replay(configuration.id()).is_err());
 
-        let other_scenario = crucible::partition_recovery_scenario()?.scenario;
+        let other_scenario = crucible_engine::partition_recovery_scenario()?.scenario;
         assert!(capture_qemu_fuzz_reproduction(&other_scenario, &configuration).is_err());
         Ok(())
     }
 
     #[test]
     fn duplicate_coverage_does_not_enter_future_sampling_guidance() {
-        let feedback = crucible::EventLogCoverageFeedback::from_event_log(&[]);
-        let first = crucible::ContentHash::from_bytes(b"covered-block");
-        let second = crucible::ContentHash::from_bytes(b"new-block");
+        let feedback = crucible_engine::EventLogCoverageFeedback::from_event_log(&[]);
+        let first = crucible_engine::ContentHash::from_bytes(b"covered-block");
+        let second = crucible_engine::ContentHash::from_bytes(b"new-block");
         let mut observed = std::collections::BTreeSet::new();
         let mut guidance = Vec::new();
 
@@ -884,11 +888,11 @@ mod finding_tests {
     #[test]
     fn collect_fuzz_deduplicates_identical_phase_reproductions()
     -> Result<(), Box<dyn std::error::Error>> {
-        let scenario = crucible::happy_path_scenario()?.scenario;
-        let configuration = crucible::Configuration::genesis(scenario.scenario_def());
-        let finding = crucible::FindingReproductionArtifact::capture(
-            crucible::FindingDiscoveryPath::CoverageGuidedFuzzing,
-            crucible::ContentHash::from_bytes(b"repeated-fuzz-timeout"),
+        let scenario = crucible_engine::happy_path_scenario()?.scenario;
+        let configuration = crucible_engine::Configuration::genesis(scenario.scenario_def());
+        let finding = crucible_engine::FindingReproductionArtifact::capture(
+            crucible_engine::FindingDiscoveryPath::CoverageGuidedFuzzing,
+            crucible_engine::ContentHash::from_bytes(b"repeated-fuzz-timeout"),
             &scenario,
             &configuration,
         )?;
@@ -896,8 +900,8 @@ mod finding_tests {
             crucible_model::FailureTimeoutBudgetKind::ExecutionQuanta,
             Some(10),
             10,
-            crucible::VirtualTime { ticks: 4 },
-            Some(crucible::Icount { retired: 10 }),
+            crucible_engine::VirtualTime { ticks: 4 },
+            Some(crucible_engine::Icount { retired: 10 }),
             None,
             finding.artifact.id(),
         );
@@ -905,7 +909,7 @@ mod finding_tests {
             crate::cli_triage_debug::triage_timeout_evidence(
                 finding.clone(),
                 inconsistent_timeout,
-                crucible::ContentHash::from_bytes(b"repeated-fuzz-coverage"),
+                crucible_engine::ContentHash::from_bytes(b"repeated-fuzz-coverage"),
                 Vec::new(),
             )
             .is_err()
@@ -915,7 +919,7 @@ mod finding_tests {
             crucible_model::FailureTimeoutBudgetKind::ExecutionQuanta,
             Some(10),
             10,
-            crucible::VirtualTime { ticks: 4 },
+            crucible_engine::VirtualTime { ticks: 4 },
             None,
             None,
             finding.artifact.id(),
@@ -923,7 +927,7 @@ mod finding_tests {
         let evidence = crate::cli_triage_debug::triage_timeout_evidence(
             finding,
             timeout,
-            crucible::ContentHash::from_bytes(b"repeated-fuzz-coverage"),
+            crucible_engine::ContentHash::from_bytes(b"repeated-fuzz-coverage"),
             Vec::new(),
         )?;
         let mut execution = QemuFuzzExecution::default();
@@ -938,17 +942,17 @@ mod finding_tests {
     #[test]
     fn cli_search_fuzz_live_qemu_iterations_bound_the_campaign()
     -> Result<(), Box<dyn std::error::Error>> {
-        let scenario = crucible::happy_path_scenario()?.scenario;
+        let scenario = crucible_engine::happy_path_scenario()?.scenario;
         let plan = qemu_fuzz_iteration_plan(0, scenario);
 
         assert_eq!(plan.max_quanta, Some(LIVE_FUZZ_QUANTUM_LIMIT));
         assert_eq!(LIVE_FUZZ_RUN_CEILING_TICKS, 51_000_000);
         assert_eq!(
-            LIVE_EXPLORATION_RUN_CEILING_TICKS / crucible_core::SIM_TICKS_PER_NS,
+            LIVE_EXPLORATION_RUN_CEILING_TICKS / ::crucible_engine::SIM_TICKS_PER_NS,
             1_500_000_000,
         );
         assert_eq!(
-            PRODUCTION_CLI_RUN_CEILING_TICKS / crucible_core::SIM_TICKS_PER_NS,
+            PRODUCTION_CLI_RUN_CEILING_TICKS / ::crucible_engine::SIM_TICKS_PER_NS,
             5_000_000_000,
         );
         assert_eq!(plan.execution_mode, RunExecutionMode::ToCompletion);

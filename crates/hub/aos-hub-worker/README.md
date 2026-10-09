@@ -1,6 +1,6 @@
 # AOS Hub Worker
 
-`aos-hub-worker` is the Cloudflare shell for the shared `aos-hub-core`
+`aos-hub-worker` is the Cloudflare shell for the shared `aos-hub-service`
 application. It serves the same Connect API, producer console, authentication,
 machine surfaces, topology controllers, and write path as the native Hub.
 

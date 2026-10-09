@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 
-use crucible_core::model::{
+use crucible_engine::model::{
     BindingMapping, BindingObservabilityPolicy, BindingSampling, BindingSearchPolicy,
     CpuServiceDiscipline, EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest,
     EffectSpecification, ExactRatio, FaultBinding, FaultObjectId, FaultPhase, FaultResourceLimits,
@@ -22,7 +22,7 @@ pub(super) fn cpu_service_fault(world: &World) -> Result<FaultSignalPlan, Box<dy
         .vm_nodes()
         .first()
         .ok_or("signal-rich finding has no guest node")?;
-    let output = crucible_core::model::SignalId::parse("finding-cpu-service-enabled")?;
+    let output = crucible_engine::model::SignalId::parse("finding-cpu-service-enabled")?;
     let program = SignalProgram::new(
         vec![SignalNode {
             id: output.clone(),
@@ -79,7 +79,7 @@ pub(super) fn cpu_service_fault(world: &World) -> Result<FaultSignalPlan, Box<dy
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crucible_core::model::{
+    use crucible_engine::model::{
         Icount, NodeId, Plan, ReadyPoint, VmArchitecture, WhiteBoxPolicy, WorldNode,
     };
 

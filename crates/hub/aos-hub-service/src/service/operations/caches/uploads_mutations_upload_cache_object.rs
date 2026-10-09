@@ -1096,7 +1096,7 @@ impl RpcService {
         expected_sha256: Option<&str>,
     ) -> Result<String, SurfaceWriteOutcome> {
         if !keymap::is_machine_path(path)
-            || crate::url_guard::validate_http_surface_path(path).is_err()
+            || aos_hub_model::url_guard::validate_http_surface_path(path).is_err()
         {
             return Err(SurfaceWriteOutcome::BadPath("unsafe or non-machine path"));
         }

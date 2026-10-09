@@ -164,9 +164,8 @@ fn cache_href(slug: &str) -> String {
 fn stack_resource(
     client: ApiClient,
     registry_id: String,
-) -> LocalResource<
-    Result<aos_hub_api::ConsumerCacheStackResponse, crate::transport::TransportError>,
-> {
+) -> LocalResource<Result<aos_hub_api::ConsumerCacheStackResponse, crate::transport::TransportError>>
+{
     LocalResource::new(move || {
         let client = client.clone();
         let registry_id = registry_id.clone();
@@ -243,10 +242,7 @@ fn render_stack(
 #[component]
 fn ValidationPanel(
     validation: LocalResource<
-        Result<
-            aos_hub_api::ConsumerCacheStackValidationResponse,
-            crate::transport::TransportError,
-        >,
+        Result<aos_hub_api::ConsumerCacheStackValidationResponse, crate::transport::TransportError>,
     >,
 ) -> impl IntoView {
     view! {
@@ -476,11 +472,9 @@ fn cache_source(
         );
     }
     let url = validate_external_url(value)?;
-    Ok(
-        aos_hub_api::consumer_cache_stack_entry::Source::External(
-            aos_hub_api::ExternalConsumerCache { url },
-        ),
-    )
+    Ok(aos_hub_api::consumer_cache_stack_entry::Source::External(
+        aos_hub_api::ExternalConsumerCache { url },
+    ))
 }
 
 fn validate_external_url(value: &str) -> Result<String, String> {

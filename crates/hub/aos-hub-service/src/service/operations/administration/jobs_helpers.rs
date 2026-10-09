@@ -30,7 +30,7 @@ impl RpcService {
 
     pub(in crate::service) async fn operation_detail(
         &self,
-        operation: &crate::db::TopologyOperationRecord,
+        operation: &aos_hub_db::db::TopologyOperationRecord,
     ) -> Result<pb::OperationDetail, RpcError> {
         let targets = self
             .db

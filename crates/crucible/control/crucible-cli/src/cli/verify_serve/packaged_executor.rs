@@ -749,7 +749,7 @@ qemu_profile = "deterministic-tcg-v1"
         )
     }
 
-    fn hot_fork_artifacts(directory: &Path) -> crucible_api::ProductionVmLifecycleConfig {
+    fn hot_fork_artifacts(directory: &Path) -> crucible_daemon::ProductionVmLifecycleConfig {
         let qemu = directory.join("bin/qemu-system-x86_64");
         let plugin = directory.join("lib/libcrucible-qemu-plugin.so");
         let qemu_marker = directory.join("share/aos/crucible/qemu-build-identity.env");
@@ -760,7 +760,7 @@ qemu_profile = "deterministic-tcg-v1"
         }
         fs::write(&qemu, b"qemu").expect("write QEMU artifact");
         fs::write(&plugin, b"plugin").expect("write plugin artifact");
-        let abi_version = crucible::SHMEM_ABI_VERSION;
+        let abi_version = crucible_engine::SHMEM_ABI_VERSION;
         let abi = format!("crucible-shmem-abi-v{abi_version}");
         fs::write(
             qemu_marker,
@@ -788,7 +788,7 @@ qemu_profile = "deterministic-tcg-v1"
             ),
         )
         .expect("write plugin marker");
-        crucible_api::ProductionVmLifecycleConfig::new(
+        crucible_daemon::ProductionVmLifecycleConfig::new(
             &qemu,
             &plugin,
             directory.join("kernel"),

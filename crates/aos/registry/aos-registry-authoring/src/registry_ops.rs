@@ -74,7 +74,7 @@ mod workflow;
 
 pub use cache_validation::validate;
 pub use channels::run_channel;
-pub use config::{local_registry_name, resolve_mirrors, resolve_mirrors_for_registry};
+pub use config::local_registry_name;
 pub use distribution::{run_cache, run_origin, run_web};
 pub(crate) use git::{
     refresh_registry_object_store, semver_tag_versions, validate_canonical_release_registry_index,

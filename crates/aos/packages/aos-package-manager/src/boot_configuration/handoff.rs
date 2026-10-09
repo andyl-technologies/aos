@@ -11,16 +11,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context as _, Result, ensure};
-use aos_module_format::graph::GRAPH_LIMITS;
 use aos_activation::adapter::CancellationToken;
 use aos_core::Sha256Digest;
+use aos_module_format::graph::GRAPH_LIMITS;
 use clap::Parser as _;
 
 use super::{proof, reader};
-use aos_deployment::process::run_bounded_with_input_limit;
-use aos_deployment_format::input::EvaluationInput;
-use aos_deployment::input::ImportControl;
 use crate::native_deployment::{NativeDeploymentArgs, NativeDeploymentCommand};
+use aos_deployment::input::ImportControl;
+use aos_deployment::process::run_bounded_with_input_limit;
 use aos_deployment::store::temp_roots::TemporaryRoots;
 
 const TRANSFER_LIMIT: usize = 8 * 1024 * 1024;

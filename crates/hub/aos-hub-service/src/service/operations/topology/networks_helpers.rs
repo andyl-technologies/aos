@@ -6,7 +6,7 @@ impl RpcService {
     pub(in crate::service) fn network_policy_identity_spec(
         kind: &str,
         identity: Option<pb::NetworkPolicyIdentity>,
-    ) -> Result<crate::db::NetworkPolicyIdentitySpec, RpcError> {
+    ) -> Result<aos_hub_db::db::NetworkPolicyIdentitySpec, RpcError> {
         use pb::network_policy_identity::Identity;
         let identity = identity
             .and_then(|value| value.identity)
@@ -15,10 +15,12 @@ impl RpcService {
             (value.provider, value.account_or_tenant, value.resource_id)
         };
         match (kind, identity) {
-            ("public", Identity::Public(true)) => Ok(crate::db::NetworkPolicyIdentitySpec::Public),
+            ("public", Identity::Public(true)) => {
+                Ok(aos_hub_db::db::NetworkPolicyIdentitySpec::Public)
+            }
             ("vpn", Identity::Vpn(value)) => {
                 let (provider, account_or_tenant, resource_id) = provider_resource(value);
-                Ok(crate::db::NetworkPolicyIdentitySpec::Vpn {
+                Ok(aos_hub_db::db::NetworkPolicyIdentitySpec::Vpn {
                     provider,
                     account_or_tenant,
                     resource_id,
@@ -28,7 +30,7 @@ impl RpcService {
                 if !value.listener_id.is_empty() {
                     return Err(RpcError::invalid("vpc identity forbids listenerId"));
                 }
-                Ok(crate::db::NetworkPolicyIdentitySpec::Vpc {
+                Ok(aos_hub_db::db::NetworkPolicyIdentitySpec::Vpc {
                     provider: value.provider,
                     account_or_tenant: value.account_or_tenant,
                     resource_id: value.resource_id,
@@ -36,14 +38,14 @@ impl RpcService {
             }
             ("tunnel", Identity::Tunnel(value)) => {
                 let (provider, account_or_tenant, resource_id) = provider_resource(value);
-                Ok(crate::db::NetworkPolicyIdentitySpec::Tunnel {
+                Ok(aos_hub_db::db::NetworkPolicyIdentitySpec::Tunnel {
                     provider,
                     account_or_tenant,
                     resource_id,
                 })
             }
             ("source_allowlist", Identity::SourceAllowlistId(logical_id)) => {
-                Ok(crate::db::NetworkPolicyIdentitySpec::SourceAllowlist { logical_id })
+                Ok(aos_hub_db::db::NetworkPolicyIdentitySpec::SourceAllowlist { logical_id })
             }
             ("trusted_ingress", Identity::TrustedIngress(value)) => {
                 if !value.resource_id.is_empty() {
@@ -51,7 +53,7 @@ impl RpcService {
                         "trusted ingress identity forbids resourceId",
                     ));
                 }
-                Ok(crate::db::NetworkPolicyIdentitySpec::TrustedIngress {
+                Ok(aos_hub_db::db::NetworkPolicyIdentitySpec::TrustedIngress {
                     provider: value.provider,
                     account_or_tenant: value.account_or_tenant,
                     listener_id: value.listener_id,
@@ -64,12 +66,12 @@ impl RpcService {
     }
 
     pub(in crate::service) fn network_policy_identity_message(
-        identity: crate::db::NetworkPolicyIdentitySpec,
+        identity: aos_hub_db::db::NetworkPolicyIdentitySpec,
     ) -> pb::NetworkPolicyIdentity {
         use pb::network_policy_identity::Identity;
         let identity = match identity {
-            crate::db::NetworkPolicyIdentitySpec::Public => Identity::Public(true),
-            crate::db::NetworkPolicyIdentitySpec::Vpn {
+            aos_hub_db::db::NetworkPolicyIdentitySpec::Public => Identity::Public(true),
+            aos_hub_db::db::NetworkPolicyIdentitySpec::Vpn {
                 provider,
                 account_or_tenant,
                 resource_id,
@@ -78,7 +80,7 @@ impl RpcService {
                 account_or_tenant,
                 resource_id,
             }),
-            crate::db::NetworkPolicyIdentitySpec::Vpc {
+            aos_hub_db::db::NetworkPolicyIdentitySpec::Vpc {
                 provider,
                 account_or_tenant,
                 resource_id,
@@ -88,7 +90,7 @@ impl RpcService {
                 resource_id,
                 listener_id: String::new(),
             }),
-            crate::db::NetworkPolicyIdentitySpec::Tunnel {
+            aos_hub_db::db::NetworkPolicyIdentitySpec::Tunnel {
                 provider,
                 account_or_tenant,
                 resource_id,
@@ -97,10 +99,10 @@ impl RpcService {
                 account_or_tenant,
                 resource_id,
             }),
-            crate::db::NetworkPolicyIdentitySpec::SourceAllowlist { logical_id } => {
+            aos_hub_db::db::NetworkPolicyIdentitySpec::SourceAllowlist { logical_id } => {
                 Identity::SourceAllowlistId(logical_id)
             }
-            crate::db::NetworkPolicyIdentitySpec::TrustedIngress {
+            aos_hub_db::db::NetworkPolicyIdentitySpec::TrustedIngress {
                 provider,
                 account_or_tenant,
                 listener_id,
@@ -118,7 +120,7 @@ impl RpcService {
 
     pub(in crate::service) fn network_policy_revision_spec(
         spec: Option<pb::NetworkPolicyRevisionSpec>,
-    ) -> Result<crate::db::NetworkPolicyRevisionSpec, RpcError> {
+    ) -> Result<aos_hub_db::db::NetworkPolicyRevisionSpec, RpcError> {
         #[derive(serde::Serialize)]
         struct Mtls<'a> {
             ca_secret_ref: &'a str,
@@ -157,7 +159,7 @@ impl RpcService {
             ),
             _ => return Err(RpcError::invalid("invalid trustedIngress variant")),
         };
-        Ok(crate::db::NetworkPolicyRevisionSpec {
+        Ok(aos_hub_db::db::NetworkPolicyRevisionSpec {
             protected_transport_required: spec.protected_transport_required,
             trusted_ingress_kind,
             trusted_ingress_configuration,
@@ -174,7 +176,7 @@ impl RpcService {
     }
 
     pub(in crate::service) fn network_policy_revision_spec_message(
-        spec: &crate::db::NetworkPolicyRevisionSpec,
+        spec: &aos_hub_db::db::NetworkPolicyRevisionSpec,
     ) -> Result<pb::NetworkPolicyRevisionSpec, RpcError> {
         use pb::trusted_ingress_configuration::Configuration;
         let configuration = match spec.trusted_ingress_kind.as_str() {
@@ -245,13 +247,15 @@ impl RpcService {
 
     pub(in crate::service) async fn network_policy_message(
         &self,
-        record: crate::db::NetworkPolicyRecord,
+        record: aos_hub_db::db::NetworkPolicyRecord,
     ) -> Result<pb::NetworkPolicy, RpcError> {
         let identity =
             serde_json::from_str(&record.identity_spec_json).map_err(RpcError::internal)?;
         let grant_records = self
             .db
-            .list_consumer_scope_grants(crate::db::GrantResource::NetworkPolicy { id: &record.id })
+            .list_consumer_scope_grants(aos_hub_db::db::GrantResource::NetworkPolicy {
+                id: &record.id,
+            })
             .await
             .map_err(RpcError::internal)?;
         let mut grants = Vec::with_capacity(grant_records.len());
@@ -259,7 +263,7 @@ impl RpcService {
             grants.push(
                 self.topology_grant_message(
                     grant,
-                    crate::db::GrantResource::NetworkPolicy { id: &record.id },
+                    aos_hub_db::db::GrantResource::NetworkPolicy { id: &record.id },
                 )
                 .await?,
             );
@@ -280,7 +284,7 @@ impl RpcService {
     }
 
     pub(in crate::service) fn network_policy_revision_message(
-        record: crate::db::NetworkPolicyRevisionRecord,
+        record: aos_hub_db::db::NetworkPolicyRevisionRecord,
     ) -> Result<pb::NetworkPolicyRevision, RpcError> {
         Ok(pb::NetworkPolicyRevision {
             boundary_id: record.boundary_id,
@@ -310,7 +314,7 @@ impl RpcService {
         &self,
         auth: Option<&str>,
         stable_id: &str,
-    ) -> Result<crate::db::NetworkPolicyRecord, RpcError> {
+    ) -> Result<aos_hub_db::db::NetworkPolicyRecord, RpcError> {
         let record = self
             .db
             .network_policy(stable_id)
@@ -424,7 +428,7 @@ impl RpcService {
                     "live consumer references an unfenceable boundary revision".to_string(),
                 ));
             }
-            coordination_revisions.push(crate::db::NetworkPolicyCoordinationRevisionSeal {
+            coordination_revisions.push(aos_hub_db::db::NetworkPolicyCoordinationRevisionSeal {
                 revision: old.revision,
                 lifecycle_state: old.lifecycle_state,
                 resource_version: old.resource_version,
@@ -538,7 +542,7 @@ impl RpcService {
                 input
                     .default_cas
                     .as_ref()
-                    .map(|seal| crate::db::NetworkPolicyDefaultCas {
+                    .map(|seal| aos_hub_db::db::NetworkPolicyDefaultCas {
                         boundary_resource_version: seal.boundary_resource_version,
                         previous_revision: seal.previous_revision,
                         previous_resource_version: seal.previous_resource_version,
@@ -690,7 +694,7 @@ impl RpcService {
             &parse_authorization_scope(&req.consumer_scope_key)?,
         )
         .await?;
-        let resource = crate::db::GrantResource::NetworkPolicy { id: &boundary.id };
+        let resource = aos_hub_db::db::GrantResource::NetworkPolicy { id: &boundary.id };
         let grants = self
             .db
             .list_consumer_scope_grants(resource)
@@ -831,7 +835,7 @@ impl RpcService {
                 "network policy owner scope changed after planning".to_string(),
             ));
         }
-        let resource = crate::db::GrantResource::NetworkPolicy { id: &boundary.id };
+        let resource = aos_hub_db::db::GrantResource::NetworkPolicy { id: &boundary.id };
         let claims = self.require_claims(auth)?;
         self.require_permission(
             &claims,

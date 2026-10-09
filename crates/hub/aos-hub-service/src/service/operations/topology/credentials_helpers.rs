@@ -6,7 +6,7 @@ impl RpcService {
     /// Projects a credential revision without resolving or exposing secret material.
     pub(in crate::service) fn binding_credential_message(
         stable_id: &str,
-        record: crate::db::BindingCredentialRevisionRecord,
+        record: aos_hub_db::db::BindingCredentialRevisionRecord,
     ) -> pb::BindingCredential {
         pb::BindingCredential {
             binding_id: stable_id.to_string(),
@@ -75,7 +75,7 @@ impl RpcService {
             ));
         }
         req.secret_version_ref = req.secret_version_ref.trim().to_string();
-        crate::secret_version::validate_secret_version_ref(&req.secret_version_ref)
+        aos_hub_model::secret_version::validate_secret_version_ref(&req.secret_version_ref)
             .map_err(|error| RpcError::invalid(format!("invalid secretVersionRef: {error:#}")))?;
         req.credential_fingerprint = req.credential_fingerprint.trim().to_ascii_lowercase();
         if req.credential_fingerprint.len() != 64
@@ -99,8 +99,11 @@ impl RpcService {
                     "secret version cannot be resolved: {error:#}"
                 ))
             })?;
-        crate::secret_version::verify_secret_fingerprint(&resolved, &req.credential_fingerprint)
-            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        aos_hub_model::secret_version::verify_secret_fingerprint(
+            &resolved,
+            &req.credential_fingerprint,
+        )
+        .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         drop(resolved);
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
         let credential_fingerprint = req.credential_fingerprint.clone();

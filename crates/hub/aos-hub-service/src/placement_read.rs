@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
-use crate::db::{Database, PlacementReadRequirement, SurfacePlacementRecord, SurfaceTarget};
 use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceProvider};
+use aos_hub_db::db::{Database, PlacementReadRequirement, SurfacePlacementRecord, SurfaceTarget};
 
 /// Placement-planned reader for callers that need a reusable [`SurfaceFetch`].
 ///
@@ -260,7 +260,8 @@ pub fn requirement_for_path<'a>(
     surface: SurfaceTarget,
     path: &'a str,
 ) -> PlacementReadRequirement<'a> {
-    if crate::keymap::cache_control(path) == crate::keymap::IMMUTABLE_CACHE_CONTROL {
+    if aos_hub_model::keymap::cache_control(path) == aos_hub_model::keymap::IMMUTABLE_CACHE_CONTROL
+    {
         PlacementReadRequirement::ImmutableObject(path)
     } else if matches!(surface, SurfaceTarget::Registry(_)) {
         PlacementReadRequirement::RegistryCurrentPublication(path)
@@ -623,7 +624,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::db::{CacheObjectPresenceObservation, NewSurfacePlacementSpec, SetSurfaceObject};
+    use aos_hub_db::db::{
+        CacheObjectPresenceObservation, NewSurfacePlacementSpec, SetSurfaceObject,
+    };
 
     #[test]
     fn streamed_and_persisted_strong_versions_compare_canonically() {

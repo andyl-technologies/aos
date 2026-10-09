@@ -5,6 +5,7 @@
   dependencies ? [],
   campaignComposition ? null,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir;
   campaignMode =
     if campaignComposition == null
     then null
@@ -184,7 +185,6 @@
 
   reductionPackages = [
     "crucible-determinism"
-    "crucible-test-support"
     "crucible-engine"
     "crucible-qemu-protocol"
     "crucible-device"
@@ -757,14 +757,14 @@
     ];
 
   manifestErrorPolicyFailures = package: let
-    sourceContents = map builtins.readFile (listRustFiles (../../crates + "/${package}/src"));
+    sourceContents = map builtins.readFile (listRustFiles (packageDir package + "/src"));
   in
     scanManifestErrorPolicyContent
     "${package}/Cargo.toml"
-    (builtins.readFile (../../crates + "/${package}/Cargo.toml"))
+    (builtins.readFile (packageDir package + "/Cargo.toml"))
     sourceContents;
 
-  readManifest = package: builtins.fromTOML (builtins.readFile (../../crates + "/${package}/Cargo.toml"));
+  readManifest = package: builtins.fromTOML (builtins.readFile (packageDir package + "/Cargo.toml"));
 
   workspaceManifestToml = builtins.fromTOML workspaceManifest;
   workspaceDependencies =
@@ -825,7 +825,7 @@
   strictDeterministicPackages = builtins.filter (package: !(builtins.elem package nondeterministicBoundaryPackages)) allPackages;
 
   relativeSourcePath = package: path: let
-    prefix = toString (../../crates + "/${package}/");
+    prefix = toString (packageDir package + "/");
     full = toString path;
   in
     builtins.substring (builtins.stringLength prefix) (builtins.stringLength full - builtins.stringLength prefix) full;
@@ -837,7 +837,7 @@
       label = toString path;
       content = builtins.readFile path;
     })
-    (listRustFiles (../../crates + "/${package}/src"));
+    (listRustFiles (packageDir package + "/src"));
 
   relativeIsUnder = relative: prefix:
     relative == "${prefix}.rs" || lib.hasPrefix "${prefix}/" relative;
@@ -948,7 +948,7 @@
     manifestFailures =
       lib.concatMap (
         package: let
-          normalizedManifest = normalize (builtins.readFile (../../crates + "/${package}/Cargo.toml"));
+          normalizedManifest = normalize (builtins.readFile (packageDir package + "/Cargo.toml"));
         in
           lib.optionals (!(hasInfix "[lints]workspace=true" normalizedManifest)) [
             "${package}/Cargo.toml: missing workspace lint inheritance"
@@ -1288,7 +1288,7 @@
     };
     sameFileFindings = boundaryPackageSourceFailures "crucible-cli" [
       (source "crucible-cli" "src/main.rs" ''
-        use crucible::State;
+        use crucible_engine::State;
 
         fn bad() {
           let stamp = std::time::SystemTime::now();
@@ -1306,7 +1306,7 @@
       '')
       (source "crucible-cli" "src/session.rs" ''
         use crucible_session::SessionDriver;
-        use crucible_api::ControlClient;
+        use crucible_control_api::ControlClient;
 
         fn route(client: ControlClient, driver: SessionDriver<()>) {
           submit(client, driver);

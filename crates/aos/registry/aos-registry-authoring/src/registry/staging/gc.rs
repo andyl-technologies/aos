@@ -113,10 +113,7 @@ impl LocalStageStore {
                 retained_digests.insert(object.sha256);
             }
             for root in revision.store_roots {
-                retained_paths.insert(format!(
-                    "{}.narinfo",
-                    aos_nar::info::store_hash(&root)
-                ));
+                retained_paths.insert(format!("{}.narinfo", aos_nar::info::store_hash(&root)));
             }
             for pointer in revision.publication {
                 if pointer.path.ends_with(".narinfo") {

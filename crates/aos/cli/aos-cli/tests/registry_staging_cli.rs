@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use anyhow::{Context, Result, ensure};
-use aos_registry_client::registry::{keys, staging::LocalStageStore, state};
+use aos_registry_client::registry::{keys, state};
+use aos_registry_authoring::registry::{staging::LocalStageStore};
 use aos_registry_client::sshkey::Ed25519Keypair;
 use aos_release_format::RELEASE_JOURNAL_ENTRY;
 use aos_release_format::canonical;
@@ -57,7 +58,7 @@ impl Consumer {
         Ok(consumer)
     }
 
-    fn state(&self) -> Result<aos_package_manager::types::RegistryState> {
+    fn state(&self) -> Result<aos_registry_format::consumer::RegistryState> {
         state::load_state(&self.config)?.context("consumer state was not persisted")
     }
 

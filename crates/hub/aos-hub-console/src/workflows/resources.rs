@@ -10,7 +10,7 @@ use leptos::prelude::*;
 
 use crate::app::navigate;
 use crate::components::{EmptyState, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
-use crate::mutation::{PendingPlan, idempotency_key, watch_draft};
+use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 use crate::workflows::infrastructure::InfrastructureWorkflow;
@@ -508,10 +508,7 @@ fn OrganizationSnapshotView(snapshot: OrganizationSnapshot) -> impl IntoView {
 }
 
 #[component]
-fn OrganizationEditor(
-    client: ApiClient,
-    organization: aos_hub_api::Organization,
-) -> impl IntoView {
+fn OrganizationEditor(client: ApiClient, organization: aos_hub_api::Organization) -> impl IntoView {
     let can_manage = client.allows("members.manage");
     let display_name = RwSignal::new(organization.display_name.clone());
     let pending = RwSignal::new(None::<PendingPlan>);
@@ -1473,10 +1470,7 @@ fn OrganizationDanger(client: ApiClient, slug: String) -> impl IntoView {
 }
 
 #[component]
-fn OrganizationDelete(
-    client: ApiClient,
-    organization: aos_hub_api::Organization,
-) -> impl IntoView {
+fn OrganizationDelete(client: ApiClient, organization: aos_hub_api::Organization) -> impl IntoView {
     let confirmation = RwSignal::new(String::new());
     let pending = RwSignal::new(None::<PendingPlan>);
     let error = RwSignal::new(None::<String>);
@@ -1682,7 +1676,7 @@ fn format_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{LlmsMode, cache_inventory_path, cache_path, llms_override};
+    use super::{cache_inventory_path, cache_path, llms_override, LlmsMode};
 
     #[test]
     fn cache_routes_preserve_ownership_scope() {

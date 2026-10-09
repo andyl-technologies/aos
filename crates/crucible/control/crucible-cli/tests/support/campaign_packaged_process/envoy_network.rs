@@ -5,7 +5,7 @@ use crucible_campaign::{
     AlternativeId, Attempt, AttemptId, AttemptStart, BranchPath, CampaignHash, CampaignLineage,
     CampaignPolicy, ChoiceDomain, ChoiceTuple, ChoiceValue, StopCondition,
 };
-use crucible_core::NetworkFaultSelectable;
+use crucible_engine::NetworkFaultSelectable;
 
 #[path = "envoy_network/resource_audit.rs"]
 mod resource_audit;

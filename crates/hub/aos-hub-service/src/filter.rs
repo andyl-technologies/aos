@@ -33,7 +33,7 @@
 //! case-insensitive; `size` is numeric and accepts byte-size suffixes
 //! (`k`/`m`/`g`, `kib`/`mib`/`gib`); `version` orders semver-aware.
 
-use crate::db::PackageRow;
+use aos_hub_db::db::PackageRow;
 
 /// A parsed, evaluatable package filter expression.
 ///

@@ -31,15 +31,15 @@
 //! Worker's key *sourcing* (a Wrangler secret) is platform-specific.
 
 use anyhow::{bail, Context, Result};
-use aos_hub_service::auth::magic::Mailer;
-use aos_hub_model::auth::seal::{parse_key, AesGcmSealer, SecretSealer};
 use aos_hub_db::db::{Database, RegistryRecord, SurfacePlacementRecord};
+use aos_hub_model::auth::seal::{parse_key, AesGcmSealer, SecretSealer};
+use aos_hub_model::secret_version::{verify_secret_fingerprint, SecretVersionResolver};
+use aos_hub_model::url_guard;
+use aos_hub_service::auth::magic::Mailer;
 use aos_hub_service::email::EmailContent;
 use aos_hub_service::fetch::SurfaceProvider as _;
 use aos_hub_service::reindex::Reindexer;
 use aos_hub_service::s3surface::{Method as S3Method, S3Surface};
-use aos_hub_model::secret_version::{verify_secret_fingerprint, SecretVersionResolver};
-use aos_hub_model::url_guard;
 use aos_hub_service::web::console::ports::HttpClient;
 use async_trait::async_trait;
 use base64::Engine as _;

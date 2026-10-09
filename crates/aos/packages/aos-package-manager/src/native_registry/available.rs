@@ -12,9 +12,9 @@ use aos_core::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 use super::{Evidence, RegistryAdmission};
+use aos_deployment::store::temp_roots::TemporaryRoots;
 use aos_registry_client::registry::store::{StoreMap, TrustContext, parse_entry, serialize_entry};
 use aos_registry_client::registry::{Registry, ReleaseTrustReceipt, store_path_hash};
-use aos_deployment::store::temp_roots::TemporaryRoots;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -47,8 +47,7 @@ impl AvailableCatalog {
             "available graph release commit is invalid"
         );
         for root in &self.roots {
-            let (canonical, suffix) =
-                aos_deployment::nix::store_root_and_suffix(Path::new(root))?;
+            let (canonical, suffix) = aos_deployment::nix::store_root_and_suffix(Path::new(root))?;
             ensure!(
                 canonical == Path::new(root) && suffix.as_os_str().is_empty(),
                 "available output is not canonical"
@@ -315,7 +314,7 @@ async fn realize(
             .context("imported path lacks checked transport identity")?;
         let nar_hash = Sha256Digest::parse(&format!(
             "sha256:{}",
-            crate::verify::sha256_digest_hex(&item.narinfo.nar_hash)?
+            aos_nar::verify::sha256_digest_hex(&item.narinfo.nar_hash)?
         ))?;
         let nar_size = item.narinfo.nar_size;
         let mut expected_references = item
@@ -334,10 +333,11 @@ async fn realize(
             &expected_references,
             Some(executable),
         )?;
-        let (nar_hash, nar_size) = aos_deployment::store::verification::dump_store_path_identity_in(
-            &result.store_path,
-            Some(executable),
-        )?;
+        let (nar_hash, nar_size) =
+            aos_deployment::store::verification::dump_store_path_identity_in(
+                &result.store_path,
+                Some(executable),
+            )?;
         let references = aos_deployment::store::verification::query_reference_hashes_in(
             &result.store_path,
             Some(executable),
@@ -431,10 +431,16 @@ mod tests {
                 root,
                 parse_entry(&format!(
                     "nar:sha256:{}:1\n  ia:sha256:{dependency}/ca:sha256:{}\n",
-                    aos_registry_client::registry::store::normalize_digest(&format!("sha256:{}", "a".repeat(64)))
-                        .unwrap(),
-                    aos_registry_client::registry::store::normalize_digest(&format!("sha256:{}", "b".repeat(64)))
-                        .unwrap()
+                    aos_registry_client::registry::store::normalize_digest(&format!(
+                        "sha256:{}",
+                        "a".repeat(64)
+                    ))
+                    .unwrap(),
+                    aos_registry_client::registry::store::normalize_digest(&format!(
+                        "sha256:{}",
+                        "b".repeat(64)
+                    ))
+                    .unwrap()
                 ))
                 .unwrap(),
             ),
@@ -442,10 +448,16 @@ mod tests {
                 dependency,
                 parse_entry(&format!(
                     "ca:sha256:{} nar:sha256:{}:2\n",
-                    aos_registry_client::registry::store::normalize_digest(&format!("sha256:{}", "b".repeat(64)))
-                        .unwrap(),
-                    aos_registry_client::registry::store::normalize_digest(&format!("sha256:{}", "c".repeat(64)))
-                        .unwrap()
+                    aos_registry_client::registry::store::normalize_digest(&format!(
+                        "sha256:{}",
+                        "b".repeat(64)
+                    ))
+                    .unwrap(),
+                    aos_registry_client::registry::store::normalize_digest(&format!(
+                        "sha256:{}",
+                        "c".repeat(64)
+                    ))
+                    .unwrap()
                 ))
                 .unwrap(),
             ),
@@ -504,8 +516,11 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
         let dependency = entries.get_mut(&"1".repeat(32)).unwrap();
         dependency.realisations[0].ca = Some(
-            aos_registry_client::registry::store::normalize_digest(&format!("sha256:{}", "d".repeat(64)))
-                .unwrap(),
+            aos_registry_client::registry::store::normalize_digest(&format!(
+                "sha256:{}",
+                "d".repeat(64)
+            ))
+            .unwrap(),
         );
         let graph = StoreMap::from_authenticated_entries(entries).unwrap();
 

@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 
-use crate::backend::BackendBounds;
-use crate::db::Database;
-use crate::secret_version::{verify_secret_fingerprint, SecretVersionResolver};
+use aos_hub_db::backend::BackendBounds;
+use aos_hub_db::db::Database;
+use aos_hub_model::secret_version::{verify_secret_fingerprint, SecretVersionResolver};
 
 /// Plaintext credential material confined to a runtime adapter.
 pub struct ResolvedStorageCredential {
     generation: i64,
-    secret: crate::secret_version::ResolvedSecretVersion,
+    secret: aos_hub_model::secret_version::ResolvedSecretVersion,
 }
 
 impl ResolvedStorageCredential {

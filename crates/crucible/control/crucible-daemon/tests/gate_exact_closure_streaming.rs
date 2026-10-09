@@ -15,8 +15,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
-use crucible_daemon::build_streaming_production_checkpoint_codec_fixture;
 use crucible_daemon::ExactCheckpointStore;
+use crucible_daemon::build_streaming_production_checkpoint_codec_fixture;
 use crucible_store::content_store::{
     BackendCapabilities, BlobHandle, BlobInventoryRecord, BlobSource, ByteRange, ContentId,
     DirectoryBlobBackend, DurabilityRequirement, ImmutableBlobBackend, ObjectKind, PutReceipt,

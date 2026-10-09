@@ -27,7 +27,7 @@ type HmacSha256 = Hmac<Sha256>;
 /// Returns the current Unix timestamp in the active runtime.
 #[must_use]
 pub fn delivery_attestation_now() -> i64 {
-    crate::clock::now_unix_secs()
+    aos_hub_model::clock::now_unix_secs()
 }
 
 /// A verified transport assertion supplied by an upstream ingress adapter.

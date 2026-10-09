@@ -30,6 +30,16 @@ The five canonical gates this file wires and refers to are, per
 `gate:qemu-inert`, `gate:patch-microtests`, `gate:e2e-determinism`, and
 `gate:abi-conformance`, and `gate:license-boundary`.
 
+Cargo dependencies are pinned once by the monorepo's `Cargo.lock` and shared
+`aosWorkspaceVendor`. Crucible does not maintain a second external-dependency
+pin. Its controller, guest, QEMU plugin, debugger gateway, fleet store, and
+reusable dependency artifacts resolve the same closed member list from
+`pkgs/tools/crucible/_workspace.nix`. Package selection excludes GPL components
+from the Apache controller's build roots while retaining the versioned protocol
+crates and the shared Linux quota library. Architectural tests and corresponding
+source retain their repository evidence; those files do not become additional
+Cargo workspace members in the packaged builds.
+
 ## 26.1 AOS build principles Crucible inherits (non-negotiable)
 
 Crucible is an AOS package set; it is bound by the same build principles as every
@@ -62,7 +72,7 @@ unambiguous.
   Nix file taking `{ mkDerivation | mkCargoPackage, fetchurl, ... }` and returning
   a derivation, with version, mirror URLs, and source hash colocated inline, and
   with `buildDeps` / `runtimeDeps` / `propagatedDeps` classified per `CLAUDE.md`.
-  The Rust crates use AOS's `mkCargoPackage` / `fetchCargoDeps` (the same path
+  The Rust crates use AOS's `mkCargoPackage` / `fetchCargoVendor` (the same path
   `pkgs.aos` uses), not a bespoke builder. *Spec:* §26.1; satisfies [G-7].
 
 - **[PKG-5]** Package **completeness** is mandatory: Crucible MUST NOT remove a
@@ -235,8 +245,8 @@ crates plus the `crucible` CLI binary — builds with AOS's cargo packaging, exa
 as `pkgs.aos` does.
 
 - **[PKG-19]** The `crucible` package MUST build the `crucible-*` workspace with
-  `mkCargoPackage` + `fetchCargoDeps` ([PKG-4]), vendoring all crate dependencies
-  through `fetchCargoDeps` (no network at build time), and MUST run the
+  `mkCargoPackage` + `fetchCargoVendor` ([PKG-4]), vendoring all crate dependencies
+  through `fetchCargoVendor` (no network at build time), and MUST run the
   workspace-scoped Cargo test suite (`doCheck = true`, Cargo flags rooted at
   `--workspace` with the non-Crucible AOS CLI crates explicitly excluded) — which
   includes the L0/L1 determinism unit tests and the in-process QEMU double tests
@@ -642,7 +652,7 @@ carries findings across an incompatible build.
   [PKG-18]; spec §26.4.
   - Completed by `checks.crucible.phase7.crucibleQemuPluginPackage`: the phase7
     gate statically verifies that `pkgs.crucible-qemu-plugin` is defined with
-    AOS `mkCargoPackage`/`fetchCargoDeps`, builds the `crucible-qemu-plugin`
+    AOS `mkCargoPackage`/`fetchCargoVendor`, builds the `crucible-qemu-plugin`
     cdylib against `qemu-crucible`, probes the matched `qemu-plugin.h` header
     and QEMU plugin API version during the package build, installs both the
     canonical library and QEMU plugin search-path entry, and emits
@@ -653,10 +663,10 @@ carries findings across an incompatible build.
     `checks.crucible.phase1.aosWorkspaceBuild` is the package-output smoke
     verifier for the built `.so`, QEMU plugin path, and ABI metadata.
 - [x] **T-PKG-8** Package the `crucible` workspace + CLI with `mkCargoPackage` /
-  `fetchCargoDeps`, vendored deps, `--workspace` tests (L0/L1 + double tests). —
+  `fetchCargoVendor`, vendored deps, scoped workspace tests (L0/L1 + double tests). —
   satisfies [PKG-19]; spec §26.5.
   - Completed by `checks.crucible.phase7.crucibleWorkspacePackage`: the
-    `pkgs.crucible` package uses AOS `mkCargoPackage` + `fetchCargoDeps` with a
+    `pkgs.crucible` package uses AOS `mkCargoPackage` + `fetchCargoVendor` with a
     fixed vendored dependency hash, builds and tests the Crucible member inventory
     through workspace-scoped Cargo flags rooted at `--workspace`, excludes the
     non-Crucible AOS CLI crates that share `crates/Cargo.toml`, keeps package
@@ -825,7 +835,7 @@ carries findings across an incompatible build.
     identity/atomic-patch hash, and the shmem, guest-host channel, and RPC ABI
     versions. The gate compares those values to Rust constants and QEMU passthru
     metadata, verifies the installed manifest files, verifies pinned
-    `fetchCargoDeps` and QEMU source/patch hashes, confirms the source filter
+    `fetchCargoVendor` and QEMU source/patch hashes, confirms the source filter
     excludes `.git`, `target`, and `result`, rejects wall-clock timestamp
     emitters in the package metadata paths, and is a dependency of
     `checks.crucible.phase7.gates.e2eDeterminism`.
@@ -859,7 +869,7 @@ carries findings across an incompatible build.
     location-independent identities, exclusive temp creation, and idempotent
     concurrent publish tests.
     `pkgs.crucible-fleet-store` builds the probe binary from source with
-    `mkCargoPackage`/`fetchCargoDeps`, records `fleet_visible=true` and
+    `mkCargoPackage`/`fetchCargoVendor`, records `fleet_visible=true` and
     `aos_from_source=true` in package metadata, and exercises the shared store in
     `postInstall`. `checks.fleet.crucible-distributed-continuous-exploration`
     builds both `pkgs.crucible-fleet-store` and the `pkgs.crucible` explorer

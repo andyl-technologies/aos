@@ -16,17 +16,17 @@ use futures_util::Future;
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 
-use crate::db::{
-    AppendOciProviderInventoryPage, BeginOciProviderInventory, CompleteOciProviderInventory,
-    Database, OciProviderInventoryEntryInput, OciProviderInventoryGenerationRecord,
-    OCI_GC_INVENTORY_BATCH_SIZE, OCI_GC_MAX_INVENTORY_KEY_BYTES, OCI_GC_MAX_INVENTORY_OBJECTS,
-};
 use crate::fetch::{
     SurfaceFetch, SurfaceListingBudget, SurfaceProvider, MAX_SURFACE_LIST_CURSOR_BYTES,
     MAX_SURFACE_LIST_OBJECTS, MAX_SURFACE_LIST_PATH_BYTES, WORKER_MAX_SURFACE_LIST_CURSOR_BYTES,
     WORKER_MAX_SURFACE_LIST_OBJECTS, WORKER_MAX_SURFACE_LIST_PATH_BYTES,
 };
-use crate::keymap::OCI_BLOB_KEY_PREFIX;
+use aos_hub_db::db::{
+    AppendOciProviderInventoryPage, BeginOciProviderInventory, CompleteOciProviderInventory,
+    Database, OciProviderInventoryEntryInput, OciProviderInventoryGenerationRecord,
+    OCI_GC_INVENTORY_BATCH_SIZE, OCI_GC_MAX_INVENTORY_KEY_BYTES, OCI_GC_MAX_INVENTORY_OBJECTS,
+};
+use aos_hub_model::keymap::OCI_BLOB_KEY_PREFIX;
 
 // An object may span many queue dispatches, but its total modeled size remains
 // bounded. Each dispatch reads only small exact ranges and carries the existing
@@ -130,7 +130,7 @@ pub struct OciInventoryControllerStats {
 #[derive(Debug)]
 struct InventoryDispatchTracker {
     limits: OciInventoryDispatchBudget,
-    started: crate::clock::Instant,
+    started: aos_hub_model::clock::Instant,
     pages: usize,
     objects: usize,
     chunks: usize,
@@ -142,7 +142,7 @@ impl InventoryDispatchTracker {
         limits.validate()?;
         Ok(Self {
             limits,
-            started: crate::clock::Instant::now(),
+            started: aos_hub_model::clock::Instant::now(),
             pages: 0,
             objects: 0,
             chunks: 0,
@@ -656,7 +656,7 @@ impl OciProviderInventoryController {
 
     async fn process_generation(
         &self,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         generation: &OciProviderInventoryGenerationRecord,
         collector_id: &str,
         now: i64,
@@ -719,7 +719,7 @@ impl OciProviderInventoryController {
 
     async fn inventory_generation(
         &self,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         generation: &OciProviderInventoryGenerationRecord,
         collector_id: &str,
         now: i64,
@@ -1198,7 +1198,7 @@ impl InventoryObjectContinuation {
         expected_size: u64,
         strong_etag: String,
     ) -> Result<Self> {
-        let state = crate::db::OciSha256State::initial();
+        let state = aos_hub_db::db::OciSha256State::initial();
         let continuation = Self {
             placement_id,
             checkpoint_ordinal,
@@ -1254,8 +1254,8 @@ impl InventoryObjectContinuation {
         Ok(())
     }
 
-    fn sha_state(&self) -> Result<crate::db::OciSha256State> {
-        let state = crate::db::OciSha256State {
+    fn sha_state(&self) -> Result<aos_hub_db::db::OciSha256State> {
+        let state = aos_hub_db::db::OciSha256State {
             version: self.sha_version,
             words: self.sha_words,
             total_bytes: self.sha_total_bytes,
@@ -1265,7 +1265,7 @@ impl InventoryObjectContinuation {
         Ok(state)
     }
 
-    fn set_sha_state(&mut self, state: &crate::db::OciSha256State) -> Result<()> {
+    fn set_sha_state(&mut self, state: &aos_hub_db::db::OciSha256State) -> Result<()> {
         state.validate()?;
         anyhow::ensure!(
             state.total_bytes == self.next_offset,
@@ -1408,7 +1408,7 @@ async fn inventory_entry(
 }
 
 fn inventory_now(floor: i64) -> i64 {
-    crate::clock::now_unix_secs().max(floor)
+    aos_hub_model::clock::now_unix_secs().max(floor)
 }
 
 async fn before_dispatch_deadline<T, F>(
@@ -1422,7 +1422,7 @@ where
         return Ok(None);
     };
     let operation = Box::pin(future);
-    let timeout = Box::pin(crate::clock::sleep(remaining));
+    let timeout = Box::pin(aos_hub_model::clock::sleep(remaining));
     match futures_util::future::select(operation, timeout).await {
         futures_util::future::Either::Left((result, _)) => result.map(Some),
         futures_util::future::Either::Right(((), _)) => Ok(None),
@@ -1551,10 +1551,10 @@ mod tests {
     use sha2::Sha256;
 
     use super::*;
-    use crate::db::{
+    use crate::fetch::{SurfaceInventoryChunk, SurfaceListPage, SurfaceObjectEvidence};
+    use aos_hub_db::db::{
         NewBindingWriteRevision, NewSurfacePlacementSpec, SurfacePlacementRecord, SurfaceTarget,
     };
-    use crate::fetch::{SurfaceInventoryChunk, SurfaceListPage, SurfaceObjectEvidence};
 
     struct MemoryInventory {
         pages: Vec<SurfaceListPage>,
@@ -1726,7 +1726,7 @@ mod tests {
             self.evidence_started.notify_one();
             let delay_ms = self.evidence_delay_ms.load(Ordering::SeqCst);
             if delay_ms > 0 {
-                crate::clock::sleep(Duration::from_millis(delay_ms)).await;
+                aos_hub_model::clock::sleep(Duration::from_millis(delay_ms)).await;
             }
             let objects = self.objects.lock().unwrap();
             let Some(bytes) = objects.get(path) else {
@@ -1788,7 +1788,7 @@ mod tests {
         db.ensure_oci_repository(
             registry_id,
             &RepositoryName::parse("seed").unwrap(),
-            crate::clock::now_unix_secs(),
+            aos_hub_model::clock::now_unix_secs(),
         )
         .await
         .unwrap();
@@ -1988,7 +1988,7 @@ mod tests {
         let (db, registry_id, placement, provider) =
             inventory_fixture(pages, BTreeMap::from([(key, bytes)])).await;
         let controller = OciProviderInventoryController::new(db.clone(), provider.clone());
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
 
         let first = controller
             .run_due("worker", "first", now, 10)
@@ -2103,7 +2103,7 @@ mod tests {
         let (pages, objects) = two_page_inventory();
         let (db, _registry_id, placement, provider) = inventory_fixture(pages, objects).await;
         let controller = OciProviderInventoryController::new(db.clone(), provider.clone());
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
         let budget =
             test_dispatch_budget(1, 1, MAX_OCI_INVENTORY_OBJECT_BYTES, Duration::from_secs(5));
 
@@ -2166,7 +2166,7 @@ mod tests {
         let (db, _registry_id, _placement, provider) =
             inventory_fixture(pages, BTreeMap::from([blobs[0].clone(), blobs[1].clone()])).await;
         let controller = OciProviderInventoryController::new(db, provider.clone());
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
         let budget = test_dispatch_budget(2, 2, 10, Duration::from_secs(5));
 
         let first = controller
@@ -2226,7 +2226,7 @@ mod tests {
         let (db, _registry_id, _placement, provider) =
             inventory_fixture(pages, BTreeMap::from([blobs[0].clone(), blobs[1].clone()])).await;
         let controller = OciProviderInventoryController::new(db, provider.clone());
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
 
         let first = controller
             .run_due_bounded(
@@ -2296,7 +2296,7 @@ mod tests {
             inventory_fixture(pages, BTreeMap::from([(key, bytes)])).await;
         let controller = OciProviderInventoryController::new(db, provider.clone());
         let budget = test_dispatch_budget(1, 1, 8, Duration::from_secs(5));
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
 
         let first = controller
             .run_due_bounded("worker", "large", now, 1, None, budget)
@@ -2370,7 +2370,7 @@ mod tests {
             inventory_fixture(pages, BTreeMap::from([(key, bytes)])).await;
         let controller = OciProviderInventoryController::new(db, provider.clone());
         let budget = test_dispatch_budget(1, 1, 8, Duration::from_secs(5));
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
         let first = controller
             .run_due_bounded("worker", "tamper", now, 1, None, budget)
             .await
@@ -2404,7 +2404,7 @@ mod tests {
             inventory_fixture(pages, BTreeMap::from([(key, bytes)])).await;
         let controller = OciProviderInventoryController::new(db.clone(), provider);
         let first_budget = test_dispatch_budget(1, 1, 8, Duration::from_secs(5));
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
         let first = controller
             .run_due_bounded("worker", "hash-tamper", now, 1, None, first_budget)
             .await
@@ -2457,7 +2457,7 @@ mod tests {
             inventory_fixture(pages, BTreeMap::from([(key.clone(), bytes.clone())])).await;
         let controller = OciProviderInventoryController::new(db.clone(), provider.clone());
         let budget = test_dispatch_budget(1, 1, 8, Duration::from_secs(5));
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
         let first = controller
             .run_due_bounded("worker", "mutation", now, 1, None, budget)
             .await
@@ -2499,7 +2499,7 @@ mod tests {
         let (db, _registry_id, _placement, provider) =
             inventory_fixture(pages, BTreeMap::from([(key, bytes.clone())])).await;
         let controller = OciProviderInventoryController::new(db, provider.clone());
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
         let first = controller
             .run_due_bounded(
                 "worker-a",
@@ -2559,7 +2559,7 @@ mod tests {
             .evidence_delay_ms
             .store(60_000, Ordering::SeqCst);
         let controller = OciProviderInventoryController::new(db.clone(), provider.clone());
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
 
         let dispatch = controller.run_due_bounded(
             "worker",
@@ -2637,7 +2637,7 @@ mod tests {
         ];
         let objects = BTreeMap::from([blobs[0].clone(), blobs[1].clone()]);
         let (db, registry_id, placement, provider) = inventory_fixture(pages, objects).await;
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
         let frozen = db
             .list_due_oci_provider_inventory_placements(now, 1)
             .await
@@ -2764,7 +2764,7 @@ mod tests {
         }
         let (db, _registry_id, placement, provider) = inventory_fixture(Vec::new(), objects).await;
         let controller = OciProviderInventoryController::new(db.clone(), provider.clone());
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
         let keys = blobs.keys().cloned().collect::<Vec<_>>();
 
         let first = controller
@@ -2825,7 +2825,7 @@ mod tests {
     async fn legacy_unscoped_checkpoint_fails_and_a_fresh_generation_is_collected() {
         let (pages, objects) = two_page_inventory();
         let (db, registry_id, placement, provider) = inventory_fixture(pages, objects).await;
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
         let frozen = db
             .list_due_oci_provider_inventory_placements(now, 1)
             .await

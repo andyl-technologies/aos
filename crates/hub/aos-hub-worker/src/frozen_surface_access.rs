@@ -54,9 +54,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use aos_hub_db::db::{
-        Database, NewBindingWriteRevision, RecordOciConditionalDeleteCapability,
-    };
+    use aos_hub_db::db::{Database, NewBindingWriteRevision, RecordOciConditionalDeleteCapability};
     use aos_hub_model::secret_version::{ResolvedSecretVersion, SecretVersionResolver};
     use aos_hub_service::storage_credential::DatabaseStorageCredentialResolver;
     use aos_hub_service::surface_write::FrozenSurfaceAccess;

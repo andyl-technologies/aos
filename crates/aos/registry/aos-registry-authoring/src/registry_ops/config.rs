@@ -7,10 +7,11 @@
 //! name = "example"
 //! ```
 
-use aos_registry_client::config::ApmConfig;
-use aos_registry_client::types::{CacheEntry, RegistryRootConfig, validate_registry_name};
 use anyhow::{Context, Result, bail};
 use aos_cli_ui::output::Printer;
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::registry::mirrors::read_registry_toml;
+use aos_registry_format::consumer::validate_registry_name;
 use std::path::{Path, PathBuf};
 
 /// Resolve the registry storage directory for a given registry name.
@@ -82,21 +83,6 @@ pub(in crate::registry_ops) fn resolve_registry_name(
     );
 }
 
-/// Read and parse registry.toml from a registry directory.
-pub(in crate::registry_ops) fn read_registry_toml(
-    dir: &Path,
-) -> Result<Option<RegistryRootConfig>> {
-    let path = dir.join("registry.toml");
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let config: RegistryRootConfig =
-        toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
-    Ok(Some(config))
-}
-
 /// Returns the local authoring name committed in a registry's manifest.
 ///
 /// # Errors
@@ -120,38 +106,6 @@ pub(in crate::registry_ops) fn registry_content_addressed(dir: &Path) -> bool {
     }
 }
 
-/// Resolves the mirror cache URLs committed in a registry's `registry.toml`.
-///
-/// Flattens the committed `[caches]` cache stack and returns the entries sorted
-/// by descending priority, or an empty
-/// list when the file is missing, unparsable, or lists no caches.
-pub fn resolve_mirrors(dir: &Path) -> Vec<CacheEntry> {
-    match read_registry_toml(dir) {
-        Ok(Some(config)) => {
-            let mut caches = config.cache_entries();
-            caches.sort_by(|a, b| b.priority.cmp(&a.priority));
-            caches
-        }
-        _ => Vec::new(),
-    }
-}
-
-/// Resolves mirror cache URLs from the committed `registry.toml` plus the
-/// consumer's client-side cache overrides.
-///
-/// The client-configured caches from `registries.d` are merged with the
-/// committed entries and the combined list is sorted by descending
-/// priority.
-pub fn resolve_mirrors_for_registry(
-    dir: &Path,
-    registry: &aos_registry_client::types::RegistryConfig,
-) -> Vec<CacheEntry> {
-    let mut caches = registry.caches.clone();
-    caches.extend(resolve_mirrors(dir));
-    caches.sort_by(|a, b| b.priority.cmp(&a.priority));
-    caches
-}
-
 pub(in crate::registry_ops) fn configured_registry_names(config: &ApmConfig) -> Vec<String> {
     config
         .registries
@@ -163,7 +117,7 @@ pub(in crate::registry_ops) fn configured_registry_names(config: &ApmConfig) -> 
 pub(in crate::registry_ops) fn registry_upload_auth_config<'a>(
     config: &'a ApmConfig,
     registry_name: &str,
-) -> Option<&'a aos_registry_client::types::RegistryUploadAuthConfig> {
+) -> Option<&'a aos_registry_format::consumer::RegistryUploadAuthConfig> {
     config
         .registries
         .iter()
@@ -180,7 +134,7 @@ pub(in crate::registry_ops) fn registry_cache_max_age_days(
         .iter()
         .find(|(registry, _state)| registry.name == registry_name)
         .map(|(registry, _state)| registry.cache.max_age_days())
-        .unwrap_or(aos_registry_client::types::DEFAULT_REGISTRY_CACHE_MAX_AGE_DAYS)
+        .unwrap_or(aos_registry_format::consumer::DEFAULT_REGISTRY_CACHE_MAX_AGE_DAYS)
 }
 
 pub(in crate::registry_ops) fn warn_on_cache_gc(

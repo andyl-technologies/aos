@@ -116,7 +116,8 @@ const RUNTIME_SPECS: &[LayerSpec] = &[
 ];
 
 const HARNESS_PACKAGE: &str = "crucible-test-support";
-const HOST_DRIVER_ENGINE_EDGE_EXCEPTIONS: &[(&str, &str)] = &[("crucible-qemu-host", "crucible-engine")];
+const HOST_DRIVER_ENGINE_EDGE_EXCEPTIONS: &[(&str, &str)] =
+    &[("crucible-qemu-host", "crucible-engine")];
 
 #[test]
 fn crucible_runtime_dependencies_follow_layer_graph() -> Result<(), Box<dyn std::error::Error>> {

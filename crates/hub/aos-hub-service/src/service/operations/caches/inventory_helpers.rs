@@ -13,10 +13,10 @@ impl RpcService {
     pub(in crate::service) async fn write_cache_object(
         &self,
         auth: Option<&str>,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
         path: &str,
         body: &[u8],
-        admission: Option<crate::db::CacheWriteTicketRecord>,
+        admission: Option<aos_hub_db::db::CacheWriteTicketRecord>,
     ) -> SurfaceWriteOutcome {
         if let Err(deny) = self.require_cache_admin(auth, &cache).await {
             return auth_denial_to_write_outcome(deny);
@@ -28,10 +28,10 @@ impl RpcService {
     /// Writes one cache object after the caller has checked cache authority.
     pub(in crate::service) async fn write_cache_object_authorized(
         &self,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
         path: &str,
         body: &[u8],
-        admission: Option<crate::db::CacheWriteTicketRecord>,
+        admission: Option<aos_hub_db::db::CacheWriteTicketRecord>,
     ) -> SurfaceWriteOutcome {
         if cache.deleted_at.is_some() {
             return SurfaceWriteOutcome::NotFound;
@@ -39,7 +39,7 @@ impl RpcService {
         if !keymap::is_machine_path(path) {
             return SurfaceWriteOutcome::BadPath("not a machine path");
         }
-        if crate::url_guard::validate_http_surface_path(path).is_err() {
+        if aos_hub_model::url_guard::validate_http_surface_path(path).is_err() {
             return SurfaceWriteOutcome::BadPath("unsafe surface path");
         }
         if body.len() > self.effective_max_upload_bytes().await {

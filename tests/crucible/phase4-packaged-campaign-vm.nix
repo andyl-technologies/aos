@@ -44,6 +44,7 @@
     cargoArtifactContract = controllerArtifactContract;
     cargoEnv = controllerArtifactContract.cargoEnv;
     cargoRoot = "crates";
+    cargoWorkspaceMembers = import ../../pkgs/tools/crucible/_workspace.nix {inherit lib;};
     cargoBuildCommands = campaignFlightBuildCommands;
 
     buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf pkgs.sqlite];
@@ -61,6 +62,7 @@
     cargoArtifactContract = controllerArtifactContract;
     cargoEnv = controllerArtifactContract.cargoEnv;
     cargoRoot = "crates";
+    cargoWorkspaceMembers = import ../../pkgs/tools/crucible/_workspace.nix {inherit lib;};
     cargoBuildCommands = campaignFlightBuildCommands;
     installBins = false;
     doCheck = false;

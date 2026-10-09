@@ -15,6 +15,9 @@ use aos_registry_authoring::registry::release::{
     RegistryPackagePublication, RegistryReleaseIntent, RegistryReleaseLifecycle,
     RegistryReleaseTransaction, require_active_signing_key,
 };
+use aos_registry_authoring::registry::tuf::{
+    MetadataSigningIdentity, MetadataSigningRequest, RegistryMetadataSigner,
+};
 use aos_registry_authoring::registry_ops::{
     ContainerReleaseAttachment, load_container_release_attachment, local_registry_name,
 };
@@ -23,11 +26,8 @@ use aos_registry_client::provenance::{
     DSSE_SIGNATURE_NAMESPACE, ProvenanceSignature, ProvenanceSigner,
 };
 use aos_registry_client::registry::support::SupportSectionWrite;
-use aos_registry_client::registry::tuf::{
-    MetadataSigningIdentity, MetadataSigningRequest, REGISTRY_METADATA_SIGNATURE_NAMESPACE,
-    RegistryMetadataSigner,
-};
 use aos_registry_client::types::ProfileScope;
+use aos_registry_format::tuf::REGISTRY_METADATA_SIGNATURE_NAMESPACE;
 use aos_release_format::build::BuildReportV1;
 use aos_release_format::canonical;
 use aos_release_format::digest::Sha256Digest;

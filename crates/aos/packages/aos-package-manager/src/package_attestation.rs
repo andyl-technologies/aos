@@ -24,12 +24,14 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::types::PackageMeta;
-use aos_registry_format::measurement::{native_package_binding_digest,package_measurement_digest};
-#[cfg(test)] use aos_registry_format::measurement::package_manifest_digest_bytes;
 #[cfg(test)]
-use aos_deployment_format::inventory::{PackageInventoryDetails, InstalledPackageRecord};
-
+use aos_deployment_format::inventory::{InstalledPackageRecord, PackageInventoryDetails};
+use aos_registry_format::consumer::PackageMeta;
+#[cfg(test)]
+use aos_registry_format::measurement::native_package_binding_digest;
+#[cfg(test)]
+use aos_registry_format::measurement::package_manifest_digest_bytes;
+use aos_registry_format::measurement::package_measurement_digest;
 
 const AOS_PACKAGE_CEL_REL: &str = "run/log/aos-packages.cel";
 const TPM2_PCREXTEND_ENV: &str = "AOS_TPM2_PCREXTEND";
@@ -538,7 +540,10 @@ struct PendingPackageSet {
 }
 
 #[cfg(test)]
-fn measurement_events(root: &Path, installed: &[InstalledPackageRecord]) -> Result<Vec<MeasurementEvent>> {
+fn measurement_events(
+    root: &Path,
+    installed: &[InstalledPackageRecord],
+) -> Result<Vec<MeasurementEvent>> {
     let mut packages = Vec::new();
     for entry in installed {
         let Some(apm) = entry.apm.as_ref() else {
@@ -1300,6 +1305,7 @@ fn pcr_baseline_event(pcr15: &str) -> MeasurementEvent {
     }
 }
 
+#[cfg(test)]
 fn package_tuple_word(package: &MeasuredPackage) -> String {
     length_prefixed_word(
         "aos-package-v1",
@@ -2572,8 +2578,10 @@ fn digest_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_deployment_format::inventory::{PackageInventoryDetails, InstalledPackageRecord};
-use crate::types::{AttestationMeta, NativeArtifactMeta, PACKAGE_META_FORMAT, PackageMeta};
+    use aos_deployment_format::inventory::{InstalledPackageRecord, PackageInventoryDetails};
+    use aos_registry_format::consumer::{
+        AttestationMeta, NativeArtifactMeta, PACKAGE_META_FORMAT, PackageMeta,
+    };
     use tempfile::TempDir;
 
     fn pcr_extension_witness(directory: &Path, exit_status: u8) -> (PathBuf, PathBuf) {
@@ -3189,10 +3197,9 @@ use crate::types::{AttestationMeta, NativeArtifactMeta, PACKAGE_META_FORMAT, Pac
             "eval_mode": "pure-eval",
             "quote_status": "quoted"
         });
-        let canonical = String::from_utf8(
-            aos_core::json::canonical_json(&record).expect("canonical record"),
-        )
-        .expect("canonical JSON is UTF-8");
+        let canonical =
+            String::from_utf8(aos_core::json::canonical_json(&record).expect("canonical record"))
+                .expect("canonical JSON is UTF-8");
         let activation_a = format!("sha256:{}", "a".repeat(64));
         assert!(
             !measure_generation_attestation(

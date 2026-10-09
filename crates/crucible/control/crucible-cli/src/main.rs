@@ -44,6 +44,7 @@ use crucible_control_server::{
     serve_shared_lifecycle_http2_with_debug_policy_until_shutdown,
 };
 use crucible_session::engine as crucible_model;
+use crucible_session::engine as crucible_engine;
 #[cfg(test)]
 use crucible_session::engine::QuantumLoop as EngineLoop;
 #[cfg(any(test, feature = "test-double"))]
@@ -59,9 +60,8 @@ use crucible_session::{
     EngineSnapshot, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
     SessionCommandKind, StepMode,
     engine::{
-        self as crucible_engine, Checkpoint, CheckpointKind, DagStore, MemoryDagStore,
-        RecordedAssertionLog, Schedule, SearchRetainedLogAssertionEvidence, SimDuration,
-        VirtualTime,
+        Checkpoint, CheckpointKind, DagStore, MemoryDagStore, RecordedAssertionLog, Schedule,
+        SearchRetainedLogAssertionEvidence, SimDuration, VirtualTime,
     },
 };
 #[cfg(test)]

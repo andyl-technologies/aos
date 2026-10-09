@@ -1,7 +1,5 @@
 //! Tenancy records returned by typed Hub persistence operations.
 
-use super::*;
-
 /// An organization (tenant boundary) system-of-record row.
 #[derive(Debug, Clone)]
 pub struct OrgRecord {

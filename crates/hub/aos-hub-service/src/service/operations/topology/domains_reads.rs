@@ -53,7 +53,7 @@ impl RpcService {
             .map_err(RpcError::internal)?
         {
             Some(domain) => Some(domain),
-            None if crate::db::canonical_delivery_hostname(&req.stable_id).is_ok() => self
+            None if aos_hub_db::db::canonical_delivery_hostname(&req.stable_id).is_ok() => self
                 .db
                 .delivery_domain_by_hostname(&req.stable_id)
                 .await

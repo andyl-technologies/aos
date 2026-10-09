@@ -65,9 +65,9 @@
 //! [`aos_hub_model::auth::password`] for the KDF.
 //!
 //! Migrations are ordered SQL statements tracked in `schema_version`,
-//!  applied at open. The connection is wrapped in a `Mutex` following the
-//! pattern of `aos-server`'s token store; hub queries are short and
-//! page-shaped, so a single writer is ample for phase 1.
+//! applied at open. The async backend owns connection and transaction policy;
+//! typed queries preserve the same migration identity and atomic mutation
+//! contracts on native SQL engines and Worker colocated SQLite.
 //!
 //! # Tenancy hierarchy (v3)
 //!
@@ -159,7 +159,7 @@
 //! order by `created_at` rather than by a sortable id, so no new dependency
 //! (a ULID generator) is taken on. The engine that drives these tables —
 //! drafting, staging, semantic-diffing, applying, and reverting — lives in
-//! [`crate::config`]; this module only stores and lists the rows.
+//! the service configuration layer; this module only stores and lists the rows.
 //!
 //! ## Security-object revert exemptions
 //!
@@ -167,7 +167,7 @@
 //! credential or grant (RFC-0004): a `token` revert renders as an
 //! "issue replacement" note (a no-op create), and a `membership` delete
 //! reverts to an *invitation* rather than a silent re-admit. These are
-//! encoded as operation/notes by [`crate::config::revert`].
+//! encoded as operation/notes by the service configuration-revert operation.
 //!
 //! # Per-org OIDC SSO (v9)
 //!
@@ -230,7 +230,7 @@
 //! secret to verify the `X-AOS-Signature` HMAC. A delivery walks `pending ->
 //! delivered | failed`; a non-2xx response increments `attempts` and schedules
 //! `next_attempt_at` with exponential backoff up to the attempt cap. The
-//! dispatch/delivery logic lives in [`crate::webhook`]; this module only
+//! dispatch/delivery logic lives in the service webhook dispatcher; this module only
 //! stores and lists the rows.
 //!
 //! # Operations: quotas, signup policy, soft-delete (v13)
@@ -608,7 +608,6 @@ fn mysql_migration_index_identity(sql: &str) -> Option<(&str, &str)> {
     (!table.is_empty() && !index.is_empty()).then_some((table, index))
 }
 
-
 /// Whether any error in `err`'s chain is a [`LastOwnerError`].
 ///
 /// Walks the full `anyhow` context chain, so classification survives any
@@ -619,11 +618,6 @@ pub fn is_last_owner_error(err: &anyhow::Error) -> bool {
         .any(|cause| cause.downcast_ref::<LastOwnerError>().is_some())
 }
 
-
-
-
-
-
 const BINDING_READ_DETAIL_SQL: &str =
     "SELECT id, org_id, name, kind, is_instance_default, stable_id, owner_scope_key, \
      resource_version, created_at, updated_at \
@@ -632,16 +626,6 @@ const BINDING_READ_DETAIL_SQL: &str =
 const BINDING_READ_SUMMARY_SQL: &str =
     "SELECT id, org_id, name, kind, is_instance_default, stable_id \
      FROM bindings WHERE org_id = ?1 ORDER BY name";
-
-
-
-
-
-
-
-
-
-
 
 fn invitation_record_from_row(row: Row) -> Result<InvitationRecord> {
     Ok(InvitationRecord {
@@ -659,20 +643,7 @@ fn invitation_record_from_row(row: Row) -> Result<InvitationRecord> {
 
 pub use aos_hub_model::identity::IdpConfigRecord;
 
-
-
-
-
-
-
 pub use aos_hub_model::identity::TokenAuth;
-
-
-
-
-
-
-
 
 /// One resolved closure edge: a store-hash prefix and the package that
 /// publishes it, when resolvable within the same registry.
@@ -682,9 +653,6 @@ pub use aos_hub_model::identity::TokenAuth;
 /// hash that points outside the registry's package set (e.g. a stdenv path).
 /// Returned in input order by [`Database::resolve_reference_names`].
 pub type ResolvedReference = (String, Option<String>, Option<String>);
-
-
-
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -720,40 +688,6 @@ fn decode_stored_system_image(encoded: &str) -> Result<StoredSystemImageIdentity
     })
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 /// Finds a typed placement-create failure in an error context chain.
 #[must_use]
 pub fn surface_placement_create_failure(
@@ -763,8 +697,6 @@ pub fn surface_placement_create_failure(
         .chain()
         .find_map(|cause| cause.downcast_ref::<SurfacePlacementCreateFailure>())
 }
-
-
 
 /// Finds a typed caller-correctable authority failure in an error chain.
 #[must_use]
@@ -776,14 +708,6 @@ pub fn surface_write_authority_mutation_failure(
         .find_map(|cause| cause.downcast_ref::<SurfaceWriteAuthorityMutationFailure>())
 }
 
-
-
-
-
-
-
-
-
 /// Maximum number of placement observations persisted in one atomic batch.
 ///
 /// The bound matches the Worker surface-list page so one provider page maps to
@@ -793,45 +717,6 @@ pub const MAX_PLACEMENT_SCAN_PRESENCE_BATCH: usize = 256;
 // Durable Object SQLite accepts at most 100 bound parameters per statement.
 // The placement occupies one slot in each bulk delete.
 const MAX_PLACEMENT_SCAN_DELETE_IDS: usize = 99;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 fn row_to_webhook(row: &Row) -> Result<WebhookRecord> {
     let events_json: String = row.get(5)?;
@@ -861,9 +746,6 @@ impl Database {
     /// The instance-config key the sealed draft-signing seed is stored under.
     const DRAFT_SIGNING_KEY: &'static str = "draft_signing_key";
 }
-
-
-
 
 /// The wire names of a permission slice, for JSON storage.
 fn permission_names(permissions: &[aos_hub_model::domain::Permission]) -> Vec<&'static str> {
@@ -904,7 +786,6 @@ fn parse_permission_names(json: &str) -> Vec<aos_hub_model::domain::Permission> 
 const REGISTRY_COLUMNS: &str = "id, stable_id, scope_key, owner_scope_key, slug, \
      trust_keys, require_signatures, org_id, project_path, visibility, \
      crawl_policy, llms_txt_body, resource_version, updated_at";
-
 
 /// `binary_caches` columns in the canonical order [`row_to_binary_cache`] expects.
 const BINARY_CACHE_COLUMNS: &str =

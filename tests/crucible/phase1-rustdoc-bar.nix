@@ -15,7 +15,7 @@
   rootOf = package:
     rootForPackage.${package} or "src/lib.rs";
 
-  expectedPackages = lib.sort builtins.lessThan packages;
+  expectedPackages = lib.sort builtins.lessThan (builtins.filter (lib.hasPrefix "crucible-") packages);
   foundPackages = lib.sort builtins.lessThan (
     cruciblePackages
   );
@@ -209,9 +209,9 @@
     scan lines 1 null false;
 
   formatOwners = {
-    "crucible-shmem/src/lib.rs" = "shared-memory ABI";
-    "crucible-protocol/src/lib.rs" = "wire protocol";
-    "crucible-harness/src/abi.rs" = "ABI golden-vector records";
+    "crucible-qemu-shmem/src/lib.rs" = "shared-memory ABI";
+    "crucible-qemu-protocol/src/lib.rs" = "wire protocol";
+    "crucible-test-support/src/abi.rs" = "ABI golden-vector records";
   };
 
   sourceFilesFor = package: let
@@ -232,7 +232,7 @@
           then [
             {
               inherit path;
-              display = "${package}/src/${relativePath}";
+              display = "${lib.removePrefix (toString cratesDir + "/") (toString srcDir)}/${relativePath}";
             }
           ]
           else []
@@ -275,7 +275,7 @@
     missingModuleDoc = rustdocFailuresForContent "crucible-determinism" "crucible-sim/src/lib.rs" ''
       pub fn documented() {}
     '';
-    missingFormat = rustdocFailuresForContent "crucible-qemu-shmem" "crucible-shmem/src/lib.rs" ''
+    missingFormat = rustdocFailuresForContent "crucible-qemu-shmem" "crucible-qemu-shmem/src/lib.rs" ''
       //! synthetic
       //!
       //! Module map: synthetic.

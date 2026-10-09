@@ -926,17 +926,17 @@
     ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "implemented crucible content-address target";
-        needle = "gate: \"gate:content-address\",\n        package: \"crucible\",\n        test_target: \"gate_content_address\",\n        required_features: &[],";
+        needle = "gate: \"gate:content-address\",\n        package: \"crucible-engine\",\n        test_target: \"gate_content_address\",\n        required_features: &[],";
       }
       {
         label = "implemented crucible-sim content-address target";
-        needle = "gate: \"gate:content-address\",\n        package: \"crucible-sim\",\n        test_target: \"gate_content_address\",\n        required_features: &[],";
+        needle = "gate: \"gate:content-address\",\n        package: \"crucible-determinism\",\n        test_target: \"gate_content_address\",\n        required_features: &[],";
       }
     ]
     ++ failuresFor "crates/crucible/testing/crucible-test-support/src/lib.rs" gateCatalog [
       {
         label = "implemented content-address catalog status";
-        needle = "name: \"gate:content-address\",\n        phase: GatePhase::Phase1,\n        owner: \"crucible\",\n        status: GateStatus::Implemented,";
+        needle = "name: \"gate:content-address\",\n        phase: GatePhase::Phase1,\n        owner: \"crucible-engine\",\n        status: GateStatus::Implemented,";
       }
     ]
     ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs" gateCatalogTest [
@@ -948,11 +948,11 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "implemented crucible mapping target";
-        needle = "gate = \"gate:content-address\";\n      package = \"crucible\";\n      testTarget = \"gate_content_address\";\n      requiredFeatures = [];";
+        needle = "gate = \"gate:content-address\";\n      package = \"crucible-engine\";\n      testTarget = \"gate_content_address\";\n      requiredFeatures = [];";
       }
       {
         label = "implemented crucible-sim mapping target";
-        needle = "gate = \"gate:content-address\";\n      package = \"crucible-sim\";\n      testTarget = \"gate_content_address\";\n      requiredFeatures = [];";
+        needle = "gate = \"gate:content-address\";\n      package = \"crucible-determinism\";\n      testTarget = \"gate_content_address\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -1026,7 +1026,7 @@
       }
       {
         label = "T-TEMP-6 completion names CoW refs";
-        needle = "`crucible::CowDeltaRef`";
+        needle = "`crucible_engine::CowDeltaRef`";
       }
       {
         label = "T-TEMP-6 completion names marginal fork API";
@@ -1042,23 +1042,23 @@
       }
       {
         label = "T-TEMP-8 completion names DAG store trait";
-        needle = "`crucible::DagStore`";
+        needle = "`crucible_engine::DagStore`";
       }
       {
         label = "T-TEMP-8 completion names local backend";
-        needle = "`crucible::LocalDagStore`";
+        needle = "`crucible_engine::LocalDagStore`";
       }
       {
         label = "T-TEMP-8 completion names store-key artifact";
-        needle = "`crucible::DagStoreReproductionArtifact`";
+        needle = "`crucible_engine::DagStoreReproductionArtifact`";
       }
       {
         label = "T-TEMP-9 completion names GC roots";
-        needle = "`crucible::TemporalGraphGcRoots`";
+        needle = "`crucible_engine::TemporalGraphGcRoots`";
       }
       {
         label = "T-TEMP-9 completion names GC report";
-        needle = "`crucible::TemporalGraphGcReport`";
+        needle = "`crucible_engine::TemporalGraphGcReport`";
       }
       {
         label = "T-TEMP-9 completion names content-address gate";
@@ -1066,7 +1066,7 @@
       }
       {
         label = "T-TEMP-10 completion names frontier policy";
-        needle = "`crucible::FrontierReductionPolicy`";
+        needle = "`crucible_engine::FrontierReductionPolicy`";
       }
       {
         label = "T-TEMP-10 completion names reduced enumeration";
@@ -1092,23 +1092,23 @@
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
       {
         label = "T-PAT-4 completion names checkpoint";
-        needle = "`crucible::Checkpoint`";
+        needle = "`crucible_engine::Checkpoint`";
       }
       {
         label = "T-PAT-4 completion names node blob refs";
-        needle = "`crucible::NodeBlobRef`";
+        needle = "`crucible_engine::NodeBlobRef`";
       }
       {
         label = "T-PAT-4 completion names CoW refs";
-        needle = "`crucible::CowDeltaRef`";
+        needle = "`crucible_engine::CowDeltaRef`";
       }
       {
         label = "T-PAT-4 completion names DagStore";
-        needle = "`crucible::DagStore`";
+        needle = "`crucible_engine::DagStore`";
       }
       {
         label = "T-PAT-4 completion names local DagStore backend";
-        needle = "`crucible::LocalDagStore`";
+        needle = "`crucible_engine::LocalDagStore`";
       }
       {
         label = "T-PAT-4 completion names checkpoint closure persistence";
@@ -1211,7 +1211,7 @@ in
             check=${attrPath}
             gate=gate:content-address
             tasks=${builtins.concatStringsSep "," taskIds}
-            rust_tests=crucible::predicate_dsl,crucible::gate_content_address,crucible-sim::gate_content_address
+            rust_tests=crucible_engine::predicate_dsl,crucible_engine::gate_content_address,crucible-sim::gate_content_address
             corpus=fixed-vectors-and-collision-sampling
             predicate_dsl=world-plan-resolved-content-addressed-conditions
             predicate_dsl_host_closures=additive-unknown-named-predicates

@@ -28,8 +28,8 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result, bail, ensure};
 use futures_util::{StreamExt, stream};
 
-use crate::registry::transport::join_cache_url;
 use crate::provenance::{self, PACKAGE_PROVENANCE_TRANSPARENCY_LOG};
+use crate::registry::transport::join_cache_url;
 use crate::registry::transport::{RegistryRead, RegistryTransport};
 use crate::registry::{channel, fetch, keys, repo, tuf, verify};
 use crate::security::{self, KeyStore, TrustedKey, key_fingerprint};

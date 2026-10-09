@@ -49,10 +49,10 @@
   in
     direct ++ target;
 
-  allowedEntrypoints = ["crucible-control-api" "crucible-session" "crucible-daemon"];
+  allowedEntrypoints = ["crucible-control-api" "crucible-control-client" "crucible-control-server" "crucible-session" "crucible-daemon"];
   # RFC-0020 04a: the daemon owns the sole-writer actor and the local
   # executor, so it hosts the engine directly like the session actor.
-  engineHosts = ["crucible-session" "crucible-daemon"];
+  engineHosts = ["crucible-session" "crucible-control-server" "crucible-daemon"];
   # Crates below the engine: data models, stores, protocols, and QEMU
   # process control. Depending on one of them reaches no engine.
   substrateCrates = [
@@ -87,8 +87,9 @@
               lib.hasPrefix "crucible-" dependency.package
               && !(builtins.elem dependency.package allowedEntrypoints)
               && !(builtins.elem dependency.package substrateCrates)
+              && !(dependency.package == "crucible-engine" && builtins.elem package engineHosts)
             then [
-              "${package} may reach the engine only through crucible-api/crucible-session, found `${dependency.package}`"
+              "${package} may reach the engine only through the control/session crates, found `${dependency.package}`"
             ]
             else []
         )
@@ -158,7 +159,7 @@
     findings = findingsFor workspaceDependencies {
       crucible-daemon = {
         dependencies = {
-          crucible-api = {};
+          crucible-control-api = {};
           session.package = "crucible-session";
         };
       };

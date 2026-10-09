@@ -13,11 +13,7 @@
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliCargo = builtins.readFile ../../crates/crucible/control/crucible-cli/Cargo.toml;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  cliProduction = import ./_rust-source.nix {
-    inherit lib;
-    entry = ../../crates/crucible/control/crucible-cli/src/main.rs;
-    fragmentDirs = [../../crates/crucible/control/crucible-cli/src/cli];
-  };
+  cliProduction = import ./_cli-production-source.nix {inherit lib;};
   cliRunProduction = builtins.concatStringsSep "\n" [
     (import ./_rust-module-source.nix {
       inherit lib;
@@ -508,7 +504,7 @@
     ++ failuresFor "crates/crucible/control/crucible-cli/Cargo.toml" cliCargo [
       {
         label = "CLI depends on API lifecycle";
-        needle = "crucible-api = { path = \"../crucible-api\" }";
+        needle = "crucible-control-api = { path = \"../crucible-control-api\" }";
       }
       {
         label = "CLI owns async runtime for local double workflow";

@@ -147,7 +147,7 @@ impl StaticSurface {
             }
             let snapshot = named_snapshot(pinned, object)?;
             if immutable {
-                aos_registry_client::registry::transport::RegistryStorage::new(
+                aos_registry_authoring::registry::transport::RegistryStorage::new(
                     self.backend.as_ref(),
                 )
                 .put_object(&object.path, snapshot.path(), &object.sha256)
@@ -344,23 +344,25 @@ impl SurfaceClient for StaticSurface {
                 kind: "immutable".into(),
                 media_type: declared.media_type.clone(),
             };
-            objects.push(aos_registry_client::registry::transport::ImmutableUpload {
-                path: object.path.clone(),
-                source: root.join(&object.path),
-                sha256: object.sha256.clone(),
-                byte_size: u64::try_from(object.byte_size)?,
-                phase: if object.path.starts_with("images/")
-                    && !object.path.ends_with("image-info.json")
-                {
-                    aos_registry_client::registry::transport::ImmutableUploadPhase::ImageDisk
-                } else if object.path.starts_with("publication-receipts/") {
-                    aos_registry_client::registry::transport::ImmutableUploadPhase::Receipt
-                } else {
-                    aos_registry_client::registry::transport::ImmutableUploadPhase::Catalog
+            objects.push(
+                aos_registry_authoring::registry::transport::ImmutableUpload {
+                    path: object.path.clone(),
+                    source: root.join(&object.path),
+                    sha256: object.sha256.clone(),
+                    byte_size: u64::try_from(object.byte_size)?,
+                    phase: if object.path.starts_with("images/")
+                        && !object.path.ends_with("image-info.json")
+                    {
+                        aos_registry_authoring::registry::transport::ImmutableUploadPhase::ImageDisk
+                    } else if object.path.starts_with("publication-receipts/") {
+                        aos_registry_authoring::registry::transport::ImmutableUploadPhase::Receipt
+                    } else {
+                        aos_registry_authoring::registry::transport::ImmutableUploadPhase::Catalog
+                    },
                 },
-            });
+            );
         }
-        aos_registry_client::registry::transport::upload_immutable_inventory(
+        aos_registry_authoring::registry::transport::upload_immutable_inventory(
             &objects,
             &[(&self.planned.origin, self.backend.as_ref())],
             printer,
@@ -459,7 +461,7 @@ impl SurfaceClient for StaticSurface {
             pointers.push((pointer, expected));
         }
         pointers.sort_by_key(|(pointer, _)| {
-            aos_registry_client::registry::transport::pointer_upload_rank(&pointer.path)
+            aos_registry_authoring::registry::transport::pointer_upload_rank(&pointer.path)
         });
         for (pointer, expectation) in pointers {
             let source = temporary_file(&pointer.bytes)?;

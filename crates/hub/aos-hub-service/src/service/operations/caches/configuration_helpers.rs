@@ -15,7 +15,7 @@ impl RpcService {
     pub(in crate::service) async fn binary_cache_or_not_found(
         &self,
         identifier: &str,
-    ) -> Result<crate::db::BinaryCache, RpcError> {
+    ) -> Result<aos_hub_db::db::BinaryCache, RpcError> {
         if let Some(cache) = self
             .db
             .binary_cache_by_stable_id(identifier)
@@ -36,7 +36,7 @@ impl RpcService {
     pub(in crate::service) async fn require_cache_admin(
         &self,
         auth: Option<&str>,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
     ) -> Result<(), RpcError> {
         let claims = self.require_claims(auth)?;
         match cache.org_id {
@@ -76,7 +76,7 @@ impl RpcService {
     pub(in crate::service) async fn require_cache_read(
         &self,
         auth: Option<&str>,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
     ) -> Result<(), RpcError> {
         // A soft-deleted (tombstoned) cache is invisible to reads — symmetric
         // with `list_binary_caches`, which filters `deleted_at`, and with typed delivery.
@@ -108,7 +108,7 @@ impl RpcService {
     pub(in crate::service) async fn require_cache_stream_read(
         &self,
         auth: ReadAuthorization<'_>,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
     ) -> Result<(), RpcError> {
         match auth {
             ReadAuthorization::AuthorizationHeader(header) => {
@@ -176,8 +176,8 @@ impl RpcService {
 
     pub(in crate::service) async fn admit_cache_proxy_writes(
         &self,
-        cache: &crate::db::BinaryCache,
-        placement: &crate::db::SurfacePlacementRecord,
+        cache: &aos_hub_db::db::BinaryCache,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         paths: &[String],
         sizes: &[u64],
         proxy_limit: u64,
@@ -195,7 +195,7 @@ impl RpcService {
                 .map_err(|_| RpcError::invalid("declared upload size is too large"))?;
             candidates.push((
                 index,
-                crate::db::CacheProxyWriteAdmission {
+                aos_hub_db::db::CacheProxyWriteAdmission {
                     ticket_id: uuid::Uuid::new_v4().simple().to_string(),
                     object_key: path.clone(),
                     declared_size,
@@ -283,7 +283,7 @@ impl RpcService {
 
     pub(in crate::service) async fn admit_cache_proxy_write(
         &self,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
         path: &str,
         size: u64,
         now: i64,
@@ -399,7 +399,7 @@ impl RpcService {
 
     pub(in crate::service) async fn register_cache_narinfos_authorized(
         &self,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
         narinfos: &[pb::CacheNarinfo],
     ) -> Result<pb::CacheNarinfoRegistrationResponse, RpcError> {
         if narinfos.len() > MAX_CACHE_NARINFO_REGISTRATION_BATCH {
@@ -474,7 +474,7 @@ impl RpcService {
     pub(in crate::service) async fn cache_surface_fetch(
         &self,
         auth: Option<&str>,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
         path: &str,
     ) -> Result<Option<SurfaceObjectResponse>, RpcError> {
         self.require_cache_read(auth, cache).await?;
@@ -530,7 +530,7 @@ impl RpcService {
 
     pub(in crate::service) async fn binary_cache_owner_scope(
         &self,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
     ) -> Result<String, RpcError> {
         Ok(cache.owner_scope_key.clone())
     }
@@ -539,7 +539,7 @@ impl RpcService {
     pub(in crate::service) async fn require_cache_permission(
         &self,
         auth: Option<&str>,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
         permission: Permission,
     ) -> Result<Claims, RpcError> {
         let claims = self.require_claims(auth)?;
@@ -552,7 +552,7 @@ impl RpcService {
     pub(in crate::service) async fn require_cache_operational_read(
         &self,
         auth: Option<&str>,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
     ) -> Result<Claims, RpcError> {
         self.require_cache_permission(auth, cache, Permission::Read)
             .await
@@ -560,7 +560,7 @@ impl RpcService {
 
     pub(in crate::service) async fn binary_cache_message(
         &self,
-        cache: &crate::db::BinaryCache,
+        cache: &aos_hub_db::db::BinaryCache,
         include_usage: bool,
     ) -> Result<pb::BinaryCache, RpcError> {
         let usage = if include_usage {
@@ -569,7 +569,7 @@ impl RpcService {
                 .await
                 .map_err(RpcError::internal)?
         } else {
-            crate::db::CacheUsage::default()
+            aos_hub_db::db::CacheUsage::default()
         };
         let placement_count = self
             .db
@@ -618,7 +618,7 @@ impl RpcService {
         cache_id: &str,
         registry_id: &str,
         mutate: bool,
-    ) -> Result<(crate::db::BinaryCache, RegistryRecord), RpcError> {
+    ) -> Result<(aos_hub_db::db::BinaryCache, RegistryRecord), RpcError> {
         let cache = self.binary_cache_or_not_found(cache_id).await?;
         let registry = self.registry_or_not_found(registry_id).await?;
         if mutate {
@@ -652,13 +652,13 @@ impl RpcService {
     ) -> Result<pb::OperationResponse, RpcError> {
         let operation = self
             .db
-            .create_topology_operation(&crate::db::NewTopologyOperation {
+            .create_topology_operation(&aos_hub_db::db::NewTopologyOperation {
                 operation_id: uuid::Uuid::new_v4().to_string(),
                 operation_kind: kind.to_string(),
                 control_permission,
-                targets: vec![crate::db::NewTopologyOperationTarget {
+                targets: vec![aos_hub_db::db::NewTopologyOperationTarget {
                     role: "primary".to_string(),
-                    target: crate::db::NewTopologyOperationTargetRef::BinaryCache(cache_id),
+                    target: aos_hub_db::db::NewTopologyOperationTargetRef::BinaryCache(cache_id),
                     generation_key: 0,
                     configuration_digest: String::new(),
                 }],

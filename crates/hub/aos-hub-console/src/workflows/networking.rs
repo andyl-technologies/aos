@@ -318,17 +318,13 @@ fn DomainCertificateEditor(client: ApiClient, domain: aos_hub_api::Domain) -> im
         .and_then(|desired| desired.certificate_configuration.as_ref())
         .and_then(|configuration| configuration.configuration.as_ref());
     let (mode, issuer, challenge_provider, secret_ref) = match current {
-        Some(aos_hub_api::certificate_configuration::Configuration::External(
-            configuration,
-        )) => (
+        Some(aos_hub_api::certificate_configuration::Configuration::External(configuration)) => (
             "external".to_string(),
             "acme".to_string(),
             String::new(),
             configuration.certificate_secret_ref.clone(),
         ),
-        Some(aos_hub_api::certificate_configuration::Configuration::HubManaged(
-            configuration,
-        )) => (
+        Some(aos_hub_api::certificate_configuration::Configuration::HubManaged(configuration)) => (
             "hub".to_string(),
             configuration.issuer.clone(),
             configuration.dns_challenge_provider.clone(),
@@ -411,9 +407,7 @@ fn domain_configuration_apply(
         };
         let client = client.clone();
         let path = match kind {
-            DomainConfigurationKind::Dns => {
-                aos_hub_api::DOMAIN_SERVICE_CONFIGURE_DOMAIN_DNS_PATH
-            }
+            DomainConfigurationKind::Dns => aos_hub_api::DOMAIN_SERVICE_CONFIGURE_DOMAIN_DNS_PATH,
             DomainConfigurationKind::Certificate => {
                 aos_hub_api::DOMAIN_SERVICE_CONFIGURE_DOMAIN_CERTIFICATE_PATH
             }

@@ -106,7 +106,7 @@ fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(),
     );
 
     assert_contains(&plugin_lib, "WHITEBOX_DOORBELL_ABIS");
-    assert_contains(&plugin_whitebox, "pub use crucible_protocol");
+    assert_contains(&plugin_whitebox, "pub use crucible_qemu_protocol");
     assert_contains(
         &plugin_whitebox,
         "pub const fn from_abi(trap: WhiteboxDoorbellTrapAbi)",

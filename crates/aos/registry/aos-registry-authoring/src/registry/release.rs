@@ -23,7 +23,9 @@ use super::parse::{parse_package_file, parse_registry_matching};
 use super::store::StoreMap;
 use aos_registry_client::config::ApmConfig;
 use aos_registry_client::provenance::ProvenanceSigner;
-use aos_registry_client::types::{package_name_bucket, validate_package_name, validate_registry_name};
+use aos_registry_format::consumer::{
+    package_name_bucket, validate_package_name, validate_registry_name,
+};
 
 pub(crate) mod artifacts;
 mod lineage;
@@ -211,8 +213,11 @@ impl RegistryObjectSigner for KeyPathRegistryObjectSigner {
         }
         semver::Version::parse(&request.release)?;
         require_sha256(&request.plan_digest, "signing plan digest")?;
-        let armored_signature =
-            aos_registry_client::security::sign_payload_signature(&self.key_path, "git", &request.payload)?;
+        let armored_signature = aos_registry_client::security::sign_payload_signature(
+            &self.key_path,
+            "git",
+            &request.payload,
+        )?;
         if !aos_registry_client::security::verify_payload_signature(
             &request.payload,
             &armored_signature,
@@ -239,17 +244,13 @@ pub const INTENT_SCHEMA: &str = "aos.registry-release-intent/v1";
 pub const PREPARED_SCHEMA: &str = "aos.prepared-registry-release/v1";
 const DIGEST_DOMAIN: &[u8] = b"aos.registry-release-surface/v1\0";
 
-pub use aos_registry_format::release::RegistryReleaseEntry;
+use aos_registry_format::release::RegistryReleaseEntry;
 
 fn is_native_companion(output: &str) -> bool {
     matches!(
         output,
         "deploymentArtifact" | "documentationArtifact" | "qualificationArtifact"
     ) || output.starts_with("deploymentArtifact.")
-}
-
-fn default_output_name() -> String {
-    "out".to_string()
 }
 
 /// Public catalog metadata used to author every platform entry for a package.
@@ -384,7 +385,9 @@ impl RegistryEntryAuthor for CanonicalRegistryEntryAuthor<'_> {
             }
             let path = isolated_registry
                 .join("packages")
-                .join(aos_registry_client::types::package_name_bucket(&entry.name))
+                .join(aos_registry_format::consumer::package_name_bucket(
+                    &entry.name,
+                ))
                 .join(format!("{}.toml", entry.name));
             let content = fs::read_to_string(&path)?;
             let package = aos_registry_format::manifest::parse_package_file(&content)?;
@@ -1647,8 +1650,12 @@ fn verify_catalog_metadata(directory: &Path) -> Result<()> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    super::tuf::verify_worktree_metadata(directory, &registry, &trusted_keys)
-        .context("verifying the candidate catalog TUF metadata before signing")?;
+    aos_registry_client::registry::tuf::verify_worktree_metadata(
+        directory,
+        &registry,
+        &trusted_keys,
+    )
+    .context("verifying the candidate catalog TUF metadata before signing")?;
     Ok(())
 }
 

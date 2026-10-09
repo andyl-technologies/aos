@@ -9,8 +9,8 @@ use aos_registry_format::tag::render_tag_payload;
 use ed25519_dalek::SigningKey;
 
 use super::index_registry;
-use crate::db::{Database, RegistryRecord};
 use crate::fetch::SurfaceFetch;
+use aos_hub_db::db::{Database, RegistryRecord};
 
 #[derive(Default)]
 struct CatalogSurface {

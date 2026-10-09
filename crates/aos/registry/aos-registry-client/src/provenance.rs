@@ -8,7 +8,7 @@
 //! their original spelling under `nix:narHash`.
 
 use std::collections::{BTreeMap, HashSet};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -27,8 +27,8 @@ const BUILD_TYPE: &str = "https://andyl.com/aos/apr-publish/v1";
 const DSSE_PAYLOAD_TYPE: &str = "application/vnd.in-toto+json";
 /// OpenSSH signature namespace for package-provenance DSSE envelopes.
 pub const DSSE_SIGNATURE_NAMESPACE: &str = "aos-package-provenance-dsse-v1";
-pub const PACKAGE_PROVENANCE_TRANSPARENCY_LOG: &str =
-    "transparency/package-provenance.jsonl";
+/// Committed registry path of the package provenance transparency log.
+pub const PACKAGE_PROVENANCE_TRANSPARENCY_LOG: &str = "transparency/package-provenance.jsonl";
 const PACKAGE_PROVENANCE_TRANSPARENCY_SCHEMA: &str =
     "https://andyl.com/aos/transparency/package-provenance/v1";
 
@@ -77,7 +77,7 @@ pub fn builder_id(registry_name: &str, key_id: &str) -> String {
 /// Returns an error when the statement cannot be serialized, the key id is
 /// empty, the DSSE payload cannot be signed, or the envelope cannot be
 /// serialized.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn sign_statement_dsse_jsonl(
     statement: &serde_json::Value,
     key_id: &str,

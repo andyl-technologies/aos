@@ -16,7 +16,7 @@
     entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
   gatewayLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-debug-gateway/src/lib.rs;
-  gatewayMain = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-debug-gateway/src/main.rs;
+  gatewayMain = import ./_rust-module-source.nix { inherit lib; entry = ../../crates/crucible/qemu/crucible-qemu-debug-gateway/src/main.rs; };
   gatewayTest = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-debug-gateway/src/main/tests.rs;
   relayPolicy = import ./_crucible-control-source.nix { inherit lib; component = "debug_relay"; };
   relayTest = builtins.readFile ../../crates/crucible/control/crucible-control-server/src/debug_relay/tests.rs;

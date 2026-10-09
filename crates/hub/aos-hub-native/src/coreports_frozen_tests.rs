@@ -7,8 +7,8 @@ use aos_hub_db::db::{
     Database, NewBindingWriteRevision, NewSurfacePlacementSpec,
     RecordOciConditionalDeleteCapability, SurfaceTarget,
 };
-use aos_hub_service::fetch::SurfaceProvider as _;
 use aos_hub_model::secret_version::{ResolvedSecretVersion, SecretVersionResolver};
+use aos_hub_service::fetch::SurfaceProvider as _;
 use aos_hub_service::surface_write::{self as core_sw, SurfaceWriteProvider as _};
 use sha2::{Digest as _, Sha256};
 

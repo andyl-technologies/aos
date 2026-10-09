@@ -618,14 +618,13 @@ async fn main() -> Result<()> {
             let route_reservation_keys_path = route_reservation_keys_file
                 .context("HUB_ROUTE_RESERVATION_KEYS_FILE is required for route management")?;
             let route_reservation_keys = String::from_utf8(
-                aos_hub_native::auth::seal::read_secret_file(&route_reservation_keys_path).with_context(
-                    || {
+                aos_hub_native::auth::seal::read_secret_file(&route_reservation_keys_path)
+                    .with_context(|| {
                         format!(
                             "reading route reservation keyring at {}",
                             route_reservation_keys_path.display()
                         )
-                    },
-                )?,
+                    })?,
             )
             .context("route reservation keyring is not UTF-8")?;
             let route_reservation_keyring = Arc::new(
@@ -747,11 +746,12 @@ async fn main() -> Result<()> {
             }
             app_state.route_reservation_keyring = Some(route_reservation_keyring);
             if let Some(path) = delivery_attestation_key_file {
-                let key = aos_hub_native::auth::seal::read_secret_file(&path).with_context(|| {
-                    format!("reading delivery attestation key at {}", path.display())
-                })?;
+                let key =
+                    aos_hub_native::auth::seal::read_secret_file(&path).with_context(|| {
+                        format!("reading delivery attestation key at {}", path.display())
+                    })?;
                 app_state.delivery_attestation_verifier = Some(Arc::new(
-                    aos_hub_model::delivery_attestation::DeliveryAttestationVerifier::new(&key)
+                    aos_hub_service::delivery_attestation::DeliveryAttestationVerifier::new(&key)
                         .context("invalid delivery attestation key")?,
                 ));
             }
@@ -886,9 +886,11 @@ async fn main() -> Result<()> {
             let cloudflare_api_token = match (cloudflare_api_token, cloudflare_api_token_file) {
                 (Some(token), None) => Some(token),
                 (None, Some(path)) => Some(
-                    String::from_utf8(aos_hub_native::auth::seal::read_secret_file(&path).with_context(
-                        || format!("reading Cloudflare API token at {}", path.display()),
-                    )?)
+                    String::from_utf8(
+                        aos_hub_native::auth::seal::read_secret_file(&path).with_context(|| {
+                            format!("reading Cloudflare API token at {}", path.display())
+                        })?,
+                    )
                     .context("Cloudflare API token is not UTF-8")?
                     .trim_end()
                     .to_owned(),
@@ -902,8 +904,9 @@ async fn main() -> Result<()> {
             };
             if let Some(token) = cloudflare_api_token {
                 anyhow::ensure!(!token.is_empty(), "Cloudflare API token file is empty");
-                let api =
-                    Arc::new(aos_hub_native::coreports::CloudflareControlPlaneClient::new(token).await?);
+                let api = Arc::new(
+                    aos_hub_native::coreports::CloudflareControlPlaneClient::new(token).await?,
+                );
                 route_adapters = route_adapters.with_external(Arc::new(
                     aos_hub_service::topology_probe::CloudflareRouteControlPlane::new(
                         api,
@@ -973,16 +976,17 @@ async fn main() -> Result<()> {
                     }
                 }
             });
-            let deletion_controller = aos_hub_service::gc_controller::CacheGcDeletionController::new(
-                Arc::clone(&app_state.db),
-                Arc::new(
-                    aos_hub_native::coreports::HubSurfaceWriteProvider::new(
-                        Arc::clone(&app_state.db),
-                        app_state.http.clone(),
-                    )
-                    .with_credentials(Arc::clone(&app_state.secret_versions)),
-                ),
-            );
+            let deletion_controller =
+                aos_hub_service::gc_controller::CacheGcDeletionController::new(
+                    Arc::clone(&app_state.db),
+                    Arc::new(
+                        aos_hub_native::coreports::HubSurfaceWriteProvider::new(
+                            Arc::clone(&app_state.db),
+                            app_state.http.clone(),
+                        )
+                        .with_credentials(Arc::clone(&app_state.secret_versions)),
+                    ),
+                );
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
                 loop {
@@ -1025,12 +1029,14 @@ async fn main() -> Result<()> {
                     Arc::clone(&inventory_surfaces)
                         as Arc<dyn aos_hub_service::fetch::SurfaceProvider>,
                 );
-            let oci_gc_controller = aos_hub_service::oci_gc_controller::OciGcDeletionController::new(
-                Arc::clone(&inventory_db),
-                Arc::clone(&inventory_surfaces) as Arc<dyn aos_hub_service::fetch::SurfaceProvider>,
-                Arc::clone(&inventory_writers)
-                    as Arc<dyn aos_hub_service::surface_write::SurfaceWriteProvider>,
-            );
+            let oci_gc_controller =
+                aos_hub_service::oci_gc_controller::OciGcDeletionController::new(
+                    Arc::clone(&inventory_db),
+                    Arc::clone(&inventory_surfaces)
+                        as Arc<dyn aos_hub_service::fetch::SurfaceProvider>,
+                    Arc::clone(&inventory_writers)
+                        as Arc<dyn aos_hub_service::surface_write::SurfaceWriteProvider>,
+                );
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
                 let mut oci_inventory_continuation: Option<String> = None;
@@ -1119,7 +1125,10 @@ async fn main() -> Result<()> {
             });
             // The console footer label is single-sourced in core; set it to this
             // binary's name + version so the footer reflects the serving hub.
-            aos_hub_native::ui::render::set_app_version(concat!("aos-hub ", env!("CARGO_PKG_VERSION")));
+            aos_hub_native::ui::render::set_app_version(concat!(
+                "aos-hub ",
+                env!("CARGO_PKG_VERSION")
+            ));
             let state = Arc::new(app_state);
             // Resolve webhook signing material only inside the delivery worker;
             // control-plane rows and replay records carry immutable references.
@@ -1182,9 +1191,7 @@ async fn main() -> Result<()> {
             };
             for registry in registries {
                 let placement = db
-                    .reconciled_surface_reader(aos_hub_db::db::SurfaceTarget::Registry(
-                        registry.id,
-                    ))
+                    .reconciled_surface_reader(aos_hub_db::db::SurfaceTarget::Registry(registry.id))
                     .await?;
                 let placement_id = placement.id;
                 let fetch = surfaces.placement_fetcher(&placement).await?;
@@ -1404,9 +1411,10 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
                 };
                 if let Some(domain) = args.domains.first() {
                     let base = format!("https://{domain}");
-                    let id =
-                        aos_hub_native::cloudflare::bootstrap_root_remote(&base, &seal, email, &plaintext)
-                            .await?;
+                    let id = aos_hub_native::cloudflare::bootstrap_root_remote(
+                        &base, &seal, email, &plaintext,
+                    )
+                    .await?;
                     println!("root admin '{email}' ready (user id {id})");
                 } else {
                     println!(
@@ -1432,9 +1440,9 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
 
 /// Provisions the provider resources and resolves a [`cloudflare::DeployConfig`].
 async fn provision_worker(
-    assets: &aos_hub::cloudflare::Assets,
+    assets: &aos_hub_native::cloudflare::Assets,
     args: &WorkerArgs,
-) -> Result<aos_hub::cloudflare::DeployConfig> {
+) -> Result<aos_hub_native::cloudflare::DeployConfig> {
     let external_url = args
         .external_url
         .clone()
@@ -1668,7 +1676,7 @@ async fn sync_due_mirrors(db: &Database, now: i64) {
                 continue;
             }
         };
-        match aos_hub::mirror::sync_full_mirror(db, &registry).await {
+        match aos_hub_native::mirror::sync_full_mirror(db, &registry).await {
             Ok(result) => tracing::info!(
                 slug = %registry.slug,
                 commit = %result.commit,

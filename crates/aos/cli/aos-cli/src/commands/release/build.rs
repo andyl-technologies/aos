@@ -403,7 +403,7 @@ fn build_journal(
     sbom: &[u8],
 ) -> Result<Vec<u8>> {
     let planned = JournalEntry {
-        schema_version: aos_release::RELEASE_JOURNAL_ENTRY.to_string(),
+        schema_version: aos_release_format::RELEASE_JOURNAL_ENTRY.to_string(),
         sequence: 1,
         previous_entry_digest: None,
         plan_digest,
@@ -418,7 +418,7 @@ fn build_journal(
     planned.validate()?;
     let planned_digest = planned.digest()?;
     let built = JournalEntry {
-        schema_version: aos_release::RELEASE_JOURNAL_ENTRY.to_string(),
+        schema_version: aos_release_format::RELEASE_JOURNAL_ENTRY.to_string(),
         sequence: 2,
         previous_entry_digest: Some(planned_digest),
         plan_digest,
@@ -431,7 +431,7 @@ fn build_journal(
         recorded_at: completed_at.to_string(),
     };
     built.validate()?;
-    aos_release::verify::verify_journal(&[planned.clone(), built.clone()])?;
+    aos_release_format::verify::verify_journal(&[planned.clone(), built.clone()])?;
 
     let mut bytes = canonical::to_vec(&planned)?;
     bytes.push(b'\n');
@@ -647,7 +647,7 @@ mod tests {
 
         assert_eq!(lines.len(), 2);
         assert_eq!(
-            aos_release::verify::verify_journal(&lines)?.global,
+            aos_release_format::verify::verify_journal(&lines)?.global,
             ReleaseState::Built
         );
         Ok(())

@@ -2,6 +2,7 @@
 //!
 //! Cargo package names establish ownership; member paths only organize readers.
 
+// crucible-lint: allow rust-allow -- Each integration target imports the workspace helpers it needs.
 #![allow(dead_code)]
 
 use std::ffi::OsString;
@@ -82,4 +83,10 @@ pub(crate) fn package_directory(crates: &Path, package: &str) -> io::Result<Path
     Err(io::Error::other(format!(
         "workspace package {package} is absent"
     )))
+}
+
+// Missing packages keep their expected path so source-contract diagnostics name
+// the absent artifact; tests that require a manifest use package_directory.
+pub(crate) fn package_path(crates: &Path, package: &str) -> PathBuf {
+    package_directory(crates, package).unwrap_or_else(|_| crates.join(package))
 }

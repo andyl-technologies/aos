@@ -19,7 +19,7 @@ use super::store_paths::{
     StoreQueries, first_letter, validate_store_path_release_policy, write_store_files,
 };
 use aos_deployment_format::model::Envelope;
-use aos_registry_client::types::NativeArtifactMeta;
+use aos_registry_format::consumer::NativeArtifactMeta;
 
 /// Retains evaluator-owned deployment and documentation beside one package entry.
 ///
@@ -222,9 +222,9 @@ pub(crate) fn publish_native_documents(
         )?;
         for binding in document.artifacts() {
             ensure!(
-                metadata
-                    .references
-                    .contains(&aos_registry_client::registry::store_path_hash(&binding.path).to_owned()),
+                metadata.references.contains(
+                    &aos_registry_client::registry::store_path_hash(&binding.path).to_owned()
+                ),
                 "qualification payload is absent from artifact NAR references"
             );
             if binding.selector.package == name {
@@ -439,7 +439,9 @@ mod tests {
     #[test]
     fn qualification_package_coordinates_do_not_borrow_runtime_role_names() {
         use aos_deployment_format::model::Artifact;
-        use aos_release_format::qualification_document::{QualificationBinding, QualificationSelector};
+        use aos_release_format::qualification_document::{
+            QualificationBinding, QualificationSelector,
+        };
 
         let path = "/nix/store/11111111111111111111111111111111-tool".to_owned();
         let dependency = Artifact {
@@ -686,14 +688,13 @@ mod publication_tests {
                 )
                 .unwrap();
                 for binding in document.artifacts() {
-                    assert!(
-                        qualification
-                            .references
-                            .contains(&aos_registry_client::registry::store_path_hash(&binding.path).to_owned())
-                    );
+                    assert!(qualification.references.contains(
+                        &aos_registry_client::registry::store_path_hash(&binding.path).to_owned()
+                    ));
                 }
             }
-            let graph = aos_registry_client::registry::store::StoreMap::load(registry.path()).unwrap();
+            let graph =
+                aos_registry_client::registry::store::StoreMap::load(registry.path()).unwrap();
             for root in std::iter::once(&deployment.store_path)
                 .chain(
                     platform
@@ -713,7 +714,9 @@ mod publication_tests {
                 )
             {
                 assert!(
-                    graph.get(aos_registry_client::registry::store_path_hash(root)).is_some(),
+                    graph
+                        .get(aos_registry_client::registry::store_path_hash(root))
+                        .is_some(),
                     "unretained root {root}"
                 );
             }

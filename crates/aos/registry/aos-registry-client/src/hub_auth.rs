@@ -24,7 +24,10 @@ static PROFILE_RESOLUTION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_ne
 ///
 /// Returns an error when the origin, stored profile, refresh grant, or client
 /// configuration is invalid, or when refreshed credentials cannot be saved.
-pub async fn hub_client(hub: Option<&str>, token: Option<&str>) -> Result<aos_hub_client::HubClient> {
+pub async fn hub_client(
+    hub: Option<&str>,
+    token: Option<&str>,
+) -> Result<aos_hub_client::HubClient> {
     let _guard = PROFILE_RESOLUTION.lock().await;
     prepare_hub_access(hub, token).await?;
     let (origin, token) = resolve_access(hub, token)?;

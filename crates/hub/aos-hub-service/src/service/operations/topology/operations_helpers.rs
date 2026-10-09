@@ -5,7 +5,7 @@ use super::*;
 impl RpcService {
     /// Projects stable topology defaults onto the public contract.
     pub(in crate::service) fn stable_topology_defaults_message(
-        record: crate::db::StableTopologyDefaultsRecord,
+        record: aos_hub_db::db::StableTopologyDefaultsRecord,
     ) -> pb::TopologyDefaults {
         pb::TopologyDefaults {
             scope_key: record.scope_key,
@@ -22,7 +22,7 @@ impl RpcService {
     /// Projects stored defaults or the editable empty state for an unset scope.
     pub(in crate::service) fn topology_defaults_or_empty(
         scope_key: &str,
-        record: Option<crate::db::StableTopologyDefaultsRecord>,
+        record: Option<aos_hub_db::db::StableTopologyDefaultsRecord>,
     ) -> pb::TopologyDefaults {
         record
             .map(Self::stable_topology_defaults_message)
@@ -224,12 +224,12 @@ impl RpcService {
         &self,
         auth: Option<&str>,
         surface: Option<pb::SurfaceRef>,
-    ) -> Result<crate::db::SurfaceTarget, RpcError> {
+    ) -> Result<aos_hub_db::db::SurfaceTarget, RpcError> {
         match surface.and_then(|surface| surface.target) {
             Some(pb::surface_ref::Target::RegistrySlug(slug)) if !slug.is_empty() => {
                 let registry = self.registry_or_not_found(&slug).await?;
                 self.require_read(auth, &registry).await?;
-                Ok(crate::db::SurfaceTarget::Registry(registry.id))
+                Ok(aos_hub_db::db::SurfaceTarget::Registry(registry.id))
             }
             Some(pb::surface_ref::Target::CacheSlug(slug)) if !slug.is_empty() => {
                 let cache = self
@@ -239,7 +239,7 @@ impl RpcService {
                     .map_err(RpcError::internal)?
                     .ok_or_else(|| RpcError::not_found("cache"))?;
                 self.require_cache_read(auth, &cache).await?;
-                Ok(crate::db::SurfaceTarget::BinaryCache(cache.id))
+                Ok(aos_hub_db::db::SurfaceTarget::BinaryCache(cache.id))
             }
             Some(_) => Err(RpcError::invalid("surface slug must not be empty")),
             None => Err(RpcError::invalid(
@@ -259,13 +259,13 @@ impl RpcService {
         &self,
         auth: Option<&str>,
         surface: Option<pb::SurfaceRef>,
-    ) -> Result<(crate::db::SurfaceTarget, Option<i64>), RpcError> {
+    ) -> Result<(aos_hub_db::db::SurfaceTarget, Option<i64>), RpcError> {
         let claims = self.require_claims(auth)?;
         let (target, org_id) = match surface.and_then(|surface| surface.target) {
             Some(pb::surface_ref::Target::RegistrySlug(slug)) if !slug.is_empty() => {
                 let registry = self.registry_or_not_found(&slug).await?;
                 (
-                    crate::db::SurfaceTarget::Registry(registry.id),
+                    aos_hub_db::db::SurfaceTarget::Registry(registry.id),
                     registry.org_id,
                 )
             }
@@ -280,7 +280,7 @@ impl RpcService {
                     return Err(RpcError::not_found("cache"));
                 }
                 (
-                    crate::db::SurfaceTarget::BinaryCache(cache.id),
+                    aos_hub_db::db::SurfaceTarget::BinaryCache(cache.id),
                     cache.org_id,
                 )
             }

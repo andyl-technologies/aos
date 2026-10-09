@@ -4,14 +4,15 @@ use super::{
     executable_on_path, materialize_signing_key_command_with_path, resolve_producer_signing_key,
     resolve_signing_key_source,
 };
-use aos_registry_client::config::ApmConfig;
 use crate::registry_ops::git::git;
 use crate::registry_ops::tags::sign_tag;
 use crate::registry_ops::test_support::{
     test_config_with_signing_key, test_registry_config, write_test_roster, write_test_signing_key,
 };
+use aos_registry_client::config::ApmConfig;
 use aos_registry_client::security::verify_tag_signature;
-use aos_registry_client::types::{ApmSettings, ProfileScope, SigningKeySource, SigningKeySpec};
+use aos_registry_client::types::{ApmSettings, ProfileScope};
+use aos_registry_format::consumer::{SigningKeySource, SigningKeySpec};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;

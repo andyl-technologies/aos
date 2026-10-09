@@ -175,7 +175,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
       {
         label = "T-PAT-5 completion names DecisionRng";
-        needle = "`crucible_sim::DecisionRng`";
+        needle = "`crucible_determinism::DecisionRng`";
       }
       {
         label = "T-PAT-5 completion names node domain";

@@ -60,6 +60,7 @@
     cargoArtifacts = controllerArtifacts;
     cargoEnv = cargoArtifactContract.cargoEnv;
     cargoRoot = "crates";
+    cargoWorkspaceMembers = import ../../pkgs/tools/crucible/_workspace.nix {inherit lib;};
     inherit cargoBuildCommands;
     buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf pkgs.sqlite];
     runtimeDeps = [pkgs.openssl pkgs.sqlite];
@@ -73,6 +74,7 @@
     cargoArtifacts = artifacts;
     cargoEnv = cargoArtifactContract.cargoEnv;
     cargoRoot = "crates";
+    cargoWorkspaceMembers = import ../../pkgs/tools/crucible/_workspace.nix {inherit lib;};
     inherit cargoBuildCommands;
     installBins = false;
     doCheck = false;

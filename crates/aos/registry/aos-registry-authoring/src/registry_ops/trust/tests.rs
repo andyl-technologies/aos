@@ -4,17 +4,17 @@ use super::{
     RetirementOptions, execute_retirement_resign, plan_retirement_resign, retire_committed_key,
     retire_roster_key, verify_partition_signature,
 };
-use aos_registry_client::config::ApmConfig;
-use aos_registry_client::registry::channel;
-use aos_registry_client::registry::keys::{self, KeysToml, RosterKey};
 use crate::registry_ops::channels::{channel_init_dir, read_channel_partition_map};
 use crate::registry_ops::git::git;
 use crate::registry_ops::tags::sign_tag;
 use crate::registry_ops::test_support::{
     TestSigningFixture, test_config_with_signing_key, write_seeded_signing_key,
 };
-use aos_registry_client::security::verify_tag_signature;
 use aos_cli_ui::output::Printer;
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::registry::channel;
+use aos_registry_client::registry::keys::{self, KeysToml, RosterKey};
+use aos_registry_client::security::verify_tag_signature;
 use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;

@@ -19,8 +19,8 @@ use aos_registry_format::tagobject::TagTarget;
 use sha2::{Digest as _, Sha256};
 
 use super::load::{load_release_tree_with_reader, ObjectReader};
-use crate::db::{Database, RegistryRecord};
 use crate::fetch::SurfaceFetch;
+use aos_hub_db::db::{Database, RegistryRecord};
 
 /// Caps unsigned mutable listings and pointer preconditions before allocation.
 const MAX_POINTER_BYTES: usize = 8 * 1024 * 1024;

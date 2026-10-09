@@ -13,13 +13,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, ensure};
 use aos_core::Sha256Digest;
-use aos_storage_layout::{
-    AuthorizedProvisioningInput, validate_authorized_provisioning_input,
-};
+use aos_storage_layout::{AuthorizedProvisioningInput, validate_authorized_provisioning_input};
 use serde::{Deserialize, Serialize};
 
-use aos_deployment_format::model::Deployment;
 use aos_deployment_format::input::EvaluationInput;
+use aos_deployment_format::model::Deployment;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -141,8 +139,7 @@ impl SourceAuthorization {
             "source authorization decision is not an initrd scope"
         );
         ensure!(
-            self.library.path
-                == aos_deployment::nix::store_root_and_suffix(&descriptor.library)?.0
+            self.library.path == aos_deployment::nix::store_root_and_suffix(&descriptor.library)?.0
                 && self.library.nar_hash == descriptor.library_nar_hash,
             "accepted metadata source uses a different native module library"
         );
@@ -227,8 +224,7 @@ mod tests {
     }
 
     fn authorization() -> AuthorizedProvisioningInput {
-        let facts =
-            aos_storage_layout::observed_instance_facts(serde_json::json!({})).unwrap();
+        let facts = aos_storage_layout::observed_instance_facts(serde_json::json!({})).unwrap();
         AuthorizedProvisioningInput {
             schema: "aos.metadata.authorized-provisioning-input/v1".into(),
             source: aos_storage_layout::CanonicalProvisioningSource::Operator,

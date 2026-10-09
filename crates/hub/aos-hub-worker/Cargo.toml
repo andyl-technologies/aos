@@ -85,7 +85,7 @@ worker = { version = "0.8", features = ["queue"] }
 worker-sys = "0.8"
 
 # The worker fold (RFC-0004 Phase 5 step 4e): the Worker serves the *same*
-# shared Connect-JSON axum router as the native hub (aos_hub_core::connect),
+# shared Connect-JSON axum router as the native hub (aos_hub_service::connect),
 # bridged to the Workers runtime by hand (no axum-cloudflare-adapter — no release
 # tracks the worker version pinned here). axum types-only (default-features=false) is the
 # wasm-clean config; tower's ServiceExt::oneshot drives the Router; http builds
@@ -100,7 +100,7 @@ http = { workspace = true }
 futures-util = "0.3"
 # Wrap the `!Send` R2 body stream so `axum::body::Body::from_stream` (which
 # requires `Send`) accepts it — sound on the single-threaded Worker. Already in
-# the workspace lockfile via aos-hub-core, so this adds no new vendored crate.
+# the workspace lockfile via aos-hub-service, so this adds no new vendored crate.
 send_wrapper = { version = "0.6", features = ["futures"] }
 
 [dev-dependencies]

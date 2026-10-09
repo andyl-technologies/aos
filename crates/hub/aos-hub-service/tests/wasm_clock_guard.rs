@@ -1,6 +1,6 @@
 //! Guard: no wasm-unsafe wall-clock calls outside [`aos_hub_model::clock`].
 //!
-//! `aos-hub-core` compiles to `wasm32-unknown-unknown` and runs in the
+//! The portable Hub libraries compiles to `wasm32-unknown-unknown` and runs in the
 //! Cloudflare Worker, where `std::time::SystemTime::now()` (and a bare
 //! `std::time::Instant::now()`) **panic** — the platform has no system clock.
 //! All time access must go through [`aos_hub_model::clock`], which reads the host
@@ -23,9 +23,11 @@ fn core_has_no_wasm_unsafe_clock_calls() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut offenders = Vec::new();
     scan(&src, &mut offenders);
+    scan(&src.join("../../aos-hub-model/src"), &mut offenders);
+    scan(&src.join("../../aos-hub-db/src"), &mut offenders);
     assert!(
         offenders.is_empty(),
-        "wasm-unsafe clock call(s) found — route time through `crate::clock` \
+        "wasm-unsafe clock call(s) found — route time through `aos_hub_model::clock` \
          (these PANIC in the Cloudflare Worker):\n{}",
         offenders.join("\n"),
     );

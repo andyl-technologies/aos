@@ -173,7 +173,7 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .as_deref()
-            .and_then(|value| crate::crawl::CrawlPolicy::parse(value).ok())
+            .and_then(|value| aos_hub_model::crawl::CrawlPolicy::parse(value).ok())
             .unwrap_or_default();
         let id = self
             .db
@@ -242,7 +242,7 @@ impl RpcService {
     }
 
     pub(in crate::service) fn registry_mirror_message(
-        record: crate::db::RegistryMirrorRecord,
+        record: aos_hub_db::db::RegistryMirrorRecord,
     ) -> pb::RegistryMirror {
         let mode = match record.mode.as_str() {
             "pull_through" => pb::RegistryMirrorMode::PullThrough,
@@ -274,7 +274,7 @@ impl RpcService {
         if spec.source_url.is_empty() {
             return Err(RpcError::invalid("mirror source_url is required"));
         }
-        crate::url_guard::is_safe_remote_url(&spec.source_url)
+        aos_hub_model::url_guard::is_safe_remote_url(&spec.source_url)
             .map_err(|error| RpcError::invalid(format!("mirror source_url: {error:#}")))?;
         if spec.refspec.is_empty() {
             spec.refspec = "refs/*".to_string();
@@ -408,13 +408,15 @@ impl RpcService {
             existing
         } else {
             self.db
-                .create_topology_operation(&crate::db::NewTopologyOperation {
+                .create_topology_operation(&aos_hub_db::db::NewTopologyOperation {
                     operation_id,
                     operation_kind: "registry_mirror_sync".to_string(),
                     control_permission: Permission::RegistryConfigure,
-                    targets: vec![crate::db::NewTopologyOperationTarget {
+                    targets: vec![aos_hub_db::db::NewTopologyOperationTarget {
                         role: "primary".to_string(),
-                        target: crate::db::NewTopologyOperationTargetRef::Registry(registry.id),
+                        target: aos_hub_db::db::NewTopologyOperationTargetRef::Registry(
+                            registry.id,
+                        ),
                         generation_key: 0,
                         configuration_digest: String::new(),
                     }],
@@ -445,9 +447,9 @@ impl RpcService {
         surface_object_id: i64,
     ) -> Result<
         (
-            crate::db::RegistryPublicationRecord,
-            crate::db::RegistryRecord,
-            crate::db::RegistryPublicationUploadObjectRecord,
+            aos_hub_db::db::RegistryPublicationRecord,
+            aos_hub_db::db::RegistryRecord,
+            aos_hub_db::db::RegistryPublicationUploadObjectRecord,
         ),
         RpcError,
     > {

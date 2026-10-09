@@ -1,6 +1,5 @@
 //! Target platform spelling used by registry manifests.
 
-
 /// Returns the Nix system name for the running binary.
 ///
 /// Architecture names are normalized to their Nix spellings and Apple's

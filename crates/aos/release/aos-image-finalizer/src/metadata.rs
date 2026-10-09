@@ -21,7 +21,8 @@ use crate::input::digest_regular_file;
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImageMetadata<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) capabilities: Option<aos_release_format::qualification::capabilities::ImageCapabilities>,
+    pub(crate) capabilities:
+        Option<aos_release_format::qualification::capabilities::ImageCapabilities>,
     pub(crate) schema_version: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) assembly_digest: Option<Sha256Digest>,

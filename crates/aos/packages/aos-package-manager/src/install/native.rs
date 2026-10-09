@@ -13,21 +13,21 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, ensure};
 
-use aos_registry_client::config::ApmConfig;
+use crate::native_deployment::EvaluationInputs;
+use crate::native_registry::{NativeRegistry, RegistryAdmission};
+use crate::profile::deployment::ProfileDeployment;
+use crate::profile::{Generation, Profile};
+use crate::resolve::ResolvedClosure;
 use aos_deployment::evaluation::Evaluation;
-use aos_deployment_format::model::Deployment;
 use aos_deployment::retention::ArtifactAdmission;
 use aos_deployment::retention::NixStore;
 use aos_deployment::transaction::journal_limits;
 use aos_deployment_format::input::EvaluationInput;
-use crate::native_deployment::{EvaluationInputs};
-use crate::native_registry::{NativeRegistry, RegistryAdmission};
-use crate::profile::deployment::ProfileDeployment;
-use crate::profile::{Generation, Profile};
+use aos_deployment_format::inventory::InstalledPackageRecord;
+use aos_deployment_format::model::Deployment;
+use aos_registry_client::config::ApmConfig;
 use aos_registry_client::registry::{RegistrySet, store_path_hash};
-use crate::resolve::ResolvedClosure;
-use aos_deployment_format::inventory::{InstalledPackageRecord};
-use crate::types::{PackageMeta};
+use aos_registry_format::consumer::PackageMeta;
 
 /// Realizes pinned module companions before invoking the pure package resolver.
 ///
@@ -415,7 +415,7 @@ async fn realize_companions(
 }
 
 fn cached_envelope(
-    artifact: &crate::types::NativeArtifactMeta,
+    artifact: &aos_registry_format::consumer::NativeArtifactMeta,
     package: &PackageMeta,
     results: &[crate::download::DownloadResult],
 ) -> Result<aos_deployment_format::model::Envelope> {
@@ -449,8 +449,7 @@ fn cached_envelope(
     let document = aos_module_docs::decode_native_artifact_nar(&nar, "deployment.json")?;
     ensure!(
         document.len() as u64 == artifact.document_size
-            && aos_core::Sha256Digest::of_bytes(document).to_string()
-                == artifact.document_sha256,
+            && aos_core::Sha256Digest::of_bytes(document).to_string() == artifact.document_sha256,
         "native envelope document differs from authenticated metadata"
     );
     let envelope = aos_deployment_format::model::Envelope::decode(document)?;
@@ -834,8 +833,8 @@ fn prepare_with_inputs(
     let scope = vec![
         "profile".into(),
         match profile.scope {
-            crate::types::ProfileScope::System => "system".into(),
-            crate::types::ProfileScope::User => profile
+            aos_registry_client::types::ProfileScope::System => "system".into(),
+            aos_registry_client::types::ProfileScope::User => profile
                 .path
                 .to_str()
                 .context("profile path is not UTF-8")?
@@ -871,8 +870,7 @@ fn prepare_with_inputs(
             .map(|(registry, meta)| (registry.as_str(), meta)),
     )?;
     let mut admission = resolver.into_admission();
-    let (library_root, _) =
-        aos_deployment::nix::store_root_and_suffix(&evaluation_inputs.library)?;
+    let (library_root, _) = aos_deployment::nix::store_root_and_suffix(&evaluation_inputs.library)?;
     let (library_nar_hash, _) = aos_deployment::store::verification::dump_store_path_identity_in(
         library_root
             .to_str()
@@ -912,7 +910,8 @@ fn prepare_with_inputs(
             .collect::<Result<Vec<_>>>()?,
         cancellation.token(),
     )?;
-    let evaluation_input = aos_deployment::input::import_evaluation_input_retained(&descriptor,
+    let evaluation_input = aos_deployment::input::import_evaluation_input_retained(
+        &descriptor,
         &executable,
         staging.path(),
         cancellation.token(),
@@ -1385,7 +1384,7 @@ mod tests {
         let config = ApmConfig {
             settings: Default::default(),
             registries: Vec::new(),
-            scope: crate::types::ProfileScope::User,
+            scope: aos_registry_client::types::ProfileScope::User,
         };
         discover_modules(
             &config,

@@ -4,8 +4,8 @@ use super::{
     required_publish_metadata, validate_release_publish_metadata,
     validate_release_publish_signing_identity,
 };
-use aos_registry_client::config::ApmConfig;
 use crate::registry_ops::release::ReleaseStorePublish;
+use aos_registry_client::config::ApmConfig;
 use aos_registry_client::types::{ApmSettings, ProfileScope};
 
 #[test]

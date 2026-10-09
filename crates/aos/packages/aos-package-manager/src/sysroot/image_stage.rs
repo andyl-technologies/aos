@@ -17,14 +17,15 @@ use aos_cli_ui::output::Printer;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use aos_registry_client::config::ApmConfig;
 use crate::download::{
     DownloadRequest, default_engine, download_nars, fetch_narinfo_closure, resolve_mirror_chain,
     split_mirror_chain,
 };
-use aos_registry_client::registry::{RegistrySet, store_path_hash};
 use crate::resolve::ResolvedClosure;
-use crate::types::{BootProviderState, ImageDelivery, ImageGeneration, ModuleLibraryIdentity};
+use crate::types::{BootProviderState, ImageGeneration, ModuleLibraryIdentity};
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::registry::{RegistrySet, store_path_hash};
+use aos_registry_format::consumer::ImageDelivery;
 
 use super::{
     IMAGE_PROFILE_DIR, IMAGE_STATE_FILE, load_image_generation_state_pub, read_toplevel_meta,
@@ -218,9 +219,12 @@ pub(crate) async fn stage_candidate(
     validation.generations.push(candidate.clone());
     validation.validate()?;
     let (library_hash, library_size) =
-        aos_deployment::store::verification::dump_store_path_identity(&candidate.module_library.store_path)?;
+        aos_deployment::store::verification::dump_store_path_identity(
+            &candidate.module_library.store_path,
+        )?;
     ensure!(
-        library_hash.hex() == crate::verify::sha256_digest_hex(&candidate.module_library.nar_hash)?
+        library_hash.hex()
+            == aos_nar::verify::sha256_digest_hex(&candidate.module_library.nar_hash)?
             && library_size == candidate.module_library.nar_size,
         "candidate realized native module library differs from its immutable NAR identity"
     );
@@ -338,7 +342,7 @@ pub(crate) async fn stage_candidate(
     // Keep native generation authority locked until the physical backend has
     // preserved every retained input and orphan handler before slot replacement.
     let retained = crate::deployment::retained::RetainedStoreRoots::open(
-        &crate::types::ProfileScope::System.profile_path(),
+        &aos_registry_client::types::ProfileScope::System.profile_path(),
         &crate::install::native::packaged_path("AOS_NIX_STORE")?,
     )?;
     let retained_initrd = crate::deployment::retained::RetainedStoreRoots::open_deployment(
@@ -487,7 +491,7 @@ fn admit_receipt(
 }
 
 fn candidate_identity(
-    package: &crate::types::PackageMeta,
+    package: &aos_registry_format::consumer::PackageMeta,
     registry: &str,
     number: u32,
     created_at: &str,
@@ -850,22 +854,23 @@ mod tests {
         }
         let kernel = "/nix/store/00000000000000000000000000000000-kernel/bzImage";
         std::os::unix::fs::symlink(kernel, toplevel.path().join("kernel")).unwrap();
-        let package: crate::types::PackageMeta = serde_json::from_value(serde_json::json!({
-            "name": template.package_name,
-            "version": template.version,
-            "description": "image fixture",
-            "license": "test",
-            "maintainer": "test",
-            "platform": "x86_64-linux",
-            "store_path": toplevel.path(),
-            "nar_hash": format!("sha256:{}", "0".repeat(64)),
-            "nar_size": 1,
-            "references": [],
-            "source_drv": "fixture",
-            "source_nar_hash": "fixture",
-            "closure_size": 1
-        }))
-        .unwrap();
+        let package: aos_registry_format::consumer::PackageMeta =
+            serde_json::from_value(serde_json::json!({
+                "name": template.package_name,
+                "version": template.version,
+                "description": "image fixture",
+                "license": "test",
+                "maintainer": "test",
+                "platform": "x86_64-linux",
+                "store_path": toplevel.path(),
+                "nar_hash": format!("sha256:{}", "0".repeat(64)),
+                "nar_size": 1,
+                "references": [],
+                "source_drv": "fixture",
+                "source_nar_hash": "fixture",
+                "closure_size": 1
+            }))
+            .unwrap();
 
         let candidate = candidate_identity(&package, "release", 2, &template.created_at).unwrap();
 

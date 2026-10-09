@@ -55,7 +55,11 @@ fn plugin_distributed_dependency_graph_has_gpl2_compatible_license_choices()
     let failures = resolved_production_graph_failures(
         &metadata,
         PLUGIN_PACKAGE,
-        &[PLUGIN_PACKAGE, "crucible-qemu-protocol", "crucible-qemu-shmem"],
+        &[
+            PLUGIN_PACKAGE,
+            "crucible-qemu-protocol",
+            "crucible-qemu-shmem",
+        ],
         gpl2_compatible_external_license,
         "plugin",
     )?;
@@ -303,7 +307,11 @@ fn resolved_graph_rejects_local_apache_and_external_gpl_boundary_regressions()
     let plugin_failures = resolved_production_graph_failures(
         &metadata,
         PLUGIN_PACKAGE,
-        &[PLUGIN_PACKAGE, "crucible-qemu-protocol", "crucible-qemu-shmem"],
+        &[
+            PLUGIN_PACKAGE,
+            "crucible-qemu-protocol",
+            "crucible-qemu-shmem",
+        ],
         gpl2_compatible_external_license,
         "plugin",
     )?;

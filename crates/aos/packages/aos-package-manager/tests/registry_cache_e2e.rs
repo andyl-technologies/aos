@@ -7,14 +7,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use aos_nix_cache::backend::{self, AuthOptions};
-use aos_nar::info::{self as narinfo, store_hash};
 use aos_cli_ui::output::Printer;
-use aos_transfer::{TransferEngine, TransferEngineConfig};
+use aos_nar::info::{self as narinfo, store_hash};
+use aos_nix_cache::backend::{self, AuthOptions};
 use aos_package_manager::download::{
     DownloadRequest, default_engine, download_nars, fetch_narinfos, narinfo_url,
 };
 use aos_registry_authoring::registry::nixcache;
+use aos_transfer::{TransferEngine, TransferEngineConfig};
 use base64::Engine as _;
 
 use common::StaticHttpServer;
@@ -207,7 +207,9 @@ nar_size = 1
 
 async fn fetch_text(url: &str) -> Result<String> {
     let engine = TransferEngine::new(TransferEngineConfig::default());
-    let result = engine.execute(aos_transfer::TransferRequest::get(url)).await?;
+    let result = engine
+        .execute(aos_transfer::TransferRequest::get(url))
+        .await?;
     let body = result
         .body
         .ok_or_else(|| anyhow::anyhow!("no response body for {url}"))?;

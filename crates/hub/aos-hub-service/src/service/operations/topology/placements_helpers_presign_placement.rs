@@ -9,7 +9,7 @@ impl RpcService {
     /// durable write ticket before requesting a write signature.
     pub(in crate::service) async fn presign_placement(
         &self,
-        placement: &crate::db::SurfacePlacementRecord,
+        placement: &aos_hub_db::db::SurfacePlacementRecord,
         path: &str,
         now: i64,
         write_size: Option<u64>,
@@ -51,7 +51,7 @@ impl RpcService {
         // cache's prefix on a path-normalizing origin — the same guard the write
         // path and the local-bytes read path enforce. An invalid path is simply
         // not presignable (`None`); the caller then 404s it.
-        if crate::url_guard::validate_http_surface_path(path).is_err() {
+        if aos_hub_model::url_guard::validate_http_surface_path(path).is_err() {
             return Ok(None);
         }
         let (access_key, rest) = credential

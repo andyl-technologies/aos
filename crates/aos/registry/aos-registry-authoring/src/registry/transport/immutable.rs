@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
-use aos_nix_cache::backend::CacheBackend;
 use aos_cli_ui::output::Printer;
+use aos_nix_cache::backend::CacheBackend;
 use futures_util::stream::{StreamExt as _, TryStreamExt as _};
 
 use super::RegistryStorage;

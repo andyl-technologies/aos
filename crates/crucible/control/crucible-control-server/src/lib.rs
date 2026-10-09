@@ -24,7 +24,6 @@ pub mod streaming;
 pub mod transport_security;
 pub use control_responsive::ControlResponsiveSessionProbe;
 use crucible_control_api::*;
-use crucible_control_client::{ControlClientError, InProcessLifecycleControlStream};
 pub use debug_access::{DebugAuthorizationPolicy, DebugAuthorizationPolicyError};
 pub use debug_gateway::{
     DEBUG_GATEWAY_STARTUP_TIMEOUT, DEBUG_GATEWAY_V1_CAPABILITY, DebugGatewayClientError,
@@ -51,3 +50,5 @@ pub use streaming::{ControlStream, InProcessStreamingSession, WatchStream};
 pub use transport_security::{
     DebugTransportIdentity, MutualTlsServerConfigError, mutual_tls_acceptor_from_pem,
 };
+
+pub use server::spawn_shared_lifecycle_http2_mtls_with_mode_until_shutdown;

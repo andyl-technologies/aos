@@ -539,7 +539,7 @@ impl MaintainerConfig {
                 self.schema_version
             );
         }
-        aos_release::registry::registry_policy(&self.registry)?;
+        aos_release_format::registry::registry_policy(&self.registry)?;
         self.git.validate()?;
         for role in [SurfaceRole::Staging, SurfaceRole::Production] {
             self.surface(role).planned(role).validate()?;

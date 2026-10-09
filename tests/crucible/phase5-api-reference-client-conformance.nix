@@ -47,8 +47,8 @@
     ]
     ++ failuresFor "crates/crucible/control/crucible-control-api/Cargo.toml" apiCargo [
       {
-        label = "QEMU backend contract dev dependency";
-        needle = ''crucible-qemu = { path = "../crucible-qemu" }'';
+        label = "versioned process-protocol dependency";
+        needle = ''crucible-qemu-protocol = { path = "../../protocol/crucible-qemu-protocol" }'';
       }
     ]
     ++ failuresFor "crates/crucible/control/crucible-control-client/tests/gate_control_client*.rs" controlClientTest [
@@ -87,14 +87,6 @@
       {
         label = "SimDouble backend stepping";
         needle = "SimulationBackend::step_to(&mut self.backend";
-      }
-      {
-        label = "QEMU backend trait assertion";
-        needle = "assert_qemu_node_implements_simulation_backend_contract";
-      }
-      {
-        label = "QemuNode implements SimulationBackend";
-        needle = "assert_qemu_node_implements_simulation_backend_contract";
       }
       {
         label = "scenario-ref create session";
@@ -385,7 +377,7 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
-            -p crucible-control-api -p crucible-control-client -p crucible-control-server \
+            -p crucible-control-api \
             --test gate_abi_conformance \
             -- --list \
             > "$TMPDIR/abi-conformance-tests.list"
@@ -396,7 +388,7 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
-            -p crucible-control-api -p crucible-control-client -p crucible-control-server \
+            -p crucible-control-api \
             --test gate_abi_conformance \
             rpc_golden_vectors_cover_requests_responses_events_and_payload_kinds \
             -- --exact --test-threads=1

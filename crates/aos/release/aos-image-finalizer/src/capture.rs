@@ -7,9 +7,9 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
-use aos_deployment_format::model::{Deployment, ResolvedPackages};
 use aos_deployment_format::admission::AdmissionCatalog;
 use aos_deployment_format::input::EvaluationInput;
+use aos_deployment_format::model::{Deployment, ResolvedPackages};
 use aos_release_format::artifact::BundlePath;
 use aos_release_format::canonical;
 use aos_release_format::digest::Sha256Digest;

@@ -4,18 +4,18 @@
 //! contract. It does not interpret boot media, slot, recovery, verification, or
 //! filesystem fields inside that contract.
 
-use aos_registry_client::registry::parse::{
-    ImageArtifactContractDocumentReference, ImageArtifactContractReference, ImageCompression,
-    ImageDelivery, ImageStoreReference, ImageTarget,
-};
 use crate::registry_ops::images::files::{
     FileIdentity, ValidatedImageDirectory, ValidatedImageFile, file_identity,
     open_canonical_store_regular_file, open_stable_regular_file_at_with_links, sha256_open_file,
     validate_lower_sha256, validate_single_filename, verify_stable_regular_file,
 };
 use crate::registry_ops::store_paths::{StorePathInfo, store_dir_from_store_path};
-use aos_registry_client::types::validate_package_name;
 use anyhow::{Context, Result, bail};
+use aos_registry_client::registry::parse::{
+    ImageArtifactContractDocumentReference, ImageArtifactContractReference, ImageCompression,
+    ImageDelivery, ImageStoreReference, ImageTarget,
+};
+use aos_registry_format::consumer::validate_package_name;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read as _, Seek as _, SeekFrom};

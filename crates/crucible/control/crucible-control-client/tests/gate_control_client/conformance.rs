@@ -401,11 +401,6 @@ where
     )
 }
 
-pub(super) fn assert_qemu_node_implements_simulation_backend_contract() {
-    fn assert_backend<T: SimulationBackend>() {}
-    assert_backend::<crucible_qemu_host::QemuNode>();
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ApiDeterminismTraffic {
     Quiet,

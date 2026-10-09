@@ -73,9 +73,9 @@ pub fn read_qualification(
     )?;
     for binding in document.artifacts() {
         ensure!(
-            artifact.references.contains(
-                &aos_registry_client::registry::store_path_hash(&binding.path).to_owned()
-            ),
+            artifact
+                .references
+                .contains(&aos_nar::info::store_hash(&binding.path).to_owned()),
             "qualification binding is absent from authenticated artifact references"
         );
     }
@@ -117,8 +117,7 @@ pub fn read_document_in(
         "unsupported native artifact filename"
     );
     let path = Path::new(&artifact.store_path).join(filename);
-    let bytes =
-        aos_deployment::document::read_regular_store_document_in(&path, executable, cancellation)?;
+    let bytes = crate::document::read_regular_store_document_in(&path, executable, cancellation)?;
     validate_document_bytes(artifact, &bytes)?;
     Ok(bytes)
 }
@@ -127,7 +126,7 @@ pub fn read_document_in(
 ///
 /// # Errors
 /// Returns an error when the document size or SHA-256 binding differs.
-pub(crate) fn validate_document_bytes(artifact: &NativeArtifactMeta, bytes: &[u8]) -> Result<()> {
+pub fn validate_document_bytes(artifact: &NativeArtifactMeta, bytes: &[u8]) -> Result<()> {
     ensure!(
         bytes.len() as u64 == artifact.document_size
             && Sha256Digest::of_bytes(bytes).to_string() == artifact.document_sha256,

@@ -170,33 +170,34 @@ fn RootAction(
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     let plan_client = client.clone();
-    let on_plan = move |_| {
-        let expires = if matches!(action, RootActionKind::Renew) {
-            match required_timestamp(&expires_at.get_untracked()) {
-                Ok(value) => Some(value),
-                Err(detail) => {
-                    error.set(Some(detail));
-                    return;
+    let on_plan =
+        move |_| {
+            let expires = if matches!(action, RootActionKind::Renew) {
+                match required_timestamp(&expires_at.get_untracked()) {
+                    Ok(value) => Some(value),
+                    Err(detail) => {
+                        error.set(Some(detail));
+                        return;
+                    }
                 }
-            }
-        } else {
-            None
-        };
-        let key = idempotency_key(match action {
-            RootActionKind::Renew => "retention-lease-renew",
-            RootActionKind::Revoke => "retention-lease-revoke",
-            RootActionKind::Delete => "manual-root-delete",
-        });
-        let client = plan_client.clone();
-        let cache_id = cache_id.clone();
-        let root_id = root_id.clone();
-        let lease_id = lease_id.clone();
-        let version = version.clone();
-        error.set(None);
-        pending.set(None);
-        busy.set(true);
-        spawn_local(async move {
-            let response = match action {
+            } else {
+                None
+            };
+            let key = idempotency_key(match action {
+                RootActionKind::Renew => "retention-lease-renew",
+                RootActionKind::Revoke => "retention-lease-revoke",
+                RootActionKind::Delete => "manual-root-delete",
+            });
+            let client = plan_client.clone();
+            let cache_id = cache_id.clone();
+            let root_id = root_id.clone();
+            let lease_id = lease_id.clone();
+            let version = version.clone();
+            error.set(None);
+            pending.set(None);
+            busy.set(true);
+            spawn_local(async move {
+                let response = match action {
                 RootActionKind::Renew => client
                     .call::<_, aos_hub_api::TopologyPlanResponse>(
                         aos_hub_api::BINARY_CACHE_SERVICE_PLAN_RENEW_RETENTION_LEASE_PATH,
@@ -233,16 +234,16 @@ fn RootAction(
                     )
                     .await,
             };
-            let result = response
-                .map_err(|failure| failure.to_string())
-                .and_then(|response| PendingPlan::from_response(response, key));
-            match result {
-                Ok(reviewed) => pending.set(Some(reviewed)),
-                Err(detail) => error.set(Some(detail)),
-            }
-            busy.set(false);
-        });
-    };
+                let result = response
+                    .map_err(|failure| failure.to_string())
+                    .and_then(|response| PendingPlan::from_response(response, key));
+                match result {
+                    Ok(reviewed) => pending.set(Some(reviewed)),
+                    Err(detail) => error.set(Some(detail)),
+                }
+                busy.set(false);
+            });
+        };
     let on_apply = Callback::new(move |()| {
         let Some(reviewed) = pending.get_untracked() else {
             return;

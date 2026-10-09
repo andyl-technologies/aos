@@ -14,14 +14,14 @@ use crucible_campaign::{
     RankingDisposition, RankingMethod, StopOutcome, SurvivorRule, rank_survivors,
 };
 use crucible_control_client::ControlClient as _;
-use crucible_core::NetworkFaultSelectable;
-use crucible_core::model::{
-    MeasurementAggregateValue, MeasurementEvaluation, MeasurementId, MeasurementWindowOutcome,
-    MetricId,
-};
 use crucible_daemon::{
     CrucibleMeasurementReplayEvidence, evaluate_crucible_objectives,
     verify_crucible_measurement_publication,
+};
+use crucible_engine::NetworkFaultSelectable;
+use crucible_engine::model::{
+    MeasurementAggregateValue, MeasurementEvaluation, MeasurementId, MeasurementWindowOutcome,
+    MetricId,
 };
 
 const UNSAFE_SHORT_CIRCUIT: [u8; 32] = [0xff; 32];

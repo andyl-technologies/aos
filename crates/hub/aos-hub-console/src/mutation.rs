@@ -291,9 +291,7 @@ impl PendingPlan {
     }
 
     /// Builds a storage-credential apply envelope for this exact plan.
-    pub(crate) fn storage_credential_apply(
-        &self,
-    ) -> aos_hub_api::ApplyBindingCredentialRequest {
+    pub(crate) fn storage_credential_apply(&self) -> aos_hub_api::ApplyBindingCredentialRequest {
         aos_hub_api::ApplyBindingCredentialRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
@@ -311,9 +309,7 @@ impl PendingPlan {
     }
 
     /// Builds a topology-defaults apply envelope for this exact plan.
-    pub(crate) fn topology_defaults_apply(
-        &self,
-    ) -> aos_hub_api::ApplySetTopologyDefaultsRequest {
+    pub(crate) fn topology_defaults_apply(&self) -> aos_hub_api::ApplySetTopologyDefaultsRequest {
         aos_hub_api::ApplySetTopologyDefaultsRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
@@ -342,9 +338,7 @@ impl PendingPlan {
     }
 
     /// Builds a network-boundary identity apply envelope for this exact plan.
-    pub(crate) fn network_policy_apply(
-        &self,
-    ) -> aos_hub_api::ApplyNetworkPolicyMutationRequest {
+    pub(crate) fn network_policy_apply(&self) -> aos_hub_api::ApplyNetworkPolicyMutationRequest {
         aos_hub_api::ApplyNetworkPolicyMutationRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
@@ -384,9 +378,7 @@ impl PendingPlan {
     }
 
     /// Builds an endpoint-generation apply envelope for this exact plan.
-    pub(crate) fn endpoint_generation_apply(
-        &self,
-    ) -> aos_hub_api::ApplyEndpointGenerationRequest {
+    pub(crate) fn endpoint_generation_apply(&self) -> aos_hub_api::ApplyEndpointGenerationRequest {
         aos_hub_api::ApplyEndpointGenerationRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
@@ -413,9 +405,7 @@ impl PendingPlan {
     }
 
     /// Builds a canonical-route apply envelope for this exact plan.
-    pub(crate) fn route_advertisement_apply(
-        &self,
-    ) -> aos_hub_api::ApplyRouteAdvertisementRequest {
+    pub(crate) fn route_advertisement_apply(&self) -> aos_hub_api::ApplyRouteAdvertisementRequest {
         aos_hub_api::ApplyRouteAdvertisementRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),
@@ -424,9 +414,7 @@ impl PendingPlan {
     }
 
     /// Builds a coordinated delivery-workflow apply envelope for this plan.
-    pub(crate) fn delivery_workflow_apply(
-        &self,
-    ) -> aos_hub_api::ApplyDeliveryDestinationRequest {
+    pub(crate) fn delivery_workflow_apply(&self) -> aos_hub_api::ApplyDeliveryDestinationRequest {
         aos_hub_api::ApplyDeliveryDestinationRequest {
             plan_id: self.plan.plan_id.clone(),
             idempotency_key: self.idempotency_key.clone(),

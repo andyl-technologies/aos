@@ -550,13 +550,19 @@ pub(super) fn standard_for_gate(gate: &str) -> Option<&'static GateTestingStanda
 
 pub(super) fn package_layer(package: &str) -> Option<Layer> {
     match package {
-        "crucible-determinism" | "crucible-test-support" => Some(Layer::L0),
+        "crucible-determinism" => Some(Layer::L0),
         "crucible-qemu-shmem" | "crucible-qemu-protocol" | "crucible-device" => Some(Layer::L1),
-        "crucible-qemu-host" | "crucible-qemu-plugin" | "crucible-guest" | "aos-linux-project-quota" => {
-            Some(Layer::L2)
-        }
+        "crucible-qemu-host"
+        | "crucible-qemu-plugin"
+        | "crucible-guest"
+        | "aos-linux-project-quota" => Some(Layer::L2),
         "crucible-engine" | "crucible-store" | "crucible-campaign" => Some(Layer::L3),
-        "crucible-store-s3" | "crucible-session" | "crucible-control-api" | "crucible-daemon"
+        "crucible-store-s3"
+        | "crucible-session"
+        | "crucible-control-api"
+        | "crucible-control-client"
+        | "crucible-control-server"
+        | "crucible-daemon"
         | "crucible-cli" => Some(Layer::L4),
         "crucible-test-support" => Some(Layer::CrossCutting),
         _ => None,
@@ -641,7 +647,7 @@ pub(super) fn testing_standard_regression_failures() -> Vec<String> {
     }
     if !findings
         .iter()
-        .any(|finding| finding.contains("crucible-qemu missing crate-owned layer gate"))
+        .any(|finding| finding.contains("crucible-qemu-host missing crate-owned layer gate"))
     {
         failures.push(
             "testing-standard regression failed to reject missing per-crate ownership".to_string(),

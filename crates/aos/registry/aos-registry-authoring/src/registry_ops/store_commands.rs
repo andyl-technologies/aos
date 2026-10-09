@@ -1,9 +1,6 @@
 //! Realisation graph maintenance and store signing-key selection.
 
 use crate::StoreCommand;
-use aos_registry_client::config::ApmConfig;
-use aos_registry_client::registry::store;
-use aos_registry_client::registry::store::StoreMap;
 use crate::registry_ops::config::{registry_content_addressed, resolve_registry_name};
 use crate::registry_ops::git::{commit_registry_paths, refresh_registry_object_store};
 use crate::registry_ops::publish::{RegistryPublishLock, ensure_writable_registry_clone};
@@ -17,6 +14,9 @@ use crate::registry_ops::store_paths::{
 use crate::registry_ops::trust::load_committed_roster;
 use anyhow::{Context, Result, bail};
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::registry::store;
+use aos_registry_client::registry::store::StoreMap;
 use std::collections::HashSet;
 use std::path::Path;
 

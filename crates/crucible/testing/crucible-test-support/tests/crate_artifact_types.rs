@@ -391,9 +391,9 @@ fn artifact_type_failures(
                 ));
             } else {
                 let bin = &bins[0];
-                if bin.name.as_deref() != Some("crucible-engine") {
+                if bin.name.as_deref() != Some("crucible") {
                     failures.push(format!(
-                        "{}: CLI [[bin]] name must be `crucible-engine`, found {:?}",
+                        "{}: CLI [[bin]] name must be `crucible`, found {:?}",
                         spec.package, bin.name
                     ));
                 }
@@ -447,9 +447,9 @@ fn artifact_type_failures(
                 ));
             } else {
                 let bin = &bins[0];
-                if bin.name.as_deref() != Some("crucible-qemu-debug-gateway") {
+                if bin.name.as_deref() != Some("crucible-debug-gateway") {
                     failures.push(format!(
-                        "{}: debug gateway [[bin]] name must be `crucible-qemu-debug-gateway`, found {:?}",
+                        "{}: debug gateway [[bin]] name must be `crucible-debug-gateway`, found {:?}",
                         spec.package, bin.name
                     ));
                 }

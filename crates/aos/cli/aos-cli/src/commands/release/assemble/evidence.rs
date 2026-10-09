@@ -263,8 +263,8 @@ fn repeat_build_detail(report: &BuildReportV1, tier: RegistryTier) -> Result<Str
 
 #[cfg(test)]
 mod tests {
-    use aos_release::build::{BUILD_REPORT_V1, BuildOutputEvidence, ReproducibilityResult};
-    use aos_release::platform::Platform;
+    use aos_release_format::build::{BUILD_REPORT_V1, BuildOutputEvidence, ReproducibilityResult};
+    use aos_release_format::platform::Platform;
 
     use super::*;
 

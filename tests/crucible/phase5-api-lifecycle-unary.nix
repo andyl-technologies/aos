@@ -52,7 +52,7 @@
     ++ failuresFor "crates/crucible/control/crucible-control-api/Cargo.toml" apiCargo [
       {
         label = "crucible production dependency";
-        needle = ''crucible = { path = "../crucible" }'';
+        needle = ''crucible-engine = { path = "../../engine/crucible-engine" }'';
       }
     ]
     ++ failuresFor "crates/crucible/control/crucible-control-api/src/lib.rs" apiLib [
@@ -133,8 +133,8 @@
     ]
     ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
-        label = "opaque inline scenario transport constructor";
-        needle = "pub fn from_content_hash_seed_and_app_random_draw_cap";
+        label = "complete inline scenario source-form constructor";
+        needle = "pub fn from_components_with_app_random_draw_cap";
       }
     ]
     ++ failuresFor "crates/crucible/control/crucible-control-api/src/lifecycle.rs" lifecycle [
@@ -338,7 +338,7 @@
       }
       {
         label = "RPC inline scenario reconstruction";
-        needle = "ScenarioDef::from_content_hash_seed_and_app_random_draw_cap";
+        needle = "ScenarioDefForm::from_components_with_app_random_draw_cap";
       }
       {
         label = "RPC inline scenario seed parser";
@@ -434,7 +434,7 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-api-lifecycle-unary-target" \
-            -p crucible-control-api -p crucible-control-client -p crucible-control-server \
+            -p crucible-control-server \
             --features test-support \
             --test gate_lifecycle_unary \
             -- --test-threads=1
@@ -442,8 +442,7 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-api-lifecycle-unary-target" \
-            -p crucible-control-api -p crucible-control-client -p crucible-control-server \
-            --features test-support \
+            -p crucible-control-client \
             --test gate_control_client \
             -- --test-threads=1
         '';

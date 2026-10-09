@@ -1,8 +1,6 @@
 //! Signed rollout channel partitions and fix-forward channel advancement.
 
 use crate::ChannelCommand;
-use aos_registry_client::config::ApmConfig;
-use aos_registry_client::registry::channel::PartitionMap;
 use crate::registry::{channel, objectstore};
 use crate::registry_ops::config::{registry_dir, resolve_registry_name};
 use crate::registry_ops::git::{
@@ -10,15 +8,17 @@ use crate::registry_ops::git::{
 };
 use crate::registry_ops::signing::resolve_producer_signing_key;
 use crate::registry_ops::tags::{assert_release_tag_exists, format_git_tz, release_commit};
-use aos_registry_client::types::validate_channel_name;
 use anyhow::{Context, Result};
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::registry::channel::PartitionMap;
 #[cfg(test)]
 use aos_registry_format::channel::parse_partition_list;
 use aos_registry_format::channel::{PartitionTag, parse_partition_target};
 pub(in crate::registry_ops) use aos_registry_format::channel::{
     ensure_channel_advance_fix_forward, select_partitions_for_advance,
 };
+use aos_registry_format::consumer::validate_channel_name;
 use std::collections::BTreeMap;
 use std::path::Path;
 

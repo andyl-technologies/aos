@@ -14,7 +14,7 @@
 
 use std::collections::BTreeSet;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 
 /// Name of the realization-graph directory at the registry tree root.

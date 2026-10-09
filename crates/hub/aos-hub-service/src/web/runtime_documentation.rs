@@ -48,7 +48,7 @@ fn page(content: &str) -> String {
         "runtime abilities",
         &[(String::new(), "runtime abilities".into())],
         &body,
-        &StateLine::timed(crate::clock::Instant::now()),
+        &StateLine::timed(aos_hub_model::clock::Instant::now()),
         &SessionIndicator::anonymous(),
     )
 }

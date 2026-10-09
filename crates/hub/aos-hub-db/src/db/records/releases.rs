@@ -1,7 +1,5 @@
 //! Releases records returned by typed Hub persistence operations.
 
-use super::*;
-
 /// One sysroot disk image attached to a platform artifact.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ImageDetail {

@@ -549,10 +549,7 @@ fn StorageCredentialEditor(client: ApiClient, binding: aos_hub_api::Binding) -> 
 }
 
 #[component]
-fn StorageCredentialValidation(
-    client: ApiClient,
-    binding: aos_hub_api::Binding,
-) -> impl IntoView {
+fn StorageCredentialValidation(client: ApiClient, binding: aos_hub_api::Binding) -> impl IntoView {
     let purpose = RwSignal::new("write".to_string());
     let generation = RwSignal::new(String::new());
     let credential_version = RwSignal::new(String::new());
@@ -1185,9 +1182,10 @@ fn binding_ref(
     } else {
         let org_slug = organization_slug?.to_string();
         let name = binding.spec.as_ref()?.name.clone();
-        aos_hub_api::binding_ref::Target::Organization(
-            aos_hub_api::OrganizationBindingRef { org_slug, name },
-        )
+        aos_hub_api::binding_ref::Target::Organization(aos_hub_api::OrganizationBindingRef {
+            org_slug,
+            name,
+        })
     };
     Some(aos_hub_api::BindingRef {
         target: Some(target),

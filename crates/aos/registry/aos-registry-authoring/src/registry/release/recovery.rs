@@ -39,9 +39,11 @@ pub(super) struct SignedFinalizationReceipt {
 
 fn receipt_path(directory: &Path, release: &str) -> Result<PathBuf> {
     semver::Version::parse(release)?;
-    Ok(aos_registry_client::registry::objectstore::repo_git_dir(directory)?
-        .join("apr/finalizations")
-        .join(format!("{release}.json")))
+    Ok(
+        aos_registry_client::registry::objectstore::repo_git_dir(directory)?
+            .join("apr/finalizations")
+            .join(format!("{release}.json")),
+    )
 }
 
 pub(super) fn read(directory: &Path, release: &str) -> Result<Option<SignedFinalizationReceipt>> {
@@ -152,9 +154,11 @@ fn validate(receipt: &SignedFinalizationReceipt) -> Result<()> {
         &prepared.plan_digest,
         &receipt.identity.signature()?,
     );
-    let (_, tag_payload) =
-        aos_registry_client::registry::repo::tag_signature(&prepared.directory, &receipt.tag_object)?
-            .context("candidate release tag is unsigned")?;
+    let (_, tag_payload) = aos_registry_client::registry::repo::tag_signature(
+        &prepared.directory,
+        &receipt.tag_object,
+    )?
+    .context("candidate release tag is unsigned")?;
     if tag_payload != expected_tag {
         bail!("candidate tag identity differs from the persisted signing receipt");
     }
@@ -345,7 +349,9 @@ mod tests {
             .iter()
             .find(|file| file.path.ends_with(".pack"))
             .context("optimized full pack")?;
-        fs::remove_file(aos_registry_client::registry::objectstore::repo_git_dir(&directory)?.join(&pack.path))?;
+        fs::remove_file(
+            aos_registry_client::registry::objectstore::repo_git_dir(&directory)?.join(&pack.path),
+        )?;
 
         let recovered = complete(receipt).await?;
 

@@ -158,7 +158,7 @@
           else [];
       in
         lib.optionals (builtins.elem "test-double" features) [
-          "${package} enables crucible/test-double in production dependencies"
+          "${package} enables crucible-engine/test-double in production dependencies"
         ]
     )
     corePackages;
@@ -167,7 +167,7 @@
     lib.concatMap (
       package: let
         features = builtins.attrNames (manifestFeatures package);
-        sourcePath = packageDir package + "/src";
+        sourcePath = packageDir package;
         source =
           if builtins.pathExists sourcePath
           then readRustTree sourcePath
@@ -201,7 +201,7 @@
 
   guestPolicyRegressionFailures = let
     findings = guestDependencyFailuresFor {
-      crucible = {
+      crucible-engine = {
         dependencies.guest-double = {
           package = "crucible-guest";
           optional = true;
@@ -221,7 +221,7 @@
 
   directGuestPolicyRegressionFailures = let
     findings = guestDependencyFailuresFor {
-      crucible = {
+      crucible-engine = {
         dependencies.crucible-guest = {};
         features.default = [];
       };
@@ -237,11 +237,11 @@
     assertFeatureSet "crucible-engine" {
       default = [];
       test-support = [];
-      test-double = ["dep:crucible-shmem"];
+      test-double = ["dep:crucible-qemu-shmem"];
     }
     ++ assertFeatureSet "crucible-qemu-host" {
       default = [];
-      test-support = ["crucible/test-double"];
+      test-support = ["crucible-engine/test-double"];
     }
     ++ assertFeatureSet "crucible-device" {
       default = [];

@@ -24,12 +24,12 @@ use sha2::{Digest as _, Sha256};
 use worker::Bucket;
 
 use aos_hub_db::db::{BindingWriteRevisionRecord, Database, SurfacePlacementRecord};
+use aos_hub_model::secret_version::SecretVersionResolver;
 use aos_hub_service::fetch::{
     OriginFetch, StreamedRead, SurfaceFetch, SurfaceListPage, SurfaceListedEvidence,
     SurfaceObjectEvidence, SurfaceProvider,
 };
 use aos_hub_service::s3surface::{Method as S3Method, S3Surface};
-use aos_hub_model::secret_version::SecretVersionResolver;
 use aos_hub_service::storage_credential::{
     DatabaseStorageCredentialResolver, StorageCredentialResolver,
 };
@@ -363,10 +363,12 @@ async fn placement_s3_surface(
         return Ok(None);
     }
     if !matches!(binding.kind.as_str(), "s3" | "r2") {
-        return Err(aos_hub_service::placement_read::terminal_read_error(format!(
-            "placement '{}' uses unsupported Worker storage kind '{}'",
-            placement.name, binding.kind
-        )));
+        return Err(aos_hub_service::placement_read::terminal_read_error(
+            format!(
+                "placement '{}' uses unsupported Worker storage kind '{}'",
+                placement.name, binding.kind
+            ),
+        ));
     }
     let credential = if binding.access_mode.as_deref() == Some("private") {
         if let Some(revision) = write_revision {
@@ -494,14 +496,14 @@ async fn r2_get(
             Ok(v) => return Ok(Some(v)),
             Err(e) if attempt < 2 && is_transient_r2(&format!("{e:?}")) => attempt += 1,
             Err(e) if is_transient_r2(&format!("{e:?}")) => {
-                return Err(aos_hub_service::placement_read::retryable_read_error(format!(
-                    "R2 get {key}: {e:?}"
-                )));
+                return Err(aos_hub_service::placement_read::retryable_read_error(
+                    format!("R2 get {key}: {e:?}"),
+                ));
             }
             Err(e) => {
-                return Err(aos_hub_service::placement_read::terminal_read_error(format!(
-                    "R2 get {key}: {e:?}"
-                )));
+                return Err(aos_hub_service::placement_read::terminal_read_error(
+                    format!("R2 get {key}: {e:?}"),
+                ));
             }
         }
     }
@@ -520,9 +522,9 @@ async fn r2_get_range(
 
     const MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
     if offset > MAX_SAFE_INTEGER || length > MAX_SAFE_INTEGER {
-        return Err(aos_hub_service::placement_read::terminal_read_error(format!(
-            "R2 range for {key} exceeds JavaScript's exact integer range"
-        )));
+        return Err(aos_hub_service::placement_read::terminal_read_error(
+            format!("R2 range for {key} exceeds JavaScript's exact integer range"),
+        ));
     }
 
     let range = Object::new();
@@ -560,14 +562,14 @@ async fn r2_get_range(
             Ok(v) => return Ok(Some(v)),
             Err(e) if attempt < 2 && is_transient_r2(&format!("{e:?}")) => attempt += 1,
             Err(e) if is_transient_r2(&format!("{e:?}")) => {
-                return Err(aos_hub_service::placement_read::retryable_read_error(format!(
-                    "R2 ranged get {key}: {e:?}"
-                )));
+                return Err(aos_hub_service::placement_read::retryable_read_error(
+                    format!("R2 ranged get {key}: {e:?}"),
+                ));
             }
             Err(e) => {
-                return Err(aos_hub_service::placement_read::terminal_read_error(format!(
-                    "R2 ranged get {key}: {e:?}"
-                )));
+                return Err(aos_hub_service::placement_read::terminal_read_error(
+                    format!("R2 ranged get {key}: {e:?}"),
+                ));
             }
         }
     }
@@ -1096,7 +1098,11 @@ impl SurfaceFetch for S3SurfaceFetch {
             .ok()
             .flatten()
             .map(|value| value.trim().to_string());
-        Ok(etag.filter(|value| aos_hub_service::surface_write::strong_if_match_etag(value).is_ok()))
+        Ok(
+            etag.filter(|value| {
+                aos_hub_service::surface_write::strong_if_match_etag(value).is_ok()
+            }),
+        )
     }
 
     async fn fetch_stream(

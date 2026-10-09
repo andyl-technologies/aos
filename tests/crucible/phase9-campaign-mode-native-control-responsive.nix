@@ -27,8 +27,8 @@ in
         {
           targetName = "gate_control_responsive";
           targetKind = "test";
-          crateDir = "crucible-api";
-          destination = "crucible-api-gate-control-responsive";
+          crateDir = "crucible-control-server";
+          destination = "crucible-control-server-gate-control-responsive";
         }
         {
           targetName = "gate_control_responsive";
@@ -45,10 +45,10 @@ in
           evidence = "crucible_session_gate_control_responsive";
         }
         {
-          executable = "crucible-api-gate-control-responsive";
+          executable = "crucible-control-server-gate-control-responsive";
           arguments = [];
           expectedCount = 6;
-          evidence = "crucible_api_gate_control_responsive";
+          evidence = "crucible_control_server_gate_control_responsive";
         }
         {
           executable = "crucible-daemon-gate-control-responsive";

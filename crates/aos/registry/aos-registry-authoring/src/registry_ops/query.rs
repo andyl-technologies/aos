@@ -1,7 +1,5 @@
 //! Package listing, version selection, removal, and closure integrity verification.
 
-use aos_registry_client::config::ApmConfig;
-use aos_registry_client::registry::store::StoreMap;
 use crate::registry_ops::config::{
     format_size, registry_content_addressed, registry_dir, resolve_registry_name,
 };
@@ -12,9 +10,11 @@ use crate::registry_ops::store_paths::{
     StoreQueries, extract_hash, first_letter, write_store_files,
 };
 use crate::registry_ops::workflow::{current_git_branch, git_branch_entries};
-use aos_registry_client::types::validate_package_name;
 use anyhow::{Context, Result, bail};
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::registry::store::StoreMap;
+use aos_registry_format::consumer::validate_package_name;
 use std::collections::HashSet;
 
 /// `apr unpublish <PACKAGE> [VERSION]` — removes package metadata from the
@@ -454,8 +454,10 @@ pub async fn packages(
             let path = entry.path();
             if path.extension().map(|e| e == "toml").unwrap_or(false) {
                 let content = std::fs::read_to_string(&path)?;
-                let name = aos_registry_client::registry::parse::validate_package_file_layout(&path, &content)
-                    .with_context(|| format!("validating {}", path.display()))?;
+                let name = aos_registry_client::registry::parse::validate_package_file_layout(
+                    &path, &content,
+                )
+                .with_context(|| format!("validating {}", path.display()))?;
                 let toml_val: toml::Value = toml::from_str(&content)?;
                 let versions = matching_package_versions(&toml_val, platform);
                 if outdated && versions.len() < 2 {

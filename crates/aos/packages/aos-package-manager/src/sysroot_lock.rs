@@ -14,10 +14,10 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result};
 
-use aos_registry_client::config::ApmConfig;
-use aos_registry_format::platform::native_platform;
-use aos_registry_client::registry::store_path_hash;
 use crate::sysroot;
+use aos_registry_client::config::ApmConfig;
+use aos_registry_client::registry::store_path_hash;
+use aos_registry_format::platform::native_platform;
 
 // ---------------------------------------------------------------------------
 // Store path parsing

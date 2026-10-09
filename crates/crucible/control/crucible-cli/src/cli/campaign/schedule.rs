@@ -2,12 +2,12 @@
 
 use super::*;
 
-use crucible_daemon::MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES;
-use crucible_engine::{
+use crate::crucible_engine::{
     ChoiceTag, Decision, DeliveryOrderDecision, EventKey, IrqVector, NodeId, OverrideDecision,
     PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, Schedule, SchedulerNodeId,
     SchedulingNodeKind, SchedulingPoint, VcpuId, VirtualInstant, VirtualTime,
 };
+use crucible_daemon::MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES;
 use serde::{Deserialize, Serialize};
 
 use super::authoring::{read_bounded_utf8, write_new_record};

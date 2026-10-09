@@ -505,7 +505,7 @@ fn live_qemu_fuzz_fixture_pins_a_searchable_fault_plan() {
 
     assert_eq!(family.space().fault_densities(), &[1]);
     assert_eq!(bindings.len(), 1);
-    let crucible_core::model::BindingSearchPolicy::BranchParameter { candidates, .. } =
+    let ::crucible_engine::model::BindingSearchPolicy::BranchParameter { candidates, .. } =
         bindings[0].search()
     else {
         panic!("live QEMU fuzz binding must expose typed parameter candidates");
@@ -580,7 +580,7 @@ pub(super) fn search_frontier_decisions() -> Vec<crucible_engine::Decision> {
     ]
     .into_iter()
     .map(|label| {
-        crucible_core::test_support::typed_search_decision_for_test(label)
+        ::crucible_engine::test_support::typed_search_decision_for_test(label)
             .unwrap_or_else(|error| panic!("typed search fixture should build: {error}"))
     })
     .collect()

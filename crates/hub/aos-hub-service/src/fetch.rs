@@ -26,8 +26,8 @@ use anyhow::{bail, Context as _, Result};
 use futures_util::TryStreamExt as _;
 use sha2::{Digest as _, Sha256};
 
-use crate::backend::BackendBounds;
-use crate::db::SurfacePlacementRecord;
+use aos_hub_db::backend::BackendBounds;
+use aos_hub_db::db::SurfacePlacementRecord;
 
 /// Maximum object keys accepted from one physical placement or one cache-wide scan.
 pub const MAX_SURFACE_LIST_OBJECTS: usize = 1_000_000;

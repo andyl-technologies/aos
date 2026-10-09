@@ -29,12 +29,12 @@
 //! inventory and authorized placement lifecycle calls.
 
 use anyhow::{Context, Result};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::fmt;
 use std::str::FromStr;
 
-use aos_hub_api::{CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER, SurfaceRef};
+use aos_hub_api::{SurfaceRef, CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER};
 
 use crate::validate_base_url;
 
@@ -2349,7 +2349,7 @@ impl HubClient {
 /// The Connect-JSON error envelope: a stable error `code` and human `message`.
 ///
 /// Returned with a non-2xx HTTP status on failure; see the hub's
-/// `aos-hub-core` `RpcError`.
+/// `aos-hub-service` `RpcError`.
 #[derive(serde::Deserialize)]
 struct ConnectError {
     /// The Connect error code (e.g. `not_found`, `permission_denied`).
@@ -2405,10 +2405,10 @@ fn ensure_trailing_slash(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{HubClient, HubSurfaceRef, HubTopologyMethod, decode_optional_response};
+    use super::{decode_optional_response, HubClient, HubSurfaceRef, HubTopologyMethod};
     use aos_hub_api::surface_ref::Target;
     use aos_hub_api::{
-        CONNECT_PROTOCOL_VERSION_HEADER, PlanCreatePlacementRequest, PlanUpdatePlacementRequest,
+        PlanCreatePlacementRequest, PlanUpdatePlacementRequest, CONNECT_PROTOCOL_VERSION_HEADER,
     };
     use std::str::FromStr as _;
 

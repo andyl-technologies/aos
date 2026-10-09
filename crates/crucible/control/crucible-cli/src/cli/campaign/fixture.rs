@@ -8,17 +8,7 @@ use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-use crucible_campaign::{
-    AlternativeId, BooleanDomain, CampaignHash, CampaignLineage, CampaignMode, CampaignPolicy,
-    CampaignSeed, CandidateGeneratorAlgorithm, CandidateGeneratorSpec, ChoiceClassContext,
-    ChoiceDomain, ChoiceGroup, ChoiceGroupApplication, ChoiceGroupDomain, ChoicePolicy,
-    ChoiceSource, ChoiceTuple, ChoiceValue, DiscreteAlternative, DiscreteDomain, ExactRational,
-    ExplorerPolicy, FairnessPolicy, GuidanceWeight, IntegerDomain, IntegerRepresentation,
-    IntegerValue, Objective, ObjectiveGoal, ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy,
-    SelectableDeclaration,
-};
-use crucible_daemon::{encode_crucible_configuration_artifact, encode_crucible_scenario_artifact};
-use crucible_engine::{
+use crate::crucible_engine::{
     Action, Aggregation, AssertionDef, AssertionId, BoundarySelector, CohortPolicy,
     ContentAddressedBlobRef, ContentHash, EventGraph, FaultDirection, LinkDef, LinkLossProbability,
     LogLevel, MarkerId, MeasurementDefinition, MeasurementDefinitions, MeasurementId,
@@ -29,6 +19,16 @@ use crucible_engine::{
     WorldFaultTopology, WorldNetworkInterface, WorldNetworkPath, WorldNetworkPathHop,
     WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology, WorldNode,
 };
+use crucible_campaign::{
+    AlternativeId, BooleanDomain, CampaignHash, CampaignLineage, CampaignMode, CampaignPolicy,
+    CampaignSeed, CandidateGeneratorAlgorithm, CandidateGeneratorSpec, ChoiceClassContext,
+    ChoiceDomain, ChoiceGroup, ChoiceGroupApplication, ChoiceGroupDomain, ChoicePolicy,
+    ChoiceSource, ChoiceTuple, ChoiceValue, DiscreteAlternative, DiscreteDomain, ExactRational,
+    ExplorerPolicy, FairnessPolicy, GuidanceWeight, IntegerDomain, IntegerRepresentation,
+    IntegerValue, Objective, ObjectiveGoal, ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy,
+    SelectableDeclaration,
+};
+use crucible_daemon::{encode_crucible_configuration_artifact, encode_crucible_scenario_artifact};
 use crucible_session::engine::NetworkFaultSelectable;
 use serde::Serialize;
 

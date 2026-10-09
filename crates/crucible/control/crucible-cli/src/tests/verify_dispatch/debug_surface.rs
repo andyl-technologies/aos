@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::cli_triage_debug::guest_input_message;
-use crucible_core::SIM_TICKS_PER_NS;
+use ::crucible_engine::SIM_TICKS_PER_NS;
 
 #[test]
 fn debug_goto_accepts_an_unambiguous_event_log_coordinate() -> Result<(), Box<dyn Error>> {

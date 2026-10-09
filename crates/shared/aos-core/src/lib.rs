@@ -1,7 +1,7 @@
 //! Portable primitives shared by AOS applications and data formats.
 //!
 //! This crate owns strict canonical [`json`], typed content [`digest`] values,
-//! bounded document decoding in [`limits`], and authenticated local names in
+//! bounded document decoding in [`limits`], and bounded local names in
 //! [`identity`]. It performs no filesystem, network, process, clock, credential,
 //! or terminal I/O. Domain schemas and execution policy belong to their owners.
 

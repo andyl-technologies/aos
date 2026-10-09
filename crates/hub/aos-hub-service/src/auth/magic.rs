@@ -21,7 +21,7 @@
 //! Cloudflare Email Service binding on Workers) implement [`Mailer`]. The link
 //! lifecycle (create, consume-once) lives on `Database`.
 
-use crate::backend::BackendBounds;
+use aos_hub_db::backend::BackendBounds;
 
 pub use aos_hub_model::auth::magic::{new_magic_secret, MAGIC_LINK_TTL_SECS};
 

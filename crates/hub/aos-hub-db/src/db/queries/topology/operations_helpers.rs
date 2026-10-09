@@ -4,7 +4,9 @@ use super::*;
 
 impl Database {
     /// Builds the insert appended to an atomic topology mutation batch.
-    pub(in crate::db) fn topology_event_insert_statement(event: &NewTopologyEvent<'_>) -> Statement {
+    pub(in crate::db) fn topology_event_insert_statement(
+        event: &NewTopologyEvent<'_>,
+    ) -> Statement {
         Statement::new(
             "INSERT INTO topology_event_outbox
              (event_id, event_name, owner_scope_key, resource_kind,
@@ -29,7 +31,9 @@ impl Database {
     }
 
     /// Builds the checked insert appended to an atomic topology mutation batch.
-    pub(in crate::db) fn topology_event_statement(event: &NewTopologyEvent<'_>) -> CheckedStatement {
+    pub(in crate::db) fn topology_event_statement(
+        event: &NewTopologyEvent<'_>,
+    ) -> CheckedStatement {
         Self::topology_event_insert_statement(event).expecting(1)
     }
 }

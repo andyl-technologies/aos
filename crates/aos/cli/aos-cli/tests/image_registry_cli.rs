@@ -180,11 +180,11 @@ version = "{version}"
         fixture.source_path().join("packages/a/aos.toml"),
     )?)?;
     fixture.commit_all(&format!("images {version}"))?;
-    tuf::write_release_metadata_worktree(
+    aos_registry_authoring::registry::tuf::write_release_metadata_worktree(
         fixture.source_path(),
         fixture.name(),
         &semver::Version::parse(version)?,
-        &[tuf::MetadataSigningKey {
+        &[aos_registry_authoring::registry::tuf::MetadataSigningKey {
             key_id: "initial".into(),
             key_path: fixture.private_key_path().to_path_buf(),
             key: fixture.trusted_key().to_string(),
@@ -225,7 +225,7 @@ async fn success(home: &Path, arguments: &[&str]) -> Result<serde_json::Value> {
 
 async fn full_pack(fixture: &RegistryFixture, version: &str) -> Result<()> {
     let temp = tempfile::tempdir()?;
-    let source = pack::full_pack(fixture.source_path(), version, temp.path()).await?;
+    let source = aos_registry_authoring::registry::pack::full_pack(fixture.source_path(), version, temp.path()).await?;
     let name = source.file_name().context("pack filename")?;
     let root = fixture
         .origin_path()
@@ -515,7 +515,7 @@ priority = 9999
         .context("catalog state")?
         .1;
     let catalog: serde_json::Value = serde_json::from_slice(catalog_bytes)?;
-    let mut baseline: aos_package_manager::types::RegistryState =
+    let mut baseline: aos_registry_format::consumer::RegistryState =
         serde_json::from_value(catalog["trust"].clone())?;
     baseline.last_commit = catalog["tuf_commit"].as_str().map(str::to_owned);
     let baseline_home = temp.path().join("configured-consumer");

@@ -18,7 +18,7 @@ use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::backend::BackendBounds;
+use aos_hub_db::backend::BackendBounds;
 
 /// Canonical public evidence returned by a deployment signing authority.
 #[derive(Debug, Clone, PartialEq, Eq)]

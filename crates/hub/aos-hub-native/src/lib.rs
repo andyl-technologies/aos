@@ -76,12 +76,12 @@ compile_error!("the aos-hub test-support feature must never be enabled in a rele
 
 pub mod auth;
 pub mod cloudflare;
-/// Config change-set staging/revert, re-exported from
-/// [`aos_hub_service::config`] (RFC-0004 Phase 5); keeps `crate::config::…` stable.
-pub use aos_hub_service::config;
 /// The crawl-policy value type, re-exported from [`aos_hub_model::crawl`]; keeps
 /// `crate::crawl::…` stable for the CLI.
 pub use aos_hub_model::crawl;
+/// Config change-set staging/revert, re-exported from
+/// [`aos_hub_service::config`] (RFC-0004 Phase 5); keeps `crate::config::…` stable.
+pub use aos_hub_service::config;
 /// Native adapters from the hub's concrete types to the shared service ports
 /// ([`aos_hub_service::ratelimit::RateLimiter`],
 /// [`aos_hub_service::fetch::SurfaceProvider`]); RFC-0004 Phase 5.

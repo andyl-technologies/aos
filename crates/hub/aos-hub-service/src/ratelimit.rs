@@ -14,8 +14,8 @@
 
 use std::sync::Arc;
 
-use crate::backend::BackendBounds;
 use crate::coordinator::Coordinator;
+use aos_hub_db::backend::BackendBounds;
 
 /// The maximum number of orgs a single user principal may own at once.
 ///

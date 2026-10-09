@@ -4,7 +4,7 @@
 //! Channel participation is explicitly current state; percentages describe the
 //! protocol's 256 rollout buckets, never observed host installation rates.
 
-use crate::clock::Instant;
+use aos_hub_model::clock::Instant;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
@@ -15,7 +15,7 @@ use super::release_browse::{
     is_prerelease, release_href, release_order, unavailable_page, ReleaseContext,
 };
 use super::render::{escape, hash_value, table};
-use crate::db::{ChannelSummary, Database, IndexStatus, RegistryRecord, ReleaseRow};
+use aos_hub_db::db::{ChannelSummary, Database, IndexStatus, RegistryRecord, ReleaseRow};
 use aos_registry_format::support::{Date, SupportKind, SupportPolicy, SupportState};
 
 /// Published content counts, distinguishing incomplete projections from empty sets.
@@ -477,7 +477,7 @@ pub(crate) fn releases_page(
 ) -> String {
     let slug = &registry.slug;
     let policy = status.and_then(|status| status.support.as_ref());
-    let today = Date::from_unix(crate::clock::now_unix_secs());
+    let today = Date::from_unix(aos_hub_model::clock::now_unix_secs());
     let mut body = context.nav(slug, "releases");
     body.push_str("<h1>Releases</h1>");
     body.push_str(&support_board(

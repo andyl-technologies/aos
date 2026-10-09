@@ -147,14 +147,30 @@ fn JobAction(
         busy.set(true);
         spawn_local(async move {
             let response = match action {
-                JobActionKind::Retry => client.call::<_, aos_hub_api::TopologyPlanResponse>(
-                    aos_hub_api::BINARY_CACHE_SERVICE_PLAN_RETRY_CACHE_GC_DELETION_JOB_PATH,
-                    &aos_hub_api::PlanRetryCacheGcDeletionJobRequest { cache_id, job_id, expected_resource_version: version, idempotency_key: key.clone() },
-                ).await,
-                JobActionKind::Abandon => client.call::<_, aos_hub_api::TopologyPlanResponse>(
-                    aos_hub_api::BINARY_CACHE_SERVICE_PLAN_ABANDON_CACHE_GC_DELETION_JOB_PATH,
-                    &aos_hub_api::PlanAbandonCacheGcDeletionJobRequest { cache_id, job_id, expected_resource_version: version, idempotency_key: key.clone() },
-                ).await,
+                JobActionKind::Retry => {
+                    client
+                        .call::<_, aos_hub_api::TopologyPlanResponse>(
+                            aos_hub_api::BINARY_CACHE_SERVICE_PLAN_RETRY_CACHE_GC_DELETION_JOB_PATH,
+                            &aos_hub_api::PlanRetryCacheGcDeletionJobRequest {
+                                cache_id,
+                                job_id,
+                                expected_resource_version: version,
+                                idempotency_key: key.clone(),
+                            },
+                        )
+                        .await
+                }
+                JobActionKind::Abandon => client
+                    .call::<_, aos_hub_api::TopologyPlanResponse>(
+                        aos_hub_api::BINARY_CACHE_SERVICE_PLAN_ABANDON_CACHE_GC_DELETION_JOB_PATH,
+                        &aos_hub_api::PlanAbandonCacheGcDeletionJobRequest {
+                            cache_id,
+                            job_id,
+                            expected_resource_version: version,
+                            idempotency_key: key.clone(),
+                        },
+                    )
+                    .await,
             };
             let result = response
                 .map_err(|failure| failure.to_string())

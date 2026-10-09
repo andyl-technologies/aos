@@ -8,12 +8,6 @@
 //!   one signed statement binding per line, chained by entry hash
 //! ```
 
-use aos_registry_client::provenance::{
-    ProvenanceSignature, ProvenanceSigner, TrustedProvenanceKey,
-    builder_id as provenance_builder_id, digest_map as provenance_digest_map, sha256_hex_payload,
-};
-use aos_registry_client::registry::keys;
-use crate::registry_ops::config::read_registry_toml;
 use crate::registry_ops::git::{git_try, registry_relative_path};
 use crate::registry_ops::provenance::staged::git_tree_file_bytes;
 use crate::registry_ops::provenance::statement::{
@@ -23,11 +17,17 @@ use crate::registry_ops::sha256_hex;
 use crate::registry_ops::signing::ResolvedSigningKey;
 use crate::registry_ops::store_paths::StorePathInfo;
 use crate::registry_ops::trust::{derive_trust_key, load_committed_roster, validate_roster_key_id};
+use anyhow::{Context, Result, bail};
+use aos_registry_client::provenance::{
+    ProvenanceSignature, ProvenanceSigner, TrustedProvenanceKey,
+    builder_id as provenance_builder_id, digest_map as provenance_digest_map, sha256_hex_payload,
+};
+use aos_registry_client::registry::keys;
+use aos_registry_client::registry::mirrors::read_registry_toml;
 use aos_registry_client::security::parse_signing_key;
-use aos_registry_client::types::{
+use aos_registry_format::consumer::{
     AttestationMeta, package_name_bucket, validate_package_name, validate_platform_name,
 };
-use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::fs::OpenOptions;

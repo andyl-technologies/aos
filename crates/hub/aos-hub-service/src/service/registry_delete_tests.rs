@@ -10,20 +10,20 @@ use aos_oci_types::{RepositoryName, Sha256Digest};
 
 use super::super::cache_upload_tests::release_test_service;
 use super::*;
-use crate::backend::Statement;
-use crate::db::{
+use crate::fetch::{SurfaceFetch, SurfaceListPage, SurfaceProvider};
+use crate::oci_inventory_controller::NATIVE_OCI_INVENTORY_DISPATCH_BUDGET;
+use crate::registry_delete_controller::{RegistryDeletionController, RegistryDeletionPassStats};
+use aos_hub_db::backend::Statement;
+use aos_hub_db::db::{
     oci_blob_object_key, AppendOciProviderInventoryPage, BeginOciProviderInventory,
     CompleteOciProviderInventory, Database, NewBindingWriteRevision, NewSurfacePlacementSpec,
     OciProviderInventoryEntryInput, RegistryRecord, SurfacePlacementRecord, SurfaceTarget,
 };
-use crate::fetch::{SurfaceFetch, SurfaceListPage, SurfaceProvider};
-use crate::oci_inventory_controller::NATIVE_OCI_INVENTORY_DISPATCH_BUDGET;
-use crate::registry_delete_controller::{RegistryDeletionController, RegistryDeletionPassStats};
 
 /// Binds SQL parameters like the database module's private `vals!`.
 macro_rules! values {
     ($($value:expr),* $(,)?) => {
-        vec![$(crate::value::ToValue::to_value(&$value)),*]
+        vec![$(aos_hub_db::value::ToValue::to_value(&$value)),*]
     };
 }
 
@@ -180,7 +180,7 @@ impl Fixture {
     async fn operation(
         &self,
         response: &pb::OperationResponse,
-    ) -> crate::db::TopologyOperationRecord {
+    ) -> aos_hub_db::db::TopologyOperationRecord {
         let operation_id = &response.operation.as_ref().unwrap().operation_id;
         self.db
             .topology_operation(operation_id)
@@ -199,7 +199,7 @@ impl Fixture {
 
     /// Inserts one OCI GC run row in `state` for this registry.
     async fn insert_gc_run(&self, run_id: &str, state: &str, expires_at: i64) {
-        let now = crate::clock::now_unix_secs();
+        let now = aos_hub_model::clock::now_unix_secs();
         self.db
             .fixture_backend()
             .checked_batch(&[Statement::new(
@@ -280,7 +280,7 @@ fn blockers(readiness: Option<&pb::RegistryDeletionReadiness>) -> pb::RegistryDe
     readiness.unwrap().blockers.unwrap()
 }
 
-fn detail(operation: &crate::db::TopologyOperationRecord) -> serde_json::Value {
+fn detail(operation: &aos_hub_db::db::TopologyOperationRecord) -> serde_json::Value {
     serde_json::from_str(&operation.detail_json).unwrap()
 }
 
@@ -328,7 +328,7 @@ async fn empty_registry_without_inventory_deletes_with_one_apply() {
 #[tokio::test]
 async fn stale_inventory_listing_objects_is_recollected_before_deletion() {
     let fixture = Fixture::new("delete-stale", true).await;
-    let stale_at = crate::clock::now_unix_secs() - 7200;
+    let stale_at = aos_hub_model::clock::now_unix_secs() - 7200;
     let untracked = Sha256Digest::digest(b"removed-out-of-band");
     let inventory = fixture
         .db
@@ -401,7 +401,7 @@ async fn repositories_fail_closed_with_the_blocker_breakdown() {
             .ensure_oci_repository(
                 fixture.registry.id,
                 &RepositoryName::parse(name).unwrap(),
-                crate::clock::now_unix_secs(),
+                aos_hub_model::clock::now_unix_secs(),
             )
             .await
             .unwrap();
@@ -435,7 +435,7 @@ async fn repositories_fail_closed_with_the_blocker_breakdown() {
 #[tokio::test]
 async fn enabled_oci_namespace_blocks_deletion_until_disabled() {
     let fixture = Fixture::new("delete-namespace", true).await;
-    let now = crate::clock::now_unix_secs();
+    let now = aos_hub_model::clock::now_unix_secs();
     fixture
         .db
         .fixture_backend()
@@ -497,7 +497,7 @@ async fn enabled_oci_namespace_blocks_deletion_until_disabled() {
 #[tokio::test]
 async fn planned_gc_runs_are_abandoned_and_applying_runs_block() {
     let fixture = Fixture::new("delete-gc-runs", true).await;
-    let now = crate::clock::now_unix_secs();
+    let now = aos_hub_model::clock::now_unix_secs();
     fixture
         .insert_gc_run(&"a".repeat(64), "planned", now - 60)
         .await;
@@ -586,7 +586,7 @@ async fn precondition_changed_after_review_fails_as_a_precondition() {
         .ensure_oci_repository(
             fixture.registry.id,
             &RepositoryName::parse("late").unwrap(),
-            crate::clock::now_unix_secs(),
+            aos_hub_model::clock::now_unix_secs(),
         )
         .await
         .unwrap();
@@ -606,7 +606,7 @@ async fn precondition_changed_while_running_fails_the_operation_with_the_breakdo
 
     fixture
         .db
-        .create_registry_publication(&crate::db::NewRegistryPublication {
+        .create_registry_publication(&aos_hub_db::db::NewRegistryPublication {
             publication_id: "late-publication".into(),
             registry_id: fixture.registry.id,
             generation: "late-generation".into(),

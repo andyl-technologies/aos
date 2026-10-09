@@ -3,9 +3,9 @@
 use std::io::{self, Read as _, Write as _};
 
 use anyhow::{Context as _, Result, ensure};
-use aos_module_format::ABILITY_LIMITS_V1;
 use aos_activation::activation::{Action, Invocation};
 use aos_activation::adapter::CancellationToken;
+use aos_module_format::ABILITY_LIMITS_V1;
 use serde_json::json;
 
 use super::provisioning_evaluator::{self, EvaluationParameters};

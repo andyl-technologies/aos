@@ -5,19 +5,19 @@ mod common;
 use std::fs;
 
 use anyhow::Result;
-use aos_registry_client::registry::{Registry, git, transport::RegistryTransport, tuf};
-use aos_package_manager::types::{RegistryConfig, RegistryState, TrackingMode};
+use aos_registry_client::registry::{Registry, git, transport::RegistryTransport};
+use aos_registry_format::consumer::{RegistryConfig, RegistryState, TrackingMode};
 use common::RegistryFixture;
 
 fn publish_release(fixture: &RegistryFixture, version: &str, channel: &str) -> Result<String> {
     let store_path = fixture.write_package("hello", version)?;
     fixture.write_closure(&store_path)?;
     fixture.commit_all(&format!("release {version}"))?;
-    tuf::write_release_metadata_worktree(
+    aos_registry_authoring::registry::tuf::write_release_metadata_worktree(
         fixture.source_path(),
         fixture.name(),
         &semver::Version::parse(version)?,
-        &[tuf::MetadataSigningKey {
+        &[aos_registry_authoring::registry::tuf::MetadataSigningKey {
             key_id: "initial".into(),
             key_path: fixture.private_key_path().to_path_buf(),
             key: fixture.trusted_key().to_string(),

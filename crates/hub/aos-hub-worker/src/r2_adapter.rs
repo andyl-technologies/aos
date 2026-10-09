@@ -514,12 +514,10 @@ mod tests {
                 .unwrap(),
             SurfaceDeleteOutcome::NotFound
         ));
-        assert!(
-            absent
-                .delete_if_matches("k", &precondition(None, Some(4)))
-                .await
-                .is_err()
-        );
+        assert!(absent
+            .delete_if_matches("k", &precondition(None, Some(4)))
+            .await
+            .is_err());
         assert_eq!(*absent.adapter.calls.borrow(), vec!["head:k"]);
     }
 }

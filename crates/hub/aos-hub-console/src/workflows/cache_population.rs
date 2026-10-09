@@ -207,24 +207,49 @@ fn PopulationAction(
         busy.set(true);
         spawn_local(async move {
             let response = match action {
-                PopulationActionKind::Run => client.call::<_, aos_hub_api::TopologyPlanResponse>(
-                    aos_hub_api::CACHE_INTEGRATION_SERVICE_PLAN_RUN_POPULATION_PATH,
-                    &aos_hub_api::PlanRunPopulationRequest { cache_id, registry_id, release_tag: tag, idempotency_key: key.clone(), expected_resource_version: version },
-                ).await,
+                PopulationActionKind::Run => {
+                    client
+                        .call::<_, aos_hub_api::TopologyPlanResponse>(
+                            aos_hub_api::CACHE_INTEGRATION_SERVICE_PLAN_RUN_POPULATION_PATH,
+                            &aos_hub_api::PlanRunPopulationRequest {
+                                cache_id,
+                                registry_id,
+                                release_tag: tag,
+                                idempotency_key: key.clone(),
+                                expected_resource_version: version,
+                            },
+                        )
+                        .await
+                }
                 PopulationActionKind::Validate | PopulationActionKind::Repair => {
                     let path = if matches!(action, PopulationActionKind::Validate) {
                         aos_hub_api::CACHE_INTEGRATION_SERVICE_PLAN_RUN_COVERAGE_VALIDATION_PATH
                     } else {
                         aos_hub_api::CACHE_INTEGRATION_SERVICE_PLAN_RUN_COVERAGE_REPAIR_PATH
                     };
-                    client.call::<_, aos_hub_api::TopologyPlanResponse>(path, &aos_hub_api::PlanCoverageOperationRequest {
-                        cache_id, registry_id, expected_resource_version: version, idempotency_key: key.clone(),
-                    }).await
+                    client
+                        .call::<_, aos_hub_api::TopologyPlanResponse>(
+                            path,
+                            &aos_hub_api::PlanCoverageOperationRequest {
+                                cache_id,
+                                registry_id,
+                                expected_resource_version: version,
+                                idempotency_key: key.clone(),
+                            },
+                        )
+                        .await
                 }
-                PopulationActionKind::Delete => client.call::<_, aos_hub_api::TopologyPlanResponse>(
-                    aos_hub_api::CACHE_INTEGRATION_SERVICE_PLAN_DELETE_POPULATION_TARGET_PATH,
-                    &aos_hub_api::PlanDeletePopulationTargetRequest { cache_id, registry_id, expected_resource_version: version, idempotency_key: key.clone() },
-                ).await,
+                PopulationActionKind::Delete => client
+                    .call::<_, aos_hub_api::TopologyPlanResponse>(
+                        aos_hub_api::CACHE_INTEGRATION_SERVICE_PLAN_DELETE_POPULATION_TARGET_PATH,
+                        &aos_hub_api::PlanDeletePopulationTargetRequest {
+                            cache_id,
+                            registry_id,
+                            expected_resource_version: version,
+                            idempotency_key: key.clone(),
+                        },
+                    )
+                    .await,
             };
             let result = response
                 .map_err(|failure| failure.to_string())

@@ -338,7 +338,10 @@ fn digest_native_alias(
             .split('/')
             .next()
             .context("native document alias lacks root")?;
-        aos_release_format::artifact::require_store_path(&format!("/nix/store/{component}"), false)?;
+        aos_release_format::artifact::require_store_path(
+            &format!("/nix/store/{component}"),
+            false,
+        )?;
         let identity = digest_native_alias(
             root,
             &store_directory.join(suffix),

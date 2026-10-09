@@ -13,8 +13,8 @@ use aos_core::Sha256Digest;
 use super::capture::binding_module;
 use super::proof::{ArtifactIdentity, SourceAuthorization, validate_authorized_bytes};
 use super::reader::read_immutable_bounded;
-use aos_deployment::evaluation::Evaluation;
 use crate::native_deployment::NativeDeploymentCommand;
+use aos_deployment::evaluation::Evaluation;
 
 pub(super) fn verify(command: &NativeDeploymentCommand, number: u32) -> Result<()> {
     let profile = command
@@ -122,7 +122,10 @@ pub(super) fn verify(command: &NativeDeploymentCommand, number: u32) -> Result<(
     if let Some(bundle) = bundle {
         ensure!(
             read_immutable_bounded(
-                &proof.host.path.join(aos_platform_metadata::bundle::BUNDLE_FILE),
+                &proof
+                    .host
+                    .path
+                    .join(aos_platform_metadata::bundle::BUNDLE_FILE),
                 &command.nix_store,
                 aos_platform_metadata::bundle::MAX_BUNDLE_BYTES,
             )? == payload.as_bytes(),
@@ -145,7 +148,8 @@ pub(super) fn verify(command: &NativeDeploymentCommand, number: u32) -> Result<(
             );
         }
     }
-    let facts: aos_platform_metadata::fetcher::Facts = serde_json::from_value(authorized.facts.value)?;
+    let facts: aos_platform_metadata::fetcher::Facts =
+        serde_json::from_value(authorized.facts.value)?;
     ensure!(
         read_immutable_bounded(&proof.facts.path, &command.nix_store, 1024 * 1024)?
             == aos_platform_metadata::facts_render::render_host_facts_nix(&facts).as_bytes(),

@@ -1,6 +1,5 @@
 //! Validation of transparency statements and their bound package metadata.
 
-use aos_registry_client::provenance::{builder_id as provenance_builder_id, digest_map as provenance_digest_map};
 use crate::registry_ops::provenance::{
     PACKAGE_PROVENANCE_BUILD_TYPE, PACKAGE_PROVENANCE_PREDICATE_TYPE,
     PACKAGE_PROVENANCE_STATEMENT_TYPE, PackageProvenanceTransparencyLogBody,
@@ -8,6 +7,9 @@ use crate::registry_ops::provenance::{
 };
 use crate::registry_ops::sha256_hex;
 use anyhow::{Context, Result, bail};
+use aos_registry_client::provenance::{
+    builder_id as provenance_builder_id, digest_map as provenance_digest_map,
+};
 use serde_json::Value;
 use std::path::Path;
 

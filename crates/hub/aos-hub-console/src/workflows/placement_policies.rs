@@ -392,13 +392,14 @@ fn build_policy(
             }
             let (boundary_id, revision) =
                 generation_ref(&signals.boundary.get_untracked(), "Local boundary")?;
-            let replica_groups = local
-                .into_iter()
-                .map(|name| replica_group(vec![name], aos_hub_api::AccessClass::Local, None))
-                .chain(remote.into_iter().map(|name| {
-                    replica_group(vec![name], aos_hub_api::AccessClass::Remote, None)
-                }))
-                .collect();
+            let replica_groups =
+                local
+                    .into_iter()
+                    .map(|name| replica_group(vec![name], aos_hub_api::AccessClass::Local, None))
+                    .chain(remote.into_iter().map(|name| {
+                        replica_group(vec![name], aos_hub_api::AccessClass::Remote, None)
+                    }))
+                    .collect();
             Selector::LocalThenRemote(aos_hub_api::LocalThenRemotePlacementPolicy {
                 replica_groups,
                 local_boundary: Some(aos_hub_api::NetworkPolicyRevisionRef {

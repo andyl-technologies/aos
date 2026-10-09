@@ -3,6 +3,9 @@
 // crucible-lint: allow rust-allow -- split support modules are shared across harness-lint regression crates.
 #![allow(dead_code, unused_imports)]
 
+#[path = "support/workspace.rs"]
+mod workspace;
+
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;

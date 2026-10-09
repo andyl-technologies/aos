@@ -12,10 +12,10 @@ use aos_activation::adapter::CancellationToken;
 
 use super::EvaluationInput;
 use aos_deployment::evaluation::Evaluation;
-use aos_deployment_format::model::Deployment;
 use aos_deployment::nix::store_root_and_suffix;
 use aos_deployment::store::temp_roots::TemporaryRoots;
 use aos_deployment::store::verification::dump_store_path_identity_in;
+use aos_deployment_format::model::Deployment;
 
 mod validation;
 
@@ -55,7 +55,8 @@ pub fn evaluate_input(
     let mut retained = TemporaryRoots::open(nix_store, cancellation)?;
     retained.retain([descriptor_root], cancellation)?;
 
-    let descriptor = aos_deployment::input::read_evaluation_input_in(input, nix_store, cancellation)?;
+    let descriptor =
+        aos_deployment::input::read_evaluation_input_in(input, nix_store, cancellation)?;
     retained.retain(source_roots(&descriptor)?, cancellation)?;
     let declarations = validation::validate(&descriptor, nix_store, cancellation)?;
     let library_root = root_string(&descriptor.library)?;

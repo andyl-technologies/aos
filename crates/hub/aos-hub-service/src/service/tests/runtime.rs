@@ -114,8 +114,8 @@ async fn deployment_reports_require_the_exact_live_enrollment() {
 
 #[tokio::test]
 async fn image_head_unsatisfied_range_and_auth_gate_never_fetch_storage_bytes() {
-    use crate::delivery_http::DeliveryMethod;
     use crate::service::{ReadAuthorization, RegistryServeOutcome};
+    use aos_hub_model::delivery_http::DeliveryMethod;
     use axum::http::StatusCode;
 
     let (service, registry, object_key, calls) = image_metadata_service("public").await;

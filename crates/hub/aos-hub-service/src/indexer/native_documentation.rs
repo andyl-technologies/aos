@@ -99,7 +99,7 @@ pub async fn fetch_native_documentation(
 pub(super) async fn verify_native_documentation(
     fetch: &dyn SurfaceFetch,
     packages: &[PackageToml],
-) -> Result<Vec<crate::db::NativeDocumentationIndex>> {
+) -> Result<Vec<aos_hub_db::db::NativeDocumentationIndex>> {
     let mut documents = Vec::new();
     for package in packages {
         for version in &package.versions {
@@ -113,7 +113,7 @@ pub(super) async fn verify_native_documentation(
                         artifact,
                     )
                     .await?;
-                    documents.push(crate::db::NativeDocumentationIndex {
+                    documents.push(aos_hub_db::db::NativeDocumentationIndex {
                         package: package.package.name.clone(),
                         version: version.version.clone(),
                         platform: platform.clone(),

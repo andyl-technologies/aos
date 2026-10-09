@@ -302,17 +302,16 @@ async fn load_gateway_create_choices(
         },
         |response| (response.endpoints, response.next_page_token),
     );
-    let boundaries = client
-        .collect_pages::<_, aos_hub_api::ListNetworkPoliciesResponse, _, _, _>(
-            aos_hub_api::NETWORK_POLICY_SERVICE_LIST_NETWORK_POLICIES_PATH,
-            move |page_token| aos_hub_api::ListTopologyResourcesRequest {
-                owner_scope_key: owner_scope_key.clone(),
-                page_size: 100,
-                page_token,
-                include_granted: true,
-            },
-            |response| (response.network_policies, response.next_page_token),
-        );
+    let boundaries = client.collect_pages::<_, aos_hub_api::ListNetworkPoliciesResponse, _, _, _>(
+        aos_hub_api::NETWORK_POLICY_SERVICE_LIST_NETWORK_POLICIES_PATH,
+        move |page_token| aos_hub_api::ListTopologyResourcesRequest {
+            owner_scope_key: owner_scope_key.clone(),
+            page_size: 100,
+            page_token,
+            include_granted: true,
+        },
+        |response| (response.network_policies, response.next_page_token),
+    );
     let (bindings, endpoints, boundaries) = futures::join!(bindings, endpoints, boundaries);
     let bindings = bindings.map_err(|failure| failure.to_string())?;
     let endpoints = endpoints.map_err(|failure| failure.to_string())?;

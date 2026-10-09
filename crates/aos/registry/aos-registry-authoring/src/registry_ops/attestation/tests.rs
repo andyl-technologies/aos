@@ -7,13 +7,17 @@ fn package_attestation_measurement_changes_when_manifest_digest_changes() {
         "webapp",
         "1.0.0",
         root_hash,
-        &aos_registry_format::measurement::package_manifest_digest_bytes(br#"{\"network\":\"private\"}"#),
+        &aos_registry_format::measurement::package_manifest_digest_bytes(
+            br#"{\"network\":\"private\"}"#,
+        ),
     );
     let second = aos_registry_format::measurement::package_measurement_digest(
         "webapp",
         "1.0.0",
         root_hash,
-        &aos_registry_format::measurement::package_manifest_digest_bytes(br#"{\"network\":\"host\"}"#),
+        &aos_registry_format::measurement::package_manifest_digest_bytes(
+            br#"{\"network\":\"host\"}"#,
+        ),
     );
 
     assert_ne!(first, second);

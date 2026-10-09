@@ -31,13 +31,13 @@
 ))]
 compile_error!("required-live-dialects requires both postgres and mysql features");
 
-use aos_hub_native::db::Database;
-use aos_hub_native::domain::{Permission, Principal};
 use aos_hub_db::db::{
     BeginCacheGcGeneration, CacheGcCoverageError, CacheInventoryNarinfoCandidate,
     CacheObjectPresenceObservation, IndexOciRepositoryCatalog, NewBindingWriteRevision,
     OciCatalogObject, OciCatalogProjection, SurfacePlacementRecord, SurfaceTarget,
 };
+use aos_hub_native::db::Database;
+use aos_hub_native::domain::{Permission, Principal};
 use aos_oci_types::{
     Annotations, Descriptor, ImageIndex, ImageManifest, ManifestReference, MediaType, Platform,
     RepositoryName, Sha256Digest, Tag,

@@ -90,7 +90,11 @@ pub(crate) fn configure_pure_eval_command(
 /// # Errors
 /// Returns an error for a noncanonical identity, an insufficient read-path suffix, a
 /// non-UTF-8 path, or an invalid SHA-256 hash.
-pub(crate) fn locked_evaluator_input(identity: &Path, read_path: &Path, nar_hash: &str) -> Result<String> {
+pub(crate) fn locked_evaluator_input(
+    identity: &Path,
+    read_path: &Path,
+    nar_hash: &str,
+) -> Result<String> {
     let (_, suffix) = store_root_and_suffix(identity)?;
     let read_root = read_path
         .ancestors()

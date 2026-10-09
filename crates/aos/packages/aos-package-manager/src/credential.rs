@@ -12,11 +12,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail, ensure};
-use aos_module_format::LocalKey;
 use aos_cli_ui::output::{OutputMode, Printer};
+use aos_module_format::LocalKey;
 
 use crate::CredentialCommand;
-use crate::types::validate_credential_ciphertext;
+use aos_registry_format::consumer::validate_credential_ciphertext;
 
 const PROVIDER_LOCATOR: &str = "/etc/aos/providers/credential-encrypt";
 const MAX_PROVIDER_PATH_BYTES: u64 = 4096;
