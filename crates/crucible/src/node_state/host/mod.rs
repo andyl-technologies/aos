@@ -154,3 +154,12 @@ fn native_failure(error: crate::node_contract::OperationFailure) -> StateError {
         error.reason,
     )
 }
+
+fn require_supported_extensions(graph: &AdmittedGraph) -> Result<(), StateError> {
+    if !graph.selected_extensions().is_empty() {
+        return Err(archive::refusal(
+            "host archive edition one has no qualified selected-extension closure codec",
+        ));
+    }
+    Ok(())
+}

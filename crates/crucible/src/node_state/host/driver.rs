@@ -23,7 +23,10 @@ use super::super::{
     VerifiedCapture, WorldRestoreDriver, schema,
 };
 use super::archive::refusal;
-use super::{AuthenticatedHostSource, HostArchiveRecord, HostWorldFactory, native_failure};
+use super::{
+    AuthenticatedHostSource, HostArchiveRecord, HostWorldFactory, native_failure,
+    require_supported_extensions,
+};
 
 /// Restores actual local host models from an authenticated durable source archive.
 ///
@@ -49,6 +52,7 @@ impl HostWorldRestoreDriver {
         factory: Rc<dyn HostWorldFactory>,
         custody: RuntimeCustodyQueue,
     ) -> Result<Self, StateError> {
+        require_supported_extensions(&graph)?;
         if graph.world_binding_hash() != &archive.manifest().world_binding_hash {
             return Err(refusal(
                 "host restore backend or immutable world binding differs",
@@ -82,6 +86,7 @@ impl WorldRestoreDriver for HostWorldRestoreDriver {
         limits: StateLimits,
         allocation: &mut PreparedRestoreAllocation,
     ) -> Result<(), StateError> {
+        require_supported_extensions(graph)?;
         if capture.artifact() != self.archive.artifact()
             || capture.manifest() != self.archive.manifest()
             || graph.world() != self.graph.world()

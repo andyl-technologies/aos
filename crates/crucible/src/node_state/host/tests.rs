@@ -373,6 +373,130 @@ fn source_world(
 }
 
 #[test]
+fn selected_extensions_refuse_every_host_archive_entrypoint_without_changing_source() {
+    let directory = TestDirectory::new();
+    let limits = StateLimits::default();
+    let archive = HostArchive::open(directory.path().join("private"), limits).unwrap();
+    let (graph, blobs) = crate::node_admission::test_fixture_host_clock_execution();
+    let selected = crate::node_admission::test_model_graph_with_extension();
+    let mut queue = RuntimeCustodyQueue::new(4).unwrap();
+    let (mut runtime, world) = source_world(&graph, &mut queue);
+    assert!(graph.selected_extensions().is_empty());
+    assert!(!selected.selected_extensions().is_empty());
+
+    let source = runtime
+        .runtime_snapshot(cut(0), 1.into(), limits.maximum_record_bytes)
+        .unwrap();
+    let record = archive
+        .capture_world(
+            &graph,
+            &mut runtime,
+            &world,
+            cut(0),
+            1.into(),
+            id("capture/empty-extension-clock"),
+            requirements(),
+            &Immutable(blobs.clone()),
+            &ModelFactory,
+        )
+        .unwrap();
+    let verified = Rc::new(
+        record
+            .admit(&graph, requirements(), &ModelFactory, limits)
+            .unwrap(),
+    );
+    let manifest_bytes = record
+        .content_bytes(record.artifact(), limits.maximum_record_bytes)
+        .unwrap();
+
+    let assert_extension_refusal = |error: StateError| {
+        assert_eq!(error.code, StateErrorCode::NativeEvidence);
+        assert!(
+            error
+                .reason
+                .contains("no qualified selected-extension closure codec")
+        );
+    };
+    let refused_capture = archive.capture_world(
+        &selected,
+        &mut runtime,
+        &world,
+        cut(0),
+        1.into(),
+        id("capture/unsupported-extension"),
+        requirements(),
+        &Immutable(blobs),
+        &ModelFactory,
+    );
+    assert_extension_refusal(refused_capture.err().unwrap());
+    assert_extension_refusal(
+        record
+            .admit(&selected, requirements(), &ModelFactory, limits)
+            .err()
+            .unwrap(),
+    );
+    assert_extension_refusal(
+        HostWorldRestoreDriver::new(
+            Rc::new(selected),
+            record.clone(),
+            Rc::new(ModelFactory),
+            queue.clone(),
+        )
+        .err()
+        .unwrap(),
+    );
+
+    // A separately verified empty-extension capture cannot bypass the driver's
+    // own guard by offering a different extension-bearing graph at staging.
+    let graph = Rc::new(graph);
+    let target = activation(&graph, 2, cut(0));
+    let mut driver = HostWorldRestoreDriver::new(
+        Rc::clone(&graph),
+        record.clone(),
+        Rc::new(ModelFactory),
+        queue.clone(),
+    )
+    .unwrap();
+    let slot = queue
+        .reserve_world(&target, RuntimeLimits::default())
+        .unwrap();
+    let mut allocation = PreparedRestoreAllocation::new(
+        slot,
+        Rc::clone(&verified),
+        target.clone(),
+        RuntimeLimits::default(),
+    );
+    let selected = crate::node_admission::test_model_graph_with_extension();
+    assert_extension_refusal(
+        driver
+            .stage_world(&selected, &verified, &target, limits, &mut allocation)
+            .unwrap_err(),
+    );
+    assert!(allocation.capsule_mut().is_err());
+
+    let after = runtime
+        .runtime_snapshot(cut(0), 1.into(), limits.maximum_record_bytes)
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(after).unwrap(),
+        serde_json::to_value(source).unwrap()
+    );
+    assert_eq!(
+        record
+            .content_bytes(record.artifact(), limits.maximum_record_bytes)
+            .unwrap(),
+        manifest_bytes,
+    );
+    drop(allocation);
+    drop(runtime);
+    let mut context = Context::from_waker(Waker::noop());
+    for _ in 0..8 {
+        let _ = queue.poll_reclamation(&mut context);
+    }
+    assert_eq!(queue.reserved_worlds(), 0);
+}
+
+#[test]
 fn durable_archive_restores_actual_clock_and_original_pending_ack_without_reexecution() {
     let directory = TestDirectory::new();
     let path = directory.path().join("private");

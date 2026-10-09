@@ -21,7 +21,9 @@ use super::super::{
     admit_capture, schema,
 };
 use super::archive::{ArchiveBody, Object, refusal};
-use super::{HostArchive, HostArchiveRecord, HostWorldFactory, native_failure};
+use super::{
+    HostArchive, HostArchiveRecord, HostWorldFactory, native_failure, require_supported_extensions,
+};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -70,6 +72,7 @@ impl HostArchive {
         immutable: &dyn CaptureEvidence,
         factory: &dyn HostWorldFactory,
     ) -> Result<HostArchiveRecord, StateError> {
+        require_supported_extensions(graph)?;
         if requirements.restore_mode != StateRestoreMode::DurableRestart {
             return Err(refusal(
                 "host signed archive selects durable reconstruction explicitly",
@@ -332,6 +335,7 @@ impl HostArchiveRecord {
         factory: &dyn HostWorldFactory,
         limits: StateLimits,
     ) -> Result<VerifiedCapture, StateError> {
+        require_supported_extensions(graph)?;
         admit_capture(
             graph,
             self.artifact(),
