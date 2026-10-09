@@ -5,14 +5,19 @@
 
 use anyhow::Result;
 use aos_assessment::result::PackageAssessmentV1;
+use aos_assessment_runtime::application::ScanReceiptV1;
 use aos_assessment_runtime::application::{AssessmentStatusV1, StatusQueryV1};
+use aos_assessment_runtime::control::{
+    ScanCancellationV1, ScanListQueryV1, ScanListV1, ScanLookupV1, ScanRetryV1, ScanSubmissionV1,
+};
 use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
 use aos_maintain::presentation::escape_terminal as escape_bounded_terminal;
 use aos_remote::{hub_rpc, hub_types};
 
 use super::client::hub_client;
-use crate::cli::HubAssessmentCmd;
+use crate::cli::{HubAssessmentCmd, HubAssessmentScansCmd};
+use crate::commands::input::read_bounded_file;
 
 fn escape_terminal(text: &str) -> String {
     escape_bounded_terminal(text, 4096)
@@ -25,6 +30,26 @@ fn escape_terminal(text: &str) -> String {
 /// calls or incompatible canonical inner documents.
 pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result<()> {
     match command {
+        HubAssessmentCmd::Scan {
+            access,
+            registry,
+            request,
+        } => {
+            let bytes = read_bounded_file(request, 262_144, "assessment scan submission")?;
+            let submission = ScanSubmissionV1::from_slice(&bytes)?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
+            let response = client
+                .call_topology(
+                    hub_rpc::RequestPackageScan,
+                    &hub_types::AssessmentControlRequest {
+                        registry_slug: registry.clone(),
+                        document_json: serde_json::to_vec(&submission)?,
+                    },
+                )
+                .await?;
+            print_receipt(printer, ScanReceiptV1::from_slice(&response.document_json)?)
+        }
+        HubAssessmentCmd::Scans { command } => run_scans(printer, command).await,
         HubAssessmentCmd::Status {
             access,
             registry,
@@ -158,4 +183,133 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
             Ok(())
         }
     }
+}
+
+async fn run_scans(printer: &Printer, command: &HubAssessmentScansCmd) -> Result<()> {
+    let (access, registry, document_json) = match command {
+        HubAssessmentScansCmd::List {
+            access,
+            registry,
+            limit,
+            after_scan,
+        } => (
+            access,
+            registry,
+            serde_json::to_vec(&ScanListQueryV1 {
+                schema: "aos.assessment-scan-list-query/v1".into(),
+                limit: *limit,
+                after_scan: after_scan.clone(),
+            })?,
+        ),
+        HubAssessmentScansCmd::Inspect {
+            access,
+            registry,
+            scan_id,
+        } => (
+            access,
+            registry,
+            serde_json::to_vec(&ScanLookupV1 {
+                schema: "aos.assessment-scan-lookup/v1".into(),
+                scan_id: scan_id.clone(),
+            })?,
+        ),
+        HubAssessmentScansCmd::Cancel {
+            access,
+            registry,
+            scan_id,
+            expected_revision,
+        } => (
+            access,
+            registry,
+            serde_json::to_vec(&ScanCancellationV1 {
+                schema: "aos.assessment-scan-cancellation/v1".into(),
+                scan_id: scan_id.clone(),
+                expected_revision: *expected_revision,
+            })?,
+        ),
+        HubAssessmentScansCmd::Retry {
+            access,
+            registry,
+            scan_id,
+            idempotency_key,
+        } => (
+            access,
+            registry,
+            serde_json::to_vec(&ScanRetryV1 {
+                schema: "aos.assessment-scan-retry/v1".into(),
+                scan_id: scan_id.clone(),
+                idempotency_key: idempotency_key.clone(),
+            })?,
+        ),
+    };
+    let request = hub_types::AssessmentControlRequest {
+        registry_slug: registry.clone(),
+        document_json,
+    };
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
+    let response = match command {
+        HubAssessmentScansCmd::List { .. } => {
+            client
+                .call_topology(hub_rpc::ListPackageScans, &request)
+                .await?
+        }
+        HubAssessmentScansCmd::Inspect { .. } => {
+            client
+                .call_topology(hub_rpc::GetPackageScan, &request)
+                .await?
+        }
+        HubAssessmentScansCmd::Cancel { .. } => {
+            client
+                .call_topology(hub_rpc::CancelPackageScan, &request)
+                .await?
+        }
+        HubAssessmentScansCmd::Retry { .. } => {
+            client
+                .call_topology(hub_rpc::RetryPackageScan, &request)
+                .await?
+        }
+    };
+    if matches!(command, HubAssessmentScansCmd::List { .. }) {
+        let page = ScanListV1::from_slice(&response.document_json)?;
+        if printer.mode() == OutputMode::Json {
+            printer.json(&serde_json::json!({"schema_version":"aos.hub.cli/v1", "kind":"assessment-scans", "data":page}));
+        } else {
+            for scan in &page.scans {
+                printer.info(&format!(
+                    "{}: {:?}; generation {}; revision {}",
+                    escape_terminal(&scan.scan_id),
+                    scan.state,
+                    scan.generation,
+                    scan.resource_version
+                ));
+            }
+            if let Some(next) = &page.next_scan {
+                printer.info(&format!(
+                    "Next page: --after-scan {}",
+                    escape_terminal(next)
+                ));
+            }
+        }
+        Ok(())
+    } else {
+        print_receipt(printer, ScanReceiptV1::from_slice(&response.document_json)?)
+    }
+}
+
+fn print_receipt(printer: &Printer, receipt: ScanReceiptV1) -> Result<()> {
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({"schema_version":"aos.hub.cli/v1", "kind":"assessment-scan", "data":receipt}));
+    } else {
+        printer.info(&format!(
+            "Scan {}: {:?}; generation {}; revision {}",
+            escape_terminal(&receipt.scan_id),
+            receipt.state,
+            receipt.generation,
+            receipt.resource_version
+        ));
+        if let Some(digest) = receipt.assessment_digest {
+            printer.info(&format!("Assessment {digest}"));
+        }
+    }
+    Ok(())
 }

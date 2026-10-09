@@ -100,8 +100,9 @@ async fn pinned_evaluation_replays_and_unknown_coverage_is_not_a_clean_result() 
         .assessment_scan(registry_id, &scan.scan_id)
         .await?
         .context("completed scan")?;
-    assert_eq!(completed.state, ScanState::Succeeded);
+    assert_eq!(completed.state, ScanState::Partial);
     assert_eq!(completed.assessment_digest, Some(result.digest()?));
+    assert!(db.has_admitted_assessment(registry_id, result.digest()?).await?);
     let head = db
         .backend
         .query_opt(

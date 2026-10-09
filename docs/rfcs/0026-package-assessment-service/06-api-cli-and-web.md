@@ -92,6 +92,17 @@ Stale revisions produce a conflict with the current authorized revision.
 Provider failures live in operation diagnostics; they do not become an
 unstructured transport failure after successful scan admission.
 
+Scan admission is an observational operation: it pins a closed inventory and
+policy selector and records an idempotent request. It MUST NOT update packages,
+infrastructure configuration, schedules, credentials, or delivery destinations.
+The retained-control method classifier therefore distinguishes this exact
+admission method from reviewed configuration plan/apply pairs. Source effects
+occur only through separately fenced provider work. Cancellation and retry use
+the operation lifecycle classification; retry preserves the original immutable
+selection and ceilings and consumes a new allowance. Schedule, subscription,
+policy, and disposition configuration remain subject to their applicable
+reviewed mutation contracts.
+
 Typed application errors include `invalid-argument`, `unauthenticated`,
 `permission-denied`, `not-found`, `conflict`, `resource-exhausted`,
 `unsupported-profile`, `unavailable`, and `evidence-unavailable`. Adapters map

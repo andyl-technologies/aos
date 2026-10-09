@@ -38,7 +38,7 @@ async fn serving_inventory_scan_heads_alerts_acknowledgements_and_events_are_ato
         .assessment_scan(registry_id, &first.scan_id)
         .await?
         .context("completed scan")?;
-    assert_eq!(scan.state, ScanState::Succeeded);
+    assert_eq!(scan.state, ScanState::Partial);
     let status = db
         .assessment_status_page(registry_id, &request.profiles, "", 100)
         .await?;

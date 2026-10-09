@@ -381,6 +381,21 @@ service AssessmentService {
   rpc GetAssessment(AssessmentObjectRequest) returns (AssessmentDocumentResponse);
 }
 
+// Durable scan admission and lifecycle. Provider acquisition belongs to the
+// execution service, never to an implicit read or the admission HTTP request.
+service ScanService {
+  rpc RequestScan(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc GetScan(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc ListScans(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc CancelScan(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc RetryScan(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+}
+
+message AssessmentControlRequest {
+  string registry_slug = 1;
+  bytes document_json = 2;
+}
+
 // Canonical domain documents pass the same bounded, closed parsers as local
 // maintenance. Protobuf JSON coercions cannot alter their inner semantics.
 message AssessmentStatusRequest {

@@ -138,6 +138,7 @@ pub struct HubAccessPolicyArgs {
 #[derive(Subcommand)]
 pub enum HubCmd {
     /// Inspect package update and vulnerability assessments
+    #[command(alias = "maintain")]
     Assessment {
         #[command(subcommand)]
         command: HubAssessmentCmd,
@@ -289,6 +290,22 @@ impl From<AssessmentProfileArg> for aos_assessment::input::Profile {
 
 #[derive(Subcommand)]
 pub enum HubAssessmentCmd {
+    /// Request a scan of an exact pinned inventory selection
+    Scan {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry whose admitted inventory is selected
+        #[arg(long)]
+        registry: String,
+        /// Read a closed aos.assessment-scan-submission/v1 document
+        #[arg(long)]
+        request: PathBuf,
+    },
+    /// Manage durable Hub scan operations
+    Scans {
+        #[command(subcommand)]
+        command: HubAssessmentScansCmd,
+    },
     /// Read current assessment freshness and pending generations
     Status {
         #[command(flatten)]
@@ -326,6 +343,60 @@ pub enum HubAssessmentCmd {
         registry: String,
         /// Exact immutable assessment digest
         digest: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubAssessmentScansCmd {
+    /// List bounded scan summaries
+    List {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry containing the operations
+        #[arg(long)]
+        registry: String,
+        /// Maximum operations in this page
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+        /// Continue after this operation identity
+        #[arg(long)]
+        after_scan: Option<String>,
+    },
+    /// Inspect an operation's exact request and current state
+    Inspect {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry containing the operation
+        #[arg(long)]
+        registry: String,
+        /// Durable operation identity
+        scan_id: String,
+    },
+    /// Cancel one exact operation revision
+    Cancel {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry containing the operation
+        #[arg(long)]
+        registry: String,
+        /// Durable operation identity
+        scan_id: String,
+        /// Pin the revision returned by inspect
+        #[arg(long)]
+        expected_revision: u64,
+    },
+    /// Retry a terminal operation with its exact original selection
+    Retry {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry containing the original operation
+        #[arg(long)]
+        registry: String,
+        /// Original terminal operation identity
+        scan_id: String,
+        /// Scope an idempotent retry within this original operation
+        #[arg(long)]
+        idempotency_key: String,
     },
 }
 

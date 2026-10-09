@@ -144,7 +144,7 @@ impl RpcService {
         Ok(pb::AssessmentDocumentResponse { document_json })
     }
 
-    async fn authorize_assessment(
+    pub(super) async fn authorize_assessment(
         &self,
         auth: Option<&str>,
         registry: &RegistryRecord,
@@ -155,7 +155,7 @@ impl RpcService {
         Ok(claims)
     }
 
-    async fn recheck_assessment(
+    pub(super) async fn recheck_assessment(
         &self,
         claims: &Claims,
         registry: &RegistryRecord,

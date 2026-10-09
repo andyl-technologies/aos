@@ -36,6 +36,9 @@ mod budgets_tests;
 mod evaluation_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod execution_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod provider_state_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

@@ -4,7 +4,7 @@
 //! confer no authority. The final checked batch fences every selected profile
 //! with the same database lease, inventory, policy and authorization revision.
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use aos_assessment::input::{AssessmentPolicyV1, EvaluationData, ScanInputV1};
 use aos_assessment::result::PackageAssessmentV1;
 use aos_assessment_runtime::scan::{ScanState, ScanUsage, TaskClaim};
@@ -13,9 +13,9 @@ use aos_contract::Sha256Digest;
 use crate::backend::Statement;
 use crate::db::Database;
 
-use super::AssessmentObjectKind;
 use super::objects::encode;
 use super::scans::{claim_values, profile_name};
+use super::AssessmentObjectKind;
 
 impl Database {
     /// Loads the admitted inventory closure with the operation's pinned policy.
@@ -276,7 +276,9 @@ impl Database {
             .await?
             .context("assessment operation is absent")?;
         let digest = assessment.digest()?;
-        if scan.state == ScanState::Succeeded && scan.assessment_digest == Some(digest) {
+        if matches!(scan.state, ScanState::Succeeded | ScanState::Partial)
+            && scan.assessment_digest == Some(digest)
+        {
             let retained = self
                 .assessment_object(
                     &scan.request.authorization_partition,
@@ -318,15 +320,21 @@ impl Database {
         )
         .await?;
         let mut values = claim_values(registry_id, claim);
+        let state = if assessment.coverage == aos_assessment::security::CoverageState::Complete {
+            "succeeded"
+        } else {
+            "partial"
+        };
         values.extend(vals![
             digest.to_string(),
             input.digest()?.to_string(),
             encode(&usage)?,
-            scan.resource_version
+            scan.resource_version,
+            state
         ]);
         let clock = self.backend.dialect().unix_time_expression();
         let mut statements = vec![Statement::new(format!(
-            "UPDATE assessment_scans SET state = 'succeeded', assessment_digest = ?9,
+            "UPDATE assessment_scans SET state = ?13, assessment_digest = ?9,
                  usage_json = ?11, claim_token = NULL, lease_expires_at = NULL,
                  completed_at = {clock}, updated_at = {clock}, resource_version = resource_version + 1
              WHERE {} AND evaluation_input_digest = ?10 AND resource_version = ?12

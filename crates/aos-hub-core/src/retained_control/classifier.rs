@@ -80,6 +80,8 @@ pub enum MethodClass {
     OperationLifecycle,
     /// Explicit CAS/idempotency replay of one frozen maintenance action.
     MaintenanceReplay,
+    /// A pinned, idempotent assessment request that cannot change package or infrastructure state.
+    AssessmentScanAdmission,
     /// A user-authorized identity ceremony whose presented secret is the
     /// mutation precondition rather than an administrator-reviewed plan.
     IdentityCeremony,
@@ -336,10 +338,12 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                         | "OperationService/RetryOperation"
                         | "DeliveryService/ResumeDeliveryDestination"
                         | "ContainerService/CancelContainerGcRun"
+                        | "ScanService/CancelScan"
+                        | "ScanService/RetryScan"
                 ) {
                     violations.push(violation(
                         method,
-                        "operation-lifecycle exception is limited to cancel, retry, reviewed delivery resume, and unapplied GC plan cancellation",
+                        "operation-lifecycle exception is limited to canonical cancellation, retry and reviewed delivery resume methods",
                     ));
                 }
             }
@@ -373,6 +377,26 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                     violations.push(violation(
                         method,
                         "identity-ceremony exception is limited to local invitation acceptance",
+                    ));
+                }
+            }
+            MethodClass::AssessmentScanAdmission => {
+                require_durability(
+                    method,
+                    MethodDurability::Durable,
+                    "assessment admission persists a pinned idempotent operation",
+                    &mut violations,
+                );
+                // Admission schedules observational work. Source effects occur
+                // under separately fenced provider plans; this handler cannot
+                // update packages, schedules, secrets or infrastructure policy.
+                if path != "ScanService/RequestScan"
+                    || method.exposure != MethodExposure::Public
+                    || method.external_effects
+                {
+                    violations.push(violation(
+                        method,
+                        "assessment admission is limited to the effect-free pinned scan request",
                     ));
                 }
             }
@@ -506,8 +530,13 @@ pub fn validate_complete_method_manifest(
         // blockers, or the registry-deletion blocker breakdown.
         let extended_plan_response = matches!(
             (method.path().as_str(), descriptor.response.as_str()),
-            ("ContainerService/PlanRunContainerGc", "ContainerGcPlanResponse")
-                | ("RegistryService/PlanDeleteRegistry", "RegistryDeletePlanResponse")
+            (
+                "ContainerService/PlanRunContainerGc",
+                "ContainerGcPlanResponse"
+            ) | (
+                "RegistryService/PlanDeleteRegistry",
+                "RegistryDeletePlanResponse"
+            )
         );
         if matches!(method.class, MethodClass::Plan { .. })
             && descriptor.response != "TopologyPlanResponse"
@@ -536,10 +565,30 @@ pub fn validate_complete_method_manifest(
                     "run_id",
                 ]
             };
-            if !fields.iter().map(String::as_str).eq(expected.iter().copied()) {
+            if !fields
+                .iter()
+                .map(String::as_str)
+                .eq(expected.iter().copied())
+            {
                 violations.push(violation(
                     method,
                     "maintenance replay must bind the exact registry, run, action, CAS, and idempotency key, or only the scheduled job for the maintenance trigger",
+                ));
+            }
+        }
+        if matches!(method.class, MethodClass::AssessmentScanAdmission) {
+            let mut fields = descriptor.request_fields.clone();
+            fields.sort();
+            if descriptor.request != "AssessmentControlRequest"
+                || descriptor.response != "AssessmentDocumentResponse"
+                || !fields
+                    .iter()
+                    .map(String::as_str)
+                    .eq(["document_json", "registry_slug"])
+            {
+                violations.push(violation(
+                    method,
+                    "assessment admission requires the scoped closed scan document envelope",
                 ));
             }
         }
@@ -1528,6 +1577,30 @@ fn invalid(field: &'static str, reason: &str) -> ControlError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assessment_admission_cannot_authorize_configuration_or_inline_external_work() {
+        let admitted = MethodDescriptor {
+            service: "ScanService".into(),
+            method: "RequestScan".into(),
+            exposure: MethodExposure::Public,
+            durability: MethodDurability::Durable,
+            class: MethodClass::AssessmentScanAdmission,
+            external_effects: false,
+        };
+        assert!(validate_method_manifest(&[admitted.clone()]).is_empty());
+        for (service, method, effects) in [
+            ("ScanService", "RequestScan", true),
+            ("ScheduleService", "PutSchedule", false),
+            ("StorageService", "SetCredentials", false),
+        ] {
+            let mut invalid = admitted.clone();
+            invalid.service = service.into();
+            invalid.method = method.into();
+            invalid.external_effects = effects;
+            assert!(!validate_method_manifest(&[invalid]).is_empty());
+        }
+    }
 
     #[test]
     fn reviewed_pairs_and_explicit_exceptions_validate() {

@@ -1320,6 +1320,23 @@
         "GetStatus",
         "GetAssessment"
       ]
+    },
+    {
+      "service": "ScanService",
+      "audience": "end-user",
+      "cli_families": [
+        "assessment"
+      ],
+      "web_workflows": [
+        "registry-assessments"
+      ],
+      "methods": [
+        "RequestScan",
+        "GetScan",
+        "ListScans",
+        "CancelScan",
+        "RetryScan"
+      ]
     }
   ]
 }

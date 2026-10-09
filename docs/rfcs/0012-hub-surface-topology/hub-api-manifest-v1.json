@@ -3222,6 +3222,41 @@
          "request" : "AssessmentObjectRequest",
          "response" : "AssessmentDocumentResponse",
          "service" : "AssessmentService"
+      },
+      {
+         "method" : "RequestScan",
+         "path" : "aos.hub.v1.ScanService/RequestScan",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "ScanService"
+      },
+      {
+         "method" : "GetScan",
+         "path" : "aos.hub.v1.ScanService/GetScan",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "ScanService"
+      },
+      {
+         "method" : "ListScans",
+         "path" : "aos.hub.v1.ScanService/ListScans",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "ScanService"
+      },
+      {
+         "method" : "CancelScan",
+         "path" : "aos.hub.v1.ScanService/CancelScan",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "ScanService"
+      },
+      {
+         "method" : "RetryScan",
+         "path" : "aos.hub.v1.ScanService/RetryScan",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "ScanService"
       }
    ],
    "mutation_protocol" : {

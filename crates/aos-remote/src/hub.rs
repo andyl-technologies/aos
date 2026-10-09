@@ -83,6 +83,11 @@ enum HubTopologyMethod {
     GetAssessmentStatus,
     /// Reads one canonical successfully admitted package assessment.
     GetPackageAssessment,
+    RequestPackageScan,
+    GetPackageScan,
+    ListPackageScans,
+    CancelPackageScan,
+    RetryPackageScan,
     /// Selects authenticated direct-upload capability discovery.
     DirectUploadGetCapabilities,
     /// Selects bounded immutable direct-session admission.
@@ -1209,6 +1214,11 @@ impl HubTopologyMethod {
             GetRegistryMetadata => "aos.hub.v1.RegistryService/GetRegistryMetadata",
             GetAssessmentStatus => "aos.hub.v1.AssessmentService/GetStatus",
             GetPackageAssessment => "aos.hub.v1.AssessmentService/GetAssessment",
+            RequestPackageScan => "aos.hub.v1.ScanService/RequestScan",
+            GetPackageScan => "aos.hub.v1.ScanService/GetScan",
+            ListPackageScans => "aos.hub.v1.ScanService/ListScans",
+            CancelPackageScan => "aos.hub.v1.ScanService/CancelScan",
+            RetryPackageScan => "aos.hub.v1.ScanService/RetryScan",
             PlanUpdateRegistryMetadata => "aos.hub.v1.RegistryService/PlanUpdateRegistryMetadata",
             UpdateRegistryMetadata => "aos.hub.v1.RegistryService/UpdateRegistryMetadata",
             PlanUpdateRegistry => "aos.hub.v1.RegistryService/PlanUpdateRegistry",
@@ -1767,6 +1777,11 @@ pub mod hub_rpc {
         GetRegistryMetadata: GetRegistryRequest => RegistryMetadataResponse;
         GetAssessmentStatus: AssessmentStatusRequest => AssessmentDocumentResponse;
         GetPackageAssessment: AssessmentObjectRequest => AssessmentDocumentResponse;
+        RequestPackageScan: AssessmentControlRequest => AssessmentDocumentResponse;
+        GetPackageScan: AssessmentControlRequest => AssessmentDocumentResponse;
+        ListPackageScans: AssessmentControlRequest => AssessmentDocumentResponse;
+        CancelPackageScan: AssessmentControlRequest => AssessmentDocumentResponse;
+        RetryPackageScan: AssessmentControlRequest => AssessmentDocumentResponse;
         PlanUpdateRegistryMetadata: PlanUpdateRegistryMetadataRequest => TopologyPlanResponse;
         UpdateRegistryMetadata: ApplyRegistryMutationRequest => RegistryMetadataChangeResponse;
         PlanUpdateRegistry: PlanUpdateRegistryRequest => TopologyPlanResponse;

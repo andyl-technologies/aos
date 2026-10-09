@@ -7,6 +7,7 @@ use leptos::prelude::*;
 
 use crate::components::InlineError;
 use crate::transport::ApiClient;
+use super::assessment_scans::AssessmentScanControls;
 
 /// Renders authorized current status and retained result details for a registry.
 #[component]
@@ -15,6 +16,7 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
         return view! { <section class="panel"><h2>"Package assessments"</h2><p>"Assessment read access is required to view package checks."</p></section> }.into_any();
     }
     let epoch = RwSignal::new(0_u64);
+    let controls = StoredValue::new((client.clone(), slug.clone()));
     let query = RwSignal::new(StatusQueryV1 {
         schema: "aos.assessment-status-query/v1".into(),
         profiles: vec![Profile::Updates, Profile::Vulnerabilities],
@@ -105,6 +107,7 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
                                 {next.map(|position| view! { <button class="secondary-button" on:click=move |_| query.update(|query| {
                                     query.after_subject = Some(position.clone()); query.inventory_digest = Some(inventory_digest); query.policy_digest = Some(policy_digest);
                                 })>"Next packages"</button> })}
+                                <AssessmentScanControls client=controls.get_value().0 slug=controls.get_value().1 status=status.clone()/>
                             }.into_any()
                         }
                     }

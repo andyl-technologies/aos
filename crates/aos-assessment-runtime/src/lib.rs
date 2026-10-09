@@ -17,6 +17,7 @@
 pub mod alerts;
 pub mod acquisition;
 pub mod application;
+pub mod control;
 pub mod attention;
 pub mod events;
 pub mod ports;

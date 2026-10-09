@@ -4315,5 +4315,75 @@
       "class": "data_plane_write"
     },
     "external_effects": true
+  },
+  {
+    "service": "AssessmentService",
+    "method": "GetStatus",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "GetAssessment",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "ScanService",
+    "method": "GetScan",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "ScanService",
+    "method": "ListScans",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "ScanService",
+    "method": "RequestScan",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "assessment_scan_admission"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "ScanService",
+    "method": "CancelScan",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "operation_lifecycle"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "ScanService",
+    "method": "RetryScan",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "operation_lifecycle"
+    },
+    "external_effects": false
   }
 ]

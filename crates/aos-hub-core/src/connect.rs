@@ -2955,6 +2955,13 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         get_package_assessment
     );
     // PackageService
+    r = rpc_route!(r, "/aos.hub.v1.ScanService/RequestScan", request_package_scan);
+    r = rpc_route!(r, "/aos.hub.v1.ScanService/GetScan", get_package_scan);
+    r = rpc_route!(r, "/aos.hub.v1.ScanService/ListScans", list_package_scans);
+    r = rpc_route!(r, "/aos.hub.v1.ScanService/CancelScan", cancel_package_scan);
+    r = rpc_route!(r, "/aos.hub.v1.ScanService/RetryScan", retry_package_scan);
+
+    // PackageService
     r = rpc_route!(r, "/aos.hub.v1.PackageService/ListPackages", list_packages);
     r = rpc_route!(r, "/aos.hub.v1.PackageService/GetPackage", get_package);
     // DocumentationService

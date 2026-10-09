@@ -93,7 +93,7 @@ impl Database {
         digest: Sha256Digest,
     ) -> Result<bool> {
         Ok(self.backend.query_opt(
-            "SELECT 1 FROM assessment_scans WHERE registry_id = ?1 AND state = 'succeeded' AND assessment_digest = ?2 LIMIT 1",
+            "SELECT 1 FROM assessment_scans WHERE registry_id = ?1 AND state IN ('succeeded', 'partial') AND assessment_digest = ?2 LIMIT 1",
             &vals![@slice registry_id, digest.to_string()],
         ).await?.is_some())
     }

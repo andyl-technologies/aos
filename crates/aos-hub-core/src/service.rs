@@ -30,6 +30,7 @@
 
 mod authentication;
 mod assessment;
+mod assessment_scans;
 mod container;
 mod container_admin;
 mod delivery_workflow;

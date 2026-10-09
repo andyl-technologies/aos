@@ -69,7 +69,7 @@ in {
       maintainer.succeed("aos-release-fleet-fixture assessment-input 1.3.0 > /var/lib/assessment/input.json")
       fixed = json.loads(maintainer.succeed(command))
       assert fixed["data"]["subjectResults"][0]["findings"] == [], fixed
-      assert fixed["data"]["inventoryDigest"] != first["data"]["inventoryDigest"], fixed
+      assert fixed["data"]["inputDigest"] != first["data"]["inputDigest"], fixed
 
       # Tampering with the handoff cannot manufacture an accepted result.
       bundle = json.loads(maintainer.succeed("cat /var/lib/assessment/evidence.json"))

@@ -282,7 +282,8 @@ impl ScanReceiptV1 {
             || self.resource_version == 0
             || self.generation > 9_007_199_254_740_991
             || self.resource_version > 9_007_199_254_740_991
-            || (self.state == ScanState::Succeeded) != self.assessment_digest.is_some()
+            || matches!(self.state, ScanState::Succeeded | ScanState::Partial)
+                != self.assessment_digest.is_some()
         {
             bail!("assessment scan receipt differs from its exact immutable request/state");
         }
