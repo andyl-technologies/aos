@@ -289,6 +289,7 @@ fn embedded_nul_is_an_original_serial_byte() {
 }
 
 #[test]
+#[ignore = "requires compiled source-built ARM model profile"]
 fn actual_source_installed_arm_bundle_remeasures_and_never_grants_admission() {
     let mechanism = codecs::installed::InstalledArmMechanism::load().unwrap();
     assert_eq!(
@@ -299,9 +300,30 @@ fn actual_source_installed_arm_bundle_remeasures_and_never_grants_admission() {
 }
 
 #[test]
+fn installed_arm_loading_requires_the_actual_compile_time_binding() {
+    let result = codecs::installed::InstalledArmMechanism::load();
+    match option_env!("CRUCIBLE_GEM5_ARM_MODEL_MANIFEST") {
+        None => assert!(matches!(
+            result,
+            Err(ProviderError::Frame(
+                "no installed ARM model mechanism binding"
+            ))
+        )),
+        Some(_) => {
+            let installed = result.unwrap();
+            codecs::validate_arm_scope(installed.document()).unwrap();
+            assert!(installed.require_execution_admission().is_err());
+        }
+    }
+}
+
+#[test]
 fn installed_model_or_admission_metadata_change_refuses() {
-    let mechanism = codecs::installed::InstalledArmMechanism::load().unwrap();
-    let original = mechanism.document();
+    // Scope checks use inert metadata with no installed paths or native authority.
+    // Every negative must execute in the reference-only package too.
+    let original: serde_json::Value =
+        serde_json::from_str(include_str!("support/gem5_arm_scope_fixture.json")).unwrap();
+    codecs::validate_arm_scope(&original).unwrap();
     for pointer in [
         "/qualification/execution_admission_qualified",
         "/qualification/full_system_admission_qualified",

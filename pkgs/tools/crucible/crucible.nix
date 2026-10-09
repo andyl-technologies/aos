@@ -357,6 +357,15 @@
             --frozen \
             --offline \
             -j$NIX_BUILD_CORES \
+            -p crucible-node-provider \
+            --test gem5_model \
+            -- \
+            --ignored \
+            --exact actual_source_installed_arm_bundle_remeasures_and_never_grants_admission
+          cargo test \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
             -p crucible-harness \
             --test gate_license_boundary
           cargo clippy \

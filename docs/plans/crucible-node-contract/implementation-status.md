@@ -532,6 +532,22 @@ Its assertions, profile bindings, native inputs and production code are
 unchanged. Source-quality and nine-crate all-target strict checks pass for this
 successor; broader package qualification remains pending.
 
+The third broader cohort reaches the older `gem5_model` integration target and
+fails its two unconditional installed-profile loads in the reference-only
+package. Its 20 other cases pass and its original failed log remains retained.
+A complete transitive audit of provider integration targets finds these two
+remaining external-binding assumptions. The actual old-model measurement keeps
+all its assertions, gains an explicit installed-profile requirement, and is now
+mandatory beside the Root measurement in the native controller build. Metadata
+negatives run unconditionally against seven inert fields copied from the actual
+installed model, with a positive scope check first. A separate case checks the
+precise missing-binding refusal or measures the genuine compiled binding.
+Central verification passes all 22 ordinary old-model cases, the mandatory
+actual installed measurement, 37 source-quality cases and provider all-target
+strict checks. Independent standalone source checks also pass with the binding
+absent. Production codecs, dependencies, manifests and admission flags are
+unchanged. Broader qualification is running against this complete successor.
+
 ## Native administrative metadata during reply custody
 
 The plugin retains immutable registration facts only after native validation
