@@ -413,7 +413,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 }
                 _ => None,
             };
-            crate::codec::decode_verified(
+            crate::codec::decode_object_chunk_verified(
                 &encoded,
                 requirement.declared_plaintext_len,
                 profile,
@@ -421,7 +421,15 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 identity,
                 dictionary.as_deref(),
             )
-            .map_err(invalid_chunk)?;
+            .map_err(|error| {
+                if requirement.position == ChunkPosition::Final
+                    && matches!(error, crate::codec::FrameError::BoundaryMismatch)
+                {
+                    invalid("CDC-19")
+                } else {
+                    invalid_chunk(error)
+                }
+            })?;
         }
 
         Ok(())

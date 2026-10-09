@@ -550,7 +550,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
         } else {
             None
         };
-        let chunk = crate::codec::decode_verified(
+        let chunk = crate::codec::decode_object_chunk_verified(
             &encoded,
             usize::try_from(size).map_err(|_| invalid())?,
             &self.config().chunk_profile,

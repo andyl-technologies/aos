@@ -188,10 +188,15 @@ while adding actual read-only, legacy refusal, member-body coverage and existing
 lock continuity assertions. Its native build passes; strict Clippy detects the
 same fixture source included twice. A parent-owned test-only visibility change
 allows reuse of the original fixture without copying it or suppressing the lint;
-fresh qualification remains pending. Parallel review also identifies CDC-19's
+candidate `019e904fc7` passes its native build and strict all-target Clippy;
+actual test compilation is running. Parallel review also identifies CDC-19's
 final manifest chunk boundary gap in admission, restoration and guarded reads.
 An isolated codec/manifest witness workline owns the correction; the exact native
 nonfinal and final admission selectors are registered in `cdc-boundaries`.
+The reviewed object-context decoder preserves standalone dictionary admission
+and adds final-boundary verification; manifest admission and guarded object
+reads use that helper. Source integration and executable qualification remain
+pending, including the permanent restoration path.
 Native overlay review also
 identifies inherited index bindings that need authentication against their
 signed source and recomputation for the actual output. Source corrections
