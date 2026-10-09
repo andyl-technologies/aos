@@ -33,6 +33,8 @@ use crate::spawn::{QemuChildCredentials, QemuChildProcessContract};
 use crate::{QemuNodeChild, QemuProcessIdentity, linux_process_identity};
 
 mod attempt_owner;
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) mod measurement_domain;
 mod memory_control;
 /// Opaque pinned memory authority confined to the physical owner boundary.
 pub(crate) type LinuxQemuCgroupMemoryControl = memory_control::LinuxQemuCgroupMemoryControl;

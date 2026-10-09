@@ -1226,6 +1226,27 @@ impl PreparedCampaignLocalService {
         Ok(executor)
     }
 
+    /// Prepares the genuine packaged pool under its admitted private original.
+    ///
+    /// The opaque authority is constructed only by the closed original actor.
+    /// Its external paired credits must remain held through actual factory,
+    /// native/source quarantine, watcher and final shared-control retirement.
+    /// This uses the ordinary repository authentication and concrete factory;
+    /// it does not certify that retirement or create a second host allocator.
+    ///
+    /// # Errors
+    /// Preserves ordinary preparation refusals and the same original's typed
+    /// derivation, watcher, capture and cleanup refusals. Missing complete
+    /// purpose admission must refuse before this authority can be issued.
+    #[cfg(feature = "private-measurement-domain")]
+    pub fn prepare_original_packaged_executor(
+        &self,
+        config: PackagedQemuExecutorConfig,
+        original: crate::private_original_capture::OriginalPreparation,
+    ) -> Result<PackagedQemuExecutor, CampaignLocalServiceError> {
+        self.prepare_packaged_executor(config.with_original_preparation(original))
+    }
+
     /// Discovers the complete bounded set of authenticated campaign heads.
     ///
     /// This owner-side operation is intended for fixed packaged-runtime

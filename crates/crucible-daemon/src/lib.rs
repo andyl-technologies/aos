@@ -201,6 +201,12 @@ pub mod qemu_resource_guard;
 pub mod repository_admission;
 mod supervision;
 
+#[cfg(feature = "private-measurement-domain")]
+pub mod private_original_capture;
+
+#[cfg(feature = "private-measurement-domain")]
+pub mod private_measurement_runtime;
+
 pub use assignment_ledger::{
     AssignmentLedger, AssignmentLedgerError, AssignmentPublish, AssignmentRecord,
     AssignmentRetentionAdmin, AssignmentRetentionFence, AssignmentRetentionGeneration,

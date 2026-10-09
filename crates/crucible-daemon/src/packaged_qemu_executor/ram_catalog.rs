@@ -40,6 +40,14 @@ pub(super) fn admit_catalog_service(
     identity.update(&catalog.project_id().to_be_bytes());
     let owner = *identity.finalize().as_bytes();
     let budgets = config.host_operation_budgets().ok_or(StoreError::Quota)?;
+    #[cfg(feature = "private-measurement-domain")]
+    let supervisor = if let Some(original) = &config.original_preparation {
+        original.derive_supervisor(budgets)?
+    } else {
+        HostOperationSupervisor::new(budgets, None)
+            .map_err(crate::ProviderServiceAdmissionError::from)?
+    };
+    #[cfg(not(feature = "private-measurement-domain"))]
     let supervisor = HostOperationSupervisor::new(budgets, None)
         .map_err(crate::ProviderServiceAdmissionError::from)?;
     let custody = registry.capacity_custody()?;

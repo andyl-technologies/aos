@@ -23,6 +23,8 @@ use crate::host_services::{AdmittedHostServiceBootstrap, HostServiceBootstrap};
 #[derive(Debug)]
 pub struct HostSupervisionBootstrap {
     started: Instant,
+    #[cfg(feature = "private-measurement-domain")]
+    measurement_origin: Option<crate::measurement_origin::MeasurementInvocationOrigin>,
     original_monotonic_ns: u64,
     state: SupervisionState,
     preparation: Operation,
@@ -85,6 +87,8 @@ impl HostSupervisionBootstrap {
         state.next_operation = 1;
         Ok(Self {
             started,
+            #[cfg(feature = "private-measurement-domain")]
+            measurement_origin: None,
             original_monotonic_ns,
             state,
             preparation: Operation {
@@ -100,16 +104,88 @@ impl HostSupervisionBootstrap {
         })
     }
 
+    /// Consumes the authenticated private invocation without renewing its clocks.
+    ///
+    /// The original init interval includes admission and loader work. The same
+    /// descriptor-owning token moves into the existing outer owner at publication.
+    /// Its expanded control/body and all prepublication work must already belong
+    /// to the authenticated whole operator contract; this method issues no credit.
+    ///
+    /// # Errors
+    /// Refuses invalid class budgets, exhausted identity, original clock refusal
+    /// or a preparation budget already spent since the original init start.
+    #[cfg(feature = "private-measurement-domain")]
+    pub fn from_measurement_origin(
+        origin: crate::measurement_origin::MeasurementInvocationOrigin,
+        budgets: HostOperationBudgets,
+    ) -> Result<Self, HostSupervisionError> {
+        budgets.validate(false)?;
+        let (started, clock) = origin
+            .supervision_coordinates()
+            .map_err(|_| HostSupervisionError::Unavailable)?;
+        budgets.validate(true)?;
+        let ordinal = NEXT_CAP_ID
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |ordinal| {
+                ordinal.checked_add(1)
+            })
+            .map_err(|_| HostSupervisionError::IdentityExhausted)?;
+        let mut cap_id = [0; 32];
+        cap_id[24..].copy_from_slice(&ordinal.to_be_bytes());
+        let mut bootstrap = Self {
+            started,
+            measurement_origin: Some(origin),
+            original_monotonic_ns: clock.start_ns,
+            state: SupervisionState {
+                cap_id,
+                budgets,
+                policy_revision: 0,
+                cap_revision: 0,
+                cap_allowance: Some(clock.span()),
+                cap_state: HostOperationState::Running,
+                next_operation: 1,
+                operations: BTreeMap::new(),
+            },
+            preparation: Operation {
+                class: HostOperationClass::Preparation,
+                control: false,
+                // Admission and loader time belong to this original phase too.
+                started: Duration::ZERO,
+                last_progress: Duration::ZERO,
+                started_revision: 0,
+                completed: 0,
+                required: 1,
+                state: HostOperationState::Running,
+            },
+        };
+        bootstrap.wait_slice()?;
+        Ok(bootstrap)
+    }
+
+    fn elapsed(&self) -> Duration {
+        let elapsed = host_now().saturating_duration_since(self.started);
+        #[cfg(feature = "private-measurement-domain")]
+        if let Some(origin) = self.measurement_origin.as_ref() {
+            return match origin.supervision_coordinates() {
+                Ok((_, clock)) => elapsed.max(clock.elapsed()),
+                Err(_) => Duration::MAX,
+            };
+        }
+        elapsed
+    }
+
+    #[cfg(all(test, feature = "private-measurement-domain"))]
+    pub(crate) fn original_measurement_start_for_test(&self) -> u64 {
+        self.original_monotonic_ns
+    }
+
     /// Checks the original preparation and returns its current polling slice.
     ///
     /// # Errors
     /// Returns the original expiration or sticky terminal disposition.
     pub fn wait_slice(&mut self) -> Result<Duration, HostSupervisionError> {
-        refresh_cap(
-            &mut self.state,
-            host_now().saturating_duration_since(self.started),
-        );
-        let elapsed = host_now().saturating_duration_since(self.started);
+        let before = self.elapsed();
+        refresh_cap(&mut self.state, before);
+        let elapsed = self.elapsed();
         refresh_cap(&mut self.state, elapsed);
         let decision = decide_operation(&self.state, &self.preparation, elapsed);
         self.preparation.state = decision.state;
@@ -139,6 +215,16 @@ impl HostSupervisionBootstrap {
         self,
         accounts: &AdmittedHostServiceBootstrap,
     ) -> Result<(HostOperationSupervisor, HostOperationGuard), HostSupervisionError> {
+        #[cfg(feature = "private-measurement-domain")]
+        let measurement_clock = if let Some(origin) = self.measurement_origin.as_ref() {
+            let (_, clock) = origin
+                .supervision_coordinates()
+                .map_err(|_| HostSupervisionError::Unavailable)?;
+            decide_operation(&self.state, &self.preparation, self.elapsed()).require_running(1)?;
+            Some(clock)
+        } else {
+            None
+        };
         let minimum = Self::structure_bytes()?
             .checked_add(
                 HostServiceBootstrap::control_bytes()
@@ -152,10 +238,14 @@ impl HostSupervisionBootstrap {
         let supervisor = HostOperationSupervisor {
             shared: Arc::new(Shared {
                 started: self.started,
+                #[cfg(feature = "private-measurement-domain")]
+                measurement_clock,
                 original_monotonic_ns: self.original_monotonic_ns,
                 cap_id: self.state.cap_id,
                 changed: Arc::clone(&changed),
                 outer: Arc::new(Mutex::new(OuterAuthority {
+                    #[cfg(feature = "private-measurement-domain")]
+                    measurement_origin: self.measurement_origin,
                     root_wakeup: changed,
                     revision: self.state.cap_revision,
                     allowance: self.state.cap_allowance,
@@ -178,6 +268,13 @@ impl HostSupervisionBootstrap {
             supervisor: supervisor.clone(),
             id: 1,
         };
+        // Publication itself allocates the original controls and tree nodes.
+        // Private invocation admission rechecks the SAME returned preparation
+        // after that work; no new clock or operation can renew its allowance.
+        #[cfg(feature = "private-measurement-domain")]
+        if measurement_clock.is_some() {
+            preparation.wait_slice()?;
+        }
         Ok((supervisor, preparation))
     }
 

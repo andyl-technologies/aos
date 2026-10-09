@@ -2726,10 +2726,13 @@ dependencies = [
 name = "crucible-linux-resource"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "crucible-linux-resource",
  "crucible-ram",
  "libc",
  "rustix 1.1.4",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
 ]

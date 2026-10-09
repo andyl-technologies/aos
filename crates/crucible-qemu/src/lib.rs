@@ -76,6 +76,12 @@ mod linux_attempt_storage;
 // Raw cgroup mutation stays internal; `linux_attempt_process` exposes only the
 // sealed process owner needed by the still-separate quota/session composition.
 mod linux_cgroup;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+#[doc(hidden)]
+pub use linux_cgroup::measurement_domain::{
+    MeasurementCgroupContract, MeasurementCgroupError, MeasurementCgroupOwner,
+    OwnedMeasurementCgroupOwner,
+};
 #[cfg(target_os = "linux")]
 mod live_plugin_gate;
 #[cfg(not(target_os = "linux"))]

@@ -323,9 +323,21 @@ pub struct PackagedQemuExecutorConfig {
     host_operation_budgets: Option<crucible_api::host_operational::HostOperationBudgets>,
     guest_selectable_boundary_diagnostics: Option<GuestSelectableBoundaryDiagnosticConfig>,
     verify_determinism_findings: bool,
+    #[cfg(feature = "private-measurement-domain")]
+    original_preparation: Option<crate::private_original_capture::OriginalPreparation>,
 }
 
 impl PackagedQemuExecutorConfig {
+    /// Retains the admitted original only for the closed private actor route.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn with_original_preparation(
+        mut self,
+        original: crate::private_original_capture::OriginalPreparation,
+    ) -> Self {
+        self.original_preparation = Some(original);
+        self
+    }
+
     /// Projects immutable operational inputs for the guarded campaign adapter.
     pub(crate) fn guarded_inputs(
         &self,
@@ -445,6 +457,8 @@ impl PackagedQemuExecutorConfig {
             host_operation_budgets: None,
             guest_selectable_boundary_diagnostics: None,
             verify_determinism_findings: false,
+            #[cfg(feature = "private-measurement-domain")]
+            original_preparation: None,
         })
     }
 
@@ -2184,6 +2198,20 @@ pub enum PackagedQemuExecutorError {
     /// The complete retained world cannot satisfy its actual RAM launch contract.
     #[error("host RAM launch admission failed: {0}")]
     HostRamAdmission(#[from] crucible_api::vm_lifecycle::HostRamAdmissionError),
+    /// Private preparation refused its same original derivation boundary.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error(transparent)]
+    OriginalPreparationScope(
+        #[from] crucible_linux_resource::host_supervision::OriginalCaptureSupervisionError,
+    ),
+    /// Retains a private startup cut's actual original supervision refusal.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error("private original preparation boundary refused: {0}")]
+    OriginalPreparationBoundary(#[source] crucible_linux_resource::host_supervision::HostSupervisionError),
+    /// Private capture preserves its actual work and completion failures.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error(transparent)]
+    OriginalPreparationCapture(#[from] preparation::OriginalCaptureFailure),
     /// Preparation could not start its separately charged watchdog or namespace.
     #[error("packaged preparation supervision failed: {0}")]
     PreparationSupervisor(#[source] std::io::Error),

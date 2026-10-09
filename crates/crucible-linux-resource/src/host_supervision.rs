@@ -369,6 +369,8 @@ struct SupervisionState {
 #[derive(Debug)]
 struct Shared {
     started: Instant,
+    #[cfg(feature = "private-measurement-domain")]
+    measurement_clock: Option<crate::measurement_origin::MeasurementClock>,
     original_monotonic_ns: u64,
     cap_id: [u8; 32],
     state: Mutex<SupervisionState>,
@@ -379,6 +381,10 @@ struct Shared {
 
 #[derive(Debug)]
 struct OuterAuthority {
+    // The same outer Arc owns the authenticated descriptors through every
+    // nested budget owner. This inline body is included in structure_bytes.
+    #[cfg(feature = "private-measurement-domain")]
+    measurement_origin: Option<crate::measurement_origin::MeasurementInvocationOrigin>,
     root_wakeup: Arc<Condvar>,
     revision: u64,
     allowance: Option<Duration>,
@@ -431,6 +437,8 @@ impl HostOperationSupervisor {
         Ok(Self {
             shared: Arc::new(Shared {
                 started: host_now(),
+                #[cfg(feature = "private-measurement-domain")]
+                measurement_clock: None,
                 original_monotonic_ns,
                 cap_id,
                 state: Mutex::new(SupervisionState {
@@ -446,6 +454,8 @@ impl HostOperationSupervisor {
                 changed: Arc::clone(&changed),
                 budget_owner: 0,
                 outer: Arc::new(Mutex::new(OuterAuthority {
+                    #[cfg(feature = "private-measurement-domain")]
+                    measurement_origin: None,
                     root_wakeup: changed,
                     revision: 0,
                     allowance: outer,
@@ -468,6 +478,8 @@ impl HostOperationSupervisor {
             .outer
             .lock()
             .map_err(|_| HostSupervisionError::Unavailable)?;
+        #[cfg(feature = "private-measurement-domain")]
+        self.require_measurement_interval(&mut state, &mut outer)?;
         if outer.state == HostOperationState::Running
             && outer
                 .allowance
@@ -480,6 +492,28 @@ impl HostOperationSupervisor {
         state.cap_state = outer.state;
         drop(outer);
         Ok(state)
+    }
+
+    #[cfg(feature = "private-measurement-domain")]
+    fn require_measurement_interval(
+        &self,
+        state: &mut SupervisionState,
+        outer: &mut OuterAuthority,
+    ) -> Result<(), HostSupervisionError> {
+        if self
+            .shared
+            .measurement_clock
+            .is_some_and(|clock| clock.elapsed() >= clock.span())
+        {
+            if outer.state == HostOperationState::Running {
+                outer.state = HostOperationState::Expired;
+            }
+            state.cap_state = outer.state;
+            // This is the enclosing invocation's ownership refusal, including
+            // Cleanup, rather than a fabricated class-deadline provenance.
+            return Err(HostSupervisionError::Terminal { state: outer.state });
+        }
+        Ok(())
     }
 
     /// Creates an independent node budget roster under the same original outer cap.
@@ -529,6 +563,8 @@ impl HostOperationSupervisor {
             .ok_or(HostSupervisionError::IdentityExhausted)?;
         let shared = Arc::new(Shared {
             started: self.shared.started,
+            #[cfg(feature = "private-measurement-domain")]
+            measurement_clock: self.shared.measurement_clock,
             original_monotonic_ns: self.shared.original_monotonic_ns,
             cap_id: self.shared.cap_id,
             state: Mutex::new(SupervisionState {
@@ -575,7 +611,28 @@ impl HostOperationSupervisor {
     }
 
     fn elapsed(&self) -> Duration {
-        host_now().saturating_duration_since(self.shared.started)
+        let elapsed = host_now().saturating_duration_since(self.shared.started);
+        #[cfg(feature = "private-measurement-domain")]
+        if let Some(clock) = self.shared.measurement_clock {
+            return elapsed.max(clock.elapsed());
+        }
+        elapsed
+    }
+
+    #[cfg(feature = "private-measurement-domain")]
+    fn bound_measurement_wait(&self, slice: Duration) -> Result<Duration, HostSupervisionError> {
+        let Some(clock) = self.shared.measurement_clock else {
+            return Ok(slice);
+        };
+        let remaining = clock.span().saturating_sub(self.elapsed());
+        if remaining.is_zero() {
+            return Err(HostSupervisionError::Terminal {
+                state: HostOperationState::Expired,
+            });
+        }
+        // Cleanup deliberately keeps ordinary class provenance. Its wait still
+        // cannot overrun this enclosing authenticated original invocation.
+        Ok(slice.min(remaining))
     }
 
     /// Begins one bounded operation under the current live class policy.
@@ -644,6 +701,16 @@ impl HostOperationSupervisor {
         let mut state = self.lock()?;
         let elapsed = self.elapsed();
         refresh_cap(&mut state, elapsed);
+        #[cfg(feature = "private-measurement-domain")]
+        if self
+            .shared
+            .measurement_clock
+            .is_some_and(|clock| elapsed >= clock.span())
+        {
+            return Err(HostSupervisionError::Terminal {
+                state: state.cap_state,
+            });
+        }
         if class != HostOperationClass::Cleanup && state.cap_state != HostOperationState::Running {
             return Err(HostSupervisionError::Terminal {
                 state: state.cap_state,
@@ -780,6 +847,15 @@ impl HostOperationSupervisor {
         }) {
             return Err(HostSupervisionError::InvalidBudget);
         }
+        #[cfg(feature = "private-measurement-domain")]
+        if let Some(origin) = outer.measurement_origin.as_ref() {
+            let (_, clock) = origin
+                .supervision_coordinates()
+                .map_err(|_| HostSupervisionError::Unavailable)?;
+            if allowance.is_none_or(|duration| duration > clock.span()) {
+                return Err(HostSupervisionError::InvalidBudget);
+            }
+        }
         for (budgets, _) in outer.rosters.values() {
             budgets.validate(allowance.is_some())?;
         }
@@ -857,10 +933,14 @@ impl HostOperationSupervisor {
     pub fn wait_for_active_work_change(&self) -> Result<(), HostSupervisionError> {
         self.check_active_work()?;
         let state = self.lock()?;
+        #[cfg(feature = "private-measurement-domain")]
+        let slice = self.bound_measurement_wait(Duration::from_millis(10))?;
+        #[cfg(not(feature = "private-measurement-domain"))]
+        let slice = Duration::from_millis(10);
         let waited = self
             .shared
             .changed
-            .wait_timeout(state, Duration::from_millis(10))
+            .wait_timeout(state, slice)
             .map_err(|_| HostSupervisionError::Unavailable)?;
         drop(waited);
         self.check_active_work()
@@ -955,6 +1035,8 @@ impl HostOperationSupervisor {
             .outer
             .lock()
             .map_err(|_| HostSupervisionError::Unavailable)?;
+        #[cfg(feature = "private-measurement-domain")]
+        self.require_measurement_interval(&mut state, &mut outer)?;
         let elapsed = self.elapsed();
         state.cap_revision = outer.revision;
         state.cap_allowance = outer.allowance;
@@ -1070,6 +1152,8 @@ impl HostOperationSupervisor {
             .outer
             .lock()
             .map_err(|_| HostSupervisionError::Unavailable)?;
+        #[cfg(feature = "private-measurement-domain")]
+        self.require_measurement_interval(state, &mut outer)?;
         state.cap_revision = outer.revision;
         state.cap_allowance = outer.allowance;
         state.cap_state = outer.state;
@@ -1088,6 +1172,8 @@ impl HostOperationSupervisor {
             .outer
             .lock()
             .map_err(|_| HostSupervisionError::Unavailable)?;
+        #[cfg(feature = "private-measurement-domain")]
+        self.require_measurement_interval(state, &mut outer)?;
         state.cap_revision = outer.revision;
         state.cap_allowance = outer.allowance;
         state.cap_state = outer.state;
@@ -1104,7 +1190,145 @@ pub struct HostOperationGuard {
     id: u64,
 }
 
+/// Retains private capture construction and original-boundary refusals separately.
+///
+/// This inline outcome creates no diagnostic allocation. Its containing
+/// original purpose must cover its target layout before used construction.
+#[cfg(feature = "private-measurement-domain")]
+#[derive(Debug, thiserror::Error)]
+pub enum OriginalCaptureSupervisionError {
+    /// The actual original owner or preparation refused before construction.
+    #[error("original capture supervision refused: {0}")]
+    Original(#[from] HostSupervisionError),
+    /// Child construction failed, retaining its separate post-original refusal.
+    #[error("capture child construction refused: {source}; original: {original:?}")]
+    Construction {
+        /// Actual first child-construction failure.
+        #[source]
+        source: HostSupervisionError,
+        /// Same original preparation's postcheck failure, when present.
+        original: Option<HostSupervisionError>,
+    },
+}
+
+impl HostOperationSupervisor {
+    /// Names this actual child capture roster under its retained original Prep.
+    ///
+    /// Repeated captures share the original cap and restart operation IDs. The
+    /// nonreused roster index distinguishes their independently charged service
+    /// owners without another clock, random nonce or caller-authored identity.
+    /// This scalar names an owner; it grants no resources or factory authority.
+    ///
+    /// # Errors
+    /// Refuses an unbound or different original, a root/replacement roster,
+    /// invalid daemon identity, or the same original's terminal boundary.
+    #[cfg(feature = "private-measurement-domain")]
+    pub fn original_capture_service_owner(
+        &self,
+        original: &HostOperationGuard,
+        daemon_epoch: [u8; 32],
+    ) -> Result<[u8; 32], HostSupervisionError> {
+        if daemon_epoch == [0; 32]
+            || self.shared.measurement_clock.is_none()
+            || self.shared.budget_owner == 0
+            || original.supervisor.shared.measurement_clock.is_none()
+            || original.supervisor.shared.budget_owner != 0
+            || original.id != 1
+            || !Arc::ptr_eq(&self.shared.outer, &original.supervisor.shared.outer)
+        {
+            return Err(HostSupervisionError::InvalidBudget);
+        }
+        original.wait_slice()?;
+        if original.status()?.class != HostOperationClass::Preparation {
+            return Err(HostSupervisionError::InvalidBudget);
+        }
+
+        let mut identity = blake3::Hasher::new();
+        identity.update(b"crucible.host.original-capture-owner.v1\0");
+        identity.update(&daemon_epoch);
+        identity.update(&self.shared.cap_id);
+        identity.update(&self.shared.budget_owner.to_le_bytes());
+        let owner = *identity.finalize().as_bytes();
+        original.wait_slice()?;
+        Ok(owner)
+    }
+}
+
 impl HostOperationGuard {
+    /// Derives finite capture supervision from this exact private original owner.
+    ///
+    /// The preparation's actual owner allocation must match `original`; a
+    /// different class roster sharing its outer cap cannot replace it. The
+    /// existing child roster preserves the original start, cap and private
+    /// kernel end. Its allocations need original prebirth structural payment.
+    /// This does not complete or renew this whole-family preparation.
+    ///
+    /// # Errors
+    /// Refuses a different owner, absent private original clock, wrong class,
+    /// terminal original scope, or invalid/unavailable child construction.
+    #[cfg(feature = "private-measurement-domain")]
+    pub fn begin_original_capture_supervisor(
+        &self,
+        original: &HostOperationSupervisor,
+        budgets: HostOperationBudgets,
+    ) -> Result<HostOperationSupervisor, OriginalCaptureSupervisionError> {
+        if !Arc::ptr_eq(&self.supervisor.shared, &original.shared)
+            || self.supervisor.shared.measurement_clock.is_none()
+            // The private stack publisher returns root owner zero's first
+            // preparation. Later root work and derived child rosters cannot
+            // replace that whole-family scope, even under the same outer cap.
+            || self.supervisor.shared.budget_owner != 0
+            || self.id != 1
+        {
+            return Err(HostSupervisionError::InvalidBudget.into());
+        }
+        self.wait_slice()?;
+        if self.status()?.class != HostOperationClass::Preparation {
+            return Err(HostSupervisionError::InvalidBudget.into());
+        }
+
+        let child = original.new_budget_owner(budgets);
+        // Observe both outcomes without replacing an actual construction
+        // failure with its independent original-boundary refusal.
+        let after = self.wait_slice();
+        match child {
+            Ok(child) => {
+                after?;
+                Ok(child)
+            }
+            Err(source) => Err(OriginalCaptureSupervisionError::Construction {
+                source,
+                original: after.err(),
+            }),
+        }
+    }
+
+    /// Starts finite cleanup in this guard's retained original supervisor.
+    ///
+    /// This private measurement seam accepts no supervisor, deadline or
+    /// account substitute. Cleanup uses the existing current class policy,
+    /// including its terminal-parent semantics. Its existing BTree control
+    /// allocation must be covered by the enclosing original controller role
+    /// before this method runs; the returned guard must be retained before
+    /// any fallible physical retirement work.
+    ///
+    /// # Errors
+    /// Refuses a non-preparation origin, unavailable original synchronization,
+    /// exhausted control capacity, or an invalid original cleanup policy.
+    #[cfg(feature = "private-measurement-domain")]
+    pub fn begin_original_cleanup_control(&self) -> Result<Self, HostSupervisionError> {
+        let mut state = self.supervisor.lock()?;
+        let origin = self
+            .supervisor
+            .evaluate_decision(&mut state, self.id)?
+            .class;
+        drop(state);
+        if origin != HostOperationClass::Preparation {
+            return Err(HostSupervisionError::InvalidBudget);
+        }
+        self.supervisor.begin_control(HostOperationClass::Cleanup)
+    }
+
     /// Returns coherent live operation status.
     ///
     /// # Errors
@@ -1124,9 +1348,12 @@ impl HostOperationGuard {
         let decision = self.supervisor.evaluate_decision(&mut state, self.id)?;
         decision.require_running(self.id)?;
         let poll = state.budgets.get(decision.class).poll_interval;
-        Ok(decision
+        let slice = decision
             .deadline
-            .map_or(poll, |deadline| poll.min(deadline.remaining)))
+            .map_or(poll, |deadline| poll.min(deadline.remaining));
+        #[cfg(feature = "private-measurement-domain")]
+        let slice = self.supervisor.bound_measurement_wait(slice)?;
+        Ok(slice)
     }
 
     /// Waits for a poll slice or a policy/cancellation wakeup, then reevaluates.
@@ -1142,6 +1369,8 @@ impl HostOperationGuard {
         let slice = decision
             .deadline
             .map_or(poll, |deadline| poll.min(deadline.remaining));
+        #[cfg(feature = "private-measurement-domain")]
+        let slice = self.supervisor.bound_measurement_wait(slice)?;
         let waited = self
             .supervisor
             .shared

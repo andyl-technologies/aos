@@ -29,6 +29,9 @@ mod linux_project_quota;
 
 pub mod host_services;
 pub mod host_supervision;
+#[cfg(feature = "private-measurement-domain")]
+#[doc(hidden)]
+pub mod measurement_origin;
 pub mod ram_policy;
 #[cfg(feature = "test-support")]
 pub mod test_support;
@@ -37,4 +40,10 @@ pub use linux_project_quota::{
     LinuxProjectQuotaBinding, LinuxProjectQuotaController, LinuxProjectQuotaError,
     LinuxProjectQuotaInstallError, LinuxProjectQuotaLimits, LinuxProjectQuotaReleaseError,
     LinuxProjectQuotaReservation, validate_project_quota_root,
+};
+
+#[doc(hidden)]
+#[cfg(feature = "private-measurement-domain")]
+pub use linux_project_quota::{
+    MeasurementStorageContract, MeasurementStorageError, MeasurementStoragePins,
 };

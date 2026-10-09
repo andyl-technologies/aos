@@ -10,6 +10,8 @@ use crate::supervision::AssignmentHostWatchdogGuard;
 use crucible_linux_resource::host_supervision::HostOperationSupervisor;
 
 mod failure;
+#[cfg(feature = "private-measurement-domain")]
+pub use failure::OriginalCaptureFailure;
 pub use failure::PreparationExpiredCause;
 
 pub(super) struct PackagedPreparation {
@@ -226,6 +228,23 @@ where
     use crate::executor_supervisor::{ExecutorBootstrapConfiguration, ExecutorBootstrapResources};
     use crucible_api::host_operational::HostOperationalError;
 
+    #[cfg(feature = "private-measurement-domain")]
+    let preparation_supervisor = if let Some(original) = &config.original_preparation {
+        original.derive_supervisor(
+            config
+                .host_operation_budgets()
+                .ok_or(HostOperationalError::Unavailable)?,
+        )?
+    } else {
+        HostOperationSupervisor::new(
+            config
+                .host_operation_budgets()
+                .ok_or(HostOperationalError::Unavailable)?,
+            None,
+        )
+        .map_err(|_| HostOperationalError::Unavailable)?
+    };
+    #[cfg(not(feature = "private-measurement-domain"))]
     let preparation_supervisor = HostOperationSupervisor::new(
         config
             .host_operation_budgets()
@@ -283,6 +302,17 @@ where
     let mut pending = PendingOriginalSupervisor {
         supervisor: Some(supervisor),
     };
+    #[cfg(feature = "private-measurement-domain")]
+    if config.original_preparation.is_some() {
+        operation
+            .wait_slice()
+            .map_err(PackagedQemuExecutorError::OriginalPreparationBoundary)?;
+    } else {
+        operation
+            .wait_slice()
+            .map_err(|_| HostOperationalError::Unavailable)?;
+    }
+    #[cfg(not(feature = "private-measurement-domain"))]
     operation
         .wait_slice()
         .map_err(|_| HostOperationalError::Unavailable)?;
@@ -292,11 +322,33 @@ where
         registry_resources,
         startup_services,
     )?;
+    #[cfg(feature = "private-measurement-domain")]
+    if config.original_preparation.is_some() {
+        operation
+            .wait_slice()
+            .map_err(PackagedQemuExecutorError::OriginalPreparationBoundary)?;
+    } else {
+        operation
+            .wait_slice()
+            .map_err(|_| HostOperationalError::Unavailable)?;
+    }
+    #[cfg(not(feature = "private-measurement-domain"))]
     operation
         .wait_slice()
         .map_err(|_| HostOperationalError::Unavailable)?;
     host_operational_registry.configure_bootstrap_limits(bootstrap)?;
     pending.attach_registry(host_operational_registry.clone())?;
+    #[cfg(feature = "private-measurement-domain")]
+    if config.original_preparation.is_some() {
+        operation
+            .complete()
+            .map_err(PackagedQemuExecutorError::OriginalPreparationBoundary)?;
+    } else {
+        operation
+            .complete()
+            .map_err(|_| HostOperationalError::Unavailable)?;
+    }
+    #[cfg(not(feature = "private-measurement-domain"))]
     operation
         .complete()
         .map_err(|_| HostOperationalError::Unavailable)?;
@@ -383,6 +435,10 @@ pub(super) fn run_capture<T>(
     scenario: &ScenarioDefForm,
     capture: impl FnOnce(&AttemptExecutionContext) -> Result<T, PackagedQemuExecutorError>,
 ) -> Result<T, PackagedQemuExecutorError> {
+    #[cfg(feature = "private-measurement-domain")]
+    if let Some(original) = &config.original_preparation {
+        return run_original_capture(preparation, config, scenario, original, capture);
+    }
     use crucible_api::host_operational::HostOperationalError;
     use crucible_api::vm_lifecycle::{
         ProductionHostRamLaunchShape, partition_host_ram_launch_resources,
@@ -536,4 +592,250 @@ pub(super) fn run_capture<T>(
         });
     }
     failure::finish_capture(result, expired, expiry_cause_resources)
+}
+
+#[cfg(feature = "private-measurement-domain")]
+fn run_original_capture<T>(
+    preparation: &PackagedPreparation,
+    config: &PackagedQemuExecutorConfig,
+    scenario: &ScenarioDefForm,
+    original: &crate::private_original_capture::OriginalPreparation,
+    capture: impl FnOnce(&AttemptExecutionContext) -> Result<T, PackagedQemuExecutorError>,
+) -> Result<T, PackagedQemuExecutorError> {
+    use crucible_api::host_operational::HostOperationalError;
+    use crucible_api::vm_lifecycle::{
+        ProductionHostRamLaunchShape, partition_host_ram_launch_resources,
+    };
+
+    // Cold capture has no queued execution input to install decoder custody.
+    // Its host input/configuration copies belong to the original CatalogService
+    // metadata account, as in ordinary campaign and interactive admission.
+    // Active copies retain their child receipts after this lexical scope;
+    // native node and watcher resources remain in the separate Service below.
+    let decoding = crucible::owned_decode::DecodeBudget::for_store(
+        preparation.checkpoints.metadata_resource_authority()?,
+    )?;
+    let _metadata_scope = decoding.enter();
+    // Reserve the exact optional error box before capture effects. An expired
+    // capture may still return a useful launch or checkpoint failure; its
+    // storage keeps this original credit until the diagnostic's final drop.
+    let expiry_cause_resources =
+        decoding.reserve_scratch_array::<failure::OriginalCaptureFailureBody>(1)?;
+    let quarantine_resources =
+        crate::private_original_capture::OriginalCaptureCustody::reserve(&decoding)?;
+    let actor_custody = preparation.actor.preparation_custody();
+
+    let ceiling = config
+        .assignment_resources()
+        .ok_or(HostOperationalError::Unavailable)?;
+    let resources = config
+        .assignment_limits()
+        .ok_or(HostOperationalError::Unavailable)?;
+    let watcher_resident_bytes = config.host.watcher_service_resident_bytes();
+    if watcher_resident_bytes <= crate::supervision::HOST_WATCHDOG_STACK_BYTES as u64 {
+        return Err(HostOperationalError::Unavailable.into());
+    }
+    // The immutable authored service peak includes its watcher. The native
+    // node partition cannot consume that outside stack and bookkeeping owner.
+    let mut node_ceiling = ceiling;
+    node_ceiling.resident_peak_bytes = node_ceiling
+        .resident_peak_bytes
+        .checked_sub(watcher_resident_bytes)
+        .ok_or(HostOperationalError::Unavailable)?;
+    node_ceiling.task_slots = node_ceiling
+        .task_slots
+        .checked_sub(1)
+        .ok_or(HostOperationalError::Unavailable)?;
+    let physical_partition = AttemptResourceLimits::new(
+        u32::try_from(node_ceiling.cpu_slots).map_err(|_| HostOperationalError::Unavailable)?,
+        node_ceiling.resident_peak_bytes,
+        node_ceiling.backing_peak_bytes,
+        resources.maximum_execution_quanta(),
+    )?;
+    let shapes = scenario
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|node| {
+            Ok(ProductionHostRamLaunchShape {
+                node: node.id.name.clone(),
+                declared_ram_bytes: u64::from(node.memory_mib)
+                    .checked_mul(1024 * 1024)
+                    .ok_or(HostOperationalError::Unavailable)?,
+                vcpus: u32::from(node.smp_vcpus),
+            })
+        })
+        .collect::<Result<Vec<_>, HostOperationalError>>()?;
+    let bootstrap = preparation
+        .host_operational_registry
+        .bootstrap_limits()
+        .ok_or(HostOperationalError::Unavailable)?;
+    let requirements = crate::qemu_campaign_lifecycle::host_ram_launch_requirements(&shapes)?;
+    let partition =
+        partition_host_ram_launch_resources(&shapes, physical_partition, bootstrap, &requirements)
+            .map_err(|_| HostOperationalError::Unavailable)?;
+    if !partition.ceiling.fits(node_ceiling) {
+        return Err(HostOperationalError::Unavailable.into());
+    }
+
+    let budgets = config
+        .host_operation_budgets()
+        .ok_or(HostOperationalError::Unavailable)?;
+    let daemon =
+        crate::host_operational_registry::operational_identity(config.daemon_epoch.as_bytes());
+    let staged = match original.stage_capture(budgets, daemon) {
+        Ok(staged) => staged,
+        Err(start) => {
+            return Err(failure::original_failure(
+                failure::OriginalCaptureFailureBody {
+                    capture: None,
+                    start: Some(start),
+                    completion: None,
+                    watcher: None,
+                    cleanup: None,
+                    configuration_original: None,
+                    release_original: None,
+                },
+                expiry_cause_resources,
+            ));
+        }
+    };
+    let owner = staged.service_owner();
+    let mut custody = crate::private_original_capture::OriginalCaptureCustody::stage(
+        actor_custody,
+        original.clone(),
+        quarantine_resources,
+    );
+    original
+        .boundary()
+        .map_err(PackagedQemuExecutorError::OriginalPreparationBoundary)?;
+    let mut reserved = false;
+    let configured = preparation.actor.with_supervisor(|actor| {
+        actor.reserve_host_ram_service(owner, ceiling)?;
+        custody.arm_reserved();
+        reserved = true;
+        actor.configure_host_ram_owner(daemon, owner, partition.ceiling)
+    });
+    let configured_original = original.boundary().err();
+    if configured.is_err() || configured_original.is_some() {
+        let (cleanup, release_original) = if reserved {
+            release_original_service(preparation, owner, original)
+        } else {
+            (None, None)
+        };
+        if cleanup.is_none() && release_original.is_none() {
+            custody.close();
+        }
+        return Err(failure::original_failure(
+            failure::OriginalCaptureFailureBody {
+                capture: configured.err().map(PackagedQemuExecutorError::from),
+                start: None,
+                completion: None,
+                watcher: None,
+                cleanup,
+                configuration_original: configured_original,
+                release_original,
+            },
+            expiry_cause_resources,
+        ));
+    }
+
+    let cancellation = ExecutionCancellation::default();
+    // The existing actor owns the full service before the real watcher starts.
+    let (watchdog, state) = match staged.start(cancellation.clone()) {
+        Ok(started) => started,
+        Err(start) => {
+            let (cleanup, release_original) =
+                release_original_service(preparation, owner, original);
+            if cleanup.is_none() && release_original.is_none() {
+                custody.close();
+            }
+            return Err(failure::original_failure(
+                failure::OriginalCaptureFailureBody {
+                    capture: None,
+                    start: Some(start),
+                    completion: None,
+                    watcher: None,
+                    cleanup,
+                    configuration_original: None,
+                    release_original,
+                },
+                expiry_cause_resources,
+            ));
+        }
+    };
+    custody.attach_watchdog(watchdog);
+    let context = AttemptExecutionContext::for_preparation_service(
+        resources,
+        preparation.host_operational_registry.clone(),
+        daemon,
+        owner,
+        state,
+        cancellation,
+    );
+    let result = context
+        .map_err(PackagedQemuExecutorError::from)
+        .and_then(|context| {
+            let result = capture(&context)?;
+            decoding.check()?;
+            Ok(result)
+        });
+    let nodes_cleaned = preparation
+        .actor
+        .with_supervisor(|actor| actor.host_ram_service_nodes_cleaned(owner));
+    if !matches!(nodes_cleaned, Ok(true)) {
+        // The armed owner transfers its already-prepaid body on this refusal
+        // or unwinding, retaining the same actor and actual watcher/guard.
+        let watcher = custody.first_refusal();
+        return Err(failure::original_failure(
+            failure::OriginalCaptureFailureBody {
+                capture: result.err(),
+                start: None,
+                completion: None,
+                watcher,
+                cleanup: Some(
+                    nodes_cleaned
+                        .err()
+                        .unwrap_or(HostOperationalError::Unavailable),
+                ),
+                configuration_original: None,
+                release_original: original.boundary().err(),
+            },
+            expiry_cause_resources,
+        ));
+    }
+    let completion = custody.finish().ok_or(HostOperationalError::Unavailable)?;
+    let (cleanup, release_original) = release_original_service(preparation, owner, original);
+    if cleanup.is_none() && release_original.is_none() {
+        custody.close();
+    }
+    failure::finish_original_capture(
+        result,
+        completion,
+        cleanup,
+        release_original,
+        expiry_cause_resources,
+    )
+}
+
+#[cfg(feature = "private-measurement-domain")]
+fn release_original_service(
+    preparation: &PackagedPreparation,
+    owner: [u8; 32],
+    original: &crate::private_original_capture::OriginalPreparation,
+) -> (
+    Option<crucible_api::host_operational::HostOperationalError>,
+    Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
+) {
+    if let Err(before) = original.boundary() {
+        return (None, Some(before));
+    }
+    let cleanup = preparation
+        .actor
+        .with_supervisor(|actor| actor.release_host_ram_service_after_cleanup(owner))
+        .err();
+    // Retain the actual kernel/account outcome first, then sample the SAME
+    // original even on refusal. Cleanup cannot renew the enclosing interval.
+    let after = original.boundary().err();
+    (cleanup, after)
 }

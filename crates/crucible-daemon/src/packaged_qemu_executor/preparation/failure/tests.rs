@@ -194,3 +194,176 @@ fn expired_success_discards_candidate_without_inventing_a_source() {
     drop(budget);
     assert_eq!(outstanding.load(Ordering::SeqCst), 0);
 }
+
+#[cfg(feature = "private-measurement-domain")]
+#[test]
+fn private_typed_finish_preserves_capture_completion_cleanup_and_live_credit() {
+    use crate::private_original_capture::{
+        OriginalCaptureCompletion, OriginalCaptureWatcherRefusal,
+    };
+    use crucible_api::host_operational::HostOperationalError;
+    use crucible_linux_resource::host_supervision::{HostOperationClass, HostSupervisionError};
+
+    // This exercises the real owning diagnostic and admitted Box, not an
+    // actual watchdog expiry, original PID1 or physical native retirement.
+    let outstanding = Arc::new(AtomicU64::new(0));
+    let decoding = budget(&outstanding);
+    let resources = decoding
+        .reserve_scratch_array::<OriginalCaptureFailureBody>(1)
+        .unwrap();
+    let admitted = outstanding.load(Ordering::SeqCst);
+    assert!(admitted > 0);
+    eprintln!(
+        "original_capture_failure_body={} owning_error={} packaged_error={} scratch={}",
+        std::mem::size_of::<OriginalCaptureFailureBody>(),
+        std::mem::size_of::<OriginalCaptureFailure>(),
+        std::mem::size_of::<PackagedQemuExecutorError>(),
+        std::mem::size_of::<DecodeScratch>()
+    );
+    let dropped = Arc::new(AtomicBool::new(false));
+    let capture = PackagedQemuExecutorError::PreparationSupervisor(std::io::Error::other(
+        NativeSetupFailure {
+            outstanding: Arc::clone(&outstanding),
+            minimum_live_bytes: admitted,
+            dropped: Arc::clone(&dropped),
+        },
+    ));
+    let refusal = OriginalCaptureWatcherRefusal::CaptureWait {
+        source: HostSupervisionError::DeadlineExpired {
+            operation_id: 41,
+            class: HostOperationClass::Setup,
+        },
+        original_after: None,
+    };
+    let completion = OriginalCaptureCompletion {
+        original_before: None,
+        original_after: None,
+        child: None,
+        watcher: Some(refusal),
+        join_panicked: false,
+    };
+    let result = finish_original_capture::<()>(
+        Err(capture),
+        completion,
+        Some(HostOperationalError::Unavailable),
+        None,
+        resources,
+    );
+    let Err(PackagedQemuExecutorError::OriginalPreparationCapture(source)) = result else {
+        panic!("typed original capture expected")
+    };
+
+    assert_eq!(source.completion(), Some(completion));
+    assert_eq!(source.watcher(), Some(refusal));
+    assert!(matches!(
+        source.cleanup(),
+        Some(HostOperationalError::Unavailable)
+    ));
+    assert!(source.start().is_none());
+    let Some(PackagedQemuExecutorError::PreparationSupervisor(capture)) = source.capture() else {
+        panic!("real IO cause expected")
+    };
+    assert!(capture.get_ref().unwrap().is::<NativeSetupFailure>());
+    assert_eq!(outstanding.load(Ordering::SeqCst), admitted);
+    assert!(!dropped.load(Ordering::SeqCst));
+
+    drop(source);
+    assert!(dropped.load(Ordering::SeqCst));
+    drop(decoding);
+    assert_eq!(outstanding.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(feature = "private-measurement-domain")]
+#[test]
+fn private_accepted_finish_keeps_success_and_returns_unused_original_credit() {
+    use crate::private_original_capture::OriginalCaptureCompletion;
+    let outstanding = Arc::new(AtomicU64::new(0));
+    let decoding = budget(&outstanding);
+    let resources = decoding
+        .reserve_scratch_array::<OriginalCaptureFailureBody>(1)
+        .unwrap();
+    assert!(outstanding.load(Ordering::SeqCst) > 0);
+    let completion = OriginalCaptureCompletion {
+        original_before: None,
+        original_after: None,
+        child: None,
+        watcher: None,
+        join_panicked: false,
+    };
+    assert_eq!(
+        finish_original_capture(
+            Ok::<_, PackagedQemuExecutorError>(7),
+            completion,
+            None,
+            None,
+            resources
+        )
+        .unwrap(),
+        7
+    );
+    drop(decoding);
+    assert_eq!(outstanding.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(feature = "private-measurement-domain")]
+#[test]
+fn earlier_retained_supervision_cuts_remain_in_the_standard_error_chain() {
+    use crate::private_original_capture::OriginalCaptureCompletion;
+    use crucible_linux_resource::host_supervision::{HostOperationClass, HostSupervisionError};
+
+    // Error-carrier projection controls preserve exact stored IDs/classes;
+    // real clock/expiry scheduling is covered by the joined watcher controls.
+    let early = HostSupervisionError::DeadlineExpired {
+        operation_id: 73,
+        class: HostOperationClass::Setup,
+    };
+    let later = HostSupervisionError::Unavailable;
+    let outstanding = Arc::new(AtomicU64::new(0));
+    let decoding = budget(&outstanding);
+    for cut in 0..4 {
+        let resources = decoding
+            .reserve_scratch_array::<OriginalCaptureFailureBody>(1)
+            .unwrap();
+        let completion = OriginalCaptureCompletion {
+            original_before: (cut == 1).then_some(early),
+            child: (cut == 2).then_some(early),
+            original_after: (cut == 3).then_some(early),
+            watcher: None,
+            join_panicked: false,
+        };
+        let error = original_failure(
+            OriginalCaptureFailureBody {
+                capture: None,
+                start: None,
+                completion: (cut != 0).then_some(completion),
+                watcher: None,
+                cleanup: Some(crucible_api::host_operational::HostOperationalError::Unavailable),
+                configuration_original: (cut == 0).then_some(early),
+                release_original: Some(later),
+            },
+            resources,
+        );
+        let PackagedQemuExecutorError::OriginalPreparationCapture(error) = error else {
+            panic!("expected retained original failure")
+        };
+        assert_eq!(
+            error
+                .source()
+                .unwrap()
+                .downcast_ref::<HostSupervisionError>(),
+            Some(&early)
+        );
+        assert_eq!(error.release_original(), Some(later));
+    }
+
+    let direct = PackagedQemuExecutorError::OriginalPreparationBoundary(early);
+    assert_eq!(
+        direct
+            .source()
+            .unwrap()
+            .downcast_ref::<HostSupervisionError>(),
+        Some(&early)
+    );
+    drop(decoding);
+    assert_eq!(outstanding.load(Ordering::SeqCst), 0);
+}

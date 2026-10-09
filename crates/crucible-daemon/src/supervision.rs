@@ -73,11 +73,33 @@ pub(crate) const HOST_WATCHDOG_STACK_BYTES: usize = 256 * 1024;
 #[derive(Clone, Debug)]
 pub(super) struct AssignmentHostWatchdog {
     supervisor: HostOperationSupervisor,
+    // Context aliases retain the same whole-family guard beyond watcher join.
+    // Its last Arc/control free remains covered by the external original payer.
+    #[cfg(feature = "private-measurement-domain")]
+    original: Option<Arc<HostOperationGuard>>,
 }
 
 impl AssignmentHostWatchdog {
+    /// Wraps the already-verified child and its same admitted original alias.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn for_original_capture(
+        supervisor: HostOperationSupervisor,
+        original: Arc<HostOperationGuard>,
+    ) -> Self {
+        Self {
+            supervisor,
+            original: Some(original),
+        }
+    }
+
     /// Reports whether the assignment budget elapsed or its watcher fired.
     pub(super) fn expired(&self) -> bool {
+        #[cfg(feature = "private-measurement-domain")]
+        if let Some(original) = &self.original
+            && original.wait_slice().is_err()
+        {
+            return true;
+        }
         self.supervisor.outer_cap_status().map_or(true, |status| {
             matches!(
                 status.state,
@@ -339,7 +361,11 @@ impl AssignmentHostWatchdogGuard {
             operation: None,
             cancellation,
             watcher: Some(watcher),
-            state: AssignmentHostWatchdog { supervisor },
+            state: AssignmentHostWatchdog {
+                supervisor,
+                #[cfg(feature = "private-measurement-domain")]
+                original: None,
+            },
         })
     }
 
@@ -359,7 +385,11 @@ impl AssignmentHostWatchdogGuard {
         cancellation: ExecutionCancellation,
     ) -> std::io::Result<Self> {
         let operation = Arc::new(supervisor.begin(class).map_err(std::io::Error::other)?);
-        let state = AssignmentHostWatchdog { supervisor };
+        let state = AssignmentHostWatchdog {
+            supervisor,
+            #[cfg(feature = "private-measurement-domain")]
+            original: None,
+        };
         let stopped = Arc::new(AtomicBool::new(false));
         let operation_expired = Arc::new(AtomicBool::new(false));
         let watcher_expired = operation_expired.clone();

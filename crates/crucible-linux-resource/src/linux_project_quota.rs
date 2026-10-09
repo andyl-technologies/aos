@@ -31,8 +31,14 @@ use crate::host_supervision::{
 
 mod control;
 mod descendants;
+#[cfg(feature = "private-measurement-domain")]
+mod measurement_storage;
 pub use control::LinuxProjectQuotaController;
 use control::QuotaControlState;
+#[cfg(feature = "private-measurement-domain")]
+pub use measurement_storage::{
+    MeasurementStorageContract, MeasurementStorageError, MeasurementStoragePins,
+};
 
 const EXT4_QUOTA_BLOCK_BYTES: u64 = 1 << 10;
 const PROJECT_QUOTA_TYPE: u32 = 2;
