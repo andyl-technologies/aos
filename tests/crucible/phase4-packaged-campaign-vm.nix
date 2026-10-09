@@ -262,6 +262,7 @@
       ++ (lib.optional twoNodeHttp httpRootImage)
       ++ (lib.optionals storageRecovery [storageRecoveryRunner pkgs.garage pkgs.bash pkgs.gawk])
       ++ (lib.optional (findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) pkgs.crucible)
+      ++ (lib.optional maintenanceTransfer choiceInitramfs)
       ++ (
         if guestChoice || hotForkFlight
         then [networkChoiceInitramfs]
