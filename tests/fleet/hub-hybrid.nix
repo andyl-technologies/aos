@@ -342,7 +342,9 @@
     recoveryBundleMiB,
   }: {
     aos.image.budgets = {
-      maxRuntimeClosureMiB = 912;
+      # The merged Native modules produce a 912.3 MiB diagnostic closure.
+      # Retain a small allowance for package metadata and executable growth.
+      maxRuntimeClosureMiB = 920;
       maxInitrdMiB = 144;
       # The measured 160.2 MiB UKI embeds the diagnostic initrd plus the kernel.
       # Keep both boot slots within the existing 384 MiB ESP allowance.

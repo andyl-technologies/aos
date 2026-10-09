@@ -12,6 +12,12 @@
     == cratesRoot
     || pathString == "${cratesRoot}/Cargo.toml"
     || pathString == "${cratesRoot}/Cargo.lock"
+    # Integration suites need the workspace runner profile. Small provider
+    # slices use the runner defaults without unrelated package-specific rules.
+    || (includeIntegrationInputs
+      && (pathString
+        == "${cratesRoot}/.config"
+        || lib.hasPrefix "${cratesRoot}/.config/" pathString))
     || builtins.any
     (crate: pathString == "${cratesRoot}/${crate}" || lib.hasPrefix "${cratesRoot}/${crate}/" pathString)
     selectedCrates;
