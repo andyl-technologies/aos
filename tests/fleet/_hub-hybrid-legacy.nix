@@ -5,6 +5,7 @@
   containerPublicationInputs,
   databaseUrl,
   fixture,
+  nativeOriginUrl,
   nextPublication,
   parityRouteKeys,
   pkgs,
@@ -664,7 +665,7 @@
 
   worker.wait_until_succeeds(
       f"{CURL} -sS -o /dev/null -w '%{{http_code}}' "
-      "https://aos-origin.fleet.test/-/health | "
+      "${nativeOriginUrl}/-/health | "
       f"{GREP} -qx 401",
       timeout=180,
   )
@@ -701,7 +702,7 @@
       ! {GREP} -qi '^x-aos-hybrid-native-ms:' /tmp/hybrid-instance.headers
   """), timeout=120)
   client.succeed(
-      f"test \"$({CURL} -s -o /dev/null -w '%{{http_code}}' https://aos-origin.fleet.test/-/instance)\" = 401"
+      f"test \"$({CURL} -s -o /dev/null -w '%{{http_code}}' ${nativeOriginUrl}/-/instance)\" = 401"
   )
 
   def worker_process_counters():
@@ -1799,7 +1800,7 @@
       native_page_commands.append(
           f"{CURL} -sS -o /dev/null -w {shlex.quote(PAGE_PERF_WRITEOUT)} "
           f"-H 'x-aos-hybrid-ingress: {compact}' -H \"Cookie: $cookie\" "
-          "https://aos-origin.fleet.test/-/instance"
+          "${nativeOriginUrl}/-/instance"
       )
 
   parallel_commands.extend([

@@ -1445,7 +1445,7 @@ in {
         ''
       else
         import ./_hub-hybrid-legacy.nix {
-          inherit channelReceiptKey containerPublicationInputs databaseUrl fixture nextPublication parityRouteKeys pkgs processSampler publication qualificationKeys releasePublicationKeys releaseReceiptKey secretVersionManifest serverCertificate serverPrivateKey storageKey workerOptions workerRunner;
+          inherit channelReceiptKey containerPublicationInputs databaseUrl fixture nativeOriginUrl nextPublication parityRouteKeys pkgs processSampler publication qualificationKeys releasePublicationKeys releaseReceiptKey secretVersionManifest serverCertificate serverPrivateKey storageKey workerOptions workerRunner;
         }
     );
 }

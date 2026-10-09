@@ -707,12 +707,12 @@ in {
       # served by the same native Hub process. The selected endpoint publishes
       # a strong ETag that addresses the immutable documentation object.
       consumer.succeed(
-          f"{CURL} -fsS '{REGISTRY}-/docs?q=&kind=' "
-          "| grep -q 'high-performance HTTP and reverse proxy server'"
+          f"{CURL} -fsS '{REGISTRY}-/docs?q=nginx&kind=package' "
+          "| grep -q 'href=\"/acme/production/-/docs/nginx/'"
       )
       consumer.succeed(
           f"{CURL} -fsS {REGISTRY}-/docs/nginx/${pkgs.nginx.version}/x86_64-linux "
-          "| grep -q 'high-performance HTTP and reverse proxy server'"
+          "| grep -q 'Scope: <strong>package / nginx</strong>'"
       )
       consumer.succeed(textwrap.dedent(f"""
           set -eu
@@ -774,7 +774,7 @@ in {
       """), timeout=600)
       documentation_commands = (
           ("show installed package documentation",
-           f"{APM} docs show nginx | grep -q 'high-performance HTTP and reverse proxy server'"),
+           f"{APM} docs show nginx | grep -q 'Module documentation: package / nginx'"),
           ("install generated manpage",
            f"man_path=$({APM} docs man nginx --install --print-path); test -s \"$man_path\""),
           ("inspect documentation cache",
@@ -859,14 +859,14 @@ in {
           set -eu
           export HOME=/tmp/consumer USER=consumer
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
-          {APM} docs show nginx | grep -q 'high-performance HTTP and reverse proxy server'
+          {APM} docs show nginx | grep -q 'Module documentation: package / nginx'
           {APM} docs serve --listen 127.0.0.1:18080 --once \
             >/tmp/apm-docs-serve.log 2>&1 &
           docs_pid=$!
           served=0
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
             if {CURL} -fsS http://127.0.0.1:18080/packages/nginx \
-              | grep -q 'high-performance HTTP and reverse proxy server'; then
+              | grep -q 'Scope: <strong>package / nginx</strong>'; then
               served=1
               break
             fi
