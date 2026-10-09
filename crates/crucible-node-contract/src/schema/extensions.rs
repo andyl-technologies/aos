@@ -431,6 +431,9 @@ fn validate_extension_identifier(identifier: &Id) -> Result<(), ContractError> {
 
 #[cfg(test)]
 mod tests {
+    // Contract regressions deliberately panic when canonical identities change.
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     fn version(prerelease: Option<&str>, build: Option<&str>) -> SemanticVersion {
