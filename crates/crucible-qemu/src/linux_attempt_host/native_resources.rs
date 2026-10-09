@@ -535,6 +535,7 @@ mod registry_control_tail_tests {
         release_registry_weak(&control, &mut registry).unwrap();
         assert_eq!(unwrap_without_weak(control).unwrap(), 43);
     }
+
     #[test]
     fn equal_values_in_a_different_allocation_cannot_release_registry_custody() {
         let control = Arc::new(47_u64);
