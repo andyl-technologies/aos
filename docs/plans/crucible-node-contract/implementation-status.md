@@ -409,9 +409,11 @@ The integrated source passes 325 targeted native, protocol, scheduler, state and
 source-quality checks, together with all-target strict checks across nine crates.
 The matching hermetic controller cohort passes all 6,399 tests, with 164
 explicitly skipped fixtures. The required application unit and integration
-test-target build also passes. The full license-boundary gate is still building
-its remaining package and corresponding-source dependencies; the controller
-result alone does not complete that gate. Raw original cohorts and build logs
+test-target build also passes. The matching full license-boundary gate passes,
+including the controller, plugin and corresponding-source dependencies;
+its artifact is `iwfbh32dwrv1f3v2cnxiy8r903a1pg6y-crucible-phase1-license-boundary-0`.
+This qualifies the original-epoch/provider and fixed-constructor checkpoint,
+not subsequent implementation stages. Raw original cohorts and build logs
 remain local.
 
 ## Fixed microvm constructor lifetimes
