@@ -58,6 +58,7 @@ schemas and test adapters establish component behavior, not native support.
 | `8eb08881cd` | Exact guarded native headers and timer registration in mandatory QEMU source validation | All 269 static checks and three source mutation controls pass; production binary and matching complete source build, and both installed ISA refusal suites pass |
 | `7e924dfeac` | Complete prepared-world authority, native input provenance, public reference runtime and conditional transcript boundaries | Strict production/all-target checks, 765 core regressions, actual public preparation and two-provider original-byte delivery/checksum/whole-custody reclamation pass; replay continuation and archive relocation remain separate work |
 | `c0c94c9225` | Complete durable public-world activation with separately rooted coordinator bytes | Three actual filesystem-backed public-provider tests pass, including fresh reconciliation, corrupt/missing bytes, partial root writes and lost commit acknowledgment |
+| `fd472ff836` | Authenticated native gem5 saved-copy relocation and co-retained patched DMTCP source | Both installed ISA witnesses remove the complete original image/resource/temporary namespace before two fresh continuations and recaptures; 25 native relocation controls and all 26 artifact identity checks pass |
 
 Legacy codec bytes, hash domains, fault identifiers, and existing exact QEMU
 restore semantics remain unchanged by these source extractions. New node
@@ -125,8 +126,14 @@ image directory as well as the live resource directory. Its first fresh native
 child failed before readiness: DMTCP still opened a saved supplementary file
 through the deleted image-root spelling. The earlier fixed-workload witnesses
 retained that historical image directory and therefore do not qualify archive
-relocation. Native checkpoint-file rebinding, an explicit signed gem5
-continuation schema, and early-child process-identity custody are being added;
+relocation. The successor native saved-copy hook now passes that stronger
+namespace-deletion gate for both ISAs, with unchanged primary image bytes and
+two independent imported saved-file roots. The required signed continuation
+edition two and early-child kernel identity custody pass 61 focused core/provider
+tests; the complete core suite passes 771 tests with three native fixtures
+excluded, and production strict checks pass against the newly measured profile.
+The next actual mixed-world cold test reaches a distinct copied-artifact managed
+route refusal during native staging. That route discrepancy is under diagnosis;
 complete mixed-world cold continuation remains unqualified.
 
 The [KVM audit](kvm-feasibility.md) records the clock/timer/interrupt mediation
