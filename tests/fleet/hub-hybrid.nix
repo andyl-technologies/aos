@@ -202,9 +202,13 @@
     builtins.readFile ../fixtures/hub-hybrid-fleet-s3.key
   );
   s3PublicTrust = writeFixture "hub-hybrid-fleet-s3-public-trust" s3CaCertificate;
+  nativeOriginUrl =
+    if externalDirect
+    then "https://aos-origin.fleet.test"
+    else "https://aos-origin.fleet.test:8443";
   nativeTCPPorts =
-    [443]
-    ++ lib.optionals externalDirect [8443 8453 4644 4673 4674 4677]
+    [443 8443]
+    ++ lib.optionals externalDirect [8453 4644 4673 4674 4677]
     ++ lib.optional (externalDirect && !separateDatabase) 5432;
   edgeTCPPorts = [443] ++ lib.optionals externalDirect [8453 4643 4644 4673 4674];
   fleetHostModule = allowedTCP:
@@ -432,13 +436,14 @@
         listen =
           if externalDirect
           then "127.0.0.1:4443"
-          else "0.0.0.0:443";
+          # The production Hub service runs without bind-service privileges.
+          else "0.0.0.0:8443";
         releaseReceiptKeyId = "staging-publication-v1";
         channelReceiptKeyId = "staging-channel-v1";
         hybrid = {
           enable = true;
           workerUrl = "https://aos.fleet.test";
-          originUrl = "https://aos-origin.fleet.test";
+          originUrl = nativeOriginUrl;
           uploadMode =
             if externalDirect
             then "direct"
@@ -665,7 +670,7 @@
         {
           HUB_TOPOLOGY = "hybrid";
           HUB_DEPLOYMENT_ID = "fleet-hybrid-v1";
-          HUB_HYBRID_ORIGIN_URL = "https://aos-origin.fleet.test";
+          HUB_HYBRID_ORIGIN_URL = nativeOriginUrl;
           HUB_HYBRID_INGRESS_KEY = "hybrid-fleet-ingress-key-with-at-least-thirty-two-bytes";
           HUB_STORAGE_WORK_KEY = "hybrid-fleet-storage-key-with-at-least-thirty-two-bytes";
         }
@@ -1398,7 +1403,7 @@ in {
               "aosStorePath": "${pkgs.aos}", "containerPublicationInputs": "${containerPublicationInputs}",
               "openssl": "${pkgs.openssl}/bin/openssl", "helperStorePath": "${fixture.helperV1}",
               "deploymentId": "fleet-hybrid-v1", "workerUrl": "https://aos.fleet.test",
-              "nativeOriginUrl": "https://aos-origin.fleet.test", "garage": GARAGE,
+              "nativeOriginUrl": "${nativeOriginUrl}", "garage": GARAGE,
               "s3Ca": "${s3PublicTrust}/value",
               "s3PublicTrust": "${s3PublicTrust}/value",
               "issuerCertificate": "${serverCertificate}/value", "issuerPrivateKey": "${serverPrivateKey}/value",

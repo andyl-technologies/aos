@@ -674,13 +674,15 @@ in {
           hub_command(
               "docs package nginx --registry acme/production",
               token,
-          ) + f" | {JQ} -e '.package.name == \"nginx\"'"
+          ) + f" | {JQ} -e '.schema == \"aos.module.documentation\" "
+          "and any(.packages[]; .name == \"nginx\")'"
       )
       publisher.succeed(
           hub_command(
               "docs package aos-hub --registry acme/production",
               token,
-          ) + f" | {JQ} -e '.package.name == \"aos-hub\"'"
+          ) + f" | {JQ} -e '.schema == \"aos.module.documentation\" "
+          "and any(.packages[]; .name == \"aos-hub\")'"
       )
       publisher.succeed(
           hub_command(
