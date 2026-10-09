@@ -146,6 +146,15 @@ Nextest profile also passes all 217 tests with zero skips (run
 `8602f827-a23d-477b-9f6b-8c379e35767a`, raw log
 `/tmp/terrane-3cd-std-nextest.log`). The new Tokio recovery fixtures, native
 traversal selection and runtime gates remain unqualified.
+The reviewed continuation now removes total-family caps while bounding each
+event, reconstructs current-pass coverage and unresolved duties from actual
+selected history, and attaches the typed native traversal refresh immediately
+after genuine Frame capture, before progress writes and selecting-slot effects.
+Its private composition `f5d6069445` passes strict Tokio production-library
+Clippy with warnings denied (raw log
+`/tmp/terrane-bounded-traversal-production-clippy.log`). Each event still scans
+the complete family and reconstructs history; this pass does not prove runtime
+fairness, large-family performance or the new native test-target compilation.
 
 All ten
 exact native Active completion cases pass on `4e6c14a7f3`. The eight-case native
