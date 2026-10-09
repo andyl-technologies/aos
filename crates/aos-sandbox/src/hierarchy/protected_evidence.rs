@@ -8,6 +8,7 @@
 //! AOSHPE01 | version:u16 | evidence-kind:u8 | reserved:u8 | typed fields
 //! ```
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{
     AssignmentEpoch, AttachmentId, AttachmentSlotId, DesiredGeneration, ExportId, IncarnationId,
     MediaType, NamespaceGeneration, NodeId, ObjectDescriptor, ObjectDigest, ProjectId, Revision,
@@ -379,13 +380,13 @@ pub(crate) fn decode_hierarchy_protected_evidence_v1(
                 cursor.sandbox()?,
                 cursor.desired_generation()?,
                 cursor.sandbox()?,
-                match cursor.u8()? {
+                match cursor.reader.u8().ok()? {
                     1 => InspectionGrantModeV1::Stable,
                     2 => InspectionGrantModeV1::LiveKernelCoupled,
                     _ => return None,
                 },
                 cursor.revision()?,
-                cursor.digest()?,
+                cursor.reader.digest().ok()?,
             ),
         ),
         2 => HierarchyProtectedEvidenceV1::SnapshotManifest(
@@ -393,13 +394,13 @@ pub(crate) fn decode_hierarchy_protected_evidence_v1(
                 &PROTECTED_CURRENT_AUTHORITY,
                 cursor.project()?,
                 cursor.sandbox()?,
-                SnapshotId::from_bytes(cursor.array()?),
+                SnapshotId::from_bytes(cursor.reader.array().ok()?),
                 cursor.desired_generation()?,
                 cursor.descriptor()?,
-                cursor.digest()?,
-                cursor.digest()?,
-                cursor.digest()?,
-                cursor.digest()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
             ),
         ),
         3 => HierarchyProtectedEvidenceV1::LiveInspection(
@@ -408,12 +409,12 @@ pub(crate) fn decode_hierarchy_protected_evidence_v1(
                 cursor.project()?,
                 cursor.sandbox()?,
                 cursor.desired_generation()?,
-                IncarnationId::from_bytes(cursor.array()?),
-                NamespaceGeneration::new(cursor.u64()?),
-                AssignmentEpoch::new(cursor.u64()?),
-                NodeId::from_bytes(cursor.array()?),
-                cursor.digest()?,
-                cursor.digest()?,
+                IncarnationId::from_bytes(cursor.reader.array().ok()?),
+                NamespaceGeneration::new(cursor.reader.u64().ok()?),
+                AssignmentEpoch::new(cursor.reader.u64().ok()?),
+                NodeId::from_bytes(cursor.reader.array().ok()?),
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
             ),
         ),
         4 => HierarchyProtectedEvidenceV1::Assignment(
@@ -422,34 +423,34 @@ pub(crate) fn decode_hierarchy_protected_evidence_v1(
                 cursor.project()?,
                 cursor.sandbox()?,
                 cursor.desired_generation()?,
-                IncarnationId::from_bytes(cursor.array()?),
-                NamespaceGeneration::new(cursor.u64()?),
-                AssignmentEpoch::new(cursor.u64()?),
-                NodeId::from_bytes(cursor.array()?),
-                cursor.digest()?,
-                cursor.digest()?,
+                IncarnationId::from_bytes(cursor.reader.array().ok()?),
+                NamespaceGeneration::new(cursor.reader.u64().ok()?),
+                AssignmentEpoch::new(cursor.reader.u64().ok()?),
+                NodeId::from_bytes(cursor.reader.array().ok()?),
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
             ),
         ),
         5 => {
             let project = cursor.project()?;
             let owner = cursor.sandbox()?;
             let owner_generation = cursor.desired_generation()?;
-            let export = ExportId::from_bytes(cursor.array()?);
-            let view = ViewId::from_bytes(cursor.array()?);
+            let export = ExportId::from_bytes(cursor.reader.array().ok()?);
+            let view = ViewId::from_bytes(cursor.reader.array().ok()?);
             let view_revision = cursor.revision()?;
             let descriptor = cursor.descriptor()?;
-            let source_handle = cursor.digest()?;
-            let retention = cursor.digest()?;
-            let live = cursor.u8()?;
+            let source_handle = cursor.reader.digest().ok()?;
+            let retention = cursor.reader.digest().ok()?;
+            let live = cursor.reader.u8().ok()?;
             let (incarnation, node, namespace_generation, assignment_epoch, observation) =
                 match live {
                     0 => (None, None, None, None, None),
                     1 => (
-                        Some(IncarnationId::from_bytes(cursor.array()?)),
-                        Some(NodeId::from_bytes(cursor.array()?)),
-                        Some(NamespaceGeneration::new(cursor.u64()?)),
-                        Some(AssignmentEpoch::new(cursor.u64()?)),
-                        Some(cursor.digest()?),
+                        Some(IncarnationId::from_bytes(cursor.reader.array().ok()?)),
+                        Some(NodeId::from_bytes(cursor.reader.array().ok()?)),
+                        Some(NamespaceGeneration::new(cursor.reader.u64().ok()?)),
+                        Some(AssignmentEpoch::new(cursor.reader.u64().ok()?)),
+                        Some(cursor.reader.digest().ok()?),
                     ),
                     _ => return None,
                 };
@@ -475,18 +476,18 @@ pub(crate) fn decode_hierarchy_protected_evidence_v1(
         }
         6 => {
             let sandbox = cursor.sandbox()?;
-            let incarnation = IncarnationId::from_bytes(cursor.array()?);
-            let namespace_generation = NamespaceGeneration::new(cursor.u64()?);
-            let node = NodeId::from_bytes(cursor.array()?);
-            let assignment_epoch = AssignmentEpoch::new(cursor.u64()?);
-            let observation = cursor.digest()?;
-            let slot = AttachmentSlotId::from_bytes(cursor.array()?);
-            let state = match cursor.u8()? {
+            let incarnation = IncarnationId::from_bytes(cursor.reader.array().ok()?);
+            let namespace_generation = NamespaceGeneration::new(cursor.reader.u64().ok()?);
+            let node = NodeId::from_bytes(cursor.reader.array().ok()?);
+            let assignment_epoch = AssignmentEpoch::new(cursor.reader.u64().ok()?);
+            let observation = cursor.reader.digest().ok()?;
+            let slot = AttachmentSlotId::from_bytes(cursor.reader.array().ok()?);
+            let state = match cursor.reader.u8().ok()? {
                 1 => SlotInventoryStateV1::Empty,
                 2 => SlotInventoryStateV1::ImmediatePredecessor {
-                    attachment: AttachmentId::from_bytes(cursor.array()?),
+                    attachment: AttachmentId::from_bytes(cursor.reader.array().ok()?),
                     generation: cursor.desired_generation()?,
-                    recipe_commitment: cursor.digest()?,
+                    recipe_commitment: cursor.reader.digest().ok()?,
                 },
                 _ => return None,
             };
@@ -501,27 +502,27 @@ pub(crate) fn decode_hierarchy_protected_evidence_v1(
                     observation,
                     slot,
                     state,
-                    cursor.digest()?,
+                    cursor.reader.digest().ok()?,
                 ),
             )
         }
         7 => HierarchyProtectedEvidenceV1::AttachmentAuthority(
             VerifiedAttachmentAuthorityV1::from_verified_parts(
                 &PROTECTED_CURRENT_AUTHORITY,
-                AttachmentId::from_bytes(cursor.array()?),
+                AttachmentId::from_bytes(cursor.reader.array().ok()?),
                 cursor.desired_generation()?,
-                cursor.digest()?,
-                cursor.digest()?,
-                cursor.digest()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
             ),
         ),
         8 => HierarchyProtectedEvidenceV1::DetachAuthority(
             VerifiedDetachAuthorityV1::from_verified_parts(
                 &PROTECTED_CURRENT_AUTHORITY,
-                AttachmentId::from_bytes(cursor.array()?),
+                AttachmentId::from_bytes(cursor.reader.array().ok()?),
                 cursor.desired_generation()?,
-                cursor.digest()?,
-                cursor.digest()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
             ),
         ),
         9 => HierarchyProtectedEvidenceV1::DetachCompletion(
@@ -529,12 +530,12 @@ pub(crate) fn decode_hierarchy_protected_evidence_v1(
                 &PROTECTED_CURRENT_AUTHORITY,
                 cursor.project()?,
                 cursor.revision()?,
-                AttachmentId::from_bytes(cursor.array()?),
+                AttachmentId::from_bytes(cursor.reader.array().ok()?),
                 cursor.desired_generation()?,
-                cursor.digest()?,
-                cursor.digest()?,
-                cursor.digest()?,
-                cursor.digest()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
             ),
         ),
         10 => HierarchyProtectedEvidenceV1::TransactionCompletion(
@@ -542,84 +543,84 @@ pub(crate) fn decode_hierarchy_protected_evidence_v1(
                 &PROTECTED_CURRENT_AUTHORITY,
                 cursor.project()?,
                 cursor.revision()?,
-                cursor.digest()?,
-                cursor.digest()?,
-                cursor.digest()?,
-                cursor.digest()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
             ),
         ),
         11 => HierarchyProtectedEvidenceV1::SnapshotRecoveryAuthority(
             VerifiedSnapshotRecoveryAuthorityV1::from_verified_parts(
                 &PROTECTED_CURRENT_AUTHORITY,
                 cursor.project()?,
-                SnapshotId::from_bytes(cursor.array()?),
-                cursor.digest()?,
-                match cursor.u8()? {
+                SnapshotId::from_bytes(cursor.reader.array().ok()?),
+                cursor.reader.digest().ok()?,
+                match cursor.reader.u8().ok()? {
                     1 => PreparedSnapshotRecoveryDecisionV1::Continue,
                     2 => PreparedSnapshotRecoveryDecisionV1::Rollback,
                     _ => return None,
                 },
-                cursor.digest()?,
+                cursor.reader.digest().ok()?,
             ),
         ),
         12 => HierarchyProtectedEvidenceV1::StageTransition(
             VerifiedStageTransitionV1::from_verified_parts(
                 &PROTECTED_CURRENT_AUTHORITY,
-                AttachmentId::from_bytes(cursor.array()?),
+                AttachmentId::from_bytes(cursor.reader.array().ok()?),
                 cursor.desired_generation()?,
-                cursor.digest()?,
-                realization_stage(cursor.u8()?)?,
-                realization_stage(cursor.u8()?)?,
-                cursor.digest()?,
+                cursor.reader.digest().ok()?,
+                realization_stage(cursor.reader.u8().ok()?)?,
+                realization_stage(cursor.reader.u8().ok()?)?,
+                cursor.reader.digest().ok()?,
             ),
         ),
         13 => HierarchyProtectedEvidenceV1::RebootRealizationInventory(
             RebootRealizationInventoryV1::from_verified_parts(
                 &PROTECTED_CURRENT_AUTHORITY,
-                AttachmentId::from_bytes(cursor.array()?),
+                AttachmentId::from_bytes(cursor.reader.array().ok()?),
                 cursor.desired_generation()?,
-                cursor.digest()?,
-                reboot_inventory_state(cursor.u8()?)?,
+                cursor.reader.digest().ok()?,
+                reboot_inventory_state(cursor.reader.u8().ok()?)?,
                 cursor.replacement()?,
-                cursor.digest()?,
+                cursor.reader.digest().ok()?,
             ),
         ),
         14 => HierarchyProtectedEvidenceV1::PublishedRollbackAuthority(
             VerifiedPublishedRollbackAuthorityV1::from_verified_parts(
                 &PROTECTED_CURRENT_AUTHORITY,
-                AttachmentId::from_bytes(cursor.array()?),
+                AttachmentId::from_bytes(cursor.reader.array().ok()?),
                 cursor.desired_generation()?,
-                cursor.digest()?,
-                cursor.digest()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
             ),
         ),
         15 => HierarchyProtectedEvidenceV1::PreparedRealizationAuthority(
             VerifiedPreparedRealizationAuthorityV1::from_verified_parts(
                 &PROTECTED_CURRENT_AUTHORITY,
-                AttachmentId::from_bytes(cursor.array()?),
+                AttachmentId::from_bytes(cursor.reader.array().ok()?),
                 cursor.desired_generation()?,
-                cursor.digest()?,
-                match cursor.u8()? {
+                cursor.reader.digest().ok()?,
+                match cursor.reader.u8().ok()? {
                     1 => PreparedRealizationRecoveryDecisionV1::Continue,
                     2 => PreparedRealizationRecoveryDecisionV1::Rollback,
                     _ => return None,
                 },
-                cursor.digest()?,
+                cursor.reader.digest().ok()?,
             ),
         ),
         16 => HierarchyProtectedEvidenceV1::DetachRebootInventory(
             VerifiedDetachRebootInventoryV1::from_verified_parts(
                 &PROTECTED_CURRENT_AUTHORITY,
-                AttachmentId::from_bytes(cursor.array()?),
+                AttachmentId::from_bytes(cursor.reader.array().ok()?),
                 cursor.desired_generation()?,
-                cursor.digest()?,
-                detach_stage(cursor.u8()?)?,
-                cursor.digest()?,
+                cursor.reader.digest().ok()?,
+                detach_stage(cursor.reader.u8().ok()?)?,
+                cursor.reader.digest().ok()?,
             ),
         ),
         _ => return None,
     };
-    cursor.finish()?;
+    cursor.reader.finish().ok()?;
     (encode_hierarchy_protected_evidence_v1(&evidence)?.as_slice() == bytes).then_some(evidence)
 }
 
@@ -873,7 +874,7 @@ fn detach_stage(code: u8) -> Option<DetachStageV1> {
 }
 
 struct Cursor<'a> {
-    remaining: &'a [u8],
+    reader: BoundedReader<'a, ()>,
     tag: u8,
 }
 
@@ -944,80 +945,50 @@ impl<'a> Cursor<'a> {
             return None;
         }
         Some(Self {
-            remaining: &bytes[12..],
+            reader: BoundedReader::new(&bytes[12..], |_| ()),
             tag: bytes[10],
         })
     }
 
-    fn finish(self) -> Option<()> {
-        self.remaining.is_empty().then_some(())
-    }
-
-    fn take(&mut self, length: usize) -> Option<&'a [u8]> {
-        let (value, remaining) = self.remaining.split_at_checked(length)?;
-        self.remaining = remaining;
-        Some(value)
-    }
-
-    fn array<const N: usize>(&mut self) -> Option<[u8; N]> {
-        self.take(N)?.try_into().ok()
-    }
-
-    fn u8(&mut self) -> Option<u8> {
-        Some(self.array::<1>()?[0])
-    }
-
-    fn u16(&mut self) -> Option<u16> {
-        Some(u16::from_be_bytes(self.array()?))
-    }
-
-    fn u64(&mut self) -> Option<u64> {
-        Some(u64::from_be_bytes(self.array()?))
-    }
-
-    fn digest(&mut self) -> Option<ObjectDigest> {
-        Some(ObjectDigest::from_bytes(self.array()?))
-    }
-
     fn project(&mut self) -> Option<ProjectId> {
-        Some(ProjectId::from_bytes(self.array()?))
+        Some(ProjectId::from_bytes(self.reader.array().ok()?))
     }
 
     fn sandbox(&mut self) -> Option<SandboxId> {
-        Some(SandboxId::from_bytes(self.array()?))
+        Some(SandboxId::from_bytes(self.reader.array().ok()?))
     }
 
     fn revision(&mut self) -> Option<Revision> {
-        Some(Revision::new(self.u64()?))
+        Some(Revision::new(self.reader.u64().ok()?))
     }
 
     fn desired_generation(&mut self) -> Option<DesiredGeneration> {
-        Some(DesiredGeneration::new(self.u64()?))
+        Some(DesiredGeneration::new(self.reader.u64().ok()?))
     }
 
     fn descriptor(&mut self) -> Option<ObjectDescriptor> {
-        let media_length = usize::from(self.u16()?);
+        let media_length = usize::from(self.reader.u16().ok()?);
         if media_length == 0 || media_length > MAXIMUM_MEDIA_TYPE_BYTES {
             return None;
         }
         let media_type =
-            MediaType::new(std::str::from_utf8(self.take(media_length)?).ok()?).ok()?;
+            MediaType::new(std::str::from_utf8(self.reader.bytes(media_length).ok()?).ok()?).ok()?;
         Some(ObjectDescriptor::new(
             media_type,
-            self.digest()?,
-            self.u64()?,
+            self.reader.digest().ok()?,
+            self.reader.u64().ok()?,
         ))
     }
 
     fn replacement(&mut self) -> Option<Option<ReplacementTransactionV1>> {
-        match self.u8()? {
+        match self.reader.u8().ok()? {
             0 => Some(None),
             1 => Some(Some(ReplacementTransactionV1::from_durable_parts(
-                AttachmentId::from_bytes(self.array()?),
-                AttachmentId::from_bytes(self.array()?),
+                AttachmentId::from_bytes(self.reader.array().ok()?),
+                AttachmentId::from_bytes(self.reader.array().ok()?),
                 self.desired_generation()?,
-                self.digest()?,
-                self.digest()?,
+                self.reader.digest().ok()?,
+                self.reader.digest().ok()?,
             ))),
             _ => None,
         }

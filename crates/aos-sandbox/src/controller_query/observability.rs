@@ -5,6 +5,7 @@
 //! selecting a global recorder, exporter, endpoint, or production worker.
 
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use aos_sandbox_protocol::public_api::audit_event::CheckedAuditWatchEventV1;
 use aos_sandbox_protocol::public_api::model::{MAXIMUM_OPAQUE_RESPONSE_BYTES, QueryBindingV1};
 use aos_sandbox_protocol::public_api::resource::PublicResourceTypeV1;
@@ -1278,15 +1279,15 @@ fn decode_observability_progress(
     expected_effect_id: ObjectDigest,
     encoded: &[u8],
 ) -> Result<DormantObservabilityEffectHandoffV1, DormantObservabilityErrorV1> {
-    let mut reader = CanonicalReaderV1::new(encoded);
-    if reader.take(8)? != OBSERVABILITY_PROGRESS_MAGIC_V1 {
+    let mut reader = CanonicalReaderV1::new(encoded, canonical_read_error);
+    if reader.bytes(8)? != OBSERVABILITY_PROGRESS_MAGIC_V1 {
         return Err(DormantObservabilityErrorV1::NotCanonical);
     }
-    let embedded_effect_id = reader.digest()?;
+    let embedded_effect_id = read_nonzero_digest(&mut reader)?;
     if embedded_effect_id != expected_effect_id {
         return Err(DormantObservabilityErrorV1::NotCanonical);
     }
-    let canonical_content = reader.length_prefixed()?.to_vec();
+    let canonical_content = read_length_prefixed(&mut reader)?.to_vec();
     let effect = decode_observability_effect_content(expected_effect_id, &canonical_content)?;
     let next_audit_row = reader.u32()? as usize;
     let ambiguity_queries = reader.u32()?;
@@ -1399,15 +1400,15 @@ fn decode_observability_effect_content(
     {
         return Err(DormantObservabilityErrorV1::NotCanonical);
     }
-    let mut reader = CanonicalReaderV1::new(canonical_content);
-    if reader.take(8)? != OBSERVABILITY_CONTENT_MAGIC_V1 {
+    let mut reader = CanonicalReaderV1::new(canonical_content, canonical_read_error);
+    if reader.bytes(8)? != OBSERVABILITY_CONTENT_MAGIC_V1 {
         return Err(DormantObservabilityErrorV1::NotCanonical);
     }
-    let operation_id = reader.array_16()?;
+    let operation_id = reader.array()?;
     let resource_type = decode_resource_type(reader.u8()?)?;
-    let resource_id = reader.array_16()?;
-    let resource_version = reader.length_prefixed()?.to_vec();
-    let current_observation = decode_current_observation(reader.length_prefixed()?)?;
+    let resource_id = reader.array()?;
+    let resource_version = read_length_prefixed(&mut reader)?.to_vec();
+    let current_observation = decode_current_observation(read_length_prefixed(&mut reader)?)?;
 
     let audit_count = reader.u32()? as usize;
     if audit_count > MAXIMUM_DORMANT_AUDIT_ROWS_V1 {
@@ -1416,7 +1417,7 @@ fn decode_observability_effect_content(
     let mut audit = Vec::with_capacity(audit_count);
     for _ in 0..audit_count {
         let binding = decode_query_binding(&mut reader)?;
-        let wire = aos_proto::aos::sandbox::v1::Event::decode_from_slice(reader.length_prefixed()?)
+        let wire = aos_proto::aos::sandbox::v1::Event::decode_from_slice(read_length_prefixed(&mut reader)?)
             .map_err(|_| DormantObservabilityErrorV1::NotCanonical)?;
         audit.push(
             CheckedAuditWatchEventV1::from_response(binding, wire)
@@ -1508,8 +1509,8 @@ fn encode_current_observation(
 fn decode_current_observation(
     encoded: &[u8],
 ) -> Result<DormantObservabilityCurrentObservationV1, DormantObservabilityErrorV1> {
-    let mut reader = CanonicalReaderV1::new(encoded);
-    if reader.take(8)? != OBSERVABILITY_CURRENT_MAGIC_V1 {
+    let mut reader = CanonicalReaderV1::new(encoded, canonical_read_error);
+    if reader.bytes(8)? != OBSERVABILITY_CURRENT_MAGIC_V1 {
         return Err(DormantObservabilityErrorV1::NotCanonical);
     }
     let health_sequence = reader.u64()?;
@@ -1522,7 +1523,7 @@ fn decode_current_observation(
         let component = decode_health_component(reader.u8()?)?;
         let state = decode_health_state(reader.u8()?)?;
         let generation = reader.u64()?;
-        let safe_code = std::str::from_utf8(reader.length_prefixed()?)
+        let safe_code = std::str::from_utf8(read_length_prefixed(&mut reader)?)
             .map_err(|_| DormantObservabilityErrorV1::NotCanonical)?
             .to_owned();
         checks.push(DormantHealthCheckV1::new(
@@ -1540,10 +1541,10 @@ fn decode_current_observation(
     for _ in 0..resource_count {
         let kind = decode_residual_kind(reader.u8()?)?;
         let state = decode_residual_state(reader.u8()?)?;
-        let identity = reader.digest()?;
+        let identity = read_nonzero_digest(&mut reader)?;
         let owner = match reader.u8()? {
             0 => None,
-            1 => Some(reader.array_16()?),
+            1 => Some(reader.array()?),
             _ => return Err(DormantObservabilityErrorV1::NotCanonical),
         };
         resources.push(DormantResidualResourceV1::new(
@@ -1571,7 +1572,7 @@ fn decode_query_binding(
 ) -> Result<QueryBindingV1, DormantObservabilityErrorV1> {
     let mut encoded = [0; aos_sandbox_protocol::public_api::QUERY_BINDING_TRANSPORT_BYTES];
     for component in encoded.chunks_exact_mut(32) {
-        component.copy_from_slice(reader.digest()?.as_bytes());
+        component.copy_from_slice(read_nonzero_digest(reader)?.as_bytes());
     }
 
     QueryBindingV1::from_transport_bytes(&encoded)
@@ -1628,7 +1629,7 @@ fn encode_metric_observation(
 fn decode_metric_observation(
     reader: &mut CanonicalReaderV1<'_>,
 ) -> Result<PortableMetricObservationV1, DormantObservabilityErrorV1> {
-    let name = std::str::from_utf8(reader.length_prefixed()?)
+    let name = std::str::from_utf8(read_length_prefixed(reader)?)
         .ok()
         .and_then(SandboxMetricNameV1::from_stable_name)
         .ok_or(DormantObservabilityErrorV1::NotCanonical)?;
@@ -1645,9 +1646,9 @@ fn decode_metric_observation(
     let mut labels = Vec::with_capacity(label_count);
     for _ in 0..label_count {
         labels.push(match reader.u8()? {
-            1 => MetricLabelValueV1::Project(reader.array_16()?),
+            1 => MetricLabelValueV1::Project(reader.array()?),
             2 => MetricLabelValueV1::Backend(decode_metric_backend(reader.u8()?)?),
-            3 => MetricLabelValueV1::Node(reader.array_16()?),
+            3 => MetricLabelValueV1::Node(reader.array()?),
             4 => MetricLabelValueV1::StatusClass(decode_metric_status(reader.u8()?)?),
             5 => MetricLabelValueV1::CapabilityProfile(decode_metric_capability(reader.u8()?)?),
             _ => return Err(DormantObservabilityErrorV1::NotCanonical),
@@ -1678,77 +1679,27 @@ fn push_length_prefixed(
     Ok(())
 }
 
-struct CanonicalReaderV1<'a> {
-    remaining: &'a [u8],
+type CanonicalReaderV1<'a> = BoundedReader<'a, DormantObservabilityErrorV1>;
+
+fn canonical_read_error(_error: ReadError) -> DormantObservabilityErrorV1 {
+    DormantObservabilityErrorV1::NotCanonical
 }
 
-impl<'a> CanonicalReaderV1<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { remaining: bytes }
+fn read_nonzero_digest(
+    reader: &mut CanonicalReaderV1<'_>,
+) -> Result<ObjectDigest, DormantObservabilityErrorV1> {
+    let bytes: [u8; 32] = reader.array()?;
+    if bytes == [0; 32] {
+        return Err(DormantObservabilityErrorV1::NotCanonical);
     }
+    Ok(ObjectDigest::from_bytes(bytes))
+}
 
-    const fn remaining(&self) -> usize {
-        self.remaining.len()
-    }
-
-    fn take(&mut self, length: usize) -> Result<&'a [u8], DormantObservabilityErrorV1> {
-        if length > self.remaining.len() {
-            return Err(DormantObservabilityErrorV1::NotCanonical);
-        }
-        let (value, remaining) = self.remaining.split_at(length);
-        self.remaining = remaining;
-        Ok(value)
-    }
-
-    fn u8(&mut self) -> Result<u8, DormantObservabilityErrorV1> {
-        Ok(self.take(1)?[0])
-    }
-
-    fn u32(&mut self) -> Result<u32, DormantObservabilityErrorV1> {
-        Ok(u32::from_be_bytes(
-            self.take(4)?
-                .try_into()
-                .map_err(|_| DormantObservabilityErrorV1::NotCanonical)?,
-        ))
-    }
-
-    fn u64(&mut self) -> Result<u64, DormantObservabilityErrorV1> {
-        Ok(u64::from_be_bytes(
-            self.take(8)?
-                .try_into()
-                .map_err(|_| DormantObservabilityErrorV1::NotCanonical)?,
-        ))
-    }
-
-    fn array_16(&mut self) -> Result<[u8; 16], DormantObservabilityErrorV1> {
-        self.take(16)?
-            .try_into()
-            .map_err(|_| DormantObservabilityErrorV1::NotCanonical)
-    }
-
-    fn digest(&mut self) -> Result<ObjectDigest, DormantObservabilityErrorV1> {
-        let bytes: [u8; 32] = self
-            .take(32)?
-            .try_into()
-            .map_err(|_| DormantObservabilityErrorV1::NotCanonical)?;
-        if bytes == [0; 32] {
-            return Err(DormantObservabilityErrorV1::NotCanonical);
-        }
-        Ok(ObjectDigest::from_bytes(bytes))
-    }
-
-    fn length_prefixed(&mut self) -> Result<&'a [u8], DormantObservabilityErrorV1> {
-        let length = self.u32()? as usize;
-        self.take(length)
-    }
-
-    fn finish(self) -> Result<(), DormantObservabilityErrorV1> {
-        if self.remaining.is_empty() {
-            Ok(())
-        } else {
-            Err(DormantObservabilityErrorV1::NotCanonical)
-        }
-    }
+fn read_length_prefixed<'a>(
+    reader: &mut CanonicalReaderV1<'a>,
+) -> Result<&'a [u8], DormantObservabilityErrorV1> {
+    let length = reader.u32()? as usize;
+    reader.bytes(length)
 }
 
 macro_rules! closed_observability_tags {
