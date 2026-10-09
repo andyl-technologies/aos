@@ -257,6 +257,7 @@ in
     version = "0";
     LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     src = crucibleSrc;
+    runtimeDeps = [pkgs.sqlite];
 
     buildDeps = [
       pkgs.coreutils
