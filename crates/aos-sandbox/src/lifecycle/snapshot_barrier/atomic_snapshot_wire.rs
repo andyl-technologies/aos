@@ -77,6 +77,7 @@ impl LifecycleAtomicDatasetSnapshotPlanV1 {
         if bytes.len() > MAXIMUM_PLAN_BYTES {
             return Err(LifecyclePhase6ErrorV1::Capacity);
         }
+        // Mechanical range errors retain the format's overflow/truncation distinction.
         let mut reader = BoundedReader::new(bytes, |error| match error {
             ReadError::LengthOverflow => LifecyclePhase6ErrorV1::Capacity,
             _ => LifecyclePhase6ErrorV1::InvalidInput,

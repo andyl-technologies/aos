@@ -329,6 +329,7 @@ impl ClosedPolicyRootBindingV2 {
             effect_transaction: reader.array()?,
             handoff_epoch: reader.u64()?,
         };
+        // Leave the checksum unread; canonical re-encoding validates the whole record.
         if reader.remaining() != RECORD_BYTES - BODY_BYTES || binding.encode()?.as_slice() != bytes {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
