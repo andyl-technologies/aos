@@ -55,10 +55,20 @@ in
 
           count_daemon_production_occurrences() {
             needle="$1"
-            count="$(${pkgs.grep}/bin/grep -RhoF --include='*.rs' \
-              --exclude='tests.rs' --exclude-dir=tests --exclude-dir=examples \
-              -- "$needle" crates/crucible/control/crucible-daemon/src 2>/dev/null \
-              | ${pkgs.coreutils}/bin/wc -l)"
+            # Lifecycle declarations and their closed inline fixture regions
+            # moved into the daemon. Their exact counts and gates are checked
+            # below; they do not introduce a production launch implementation.
+            count="$(
+              for file in $(${pkgs.grep}/bin/grep -RlF --include='*.rs' \
+                --exclude='tests.rs' --exclude-dir=tests --exclude-dir=examples \
+                -- "$needle" crates/crucible/control/crucible-daemon/src 2>/dev/null); do
+                case "$file" in
+                  crates/crucible/control/crucible-daemon/src/vm_lifecycle.rs|\
+                  crates/crucible/control/crucible-daemon/src/vm_lifecycle/helpers.rs) ;;
+                  *) ${pkgs.grep}/bin/grep -Fo -- "$needle" "$file" ;;
+                esac
+              done | ${pkgs.coreutils}/bin/wc -l
+            )"
             printf '%s' "$count" | ${pkgs.coreutils}/bin/tr -d '[:space:]'
           }
 
@@ -79,7 +89,7 @@ in
               || fail "expected $expected occurrence(s) of '$needle' in $file, found $actual"
           }
 
-          # The API is the sole authority that can construct the complete request.
+          # The lifecycle owner alone constructs the complete request.
           require_count 1 'QemuProductionExactRestoreRequest::new('
           require_file_count 1 \
             crates/crucible/control/crucible-daemon/src/vm_lifecycle.rs \
@@ -108,7 +118,7 @@ in
           daemon_restored_impls="$(count_daemon_production_occurrences 'fn launch_restored(')"
           [ "$daemon_restored_impls" = 1 ] \
             || fail "expected one production daemon launch_restored implementation, found $daemon_restored_impls"
-          # Across the workspace, the remaining definitions are one API trait
+          # Across the workspace, the remaining definitions are one lifecycle trait
           # declaration and seven implementations in closed test-only regions.
           require_count 9 'fn launch_restored('
           require_file_count 2 \
@@ -129,6 +139,17 @@ in
           require_file_count 1 \
             crates/crucible/control/crucible-daemon/src/vm_lifecycle/helpers.rs \
             'mod tests {'
+          require_file_count 1 \
+            crates/crucible/control/crucible-daemon/src/vm_lifecycle.rs \
+            'pub trait ProductionVmNodeLauncher'
+          ${pkgs.grep}/bin/grep -F -A1 '#[cfg(any(test, feature = "test-support"))]' \
+            crates/crucible/control/crucible-daemon/src/vm_lifecycle.rs \
+            | ${pkgs.grep}/bin/grep -Fqx 'impl ProductionVmNodeLauncher for PackagedProductionVmNodeLauncher {' \
+            || fail "packaged lifecycle mock is not gated by test/test-support"
+          ${pkgs.grep}/bin/grep -F -A1 '#[cfg(test)]' \
+            crates/crucible/control/crucible-daemon/src/vm_lifecycle/helpers.rs \
+            | ${pkgs.grep}/bin/grep -Fqx 'mod tests {' \
+            || fail "lifecycle helper launcher mocks are not gated by cfg(test)"
 
           # The held-stop mock is reachable only through the gated runtime tests.
           require_file_count 1 \
