@@ -642,7 +642,8 @@ impl<E: SingleNodeEffectExecutor> Reconciler<E> {
     ) -> Result<Option<ControllerCreateFailureSettlementAckV1>, ReconcilerError> {
         self.journal.ensure_protected_authority()?;
         let Some(floor) = load_floor(&self.journal, operation_id)? else {
-            return if self.load_operation(operation_id)?.state() == OperationState::FailedBeforeCommit
+            return if self.load_operation(operation_id)?.state()
+                == OperationState::FailedBeforeCommit
             {
                 Err(invalid_settlement())
             } else {
