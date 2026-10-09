@@ -150,9 +150,9 @@ async fn actual_capture_publishes_private_files_and_verifies_without_source_muta
         captured.schema_version,
         "aos.hub.offline-database-capture-report/v2"
     );
-    assert_eq!(captured.checked_retained_tables, 278);
+    assert_eq!(captured.checked_retained_tables, 281);
     assert_eq!(captured.synthetic_lineage_rows, 2);
-    assert_eq!(verified.checked_retained_tables, 278);
+    assert_eq!(verified.checked_retained_tables, 281);
     assert_eq!(captured.signed_root_profile, "framing_only");
     assert!(!captured
         .pending_recovery_requirements
@@ -667,36 +667,21 @@ async fn observed_cancellation_during_capture_cleans_unpublished_stage() {
 }
 
 #[test]
-fn archive_key_refuses_systemd_group_exception_without_changing_runtime_loader() {
-    const CHILD_PATH: &str = "AOS_SNAPSHOT_TEST_PRIVATE_PATH";
-    if let Some(path) = std::env::var_os(CHILD_PATH) {
-        let path = PathBuf::from(path);
-        // The existing runtime policy deliberately admits systemd group read.
-        assert_eq!(
-            crate::auth::seal::read_secret_file_zeroizing(&path)
-                .unwrap()
-                .len(),
-            32
-        );
-        assert!(crate::auth::seal::read_secret_file_zeroizing_capped(&path, 32).is_err());
-        return;
-    }
+fn archive_and_runtime_keys_refuse_group_readable_files() {
     let f = fixture();
     fs::set_permissions(
         &f.credentials.signing_seed_file,
         fs::Permissions::from_mode(0o440),
     )
     .unwrap();
-    // A separate process avoids mutating process-wide environment during other
-    // secret-policy tests while exercising the real context-dependent policy.
-    let child = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "snapshot::tests::archive_key_refuses_systemd_group_exception_without_changing_runtime_loader", "--nocapture"])
-        .env(CHILD_PATH, &f.credentials.signing_seed_file)
-        .env("CREDENTIALS_DIRECTORY", f.directory.path()).output().unwrap();
+
+    // Native credentials now share the strict owner-only permission policy.
     assert!(
-        child.status.success(),
-        "{}",
-        String::from_utf8_lossy(&child.stderr)
+        crate::auth::seal::read_secret_file_zeroizing(&f.credentials.signing_seed_file).is_err()
+    );
+    assert!(
+        crate::auth::seal::read_secret_file_zeroizing_capped(&f.credentials.signing_seed_file, 32,)
+            .is_err()
     );
 }
 
