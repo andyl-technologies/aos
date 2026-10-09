@@ -49,6 +49,19 @@
     "retirement_tests::raw_publication_refuses_mixed_live_row_exclusion_without_changing_selected_catalog"
   ];
 
+  rawDurabilityTests = [
+    "indexed_classification_matches_full_scan_for_all_retained_variants"
+    "protected_absent_unretained_and_missing_inventory_match_original"
+    "dynamic_targets_preserve_duplicate_attempts_and_original_row_order"
+    "fixed_flags_never_cache_output_body_or_full_boundary_success"
+    "consumed_present_absent_and_policy_observations_stay_fresh"
+    "equal_bytes_on_replaced_inode_refuse_current_and_complete_boundaries"
+    "original_first_refusal_and_fault_prescan_precede_later_rows"
+    "consumed_mutation_at_pre_sync_gate_refuses_without_completion"
+    "duplicate_current_rows_stay_fresh_after_actual_sync_without_completion"
+    "current_denial_after_actual_body_handoff_precedes_completion"
+  ];
+
   nativeCreationTests = [
     "native_creation_commits_pack_and_index_from_real_container_writers"
     "native_creation_selects_pending_before_any_artifact_mutation"
@@ -186,6 +199,7 @@ in {
     run_bucket_test bucket::fault_tests::unsynced_temporary_write_never_changes_visible_ref
     run_bucket_test store::native_effect::tests::immutable_cohort::targeted_rename_tests::targeted_manifest_rename_fault_preserves_installed_prefix_and_refuses_receipt
     run_bucket_test store::native_effect::tests::immutable_cohort::targeted_rename_tests::targeted_manifest_rename_fault_ignores_other_destinations
+    ${builtins.concatStringsSep "\n" (map (test: "run_bucket_test store::native_effect::artifact_seal::publication_sync::outputs::durability::classification_tests::${test}") rawDurabilityTests)}
     run_bucket_test bucket::fault_tests::partial_generation_is_unpublished_and_retry_uses_a_fresh_generation
     run_bucket_test store::native_effect::tests::directory::restrictive_umask_repairs_the_actual_new_directory_or_refuses_handoff
     run_bucket_test store::native_effect::tests::directory::restored_created_name_rejects_the_opened_directory_decoy
