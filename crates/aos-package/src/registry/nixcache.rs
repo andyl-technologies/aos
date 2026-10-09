@@ -1627,6 +1627,16 @@ fn compress_nar_to_file(
         writer.finish().context("flushing compressed NAR")
     });
 
+    // A failed destination write leaves unread bytes in the pipe. Close it
+    // before waiting so the producer cannot block forever on a full pipe.
+    drop(dump_stdout);
+    if let Err(error) = digest {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
+
     let status = child.wait().context("waiting for nix-store --dump")?;
     if !status.success() {
         let mut stderr = String::new();
@@ -1675,6 +1685,16 @@ fn dump_nar_to_file(store_path: &str, dest: &Path) -> Result<(String, u64)> {
     let mut writer = HashingWriter::new(BufWriter::new(file));
     let copy_result = io::copy(&mut dump_stdout, &mut writer).context("copying plain NAR stream");
     let digest = copy_result.and_then(|_| writer.finish().context("flushing plain NAR"));
+
+    // Plain NARs have the same producer pipe as compressed NARs; a failed
+    // copy must release and reap that producer before returning the error.
+    drop(dump_stdout);
+    if let Err(error) = digest {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
 
     let status = child.wait().context("waiting for nix-store --dump")?;
     if !status.success() {
@@ -1741,6 +1761,90 @@ mod tests {
     use super::*;
     use aos_core::nar::info as narinfo;
     use tempfile::TempDir;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cache_write_failure_reaps_dump_process() {
+        // Run the failure cases in a subprocess so a regression cannot leave
+        // this test waiting indefinitely for a producer with a full pipe.
+        let output = TempDir::new().unwrap();
+        let receipt = output.path().join("verified");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "registry::nixcache::tests::cache_write_failure_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("AOS_CACHE_WRITE_FAILURE_CHILD", &receipt)
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "cache write failure subprocess failed");
+                break;
+            }
+
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("cache write failure left the dump process blocked");
+            }
+
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        assert_eq!(std::fs::read_to_string(receipt).unwrap(), "verified");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "invoked by the bounded cache write failure subprocess test"]
+    fn cache_write_failure_child() {
+        let Some(receipt) = std::env::var_os("AOS_CACHE_WRITE_FAILURE_CHILD") else {
+            return;
+        };
+
+        let source = TempDir::new().unwrap();
+        let output = TempDir::new().unwrap();
+        let mut state = 0x1234_5678_u32;
+        let payload: Vec<u8> = (0..8 * 1024 * 1024)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect();
+        std::fs::write(source.path().join("payload"), payload).unwrap();
+        let source = source.path().to_str().unwrap();
+
+        for compressed in [false, true] {
+            let destination = output.path().join("nar");
+            let temporary = output.path().join("nar.tmp");
+            std::os::unix::fs::symlink("/dev/full", &temporary).unwrap();
+
+            let result = if compressed {
+                compress_nar_to_file(source, &destination, NAR_ZSTD_LEVEL, 1)
+            } else {
+                dump_nar_to_file(source, &destination)
+            };
+
+            let error = result.unwrap_err();
+            assert!(
+                error.chain().any(|cause| cause
+                    .downcast_ref::<io::Error>()
+                    .is_some_and(|error| error.raw_os_error() == Some(28))),
+                "destination write error was lost: {error:#}"
+            );
+            assert!(!temporary.exists(), "failed NAR was retained");
+            assert!(!destination.exists(), "failed NAR was published");
+        }
+
+        std::fs::write(receipt, "verified").unwrap();
+    }
 
     #[test]
     fn local_reuse_requires_file_hash_addressed_nar_url() {
