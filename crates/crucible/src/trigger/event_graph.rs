@@ -1074,7 +1074,7 @@ where
         self.inner.timer_fires()
     }
 
-    fn observable_events(&self) -> &[ObservableEvent] {
+    fn observable_events(&self) -> &crate::History<ObservableEvent> {
         self.inner.observable_events()
     }
 

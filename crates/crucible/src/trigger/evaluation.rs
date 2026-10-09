@@ -62,7 +62,7 @@ where
         value
     }
 
-    fn observable_events(&self) -> &[ObservableEvent] {
+    fn observable_events(&self) -> &crate::History<ObservableEvent> {
         self.observed.observable_events()
     }
 
@@ -658,7 +658,7 @@ where
 
 pub(super) fn observable_event_matches(
     at: VirtualTime,
-    events: &[ObservableEvent],
+    events: &crate::History<ObservableEvent>,
     matches_payload: impl Fn(&ObservableEventPayload) -> bool,
 ) -> bool {
     events
@@ -694,7 +694,7 @@ pub(super) fn frame_predicate_matches(predicate: &FramePredicate, payload: &[u8]
 
 pub(super) fn console_stream_matches(
     at: VirtualTime,
-    events: &[ObservableEvent],
+    events: &crate::History<ObservableEvent>,
     expected_node: &NodeId,
     regex: &RegexProgram,
 ) -> bool {
@@ -912,8 +912,8 @@ pub struct ConditionEvaluation<O> {
     oracle: O,
     event_firings: BTreeMap<EventId, VirtualTime>,
     timer_fires: BTreeMap<TimerId, VirtualTime>,
-    observable_events: Vec<ObservableEvent>,
-    ordering_facts: Vec<ObservedOrderingFact>,
+    observable_events: crate::History<ObservableEvent>,
+    ordering_facts: crate::History<ObservedOrderingFact>,
     scheduler_quiescence: Option<SchedulerQuiescence>,
     white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
     once_latches: Vec<Condition>,
@@ -943,9 +943,10 @@ impl<O> ConditionEvaluation<O> {
 
     /// Builds a condition evaluator from a borrowed deterministic prefix.
     ///
-    /// Copies the observable state used by evaluation without copying the
-    /// scheduler-entry history or its prefix-offset index. The evaluator owns
-    /// its projected state and does not retain a borrow of `prefix`.
+    /// Shares the observable history used by evaluation in constant time and
+    /// copies the remaining projected state, without retaining the
+    /// scheduler-entry history or its prefix-offset index. The evaluator does
+    /// not retain a borrow of `prefix`.
     #[must_use]
     pub fn from_log_prefix_ref(prefix: &ConditionEventLogPrefix, oracle: O) -> Self {
         Self {
@@ -1242,7 +1243,7 @@ where
         self.timer_fires.clone()
     }
 
-    fn observable_events(&self) -> &[ObservableEvent] {
+    fn observable_events(&self) -> &crate::History<ObservableEvent> {
         &self.observable_events
     }
 

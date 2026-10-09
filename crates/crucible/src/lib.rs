@@ -15,6 +15,8 @@
 //! of `MaterializedState`, [`device_subnode`] holds the L1 I/O devices as
 //! scheduling sub-nodes that drive the scheduler horizon and RESOLVE delivery,
 //! [`example_corpus`] owns the built-in worked-example scenario corpus,
+//! [`history`] owns the structurally shared sequences that keep scheduler
+//! snapshots independent of run length,
 //! [`node_time`] owns backend-counter to scheduler-time rebasing,
 //! [`backend`] owns the VM backend boundary, [`event_catalog`] owns the versioned
 //! event-kind catalog, [`scheduler`] owns the quantum-loop boundary, [`trigger`]
@@ -35,6 +37,7 @@ pub mod device_subnode;
 pub mod event_catalog;
 pub mod exact_checkpoint;
 pub mod example_corpus;
+pub mod history;
 mod local_backend;
 pub mod model;
 pub mod native_console;
@@ -95,6 +98,7 @@ pub use example_corpus::{
     verify_example_scenario_runs, verify_happy_path_default_runs,
     verify_partition_recovery_default_runs,
 };
+pub use history::History;
 pub use local_backend::{SimBackend, SimBackendState};
 pub use model::FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION;
 pub use model::{

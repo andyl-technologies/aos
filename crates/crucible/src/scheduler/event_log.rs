@@ -1603,7 +1603,7 @@ impl fmt::Debug for EventLogSegmentStore {
 #[derive(Clone, Debug)]
 pub struct EventLog {
     pub(super) segment_store: EventLogSegmentStore,
-    pub(super) segment_dependencies: Vec<ContentHash>,
+    pub(super) segment_dependencies: crate::History<ContentHash>,
     pub(super) prefix: ContentHash,
     pub(super) offset: EventLogOffset,
     pub(super) bytes: u64,
@@ -1660,7 +1660,7 @@ impl EventLog {
         let prefix = scheduler_event_log_prefix_for_resume(offset);
         Self {
             segment_store,
-            segment_dependencies: Vec::new(),
+            segment_dependencies: crate::History::new(),
             prefix,
             offset,
             bytes: offset.bytes,
@@ -1688,10 +1688,10 @@ impl EventLog {
     ///
     /// A scheduler created at run genesis retains a zero-based complete prefix.
     /// An offset-only continuation may retain only a suffix; callers must pair
-    /// this slice with [`Self::retained_base_events`] before treating it as a
+    /// this history with [`Self::retained_base_events`] before treating it as a
     /// complete run history.
     #[must_use]
-    pub fn retained_entries(&self) -> &[SchedulerEventLogEntry] {
+    pub fn retained_entries(&self) -> &crate::History<SchedulerEventLogEntry> {
         self.condition_prefix.scheduler_entries()
     }
 

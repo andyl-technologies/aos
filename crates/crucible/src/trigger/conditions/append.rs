@@ -126,7 +126,7 @@ impl ConditionEventLogPrefix {
     }
 
     /// Borrows the single authenticated history also used by checkpoint capture.
-    pub(crate) fn scheduler_entries(&self) -> &[SchedulerEventLogEntry] {
+    pub(crate) fn scheduler_entries(&self) -> &crate::History<SchedulerEventLogEntry> {
         &self.scheduler_entries
     }
 

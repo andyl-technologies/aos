@@ -138,11 +138,11 @@ impl SingleScheduler {
                 fixed_input_generation: self.fixed_input_generation,
                 settled_fixed_input_events: self.settled_fixed_input_events.clone(),
                 run_subdivision_policies: self.run_subdivision_policies.clone(),
-                run_subdivision_records: self.run_subdivision_records.clone(),
+                run_subdivision_records: self.run_subdivision_records.to_vec(),
                 preemption_requests: self.preemption_requests.clone(),
-                preemption_applications: self.preemption_applications.clone(),
+                preemption_applications: self.preemption_applications.to_vec(),
                 control_admissions: self.control_admissions.clone(),
-                control_applications: self.control_applications.clone(),
+                control_applications: self.control_applications.to_vec(),
                 control_inbox: self.control_inbox.clone(),
                 decision_seed: self.decision_seed.bytes(),
                 decision_rng_cursor: self.decision_rng_cursor.clone(),
@@ -156,10 +156,10 @@ impl SingleScheduler {
                 trigger_actions: self.trigger_actions.clone(),
                 frontier: self.frontier.ticks,
                 quanta: self.quanta,
-                topology_change_applications: self.topology_change_applications.clone(),
-                rendezvous_records: self.rendezvous_records.clone(),
+                topology_change_applications: self.topology_change_applications.to_vec(),
+                rendezvous_records: self.rendezvous_records.to_vec(),
                 boundary_yields: self.boundary_yields,
-                ceiling_publications: self.ceiling_publications.clone(),
+                ceiling_publications: self.ceiling_publications.to_vec(),
                 last_advance: self.last_advance.clone(),
                 last_topology_recompute: self.last_topology_recompute,
             },
@@ -215,7 +215,7 @@ impl From<&EventLog> for EventLogWire {
         Self {
             prefix: log.offset.prefix,
             appended_segment: log.offset.appended_segment,
-            segment_dependencies: log.segment_dependencies.clone(),
+            segment_dependencies: log.segment_dependencies.to_vec(),
             bytes: log.offset.bytes,
             events: log.offset.events,
             condition_entries: log.retained_entries().to_vec(),
@@ -547,11 +547,13 @@ impl SingleSchedulerCheckpoint {
             SchedulerLookaheadGraph::from_edges(state.effective_topology_edges.clone());
         staged.topology_changes = state.pending_topology_changes;
         staged.run_subdivision_policies = self.wire.run_subdivision_policies.clone();
-        staged.run_subdivision_records = self.wire.run_subdivision_records.clone();
+        staged.run_subdivision_records =
+            crate::History::from(self.wire.run_subdivision_records.clone());
         staged.preemption_requests = self.wire.preemption_requests.clone();
-        staged.preemption_applications = self.wire.preemption_applications.clone();
+        staged.preemption_applications =
+            crate::History::from(self.wire.preemption_applications.clone());
         staged.control_admissions = self.wire.control_admissions.clone();
-        staged.control_applications = self.wire.control_applications.clone();
+        staged.control_applications = crate::History::from(self.wire.control_applications.clone());
         staged.pending_events = self.wire.pending_events.clone();
         staged.imported_io = self.wire.imported_io.clone();
         staged.fixed_input_generation = self.wire.fixed_input_generation;
@@ -575,10 +577,11 @@ impl SingleSchedulerCheckpoint {
         };
         staged.quanta = self.wire.quanta;
         staged.topology_epoch = state.topology_epoch;
-        staged.topology_change_applications = self.wire.topology_change_applications.clone();
-        staged.rendezvous_records = self.wire.rendezvous_records.clone();
+        staged.topology_change_applications =
+            crate::History::from(self.wire.topology_change_applications.clone());
+        staged.rendezvous_records = crate::History::from(self.wire.rendezvous_records.clone());
         staged.boundary_yields = self.wire.boundary_yields;
-        staged.ceiling_publications = self.wire.ceiling_publications.clone();
+        staged.ceiling_publications = crate::History::from(self.wire.ceiling_publications.clone());
         staged.lock_held = false;
         staged.last_advance = self.wire.last_advance.clone();
         staged.last_topology_recompute = self.wire.last_topology_recompute;
@@ -749,7 +752,7 @@ fn restore_event_log(
         .with_event_log_offset(offset)
     };
     log.prefix = scheduler_event_log_prefix_for_resume(offset);
-    log.segment_dependencies = checkpoint.segment_dependencies.clone();
+    log.segment_dependencies = crate::History::from(checkpoint.segment_dependencies.clone());
     log.offset = offset;
     log.bytes = offset.bytes;
     log.events = offset.events;

@@ -823,7 +823,12 @@ pub(super) fn validate_recorded_event_log_entries(
     ConditionEventLogPrefix::from_scheduler_event_log_entries(entries.to_vec()).map(|_| ())
 }
 
-pub(super) fn external_formal_trace_bytes(entries: &[SchedulerEventLogEntry]) -> Vec<u8> {
+pub(super) fn external_formal_trace_bytes<'a, I>(entries: I) -> Vec<u8>
+where
+    I: IntoIterator<Item = &'a SchedulerEventLogEntry>,
+    I::IntoIter: ExactSizeIterator,
+{
+    let entries = entries.into_iter();
     let previous_prefix = scheduler_event_log_empty_prefix();
     let mut lines = Vec::new();
     lines.push(String::from("format=crucible.external-formal-trace.v1"));

@@ -155,11 +155,11 @@ impl SingleScheduler {
             nodes,
             topology_changes: scenario.topology_changes,
             run_subdivision_policies,
-            run_subdivision_records: Vec::new(),
+            run_subdivision_records: crate::History::new(),
             preemption_requests,
-            preemption_applications: Vec::new(),
+            preemption_applications: crate::History::new(),
             control_admissions: Vec::new(),
-            control_applications: Vec::new(),
+            control_applications: crate::History::new(),
             pending_events: scenario.pending_events,
             imported_io: BTreeMap::new(),
             inventory_world: None,
@@ -190,10 +190,10 @@ impl SingleScheduler {
             frontier,
             quanta: 0,
             topology_epoch: 0,
-            topology_change_applications: Vec::new(),
-            rendezvous_records: Vec::new(),
+            topology_change_applications: crate::History::new(),
+            rendezvous_records: crate::History::new(),
             boundary_yields: 0,
-            ceiling_publications: Vec::new(),
+            ceiling_publications: crate::History::new(),
             lock_held: false,
             last_advance: None,
             last_topology_recompute: false,
@@ -1216,37 +1216,39 @@ impl SingleScheduler {
 
     /// Returns the RUN max-advance ceilings published by this scheduler.
     #[must_use]
-    pub fn run_ceiling_publications(&self) -> &[SchedulerRunCeilingPublication] {
+    pub fn run_ceiling_publications(&self) -> &crate::History<SchedulerRunCeilingPublication> {
         &self.ceiling_publications
     }
 
     /// Returns plugin-internal RR subdivision evidence for completed RUNs.
     #[must_use]
-    pub fn run_subdivision_records(&self) -> &[SchedulerRunSubdivisionRecord] {
+    pub fn run_subdivision_records(&self) -> &crate::History<SchedulerRunSubdivisionRecord> {
         &self.run_subdivision_records
     }
 
     /// Returns explorer-supplied preemptions applied by completed RESOLVE phases.
     #[must_use]
-    pub fn preemption_applications(&self) -> &[SchedulerPreemptionApplication] {
+    pub fn preemption_applications(&self) -> &crate::History<SchedulerPreemptionApplication> {
         &self.preemption_applications
     }
 
     /// Returns topology changes applied at completed scheduler boundaries.
     #[must_use]
-    pub fn topology_change_applications(&self) -> &[SchedulerTopologyChangeApplication] {
+    pub fn topology_change_applications(
+        &self,
+    ) -> &crate::History<SchedulerTopologyChangeApplication> {
         &self.topology_change_applications
     }
 
     /// Returns allowed rendezvous records completed at scheduler boundaries.
     #[must_use]
-    pub fn rendezvous_records(&self) -> &[SchedulerRendezvousRecord] {
+    pub fn rendezvous_records(&self) -> &crate::History<SchedulerRendezvousRecord> {
         &self.rendezvous_records
     }
 
     /// Returns scheduler-side control applications completed at boundaries.
     #[must_use]
-    pub fn control_applications(&self) -> &[SchedulerControlApplication] {
+    pub fn control_applications(&self) -> &crate::History<SchedulerControlApplication> {
         &self.control_applications
     }
 

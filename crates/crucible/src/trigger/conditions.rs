@@ -956,8 +956,10 @@ pub trait ConditionEvaluator: condition_evaluator_sealed::Sealed {
     }
 
     /// Returns observable event-log entries visible at the evaluation point.
-    fn observable_events(&self) -> &[ObservableEvent] {
-        &[]
+    fn observable_events(&self) -> &crate::History<ObservableEvent> {
+        static NONE: std::sync::LazyLock<crate::History<ObservableEvent>> =
+            std::sync::LazyLock::new(crate::History::new);
+        &NONE
     }
 
     /// Returns scheduler-owned quiescence evidence for the evaluation point.
@@ -1126,13 +1128,13 @@ pub struct ConditionEventLogPrefix {
     pub(super) base_sequence: u64,
     pub(super) event_log_offset: EventLogOffset,
     pub(super) prefix_offsets: BTreeMap<u64, EventLogOffset>,
-    pub(super) scheduler_entries: Vec<SchedulerEventLogEntry>,
+    pub(super) scheduler_entries: crate::History<SchedulerEventLogEntry>,
     last_black_box_observation: Option<(u64, VirtualTime)>,
-    pub(super) observable_events: Vec<ObservableEvent>,
+    pub(super) observable_events: crate::History<ObservableEvent>,
     pub(super) black_box_observation_kinds: BTreeSet<BlackBoxObservationKind>,
     pub(super) event_firings: BTreeMap<EventId, VirtualTime>,
     pub(super) timer_fires: BTreeMap<TimerId, VirtualTime>,
-    pub(super) ordering_facts: Vec<ObservedOrderingFact>,
+    pub(super) ordering_facts: crate::History<ObservedOrderingFact>,
 }
 
 impl ConditionEventLogPrefix {
@@ -1144,13 +1146,13 @@ impl ConditionEventLogPrefix {
             base_sequence: 0,
             event_log_offset: EventLogOffset::default(),
             prefix_offsets: BTreeMap::new(),
-            scheduler_entries: Vec::new(),
+            scheduler_entries: crate::History::new(),
             last_black_box_observation: None,
-            observable_events: Vec::new(),
+            observable_events: crate::History::new(),
             black_box_observation_kinds: BTreeSet::new(),
             event_firings: BTreeMap::new(),
             timer_fires: BTreeMap::new(),
-            ordering_facts: Vec::new(),
+            ordering_facts: crate::History::new(),
         }
     }
 
@@ -1335,7 +1337,7 @@ impl ConditionEventLogPrefix {
 
     /// Returns observable event-log entries visible at [`Self::point`].
     #[must_use]
-    pub fn observable_events(&self) -> &[ObservableEvent] {
+    pub fn observable_events(&self) -> &crate::History<ObservableEvent> {
         &self.observable_events
     }
 
@@ -1347,7 +1349,7 @@ impl ConditionEventLogPrefix {
 
     /// Returns cross-node ordering facts visible at [`Self::point`].
     #[must_use]
-    pub fn ordering_facts(&self) -> &[ObservedOrderingFact] {
+    pub fn ordering_facts(&self) -> &crate::History<ObservedOrderingFact> {
         &self.ordering_facts
     }
 
@@ -1373,8 +1375,8 @@ impl ConditionEventLogPrefix {
 pub struct ObservedState<'log> {
     pub(super) point: EventEvaluationPoint,
     pub(super) event_log_offset: EventLogOffset,
-    pub(super) observable_events: &'log [ObservableEvent],
-    pub(super) ordering_facts: &'log [ObservedOrderingFact],
+    pub(super) observable_events: &'log crate::History<ObservableEvent>,
+    pub(super) ordering_facts: &'log crate::History<ObservedOrderingFact>,
 }
 
 impl<'log> ObservedState<'log> {
@@ -1398,13 +1400,13 @@ impl<'log> ObservedState<'log> {
 
     /// Returns black-box observable events in deterministic log order.
     #[must_use]
-    pub fn observable_events(self) -> &'log [ObservableEvent] {
+    pub fn observable_events(self) -> &'log crate::History<ObservableEvent> {
         self.observable_events
     }
 
     /// Returns scheduler ordering facts in deterministic log order.
     #[must_use]
-    pub fn ordering_facts(self) -> &'log [ObservedOrderingFact] {
+    pub fn ordering_facts(self) -> &'log crate::History<ObservedOrderingFact> {
         self.ordering_facts
     }
 }
