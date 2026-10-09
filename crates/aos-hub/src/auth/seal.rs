@@ -91,9 +91,12 @@ fn is_already_exists(error: &anyhow::Error) -> bool {
 
 /// Reads one native secret from a non-symlink regular file in a trusted directory.
 ///
-/// The opened file's device/inode is compared with the path metadata, closing
-/// the check/open replacement race without relying on a host-specific command.
-/// On Unix, the secret itself cannot grant group/other access. A parent may
+/// Path components are opened without following links, and custody is checked
+/// on the opened descriptor. Its metadata is compared before and after reading
+/// without relying on a host-specific command.
+/// On Unix, access is restricted to root and the effective user. Linux ACLs
+/// may encode a read-only mask in the group mode bits without granting group
+/// access; those ACLs are inspected on the opened descriptor. A parent may
 /// grant read or traversal access, but cannot be group/other-writable because
 /// that would permit replacement. Ownership by either the effective user or
 /// root is accepted so provider-delivered views can be consumed by an
@@ -187,6 +190,7 @@ fn read_secret_file_unix(
             u32::from(metadata.st_mode) & 0o077 == 0
         } else {
             secret_file_mode_is_secure(path, u32::from(metadata.st_mode))
+                || secret_file_acl_is_secure(&fd, u32::from(metadata.st_mode))
         },
         "secret file {} grants group/other permissions",
         path.display()
@@ -332,6 +336,71 @@ fn secret_file_mode_is_secure(_path: &Path, mode: u32) -> bool {
     mode & 0o077 == 0
 }
 
+/// Accepts a read-only Linux ACL mask only when no additional user can read.
+#[cfg(target_os = "linux")]
+fn secret_file_acl_is_secure(fd: &std::os::fd::OwnedFd, mode: u32) -> bool {
+    if mode & 0o077 != 0o040 {
+        return false;
+    }
+
+    let mut acl = [0_u8; 128];
+    let Ok(length) = rustix::fs::fgetxattr(fd, "system.posix_acl_access", &mut acl[..]) else {
+        return false;
+    };
+
+    private_runtime_acl(&acl[..length], rustix::process::geteuid().as_raw())
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn secret_file_acl_is_secure(_fd: &std::os::fd::OwnedFd, _mode: u32) -> bool {
+    false
+}
+
+/// Checks Linux's public ACL xattr format without treating its mask as a grant.
+#[cfg(target_os = "linux")]
+fn private_runtime_acl(acl: &[u8], effective_user: u32) -> bool {
+    // The version header is followed by eight-byte little-endian tag/permission/ID entries.
+    let Some((version, entries)) = acl.split_at_checked(4) else {
+        return false;
+    };
+    if version != [2, 0, 0, 0] || entries.len() % 8 != 0 {
+        return false;
+    }
+
+    let mut required_entries = 0_u8;
+    for entry in entries.chunks_exact(8) {
+        let tag = u16::from_le_bytes([entry[0], entry[1]]);
+        let permissions = u16::from_le_bytes([entry[2], entry[3]]);
+        let identity = u32::from_le_bytes([entry[4], entry[5], entry[6], entry[7]]);
+        if permissions & !7 != 0 {
+            return false;
+        }
+
+        let (required, permitted) = match tag {
+            1 => (1, identity == u32::MAX), // File owner, already validated.
+            2 => (
+                0,
+                identity != u32::MAX
+                    && (permissions == 0
+                        || (permissions == 4
+                            && trusted_secret_owner_for(identity, effective_user))),
+            ),
+            4 => (2, identity == u32::MAX && permissions == 0), // Owning group.
+            8 => (0, identity != u32::MAX && permissions == 0), // Named group.
+            16 => (4, identity == u32::MAX && permissions == 4), // Read-only mask.
+            32 => (8, identity == u32::MAX && permissions == 0), // Other users.
+            _ => return false,
+        };
+        if !permitted || required_entries & required != 0 {
+            return false;
+        }
+
+        required_entries |= required;
+    }
+
+    required_entries == 15
+}
+
 /// Writes `key` to `path` with `0600` permissions, creating parent dirs.
 ///
 /// # Errors
@@ -446,6 +515,95 @@ mod tests {
         assert!(!secret_file_mode_is_secure(path, 0o100440));
         assert!(!secret_file_mode_is_secure(path, 0o100460));
         assert!(!secret_file_mode_is_secure(path, 0o100444));
+    }
+
+    #[cfg(target_os = "linux")]
+    fn credential_acl(user: u32) -> Vec<u8> {
+        let entries: [(u16, u16, u32); 5] = [
+            (1, 4, u32::MAX),
+            (2, 4, user),
+            (4, 0, u32::MAX),
+            (16, 4, u32::MAX),
+            (32, 0, u32::MAX),
+        ];
+        let mut bytes = 2_u32.to_le_bytes().to_vec();
+        for (tag, permissions, identity) in entries {
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            bytes.extend_from_slice(&permissions.to_le_bytes());
+            bytes.extend_from_slice(&identity.to_le_bytes());
+        }
+
+        bytes
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn runtime_acl_rejects_additional_readers_and_invalid_records() {
+        let acl = credential_acl(802);
+        assert!(private_runtime_acl(&acl, 802));
+        assert!(private_runtime_acl(&credential_acl(0), 802));
+        assert!(!private_runtime_acl(&credential_acl(803), 802));
+
+        // Group and other grants cannot hide behind a legitimate named user.
+        for entry in [2, 4] {
+            let mut public = acl.clone();
+            public[4 + entry * 8 + 2] = 4;
+            assert!(!private_runtime_acl(&public, 802));
+        }
+
+        let mut writable_mask = acl.clone();
+        writable_mask[4 + 3 * 8 + 2] = 6;
+        assert!(!private_runtime_acl(&writable_mask, 802));
+
+        let mut unknown_tag = acl.clone();
+        unknown_tag[4] = 64;
+        assert!(!private_runtime_acl(&unknown_tag, 802));
+
+        let mut unknown_version = acl.clone();
+        unknown_version[0] = 3;
+        assert!(!private_runtime_acl(&unknown_version, 802));
+        assert!(!private_runtime_acl(&acl[..acl.len() - 1], 802));
+        assert!(!private_runtime_acl(&acl[..acl.len() - 8], 802));
+
+        let mut duplicate_owner = acl.clone();
+        duplicate_owner.extend_from_slice(&acl[4..12]);
+        assert!(!private_runtime_acl(&duplicate_owner, 802));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn runtime_reads_private_kernel_acl_but_archive_input_stays_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = private_tempdir();
+        let path = directory.path().join("credential");
+        fs::write(&path, b"private credential").unwrap();
+        let descriptor = fs::File::open(&path).unwrap();
+        let effective_user = rustix::process::geteuid().as_raw();
+        rustix::fs::fsetxattr(
+            &descriptor,
+            "system.posix_acl_access",
+            &credential_acl(effective_user),
+            rustix::fs::XattrFlags::empty(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o440
+        );
+        assert_eq!(read_secret_file(&path).unwrap(), b"private credential");
+        assert!(read_secret_file_zeroizing_capped(&path, 64).is_err());
+
+        let untrusted_user = if effective_user == 802 { 803 } else { 802 };
+        rustix::fs::fsetxattr(
+            &descriptor,
+            "system.posix_acl_access",
+            &credential_acl(untrusted_user),
+            rustix::fs::XattrFlags::empty(),
+        )
+        .unwrap();
+        assert!(read_secret_file(&path).is_err());
     }
 
     #[test]

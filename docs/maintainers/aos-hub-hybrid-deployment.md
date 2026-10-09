@@ -132,6 +132,11 @@ files, invalid UTF-8 and empty contents before connecting. Only trailing CR/LF
 terminators are removed. Confirm these properties on the actual platform mount;
 a configured secret mode alone does not prove its observed filesystem metadata.
 
+Linux systemd credential views may show `0440` because the group bits represent
+an ACL mask. The reader checks the opened file's ACL and accepts that mask only
+when access is limited to root and the service user. Ordinary group-readable
+files remain invalid. Archive signing inputs still require owner-only mode bits.
+
 Release and channel receipt seeds use the same private credential reader. Their
 UTF-8 standard-base64 text is trimmed before Ed25519 validation, and temporary
 encoded buffers are zeroized after authority initialization. Mount separate
