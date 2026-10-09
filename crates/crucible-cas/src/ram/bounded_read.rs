@@ -17,6 +17,13 @@ enum ReadPhase {
 
 enum ReadTask<'read> {
     Tree(TreeRef),
+    Inventory {
+        store: &'read super::RamStore,
+        root: crate::content_store::ContentId,
+        record: &'read crucible_ram::RootRecord,
+        regions: &'read [TreeRef],
+        visitor: &'read mut dyn FnMut(crate::content_store::ContentId) -> Result<(), RamStoreError>,
+    },
     Canonical {
         id: crate::content_store::ContentId,
         response: &'read crate::owned_decode::DecodeBudget,
@@ -33,6 +40,19 @@ impl ReadTask<'_> {
     fn reborrow(&mut self) -> ReadTask<'_> {
         match self {
             Self::Tree(expected) => ReadTask::Tree(*expected),
+            Self::Inventory {
+                store,
+                root,
+                record,
+                regions,
+                visitor,
+            } => ReadTask::Inventory {
+                store,
+                root: *root,
+                record,
+                regions,
+                visitor: &mut **visitor,
+            },
             Self::Canonical {
                 id,
                 response,
@@ -57,6 +77,7 @@ impl ReadTask<'_> {
 
 enum ReadValue {
     Tree(TreeNode),
+    Inventory,
     Canonical(Option<Vec<u8>>),
     Difference(u64),
 }
@@ -117,6 +138,8 @@ pub struct BoundedReadRequest<'read, 'operation> {
     task: ReadTask<'read>,
     state: &'read mut ReadState,
     physical: Option<&'read PhysicalReadCheck<'read>>,
+    inventory_admission:
+        Option<&'read dyn Fn(crate::content_store::ContentId) -> Result<(), StoreError>>,
 }
 
 impl<'operation> BoundedReadRequest<'_, 'operation> {
@@ -136,8 +159,37 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
             task: self.task.reborrow(),
             state: self.state,
             physical: Some(&physical),
+            inventory_admission: self.inventory_admission,
         };
         forward(&mut request)
+    }
+
+    // Only a complete inventory can borrow a leaf view. Other task dispatch
+    // keeps the graph's existing checked lookup and admission order.
+    pub(crate) fn execute_graph_inventory(
+        &mut self,
+        facade: &dyn ImmutableBlobBackend,
+        child: &dyn ImmutableBlobBackend,
+        admit: &dyn Fn(crate::content_store::ContentId) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        if !matches!(self.task, ReadTask::Inventory { .. }) {
+            return self.execute_existing_checked(facade);
+        }
+        let previous = self.inventory_admission;
+        let admitted = |id| {
+            if let Some(previous) = previous {
+                previous(id)?;
+            }
+            admit(id)
+        };
+        let mut request = BoundedReadRequest {
+            work: self.work,
+            task: self.task.reborrow(),
+            state: self.state,
+            physical: self.physical,
+            inventory_admission: Some(&admitted),
+        };
+        child.read_bounded_with_boundary(&mut request)
     }
 
     pub(crate) fn execute_existing_checked<B: ImmutableBlobBackend + ?Sized>(
@@ -187,6 +239,21 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
                     Err(error) => Err(error),
                 }
             }
+            ReadTask::Inventory {
+                store,
+                root,
+                record,
+                regions,
+                visitor,
+            } => {
+                let mut access = super::inventory::ExistingInventory {
+                    store,
+                    work: self.work,
+                    visitor: &mut **visitor,
+                };
+                super::inventory::walk(record, regions, *root, &mut access)
+                    .map(|()| ReadValue::Inventory)
+            }
             ReadTask::Difference {
                 before,
                 after,
@@ -203,6 +270,99 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
         match result {
             Ok(node) => {
                 self.state.pending.set(Some(Ok(node)));
+                self.state.phase = ReadPhase::Completed;
+                Ok(())
+            }
+            Err(error) => {
+                self.state.phase = ReadPhase::Failed;
+                Err(self.work.account.fail_read(error))
+            }
+        }
+    }
+
+    pub(crate) fn execute_packed(
+        &mut self,
+        backend: &crate::content_store::PackedBlobBackend,
+    ) -> Result<(), StoreError> {
+        if !matches!(self.task, ReadTask::Inventory { .. }) {
+            return self.execute_existing_checked(backend);
+        }
+        match self.state.phase {
+            ReadPhase::Ready => {}
+            ReadPhase::Failed => return Err(self.first_failure()),
+            _ => {
+                return Err(StoreError::Unsupported {
+                    capability: "bounded-read-request-already-used",
+                });
+            }
+        }
+        if let Some(first) = self.work.account.read_failure() {
+            self.state.phase = ReadPhase::Failed;
+            return Err(first);
+        }
+        self.state.phase = ReadPhase::Active;
+        let physical = self.physical;
+        let admission = self.inventory_admission;
+        let result = (|| {
+            let view = self.work.checked(|original, boundary| {
+                let mut checked = || {
+                    crate::content_store::checked_reader::check(original, boundary)?;
+                    verify_physical(original, physical)
+                };
+                crate::content_store::PackedReadView::begin(backend, original, &mut checked)
+            })?;
+            let mut reader = self.work.checked(|original, boundary| {
+                let mut checked = || {
+                    crate::content_store::checked_reader::check(original, boundary)?;
+                    verify_physical(original, physical)
+                };
+                view.reader(backend, original, &mut checked)
+            })?;
+            let ReadTask::Inventory {
+                root,
+                record,
+                regions,
+                visitor,
+                ..
+            } = &mut self.task
+            else {
+                unreachable!("only an inventory enters the Packed read view");
+            };
+            let selected = Cell::new(None);
+            let mut source =
+                |original: &crate::owned_decode::DecodeBudget,
+                 id,
+                 boundary: &mut dyn FnMut() -> Result<(), StoreError>| {
+                    selected.set(Some(id));
+                    reader.lookup(backend, original, id, boundary)
+                };
+            let mut verify = |original: &crate::owned_decode::DecodeBudget| {
+                // The graph's exact selected-ID admission remains ahead of the
+                // physical child check; cached placement never grants access.
+                if let (Some(admit), Some(id)) = (admission, selected.get()) {
+                    admit(id)?;
+                }
+                verify_physical(original, physical)
+            };
+            let mut access = super::inventory::CheckedInventory {
+                work: self.work,
+                visitor: &mut **visitor,
+                source: &mut source,
+                verify: &mut verify,
+            };
+            super::inventory::walk(record, regions, *root, &mut access)
+        })();
+        // The final visitor may close the original or physical authority.
+        // Reader/view fields have physically closed before this acceptance cut.
+        let result = result.and_then(|()| {
+            self.work.checked(|original, boundary| {
+                crate::content_store::checked_reader::check(original, boundary)?;
+                verify_physical(original, physical)
+            })
+        });
+        match result {
+            Ok(()) => {
+                self.state.pending.set(Some(Ok(ReadValue::Inventory)));
                 self.state.phase = ReadPhase::Completed;
                 Ok(())
             }
@@ -234,6 +394,7 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
             ReadTask::Tree(expected) => *expected,
             ReadTask::Canonical { .. } => return self.execute_sqlite_canonical(backend),
             ReadTask::Difference { .. } => return self.execute_sqlite_difference(backend),
+            ReadTask::Inventory { .. } => return self.execute_existing_checked(backend),
         };
         if expected.id.schema_version() != 1 {
             self.state.phase = ReadPhase::Failed;
@@ -637,11 +798,12 @@ pub(super) fn read_tree(
         task: ReadTask::Tree(expected),
         state: &mut state,
         physical: None,
+        inventory_admission: None,
     };
     let provider = backend.read_bounded_with_boundary(&mut request);
     match request.finish(provider).map_err(RamStoreError::from)? {
         ReadValue::Tree(node) => Ok(node),
-        ReadValue::Difference(_) | ReadValue::Canonical(_) => {
+        ReadValue::Difference(_) | ReadValue::Canonical(_) | ReadValue::Inventory => {
             unreachable!("a tree request retains its tree result")
         }
     }
@@ -674,11 +836,12 @@ pub(super) fn read_difference(
         },
         state: &mut state,
         physical: None,
+        inventory_admission: None,
     };
     let provider = backend.read_bounded_with_boundary(&mut request);
     match request.finish(provider).map_err(RamStoreError::from)? {
         ReadValue::Difference(value) => Ok(value),
-        ReadValue::Tree(_) | ReadValue::Canonical(_) => {
+        ReadValue::Tree(_) | ReadValue::Canonical(_) | ReadValue::Inventory => {
             unreachable!("a comparison retains its changed-page count")
         }
     }
@@ -729,6 +892,7 @@ fn read_canonical_expected(
         },
         state: &mut state,
         physical: None,
+        inventory_admission: None,
     };
     let provider = backend.read_bounded_with_boundary(&mut request);
     match request.finish(provider).map_err(RamStoreError::from)? {
@@ -800,3 +964,45 @@ fn with_failure_work_for_test(
             .expect("the actual provider produced a first refusal"),
     }
 }
+
+pub(super) fn read_inventory(
+    store: &super::RamStore,
+    root: crate::content_store::ContentId,
+    record: &crucible_ram::RootRecord,
+    regions: &[TreeRef],
+    visitor: &mut dyn FnMut(crate::content_store::ContentId) -> Result<(), RamStoreError>,
+    work: &mut Work<'_>,
+) -> Result<(), RamStoreError> {
+    if let Some(first) = work.account.read_failure() {
+        return Err(first.into());
+    }
+    if let Err(error) = work.original().verify_live() {
+        let error = RamStoreError::from_admission(work.original(), error);
+        return Err(work.account.fail_read(error).into());
+    }
+    let mut state = ReadState {
+        phase: ReadPhase::Ready,
+        pending: Cell::new(None),
+    };
+    let mut request = BoundedReadRequest {
+        work,
+        task: ReadTask::Inventory {
+            store,
+            root,
+            record,
+            regions,
+            visitor,
+        },
+        state: &mut state,
+        physical: None,
+        inventory_admission: None,
+    };
+    let provider = store.backend.read_bounded_with_boundary(&mut request);
+    match request.finish(provider).map_err(RamStoreError::from)? {
+        ReadValue::Inventory => Ok(()),
+        _ => unreachable!("an inventory request retains its terminal outcome"),
+    }
+}
+
+#[cfg(test)]
+mod inventory_tests;

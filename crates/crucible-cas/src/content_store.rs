@@ -40,6 +40,7 @@ mod identity_render;
 mod memory;
 mod namespace;
 mod packed;
+pub(crate) use packed::read_view::View as PackedReadView;
 mod physical_quota;
 mod profile;
 mod provider_diagnostic;

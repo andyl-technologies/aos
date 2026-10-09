@@ -827,6 +827,33 @@ pub(super) fn read_envelope_from<B: crate::content_store::ImmutableBlobBackend +
     work: &mut Work<'_>,
     prepaid: bool,
 ) -> Result<OwnedEnvelope, RamStoreError> {
+    read_envelope_using(
+        id,
+        work,
+        prepaid,
+        &mut |original, id, boundary| backend.read_with_boundary(original, id, None, boundary),
+        &mut |_| Ok(()),
+    )
+}
+
+/// Reads one canonical envelope through the selected private inventory view.
+/// The ordinary entry supplies its unchanged checked backend lookup.
+pub(super) fn read_envelope_using(
+    id: ContentId,
+    work: &mut Work<'_>,
+    prepaid: bool,
+    source: &mut impl FnMut(
+        &crate::owned_decode::DecodeBudget,
+        ContentId,
+        &mut dyn FnMut() -> Result<(), crate::content_store::StoreError>,
+    ) -> Result<
+        crate::content_store::BlobHandle,
+        crate::content_store::StoreError,
+    >,
+    verify: &mut impl FnMut(
+        &crate::owned_decode::DecodeBudget,
+    ) -> Result<(), crate::content_store::StoreError>,
+) -> Result<OwnedEnvelope, RamStoreError> {
     if id.schema_version() == SCHEMA_VERSION
         && matches!(
             id.kind(),
@@ -845,8 +872,13 @@ pub(super) fn read_envelope_from<B: crate::content_store::ImmutableBlobBackend +
     // larger catalog allocation merely by declaring a large body/table.
     let (maximum_bytes, maximum_children) = object_limits(id)?;
     (work.boundary)()?;
-    let source = work
-        .checked(|original, boundary| backend.read_with_boundary(original, id, None, boundary))?;
+    let source = work.checked(|original, boundary| {
+        let mut checked = || {
+            boundary()?;
+            verify(original)
+        };
+        source(original, id, &mut checked)
+    })?;
     if source.logical_length() > maximum_bytes {
         return Err(RamStoreError::Limit("single canonical object"));
     }
@@ -868,7 +900,11 @@ pub(super) fn read_envelope_from<B: crate::content_store::ImmutableBlobBackend +
             RecordAllocationPlan::read(length, maximum_children)?,
         )?;
         let bytes = work.checked(|original, boundary| {
-            source.read_all_with_boundary(original, maximum_bytes, boundary)
+            let mut checked = || {
+                boundary()?;
+                verify(original)
+            };
+            source.read_all_with_boundary(original, maximum_bytes, &mut checked)
         })?;
         let envelope = {
             let _codec_scope = record.codec.enter();
@@ -880,7 +916,11 @@ pub(super) fn read_envelope_from<B: crate::content_store::ImmutableBlobBackend +
         {
             let _terminal_scope = record.original.enter();
             if let Err(error) = work.checked(|original, boundary| {
-                crate::content_store::checked_reader::check(original, boundary)
+                let mut checked = || {
+                    boundary()?;
+                    verify(original)
+                };
+                crate::content_store::checked_reader::check(original, &mut checked)
             }) {
                 (work.visits, work.io_bytes) = previous_counts;
                 return Err(error);
@@ -890,7 +930,11 @@ pub(super) fn read_envelope_from<B: crate::content_store::ImmutableBlobBackend +
     }
     work.visit(source.logical_length())?;
     let bytes = work.checked(|original, boundary| {
-        source.read_all_with_boundary(original, maximum_bytes, boundary)
+        let mut checked = || {
+            boundary()?;
+            verify(original)
+        };
+        source.read_all_with_boundary(original, maximum_bytes, &mut checked)
     })?;
     decode_envelope(id, &bytes, maximum_children, &account)
 }

@@ -1744,6 +1744,13 @@ impl WriteBackRetentionAdmin for StoreGraph {
 }
 
 impl ImmutableBlobBackend for StoreGraph {
+    fn read_bounded_with_boundary(
+        &self,
+        request: &mut crate::ram::BoundedReadRequest<'_, '_>,
+    ) -> Result<(), StoreError> {
+        request.execute_graph_inventory(self, self.root.as_ref(), &|id| self.require_admitted(id))
+    }
+
     fn checked_publication_metadata(
         &self,
         kind: ObjectKind,

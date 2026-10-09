@@ -199,12 +199,26 @@ impl<'s> Reader<'s> {
             return leaf_find(&node, key);
         }
         let mut buffer = operation.buffer(wire::PAGE_BYTES)?;
+        self.find_into(key, &mut buffer, operation)
+    }
+
+    pub(super) fn find_into(
+        &self,
+        key: Key,
+        buffer: &mut Bytes,
+        operation: &mut Operation<'_>,
+    ) -> Result<Option<Value>, StoreError> {
+        operation.check()?;
+        if self.arena.is_none() {
+            let node = Node::parse(self.snapshot.body(), true)?;
+            return leaf_find(&node, key);
+        }
         let mut reference = PageReference::decode(self.snapshot.body())?;
         let mut lower = None;
         let mut upper = None;
         let mut root = true;
         loop {
-            self.load(reference, root, lower, upper, &mut buffer, operation)?;
+            self.load(reference, root, lower, upper, buffer, operation)?;
             let node = Node::parse(&buffer.value, root)?;
             if node.height == 0 {
                 return leaf_find(&node, key);

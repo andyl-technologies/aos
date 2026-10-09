@@ -17,21 +17,27 @@ const INPUTS: &[Input] = &[
         path: "crates/crucible-cas/src/ram/codec.rs",
         required: &[
             "fn read_envelope_with_partition(",
+            "pub(super) fn read_envelope_using(",
+            "let mut checked = || { boundary()?; verify(original) };",
             "let account = work.original().child().map_err(admission)?;",
             "let (maximum_bytes, maximum_children) = object_limits(id)?;",
             "backend.read_with_boundary(original, id, None, boundary)",
             "if source.logical_length() > maximum_bytes",
-            "source.read_all_with_boundary(original, maximum_bytes, boundary)",
+            "source.read_all_with_boundary(original, maximum_bytes, &mut checked)",
             "let _terminal_scope = record.original.enter();",
             r#"if let Err(error) = work.checked(|original, boundary| {
-                crate::content_store::checked_reader::check(original, boundary)
+                let mut checked = || {
+                    boundary()?;
+                    verify(original)
+                };
+                crate::content_store::checked_reader::check(original, &mut checked)
             })"#,
             "if !id.authenticates(bytes)",
             "ContentEnvelope::from_canonical_bytes_with_child_limit(bytes, maximum_children)?",
         ],
         counts: &[
             (
-                "source.read_all_with_boundary(original, maximum_bytes, boundary)",
+                "source.read_all_with_boundary(original, maximum_bytes, &mut checked)",
                 2,
             ),
             (
@@ -39,6 +45,7 @@ const INPUTS: &[Input] = &[
                 1,
             ),
             ("let _terminal_scope = record.original.enter();", 1),
+            ("let mut checked = || { boundary()?; verify(original) };", 4),
         ],
     },
     Input {
@@ -99,6 +106,12 @@ const INPUTS: &[Input] = &[
         path: "crates/crucible-cas/src/ram/bounded_read.rs",
         required: &[
             "work: &'read mut Work<'operation>",
+            "let previous = self.inventory_admission;",
+            "if let Some(previous) = previous { previous(id)?; } admit(id)",
+            "inventory_admission: Some(&admitted)",
+            "selected.set(Some(id)); reader.lookup(backend, original, id, boundary)",
+            "if let (Some(admit), Some(id)) = (admission, selected.get()) { admit(id)?; } verify_physical(original, physical)",
+            "let result = result.and_then(|()| { self.work.checked(|original, boundary| { crate::content_store::checked_reader::check(original, boundary)?; verify_physical(original, physical) }) });",
             "state: &'read mut ReadState",
             "let previous = std::mem::replace(&mut self.state.phase, ReadPhase::Consumed);",
             "(ReadPhase::Failed, Ok(())) => Err(self.first_failure())",
@@ -125,6 +138,16 @@ const INPUTS: &[Input] = &[
                 1,
             ),
         ],
+    },
+    Input {
+        path: "crates/crucible-cas/src/content_store/graph.rs",
+        required: &[
+            "request.execute_graph_inventory(self, self.root.as_ref(), &|id| self.require_admitted(id))",
+        ],
+        counts: &[(
+            "request.execute_graph_inventory(self, self.root.as_ref(), &|id| self.require_admitted(id))",
+            1,
+        )],
     },
     Input {
         path: "crates/crucible-cas/src/content_store/sqlite/bounded_read.rs",

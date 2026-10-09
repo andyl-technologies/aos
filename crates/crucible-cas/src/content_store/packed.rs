@@ -52,6 +52,7 @@ mod index_update;
 mod inventory;
 mod maintenance;
 mod placement_index;
+pub(crate) mod read_view;
 mod repack;
 use placement_index as index_snapshot;
 #[cfg(test)]
@@ -614,6 +615,13 @@ fn inject_pack_index_interruption() {
 }
 
 impl ImmutableBlobBackend for PackedBlobBackend {
+    fn read_bounded_with_boundary(
+        &self,
+        request: &mut crate::ram::BoundedReadRequest<'_, '_>,
+    ) -> Result<(), StoreError> {
+        request.execute_packed(self)
+    }
+
     fn checked_publication_metadata(
         &self,
         _kind: ObjectKind,

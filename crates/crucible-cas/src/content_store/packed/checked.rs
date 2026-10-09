@@ -8,7 +8,7 @@ use crate::owned_decode::{DecodeBudget, DecodeDescriptorLoan, ResourceLoanSlot};
 
 use super::checked_io::READ_BYTES;
 
-type PackPin = FilePin<DecodeDescriptorLoan>;
+pub(super) type PackPin = FilePin<DecodeDescriptorLoan>;
 
 pub(super) fn lookup(
     backend: &PackedBlobBackend,
@@ -126,6 +126,41 @@ fn authenticate_manifest(
     original: &DecodeBudget,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
+    authenticate_manifest_into(
+        file,
+        ManifestSelection {
+            configuration,
+            id,
+            entry,
+            file_length,
+        },
+        original,
+        boundary,
+        &mut |_| Ok(()),
+    )
+}
+
+/// Binds the configured pack, selected identity and actual pinned-file length.
+pub(super) struct ManifestSelection {
+    pub(super) configuration: [u8; 32],
+    pub(super) id: ContentId,
+    pub(super) entry: IndexEntry,
+    pub(super) file_length: u64,
+}
+
+pub(super) fn authenticate_manifest_into(
+    file: &File,
+    selection: ManifestSelection,
+    original: &DecodeBudget,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    accept: &mut impl FnMut(PackManifestEntry) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    let ManifestSelection {
+        configuration,
+        id,
+        entry,
+        file_length,
+    } = selection;
     let mut fixed = [0_u8; PACK_MAGIC.len() + 32 + 4 + 4];
     checked_io::read_exact_at(file, &mut fixed, 0, original, boundary)?;
     let mut cursor = format::PackedCursor::new(&fixed);
@@ -180,7 +215,7 @@ fn authenticate_manifest(
             found |= candidate.id == id
                 && candidate.offset == entry.offset
                 && candidate.length == entry.length;
-            Ok(())
+            accept(candidate)
         },
     )?;
     if first_offset != Some(header_length) {
@@ -396,3 +431,57 @@ impl CheckedBlobReader for Reader {
 
 #[cfg(test)]
 mod tests;
+
+struct CachedSource {
+    source: Source,
+    _credit: crate::owned_decode::DecodeScratch,
+}
+
+impl BlobSource for CachedSource {
+    fn logical_length(&self) -> u64 {
+        self.source.logical_length()
+    }
+    fn checked_read_access(&self) -> CheckedReadAccess {
+        self.source.checked_read_access()
+    }
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        self.source.open()
+    }
+    fn open_with_boundary(
+        &self,
+        caller: &DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedReader, StoreError> {
+        self.source.open_with_boundary(caller, boundary)
+    }
+}
+
+pub(super) fn source_from_pin(
+    original: &DecodeBudget,
+    id: ContentId,
+    entry: IndexEntry,
+    file: PackPin,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<BlobHandle, StoreError> {
+    checked_reader::check(original, boundary)?;
+    let credit = original
+        .reserve_scratch_bytes(BlobHandle::source_allocation_bytes::<CachedSource>())
+        .map_err(|error| batch::admission_under(original, error))?;
+    let source = CachedSource {
+        source: Source {
+            file,
+            original: original.clone(),
+            id,
+            offset: entry.offset,
+            length: entry.length,
+            range: ByteRange {
+                offset: 0,
+                length: entry.length,
+            },
+        },
+        _credit: credit,
+    };
+    let handle = BlobHandle::authenticated(id, source);
+    checked_reader::check(original, boundary)?;
+    Ok(handle)
+}
