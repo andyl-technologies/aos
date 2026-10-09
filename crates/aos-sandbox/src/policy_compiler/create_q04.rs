@@ -22,7 +22,7 @@ pub(crate) use aos_sandbox_protocol::domain_ledger::create_q04_history::{
     claim_chunk_count, chunk_count,
 };
 #[cfg(test)]
-use aos_sandbox_protocol::domain_ledger::create_q04_history::GATE_IDENTITY_DOMAIN;
+const GATE_IDENTITY_DOMAIN: &[u8] = b"aos.sandbox.create-q04.effect-gate-identity.v1\0";
 
 use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};

@@ -54,7 +54,7 @@ const ROOT_PHASE_DOMAIN: &[u8] = b"aos.sandbox.create-q04.root-phase.v1\0";
 const SOURCE_PENDING_DOMAIN: &[u8] = b"aos.sandbox.create-q04.source-pending.v1\0";
 const CACHE_PENDING_DOMAIN: &[u8] = b"aos.sandbox.create-q04.cache-pending.v1\0";
 const GATE_DOMAIN: &[u8] = b"aos.sandbox.create-q04.effect-subgate.v1\0";
-pub const GATE_IDENTITY_DOMAIN: &[u8] = b"aos.sandbox.create-q04.effect-gate-identity.v1\0";
+const GATE_IDENTITY_DOMAIN: &[u8] = b"aos.sandbox.create-q04.effect-gate-identity.v1\0";
 const DECISION_DOMAIN: &[u8] = b"aos.sandbox.create-q04.root-decision.v1\0";
 const PREHOLD_RESPONSE_DOMAIN: &[u8] = b"aos.sandbox.create-q04.prefund-response.v1\0";
 
