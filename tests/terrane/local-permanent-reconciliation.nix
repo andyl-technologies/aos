@@ -23,6 +23,17 @@
     "gc::runner::permanent_local_tests::faults::permanent_local_cancelled_waiter_before_directory_sync_retains_exclusion_through_worker_completion"
     "gc::runner::permanent_local_tests::faults::permanent_local_cancelled_waiter_after_directory_sync_retains_exclusion_through_worker_completion"
     "gc::runner::permanent_local_tests::faults::permanent_local_progress_conflict_retains_owner_and_uses_fresh_event_nonce"
+    "gc::runner::permanent_local_tests::recovery::staging::permanent_local_staging_requested_directory_replacement_refuses_selection"
+    "gc::runner::permanent_local_tests::recovery::staging::permanent_local_staging_requested_directory_policy_refuses_selection"
+    "gc::runner::permanent_local_tests::recovery::staging::permanent_local_staging_off_batch_policy_refuses_before_selection"
+    "gc::runner::permanent_local_tests::recovery::staging::permanent_local_staging_added_cycle_keeps_late_residue_unselected"
+    "gc::runner::permanent_local_tests::recovery::staging::permanent_local_staging_removed_cycle_refuses_selection"
+    "gc::runner::permanent_local_tests::recovery::staging::permanent_local_staging_noncanonical_cycle_refuses_selection"
+    "gc::runner::permanent_local_tests::recovery::staging::permanent_local_staging_symlink_cycle_refuses_selection"
+    "gc::runner::permanent_local_tests::recovery::staging::permanent_local_staging_expired_whole_lease_refuses_selection"
+    "gc::runner::permanent_local_tests::recovery::staging::permanent_local_staging_replaced_owner_preimage_refuses_selection"
+    "gc::runner::permanent_local_tests::recovery::staging::permanent_local_staging_replaced_original_preimage_refuses_selection"
+    "gc::runner::permanent_local_tests::recovery::staging::permanent_local_staging_cancellation_keeps_proposals_unselected_after_reopen"
   ];
 in
   # This auxiliary check covers permanent local recovery. Full two-phase GC
@@ -44,6 +55,6 @@ in
       python3 ../tests/terrane/check_native_gate.py execution \
         "$TMPDIR/permanent-local-test.log" "[\"$test_name\"]"
     done
-    printf 'PASS: permanent local recovery and fresh-placement restore (23 exact cases)\n' \
+    printf 'PASS: permanent local recovery and fresh-placement restore (34 exact cases)\n' \
       > "$out/result"
   ''

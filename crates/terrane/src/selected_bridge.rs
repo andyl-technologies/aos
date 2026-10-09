@@ -162,10 +162,11 @@ impl OwnedFinalCheck {
 
     /// Retains original candidate-directory continuity during unselected staging.
     ///
-    /// Only unrelated immutable progress proposals may use this narrower physical
-    /// check. The owning producer must restore complete candidate enumeration
-    /// before preselection synchronization and keep it through slot installation
-    /// and acknowledgment. Continuity alone proves neither coverage nor absence.
+    /// Only fresh, unselected progress proposals may use this narrower physical
+    /// check. Mutable checkpoint keys still require their genuine absent preimage.
+    /// The owning producer must restore complete candidate enumeration before
+    /// preselection synchronization and keep it through slot installation and
+    /// acknowledgment. Continuity alone proves neither coverage nor absence.
     pub(crate) fn with_permanent_candidate_continuity(
         &self,
         source: &Arc<NativePermanentObservation>,
