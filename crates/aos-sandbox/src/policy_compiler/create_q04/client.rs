@@ -1011,7 +1011,8 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let checked_draft = super::super::checked_parentless_create_verified_policy_draft_v2(
             &current, &project, &deployment, &input, &prerequisites, now,
         )?;
-        let normalized = super::super::normalized_policy_input_digest_v1(&input).map_err(|_| super::super::PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+        let normalized = super::super::normalized_policy_input_digest_v1(&input)
+            .map_err(|_| super::super::PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
         let candidate = aos_sandbox_policy::PolicyCompilerV1::compile_retained(&input)?;
         let inclusive = super::input_origin::candidate_capacity(&candidate)?;
         self.original_input_demand(inclusive)?;

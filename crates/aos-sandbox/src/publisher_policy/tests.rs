@@ -863,7 +863,9 @@ fn policy_decoder_and_store_limits_are_hard_clamped() {
             &vec![0; MAXIMUM_POLICY_BYTES + 1],
             DecodeLimits::default(),
         ),
-        Err(aos_sandbox_policy::PublisherPolicyDataError::LimitExceeded("policy bytes"))
+        Err(aos_sandbox_policy::PublisherPolicyDataError::LimitExceeded(
+            "policy bytes"
+        ))
     ));
 
     let directory = TestDirectory::new("limits");

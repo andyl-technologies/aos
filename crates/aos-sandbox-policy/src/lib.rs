@@ -21,9 +21,11 @@ mod authority;
 mod compiler;
 mod model;
 mod publisher_revision;
-pub use publisher_revision::{PreparedPublisherPolicyRevisionV1, RetainedPublisherCompilerOriginV3,
-    PublisherPolicyDataError, NormalizedPolicyInputErrorV1, normalized_policy_input_digest_v1,
-    retain_publisher_compiler_derivation_v3};
+pub use publisher_revision::{
+    NormalizedPolicyInputErrorV1, PreparedPublisherPolicyRevisionV1, PublisherPolicyDataError,
+    RetainedPublisherCompilerOriginV3, normalized_policy_input_digest_v1,
+    retain_publisher_compiler_derivation_v3,
+};
 mod namespace;
 mod resources;
 

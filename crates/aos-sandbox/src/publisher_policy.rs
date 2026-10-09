@@ -16,8 +16,8 @@
 
 use aos_sandbox_core::model::{CacheDomain, CacheDomainKind};
 use aos_sandbox_core::{
-    DecodeLimits, ObjectDescriptor, ObjectDigest, Operation, PrincipalId, ProjectId,
-    ResourceId, ResourceKind, RevocationScopeId,
+    DecodeLimits, ObjectDescriptor, ObjectDigest, Operation, PrincipalId, ProjectId, ResourceId,
+    ResourceKind, RevocationScopeId,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -74,8 +74,8 @@ pub(crate) use project_authorization_store_v2::CurrentSourceTreeSeedPreflightErr
 #[cfg(test)]
 mod project_authorization_test_fixture;
 pub use model::{
-    PublisherControllerHeadV1, PublisherPolicyError,
-    PublisherPolicyLimits, PublisherProjectCacheDomainHeadV1, PublisherProjectRevocationHeadV1,
+    PublisherControllerHeadV1, PublisherPolicyError, PublisherPolicyLimits,
+    PublisherProjectCacheDomainHeadV1, PublisherProjectRevocationHeadV1,
     PublisherResourceBindingV1, PublisherRevocationHeadV1,
 };
 pub use project_authorization_source_v2::{

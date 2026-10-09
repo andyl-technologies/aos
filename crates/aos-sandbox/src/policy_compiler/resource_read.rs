@@ -71,7 +71,9 @@ impl ComparedResourceReadPolicyV1<'_, '_> {
         if self.state.target() != (origin.project(), origin.original_target()) {
             return Err(ResourceReadPolicyComparisonErrorV1::OriginalTargetMismatch);
         }
-        origin.compare_compiled_derivation(self.input, self.candidate()).map_err(PublisherPolicyError::from)?;
+        origin
+            .compare_compiled_derivation(self.input, self.candidate())
+            .map_err(PublisherPolicyError::from)?;
         self.recheck()?;
         Ok(())
     }

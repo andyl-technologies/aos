@@ -11,11 +11,13 @@
 //! Controller contract; neither DATA consistency nor this wrapper alone proves
 //! independently current inputs, publication authority or an effect handoff.
 
-use aos_sandbox_core::DecodeLimits;
 use crate::CommitResult;
 use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyStore};
-use aos_sandbox_policy::{PreparedPublisherPolicyRevisionV1, RetainedPublisherCompilerOriginV3,
-    PolicyCompilerInputV1, PolicyCompilerV1, retain_publisher_compiler_derivation_v3};
+use aos_sandbox_core::DecodeLimits;
+use aos_sandbox_policy::{
+    PolicyCompilerInputV1, PolicyCompilerV1, PreparedPublisherPolicyRevisionV1,
+    RetainedPublisherCompilerOriginV3, retain_publisher_compiler_derivation_v3,
+};
 
 // Existing native whole-revision bound, not extra journal capacity.
 const MAXIMUM_BYTES: usize = 4 * 1024 * 1024;
@@ -51,7 +53,10 @@ pub fn compile_publisher_policy_revision_v2(
     expires_at: i64,
 ) -> Result<CompiledPublisherPolicyRevisionV2, PublisherPolicyError> {
     let origin = derive_origin(input)?;
-    let origin_bytes = origin.to_record_bytes().map_err(PublisherPolicyError::from)?.len();
+    let origin_bytes = origin
+        .to_record_bytes()
+        .map_err(PublisherPolicyError::from)?
+        .len();
     let mut revision = PreparedPublisherPolicyRevisionV1::from_canonical_bytes(
         origin.project(),
         generation,
@@ -59,8 +64,11 @@ pub fn compile_publisher_policy_revision_v2(
         expires_at,
         origin.output_bytes()[0],
         DecodeLimits::default(),
-    ).map_err(PublisherPolicyError::from)?;
-    revision.retain_compiler_origin(origin).map_err(PublisherPolicyError::from)?;
+    )
+    .map_err(PublisherPolicyError::from)?;
+    revision
+        .retain_compiler_origin(origin)
+        .map_err(PublisherPolicyError::from)?;
     // Account for policy bytes, origin bytes, framing, and the existing header.
     let size = 88usize
         .checked_add(revision.canonical_policy().len())
@@ -106,4 +114,3 @@ fn derive_origin(
         .map_err(|_| PublisherPolicyError::InvalidPolicyRevision)?;
     retain_publisher_compiler_derivation_v3(input, &candidate).map_err(PublisherPolicyError::from)
 }
-

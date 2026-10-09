@@ -4025,7 +4025,8 @@ impl RootCurrentInputVerifierV1<'_, '_, '_, '_> {
             self.stage.staged().base().next_generation(),
         )?;
         self.recheck()?;
-        let normalized = normalized_policy_input_digest_v1(&input).map_err(|_| super::super::PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+        let normalized = normalized_policy_input_digest_v1(&input)
+            .map_err(|_| super::super::PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
         let candidate = PolicyCompilerV1::compile_retained(&input)?;
         self.recheck()?;
         Ok((input, prerequisites, normalized, candidate))

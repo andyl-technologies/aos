@@ -20,13 +20,17 @@
 //! callers retain their actual compiled wrapper, signing, Journal and held-cut
 //! owners and independently qualify derivation against genuine typed inputs.
 
+use crate::{
+    CompiledPolicyCandidateV1, PolicyCompilerInputV1, PolicyCompilerV1, canonical_bytes,
+    compiled_policy_candidate_digest_v1,
+};
 use aos_sandbox_core::format::{decode_policy, encode_policy};
 use aos_sandbox_core::model::{CacheDomainKind, Policy};
-use aos_sandbox_core::{DecodeLimits, MediaType, ObjectDescriptor, ObjectDigest,
-    PortableMediaType, ProjectId, SandboxId, descriptor_for_bytes, validate_required_features};
+use aos_sandbox_core::{
+    DecodeLimits, MediaType, ObjectDescriptor, ObjectDigest, PortableMediaType, ProjectId,
+    SandboxId, descriptor_for_bytes, validate_required_features,
+};
 use sha2::{Digest as _, Sha256};
-use crate::{canonical_bytes, compiled_policy_candidate_digest_v1,
-    CompiledPolicyCandidateV1, PolicyCompilerInputV1, PolicyCompilerV1};
 
 const MAXIMUM_POLICY_BYTES: usize = 4 * 1024 * 1024;
 const MAXIMUM_COLLECTION_ITEMS: usize = 1_024;
@@ -178,9 +182,7 @@ impl PreparedPublisherPolicyRevisionV1 {
     /// The decoded value is not authenticated input or live publication
     /// authority. Legacy resolved-policy revisions intentionally return `None`.
     #[must_use]
-    pub const fn compiler_origin(
-        &self,
-    ) -> Option<&RetainedPublisherCompilerOriginV3> {
+    pub const fn compiler_origin(&self) -> Option<&RetainedPublisherCompilerOriginV3> {
         self.compiler_origin.as_ref()
     }
 
@@ -413,7 +415,9 @@ impl RetainedPublisherCompilerOriginV3 {
             size.checked_add(4)
                 .and_then(|size| size.checked_add(field.len()))
                 .filter(|size| *size <= MAXIMUM_BYTES)
-                .ok_or(PublisherPolicyDataError::LimitExceeded("compiler origin bytes"))
+                .ok_or(PublisherPolicyDataError::LimitExceeded(
+                    "compiler origin bytes",
+                ))
         })?;
         let mut bytes = Vec::with_capacity(size);
         bytes.extend_from_slice(MAGIC);
@@ -614,8 +618,8 @@ pub fn normalized_policy_input_digest_v1(
     update_descriptor(&mut hasher, input.backend().descriptor())?;
     hasher.update(input.limits().work().to_be_bytes());
     hasher.update(input.limits().dag_depth().to_be_bytes());
-    let rule_limit = u64::try_from(input.limits().rules())
-        .map_err(|_| NormalizedPolicyInputErrorV1)?;
+    let rule_limit =
+        u64::try_from(input.limits().rules()).map_err(|_| NormalizedPolicyInputErrorV1)?;
     hasher.update(rule_limit.to_be_bytes());
     Ok(ObjectDigest::from_bytes(hasher.finalize().into()))
 }
@@ -641,17 +645,17 @@ mod tests {
 
     #[test]
     fn canonical_policy_decode_limits_are_hard_clamped() {
-    assert_eq!(
-        bounded_decode_limits(DecodeLimits::default()).maximum_collection_items,
-        MAXIMUM_COLLECTION_ITEMS
-    );
-    let oversized_required_features = [0x8b, 0x01, 0x99, 0x04, 0x01];
-    assert!(matches!(
-        aos_sandbox_core::format::decode_policy(
-            &oversized_required_features,
-            bounded_decode_limits(DecodeLimits::default()),
-        ),
-        Err(CanonicalCborError::CollectionTooLarge { .. })
-    ));
+        assert_eq!(
+            bounded_decode_limits(DecodeLimits::default()).maximum_collection_items,
+            MAXIMUM_COLLECTION_ITEMS
+        );
+        let oversized_required_features = [0x8b, 0x01, 0x99, 0x04, 0x01];
+        assert!(matches!(
+            aos_sandbox_core::format::decode_policy(
+                &oversized_required_features,
+                bounded_decode_limits(DecodeLimits::default()),
+            ),
+            Err(CanonicalCborError::CollectionTooLarge { .. })
+        ));
     }
 }

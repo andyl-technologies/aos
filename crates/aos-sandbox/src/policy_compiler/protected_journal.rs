@@ -645,7 +645,8 @@ pub(super) fn q04_independent_publication_data_v1(
 ) -> Result<Q04IndependentPublicationRecipeV1, PolicyCompilerJournalErrorV1> {
     let project = input.project().project();
     let sandbox = input.sandbox();
-    let normalized_input = normalized_policy_input_digest_v1(input).map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+    let normalized_input = normalized_policy_input_digest_v1(input)
+        .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
     let diagnostics = aos_sandbox_policy::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
     if candidate.authority_status() != CandidateAuthorityV1::NonAuthoritativeAncestry {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
@@ -709,7 +710,8 @@ impl VerifiedPolicyPublicationV1 {
     ) -> Result<Self, PolicyCompilerJournalErrorV1> {
         let project = input.project().project();
         let sandbox = input.sandbox();
-        let normalized_input = normalized_policy_input_digest_v1(input).map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+        let normalized_input = normalized_policy_input_digest_v1(input)
+            .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
         let candidate_digest = candidate.commitment().digest();
         let diagnostics =
             aos_sandbox_policy::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
@@ -1033,7 +1035,8 @@ impl<'journal> PolicyCompilerProtectedJournalV1<'journal> {
     ) -> Result<Q04IndependentPublicationRecipeV1, PolicyCompilerJournalErrorV1> {
         let project = input.project().project();
         let sandbox = input.sandbox();
-        let normalized_input = normalized_policy_input_digest_v1(input).map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+        let normalized_input = normalized_policy_input_digest_v1(input)
+            .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
         let canonical_diagnostics =
             aos_sandbox_policy::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
         if candidate.authority_status() != CandidateAuthorityV1::NonAuthoritativeAncestry
@@ -1081,7 +1084,8 @@ impl<'journal> PolicyCompilerProtectedJournalV1<'journal> {
     ) -> Result<Q04PublicationCapacityV1, PolicyCompilerJournalErrorV1> {
         let project = input.project().project();
         let sandbox = input.sandbox();
-        let normalized_input = normalized_policy_input_digest_v1(input).map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+        let normalized_input = normalized_policy_input_digest_v1(input)
+            .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
         if !self.validator.contains(prerequisites)
             || recipe.project != project
             || recipe.sandbox != sandbox
@@ -2855,7 +2859,9 @@ pub(super) fn compare_recompiled_candidate_derivation_v1(
         || header.generation != generation
         || header.prerequisite_tuple != *prerequisites
         || header.prerequisites != prerequisites.digest()
-        || header.normalized_input != normalized_policy_input_digest_v1(input).map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?
+        || header.normalized_input
+            != normalized_policy_input_digest_v1(input)
+                .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?
         || header.candidate != candidate.commitment().digest()
         || header.preimage != Some(candidate.commitment_plan_digests())
         || header.diagnostics != digest_bytes(DIAGNOSTICS_DOMAIN, &diagnostics)

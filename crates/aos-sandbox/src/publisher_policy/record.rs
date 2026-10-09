@@ -132,7 +132,9 @@ pub(super) fn encode_policy_revision(
     bytes.extend_from_slice(&length.to_be_bytes());
     bytes.extend_from_slice(value.canonical_policy());
     if let Some(origin) = value.compiler_origin() {
-        let origin_bytes = origin.to_record_bytes().map_err(PublisherPolicyError::from)?;
+        let origin_bytes = origin
+            .to_record_bytes()
+            .map_err(PublisherPolicyError::from)?;
         let length = u32::try_from(origin_bytes.len())
             .map_err(|_| PublisherPolicyError::LimitExceeded("compiler origin bytes"))?;
         bytes.extend_from_slice(&length.to_be_bytes());
@@ -184,7 +186,8 @@ pub(super) fn decode_policy_revision(
         }
         let origin = crate::policy_compiler::RetainedPublisherCompilerOriginV3::from_record_bytes(
             &bytes[origin_start..],
-        ).map_err(PublisherPolicyError::from)?;
+        )
+        .map_err(PublisherPolicyError::from)?;
         value
             .retain_compiler_origin(origin)
             .map_err(|_| PublisherPolicyError::CorruptState)?;

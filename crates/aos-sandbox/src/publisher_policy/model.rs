@@ -215,8 +215,12 @@ impl PublisherProjectRevocationHeadV1 {
 impl From<aos_sandbox_policy::PublisherPolicyDataError> for PublisherPolicyError {
     fn from(error: aos_sandbox_policy::PublisherPolicyDataError) -> Self {
         match error {
-            aos_sandbox_policy::PublisherPolicyDataError::LimitExceeded(dimension) => Self::LimitExceeded(dimension),
-            aos_sandbox_policy::PublisherPolicyDataError::InvalidPolicyRevision => Self::InvalidPolicyRevision,
+            aos_sandbox_policy::PublisherPolicyDataError::LimitExceeded(dimension) => {
+                Self::LimitExceeded(dimension)
+            }
+            aos_sandbox_policy::PublisherPolicyDataError::InvalidPolicyRevision => {
+                Self::InvalidPolicyRevision
+            }
             aos_sandbox_policy::PublisherPolicyDataError::CorruptState => Self::CorruptState,
         }
     }

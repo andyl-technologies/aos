@@ -405,8 +405,7 @@ pub use public_create_source::{
 };
 pub use aos_sandbox_policy::{RetainedPublisherCompilerOriginV3, normalized_policy_input_digest_v1};
 pub use publisher_origin::{
-    CompiledPublisherPolicyRevisionV2,
-    compile_publisher_policy_revision_v2,
+    CompiledPublisherPolicyRevisionV2, compile_publisher_policy_revision_v2,
 };
 pub use resolved_policy::{HeldResolvedRuntimePolicyV1, PolicyCompilerStateReadbackOwnerV1};
 pub use root_project_admission_proof::{

@@ -174,7 +174,11 @@ impl VerifiedPublisherPolicySourceV1 {
             canonical_policy,
             DecodeLimits::default(),
         )
-        .map_err(|cause| custody.failure(GitUploadBootstrapErrorV1::Store(PublisherPolicyError::from(cause))))?;
+        .map_err(|cause| {
+            custody.failure(GitUploadBootstrapErrorV1::Store(
+                PublisherPolicyError::from(cause),
+            ))
+        })?;
         if policy.descriptor().digest().as_bytes() != &expected_digest
             || policy.policy().cache_domain().kind() != CacheDomainKind::Project
             || !policy.policy().effective_grants().iter().any(|grant| {
