@@ -379,6 +379,49 @@ mod tests {
     }
 
     #[test]
+    fn request_reader_preserves_outer_limits_and_nested_failure_order() {
+        let encoded = encode_request(&request()).unwrap();
+
+        let decoded = decode_request(&encoded).unwrap();
+        assert_eq!(encode_request(&decoded).unwrap(), encoded);
+        for length in 0..encoded.len() {
+            assert!(matches!(
+                decode_request(&encoded[..length]),
+                Err(ZfsWorkerError::Protocol("repair worker request is truncated"))
+            ), "prefix {length}");
+        }
+
+        let mut malformed_header = encoded[..12].to_vec();
+        malformed_header[0] ^= 1;
+        assert!(matches!(
+            decode_request(&malformed_header),
+            Err(ZfsWorkerError::Protocol("repair worker request header is invalid"))
+        ));
+
+        let mut oversized_missing_body = encoded[..16].to_vec();
+        oversized_missing_body[12..16].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(matches!(
+            decode_request(&oversized_missing_body),
+            Err(ZfsWorkerError::Protocol("repair worker record length is invalid"))
+        ));
+
+        let mut invalid_inner_with_tail = encoded.clone();
+        invalid_inner_with_tail[16] ^= 1;
+        invalid_inner_with_tail.push(0);
+        assert!(matches!(
+            decode_request(&invalid_inner_with_tail),
+            Err(ZfsWorkerError::Protocol("workspace pin request header is invalid"))
+        ));
+
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert!(matches!(
+            decode_request(&trailing),
+            Err(ZfsWorkerError::Protocol("repair worker request has trailing bytes"))
+        ));
+    }
+
+    #[test]
     fn request_rejects_header_length_inner_and_trailing_substitution() {
         let encoded = encode_request(&request()).unwrap();
 

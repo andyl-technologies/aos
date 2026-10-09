@@ -1588,6 +1588,60 @@ mod tests {
     }
 
     #[test]
+    fn result_reader_preserves_asymmetric_fields_and_original_failure_frontiers() {
+        let guid = 0x0102_0304_0506_0708;
+        let result = WorkspacePinWorkerResultV1::new(
+            [5; 16],
+            WorkspaceDatasetObservationV1::Exact {
+                name: "tank/aos/project/work".to_owned(),
+                guid,
+            },
+            WorkspacePinObservationV1::Absent,
+            ObjectDigest::from_bytes([13; 32]),
+        );
+        let encoded = encode_result(&result).unwrap();
+
+        let decoded = decode_result(&encoded).unwrap();
+        assert_eq!(decoded.dataset(), result.dataset());
+        assert_eq!(encode_result(&decoded).unwrap(), encoded);
+        assert_eq!(&encoded[encoded.len() - 9..encoded.len() - 1], &guid.to_be_bytes());
+        for length in 0..encoded.len() {
+            assert!(matches!(
+                decode_result(&encoded[..length]),
+                Err(ZfsWorkerError::Protocol("workspace pin request is truncated"))
+            ), "prefix {length}");
+        }
+
+        let mut malformed_header = encoded[..12].to_vec();
+        malformed_header[0] ^= 1;
+        assert!(matches!(
+            decode_result(&malformed_header),
+            Err(ZfsWorkerError::Protocol("workspace pin result header is invalid"))
+        ));
+
+        let mut invalid_identity_with_tail = encoded.clone();
+        invalid_identity_with_tail[28..60].fill(0);
+        invalid_identity_with_tail.push(0);
+        assert!(matches!(
+            decode_result(&invalid_identity_with_tail),
+            Err(ZfsWorkerError::Protocol("workspace pin request has trailing bytes"))
+        ));
+        invalid_identity_with_tail.truncate(encoded.len());
+        assert!(matches!(
+            decode_result(&invalid_identity_with_tail),
+            Err(ZfsWorkerError::Protocol("workspace pin result identity is invalid"))
+        ));
+
+        let mut invalid_utf8_with_tail = encoded;
+        invalid_utf8_with_tail[63] = 0xff;
+        invalid_utf8_with_tail.push(0);
+        assert!(matches!(
+            decode_result(&invalid_utf8_with_tail),
+            Err(ZfsWorkerError::Protocol("workspace pin result string is not UTF-8"))
+        ));
+    }
+
+    #[test]
     fn authority_envelope_rejects_zero_identity_and_empty_or_oversized_records() {
         assert!(
             WorkspacePinWorkerAuthorityV1::new([0; 16], vec![1], vec![2], vec![3], vec![4])
