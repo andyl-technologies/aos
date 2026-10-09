@@ -1,0 +1,29 @@
+{
+  "model_version": "1",
+  "observation_basis": {"inventory": "revision-1"},
+  "items": {
+    "x": {"domain": "all", "deferrable": false, "demands": {"slots": {"default": "1", "overrides": {}}}},
+    "y": {"domain": "all", "deferrable": false, "demands": {"slots": {"default": "1", "overrides": {}}}}
+  },
+  "targets": {
+    "A": {"capacities": {"slots": {"kind": "finite", "limit": "2"}}, "fixed_load": {"slots": "0"}},
+    "B": {"capacities": {"slots": {"kind": "finite", "limit": "2"}}, "fixed_load": {"slots": "0"}}
+  },
+  "dimensions": {"slots": {"unit": "worker slots", "quantum": "1"}},
+  "domains": {"all": ["A", "B"]},
+  "groups": {"pair": ["x", "y"]},
+  "target_sets": {"A": ["A"], "B": ["B"]},
+  "scope_families": {"host": {"A": ["A"], "B": ["B"]}},
+  "observed": {
+    "x": {"binding": {"kind": "target", "target": "A"}, "charges": {"slots": "1"}},
+    "y": {"binding": {"kind": "target", "target": "B"}, "charges": {"slots": "1"}}
+  },
+  "holdings": [],
+  "constraints": [
+    {"id": "capacity-A", "enforcement": "hard", "rule": {"kind": "capacity", "target_set": "A", "dimension": "slots", "phase": "final", "limit": "2"}},
+    {"id": "capacity-B", "enforcement": "hard", "rule": {"kind": "capacity", "target_set": "B", "dimension": "slots", "phase": "final", "limit": "2"}}
+  ],
+  "objectives": [
+    {"id": "packing", "terms": [{"id": "used-hosts", "direction": "minimize", "weight": {"numerator": "1", "denominator": "1"}, "normalizer": {"numerator": "1", "denominator": "1"}, "metric": {"kind": "used_targets", "items": ["x", "y"]}}]}
+  ]
+}

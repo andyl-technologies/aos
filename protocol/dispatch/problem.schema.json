@@ -1,0 +1,1107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dispatch:schema:v1:problem",
+  "title": "Dispatch Problem version 1",
+  "$ref": "#/$defs/Problem",
+  "$defs": {
+    "Problem": {
+      "type": "object",
+      "properties": {
+        "model_version": {
+          "const": "1",
+          "type": "string"
+        },
+        "observation_basis": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "items": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Item"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "targets": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Target"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Dimension"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "domains": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "groups": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "target_sets": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "scope_families": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "propertyNames": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "observed": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Observation"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "holdings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Holding"
+          },
+          "uniqueItems": true
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Constraint"
+          },
+          "uniqueItems": true
+        },
+        "objectives": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ObjectiveTier"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "model_version",
+        "observation_basis",
+        "items",
+        "targets",
+        "dimensions",
+        "domains",
+        "groups",
+        "target_sets",
+        "scope_families",
+        "observed",
+        "holdings",
+        "constraints",
+        "objectives"
+      ],
+      "additionalProperties": false
+    },
+    "Item": {
+      "type": "object",
+      "properties": {
+        "domain": {
+          "type": "string"
+        },
+        "deferrable": {
+          "type": "boolean"
+        },
+        "demands": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Demand"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      },
+      "required": [
+        "domain",
+        "deferrable",
+        "demands"
+      ],
+      "additionalProperties": false
+    },
+    "Demand": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "overrides": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Quantity"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      },
+      "required": [
+        "overrides"
+      ],
+      "additionalProperties": false
+    },
+    "Quantity": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "x-maximum": "18446744073709551615",
+      "description": "Canonical unsigned decimal; semantic decoder also enforces the exact u64 maximum."
+    },
+    "Target": {
+      "type": "object",
+      "properties": {
+        "capacities": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Capacity"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "fixed_load": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Quantity"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      },
+      "required": [
+        "capacities",
+        "fixed_load"
+      ],
+      "additionalProperties": false
+    },
+    "Capacity": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "finite"
+            },
+            "limit": {
+              "$ref": "#/$defs/Quantity"
+            }
+          },
+          "required": [
+            "kind",
+            "limit"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "unbounded"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Dimension": {
+      "type": "object",
+      "properties": {
+        "unit": {
+          "type": "string"
+        },
+        "quantum": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "unit",
+        "quantum"
+      ],
+      "additionalProperties": false
+    },
+    "Observation": {
+      "type": "object",
+      "properties": {
+        "binding": {
+          "$ref": "#/$defs/ObservedBinding"
+        },
+        "charges": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Quantity"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      },
+      "required": [
+        "binding",
+        "charges"
+      ],
+      "additionalProperties": false
+    },
+    "ObservedBinding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "target"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "unplaced"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Holding": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "dimension": {
+          "type": "string"
+        },
+        "quantity": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "kind": {
+          "$ref": "#/$defs/HoldingKind"
+        }
+      },
+      "required": [
+        "id",
+        "target",
+        "dimension",
+        "quantity",
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "HoldingKind": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "ordinary"
+            },
+            "item": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "item"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "additional"
+            },
+            "retained_at_final": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "retained_at_final"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Constraint": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "enforcement": {
+          "$ref": "#/$defs/Enforcement"
+        },
+        "rule": {
+          "$ref": "#/$defs/ConstraintRule"
+        }
+      },
+      "required": [
+        "id",
+        "enforcement",
+        "rule"
+      ],
+      "additionalProperties": false
+    },
+    "Enforcement": {
+      "type": "string",
+      "enum": [
+        "hard",
+        "repair"
+      ]
+    },
+    "ConstraintRule": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "eligibility"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "targets": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "kind",
+            "items",
+            "targets"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "fixed_placement"
+            },
+            "bindings": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/Binding"
+              },
+              "propertyNames": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "bindings"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "capacity"
+            },
+            "target_set": {
+              "type": "string"
+            },
+            "dimension": {
+              "type": "string"
+            },
+            "phase": {
+              "$ref": "#/$defs/AccountingPhase"
+            },
+            "limit": {
+              "$ref": "#/$defs/Quantity"
+            }
+          },
+          "required": [
+            "kind",
+            "target_set",
+            "dimension",
+            "phase",
+            "limit"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "admission"
+            },
+            "group": {
+              "type": "string"
+            },
+            "minimum": {
+              "$ref": "#/$defs/Quantity"
+            },
+            "maximum": {
+              "$ref": "#/$defs/Quantity"
+            }
+          },
+          "required": [
+            "kind",
+            "group",
+            "minimum",
+            "maximum"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "atomic_admission"
+            },
+            "group": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "group"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "co_location"
+            },
+            "group": {
+              "type": "string"
+            },
+            "family": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "group",
+            "family"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "spread"
+            },
+            "group": {
+              "type": "string"
+            },
+            "family": {
+              "type": "string"
+            },
+            "minimum": {
+              "$ref": "#/$defs/Quantity"
+            },
+            "maximum_per_member": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Quantity"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "when_admitted": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "group",
+            "family",
+            "minimum",
+            "maximum_per_member",
+            "when_admitted"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "movement_budget"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "costs": {
+              "$ref": "#/$defs/MovementCosts"
+            },
+            "limit": {
+              "$ref": "#/$defs/Rational"
+            }
+          },
+          "required": [
+            "kind",
+            "items",
+            "costs",
+            "limit"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Binding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "target"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "deferred"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "AccountingPhase": {
+      "type": "string",
+      "enum": [
+        "final",
+        "overlap"
+      ]
+    },
+    "MovementCosts": {
+      "type": "object",
+      "properties": {
+        "unit": {
+          "type": "string"
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MovementCategory"
+          },
+          "uniqueItems": true
+        },
+        "costs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/AssignmentCosts"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      },
+      "required": [
+        "unit",
+        "categories",
+        "costs"
+      ],
+      "additionalProperties": false
+    },
+    "MovementCategory": {
+      "type": "string",
+      "enum": [
+        "new_placement",
+        "relocation",
+        "retirement"
+      ]
+    },
+    "AssignmentCosts": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "targets": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Rational"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "deferred": {
+          "$ref": "#/$defs/Rational"
+        }
+      },
+      "required": [
+        "targets",
+        "deferred"
+      ],
+      "additionalProperties": false
+    },
+    "Rational": {
+      "type": "object",
+      "properties": {
+        "numerator": {
+          "$ref": "#/$defs/Integer"
+        },
+        "denominator": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        }
+      },
+      "required": [
+        "numerator",
+        "denominator"
+      ],
+      "additionalProperties": false,
+      "description": "Reduced exact rational; zero denominator is forbidden and zero has denominator one."
+    },
+    "Integer": {
+      "type": "string",
+      "pattern": "^(0|-?[1-9][0-9]*)$"
+    },
+    "ObjectiveTier": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "terms": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ObjectiveTerm"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "terms"
+      ],
+      "additionalProperties": false
+    },
+    "ObjectiveTerm": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "direction": {
+          "$ref": "#/$defs/Direction"
+        },
+        "weight": {
+          "$ref": "#/$defs/Rational"
+        },
+        "normalizer": {
+          "$ref": "#/$defs/Rational"
+        },
+        "metric": {
+          "$ref": "#/$defs/Metric"
+        }
+      },
+      "required": [
+        "id",
+        "direction",
+        "weight",
+        "normalizer",
+        "metric"
+      ],
+      "additionalProperties": false
+    },
+    "Direction": {
+      "type": "string",
+      "enum": [
+        "minimize",
+        "maximize"
+      ]
+    },
+    "Metric": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "admitted_count"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "kind",
+            "items"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "admitted_priority"
+            },
+            "priorities": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/Rational"
+              },
+              "propertyNames": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "priorities"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "assignment_cost"
+            },
+            "costs": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/AssignmentCosts"
+              },
+              "propertyNames": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "costs"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "movement_cost"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "costs": {
+              "$ref": "#/$defs/MovementCosts"
+            }
+          },
+          "required": [
+            "kind",
+            "items",
+            "costs"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "used_targets"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "kind",
+            "items"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "repair_debt"
+            },
+            "components": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ComponentId"
+              },
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "kind",
+            "components"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "maximum_utilization"
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/UtilizationMember"
+              },
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "kind",
+            "members"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "utilization_range"
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/UtilizationMember"
+              },
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "kind",
+            "members"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "total_absolute_deviation"
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/UtilizationReference"
+              },
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "kind",
+            "members"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ComponentId": {
+      "type": "object",
+      "properties": {
+        "constraint": {
+          "type": "string"
+        },
+        "component": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "constraint",
+        "component"
+      ],
+      "additionalProperties": false
+    },
+    "UtilizationMember": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "target_set": {
+          "type": "string"
+        },
+        "dimension": {
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/AccountingPhase"
+        },
+        "capacity": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "id",
+        "target_set",
+        "dimension",
+        "phase",
+        "capacity"
+      ],
+      "additionalProperties": false
+    },
+    "UtilizationReference": {
+      "type": "object",
+      "properties": {
+        "member": {
+          "$ref": "#/$defs/UtilizationMember"
+        },
+        "reference": {
+          "$ref": "#/$defs/Rational"
+        }
+      },
+      "required": [
+        "member",
+        "reference"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

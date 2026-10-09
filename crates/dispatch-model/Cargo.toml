@@ -1,0 +1,22 @@
+[package]
+name = "dispatch-model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Exact portable resource assignment models and independent verification"
+repository = "https://github.com/andyl-technologies/aos"
+homepage = "https://github.com/andyl-technologies/aos"
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+num-bigint.workspace = true
+num-integer.workspace = true
+num-traits.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

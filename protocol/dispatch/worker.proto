@@ -1,0 +1,218 @@
+syntax = "proto3";
+
+package dispatch.worker.v1;
+
+// Native workers use four-byte big-endian lengths, then one WorkerEnvelope.
+// Portable JSON bytes follow the published model schema; they never name files.
+message WorkerEnvelope {
+  Version protocol_version = 1;
+  uint64 session_generation = 2;
+  uint64 worker_generation = 3;
+  uint64 request_id = 4;
+  oneof body {
+    Hello hello = 10;
+    Capabilities capabilities = 11;
+    Prepare prepare = 12;
+    Prepared prepared = 13;
+    Solve solve = 14;
+    Progress progress = 15;
+    Candidate candidate = 16;
+    Finished finished = 17;
+    Release release = 18;
+    Released released = 19;
+    ProtocolError error = 20;
+    Cancel cancel = 21;
+  }
+}
+
+message Version {
+  uint32 major = 1;
+  uint32 minor = 2;
+}
+
+message Hello {
+  repeated Version protocol_versions = 1;
+  repeated Version model_versions = 2;
+  WireLimits limits = 3;
+  repeated string required_capabilities = 4;
+}
+
+message WireLimits {
+  uint32 max_frame_bytes = 1;
+  uint64 max_problem_bytes = 2;
+  uint64 max_decoded_bytes = 3;
+  uint64 max_items = 4;
+  uint64 max_targets = 5;
+  uint64 max_dimensions = 6;
+  uint64 max_memberships = 7;
+  uint64 max_domain_entries = 8;
+  uint64 max_overrides = 9;
+  uint64 max_constraints = 10;
+  uint64 max_objectives = 11;
+  uint32 max_nesting = 12;
+  uint32 max_string_bytes = 13;
+  uint32 max_prepared = 14;
+  uint64 max_prepared_bytes = 15;
+  uint32 max_diagnostic_bytes = 16;
+}
+
+message Capabilities {
+  Version protocol_version = 1;
+  repeated Version model_versions = 2;
+  WireLimits limits = 3;
+  string backend_name = 4;
+  string backend_build_id = 5;
+  repeated string capabilities = 6;
+  repeated string constraint_kinds = 7;
+  repeated string objective_kinds = 8;
+  uint64 maximum_exact_integer = 9;
+  bool graceful_cancel = 10;
+  bool candidate_stream = 11;
+  bool incremental_updates = 12;
+  bool prepared_native_state = 13;
+  repeated SearchMode search_modes = 14;
+  bool seed_supported = 15;
+  // False means omitted stages are unavailable, never measured zero.
+  bool stage_timings = 16;
+}
+
+message Prepare {
+  bytes problem_json = 1;
+  bytes model_digest = 2;
+}
+
+message Prepared {
+  string handle = 1;
+  bytes model_digest = 2;
+}
+
+message Solve {
+  bytes problem_json = 1;
+  string prepared_handle = 2;
+  bytes model_digest = 3;
+  bytes request_digest = 4;
+  bytes hint_json = 5;
+  SolveOptions options = 6;
+  // Remaining execution time is not part of the original request commitment.
+  optional uint64 remaining_wall_time_millis = 7;
+}
+
+message SolveOptions {
+  SearchMode mode = 1;
+  uint64 wall_time_millis = 2;
+  uint32 threads = 3;
+  optional uint64 seed = 4;
+  uint64 memory_bytes = 5;
+  uint64 cpu_time_millis = 6;
+  uint64 maximum_iterations = 7;
+}
+
+enum SearchMode {
+  SEARCH_MODE_UNSPECIFIED = 0;
+  SEARCH_MODE_LOCAL_SEARCH = 1;
+  SEARCH_MODE_MIP = 2;
+}
+
+message Progress {
+  ExecutionStage stage = 1;
+  uint64 completed_iterations = 2;
+  string detail = 3;
+}
+
+enum ExecutionStage {
+  EXECUTION_STAGE_UNSPECIFIED = 0;
+  EXECUTION_STAGE_MATERIALIZING = 1;
+  EXECUTION_STAGE_SEARCHING = 2;
+  EXECUTION_STAGE_VERIFYING = 3;
+}
+
+message Candidate {
+  bytes assignment_json = 1;
+  bytes model_digest = 2;
+}
+
+message Finished {
+  Termination termination = 1;
+  bytes assignment_json = 2;
+  SearchEvidence evidence = 3;
+  string detail = 4;
+  bytes model_digest = 5;
+  bytes request_digest = 6;
+  string backend_build_id = 7;
+  SolveOptions effective_options = 8;
+  // Only the trusted Rust runner populates these; clients re-evaluate imports.
+  bytes evaluation_json = 9;
+  VerificationClass verification_class = 10;
+  repeated StageTiming timings = 11;
+  bool diagnostics_truncated = 12;
+  // Present only for rejection or execution failures with a known category.
+  optional ErrorCode error_code = 13;
+  // The trusted runner binds the exact caller revisions; native leaves empty.
+  bytes observation_basis_json = 14;
+  // Identifies the independent evaluator only when the runner established it.
+  string evaluator_version = 15;
+}
+
+enum Termination {
+  TERMINATION_UNSPECIFIED = 0;
+  TERMINATION_COMPLETED = 1;
+  TERMINATION_LIMIT_REACHED = 2;
+  TERMINATION_CANCELLED = 3;
+  TERMINATION_REJECTED = 4;
+  TERMINATION_EXECUTION_FAILED = 5;
+}
+
+enum VerificationClass {
+  VERIFICATION_CLASS_UNSPECIFIED = 0;
+  VERIFICATION_CLASS_ABSENT = 1;
+  VERIFICATION_CLASS_REJECTED = 2;
+  VERIFICATION_CLASS_FULLY_FEASIBLE = 3;
+  VERIFICATION_CLASS_REPAIR_PROPOSAL = 4;
+}
+
+message SearchEvidence {
+  EvidenceKind kind = 1;
+  // JSON typed exact-rational bounds; empty when no bound is available.
+  bytes bound_json = 2;
+  uint32 objective_tier = 3;
+  string restriction = 4;
+  string tolerance = 5;
+}
+
+enum EvidenceKind {
+  EVIDENCE_KIND_NONE = 0;
+  EVIDENCE_KIND_LOCAL_SEARCH_EXHAUSTED = 1;
+  EVIDENCE_KIND_BACKEND_REPORTED_BOUND = 2;
+  EVIDENCE_KIND_BACKEND_REPORTED_INFEASIBLE = 3;
+  EVIDENCE_KIND_BACKEND_REPORTED_OPTIMAL = 4;
+}
+
+message StageTiming {
+  ExecutionStage stage = 1;
+  // Presence is significant; missing measurements are not zero.
+  optional uint64 wall_time_micros = 2;
+  optional uint64 cpu_time_micros = 3;
+}
+
+message Release { string handle = 1; }
+message Released { string handle = 1; }
+message Cancel { uint64 solve_request_id = 1; }
+
+message ProtocolError {
+  ErrorCode code = 1;
+  string detail = 2;
+  repeated string unsupported_features = 3;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_INVALID_MESSAGE = 1;
+  ERROR_CODE_UNSUPPORTED_VERSION = 2;
+  ERROR_CODE_UNSUPPORTED_MODEL = 3;
+  ERROR_CODE_RESOURCE_LIMIT = 4;
+  ERROR_CODE_STALE_HANDLE = 5;
+  ERROR_CODE_WRONG_GENERATION = 6;
+  ERROR_CODE_BUSY = 7;
+  ERROR_CODE_INTERNAL = 8;
+  ERROR_CODE_COMMITMENT_MISMATCH = 9;
+}

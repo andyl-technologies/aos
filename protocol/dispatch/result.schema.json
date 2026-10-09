@@ -1,0 +1,958 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dispatch:schema:v1:result",
+  "title": "Dispatch SolveResult version 1",
+  "$ref": "#/$defs/SolveResult",
+  "$defs": {
+    "SolveResult": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "session_generation": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "worker_generation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "termination": {
+          "$ref": "#/$defs/Termination"
+        },
+        "rejection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RejectionReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "candidate": {
+          "$ref": "#/$defs/CandidateClass"
+        },
+        "assignment": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Assignment"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evaluation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Evaluation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "model_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "request_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "backend_build_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "observation_basis": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "requested_options": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EffectiveOptions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "effective_options": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EffectiveOptions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "seed_policy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SeedPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "search_evidence": {
+          "$ref": "#/$defs/SearchEvidence"
+        },
+        "timings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StageTiming"
+          }
+        },
+        "diagnostics_truncated": {
+          "type": "boolean"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "grant": {
+          "$ref": "#/$defs/ResourceGrant"
+        },
+        "evaluator_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "provenance_unavailable": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/UnavailabilityReason"
+          }
+        },
+        "failure_report": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkerFailureReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "job_id",
+        "session_generation",
+        "termination",
+        "candidate",
+        "search_evidence",
+        "timings",
+        "diagnostics_truncated",
+        "detail",
+        "grant",
+        "provenance_unavailable",
+        "worker_generation",
+        "model_digest",
+        "request_digest"
+      ],
+      "additionalProperties": false
+    },
+    "Quantity": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "x-maximum": "18446744073709551615",
+      "description": "Canonical unsigned decimal; semantic decoder also enforces the exact u64 maximum."
+    },
+    "Termination": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "limit_reached",
+        "cancelled",
+        "rejected",
+        "execution_failed"
+      ]
+    },
+    "SeedPolicy": {
+      "type": "string",
+      "enum": [
+        "explicit",
+        "backend_selected_unreported",
+        "unsupported"
+      ]
+    },
+    "RejectionReason": {
+      "type": "string",
+      "enum": [
+        "invalid_input",
+        "unsupported_model",
+        "unauthorized"
+      ]
+    },
+    "CandidateClass": {
+      "type": "string",
+      "enum": [
+        "absent",
+        "rejected",
+        "fully_feasible",
+        "repair_proposal"
+      ]
+    },
+    "Assignment": {
+      "type": "object",
+      "properties": {
+        "bindings": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Binding"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      },
+      "required": [
+        "bindings"
+      ],
+      "additionalProperties": false
+    },
+    "Binding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "target"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "deferred"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Evaluation": {
+      "type": "object",
+      "properties": {
+        "resource_loads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResourceLoad"
+          },
+          "uniqueItems": true
+        },
+        "violations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Violation"
+          },
+          "uniqueItems": true
+        },
+        "repair_debt": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ComponentDebt"
+          },
+          "uniqueItems": true,
+          "description": "Sparse; omitted valid zero-debt/zero-baseline components mean exact zero. Unknown components are never implied."
+        },
+        "objectives": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Rational"
+          }
+        },
+        "term_values": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Rational"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "term_contributions": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Rational"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "movements": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/MovementCategory"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      },
+      "required": [
+        "resource_loads",
+        "violations",
+        "repair_debt",
+        "objectives",
+        "term_values",
+        "term_contributions",
+        "movements"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceLoad": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string"
+        },
+        "dimension": {
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/AccountingPhase"
+        },
+        "quantity": {
+          "$ref": "#/$defs/Integer"
+        }
+      },
+      "required": [
+        "target",
+        "dimension",
+        "phase",
+        "quantity"
+      ],
+      "additionalProperties": false
+    },
+    "AccountingPhase": {
+      "type": "string",
+      "enum": [
+        "final",
+        "overlap"
+      ]
+    },
+    "Integer": {
+      "type": "string",
+      "pattern": "^(0|-?[1-9][0-9]*)$"
+    },
+    "Violation": {
+      "type": "object",
+      "properties": {
+        "component": {
+          "$ref": "#/$defs/ComponentId"
+        },
+        "actual_debt": {
+          "$ref": "#/$defs/Rational"
+        },
+        "allowed_debt": {
+          "$ref": "#/$defs/Rational"
+        },
+        "repair": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "component",
+        "actual_debt",
+        "allowed_debt",
+        "repair",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "ComponentId": {
+      "type": "object",
+      "properties": {
+        "constraint": {
+          "type": "string"
+        },
+        "component": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "constraint",
+        "component"
+      ],
+      "additionalProperties": false
+    },
+    "Rational": {
+      "type": "object",
+      "properties": {
+        "numerator": {
+          "$ref": "#/$defs/Integer"
+        },
+        "denominator": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        }
+      },
+      "required": [
+        "numerator",
+        "denominator"
+      ],
+      "additionalProperties": false,
+      "description": "Reduced exact rational; zero denominator is forbidden and zero has denominator one."
+    },
+    "ComponentDebt": {
+      "type": "object",
+      "properties": {
+        "component": {
+          "$ref": "#/$defs/ComponentId"
+        },
+        "debt": {
+          "$ref": "#/$defs/Integer"
+        },
+        "baseline": {
+          "$ref": "#/$defs/Integer"
+        }
+      },
+      "required": [
+        "component",
+        "debt",
+        "baseline"
+      ],
+      "additionalProperties": false
+    },
+    "MovementCategory": {
+      "type": "string",
+      "enum": [
+        "new_placement",
+        "relocation",
+        "retirement"
+      ]
+    },
+    "EffectiveOptions": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/SearchMode"
+        },
+        "wall_time_millis": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "threads": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,9})$",
+          "x-maximum": "4294967295"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "memory_bytes": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "cpu_time_millis": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "maximum_iterations": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "mode",
+        "wall_time_millis",
+        "threads",
+        "memory_bytes",
+        "cpu_time_millis",
+        "maximum_iterations",
+        "seed"
+      ],
+      "additionalProperties": false
+    },
+    "SearchMode": {
+      "type": "string",
+      "enum": [
+        "local_search",
+        "mip"
+      ]
+    },
+    "SearchEvidence": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/EvidenceKind"
+        },
+        "objective_tier": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,9})$",
+          "x-maximum": "4294967295"
+        },
+        "bound": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BoundReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "restriction": {
+          "type": "string"
+        },
+        "tolerance": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "objective_tier",
+        "restriction",
+        "tolerance"
+      ],
+      "additionalProperties": false
+    },
+    "EvidenceKind": {
+      "type": "string",
+      "enum": [
+        "none",
+        "local_search_exhausted",
+        "backend_reported_bound",
+        "backend_reported_infeasible",
+        "backend_reported_optimal"
+      ]
+    },
+    "BoundReport": {
+      "type": "object",
+      "properties": {
+        "lower_bound": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "incumbent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "absolute_gap": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "relative_gap": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "units": {
+          "type": "string"
+        },
+        "compilation": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "units",
+        "compilation"
+      ],
+      "additionalProperties": false
+    },
+    "StageTiming": {
+      "type": "object",
+      "properties": {
+        "stage": {
+          "type": "string"
+        },
+        "wall_time_micros": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cpu_time_micros": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "stage",
+        "wall_time_micros",
+        "cpu_time_micros"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceGrant": {
+      "type": "object",
+      "properties": {
+        "hard_cancellation": {
+          "type": "boolean"
+        },
+        "independent_memory": {
+          "type": "boolean"
+        },
+        "aggregate_accounting": {
+          "type": "boolean"
+        },
+        "owner_cleanup": {
+          "type": "boolean"
+        },
+        "enforced_memory_bytes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "description": {
+          "type": "string"
+        },
+        "enforced_limits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EnforcedLimits"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "hard_cancellation",
+        "independent_memory",
+        "aggregate_accounting",
+        "owner_cleanup",
+        "description",
+        "enforced_memory_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "EnforcedLimits": {
+      "type": "object",
+      "properties": {
+        "worker_policy": {
+          "$ref": "#/$defs/ResourceLimits"
+        },
+        "effective_worker_ceiling": {
+          "$ref": "#/$defs/ResourceLimits"
+        },
+        "application": {
+          "$ref": "#/$defs/ResourceBoundary"
+        },
+        "solvers": {
+          "$ref": "#/$defs/ResourceBoundary"
+        },
+        "outer_ancestors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResourceBoundary"
+          }
+        },
+        "owner_unit": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "worker_policy",
+        "effective_worker_ceiling",
+        "application",
+        "solvers",
+        "outer_ancestors",
+        "owner_unit"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceLimits": {
+      "type": "object",
+      "properties": {
+        "cpu_weight": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cpu_quota_micros": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cpu_period_micros": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "task_limit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "memory_high_bytes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "memory_max_bytes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "cpu_weight",
+        "cpu_quota_micros",
+        "cpu_period_micros",
+        "task_limit",
+        "memory_high_bytes",
+        "memory_max_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceBoundary": {
+      "type": "object",
+      "properties": {
+        "unit": {
+          "type": "string"
+        },
+        "cgroup_path": {
+          "type": "string"
+        },
+        "limits": {
+          "$ref": "#/$defs/ResourceLimits"
+        }
+      },
+      "required": [
+        "unit",
+        "cgroup_path",
+        "limits"
+      ],
+      "additionalProperties": false
+    },
+    "UnavailabilityReason": {
+      "type": "string",
+      "enum": [
+        "not_started",
+        "not_validated",
+        "not_negotiated",
+        "not_reported",
+        "not_measured"
+      ]
+    },
+    "WorkerFailureReport": {
+      "type": "object",
+      "properties": {
+        "cause": {
+          "$ref": "#/$defs/WorkerFailureCause"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cause",
+        "detail"
+      ],
+      "additionalProperties": false
+    },
+    "WorkerFailureCause": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "worker_memory_limit"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "ancestor_memory_limit"
+            },
+            "unit": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "unit"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "unknown"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

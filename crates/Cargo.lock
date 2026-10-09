@@ -3005,6 +3005,78 @@ dependencies = [
 ]
 
 [[package]]
+name = "dispatch"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "dispatch-model",
+ "dispatch-protocol",
+ "dispatch-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "dispatch-conformance"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "dispatch-model",
+ "dispatch-protocol",
+ "dispatch-runtime",
+ "hex",
+ "rustix 1.1.4",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "dispatch-model"
+version = "0.1.0"
+dependencies = [
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "dispatch-protocol"
+version = "0.1.0"
+dependencies = [
+ "dispatch-model",
+ "prost",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "dispatch-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "dispatch-model",
+ "dispatch-protocol",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+ "zbus",
+]
+
+[[package]]
 name = "displaydoc"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
