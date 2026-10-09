@@ -50,6 +50,7 @@ pub mod pidfd;
 pub mod process;
 pub mod protected_file;
 pub mod selinux_policy;
+pub mod self_execution;
 pub mod seqpacket;
 pub mod startup_fd_table;
 mod uapi;

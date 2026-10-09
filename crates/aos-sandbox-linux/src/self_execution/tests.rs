@@ -71,11 +71,11 @@ impl ObservationValues {
 }
 
 struct ScriptedSource {
-    scalars: VecDeque<Result<ScalarObservation, BrokerSessionSecurityError>>,
-    open: Option<Result<(), BrokerSessionSecurityError>>,
-    information: VecDeque<Result<InformationObservation, BrokerSessionSecurityError>>,
-    identity: VecDeque<Result<IdentityObservation, BrokerSessionSecurityError>>,
-    alive: VecDeque<Result<bool, BrokerSessionSecurityError>>,
+    scalars: VecDeque<Result<ScalarObservation, SelfExecutionObservationError>>,
+    open: Option<Result<(), SelfExecutionObservationError>>,
+    information: VecDeque<Result<InformationObservation, SelfExecutionObservationError>>,
+    identity: VecDeque<Result<IdentityObservation, SelfExecutionObservationError>>,
+    alive: VecDeque<Result<bool, SelfExecutionObservationError>>,
 }
 
 impl ScriptedSource {
@@ -90,45 +90,45 @@ impl ScriptedSource {
     }
 
     fn next<T>(
-        queue: &mut VecDeque<Result<T, BrokerSessionSecurityError>>,
-    ) -> Result<T, BrokerSessionSecurityError> {
+        queue: &mut VecDeque<Result<T, SelfExecutionObservationError>>,
+    ) -> Result<T, SelfExecutionObservationError> {
         queue
             .pop_front()
-            .unwrap_or(Err(BrokerSessionSecurityError::ExecutionChanged))
+            .unwrap_or(Err(SelfExecutionObservationError))
     }
 }
 
 impl ExecutionObservationSource for ScriptedSource {
     type Process = ();
 
-    fn scalars(&mut self) -> Result<ScalarObservation, BrokerSessionSecurityError> {
+    fn scalars(&mut self) -> Result<ScalarObservation, SelfExecutionObservationError> {
         Self::next(&mut self.scalars)
     }
 
     fn open_self(
         &mut self,
         _process_id: NonZeroU32,
-    ) -> Result<Self::Process, BrokerSessionSecurityError> {
+    ) -> Result<Self::Process, SelfExecutionObservationError> {
         self.open
             .take()
-            .unwrap_or(Err(BrokerSessionSecurityError::ExecutionChanged))
+            .unwrap_or(Err(SelfExecutionObservationError))
     }
 
     fn information(
         &mut self,
         _process: &Self::Process,
-    ) -> Result<InformationObservation, BrokerSessionSecurityError> {
+    ) -> Result<InformationObservation, SelfExecutionObservationError> {
         Self::next(&mut self.information)
     }
 
     fn identity(
         &mut self,
         _process: &Self::Process,
-    ) -> Result<IdentityObservation, BrokerSessionSecurityError> {
+    ) -> Result<IdentityObservation, SelfExecutionObservationError> {
         Self::next(&mut self.identity)
     }
 
-    fn alive(&mut self, _process: &Self::Process) -> Result<bool, BrokerSessionSecurityError> {
+    fn alive(&mut self, _process: &Self::Process) -> Result<bool, SelfExecutionObservationError> {
         Self::next(&mut self.alive)
     }
 }
@@ -344,7 +344,7 @@ fn scalar_and_information_sandwich_changes_are_rejected() {
 
 #[test]
 fn every_observation_operation_failure_is_redacted() {
-    let expected = BrokerSessionSecurityError::ExecutionChanged;
+    let expected = SelfExecutionObservationError;
 
     let mut first_scalar = ScriptedSource::stable(ObservationValues::stable());
     first_scalar.scalars[0] = Err(expected.clone());
