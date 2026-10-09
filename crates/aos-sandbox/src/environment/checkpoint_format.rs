@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{ObjectDigest, Revision, SandboxId};
 use sha2::{Digest as _, Sha256};
 
@@ -302,44 +303,41 @@ fn decode_checkpoint<'a>(
     if checkpoint_digest(body).as_bytes() != stored {
         return Err(EnvironmentModelError::CorruptEncoding);
     }
-    let mut preflight = body;
-    if take::<8>(&mut preflight)? != *MAGIC
-        || u16::from_be_bytes(take(&mut preflight)?) != VERSION
-        || take::<1>(&mut preflight)?[0] != expected_kind
-        || take::<5>(&mut preflight)? != [0; 5]
+    let mut preflight = BoundedReader::new(body, |_| EnvironmentModelError::CorruptEncoding);
+    if preflight.array::<8>()? != *MAGIC
+        || u16::from_be_bytes(preflight.array()?) != VERSION
+        || preflight.array::<1>()?[0] != expected_kind
+        || preflight.array::<5>()? != [0; 5]
     {
         return Err(EnvironmentModelError::CorruptEncoding);
     }
-    let floor_count = usize::try_from(u32::from_be_bytes(take(&mut preflight)?))
+    let floor_count = usize::try_from(u32::from_be_bytes(preflight.array()?))
         .map_err(|_| EnvironmentModelError::CorruptEncoding)?;
-    let record_count = usize::try_from(u32::from_be_bytes(take(&mut preflight)?))
+    let record_count = usize::try_from(u32::from_be_bytes(preflight.array()?))
         .map_err(|_| EnvironmentModelError::CorruptEncoding)?;
     if floor_count > record_ceiling || record_count > record_ceiling {
         return Err(EnvironmentModelError::CorruptEncoding);
     }
-    let expected = ObjectDigest::from_bytes(take(&mut preflight)?);
-    take_slice(
-        &mut preflight,
-        floor_count
+    let expected = ObjectDigest::from_bytes(preflight.array()?);
+    preflight.bytes(floor_count
             .checked_mul(24)
-            .ok_or(EnvironmentModelError::CorruptEncoding)?,
-    )?;
+            .ok_or(EnvironmentModelError::CorruptEncoding)?)?;
     for _ in 0..record_count {
-        let length = usize::try_from(u32::from_be_bytes(take(&mut preflight)?))
+        let length = usize::try_from(u32::from_be_bytes(preflight.array()?))
             .map_err(|_| EnvironmentModelError::CorruptEncoding)?;
         if length == 0 || length > byte_ceiling {
             return Err(EnvironmentModelError::CorruptEncoding);
         }
-        take_slice(&mut preflight, length)?;
+        preflight.bytes(length)?;
     }
     if !preflight.is_empty() {
         return Err(EnvironmentModelError::CorruptEncoding);
     }
-    let mut bytes = &body[HEADER_BYTES..];
+    let mut bytes = BoundedReader::new(&body[HEADER_BYTES..], |_| EnvironmentModelError::CorruptEncoding);
     let mut floors = BTreeMap::new();
     for _ in 0..floor_count {
-        let sandbox = SandboxId::from_bytes(take(&mut bytes)?);
-        let revision = Revision::new(u64::from_be_bytes(take(&mut bytes)?));
+        let sandbox = SandboxId::from_bytes(bytes.array()?);
+        let revision = Revision::new(u64::from_be_bytes(bytes.array()?));
         if sandbox.as_bytes() == &[0; 16]
             || revision.get() == 0
             || revision.get() == u64::MAX
@@ -353,9 +351,9 @@ fn decode_checkpoint<'a>(
         .try_reserve_exact(record_count)
         .map_err(|_| EnvironmentModelError::Allocation)?;
     for _ in 0..record_count {
-        let length = usize::try_from(u32::from_be_bytes(take(&mut bytes)?))
+        let length = usize::try_from(u32::from_be_bytes(bytes.array()?))
             .map_err(|_| EnvironmentModelError::CorruptEncoding)?;
-        records.push(take_slice(&mut bytes, length)?);
+        records.push(bytes.bytes(length)?);
     }
     Ok((floors, expected, records))
 }
@@ -374,18 +372,4 @@ fn checkpoint_record_digest(encoded: &[u8]) -> Option<ObjectDigest> {
     let (_, stored) = encoded.split_at_checked(encoded.len().checked_sub(DIGEST_BYTES)?)?;
     let bytes: [u8; DIGEST_BYTES] = stored.try_into().ok()?;
     Some(ObjectDigest::from_bytes(bytes))
-}
-
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], EnvironmentModelError> {
-    take_slice(bytes, N)?
-        .try_into()
-        .map_err(|_| EnvironmentModelError::CorruptEncoding)
-}
-
-fn take_slice<'a>(bytes: &mut &'a [u8], length: usize) -> Result<&'a [u8], EnvironmentModelError> {
-    let (head, tail) = bytes
-        .split_at_checked(length)
-        .ok_or(EnvironmentModelError::CorruptEncoding)?;
-    *bytes = tail;
-    Ok(head)
 }

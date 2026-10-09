@@ -13,6 +13,7 @@
 //! resolves them through a replay-validated manifest history. This prevents an
 //! activation record from inventing a facade or closure beside a real digest.
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{
     ExecutionId, MediaType, ObjectDescriptor, ObjectDigest, ProjectId, ResourceId, Revision,
     SandboxId, SnapshotId,
@@ -130,18 +131,18 @@ pub fn decode_environment_activation_v1(
     if activation_digest(body).as_bytes() != stored_digest {
         return Err(EnvironmentModelError::CorruptEncoding);
     }
-    let mut bytes = body;
-    if take::<8>(&mut bytes)? != *MAGIC || u16::from_be_bytes(take(&mut bytes)?) != VERSION {
+    let mut bytes = BoundedReader::new(body, |_| EnvironmentModelError::CorruptEncoding);
+    if bytes.array::<8>()? != *MAGIC || u16::from_be_bytes(bytes.array()?) != VERSION {
         return Err(EnvironmentModelError::CorruptEncoding);
     }
-    let phase = decode_phase(take::<1>(&mut bytes)?[0])?;
-    if take::<5>(&mut bytes)? != [0; 5] {
+    let phase = decode_phase(bytes.array::<1>()?[0])?;
+    if bytes.array::<5>()? != [0; 5] {
         return Err(EnvironmentModelError::CorruptEncoding);
     }
-    let transaction = ResourceId::from_bytes(take(&mut bytes)?);
-    let project = ProjectId::from_bytes(take(&mut bytes)?);
-    let sandbox = SandboxId::from_bytes(take(&mut bytes)?);
-    let revision = Revision::new(u64::from_be_bytes(take(&mut bytes)?));
+    let transaction = ResourceId::from_bytes(bytes.array()?);
+    let project = ProjectId::from_bytes(bytes.array()?);
+    let sandbox = SandboxId::from_bytes(bytes.array()?);
+    let revision = Revision::new(u64::from_be_bytes(bytes.array()?));
     let predecessor = decode_optional_digest(&mut bytes)?;
     let desired = decode_selector(&mut bytes, manifests, sandbox)?;
     let current = decode_optional_selector(&mut bytes, manifests, sandbox)?;
@@ -153,34 +154,34 @@ pub fn decode_environment_activation_v1(
         .try_reserve_exact(lease_count)
         .map_err(|_| EnvironmentModelError::Allocation)?;
     for _ in 0..lease_count {
-        let kind = take::<1>(&mut bytes)?[0];
-        let identity = take(&mut bytes)?;
+        let kind = bytes.array::<1>()?[0];
+        let identity = bytes.array()?;
         let consumer = match kind {
             1 => EnvironmentLeaseConsumerV1::Execution(ExecutionId::from_bytes(identity)),
             2 => EnvironmentLeaseConsumerV1::Snapshot(SnapshotId::from_bytes(identity)),
             _ => return Err(EnvironmentModelError::CorruptEncoding),
         };
-        let generation = Revision::new(u64::from_be_bytes(take(&mut bytes)?));
-        let lease = ResourceId::from_bytes(take(&mut bytes)?);
-        let revision = Revision::new(u64::from_be_bytes(take(&mut bytes)?));
+        let generation = Revision::new(u64::from_be_bytes(bytes.array()?));
+        let lease = ResourceId::from_bytes(bytes.array()?);
+        let revision = Revision::new(u64::from_be_bytes(bytes.array()?));
         let boot =
-            super::EnvironmentBootIdV1::from_stored(ObjectDigest::from_bytes(take(&mut bytes)?))?;
+            super::EnvironmentBootIdV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
         let observed_at =
-            super::EnvironmentLeaseTimeV1::from_stored(u64::from_be_bytes(take(&mut bytes)?))?;
-        let expires_at = u64::from_be_bytes(take(&mut bytes)?);
-        let status = match take::<1>(&mut bytes)?[0] {
+            super::EnvironmentLeaseTimeV1::from_stored(u64::from_be_bytes(bytes.array()?))?;
+        let expires_at = u64::from_be_bytes(bytes.array()?);
+        let status = match bytes.array::<1>()?[0] {
             1 => EnvironmentGenerationLeaseStatusV1::Active,
             2 => EnvironmentGenerationLeaseStatusV1::Invalidated,
             _ => return Err(EnvironmentModelError::CorruptEncoding),
         };
-        if take::<7>(&mut bytes)? != [0; 7] {
+        if bytes.array::<7>()? != [0; 7] {
             return Err(EnvironmentModelError::CorruptEncoding);
         }
-        let closed_raw = u64::from_be_bytes(take(&mut bytes)?);
+        let closed_raw = u64::from_be_bytes(bytes.array()?);
         let closed_at = (closed_raw != 0)
             .then(|| super::EnvironmentLeaseTimeV1::from_stored(closed_raw))
             .transpose()?;
-        let predecessor_raw = ObjectDigest::from_bytes(take(&mut bytes)?);
+        let predecessor_raw = ObjectDigest::from_bytes(bytes.array()?);
         let predecessor_boot = (predecessor_raw.as_bytes() != &[0; 32])
             .then(|| super::EnvironmentBootIdV1::from_stored(predecessor_raw))
             .transpose()?;
@@ -204,11 +205,11 @@ pub fn decode_environment_activation_v1(
         .map_err(|_| EnvironmentModelError::Allocation)?;
     for _ in 0..root_count {
         roots.push(EnvironmentGcRootAcknowledgementV1::new(
-            Revision::new(u64::from_be_bytes(take(&mut bytes)?)),
+            Revision::new(u64::from_be_bytes(bytes.array()?)),
             decode_descriptor(&mut bytes)?,
-            ResourceId::from_bytes(take(&mut bytes)?),
-            Revision::new(u64::from_be_bytes(take(&mut bytes)?)),
-            ObjectDigest::from_bytes(take(&mut bytes)?),
+            ResourceId::from_bytes(bytes.array()?),
+            Revision::new(u64::from_be_bytes(bytes.array()?)),
+            ObjectDigest::from_bytes(bytes.array()?),
         )?);
     }
     let retained_count = read_count(&mut bytes)?;
@@ -298,31 +299,22 @@ fn preflight(encoded: &[u8]) -> Result<(), EnvironmentModelError> {
     {
         return Err(EnvironmentModelError::CorruptEncoding);
     }
-    let mut bytes = &encoded[..encoded.len() - DIGEST_BYTES];
-    take_slice(
-        &mut bytes,
-        112 + SELECTOR_BYTES + OPTIONAL_SELECTOR_BYTES * 2,
-    )?;
+    let mut bytes = BoundedReader::new(&encoded[..encoded.len() - DIGEST_BYTES], |_| EnvironmentModelError::CorruptEncoding);
+    bytes.bytes(112 + SELECTOR_BYTES + OPTIONAL_SELECTOR_BYTES * 2)?;
     let leases = read_count(&mut bytes)?;
-    take_slice(
-        &mut bytes,
-        leases
+    bytes.bytes(leases
             .checked_mul(LEASE_BYTES)
-            .ok_or(EnvironmentModelError::CorruptEncoding)?,
-    )?;
+            .ok_or(EnvironmentModelError::CorruptEncoding)?)?;
     let roots = read_count(&mut bytes)?;
     for _ in 0..roots {
-        take_slice(&mut bytes, 8)?;
+        bytes.bytes(8)?;
         preflight_descriptor(&mut bytes)?;
-        take_slice(&mut bytes, 56)?;
+        bytes.bytes(56)?;
     }
     let retained = read_count(&mut bytes)?;
-    take_slice(
-        &mut bytes,
-        retained
+    bytes.bytes(retained
             .checked_mul(SELECTOR_BYTES)
-            .ok_or(EnvironmentModelError::CorruptEncoding)?,
-    )?;
+            .ok_or(EnvironmentModelError::CorruptEncoding)?)?;
     if bytes.is_empty() {
         Ok(())
     } else {
@@ -336,12 +328,12 @@ fn encode_selector(bytes: &mut Vec<u8>, value: &EnvironmentSelectorV1) {
 }
 
 fn decode_selector(
-    bytes: &mut &[u8],
+    bytes: &mut BoundedReader<'_, EnvironmentModelError>,
     manifests: &EnvironmentGenerationHistoryV1,
     sandbox: SandboxId,
 ) -> Result<EnvironmentSelectorV1, EnvironmentModelError> {
-    let generation = Revision::new(u64::from_be_bytes(take(bytes)?));
-    let digest = EnvironmentManifestDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
+    let generation = Revision::new(u64::from_be_bytes(bytes.array()?));
+    let digest = EnvironmentManifestDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
     manifests
         .selector_exact(sandbox, generation, digest)
         .map_err(|_| EnvironmentModelError::CorruptEncoding)?
@@ -359,16 +351,16 @@ fn encode_optional_selector(bytes: &mut Vec<u8>, value: Option<&EnvironmentSelec
 }
 
 fn decode_optional_selector(
-    bytes: &mut &[u8],
+    bytes: &mut BoundedReader<'_, EnvironmentModelError>,
     manifests: &EnvironmentGenerationHistoryV1,
     sandbox: SandboxId,
 ) -> Result<Option<EnvironmentSelectorV1>, EnvironmentModelError> {
-    let present = take::<1>(bytes)?[0];
-    if take::<7>(bytes)? != [0; 7] {
+    let present = bytes.array::<1>()?[0];
+    if bytes.array::<7>()? != [0; 7] {
         return Err(EnvironmentModelError::CorruptEncoding);
     }
     match present {
-        0 if take_slice(bytes, SELECTOR_BYTES)? == [0; SELECTOR_BYTES] => Ok(None),
+        0 if bytes.bytes(SELECTOR_BYTES)? == [0; SELECTOR_BYTES] => Ok(None),
         1 => decode_selector(bytes, manifests, sandbox).map(Some),
         _ => Err(EnvironmentModelError::CorruptEncoding),
     }
@@ -385,13 +377,13 @@ fn encode_optional_digest(bytes: &mut Vec<u8>, value: Option<ObjectDigest>) {
 }
 
 fn decode_optional_digest(
-    bytes: &mut &[u8],
+    bytes: &mut BoundedReader<'_, EnvironmentModelError>,
 ) -> Result<Option<ObjectDigest>, EnvironmentModelError> {
-    let present = take::<1>(bytes)?[0];
-    if take::<7>(bytes)? != [0; 7] {
+    let present = bytes.array::<1>()?[0];
+    if bytes.array::<7>()? != [0; 7] {
         return Err(EnvironmentModelError::CorruptEncoding);
     }
-    let digest = ObjectDigest::from_bytes(take(bytes)?);
+    let digest = ObjectDigest::from_bytes(bytes.array()?);
     match present {
         0 if digest.as_bytes() == &[0; 32] => Ok(None),
         1 if digest.as_bytes() != &[0; 32] => Ok(Some(digest)),
@@ -412,38 +404,35 @@ fn encode_descriptor(
     Ok(())
 }
 
-fn decode_descriptor(bytes: &mut &[u8]) -> Result<ObjectDescriptor, EnvironmentModelError> {
-    let length = usize::from(u16::from_be_bytes(take(bytes)?));
+fn decode_descriptor(bytes: &mut BoundedReader<'_, EnvironmentModelError>) -> Result<ObjectDescriptor, EnvironmentModelError> {
+    let length = usize::from(u16::from_be_bytes(bytes.array()?));
     if length == 0 || length > 255 {
         return Err(EnvironmentModelError::CorruptEncoding);
     }
-    let media = std::str::from_utf8(take_slice(bytes, length)?)
+    let media = std::str::from_utf8(bytes.bytes(length)?)
         .map_err(|_| EnvironmentModelError::CorruptEncoding)?;
     let media =
         MediaType::new(media.to_owned()).map_err(|_| EnvironmentModelError::CorruptEncoding)?;
     Ok(ObjectDescriptor::new(
         media,
-        ObjectDigest::from_bytes(take(bytes)?),
-        u64::from_be_bytes(take(bytes)?),
+        ObjectDigest::from_bytes(bytes.array()?),
+        u64::from_be_bytes(bytes.array()?),
     ))
 }
 
-fn preflight_descriptor(bytes: &mut &[u8]) -> Result<(), EnvironmentModelError> {
-    let length = usize::from(u16::from_be_bytes(take(bytes)?));
+fn preflight_descriptor(bytes: &mut BoundedReader<'_, EnvironmentModelError>) -> Result<(), EnvironmentModelError> {
+    let length = usize::from(u16::from_be_bytes(bytes.array()?));
     if length == 0 || length > 255 {
         return Err(EnvironmentModelError::CorruptEncoding);
     }
-    take_slice(
-        bytes,
-        length
+    bytes.bytes(length
             .checked_add(40)
-            .ok_or(EnvironmentModelError::CorruptEncoding)?,
-    )?;
+            .ok_or(EnvironmentModelError::CorruptEncoding)?)?;
     Ok(())
 }
 
-fn read_count(bytes: &mut &[u8]) -> Result<usize, EnvironmentModelError> {
-    let count = usize::try_from(u32::from_be_bytes(take(bytes)?))
+fn read_count(bytes: &mut BoundedReader<'_, EnvironmentModelError>) -> Result<usize, EnvironmentModelError> {
+    let count = usize::try_from(u32::from_be_bytes(bytes.array()?))
         .map_err(|_| EnvironmentModelError::CorruptEncoding)?;
     if count > MAXIMUM_ENVIRONMENT_INPUTS {
         Err(EnvironmentModelError::CorruptEncoding)
@@ -480,18 +469,4 @@ fn activation_digest(bytes: &[u8]) -> ObjectDigest {
             .finalize()
             .into(),
     )
-}
-
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], EnvironmentModelError> {
-    take_slice(bytes, N)?
-        .try_into()
-        .map_err(|_| EnvironmentModelError::CorruptEncoding)
-}
-
-fn take_slice<'a>(bytes: &mut &'a [u8], count: usize) -> Result<&'a [u8], EnvironmentModelError> {
-    let (head, tail) = bytes
-        .split_at_checked(count)
-        .ok_or(EnvironmentModelError::CorruptEncoding)?;
-    *bytes = tail;
-    Ok(head)
 }
