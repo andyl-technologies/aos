@@ -20,8 +20,9 @@ use crucible_protocol::{
     CONTROL_PROTOCOL_VERSION, ControlLifecycleStream, HostHandshakeConfig, SetupDescriptorFds,
     app_random_branch_plan::AppRandomBranchPlan,
     node_control::{
-        BoundaryPolicy, ExecutionCommand, ExecutionKind, NativeFrame, NativePreparation,
-        NativeStopFacts, NativeStopKind, NativeTimerObservation, OwnerScope,
+        BoundaryPolicy, ExecutionCommand, ExecutionKind, NativeControlEdition, NativeFrame,
+        NativePreparation, NativeStopFacts, NativeStopKind, NativeTimerObservation,
+        NativeWriterObservation, OwnerScope,
     },
     plugin_setup_plan::PluginSetupPlan,
     selectable_catalog_plan::{
@@ -180,7 +181,7 @@ fn next_frame(
 ) -> Result<NativeFrame, Box<dyn Error>> {
     loop {
         let frame = next_any_frame(control, child)?;
-        if !matches!(frame, NativeFrame::CpuPark(_)) {
+        if !matches!(frame, NativeFrame::CpuPark(_) | NativeFrame::WriterChunk(_)) {
             return Ok(frame);
         }
     }
@@ -206,16 +207,23 @@ fn run_windows(
     limits: &[u64],
     require_cpu_park: bool,
     pit_timer: bool,
+    writer_custody: bool,
 ) -> Result<Vec<NativeStopFacts>, Box<dyn Error>> {
     let qemu = artifact("CRUCIBLE_NATIVE_PROBE_QEMU")?;
     let plugin = artifact("CRUCIBLE_NATIVE_PROBE_PLUGIN")?;
     let mut pit_firmware = None;
-    let bios = if pit_timer {
+    let bios = if pit_timer || writer_custody {
         let mut rom = vec![0x90u8; 65_536];
-        let program = [
+        let pit_program = [
             0xfa, 0x31, 0xc0, 0x8e, 0xd8, 0xb0, 0x30, 0xe6, 0x43, 0xb0, 0x04, 0xe6, 0x40, 0x30,
             0xc0, 0xe6, 0x40, 0xeb, 0xfe,
         ];
+        let loop_program = [0x90, 0xeb, 0xfd];
+        let program: &[u8] = if pit_timer {
+            &pit_program
+        } else {
+            &loop_program
+        };
         rom[..program.len()].copy_from_slice(&program);
         rom[0xfff0..0xfff5].copy_from_slice(&[0xea, 0, 0, 0, 0xf0]);
         let mut firmware = tempfile::NamedTempFile::new()?;
@@ -226,11 +234,19 @@ fn run_windows(
     } else {
         artifact("CRUCIBLE_NATIVE_PROBE_BIOS")?
     };
-    let (mut native, endpoint) = NativeQemuControlTransport::prepare(NativePreparation {
-        scope: original(1, 0, limits[0]).scope,
-        boundary: position(0),
-        maximum_commands: U64::new(8),
-    })?;
+    let edition = if writer_custody {
+        NativeControlEdition::OwnedCustody
+    } else {
+        NativeControlEdition::Original
+    };
+    let (mut native, endpoint) = NativeQemuControlTransport::prepare_for_edition(
+        NativePreparation {
+            scope: original(1, 0, limits[0]).scope,
+            boundary: position(0),
+            maximum_commands: U64::new(8),
+        },
+        edition,
+    )?;
     let digest = endpoint
         .scope_digest()
         .iter()
@@ -292,9 +308,10 @@ fn run_windows(
         (pins[3].as_raw_fd(), 9),
     ];
     let plugin_args = format!(
-        "{},{},node_control_fd=9,node_control_scope_hash={digest},node_control_version=1",
+        "{},{},node_control_fd=9,node_control_scope_hash={digest},node_control_version={}",
         plugin.display(),
-        base.plugin_args_raw()
+        base.plugin_args_raw(),
+        edition.version()
     );
     let mut command = Command::new(qemu);
     command
@@ -393,6 +410,13 @@ fn run_windows(
     } else {
         None
     };
+    let original_writers = if writer_custody {
+        let initial = read_writers(&mut native, &mut child.0, U64::new(0))?;
+        assert!(initial.aio.iter().any(|context| context.pending_bhs != 0));
+        Some(initial)
+    } else {
+        None
+    };
     let mut start = 0;
     let mut outcomes = Vec::new();
     let mut windows = limits.to_vec();
@@ -405,10 +429,31 @@ fn run_windows(
         let NativeFrame::Stopped(facts) = next_frame(&mut native, &mut child.0)? else {
             panic!("original native stop");
         };
-        assert_eq!(facts.kind, NativeStopKind::HorizonPark);
+        let expected_kind = if writer_custody {
+            NativeStopKind::Unsupported
+        } else {
+            NativeStopKind::HorizonPark
+        };
+        assert_eq!(facts.kind, expected_kind);
         assert_eq!(facts.pending_classes, u32::MAX);
-        assert_eq!(facts.reached, position(limit));
+        assert_eq!(
+            facts.reached,
+            position(if writer_custody { start } else { limit })
+        );
         assert_eq!(facts.command_digest, original.identity_digest()?);
+        if let Some(initial) = &original_writers {
+            let cut = read_writers(&mut native, &mut child.0, facts.sequence)?;
+            assert_eq!(cut.sequence, facts.sequence);
+            assert_eq!(cut.command_digest, facts.command_digest);
+            assert_eq!(cut.current_ps, facts.reached.time_ps);
+            assert_eq!(cut.retired_count, facts.retired_count);
+            assert_eq!(cut.gate_generation, initial.gate_generation);
+            assert_eq!(cut.roster_sha256, initial.roster_sha256);
+            assert_eq!(cut.coverage, 7);
+            assert_eq!(cut.flags, 15);
+            assert_eq!(cut.bottom_halves, initial.bottom_halves);
+            assert_eq!(cut.work, initial.work);
+        }
         native.transmit_original(original)?;
         assert_eq!(
             next_frame(&mut native, &mut child.0)?,
@@ -466,16 +511,23 @@ fn run_windows(
             next_frame(&mut native, &mut child.0)?,
             NativeFrame::Acknowledged(_)
         ));
+        start = facts.reached.time_ps.get();
         outcomes.push(facts);
-        start = limit;
         index += 1;
+    }
+    if let Some(initial) = original_writers {
+        assert_eq!(
+            read_writers(&mut native, &mut child.0, U64::new(0))?,
+            initial
+        );
     }
     if let Some(original) = original_cpu_park {
         assert!(native.request_cpu_park()?);
-        assert_eq!(
-            next_any_frame(&mut native, &mut child.0)?,
-            NativeFrame::CpuPark(original.clone())
-        );
+        let mut recovered = next_any_frame(&mut native, &mut child.0)?;
+        while matches!(recovered, NativeFrame::WriterChunk(_)) {
+            recovered = next_any_frame(&mut native, &mut child.0)?;
+        }
+        assert_eq!(recovered, NativeFrame::CpuPark(original.clone()));
         // Recovery returns historical bytes, not invented current readiness.
         assert!(original.current_ps.get() < limits[limits.len() - 1]);
     }
@@ -492,10 +544,10 @@ fn run_windows(
 #[ignore = "requires built strict-native QEMU, GPL plugin and BIOS artifact environment"]
 fn actual_native_channel_preserves_exclusive_retirement_and_partitioned_service_credit()
 -> Result<(), Box<dyn Error>> {
-    let loose = run_windows(&[200], false, false)?;
-    let split = run_windows(&[110, 200], false, false)?;
-    let credit = run_windows(&[110, 151], false, false)?;
-    let equal = run_windows(&[100, 101], false, false)?;
+    let loose = run_windows(&[200], false, false, false)?;
+    let split = run_windows(&[110, 200], false, false, false)?;
+    let credit = run_windows(&[110, 151], false, false, false)?;
+    let equal = run_windows(&[100, 101], false, false, false)?;
 
     assert_eq!(loose[0].retired_count.get(), 3);
     assert_eq!(split[0].retired_count.get(), 2);
@@ -515,7 +567,7 @@ fn actual_native_channel_preserves_exclusive_retirement_and_partitioned_service_
 #[ignore = "requires built CPU-park source query, matched GPL plugin and BIOS artifacts"]
 fn actual_native_cpu_park_preserves_original_scoped_history_without_readiness_claim()
 -> Result<(), Box<dyn Error>> {
-    let observations = run_windows(&[200], true, false)?;
+    let observations = run_windows(&[200], true, false, false)?;
     assert_eq!(observations[0].retired_count.get(), 3);
     Ok(())
 }
@@ -524,7 +576,47 @@ fn actual_native_cpu_park_preserves_original_scoped_history_without_readiness_cl
 #[ignore = "requires native timer inventory, matched GPL plugin and QEMU artifacts"]
 fn actual_native_pit_inventory_retains_original_arm_at_horizon_and_across_slice_retry()
 -> Result<(), Box<dyn Error>> {
-    let observations = run_windows(&[10_000], true, true)?;
+    let observations = run_windows(&[10_000], true, true, false)?;
     assert_eq!(observations.len(), 3);
+    Ok(())
+}
+
+fn read_writers(
+    native: &mut NativeQemuControlTransport,
+    child: &mut Child,
+    sequence: U64,
+) -> Result<NativeWriterObservation, Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        // The initial CPU-only fact can precede completion of the actual HOLD.
+        // Retry this original offset; the reader never resamples source queues.
+        assert!(native.request_writer_observation(sequence)?);
+        while native.poll_original()?.is_some() {}
+        if let Some(cut) = native.writer_observation(sequence) {
+            return Ok(cut.clone());
+        }
+        if let Some(status) = child.try_wait()? {
+            return Err(io::Error::other(format!("native QEMU exited early: {status}")).into());
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "original writer object unavailable",
+            )
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+#[ignore = "requires source-held writer cut, edition-two GPL plugin and QEMU artifacts"]
+fn actual_native_writer_hold_preserves_original_cuts_and_legacy_fifo() -> Result<(), Box<dyn Error>>
+{
+    let observations = run_windows(&[110, 200], true, false, true)?;
+    assert_eq!(observations[0].kind, NativeStopKind::Unsupported);
+    assert_eq!(observations[1].kind, NativeStopKind::Unsupported);
+    assert_eq!(observations[0].retired_count.get(), 0);
+    assert_eq!(observations[1].retired_count.get(), 0);
     Ok(())
 }

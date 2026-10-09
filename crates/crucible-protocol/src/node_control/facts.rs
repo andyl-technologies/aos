@@ -105,6 +105,10 @@ impl NativePreparation {
 /// Selects a closed frame of the independently negotiated native channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeFrame {
+    /// Selects a retained original held-writer object on an edition-two endpoint.
+    QueryWriters(super::NativeWriterQuery),
+    /// Returns bounded bytes from the same retained original writer object.
+    WriterChunk(super::NativeWriterChunk),
     /// Supplies the independently prepared complete nonexecuting owner scope.
     Prepare(Box<NativePreparation>),
     /// Supplies a complete original native command claim.

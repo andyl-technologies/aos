@@ -11,3 +11,4 @@ mod transport;
 pub use transport::{NativeLaunchEndpoint, NativeQemuControlError, NativeQemuControlTransport};
 
 mod timers;
+mod writers;

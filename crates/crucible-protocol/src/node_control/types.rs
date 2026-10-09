@@ -140,7 +140,11 @@ pub struct ExecutionCommand {
 }
 
 impl ExecutionCommand {
-    /// Commits to every byte of the original versioned native command.
+    /// Commits to the complete original canonical command record.
+    ///
+    /// The identity uses the version-one command encoding across explicitly
+    /// pinned channel editions. The channel envelope is separate compatibility
+    /// and continuation state, never negotiated from received packets.
     ///
     /// # Errors
     /// Rejects a command that cannot be encoded under the closed extension.

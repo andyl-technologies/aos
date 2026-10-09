@@ -8,7 +8,8 @@
 use std::os::unix::net::UnixDatagram;
 
 use super::{
-    NODE_CONTROL_HEADER_BYTES, NODE_CONTROL_MAX_BODY_BYTES, NativeCommandError, NativeFrame,
+    NODE_CONTROL_HEADER_BYTES, NODE_CONTROL_MAX_BODY_BYTES, NativeCommandError,
+    NativeControlEdition, NativeFrame,
 };
 
 /// Reports independent native-channel framing or physical transport failure.
@@ -26,6 +27,7 @@ pub enum NativeChannelError {
 #[cfg(unix)]
 pub struct NativeChannel {
     socket: UnixDatagram,
+    edition: NativeControlEdition,
 }
 
 #[cfg(unix)]
@@ -35,8 +37,22 @@ impl NativeChannel {
     /// # Errors
     /// Returns an I/O error when nonblocking operation cannot be established.
     pub fn from_prepared_socket(socket: UnixDatagram) -> Result<Self, NativeChannelError> {
+        Self::from_prepared_socket_for_edition(socket, NativeControlEdition::Original)
+    }
+
+    /// Takes supervised socket custody with an immutable explicitly selected edition.
+    ///
+    /// Selection must match the native launch profile before the first frame.
+    /// Receiving another version never changes this endpoint's edition.
+    ///
+    /// # Errors
+    /// Returns an I/O error when nonblocking operation cannot be established.
+    pub fn from_prepared_socket_for_edition(
+        socket: UnixDatagram,
+        edition: NativeControlEdition,
+    ) -> Result<Self, NativeChannelError> {
         socket.set_nonblocking(true)?;
-        Ok(Self { socket })
+        Ok(Self { socket, edition })
     }
 
     /// Creates a private connected pair for supervised descriptor handover.
@@ -48,11 +64,29 @@ impl NativeChannel {
     /// # Errors
     /// Returns the original socket creation or nonblocking setup error.
     pub fn supervised_pair() -> Result<(Self, Self), NativeChannelError> {
+        Self::supervised_pair_for_edition(NativeControlEdition::Original)
+    }
+
+    /// Creates a supervised connected pair pinned to the same explicit edition.
+    ///
+    /// The transferred native endpoint and immutable launch configuration must
+    /// retain this edition; packet contents provide no negotiation authority.
+    ///
+    /// # Errors
+    /// Returns socket creation or nonblocking setup failure.
+    pub fn supervised_pair_for_edition(
+        edition: NativeControlEdition,
+    ) -> Result<(Self, Self), NativeChannelError> {
         let (host, provider) = UnixDatagram::pair()?;
         Ok((
-            Self::from_prepared_socket(host)?,
-            Self::from_prepared_socket(provider)?,
+            Self::from_prepared_socket_for_edition(host, edition)?,
+            Self::from_prepared_socket_for_edition(provider, edition)?,
         ))
+    }
+
+    /// Returns the edition fixed by supervised descriptor preparation.
+    pub fn edition(&self) -> NativeControlEdition {
+        self.edition
     }
 
     /// Borrows the prepared endpoint for nonsemantic host readiness polling.
@@ -83,7 +117,7 @@ impl NativeChannel {
         if length > NODE_CONTROL_HEADER_BYTES + NODE_CONTROL_MAX_BODY_BYTES {
             return Err(NativeCommandError::ResourceLimit.into());
         }
-        super::decode_frame(&bytes[..length])
+        super::decode_frame_for_edition(self.edition, &bytes[..length])
             .map(Some)
             .map_err(Into::into)
     }
@@ -96,7 +130,7 @@ impl NativeChannel {
     /// # Errors
     /// Rejects invalid local records, physical errors or an incomplete datagram.
     pub fn send(&self, frame: &NativeFrame) -> Result<bool, NativeChannelError> {
-        let bytes = super::encode_frame(frame)?;
+        let bytes = super::encode_frame_for_edition(self.edition, frame)?;
         match self.socket.send(&bytes) {
             Ok(length) if length == bytes.len() => Ok(true),
             Ok(_) => Err(NativeCommandError::Invalid("partial native datagram send").into()),
@@ -150,5 +184,30 @@ mod tests {
             ))
         ));
         assert!(host.receive().unwrap().is_none());
+    }
+
+    #[test]
+    fn prepared_edition_is_immutable_across_foreign_datagrams() {
+        for edition in [
+            NativeControlEdition::Original,
+            NativeControlEdition::OwnedCustody,
+        ] {
+            let (host, provider) = NativeChannel::supervised_pair_for_edition(edition).unwrap();
+            let other = match edition {
+                NativeControlEdition::Original => NativeControlEdition::OwnedCustody,
+                NativeControlEdition::OwnedCustody => NativeControlEdition::Original,
+            };
+            let frame = NativeFrame::QueryCpuPark([7; 32]);
+            let foreign = super::super::encode_frame_for_edition(other, &frame).unwrap();
+            provider.socket.send(&foreign).unwrap();
+
+            assert!(
+                matches!(host.receive(), Err(NativeChannelError::Protocol(NativeCommandError::UnsupportedVersion(version))) if version == other.version())
+            );
+            assert_eq!(host.edition(), edition);
+
+            assert!(provider.send(&frame).unwrap());
+            assert_eq!(host.receive().unwrap(), Some(frame));
+        }
     }
 }

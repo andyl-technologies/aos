@@ -9,6 +9,7 @@ mod abi;
 mod controller;
 mod install;
 mod manifest;
+mod writer_abi;
 pub(crate) use install::{install, registered_owner};
 pub(crate) use manifest::RegisteredResourceManifest;
 

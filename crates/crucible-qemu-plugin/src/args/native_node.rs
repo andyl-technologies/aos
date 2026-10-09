@@ -14,9 +14,14 @@ pub const PLUGIN_ARG_NODE_CONTROL_VERSION: &str = "node_control_version";
 pub struct NativeNodeControlConfig {
     descriptor: i32,
     scope_digest: [u8; 32],
+    edition: crucible_protocol::node_control::NativeControlEdition,
 }
 
 impl NativeNodeControlConfig {
+    /// Returns the immutable launch-selected public channel edition.
+    pub const fn edition(self) -> crucible_protocol::node_control::NativeControlEdition {
+        self.edition
+    }
     /// Returns the independently inherited supervisor-owned native socket.
     pub const fn descriptor(self) -> i32 {
         self.descriptor
@@ -44,12 +49,15 @@ pub(super) fn parse(
             return Err(PluginArgsParseError::MissingRequiredKey { key });
         }
     }
-    if parsed.value(PLUGIN_ARG_NODE_CONTROL_VERSION) != Some("1") {
-        return Err(PluginArgsParseError::InvalidNativeNodeControl);
-    }
+    let edition = match parsed.value(PLUGIN_ARG_NODE_CONTROL_VERSION) {
+        Some("1") => crucible_protocol::node_control::NativeControlEdition::Original,
+        Some("2") => crucible_protocol::node_control::NativeControlEdition::OwnedCustody,
+        _ => return Err(PluginArgsParseError::InvalidNativeNodeControl),
+    };
     Ok(Some(NativeNodeControlConfig {
         descriptor: parse_required_fd(parsed, PLUGIN_ARG_NODE_CONTROL_FD)?,
         scope_digest: parse_required_hash(parsed, PLUGIN_ARG_NODE_CONTROL_SCOPE_HASH)?,
+        edition,
     }))
 }
 
@@ -100,6 +108,24 @@ mod tests {
         let native = parsed.native_node_control().unwrap();
         assert_eq!(native.descriptor(), 9);
         assert_eq!(native.scope_digest(), [2; 32]);
+        let owned = PluginArgs::parse(&format!(
+            "{},{}",
+            base(),
+            fields.replace("version=1", "version=2")
+        ))
+        .unwrap();
+        assert_eq!(
+            owned.native_node_control().unwrap().edition(),
+            crucible_protocol::node_control::NativeControlEdition::OwnedCustody
+        );
+        assert!(
+            PluginArgs::parse(&format!(
+                "{},{}",
+                base(),
+                fields.replace("version=1", "version=3")
+            ))
+            .is_err()
+        );
         assert!(
             PluginArgs::parse(&format!(
                 "{},{}",

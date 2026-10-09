@@ -84,6 +84,190 @@ fn facts(original: &ExecutionCommand) -> NativeStopFacts {
 }
 
 #[test]
+fn launch_pins_edition_and_retains_original_command_and_stop() {
+    let original = command(1, 0, 110);
+    let (mut transport, endpoint) = NativeQemuControlTransport::prepare_for_edition(
+        NativePreparation {
+            scope: original.scope.clone(),
+            boundary: coordinate(0),
+            maximum_commands: U64::new(4),
+        },
+        NativeControlEdition::OwnedCustody,
+    )
+    .unwrap();
+    assert_eq!(endpoint.edition(), NativeControlEdition::OwnedCustody);
+    let provider = NativeChannel::from_prepared_socket_for_edition(
+        endpoint.into_socket(),
+        NativeControlEdition::OwnedCustody,
+    )
+    .unwrap();
+    assert!(matches!(
+        provider.receive().unwrap(),
+        Some(NativeFrame::Prepare(_))
+    ));
+    assert!(transport.transmit_original(original.clone()).is_err());
+    let park = crucible_protocol::node_control::NativeCpuParkFacts {
+        prepared_scope_hash: original.scope.identity_digest().unwrap(),
+        roster_sha256: [9; 32],
+        coverage: 1,
+        cpu_count: 1,
+        current_ps: U64::new(0),
+        retired_count: U64::new(0),
+        next_service_deadline_ps: None,
+        pending_service_credit_ps: U64::new(0),
+    };
+    provider.send(&NativeFrame::CpuPark(park.clone())).unwrap();
+    transport.poll_original().unwrap();
+    let observation = crucible_protocol::node_control::NativeWriterObservation {
+        prepared_scope_hash: park.prepared_scope_hash,
+        sequence: U64::new(0),
+        command_digest: [0; 32],
+        gate_generation: U64::new(1),
+        current_ps: U64::new(0),
+        retired_count: U64::new(0),
+        aio_generation: U64::new(1),
+        bh_generation: U64::new(1),
+        handler_generation: U64::new(1),
+        admissions_in_flight: U64::new(0),
+        coverage: 7,
+        flags: 15,
+        roster_sha256: park.roster_sha256,
+        cpus: vec![crucible_protocol::node_control::NativeWriterCpu {
+            cpu_index: 0,
+            interrupt_mask: 0,
+            exception_index: -1,
+            flags: 0,
+            work_count: U64::new(0),
+            next_work_sequence: U64::new(1),
+        }],
+        work: vec![],
+        aio: vec![],
+        bottom_halves: vec![],
+        handlers: vec![],
+    };
+    assert!(transport.request_writer_observation(U64::new(0)).unwrap());
+    assert!(matches!(
+        provider.receive().unwrap(),
+        Some(NativeFrame::QueryWriters(_))
+    ));
+    let bytes = observation.encode().unwrap();
+    let chunk = crucible_protocol::node_control::NativeWriterChunk {
+        prepared_scope_hash: park.prepared_scope_hash,
+        sequence: U64::new(0),
+        object_digest: *blake3::hash(&bytes).as_bytes(),
+        total_bytes: U64::new(bytes.len() as u64),
+        offset: U64::new(0),
+        bytes,
+    };
+    let mut changed = chunk.clone();
+    changed.bytes[8] ^= 1;
+    provider.send(&NativeFrame::WriterChunk(changed)).unwrap();
+    assert!(transport.poll_original().is_err());
+    assert!(transport.writer_observation(U64::new(0)).is_none());
+    provider
+        .send(&NativeFrame::WriterChunk(chunk.clone()))
+        .unwrap();
+    transport.poll_original().unwrap();
+    provider.send(&NativeFrame::WriterChunk(chunk)).unwrap();
+    transport.poll_original().unwrap();
+    assert_eq!(
+        transport.writer_observation(U64::new(0)),
+        Some(&observation)
+    );
+    transport.transmit_original(original.clone()).unwrap();
+    assert_eq!(
+        provider.receive().unwrap(),
+        Some(NativeFrame::Command(Box::new(original.clone())))
+    );
+    assert!(
+        provider
+            .send(&NativeFrame::Stopped(facts(&original)))
+            .unwrap()
+    );
+    transport.poll_original().unwrap();
+    assert_eq!(
+        transport.original_facts(original.sequence),
+        Some(&facts(&original))
+    );
+    let mut stopped = observation.clone();
+    stopped.sequence = original.sequence;
+    stopped.command_digest = original.identity_digest().unwrap();
+    stopped.current_ps = U64::new(110);
+    stopped.retired_count = U64::new(2);
+    stopped.aio = vec![crucible_protocol::node_control::NativeWriterAio {
+        context_id: U64::new(1),
+        home_thread_id: -1,
+        active_polls: 0,
+        active_dispatches: 0,
+        pending_bhs: 0,
+        active_bhs: 0,
+        queued_coroutines: 0,
+        flags: 0,
+    }];
+    stopped.bottom_halves = (1..=150)
+        .map(|identity| crucible_protocol::node_control::NativeWriterBh {
+            bh_id: U64::new(identity),
+            context_id: U64::new(1),
+            active_callbacks: 0,
+            flags: 0,
+        })
+        .collect();
+    let bytes = stopped.encode().unwrap();
+    assert!(bytes.len() > crucible_protocol::node_control::NATIVE_WRITER_CHUNK_BYTES);
+    let digest = *blake3::hash(&bytes).as_bytes();
+    for (index, slice) in bytes
+        .chunks(crucible_protocol::node_control::NATIVE_WRITER_CHUNK_BYTES)
+        .enumerate()
+    {
+        assert!(
+            transport
+                .request_writer_observation(original.sequence)
+                .unwrap()
+        );
+        assert!(matches!(
+            provider.receive().unwrap(),
+            Some(NativeFrame::QueryWriters(_))
+        ));
+        let chunk = crucible_protocol::node_control::NativeWriterChunk {
+            prepared_scope_hash: stopped.prepared_scope_hash,
+            sequence: original.sequence,
+            object_digest: digest,
+            total_bytes: U64::new(bytes.len() as u64),
+            offset: U64::new(
+                (index * crucible_protocol::node_control::NATIVE_WRITER_CHUNK_BYTES) as u64,
+            ),
+            bytes: slice.to_vec(),
+        };
+        provider
+            .send(&NativeFrame::WriterChunk(chunk.clone()))
+            .unwrap();
+        transport.poll_original().unwrap();
+        provider.send(&NativeFrame::WriterChunk(chunk)).unwrap();
+        transport.poll_original().unwrap();
+    }
+    assert_eq!(
+        transport.writer_observation(original.sequence),
+        Some(&stopped)
+    );
+    transport
+        .transmit_acknowledgement(original.sequence)
+        .unwrap();
+    let Some(NativeFrame::Acknowledge(ack)) = provider.receive().unwrap() else {
+        panic!("original ACK");
+    };
+    provider.send(&NativeFrame::Acknowledged(ack)).unwrap();
+    transport.poll_original().unwrap();
+    assert_eq!(
+        transport.writer_observation(original.sequence),
+        Some(&stopped)
+    );
+    assert_eq!(
+        transport.writer_observation(U64::new(0)),
+        Some(&observation)
+    );
+}
+
+#[test]
 fn lost_native_ack_reply_retains_the_original_owner_until_identical_recovery() {
     let (mut transport, provider) = channels();
     let first = command(1, 0, 110);

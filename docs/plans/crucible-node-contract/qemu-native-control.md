@@ -104,6 +104,53 @@ evidence. Original objects survive command acknowledgement. GPL retention is
 bounded at 16 MiB; host retention reserves at most 80 bounded objects. Exhaustion
 does not evict old custody or manufacture a new observation.
 
+## Retained writer observations
+
+The provider pins public channel edition two before transferring the distinct
+native socket. The plugin requires the actual writer-cut source API for this
+edition; it refuses installation when the API is unavailable. Edition one
+retains its existing packet kinds and byte encodings. The private native
+callback API and V4 resource-manifest callback version remain one, independently
+of the public channel edition.
+
+Canonical command identities continue to use the complete version-one command
+record and its existing BLAKE3 domain. The edition-two channel envelope carries
+that same closed record. Continuation must preserve the immutable channel
+edition separately; a logical journal snapshot does not preserve a native
+socket, reader, or execution engine.
+
+Edition-two frames 11 and 12 retrieve checked slices of original `CNPWRT01`
+objects. QEMU acquires and retains its real asynchronous admission HOLD at the
+authentic initial RR park. Original authorized RR dispatch uses an internal
+owner-and-generation checked admission scope. The HOLD is not released to let
+unrelated asynchronous threads run. After that dispatch scope ends, the original
+stop callback may observe a new cut. The plugin never queries these registries
+on its reader thread or resamples them in response to a slice request.
+
+The source query copies the fixed actual CPU roster, interrupt and exception
+diagnostics, each CPU's original work FIFO, Aio contexts, allocated bottom
+halves, and POSIX handlers. Work IDs are monotone within each original CPU;
+completed work may leave gaps, and native FIFO ordinals start at one. Handler
+descriptor slots and home-thread IDs are process-local diagnostics. They convey
+no descriptor authority and contain no callback payloads or pointers.
+
+Each portable object binds the prepared scope, original command sequence and
+digest, actual clock and raw retirement count, roster digest, held generation,
+registry generations, and the complete finite row counts. A gate generation
+identifies a lifetime HOLD; it is not an immutable cut identifier. Initial and
+subsequent stopped-command objects retain separate immutable bytes even when
+they share that generation. The host checks all original bindings, FIFO and
+registry references before exposing a fully assembled object. Native ACK does
+not discard the original evidence. Both processes enforce finite object and
+aggregate retention allowances.
+
+Coverage bits report CPU park, retained asynchronous HOLD, and observed CPU
+work. Unknown CPU producers, callback semantics, and device I/O remain explicit
+flags, including when every queue is empty. Pending unknown CPU work, bottom
+halves, or coroutines prevent another native owner run. IRQ and device producer
+mediation still require implementation. These records do not qualify complete
+readiness, same-time settlement, producer bounds, or exact capture.
+
 ## Remaining native qualification
 
 A qualified `SimulationNode` requires an authenticated complete execution and

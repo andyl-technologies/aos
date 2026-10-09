@@ -5,8 +5,8 @@ use std::{collections::BTreeMap, os::unix::net::UnixDatagram};
 use crucible_node_contract::U64;
 use crucible_protocol::node_control::{
     CommandJournal, CommandJournalDisposition, ExecutionCommand, NativeChannel, NativeChannelError,
-    NativeCommandError, NativeCpuParkFacts, NativeFrame, NativePreparation, NativeStopFacts,
-    NativeStopKind, ReceiptAcknowledgement,
+    NativeCommandError, NativeControlEdition, NativeCpuParkFacts, NativeFrame, NativePreparation,
+    NativeStopFacts, NativeStopKind, ReceiptAcknowledgement,
 };
 
 /// Reports physical transport failure or conflicting original native material.
@@ -24,12 +24,18 @@ pub enum NativeQemuControlError {
 pub struct NativeLaunchEndpoint {
     socket: UnixDatagram,
     scope_digest: [u8; 32],
+    edition: NativeControlEdition,
 }
 
 impl NativeLaunchEndpoint {
     /// Returns the preparation commitment to pin in the native plugin arguments.
     pub fn scope_digest(&self) -> &[u8; 32] {
         &self.scope_digest
+    }
+
+    /// Returns the exact edition to pin in the native launch configuration.
+    pub fn edition(&self) -> NativeControlEdition {
+        self.edition
     }
 
     /// Transfers the owned socket to the supervised inherited-descriptor launcher.
@@ -50,6 +56,7 @@ pub struct NativeQemuControlTransport {
     prepared_boundary: crucible_node_contract::Position,
     pub(super) cpu_park: Option<NativeCpuParkFacts>,
     pub(super) timer_objects: BTreeMap<u64, super::timers::TimerAssembly>,
+    pub(super) writer_objects: BTreeMap<u64, super::writers::WriterAssembly>,
 }
 
 impl NativeQemuControlTransport {
@@ -63,6 +70,21 @@ impl NativeQemuControlTransport {
     pub fn prepare(
         preparation: NativePreparation,
     ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
+        Self::prepare_for_edition(preparation, NativeControlEdition::Original)
+    }
+
+    /// Prepares a private descriptor pair with an explicitly pinned wire edition.
+    ///
+    /// The provider must verify the actual native implementation's edition and
+    /// selected capabilities before launch. Selection itself qualifies neither
+    /// execution, complete writer closure nor state preservation.
+    ///
+    /// # Errors
+    /// Rejects invalid preparation or bounded socket and codec failures.
+    pub fn prepare_for_edition(
+        preparation: NativePreparation,
+        edition: NativeControlEdition,
+    ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
         let scope_digest = preparation.scope.identity_digest()?;
         let maximum_commands = usize::try_from(preparation.maximum_commands.get())
             .map_err(|_| NativeCommandError::ResourceLimit)?;
@@ -72,7 +94,7 @@ impl NativeQemuControlTransport {
             preparation.boundary,
             maximum_commands,
         )?;
-        let (channel, provider) = NativeChannel::supervised_pair()?;
+        let (channel, provider) = NativeChannel::supervised_pair_for_edition(edition)?;
         if !channel.send(&NativeFrame::Prepare(Box::new(preparation)))? {
             return Err(NativeCommandError::ResourceLimit.into());
         }
@@ -85,10 +107,12 @@ impl NativeQemuControlTransport {
                 prepared_boundary,
                 cpu_park: None,
                 timer_objects: BTreeMap::new(),
+                writer_objects: BTreeMap::new(),
             },
             NativeLaunchEndpoint {
                 socket: provider.into_prepared_socket(),
                 scope_digest,
+                edition,
             },
         ))
     }
@@ -127,6 +151,11 @@ impl NativeQemuControlTransport {
         &mut self,
         command: ExecutionCommand,
     ) -> Result<(CommandJournalDisposition, bool), NativeQemuControlError> {
+        if self.channel.edition() == NativeControlEdition::OwnedCustody
+            && self.writer_observation(U64::new(0)).is_none()
+        {
+            return Err(NativeCommandError::Conflict.into());
+        }
         let disposition = self.journal.retain(command.clone())?;
         let sent = self
             .channel
@@ -145,6 +174,7 @@ impl NativeQemuControlTransport {
         };
         match &frame {
             NativeFrame::TimerChunk(chunk) => self.accept_timer_chunk(chunk)?,
+            NativeFrame::WriterChunk(chunk) => self.accept_writer_chunk(chunk)?,
             NativeFrame::CpuPark(facts) => {
                 if facts.prepared_scope_hash != self.prepared_scope_hash
                     || facts.current_ps != self.prepared_boundary.time_ps

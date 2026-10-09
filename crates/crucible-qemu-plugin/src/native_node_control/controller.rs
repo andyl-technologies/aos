@@ -20,6 +20,9 @@ struct State {
     cpu_park: Option<crucible_protocol::node_control::NativeCpuParkFacts>,
     timer_objects: BTreeMap<u64, Vec<u8>>,
     timer_object_bytes: usize,
+    writer_objects: BTreeMap<u64, Vec<u8>>,
+    writer_object_bytes: usize,
+    writer_generation: Option<u64>,
 }
 
 /// Retains separately admitted native requests for process-lifetime callbacks.
@@ -33,6 +36,7 @@ pub(crate) struct NativeNodeControl {
     prepared_scope_hash: [u8; 32],
     cpu_query: Option<super::abi::QueryCpuPark>,
     timer_query: Option<super::abi::QueryTimers>,
+    writer_query: Option<super::writer_abi::QueryWriters>,
     #[cfg(unix)]
     channel: Option<crucible_protocol::node_control::NativeChannel>,
 }
@@ -48,6 +52,7 @@ impl NativeNodeControl {
             prepared_scope_hash,
             cpu_query: None,
             timer_query: None,
+            writer_query: None,
             state: Mutex::new(State {
                 journal: CommandJournal::new(scope, boundary, maximum_commands)?,
                 current: None,
@@ -56,6 +61,9 @@ impl NativeNodeControl {
                 cpu_park: None,
                 timer_objects: BTreeMap::new(),
                 timer_object_bytes: 0,
+                writer_objects: BTreeMap::new(),
+                writer_object_bytes: 0,
+                writer_generation: None,
             }),
             protocol_worker: Mutex::new(None),
             #[cfg(unix)]
@@ -123,6 +131,7 @@ impl NativeNodeControl {
                 Ok(())
             }
             Some(NativeFrame::QueryTimers(query)) => self.send_timer_chunk(&query),
+            Some(NativeFrame::QueryWriters(query)) => self.send_writer_chunk(&query),
             Some(NativeFrame::QueryCpuPark(scope)) => {
                 if scope != self.prepared_scope_hash {
                     return Err(NativeCommandError::Conflict);
@@ -134,7 +143,8 @@ impl NativeNodeControl {
                 | NativeFrame::Prepare(_)
                 | NativeFrame::Acknowledged(_)
                 | NativeFrame::CpuPark(_)
-                | NativeFrame::TimerChunk(_),
+                | NativeFrame::TimerChunk(_)
+                | NativeFrame::WriterChunk(_),
             ) => Err(NativeCommandError::Conflict),
         }
     }
@@ -481,8 +491,26 @@ extern "C" fn get_command(out: *mut NativeNodeCommand, userdata: *mut c_void) ->
     // SAFETY: Registration requires a static owner; QEMU passes its original
     // userdata and a writable, suitably aligned ABI-sized output object.
     let owner = unsafe { &*userdata.cast::<NativeNodeControl>() };
+    if owner.writer_query.is_some()
+        && !owner
+            .state
+            .lock()
+            .ok()
+            .is_some_and(|state| state.writer_objects.contains_key(&0))
+    {
+        if (owner.observe_initial_cpu_park().is_err()
+            || owner.observe_writers(U64::new(0)).is_err())
+            && let Ok(mut state) = owner.state.lock()
+        {
+            state.quarantined = true;
+            state.current = None;
+        }
+        return false;
+    }
     let Some(command) = owner.command() else {
-        if (owner.observe_initial_cpu_park().is_err() || owner.observe_timers(U64::new(0)).is_err())
+        if (owner.observe_initial_cpu_park().is_err()
+            || owner.observe_writers(U64::new(0)).is_err()
+            || owner.observe_timers(U64::new(0)).is_err())
             && let Ok(mut state) = owner.state.lock()
         {
             state.quarantined = true;
@@ -511,6 +539,9 @@ extern "C" fn publish_stop(receipt: *const NativeNodeReceipt, userdata: *mut c_v
         if owner
             .observe_timers(U64::new(receipt.command_sequence))
             .is_err()
+            || owner
+                .observe_writers(U64::new(receipt.command_sequence))
+                .is_err()
         {
             if let Ok(mut state) = owner.state.lock() {
                 state.quarantined = true;
@@ -532,3 +563,6 @@ mod cpu_park;
 
 #[path = "timers.rs"]
 mod timers;
+
+#[path = "writers.rs"]
+mod writers;

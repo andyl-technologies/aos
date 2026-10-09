@@ -17,16 +17,20 @@
 
 mod channel;
 mod codec;
+mod edition;
 mod facts;
 mod frame;
 mod journal;
 mod timers;
 mod types;
+mod writer_frames;
+mod writers;
 
 #[cfg(unix)]
 pub use channel::NativeChannel;
 pub use channel::NativeChannelError;
 pub use codec::{decode_command, encode_command};
+pub use edition::{NativeControlEdition, decode_frame_for_edition, encode_frame_for_edition};
 pub use facts::{
     NativeCpuParkFacts, NativeFrame, NativePreparation, NativeStopFacts, NativeStopKind,
     ReceiptAcknowledgement,
@@ -44,4 +48,9 @@ pub use types::{
 pub use timers::{
     NATIVE_TIMER_CHUNK_BYTES, NATIVE_TIMER_OBJECT_MAX_BYTES, NativeTimerArm, NativeTimerChunk,
     NativeTimerList, NativeTimerObservation, NativeTimerQuery,
+};
+pub use writer_frames::{NATIVE_WRITER_CHUNK_BYTES, NativeWriterChunk, NativeWriterQuery};
+pub use writers::{
+    NATIVE_WRITER_OBJECT_MAX_BYTES, NativeWriterAio, NativeWriterBh, NativeWriterCpu,
+    NativeWriterHandler, NativeWriterObservation, NativeWriterWork,
 };

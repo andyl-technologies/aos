@@ -1,4 +1,4 @@
-From ebeef5206def518ed1ba65f649d20cdf8d9c6ca9 Mon Sep 17 00:00:00 2001
+From 2db4b349f6a36ea0cb1263918122f7b5935f3b08 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Thu, 8 Oct 2026 12:00:00 -0700
 Subject: [PATCH] Integrate deterministic execution and validated TSC source
@@ -125,6 +125,21 @@ unsupported acceleration and unqualified complete node profiles. Native
 x86_64 and aarch64 source builds and existing Aio, icount and vCPU service
 regressions pass; live x86 CPU/timer probes preserve original custody.
 This component stage does not qualify complete native capture or forks.
+
+Retain a genuine asynchronous native writer HOLD through the original
+RR owner instead of permitting broad event-loop release. The held query
+binds scope, original command, generation and bounded native CPU, work,
+BH, Aio and handler inventories. A wrong scope or insufficient capacity
+refuses without releasing or replacing original writer custody.
+
+Keep pointer-bearing native rows local to the GPL process; portable
+observations contain only checked scalar identities and process-neutral
+coordinates. Preserve legacy execution when native control is disabled.
+
+Native x86 and ARM builds, 33 Aio tests, icount/service regressions and
+exclusive CPU/PIT partition probes pass. CPU/IRQ future producers,
+plugin journals, input/output payloads and complete device state remain
+unqualified; this stage does not enable native capture or fork.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -4464,10 +4479,10 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f991666eda1b9 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..ec9347744ea0e3a8e375374b95269e4d7bfd1caf 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,2148 @@
+@@ -27,45 +27,2408 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -4481,6 +4496,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f9916
 +#include "qemu/error-report.h"
 +#include "qemu/plugin.h"
 +#include "qemu/timer.h"
++#include "qemu/aio.h"
  #include "exec/cpu-common.h"
  #include "accel/tcg/cpu-loop.h"
  #include "tcg/startup.h"
@@ -5451,6 +5467,9 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f9916
 +static QemuPluginCrucibleNodeCommand rr_node_command;
 +static bool rr_node_command_valid;
 +static bool rr_node_command_stopped;
++static uint64_t rr_node_writer_gate;
++static bool rr_node_writer_dispatch;
++static bool rr_node_stop_query;
 +static bool rr_crucible_sim_all_vcpus_halted(void);
 +
 +G_STATIC_ASSERT(sizeof(QemuPluginCrucibleNodeCpuParkFacts) == 112);
@@ -5493,7 +5512,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f9916
 +        return -ENOTSUP;
 +    }
 +    execution_state = qatomic_read(&rr_tcg_exec_state);
-+    if (execution_state != RR_TCG_EXEC_IDLE &&
++    if (!rr_node_stop_query && execution_state != RR_TCG_EXEC_IDLE &&
 +        execution_state != RR_TCG_EXEC_IDLE_WAKE_PENDING) {
 +        return -EAGAIN;
 +    }
@@ -5541,6 +5560,234 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f9916
 +    memcpy(facts->prepared_scope_hash, prepared_scope_hash,
 +           sizeof(facts->prepared_scope_hash));
 +    return 0;
++}
++
++G_STATIC_ASSERT(sizeof(QemuPluginCrucibleNodeWriterCut) == 160);
++G_STATIC_ASSERT(sizeof(QemuPluginCrucibleNodeWriterCpu) == 32);
++G_STATIC_ASSERT(sizeof(QemuPluginCrucibleNodeWriterWork) == 24);
++G_STATIC_ASSERT(sizeof(QemuPluginCrucibleNodeWriterAio) == 40);
++G_STATIC_ASSERT(sizeof(QemuPluginCrucibleNodeWriterBh) == 24);
++G_STATIC_ASSERT(sizeof(QemuPluginCrucibleNodeWriterHandler) == 32);
++
++int qemu_plugin_crucible_node_query_writer_cut(
++    const uint8_t prepared_scope_hash[32], uint64_t expected_generation,
++    QemuPluginCrucibleNodeWriterCut *cut,
++    QemuPluginCrucibleNodeWriterCpu *cpus, uint32_t cpu_capacity,
++    QemuPluginCrucibleNodeWriterWork *work, uint32_t work_capacity,
++    QemuPluginCrucibleNodeWriterAio *aio, uint32_t aio_capacity,
++    QemuPluginCrucibleNodeWriterBh *bhs, uint32_t bh_capacity,
++    QemuPluginCrucibleNodeWriterHandler *handlers, uint32_t handler_capacity)
++{
++#ifndef CONFIG_POSIX
++    if (cut) {
++        memset(cut, 0, sizeof(*cut));
++    }
++    return -ENOTSUP;
++#else
++    QemuPluginCrucibleNodeCpuParkFacts park;
++    QemuAsyncWorkerHotForkBarrierInventory barrier, after;
++    QemuAioHotForkInventory aio_inventory = { 0 };
++    QemuBhHotForkInventory bh_inventory = { 0 };
++    QemuAioHandlerHotForkInventory handler_inventory = { 0 };
++    QemuAioHotForkInventory aio_after = { 0 };
++    QemuBhHotForkInventory bh_after = { 0 };
++    QemuAioHandlerHotForkInventory handler_after = { 0 };
++    g_autofree QemuPluginCrucibleNodeWriterCpu *cpu_rows = NULL;
++    g_autofree QemuPluginCrucibleNodeWriterWork *work_rows = NULL;
++    g_autofree QemuCpuNodeWorkEntry *cpu_work = NULL;
++    CPUState *cpu;
++    uint32_t cpu_count = 0, work_count = 0;
++    bool locked = false;
++    int result;
++
++    if (!cut) {
++        return -EINVAL;
++    }
++    memset(cut, 0, sizeof(*cut));
++    if (!prepared_scope_hash || !cpus || !cpu_capacity ||
++        cpu_capacity > QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_CPU_MAX ||
++        work_capacity > QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_WORK_MAX ||
++        aio_capacity > QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_AIO_MAX ||
++        bh_capacity > QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_BH_MAX ||
++        handler_capacity > QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_HANDLER_MAX ||
++        (work_capacity && !work) || (aio_capacity && !aio) ||
++        (bh_capacity && !bhs) || (handler_capacity && !handlers)) {
++        return -EINVAL;
++    }
++    result = qemu_plugin_crucible_node_query_cpu_park(
++        prepared_scope_hash, &park);
++    if (result < 0) {
++        return result;
++    }
++    if (park.cpu_count > cpu_capacity) {
++        return -ENOSPC;
++    }
++    if (expected_generation && expected_generation != rr_node_writer_gate) {
++        return -ESTALE;
++    }
++    result = qemu_async_worker_node_hold(&rr_node_writer_gate);
++    if (result < 0) {
++        return result;
++    }
++    qemu_async_worker_hot_fork_barrier(
++        QEMU_ASYNC_WORKER_HOT_FORK_BARRIER_QUERY, &barrier);
++    if (!barrier.held || !barrier.quiescent ||
++        barrier.generation != rr_node_writer_gate ||
++        barrier.owner_thread_id != qemu_get_thread_id()) {
++        return -EAGAIN;
++    }
++
++    qemu_aio_hot_fork_inventory(&aio_inventory);
++    qemu_bh_hot_fork_inventory(&bh_inventory);
++    qemu_aio_handler_hot_fork_inventory(&handler_inventory);
++    if (aio_inventory.overflowed || bh_inventory.overflowed ||
++        handler_inventory.overflowed || !bh_inventory.stable ||
++        aio_inventory.entry_count > aio_capacity ||
++        bh_inventory.entry_count > bh_capacity ||
++        handler_inventory.entry_count > handler_capacity) {
++        result = -ENOSPC;
++        goto out;
++    }
++    cpu_rows = g_new0(QemuPluginCrucibleNodeWriterCpu, park.cpu_count);
++    work_rows = g_new0(QemuPluginCrucibleNodeWriterWork, work_capacity);
++    cpu_work = g_new0(QemuCpuNodeWorkEntry, work_capacity);
++
++    /* A single locked roster cut prevents interleaved CPU FIFO snapshots. */
++    CPU_FOREACH(cpu) {
++        qemu_mutex_lock(&cpu->work_mutex);
++    }
++    locked = true;
++    CPU_FOREACH(cpu) {
++        size_t count = 0;
++        QemuPluginCrucibleNodeWriterCpu *row = &cpu_rows[cpu_count++];
++
++        result = qemu_cpu_node_work_inventory(cpu, cpu_work,
++                                              work_capacity - work_count,
++                                              &count);
++        if (result < 0) {
++            goto out;
++        }
++        *row = (QemuPluginCrucibleNodeWriterCpu) {
++            .cpu_index = cpu->cpu_index,
++            .interrupt_mask = qatomic_read(&cpu->interrupt_request),
++            .exception_index = cpu->exception_index,
++            .flags = (cpu->halted ? 1 : 0) | (cpu->stop ? 2 : 0) |
++                     (cpu->stopped ? 4 : 0) |
++                     (qatomic_read(&cpu->exit_request) ? 8 : 0) |
++                     (cpu->crash_occurred ? 16 : 0),
++            .work_count = count,
++            .next_work_sequence =
++                cpu->crucible_node_next_work_id == UINT64_MAX ? UINT64_MAX :
++                cpu->crucible_node_next_work_id + 1,
++        };
++        for (size_t index = 0; index < count; index++) {
++            work_rows[work_count++] = (QemuPluginCrucibleNodeWriterWork) {
++                .cpu_index = cpu->cpu_index,
++                .flags = cpu_work[index].flags,
++                .work_id = cpu_work[index].work_id,
++                .fifo_ordinal = cpu_work[index].fifo_ordinal,
++            };
++        }
++    }
++    qemu_async_worker_hot_fork_barrier(
++        QEMU_ASYNC_WORKER_HOT_FORK_BARRIER_QUERY, &after);
++    qemu_aio_hot_fork_inventory(&aio_after);
++    qemu_bh_hot_fork_inventory(&bh_after);
++    qemu_aio_handler_hot_fork_inventory(&handler_after);
++    if (!after.held || !after.quiescent ||
++        after.generation != barrier.generation ||
++        after.owner_thread_id != barrier.owner_thread_id ||
++        aio_inventory.generation != aio_after.generation ||
++        bh_inventory.generation != bh_after.generation || !bh_after.stable ||
++        handler_inventory.generation != handler_after.generation) {
++        result = -EAGAIN;
++        goto out;
++    }
++
++    for (size_t index = 0; index < aio_inventory.entry_count; index++) {
++        QemuAioHotForkInventoryEntry *entry = &aio_inventory.entries[index];
++        aio[index] = (QemuPluginCrucibleNodeWriterAio) {
++            .context_id = entry->context_id,
++            .home_thread_id = entry->home_thread_id,
++            .active_polls = entry->active_polls,
++            .active_dispatches = entry->active_dispatches,
++            .pending_bhs = entry->pending_bhs,
++            .active_bhs = entry->active_bhs,
++            .queued_coroutines = entry->queued_coroutines,
++            .flags = entry->notify_pending ? 1 : 0,
++        };
++    }
++    for (size_t index = 0; index < bh_inventory.entry_count; index++) {
++        QemuBhHotForkInventoryEntry *entry = &bh_inventory.entries[index];
++        bhs[index] = (QemuPluginCrucibleNodeWriterBh) {
++            .bh_id = entry->bh_id,
++            .context_id = entry->context_id,
++            .active_callbacks = entry->active_callbacks,
++            .flags = (entry->pending ? 1 : 0) | (entry->scheduled ? 2 : 0) |
++                     (entry->deleted ? 4 : 0) | (entry->oneshot ? 8 : 0) |
++                     (entry->idle ? 16 : 0),
++        };
++    }
++    for (size_t index = 0; index < handler_inventory.entry_count; index++) {
++        QemuAioHandlerHotForkInventoryEntry *entry =
++            &handler_inventory.entries[index];
++        handlers[index] = (QemuPluginCrucibleNodeWriterHandler) {
++            .handler_id = entry->handler_id,
++            .context_id = entry->context_id,
++            .fd = entry->fd,
++            .active_callbacks = entry->active_callbacks,
++            .flags = (entry->deleted ? 1 : 0) | (entry->io_read ? 2 : 0) |
++                     (entry->io_write ? 4 : 0) | (entry->io_poll ? 8 : 0) |
++                     (entry->io_poll_ready ? 16 : 0) |
++                     (entry->io_poll_begin ? 32 : 0) |
++                     (entry->io_poll_end ? 64 : 0),
++        };
++    }
++    memcpy(cpus, cpu_rows, park.cpu_count * sizeof(*cpus));
++    if (work_count) {
++        memcpy(work, work_rows, work_count * sizeof(*work));
++    }
++    *cut = (QemuPluginCrucibleNodeWriterCut) {
++        .version = QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_CUT_VERSION,
++        .size = sizeof(*cut),
++        .coverage = QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_CPU_PARK |
++                    QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_ASYNC_HELD |
++                    QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_CPU_WORK,
++        .flags = QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_HELD |
++                 QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_UNKNOWN_CPU_PRODUCERS |
++                 QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_UNKNOWN_CALLBACKS |
++                 QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_UNKNOWN_DEVICE_IO,
++        .cpu_count = park.cpu_count,
++        .work_count = work_count,
++        .aio_count = aio_inventory.entry_count,
++        .bh_count = bh_inventory.entry_count,
++        .handler_count = handler_inventory.entry_count,
++        .gate_generation = barrier.generation,
++        .current_ps = park.current_ps,
++        .raw_icount = park.raw_icount,
++        .aio_generation = aio_inventory.generation,
++        .bh_generation = bh_inventory.generation,
++        .handler_generation = handler_inventory.generation,
++        .admissions_in_flight = after.admissions_in_flight,
++    };
++    memcpy(cut->prepared_scope_hash, park.prepared_scope_hash, 32);
++    memcpy(cut->roster_hash, park.roster_hash, 32);
++    result = 0;
++
++out:
++    if (locked) {
++        CPU_FOREACH(cpu) {
++            qemu_mutex_unlock(&cpu->work_mutex);
++        }
++    }
++    qemu_aio_handler_hot_fork_inventory_destroy(&handler_after);
++    qemu_bh_hot_fork_inventory_destroy(&bh_after);
++    qemu_aio_hot_fork_inventory_destroy(&aio_after);
++    qemu_aio_handler_hot_fork_inventory_destroy(&handler_inventory);
++    qemu_bh_hot_fork_inventory_destroy(&bh_inventory);
++    qemu_aio_hot_fork_inventory_destroy(&aio_inventory);
++    return result;
++#endif
 +}
 +
 +static bool rr_crucible_node_virtual_timer_owner(void)
@@ -5602,6 +5849,13 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f9916
 +
 +static void rr_crucible_node_stop(uint32_t reason)
 +{
++    if (rr_node_writer_dispatch) {
++        if (qemu_async_worker_node_dispatch_end(rr_node_writer_gate) < 0) {
++            error_report("Crucible original RR writer admission is unbalanced");
++            abort();
++        }
++        rr_node_writer_dispatch = false;
++    }
 +    int64_t observed = icount_crucible_sim_tick_observed();
 +    uint64_t next_service = UINT64_MAX;
 +    uint64_t native_deadline = rr_crucible_sim_next_exact_deadline();
@@ -5640,7 +5894,12 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f9916
 +    memcpy(receipt.grant_hash, rr_node_command.grant_hash,
 +           sizeof(receipt.grant_hash));
 +    rr_node_command_stopped = true;
++    /* This synchronous seam follows owner admission end and still verifies
++     * every actual CPU is physically outside execution. It is not a later
++     * resampling allowance for arbitrary ACTIVE bookkeeping states. */
++    rr_node_stop_query = true;
 +    crucible_node_control_publish_stop(&receipt);
++    rr_node_stop_query = false;
 +}
 +
 +/* Returns true when the original command withholds ordinary modeled work. */
@@ -5692,6 +5951,22 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f9916
 +            rr_crucible_node_wait(command.sequence);
 +            return true;
 +        }
++    }
++    if (rr_node_writer_gate && !rr_node_writer_dispatch) {
++        QemuAsyncWorkerHotForkBarrierInventory pending;
++
++        qemu_async_worker_hot_fork_barrier(
++            QEMU_ASYNC_WORKER_HOT_FORK_BARRIER_QUERY, &pending);
++        if (!pending.quiescent || pending.pending_bottom_halves != 0 ||
++            pending.queued_coroutines != 0 ||
++            rr_crucible_sim_vcpu_work_pending() ||
++            qemu_async_worker_node_dispatch_begin(rr_node_writer_gate) < 0) {
++            /* Unclassified queued work cannot be drained as grant input. */
++            rr_crucible_node_stop(QEMU_PLUGIN_CRUCIBLE_NODE_STOP_UNSUPPORTED);
++            rr_crucible_node_wait(command.sequence);
++            return true;
++        }
++        rr_node_writer_dispatch = true;
 +    }
 +    observed = icount_crucible_sim_tick_observed();
 +    if (observed < 0 || (uint64_t)observed > command.limit_ps ||
@@ -6635,7 +6910,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f9916
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +2187,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +2447,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -6668,7 +6943,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f9916
      }
  }
  
-@@ -110,15 +2225,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +2485,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -6802,7 +7077,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f9916
      }
  }
  
-@@ -140,6 +2371,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +2631,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -6821,7 +7096,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f9916
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +2427,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +2687,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -6830,7 +7105,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f9916
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +2449,209 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +2709,209 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -7058,7 +7333,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f9916
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -252,13 +2665,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -252,13 +2925,34 @@ static void *rr_cpu_thread_fn(void *arg)
              icount_handle_deadline();
  
              cpu_budget = icount_percpu_budget(cpu_count);
@@ -7094,7 +7369,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f9916
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2710,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2970,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -7233,7 +7508,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f9916
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2834,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +3094,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -7373,7 +7648,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..8dc4aef4bc6c396a23b7416e698f9916
      }
  
      g_assert_not_reached();
-@@ -318,13 +2973,38 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +3233,38 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -14742,10 +15017,18 @@ index b629575fcf808d6ee0c3e3d724d49d521dc2bb6a..78c06d8272a8f57713b64e99d776e6db
  {
      SocketChardev *s = SOCKET_CHARDEV(chr);
 diff --git a/cpu-common.c b/cpu-common.c
-index adb76b3a786c06d08ae89c5623d26bf75755d432..5960444189a50b8bca0670a02dc40562e992834e 100644
+index adb76b3a786c06d08ae89c5623d26bf75755d432..9a85d9fc1be26fb95083c09939d3e42bebbbcb43 100644
 --- a/cpu-common.c
 +++ b/cpu-common.c
-@@ -33,6 +33,12 @@ static QemuCond qemu_work_cond;
+@@ -22,6 +22,7 @@
+ #include "exec/cpu-common.h"
+ #include "hw/core/cpu.h"
+ #include "qemu/lockable.h"
++#include "qemu/error-report.h"
+ #include "trace/trace-root.h"
+ 
+ QemuMutex qemu_cpu_list_lock;
+@@ -33,6 +34,12 @@ static QemuCond qemu_work_cond;
   * under qemu_cpu_list_lock, read with atomic operations.
   */
  static int pending_cpus;
@@ -14758,7 +15041,76 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..5960444189a50b8bca0670a02dc40562
  
  void qemu_init_cpu_list(void)
  {
-@@ -249,6 +255,7 @@ void end_exclusive(void)
+@@ -128,11 +135,24 @@ struct qemu_work_item {
+     run_on_cpu_func func;
+     run_on_cpu_data data;
+     bool free, exclusive, done;
++    uint64_t crucible_node_work_id;
++    bool crucible_node_birth_unknown;
+ };
+ 
+ static void queue_work_on_cpu(CPUState *cpu, struct qemu_work_item *wi)
+ {
+     qemu_mutex_lock(&cpu->work_mutex);
++    wi->crucible_node_work_id = 0;
++    /* Queue custody alone does not authenticate a modeled birth Position. */
++    wi->crucible_node_birth_unknown = true;
++    if (cpu->crucible_node_work_tracking) {
++        /* Identity exhaustion must never silently alias an earlier request. */
++        if (cpu->crucible_node_next_work_id == UINT64_MAX) {
++            error_report("Crucible native CPU work identity exhausted");
++            abort();
++        }
++        wi->crucible_node_work_id = ++cpu->crucible_node_next_work_id;
++    }
+     QSIMPLEQ_INSERT_TAIL(&cpu->work_list, wi, node);
+     wi->done = false;
+     qemu_mutex_unlock(&cpu->work_mutex);
+@@ -141,6 +161,43 @@ static void queue_work_on_cpu(CPUState *cpu, struct qemu_work_item *wi)
+     cpu_exit(cpu);
+ }
+ 
++int qemu_cpu_node_work_inventory(CPUState *cpu, QemuCpuNodeWorkEntry *entries,
++                                 size_t capacity, size_t *count)
++{
++    struct qemu_work_item *wi;
++    size_t length = 0;
++    uint64_t unassigned = 0;
++
++    QSIMPLEQ_FOREACH(wi, &cpu->work_list, node) {
++        if (length == capacity) {
++            return -ENOSPC;
++        }
++        length++;
++        unassigned += wi->crucible_node_work_id == 0;
++    }
++    if (unassigned > UINT64_MAX - cpu->crucible_node_next_work_id) {
++        return -EOVERFLOW;
++    }
++
++    cpu->crucible_node_work_tracking = true;
++    length = 0;
++    QSIMPLEQ_FOREACH(wi, &cpu->work_list, node) {
++        if (wi->crucible_node_work_id == 0) {
++            wi->crucible_node_work_id = ++cpu->crucible_node_next_work_id;
++            wi->crucible_node_birth_unknown = true;
++        }
++        entries[length] = (QemuCpuNodeWorkEntry) {
++            .work_id = wi->crucible_node_work_id,
++            .fifo_ordinal = length + 1,
++            .flags = (wi->free ? 1 : 0) | (wi->exclusive ? 2 : 0) |
++                     (wi->crucible_node_birth_unknown ? 4 : 0),
++        };
++        length++;
++    }
++    *count = length;
++    return 0;
++}
++
+ void do_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data,
+                    QemuMutex *mutex)
+ {
+@@ -249,6 +306,7 @@ void end_exclusive(void)
  /* Wait for exclusive ops to finish, and begin cpu execution.  */
  void cpu_exec_start(CPUState *cpu)
  {
@@ -57732,7 +58084,7 @@ index 5f3b1327de0aa287c1859bf155a47c8815ebb08d..b726a4cbd5f2dae44f78ecbaefc4a92a
  
  SiFiveUARTState *sifive_uart_create(MemoryRegion *address_space, hwaddr base,
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index b54035fb13b22a530692186b0afbe2718f1fb8b8..16883f1bb2d315dae0f1e13a5142700e3ac10d46 100644
+index b54035fb13b22a530692186b0afbe2718f1fb8b8..1e16039779c5269b4c4c6e1aac7d9cd7b00f4dc8 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -63,6 +63,7 @@ typedef int (*WriteCoreDumpFunction)(const void *buf, size_t size,
@@ -57810,7 +58162,26 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..16883f1bb2d315dae0f1e13a5142700e
      const char *gdb_core_xml_file;
      const char * (*gdb_arch_name)(CPUState *cpu);
      const char * (*gdb_get_core_xml_file)(CPUState *cpu);
-@@ -442,6 +489,14 @@ struct qemu_work_item;
+@@ -400,6 +447,18 @@ typedef void (*run_on_cpu_func)(CPUState *cpu, run_on_cpu_data data);
+ 
+ struct qemu_work_item;
+ 
++typedef struct QemuCpuNodeWorkEntry {
++    uint64_t work_id;
++    uint64_t fifo_ordinal;
++    uint32_t flags;
++} QemuCpuNodeWorkEntry;
++
++/* Called only with work_mutex held. Enabling inventory assigns identities to
++ * the actual existing FIFO, without changing or dispatching its payloads.
++ * Existing entries have unknown birth; callback/data remain process-private. */
++int qemu_cpu_node_work_inventory(CPUState *cpu, QemuCpuNodeWorkEntry *entries,
++                                 size_t capacity, size_t *count);
++
+ #define CPU_UNSET_NUMA_NODE_ID -1
+ 
+ /**
+@@ -442,6 +501,14 @@ struct qemu_work_item;
   * @crash_occurred: Indicates the OS reported a crash (panic) for this CPU
   * @singlestep_flags: Flags for single-stepping.
   * @icount_extra: Instructions until next timer event.
@@ -57825,7 +58196,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..16883f1bb2d315dae0f1e13a5142700e
   * @cpu_ases: Pointer to array of CPUAddressSpaces (which define the
   *            AddressSpaces this CPU has)
   * @as: Pointer to the first AddressSpace, for the convenience of targets which
-@@ -508,6 +563,19 @@ struct CPUState {
+@@ -508,11 +575,27 @@ struct CPUState {
      unsigned singlestep_flags;
      int64_t icount_budget;
      int64_t icount_extra;
@@ -57845,7 +58216,15 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..16883f1bb2d315dae0f1e13a5142700e
      uint64_t random_seed;
      sigjmp_buf jmp_env;
  
-@@ -738,6 +806,138 @@ enum CPUDumpFlags {
+     QemuMutex work_mutex;
+     QSIMPLEQ_HEAD(, qemu_work_item) work_list;
++    /* Native node inventory only; retained identity is local to this CPU. */
++    uint64_t crucible_node_next_work_id;
++    bool crucible_node_work_tracking;
+ 
+     struct CPUAddressSpace *cpu_ases;
+     AddressSpace *as;
+@@ -738,6 +821,138 @@ enum CPUDumpFlags {
   */
  void cpu_dump_state(CPUState *cpu, FILE *f, int flags);
  
@@ -57984,7 +58363,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..16883f1bb2d315dae0f1e13a5142700e
  /**
   * TranslateForDebugResult: gives result of cpu_translate_for_debug()
   *
-@@ -1088,6 +1288,7 @@ void process_queued_cpu_work(CPUState *cpu);
+@@ -1088,6 +1303,7 @@ void process_queued_cpu_work(CPUState *cpu);
   * cpu_exit.
   */
  void cpu_exec_start(CPUState *cpu);
@@ -59969,7 +60348,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..36c355bf303715c91112dcceb32fb779
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f190e5f909a9a5fe3aba468662b49c147ab07b94 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..476403a5d2afd1e8eb71b899047285453140071c 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -61816,7 +62195,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f190e5f909a9a5fe3aba468662b49c14
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
-@@ -1363,6 +3179,239 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
+@@ -1363,6 +3179,372 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry);
  
@@ -61911,6 +62290,139 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f190e5f909a9a5fe3aba468662b49c14
 +int qemu_plugin_crucible_node_query_cpu_park(
 +    const uint8_t prepared_scope_hash[32],
 +    QemuPluginCrucibleNodeCpuParkFacts *facts);
++
++/* Source-specific observations, never all-source readiness qualification. */
++#define QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_CUT_VERSION 1
++#define QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_CPU_MAX 1024
++#define QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_WORK_MAX 4096
++#define QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_AIO_MAX 64
++#define QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_BH_MAX 4096
++#define QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_HANDLER_MAX 4096
++#define QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_CPU_PARK 1
++#define QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_ASYNC_HELD 2
++#define QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_CPU_WORK 4
++#define QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_HELD 1
++#define QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_UNKNOWN_CPU_PRODUCERS 2
++#define QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_UNKNOWN_CALLBACKS 4
++#define QEMU_PLUGIN_CRUCIBLE_NODE_WRITER_UNKNOWN_DEVICE_IO 8
++
++typedef struct QemuPluginCrucibleNodeWriterCut {
++    uint32_t version;
++    uint32_t size;
++    uint32_t coverage;
++    uint32_t flags;
++    uint32_t cpu_count;
++    uint32_t work_count;
++    uint32_t aio_count;
++    uint32_t bh_count;
++    uint32_t handler_count;
++    uint32_t reserved;
++    uint64_t gate_generation;
++    uint64_t current_ps;
++    uint64_t raw_icount;
++    uint64_t aio_generation;
++    uint64_t bh_generation;
++    uint64_t handler_generation;
++    uint64_t admissions_in_flight;
++    uint8_t prepared_scope_hash[32];
++    uint8_t roster_hash[32];
++} QemuPluginCrucibleNodeWriterCut;
++
++typedef struct QemuPluginCrucibleNodeWriterCpu {
++    uint32_t cpu_index;
++    uint32_t interrupt_mask;
++    int32_t exception_index;
++    uint32_t flags; /* halted=1, stop=2, stopped=4, exit_request=8, crash=16 */
++    uint64_t work_count;
++    uint64_t next_work_sequence;
++} QemuPluginCrucibleNodeWriterCpu;
++
++typedef struct QemuPluginCrucibleNodeWriterWork {
++    uint32_t cpu_index;
++    uint32_t flags; /* heap-owned=1, exclusive=2, unknown birth=4 */
++    uint64_t work_id; /* identity is the pair (cpu_index, work_id) */
++    uint64_t fifo_ordinal;
++} QemuPluginCrucibleNodeWriterWork;
++
++typedef struct QemuPluginCrucibleNodeWriterAio {
++    uint64_t context_id;
++    int64_t home_thread_id;
++    uint32_t active_polls;
++    uint32_t active_dispatches;
++    uint32_t pending_bhs;
++    uint32_t active_bhs;
++    uint32_t queued_coroutines;
++    uint32_t flags; /* native notification pending=1 */
++} QemuPluginCrucibleNodeWriterAio;
++
++typedef struct QemuPluginCrucibleNodeWriterBh {
++    uint64_t bh_id;
++    uint64_t context_id;
++    uint32_t active_callbacks;
++    uint32_t flags; /* pending=1, scheduled=2, deleted=4, oneshot=8, idle=16 */
++} QemuPluginCrucibleNodeWriterBh;
++
++typedef struct QemuPluginCrucibleNodeWriterHandler {
++    uint64_t handler_id;
++    uint64_t context_id;
++    int64_t fd; /* original GPL-local descriptor slot, not portable authority */
++    uint32_t active_callbacks;
++    uint32_t flags; /* deleted=1, read=2, write=4, poll=8, ready=16, begin=32,
++                     * end=64 */
++} QemuPluginCrucibleNodeWriterHandler;
++
++/**
++ * qemu_plugin_crucible_node_query_writer_cut() - retain a native writer cut
++ * @prepared_scope_hash: exact original sealed V4 prepared scope
++ * @expected_generation: zero for first acquisition, otherwise original gate
++ * @cut: receives the finite source-specific summary
++ * @cpus: receives ascending actual CPU roster rows
++ * @cpu_capacity: at most 1024 rows
++ * @work: receives each CPU's original FIFO, in ascending CPU order
++ * @work_capacity: at most 4096 rows across the whole roster
++ * @aio: receives actual retained AioContext identities
++ * @aio_capacity: at most 64 rows
++ * @bhs: receives allocated BH identities and original pending flags
++ * @bh_capacity: at most 4096 rows
++ * @handlers: receives actual allocated POSIX handler identities
++ * @handler_capacity: at most 4096 rows
++ *
++ * Only the scope-authenticated, finalized BQL-held native RR park may acquire
++ * the existing asynchronous-worker HOLD. The same original RR owner retains
++ * it, including after query failure; this API offers no release operation.
++ * Foreign legacy release/fork controls cannot release this node-held gate.
++ * Query never executes work. Accepted original RR commands alone may enter a
++ * balanced internal owner dispatch admission while other gated asynchronous
++ * producers remain held. An active foreign admission, callback, unstable or
++ * oversized registry fails closed. Original CPU work payloads remain in their actual queue; all
++ * work mutexes are held while the bounded rows are copied. Existing entries
++ * without a modeled birth retain that explicit unknown flag.
++ *
++ * Coverage is limited to physical CPU park, observed original CPU work, and
++ * the held asynchronous registries. CPU IRQ fields are atomic observations;
++ * unknown CPU enqueue/IRQ producers, callback semantics, coroutine payloads,
++ * input/output and device/resource sources remain explicitly unknown, even
++ * when a row set is empty. These facts cannot qualify all-source readiness.
++ * Counters are native identities, never pointer encodings. Numeric handler
++ * descriptors identify only their original local slots; they convey no
++ * cross-process authority. The GPL plugin retains immutable returned bytes
++ * under its original journal; another query is a new observation, not a retry
++ * reconstruction of an earlier object.
++ *
++ * Returns zero or negative errno-style status for scope/context, generation,
++ * active writers, unsupported registry or capacity. Failure leaves a zero
++ * summary and no output array is semantically valid. It never releases a
++ * previously acquired HOLD or its original unresolved native custody.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_node_query_writer_cut(
++    const uint8_t prepared_scope_hash[32], uint64_t expected_generation,
++    QemuPluginCrucibleNodeWriterCut *cut,
++    QemuPluginCrucibleNodeWriterCpu *cpus, uint32_t cpu_capacity,
++    QemuPluginCrucibleNodeWriterWork *work, uint32_t work_capacity,
++    QemuPluginCrucibleNodeWriterAio *aio, uint32_t aio_capacity,
++    QemuPluginCrucibleNodeWriterBh *bhs, uint32_t bh_capacity,
++    QemuPluginCrucibleNodeWriterHandler *handlers, uint32_t handler_capacity);
 +
 +#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_INVENTORY_VERSION 1
 +#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_LIST_MAX 64
@@ -63075,10 +63587,10 @@ index 0000000000000000000000000000000000000000..79d8591f5cfd0a014eb1e32a9e1ae36d
 +#endif
 diff --git a/include/qemu/crucible-hot-fork-async.h b/include/qemu/crucible-hot-fork-async.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..4b8f7d11a929f46414f1d1bb57a3b27d05cb947f
+index 0000000000000000000000000000000000000000..492b05f52f904ed2ecf42a9fcbe2dd270f64e71b
 --- /dev/null
 +++ b/include/qemu/crucible-hot-fork-async.h
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,93 @@
 +/*
 + * Crucible hot-fork asynchronous-worker barrier.
 + *
@@ -63151,6 +63663,15 @@ index 0000000000000000000000000000000000000000..4b8f7d11a929f46414f1d1bb57a3b27d
 +void qemu_async_worker_hot_fork_admission_begin(void);
 +bool qemu_async_worker_hot_fork_admission_try_begin(void);
 +void qemu_async_worker_hot_fork_admission_end(void);
++
++/* Internal native RR ownership, never a public process or plugin bypass.
++ * A node-held barrier cannot be released by the legacy hot-fork controls.
++ * The caller authenticates the finalized RR seam and original prepared scope.
++ * Dispatch admission is limited to that owner and exact retained generation;
++ * query and readiness paths must never enter it. */
++int qemu_async_worker_node_hold(uint64_t *generation);
++int qemu_async_worker_node_dispatch_begin(uint64_t generation);
++int qemu_async_worker_node_dispatch_end(uint64_t generation);
 +void qemu_async_worker_hot_fork_barrier(
 +    QemuAsyncWorkerHotForkBarrierOperation operation,
 +    QemuAsyncWorkerHotForkBarrierInventory *inventory);
@@ -149276,10 +149797,10 @@ index 0000000000000000000000000000000000000000..fc86915cf67b8357bdeb3714dab21a62
 +}
 diff --git a/tests/tcg/plugins/crucible-node-control.c b/tests/tcg/plugins/crucible-node-control.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..11264e26c90e3581322330f802e551348120c772
+index 0000000000000000000000000000000000000000..65c4eb1c5e83f1d6fcbd783c3b9d0df39a423d7c
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-node-control.c
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,278 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/*
 + * Native retirement mechanism probe, not a qualified provider or state profile.
@@ -149413,7 +149934,9 @@ index 0000000000000000000000000000000000000000..11264e26c90e3581322330f802e55134
 +static void stop(const QemuPluginCrucibleNodeReceipt *receipt, void *userdata)
 +{
 +    QemuPluginCrucibleNodeCpuParkFacts cpu_park;
-+    int park_result;
++    QemuPluginCrucibleNodeWriterCut writer_cut;
++    QemuPluginCrucibleNodeWriterCpu writer_cpu;
++    int park_result, writer_result;
 +    bool valid = receipt->version == 1 && receipt->size == sizeof(*receipt) &&
 +        receipt->reason == QEMU_PLUGIN_CRUCIBLE_NODE_STOP_HORIZON &&
 +        receipt->command_sequence == command.sequence &&
@@ -149430,6 +149953,11 @@ index 0000000000000000000000000000000000000000..11264e26c90e3581322330f802e55134
 +        command.binding_hash, &cpu_park);
 +    valid = valid && (park_result == -ESTALE || park_result == -EAGAIN ||
 +                      park_result == -EPERM) && cpu_park.version == 0;
++    writer_result = qemu_plugin_crucible_node_query_writer_cut(
++        command.binding_hash, 0, &writer_cut, &writer_cpu, 1,
++        NULL, 0, NULL, 0, NULL, 0, NULL, 0);
++    valid = valid && (writer_result == -ESTALE || writer_result == -EAGAIN ||
++                      writer_result == -EPERM) && writer_cut.version == 0;
 +
 +    if (timer_probe && valid) {
 +        struct qemu_plugin_crucible_virtual_timer_witness witness;
@@ -151976,7 +152504,7 @@ index 09ac56da9ebf8c1f75b14c62fd37eef102693e77..7b482ca2fab9e776e69a9c4e460f88a4
  struct QEMUTimerList {
      QEMUTimer active_timers;
 diff --git a/tests/unit/test-aio.c b/tests/unit/test-aio.c
-index b3ca4d8a596ea045d11cf7cc9c241e7ef04f61e1..6e635d5f9e406c81fe9ddd2cb57fe589cd259483 100644
+index b3ca4d8a596ea045d11cf7cc9c241e7ef04f61e1..29bd4e6c976f02f99e8a1be1b00bb1cdb0f7860d 100644
 --- a/tests/unit/test-aio.c
 +++ b/tests/unit/test-aio.c
 @@ -20,6 +20,8 @@
@@ -152142,7 +152670,7 @@ index b3ca4d8a596ea045d11cf7cc9c241e7ef04f61e1..6e635d5f9e406c81fe9ddd2cb57fe589
  static void test_bh_delete_from_cb_many(void)
  {
      BHTestData data1 = { .n = 0, .max = 1 };
-@@ -830,12 +972,140 @@ static void test_worker_thread_co_enter(void)
+@@ -830,12 +972,250 @@ static void test_worker_thread_co_enter(void)
      g_assert(!aio_poll(ctx, false));
  }
  
@@ -152272,6 +152800,116 @@ index b3ca4d8a596ea045d11cf7cc9c241e7ef04f61e1..6e635d5f9e406c81fe9ddd2cb57fe589
 +    g_assert_false(barrier.held);
 +}
 +
++typedef struct NodeWriterTestWorker {
++    QemuEvent entered;
++    QemuEvent finish;
++    uint64_t generation;
++} NodeWriterTestWorker;
++
++static void *node_writer_admitted_worker(void *opaque)
++{
++    NodeWriterTestWorker *worker = opaque;
++
++    qemu_async_worker_hot_fork_admission_begin();
++    qemu_event_set(&worker->entered);
++    qemu_event_wait(&worker->finish);
++    qemu_async_worker_hot_fork_admission_end();
++    return NULL;
++}
++
++static void *node_writer_foreign_owner(void *opaque)
++{
++    NodeWriterTestWorker *worker = opaque;
++    uint64_t generation = 0;
++
++    g_assert_cmpint(qemu_async_worker_node_hold(&generation), ==, -EPERM);
++    g_assert_cmpuint(generation, ==, 0);
++    g_assert_cmpint(qemu_async_worker_node_dispatch_begin(worker->generation),
++                    ==, -EBUSY);
++    return NULL;
++}
++
++static void test_node_writer_retained_gate(void)
++{
++    NodeWriterTestWorker worker;
++    QemuAsyncWorkerHotForkBarrierInventory inventory;
++    QemuAsyncWorkerHotForkRetainedTransaction transaction = { 0 };
++    BHTestData bh_data = { .n = 0, .max = 1 };
++    QemuThread thread;
++    uint64_t generation = 0, repeated = 0;
++
++    /* The native gate intentionally survives this owner. Isolate the test in
++     * a real child so it cannot release or weaken custody to clean up tests. */
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 10 * G_USEC_PER_SEC, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    bh_data.bh = aio_bh_new(ctx, bh_test_cb, &bh_data);
++    qemu_bh_schedule(bh_data.bh);
++    qemu_event_init(&worker.entered, false);
++    qemu_event_init(&worker.finish, false);
++    qemu_thread_create(&thread, "node-admitted-writer",
++                        node_writer_admitted_worker, &worker,
++                        QEMU_THREAD_JOINABLE);
++    qemu_event_wait(&worker.entered);
++
++    g_assert_cmpint(qemu_async_worker_node_hold(&generation), ==, 0);
++    g_assert_cmpuint(generation, >, 0);
++    g_assert_cmpint(qemu_async_worker_node_hold(&repeated), ==, 0);
++    g_assert_cmpuint(repeated, ==, generation);
++    g_assert_false(qemu_async_worker_hot_fork_admission_try_begin());
++    g_assert_cmpint(qemu_async_worker_node_dispatch_begin(generation + 1),
++                    ==, -EBUSY);
++    g_assert_cmpint(qemu_async_worker_node_dispatch_begin(generation),
++                    ==, -EBUSY);
++    qemu_async_worker_hot_fork_barrier(
++        QEMU_ASYNC_WORKER_HOT_FORK_BARRIER_QUERY, &inventory);
++    g_assert_cmpuint(inventory.admissions_in_flight, ==, 1);
++    g_assert_false(inventory.quiescent);
++
++    qemu_event_set(&worker.finish);
++    qemu_thread_join(&thread);
++    worker.generation = generation;
++    qemu_thread_create(&thread, "node-foreign-owner",
++                        node_writer_foreign_owner, &worker,
++                        QEMU_THREAD_JOINABLE);
++    qemu_thread_join(&thread);
++    qemu_async_worker_hot_fork_barrier(
++        QEMU_ASYNC_WORKER_HOT_FORK_BARRIER_RELEASE, &inventory);
++    g_assert_true(inventory.held);
++    g_assert_true(inventory.quiescent);
++    g_assert_cmpuint(inventory.generation, ==, generation);
++    g_assert_cmpuint(inventory.pending_bottom_halves, >=, 1);
++    g_assert_cmpint(qemu_async_worker_hot_fork_begin_retained_transaction(
++                        &transaction, generation), ==, -EINVAL);
++    g_assert_false(g_main_context_iteration(NULL, false));
++    g_assert_cmpint(bh_data.n, ==, 0);
++
++    g_assert_cmpint(qemu_async_worker_node_dispatch_begin(generation), ==, 0);
++    g_assert_true(qemu_async_worker_hot_fork_admission_try_begin());
++    g_assert_cmpint(qemu_async_worker_node_dispatch_end(generation),
++                    ==, -EPROTO);
++    qemu_async_worker_hot_fork_admission_end();
++    g_assert_cmpint(qemu_async_worker_node_dispatch_end(generation), ==, 0);
++    g_assert_false(qemu_async_worker_hot_fork_admission_try_begin());
++    g_assert_cmpint(bh_data.n, ==, 0);
++
++    /* Only the exact owner admission dispatches the original parked BH. */
++    g_assert_cmpint(qemu_async_worker_node_dispatch_begin(generation), ==, 0);
++    aio_poll(ctx, false);
++    g_assert_cmpint(bh_data.n, ==, 1);
++    qemu_bh_delete(bh_data.bh);
++    aio_poll(ctx, false);
++    g_assert_cmpint(qemu_async_worker_node_dispatch_end(generation), ==, 0);
++    qemu_async_worker_hot_fork_barrier(
++        QEMU_ASYNC_WORKER_HOT_FORK_BARRIER_QUERY, &inventory);
++    g_assert_true(inventory.held);
++    g_assert_true(inventory.quiescent);
++    g_assert_cmpuint(inventory.admissions_in_flight, ==, 0);
++    g_assert_cmpuint(inventory.generation, ==, generation);
++}
++
  /* End of tests.  */
  
  int main(int argc, char **argv)
@@ -152283,7 +152921,7 @@ index b3ca4d8a596ea045d11cf7cc9c241e7ef04f61e1..6e635d5f9e406c81fe9ddd2cb57fe589
  
      while (g_main_context_iteration(NULL, false));
  
-@@ -845,6 +1115,10 @@ int main(int argc, char **argv)
+@@ -845,6 +1225,10 @@ int main(int argc, char **argv)
      g_test_add_func("/aio/bh/cancel",               test_bh_cancel);
      g_test_add_func("/aio/bh/delete",               test_bh_delete);
      g_test_add_func("/aio/bh/callback-delete/one",  test_bh_delete_from_cb);
@@ -152294,7 +152932,7 @@ index b3ca4d8a596ea045d11cf7cc9c241e7ef04f61e1..6e635d5f9e406c81fe9ddd2cb57fe589
      g_test_add_func("/aio/bh/callback-delete/many", test_bh_delete_from_cb_many);
      g_test_add_func("/aio/bh/flush",                test_bh_flush);
      g_test_add_func("/aio/event/add-remove",        test_set_event_notifier);
-@@ -852,9 +1126,15 @@ int main(int argc, char **argv)
+@@ -852,9 +1236,17 @@ int main(int argc, char **argv)
      g_test_add_func("/aio/event/wait/no-flush-cb",  test_wait_event_notifier_noflush);
      g_test_add_func("/aio/event/flush",             test_flush_event_notifier);
      g_test_add_func("/aio/timer/schedule",          test_timer_schedule);
@@ -152307,6 +152945,8 @@ index b3ca4d8a596ea045d11cf7cc9c241e7ef04f61e1..6e635d5f9e406c81fe9ddd2cb57fe589
 +                    test_hot_fork_async_worker_barrier);
 +    g_test_add_func("/aio/hot-fork/retained-async-worker-transaction",
 +                    test_hot_fork_retained_async_worker_transaction);
++    g_test_add_func("/aio/node/retained-writer-gate",
++                    test_node_writer_retained_gate);
  
      g_test_add_func("/aio-gsource/flush",                   test_source_flush);
      g_test_add_func("/aio-gsource/bh/schedule",             test_source_bh_schedule);
@@ -190863,10 +191503,10 @@ index 1985843233efa577ce4c0228856514daa2830549..22dd5695d7f4409c79abf7546600cfca
  }
  
 diff --git a/util/async.c b/util/async.c
-index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae4d2bd3db 100644
+index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..06435d73c1f7f07cab06a6b3523dbea00e471062 100644
 --- a/util/async.c
 +++ b/util/async.c
-@@ -31,14 +31,188 @@
+@@ -31,14 +31,266 @@
  #include "qemu/main-loop.h"
  #include "qemu/mem-reentrancy.h"
  #include "qemu/atomic.h"
@@ -190893,8 +191533,11 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
 +static uint64_t crucible_hot_fork_async_worker_barrier_generation;
 +static uint64_t crucible_hot_fork_async_worker_admissions;
 +static int crucible_hot_fork_async_worker_transaction_active;
++static bool crucible_node_worker_hold;
++static bool crucible_node_worker_dispatch;
 +static __thread uint32_t crucible_hot_fork_async_worker_admission_depth;
 +static void (*crucible_aio_notify_hook)(AioContext *ctx);
++static void crucible_hot_fork_aio_notify_all(void);
 +
 +static void __attribute__((__constructor__))
 +crucible_hot_fork_aio_inventory_init(void)
@@ -190946,6 +191589,81 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
 +        smp_mb_global();
 +        qatomic_dec(&crucible_hot_fork_async_worker_admissions);
 +    }
++}
++
++int qemu_async_worker_node_hold(uint64_t *generation)
++{
++    int64_t owner = qemu_get_thread_id();
++    QEMU_LOCK_GUARD(&crucible_hot_fork_async_worker_barrier_lock);
++
++    if (!generation || owner <= 0 ||
++        crucible_hot_fork_async_worker_admission_depth != 0 ||
++        crucible_node_worker_dispatch ||
++        qatomic_read(&crucible_hot_fork_async_worker_transaction_active)) {
++        return -EBUSY;
++    }
++    if (crucible_node_worker_hold) {
++        if (crucible_hot_fork_async_worker_barrier_owner != owner) {
++            return -EPERM;
++        }
++        *generation = crucible_hot_fork_async_worker_barrier_generation;
++        return 0;
++    }
++    if (qatomic_read(&crucible_hot_fork_async_worker_barrier_held) ||
++        crucible_hot_fork_async_worker_barrier_generation == UINT64_MAX) {
++        return -EBUSY;
++    }
++
++    qemu_event_reset(&crucible_hot_fork_async_worker_barrier_release);
++    qatomic_set(&crucible_hot_fork_async_worker_barrier_owner, owner);
++    smp_mb_global();
++    qatomic_set(&crucible_hot_fork_async_worker_barrier_held, 1);
++    crucible_hot_fork_async_worker_barrier_generation++;
++    qatomic_set(&crucible_node_worker_hold, true);
++    *generation = crucible_hot_fork_async_worker_barrier_generation;
++    crucible_hot_fork_aio_notify_all();
++    return 0;
++}
++
++int qemu_async_worker_node_dispatch_begin(uint64_t generation)
++{
++    QEMU_LOCK_GUARD(&crucible_hot_fork_async_worker_barrier_lock);
++
++    if (!crucible_node_worker_hold || crucible_node_worker_dispatch ||
++        !qatomic_read(&crucible_hot_fork_async_worker_barrier_held) ||
++        generation == 0 ||
++        generation != crucible_hot_fork_async_worker_barrier_generation ||
++        crucible_hot_fork_async_worker_barrier_owner != qemu_get_thread_id() ||
++        crucible_hot_fork_async_worker_admission_depth != 0 ||
++        qatomic_read(&crucible_hot_fork_async_worker_admissions) != 0 ||
++        qatomic_read(&crucible_hot_fork_async_worker_transaction_active)) {
++        return -EBUSY;
++    }
++
++    /* Only the RR caller's accepted original command supplies this outer
++     * admission. All other producer and event-loop threads remain held. */
++    crucible_node_worker_dispatch = true;
++    qatomic_inc(&crucible_hot_fork_async_worker_admissions);
++    crucible_hot_fork_async_worker_admission_depth = 1;
++    return 0;
++}
++
++int qemu_async_worker_node_dispatch_end(uint64_t generation)
++{
++    QEMU_LOCK_GUARD(&crucible_hot_fork_async_worker_barrier_lock);
++
++    if (!crucible_node_worker_hold || !crucible_node_worker_dispatch ||
++        generation != crucible_hot_fork_async_worker_barrier_generation ||
++        crucible_hot_fork_async_worker_barrier_owner != qemu_get_thread_id() ||
++        crucible_hot_fork_async_worker_admission_depth != 1) {
++        /* A failed balance check keeps the gate and original custody intact. */
++        return -EPROTO;
++    }
++    crucible_hot_fork_async_worker_admission_depth = 0;
++    smp_mb_global();
++    qatomic_dec(&crucible_hot_fork_async_worker_admissions);
++    crucible_node_worker_dispatch = false;
++    return 0;
 +}
 +
 +static void crucible_hot_fork_aio_assign_id(AioContext *ctx)
@@ -191055,7 +191773,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
  /***********************************************************/
  /* bottom halves (can be seen as timers which expire ASAP) */
  
-@@ -68,21 +242,417 @@ struct QEMUBH {
+@@ -68,21 +320,422 @@ struct QEMUBH {
      QSLIST_ENTRY(QEMUBH) next;
      unsigned flags;
      MemReentrancyGuard *reentrancy_guard;
@@ -191221,6 +191939,10 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
 +    case QEMU_ASYNC_WORKER_HOT_FORK_BARRIER_QUERY:
 +        break;
 +    case QEMU_ASYNC_WORKER_HOT_FORK_BARRIER_RELEASE:
++        /* Old QMP and fork controls cannot release a retained node cut. */
++        if (crucible_node_worker_hold) {
++            break;
++        }
 +        if (qatomic_read(&crucible_hot_fork_async_worker_barrier_held)) {
 +            qatomic_set(&crucible_hot_fork_async_worker_barrier_held, 0);
 +            qatomic_set(&crucible_hot_fork_async_worker_barrier_owner, 0);
@@ -191314,6 +192036,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
 +        expected_barrier_generation == 0 ||
 +        expected_barrier_generation == UINT64_MAX || getpid() <= 1 ||
 +        thread_id <= 0 || crucible_hot_fork_async_worker_admission_depth != 0 ||
++        qatomic_read(&crucible_node_worker_hold) ||
 +        qatomic_cmpxchg(&crucible_hot_fork_async_worker_transaction_active,
 +                        0, 1) != 0) {
 +        return -EINVAL;
@@ -191473,7 +192196,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
          /*
           * At this point the bottom half becomes visible to aio_bh_poll().
           * This insertion thus synchronizes with QSLIST_MOVE_ATOMIC in
-@@ -105,6 +675,7 @@ static void aio_bh_enqueue(QEMUBH *bh, unsigned new_flags)
+@@ -105,6 +758,7 @@ static void aio_bh_enqueue(QEMUBH *bh, unsigned new_flags)
           */
          icount_notify_exit();
      }
@@ -191481,7 +192204,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
  }
  
  /* Only called from aio_bh_poll() and aio_ctx_finalize() */
-@@ -122,8 +693,11 @@ static QEMUBH *aio_bh_dequeue(BHList *head, unsigned *flags)
+@@ -122,8 +776,11 @@ static QEMUBH *aio_bh_dequeue(BHList *head, unsigned *flags)
       * Synchronizes with qatomic_fetch_or() in aio_bh_enqueue(), ensuring that
       * the removal finishes before BH_PENDING is reset.
       */
@@ -191493,7 +192216,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      return bh;
  }
  
-@@ -131,20 +705,27 @@ void aio_bh_schedule_oneshot_full(AioContext *ctx, QEMUBHFunc *cb,
+@@ -131,20 +788,27 @@ void aio_bh_schedule_oneshot_full(AioContext *ctx, QEMUBHFunc *cb,
                                    void *opaque, const char *name)
  {
      QEMUBH *bh;
@@ -191521,7 +192244,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      bh = g_new(QEMUBH, 1);
      *bh = (QEMUBH){
          .ctx = ctx,
-@@ -152,7 +733,10 @@ QEMUBH *aio_bh_new_full(AioContext *ctx, QEMUBHFunc *cb, void *opaque,
+@@ -152,7 +816,10 @@ QEMUBH *aio_bh_new_full(AioContext *ctx, QEMUBHFunc *cb, void *opaque,
          .opaque = opaque,
          .name = name,
          .reentrancy_guard = reentrancy_guard,
@@ -191532,7 +192255,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      return bh;
  }
  
-@@ -160,8 +744,11 @@ void aio_bh_call(QEMUBH *bh)
+@@ -160,8 +827,11 @@ void aio_bh_call(QEMUBH *bh)
  {
      bool last_engaged_in_io = false;
  
@@ -191544,7 +192267,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      if (reentrancy_guard) {
          last_engaged_in_io = reentrancy_guard->engaged_in_io;
          if (reentrancy_guard->engaged_in_io) {
-@@ -170,11 +757,21 @@ void aio_bh_call(QEMUBH *bh)
+@@ -170,11 +840,21 @@ void aio_bh_call(QEMUBH *bh)
          reentrancy_guard->engaged_in_io = true;
      }
  
@@ -191566,7 +192289,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
  }
  
  /* Multiple occurrences of aio_bh_poll cannot be called concurrently. */
-@@ -184,6 +781,10 @@ int aio_bh_poll(AioContext *ctx)
+@@ -184,6 +864,10 @@ int aio_bh_poll(AioContext *ctx)
      BHListSlice *s;
      int ret = 0;
  
@@ -191577,7 +192300,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      /* Synchronizes with QSLIST_INSERT_HEAD_ATOMIC in aio_bh_enqueue().  */
      QSLIST_MOVE_ATOMIC(&slice.bh_list, &ctx->bh_list);
  
-@@ -220,10 +821,11 @@ int aio_bh_poll(AioContext *ctx)
+@@ -220,10 +904,11 @@ int aio_bh_poll(AioContext *ctx)
              aio_bh_call(bh);
          }
          if (flags & (BH_DELETED | BH_ONESHOT)) {
@@ -191590,7 +192313,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      return ret;
  }
  
-@@ -241,7 +843,13 @@ void qemu_bh_schedule(QEMUBH *bh)
+@@ -241,7 +926,13 @@ void qemu_bh_schedule(QEMUBH *bh)
   */
  void qemu_bh_cancel(QEMUBH *bh)
  {
@@ -191605,7 +192328,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
  }
  
  /* This func is async.The bottom half will do the delete action at the finial
-@@ -305,6 +913,12 @@ static gboolean
+@@ -305,6 +996,12 @@ static gboolean
  aio_ctx_prepare(GSource *source, gint    *timeout)
  {
      AioContext *ctx = (AioContext *) source;
@@ -191618,7 +192341,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
  
      qatomic_set(&ctx->notify_me, qatomic_read(&ctx->notify_me) | 1);
  
-@@ -322,7 +936,9 @@ aio_ctx_prepare(GSource *source, gint    *timeout)
+@@ -322,7 +1019,9 @@ aio_ctx_prepare(GSource *source, gint    *timeout)
          *timeout = 0;
      }
  
@@ -191629,7 +192352,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
  }
  
  static gboolean
-@@ -331,6 +947,11 @@ aio_ctx_check(GSource *source)
+@@ -331,6 +1030,11 @@ aio_ctx_check(GSource *source)
      AioContext *ctx = (AioContext *) source;
      QEMUBH *bh;
      BHListSlice *s;
@@ -191641,7 +192364,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
  
      /* Finish computing the timeout before clearing the flag.  */
      qatomic_store_release(&ctx->notify_me, qatomic_read(&ctx->notify_me) & ~1);
-@@ -339,7 +960,8 @@ aio_ctx_check(GSource *source)
+@@ -339,7 +1043,8 @@ aio_ctx_check(GSource *source)
      QSLIST_FOREACH_RCU(bh, &ctx->bh_list, next) {
          int flags = qatomic_load_acquire(&bh->flags);
          if ((flags & (BH_SCHEDULED | BH_DELETED)) == BH_SCHEDULED) {
@@ -191651,7 +192374,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
          }
      }
  
-@@ -347,11 +969,15 @@ aio_ctx_check(GSource *source)
+@@ -347,11 +1052,15 @@ aio_ctx_check(GSource *source)
          QSLIST_FOREACH_RCU(bh, &s->bh_list, next) {
              int flags = qatomic_load_acquire(&bh->flags);
              if ((flags & (BH_SCHEDULED | BH_DELETED)) == BH_SCHEDULED) {
@@ -191669,7 +192392,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
  }
  
  static gboolean
-@@ -362,7 +988,14 @@ aio_ctx_dispatch(GSource     *source,
+@@ -362,7 +1071,14 @@ aio_ctx_dispatch(GSource     *source,
      AioContext *ctx = (AioContext *) source;
  
      assert(callback == NULL);
@@ -191684,7 +192407,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      return true;
  }
  
-@@ -377,6 +1010,8 @@ aio_ctx_finalize(GSource *source)
+@@ -377,6 +1093,8 @@ aio_ctx_finalize(GSource *source)
          return;
      }
  
@@ -191693,7 +192416,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      thread_pool_free_aio(ctx->thread_pool);
  
  #ifdef CONFIG_LINUX_AIO
-@@ -409,7 +1044,7 @@ aio_ctx_finalize(GSource *source)
+@@ -409,7 +1127,7 @@ aio_ctx_finalize(GSource *source)
              abort();
          }
  
@@ -191702,7 +192425,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      }
  
      aio_set_event_notifier(ctx, &ctx->notifier, NULL, NULL, NULL);
-@@ -420,38 +1055,115 @@ aio_ctx_finalize(GSource *source)
+@@ -420,38 +1138,115 @@ aio_ctx_finalize(GSource *source)
      aio_context_destroy(ctx);
      /* aio_context_destroy() still needs the lock */
      qemu_lockcnt_destroy(&ctx->list_lock);
@@ -191822,7 +192545,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      return ctx->linux_aio;
  }
  
-@@ -464,6 +1176,12 @@ LinuxAioState *aio_get_linux_aio(AioContext *ctx)
+@@ -464,6 +1259,12 @@ LinuxAioState *aio_get_linux_aio(AioContext *ctx)
  
  void aio_notify(AioContext *ctx)
  {
@@ -191835,7 +192558,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      /*
       * Write e.g. ctx->bh_list before writing ctx->notified.  Pairs with
       * smp_mb() in aio_notify_accept().
-@@ -481,6 +1199,13 @@ void aio_notify(AioContext *ctx)
+@@ -481,6 +1282,13 @@ void aio_notify(AioContext *ctx)
      }
  }
  
@@ -191849,7 +192572,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
  void aio_notify_accept(AioContext *ctx)
  {
      qatomic_set(&ctx->notified, false);
-@@ -545,6 +1270,7 @@ static void co_schedule_bh_cb(void *opaque)
+@@ -545,6 +1353,7 @@ static void co_schedule_bh_cb(void *opaque)
  
          /* Protected by write barrier in qemu_aio_coroutine_enter */
          qatomic_set(&co->scheduled, NULL);
@@ -191857,7 +192580,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
          qemu_aio_coroutine_enter(ctx, co);
      }
  }
-@@ -555,6 +1281,8 @@ AioContext *aio_context_new(Error **errp)
+@@ -555,6 +1364,8 @@ AioContext *aio_context_new(Error **errp)
      int ret;
      AioContext *ctx;
  
@@ -191866,7 +192589,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      /*
       * ctx is freed by g_source_unref() (e.g. aio_context_unref()). ctx's
       * resources are freed as follows:
-@@ -582,6 +1310,7 @@ AioContext *aio_context_new(Error **errp)
+@@ -582,6 +1393,7 @@ AioContext *aio_context_new(Error **errp)
       * you add any new resources to AioContext, it's probably best to acquire
       * them before aio_context_setup().
       */
@@ -191874,7 +192597,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      if (!aio_context_setup(ctx, errp)) {
          event_notifier_cleanup(&ctx->notifier);
          goto fail;
-@@ -617,17 +1346,21 @@ AioContext *aio_context_new(Error **errp)
+@@ -617,17 +1429,21 @@ AioContext *aio_context_new(Error **errp)
      ctx->thread_pool_max = THREAD_POOL_MAX_THREADS_DEFAULT;
  
      register_aiocontext(ctx);
@@ -191896,7 +192619,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
      trace_aio_co_schedule(ctx, co);
      const char *scheduled = qatomic_cmpxchg(&co->scheduled, NULL,
                                             __func__);
-@@ -638,6 +1371,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
+@@ -638,6 +1454,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
                  __func__, scheduled);
          abort();
      }
@@ -191904,7 +192627,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
  
      /* The coroutine might run and release the last ctx reference before we
       * invoke qemu_bh_schedule().  Take a reference to keep ctx alive until
-@@ -650,6 +1384,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
+@@ -650,6 +1467,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
      qemu_bh_schedule(ctx->co_schedule_bh);
  
      aio_context_unref(ctx);
@@ -191912,7 +192635,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae
  }
  
  typedef struct AioCoRescheduleSelf {
-@@ -740,6 +1475,7 @@ void qemu_set_current_aio_context(AioContext *ctx)
+@@ -740,6 +1558,7 @@ void qemu_set_current_aio_context(AioContext *ctx)
  {
      assert(!get_my_aiocontext());
      set_my_aiocontext(ctx);

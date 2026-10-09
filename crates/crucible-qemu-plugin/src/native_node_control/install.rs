@@ -48,7 +48,18 @@ pub(crate) fn install(
     // distinct inherited descriptor. Argument validation forbids aliases with
     // existing setup/control descriptors; socket metadata was checked above.
     let socket = unsafe { std::os::unix::net::UnixDatagram::from_raw_fd(config.descriptor()) };
-    let channel = NativeChannel::from_prepared_socket(socket)?;
+    let writer_query = match config.edition() {
+        crucible_protocol::node_control::NativeControlEdition::Original => None,
+        crucible_protocol::node_control::NativeControlEdition::OwnedCustody => Some(
+            super::writer_abi::resolve_query_writers()
+                .ok_or(NativeControlInstallError::MissingCapability)?,
+        ),
+    };
+    let channel = NativeChannel::from_prepared_socket_for_edition(socket, config.edition())?;
+    let cpu_query = super::abi::resolve_query_cpu_park();
+    if writer_query.is_some() && cpu_query.is_none() {
+        return Err(NativeControlInstallError::MissingCapability);
+    }
     let Some(NativeFrame::Prepare(plan)) = channel.receive()? else {
         return Err(NativeControlInstallError::MissingPreparation);
     };
@@ -59,8 +70,9 @@ pub(crate) fn install(
         .map_err(|_| crucible_protocol::node_control::NativeCommandError::ResourceLimit)?;
     let control = NativeNodeControl::new(plan.scope, plan.boundary, maximum_commands)?
         .with_prepared_channel(channel)
-        .with_cpu_park_query(super::abi::resolve_query_cpu_park())
+        .with_cpu_park_query(cpu_query)
         .with_timer_query(super::abi::resolve_query_timers());
+    let control = control.with_writer_query(writer_query);
     // Callback ownership lasts until process termination. A leaked transport
     // token cannot drop this controller or its unresolved native journal.
     // Registration is limited to one controller per process by the native API.
