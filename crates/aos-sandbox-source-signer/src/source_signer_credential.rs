@@ -94,9 +94,8 @@ impl SourceSignerCredentialValidationV1 {
     }
 }
 
-// The ordinary loader supplies local storage and drops it on return. The
-// retained reader supplies its prearmed storage to this same validation body;
-// neither path copies the seed array or calls the purpose decoder twice.
+// The loader drops its validation storage on return. It borrows the original
+// seed array and calls the Source-purpose decoder once.
 fn validate_source_signer_credential_v1(
     seed: &Zeroizing<Vec<u8>>,
     pin: &Zeroizing<Vec<u8>>,
