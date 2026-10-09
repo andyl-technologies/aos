@@ -4,6 +4,9 @@
 //! historical digests after cold recovery; decoding either format is structural
 //! and never substitutes for an authenticated Host broker outcome.
 //!
+//! Core supplies bounded byte consumption; this owner retains payload allocation,
+//! checksum and receipt consistency checks in their canonical order.
+//!
 //! ```text
 //! AOSHAR01 || AOSCIA02[336] || runtime-handle[32] || Host-custody[32]
 //!          || custody-sequence:u64be || Guest-session[32]

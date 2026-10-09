@@ -5,6 +5,9 @@
 //! against its protected current runtime and agent-key custody. This packet
 //! does not prove that a later exec child retains the same stack limit.
 //!
+//! Core supplies bounded byte consumption; this owner retains canonical profile,
+//! challenge, evidence and signature validation in their original order.
+//!
 //! ```text
 //! AOSARQ01 || runtime[104] || session[32] || channel[32] || challenge[32]
 //!          || profile-length:u8 || profile || major:u32be || minor:u32be
