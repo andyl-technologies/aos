@@ -54,6 +54,10 @@ pub(super) fn validate_inventory(
             ));
         }
     }
+    if let HostModel::SeededLink { link, definition } = model {
+        let saved = definition.capture(link, 16 * 1024 * 1024)?;
+        definition.restore(&saved, 16 * 1024 * 1024)?;
+    }
     if let HostModel::Io(io) = model {
         let positive = if let Some(block) = io.block_device() {
             let latency = block.latency_model();
@@ -128,7 +132,7 @@ pub(super) fn validate_inventory(
             .ok_or_else(|| failure("host actual output lane absent"))?;
         let pending = match model {
             HostModel::Io(io) => io.pending_completion_keys().count(),
-            HostModel::Link(link) => link.inflight_len(),
+            HostModel::Link(link) | HostModel::SeededLink { link, .. } => link.inflight_len(),
             HostModel::Clock(_) => 0,
             HostModel::ScriptedSource(source) => source.requests().len() - source.cursor(),
             HostModel::Semantics(model) => model.pending_count(),
@@ -138,7 +142,7 @@ pub(super) fn validate_inventory(
                 "host initial native pending queue exceeds its admitted lane ceiling",
             ));
         }
-        if let HostModel::Link(link) = model
+        if let HostModel::Link(link) | HostModel::SeededLink { link, .. } = model
             && link
                 .snapshot()
                 .inflight
@@ -280,7 +284,7 @@ impl HostModelNode {
                         ));
                     }
                 }
-                Some(HostModel::Link(_)) => {
+                Some(HostModel::Link(_) | HostModel::SeededLink { .. }) => {
                     u32::try_from(delivery.source_sequence.get())
                         .map_err(|_| failure("native link frame correlation exhausted"))?;
                     if bytes.len() as u64 > output_lane.maximum_payload_bytes.get() {
@@ -613,7 +617,9 @@ impl HostModelNode {
     pub(super) fn next_local_event(&self) -> Option<u64> {
         match self.model.as_ref() {
             Some(HostModel::Io(io)) => io.next_exact_local_event(),
-            Some(HostModel::Link(link)) => link.next_exact_local_event(),
+            Some(HostModel::Link(link) | HostModel::SeededLink { link, .. }) => {
+                link.next_exact_local_event()
+            }
             Some(HostModel::ScriptedSource(source)) => source.next_time(),
             Some(HostModel::Semantics(model)) => model.next_position().map(|at| at.time_ps.get()),
             _ => None,
@@ -627,7 +633,7 @@ impl HostModelNode {
             .get();
         let pending = match self.model.as_ref() {
             Some(HostModel::Io(io)) => io.pending_completion_keys().count(),
-            Some(HostModel::Link(link)) => link.inflight_len(),
+            Some(HostModel::Link(link) | HostModel::SeededLink { link, .. }) => link.inflight_len(),
             Some(HostModel::Semantics(model)) => model.pending_count(),
             _ => 0,
         };
@@ -688,6 +694,30 @@ impl HostModelNode {
                     );
                 }
             }
+            Some(HostModel::SeededLink { link, definition }) => {
+                let frame_id = u32::try_from(delivery.source_sequence.get())
+                    .map_err(|_| failure("seeded link correlation overflow"))?;
+                // The existing native snapshot owns the cursor; a fresh stream
+                // resumes precisely that cursor rather than redrawing old faults.
+                let mut rng = link.rng(
+                    definition.seed.get(),
+                    "crucible/seeded-link-v1",
+                    definition.stream.as_str(),
+                );
+                let output = link
+                    .emit_from_rng(
+                        &Frame::new(delivery.delivery.time_ps.get(), frame_id, bytes.to_vec()),
+                        &mut rng,
+                        PastDeliveryPolicy::FailLoud,
+                    )
+                    .map_err(|error| failure(&error.to_string()))?;
+                for frame in output.deliveries {
+                    self.pending_causes.insert(
+                        (frame.key.delivery_icount, frame.key.src_node, frame.key.seq),
+                        cause.clone(),
+                    );
+                }
+            }
             Some(HostModel::Semantics(model)) => {
                 model.consume(delivery, bytes, reaction(delivery.delivery))?;
             }
@@ -732,7 +762,7 @@ impl HostModelNode {
                     }
                 }
             }
-            Some(HostModel::Link(link)) => {
+            Some(HostModel::Link(link) | HostModel::SeededLink { link, .. }) => {
                 while let Some(due) = link.next_delivery(evaluation.time_ps.get()) {
                     outputs.push((
                         (due.key.delivery_icount, due.key.src_node, due.key.seq),
@@ -888,7 +918,9 @@ impl HostModelNode {
                     NativeOutputBound::At(Position::new(time.into(), 1.into(), Phase::Publication))
                 },
             )
-        } else if let Some(HostModel::Link(link)) = self.model.as_ref() {
+        } else if let Some(HostModel::Link(link) | HostModel::SeededLink { link, .. }) =
+            self.model.as_ref()
+        {
             // The installed fault-free model has no autonomous publications.
             // Every unseen request is at or beyond the authenticated half-open
             // cursor and requires the positive native latency floor. Already

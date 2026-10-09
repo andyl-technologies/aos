@@ -10,8 +10,11 @@ pub mod cnp;
 pub mod gem5;
 mod host;
 mod inventory;
+mod preparation_state;
 mod reference_device;
 mod scripted_source;
+mod seeded_link;
+pub use seeded_link::SeededLinkDefinition;
 pub mod transcript;
 
 pub use scripted_source::{
@@ -20,9 +23,11 @@ pub use scripted_source::{
 
 pub use host::{
     HOST_EXACT_PROFILE, HOST_PHYSICAL_PAUSE_PROFILE, HOST_PRESERVATION_PROFILE,
+    HOST_PUBLIC_CLOCK_CONTINUATION_PROFILE, HOST_PUBLIC_CLOCK_CONTINUATION_SPECIFICATION,
     HOST_PUBLIC_CLOCK_PREPARATION_SPECIFICATION, HostContinuationInventory, HostModel,
     HostModelNode, HostModelQualification, HostModelResources, host_clock_initial_bytes,
-    host_public_clock_preparation_schema, validate_host_continuation,
+    host_public_clock_continuation_schema, host_public_clock_preparation_schema,
+    validate_host_continuation, validate_public_clock_continuation,
 };
 pub use inventory::{
     CurrentPort, CurrentPortKind, CurrentWorldInventory, CurrentWorldParticipant,

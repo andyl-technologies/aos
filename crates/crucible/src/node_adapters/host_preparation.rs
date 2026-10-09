@@ -6,6 +6,7 @@
 //! Legacy host continuation cannot omit these original preparation records.
 
 use super::*;
+use crate::node_scheduling::InputPayload;
 use crucible_node_contract::{Extensions, PreparedOwner, SchemaRef};
 
 /// Distinguishes actual construction from every authenticated restore path.
@@ -16,13 +17,15 @@ pub(super) enum HostPreparationOrigin {
 }
 
 pub(super) struct HostPublicPreparation {
-    anchor: Rc<()>,
-    token: Id,
-    session: ContentRef,
-    session_bytes: Vec<u8>,
-    native_ready: ContentRef,
-    native_ready_bytes: Vec<u8>,
-    ready: Option<(ActivationRecord, ReadyAttestation, Vec<u8>)>,
+    pub(super) anchor: Rc<()>,
+    pub(super) token: Id,
+    pub(super) session: ContentRef,
+    pub(super) session_bytes: Vec<u8>,
+    pub(super) native_ready: ContentRef,
+    pub(super) native_ready_bytes: Vec<u8>,
+    pub(super) ready: Option<(ActivationRecord, ReadyAttestation, Vec<u8>)>,
+    pub(super) history: Vec<InputPayload>,
+    pub(super) previous: Option<ContentRef>,
 }
 
 /// Defines the exact source-owned live preparation record semantics.
@@ -60,14 +63,48 @@ impl HostModelNode {
         graph: &AdmittedGraph,
         qualification: &dyn HostModelQualification,
     ) -> Result<(), OperationFailure> {
+        self.qualify_initial_clock(graph, qualification, false)
+    }
+
+    /// Selects genuine initial Clock preparation with its distinct complete codec.
+    ///
+    /// # Errors
+    /// Refuses missing installed format/policy, foreign or used native custody,
+    /// and any model with ports, timers, inputs or autonomous work.
+    pub fn qualify_public_preserving_initial_clock(
+        &mut self,
+        graph: &AdmittedGraph,
+        qualification: &dyn HostModelQualification,
+    ) -> Result<(), OperationFailure> {
+        self.qualify_initial_clock(graph, qualification, true)
+    }
+
+    fn qualify_initial_clock(
+        &mut self,
+        graph: &AdmittedGraph,
+        qualification: &dyn HostModelQualification,
+        preservation: bool,
+    ) -> Result<(), OperationFailure> {
         self.authenticate_original_clock()?;
         let guarantee = graph
             .guarantees(&self.route.node)
             .ok_or_else(|| failure("public clock admitted guarantee is absent"))?;
-        if guarantee.capture_scope != crucible_node_contract::CaptureScope::None
-            || guarantee.continuation != crucible_node_contract::Continuation::Unsupported
-            || guarantee.durable_restart
-            || guarantee.isolated_fork
+        let preservation_matches = if preservation {
+            guarantee.capture_scope == crucible_node_contract::CaptureScope::CompleteModel
+                && guarantee.continuation == crucible_node_contract::Continuation::Exact
+                && self
+                    .binding
+                    .compatibility
+                    .implementation
+                    .formats
+                    .contains(&public_continuation::host_public_clock_continuation_schema()?)
+        } else {
+            guarantee.capture_scope == crucible_node_contract::CaptureScope::None
+                && guarantee.continuation == crucible_node_contract::Continuation::Unsupported
+                && !guarantee.durable_restart
+                && !guarantee.isolated_fork
+        };
+        if !preservation_matches
             || guarantee.conditional_replay
             || !graph.selected_extensions().is_empty()
             || graph.world_binding_hash() != &self.world_hash
@@ -91,18 +128,34 @@ impl HostModelNode {
             .as_ref()
             .ok_or_else(|| failure("actual clock is absent"))?;
         qualification.authenticate_model(model, &self.descriptor, &self.binding)?;
+        self.retain_public_clock_session(None, self.descriptor.initialization_ref.clone())?;
+        self.public_continuation = preservation;
+        Ok(())
+    }
+
+    pub(super) fn retain_public_clock_session(
+        &mut self,
+        previous: Option<ContentRef>,
+        initial_model: ContentRef,
+    ) -> Result<(), OperationFailure> {
         let native_ready_bytes = self.receipt_bytes("host-model-owned-inactive-v1");
         let native_ready = canonical::content_ref(&native_ready_bytes, "application/octet-stream")
             .map_err(|error| failure(&error.to_string()))?;
-        let session_bytes = canonical::canonical_json(&serde_json::json!({
+        let mut session_value = serde_json::json!({
             "format":"crucible.host.original-clock-session", "version":1,
             "world_hash":self.world_hash, "node":self.route.node,
             "owners":self.route.owners, "binding":self.binding.identity()
                 .map_err(|error| failure(&error.to_string()))?,
-            "initial_model":self.descriptor.initialization_ref,
+            "initial_model":initial_model,
             "original_native_ready":native_ready,
-        }))
-        .map_err(|error| failure(&error.to_string()))?;
+        });
+        if let Some(source) = &previous {
+            session_value["format"] = "crucible.host.restored-clock-session".into();
+            session_value["source_preparation"] =
+                serde_json::to_value(source).map_err(|error| failure(&error.to_string()))?;
+        }
+        let session_bytes = canonical::canonical_json(&session_value)
+            .map_err(|error| failure(&error.to_string()))?;
         if session_bytes
             .len()
             .checked_add(native_ready_bytes.len())
@@ -124,6 +177,8 @@ impl HostModelNode {
             native_ready,
             native_ready_bytes,
             ready: None,
+            history: Vec::new(),
+            previous,
         });
         Ok(())
     }
@@ -151,6 +206,30 @@ impl HostModelNode {
         Ok(())
     }
 
+    fn authenticate_public_clock_custody(&self) -> Result<(), OperationFailure> {
+        if self.preparation_origin == HostPreparationOrigin::Original {
+            return self.authenticate_original_clock();
+        }
+        if !self.public_continuation
+            || !matches!(self.model.as_ref(), Some(HostModel::Clock(_)))
+            || self.prepared_continuation.is_none()
+            || self.quarantined
+            || !self.completed.is_empty()
+            || !self.failed.is_empty()
+            || !self.input_history.is_empty()
+            || self.staged.is_some()
+            || !self.pending_causes.is_empty()
+            || self.input_endpoint.is_some()
+            || self.output_endpoint.is_some()
+            || self.capture()?.as_slice() != self.initial.as_slice()
+        {
+            return Err(failure(
+                "public restored Clock lost its actual inactive continuation custody",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn retain_public_clock_ready(
         &mut self,
         world: &ActivationRecord,
@@ -159,7 +238,7 @@ impl HostModelNode {
         if self.public_preparation.is_none() {
             return Ok(());
         }
-        self.authenticate_original_clock()?;
+        self.authenticate_public_clock_custody()?;
         let preparation = self
             .public_preparation
             .as_mut()
@@ -208,7 +287,7 @@ impl HostModelNode {
         let Some(preparation) = &self.public_preparation else {
             return Ok(None);
         };
-        self.authenticate_original_clock()?;
+        self.authenticate_public_clock_custody()?;
         let Some((original, retained, bytes)) = &preparation.ready else {
             return Err(failure("public clock has no original ready body"));
         };

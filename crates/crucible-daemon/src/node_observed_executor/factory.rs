@@ -13,6 +13,7 @@ mod native_state;
 mod profile;
 mod reference_public;
 mod scripted;
+mod seeded;
 mod semantics;
 mod transcript;
 mod trust;
@@ -35,6 +36,7 @@ pub use io::{InstalledHostIoProfile, InstalledIoArtifact, InstalledIoArtifactSou
 pub use kvm::{
     MAX_KVM_CANDIDATE_POLICY_BYTES, load_installed_kvm_candidate, prepare_installed_kvm_candidate,
 };
+pub use native_state::public_catalog::{InstalledNativePreservation, InstalledPreparedNativeWorld};
 pub use native_state::{
     InstalledGem5Isa, NativeCapturePoint, NativeWorldOutcome, NativeWorldRecord,
     NativeWorldRequest, NativeWorldRetention, NativeWorldService,
@@ -44,6 +46,7 @@ pub use reference_public::{
     ReferenceQualificationObservation, ReferenceQualificationRun,
 };
 pub use scripted::InstalledScriptedSourceProfile;
+pub use seeded::InstalledSeededLinkProfile;
 pub use semantics::InstalledHostSemanticProfile;
 pub use transcript::{
     InstalledConditionalReplay, InstalledRecordedWorld, InstalledReferenceRecording,
@@ -101,6 +104,11 @@ pub enum InstalledNodeKind {
         /// Selects the independently installed fixed guest and native poll policy.
         isa: InstalledGem5Isa,
     },
+    /// Selects the distinct preparation-bearing signed native continuation codec.
+    Gem5ClosedPreserving {
+        /// Selects the independently installed fixed guest and native poll policy.
+        isa: InstalledGem5Isa,
+    },
     /// Runs native block or 9p storage with independently enrolled immutable input.
     HostIo {
         /// Binds the native storage codec, immutable input and positive timing.
@@ -110,6 +118,11 @@ pub enum InstalledNodeKind {
     HostScripted {
         /// Binds the complete source script and its ordinary public consumer.
         profile: InstalledScriptedSourceProfile,
+    },
+    /// Runs an independently enrolled seeded byte-transport fault program.
+    HostSeededLink {
+        /// Binds original endpoints and the complete immutable RNG/fault program.
+        profile: InstalledSeededLinkProfile,
     },
     /// Runs a fault-free byte-preserving exact host link between named nodes.
     HostNetLink {
@@ -149,8 +162,12 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
             InstalledNodeKindWire::HostClock {} => Self::HostClock,
             InstalledNodeKindWire::HostSemantics { profile } => Self::HostSemantics { profile },
             InstalledNodeKindWire::Gem5Closed { isa } => Self::Gem5Closed { isa },
+            InstalledNodeKindWire::Gem5ClosedPreserving { isa } => {
+                Self::Gem5ClosedPreserving { isa }
+            }
             InstalledNodeKindWire::HostIo { profile } => Self::HostIo { profile },
             InstalledNodeKindWire::HostScripted { profile } => Self::HostScripted { profile },
+            InstalledNodeKindWire::HostSeededLink { profile } => Self::HostSeededLink { profile },
             InstalledNodeKindWire::ReferenceDevice {
                 quantum_ps,
                 host_budget_ns,
@@ -195,11 +212,19 @@ enum InstalledNodeKindWire {
     Gem5Closed {
         isa: InstalledGem5Isa,
     },
+    Gem5ClosedPreserving {
+        isa: InstalledGem5Isa,
+    },
     HostIo {
         profile: InstalledHostIoProfile,
     },
     HostScripted {
         profile: InstalledScriptedSourceProfile,
+    },
+    /// Runs an independently enrolled seeded byte-transport fault program.
+    HostSeededLink {
+        /// Binds original endpoints and the complete immutable RNG/fault program.
+        profile: InstalledSeededLinkProfile,
     },
     /// Runs a fault-free byte-preserving exact host link between named nodes.
     HostNetLink {
@@ -408,10 +433,13 @@ impl InstalledNodeCatalog {
         &self,
         selections: &[InstalledNodeSelection],
     ) -> Result<NodeScenario, NodeObservedError> {
-        if selections
-            .iter()
-            .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5Closed { .. }))
-        {
+        if selections.iter().any(|selection| {
+            matches!(
+                selection.kind,
+                InstalledNodeKind::Gem5Closed { .. }
+                    | InstalledNodeKind::Gem5ClosedPreserving { .. }
+            )
+        }) {
             return native_state::public_catalog::scenario(self, selections);
         }
         Ok(profile::build_world(
@@ -470,14 +498,18 @@ impl InstalledNodeCatalog {
             execution_text(execution)
         ))?;
         let stored = StoredWorldActivationPublisher::new(Arc::clone(&blobs), refs, reference)?;
-        let publisher: Box<dyn crucible::node_contract::ActivationPublisher> = if selections
-            .iter()
-            .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5Closed { .. }))
-        {
-            native_state::public_catalog::publisher(stored)?
-        } else {
-            Box::new(stored)
-        };
+        let publisher: Box<dyn crucible::node_contract::ActivationPublisher> =
+            if selections.iter().any(|selection| {
+                matches!(
+                    selection.kind,
+                    InstalledNodeKind::Gem5Closed { .. }
+                        | InstalledNodeKind::Gem5ClosedPreserving { .. }
+                )
+            }) {
+                native_state::public_catalog::publisher(stored)?
+            } else {
+                Box::new(stored)
+            };
         NodeObservedBackend::from_prepared(
             InstalledPreparedWorld {
                 scenario,
@@ -509,10 +541,13 @@ impl InstalledNodeCatalog {
         scenario: NodeScenario,
         execution: ExecutionId,
     ) -> Result<InstalledPreparedWorld, NodeObservedError> {
-        if selections
-            .iter()
-            .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5Closed { .. }))
-        {
+        if selections.iter().any(|selection| {
+            matches!(
+                selection.kind,
+                InstalledNodeKind::Gem5Closed { .. }
+                    | InstalledNodeKind::Gem5ClosedPreserving { .. }
+            )
+        }) {
             return native_state::public_catalog::prepare(self, selections, scenario, execution);
         }
         let artifacts = self.artifacts.clone();
@@ -526,6 +561,25 @@ impl InstalledNodeCatalog {
                 None,
             )?
             .0)
+    }
+
+    /// Prepares the distinct preserving native selection with its installed signer.
+    ///
+    /// The returned inactive realization still requires genuine complete native
+    /// readiness and durable public activation before execution or capture. The
+    /// policy cannot convert public data into native seals or allocate a cold
+    /// owner without an independently authenticated source reservation.
+    ///
+    /// # Errors
+    /// Refuses live-only selections, changed authored worlds or installed assets,
+    /// unavailable finite custody, native startup or actual closure qualification.
+    pub fn prepare_native_world(
+        &mut self,
+        selections: &[InstalledNodeSelection],
+        scenario: NodeScenario,
+        execution: ExecutionId,
+    ) -> Result<InstalledPreparedNativeWorld, NodeObservedError> {
+        native_state::public_catalog::prepare_native(self, selections, scenario, execution)
     }
 
     /// Seals fresh installed host authority for an authenticated complete source.
@@ -552,6 +606,7 @@ impl InstalledNodeCatalog {
                 InstalledNodeKind::HostClock
                     | InstalledNodeKind::HostIo { .. }
                     | InstalledNodeKind::HostScripted { .. }
+                    | InstalledNodeKind::HostSeededLink { .. }
                     | InstalledNodeKind::HostSemantics { .. }
             )
         }) || record.manifest().world_binding_hash != scenario.world.identity()?
@@ -640,8 +695,11 @@ impl InstalledNodeCatalog {
                 &resolved.scenario,
                 &capabilities.requirements,
             )?;
-            resolved.scenario =
-                capabilities::bind_requirements(resolved.scenario, &capabilities.requirements)?;
+            resolved.scenario = capabilities::bind_original_requirements(
+                resolved.scenario,
+                &capabilities.requirements,
+                &capabilities.requirements_bytes,
+            )?;
         }
         if scenario.canonical_bytes()? != resolved.scenario.canonical_bytes()? {
             return Err(refused(
@@ -765,6 +823,12 @@ impl InstalledNodeCatalog {
                         )),
                     );
                 }
+                InstalledNodeKind::HostSeededLink { profile } => {
+                    models.insert(
+                        selection.node.clone(),
+                        seeded::build_model(selection, profile, artifacts)?,
+                    );
+                }
                 InstalledNodeKind::HostIo { profile } => {
                     models.insert(
                         selection.node.clone(),
@@ -777,7 +841,8 @@ impl InstalledNodeCatalog {
                         scripted::build_model(selection, profile, artifacts)?,
                     );
                 }
-                InstalledNodeKind::Gem5Closed { .. } => {
+                InstalledNodeKind::Gem5Closed { .. }
+                | InstalledNodeKind::Gem5ClosedPreserving { .. } => {
                     return Err(refused(
                         "closed gem5 requires its original public preparation bridge",
                     ));
@@ -871,7 +936,8 @@ impl InstalledNodeCatalog {
         let mut nodes: Vec<Box<dyn SimulationNode>> = Vec::new();
         for selection in selections {
             match &selection.kind {
-                InstalledNodeKind::Gem5Closed { .. } => {
+                InstalledNodeKind::Gem5Closed { .. }
+                | InstalledNodeKind::Gem5ClosedPreserving { .. } => {
                     return Err(refused(
                         "closed gem5 native custody cannot become a host model",
                     ));
@@ -880,7 +946,8 @@ impl InstalledNodeCatalog {
                 | InstalledNodeKind::HostSemantics { .. }
                 | InstalledNodeKind::HostNetLink { .. }
                 | InstalledNodeKind::HostIo { .. }
-                | InstalledNodeKind::HostScripted { .. } => {
+                | InstalledNodeKind::HostScripted { .. }
+                | InstalledNodeKind::HostSeededLink { .. } => {
                     let model = models
                         .remove(&selection.node)
                         .ok_or_else(|| refused("enrolled host model custody disappeared"))?;

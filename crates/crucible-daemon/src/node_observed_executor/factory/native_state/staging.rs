@@ -258,14 +258,37 @@ impl NativeRestoreStaging for MixedStaging {
                 &saved,
                 capture.content(),
             )?;
-            let (actual, proof) = prepare_clock(
-                &self.graph,
-                node,
-                &source,
-                target,
-                self.evidence.as_ref(),
-                host_resources(),
-            )?;
+            let (actual, proof) = if self.profile.public_continuation {
+                let mut actual = crucible::node_adapters::HostModelNode::new(
+                    &self.graph,
+                    node,
+                    crucible::node_adapters::HostModel::Clock(
+                        crucible_device::clock::VirtualClock::new(),
+                    ),
+                    self.evidence.as_ref(),
+                    host_resources(),
+                )
+                .map_err(|error| refusal(error.reason))?;
+                let proof = actual
+                    .prepare_public_clock_continuation(
+                        &self.graph,
+                        &source,
+                        &self.target,
+                        self.evidence.as_ref(),
+                    )
+                    .map_err(|error| refusal(error.reason))?;
+                (actual, proof)
+            } else {
+                let (actual, proof) = prepare_clock(
+                    &self.graph,
+                    node,
+                    &source,
+                    target,
+                    self.evidence.as_ref(),
+                    host_resources(),
+                )?;
+                (actual, proof)
+            };
             self.nodes.insert(node.clone(), Box::new(actual));
             self.proofs.insert(node.clone(), proof);
         } else if node.as_str() == "cpu" {

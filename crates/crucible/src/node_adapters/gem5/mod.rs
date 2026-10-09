@@ -24,6 +24,7 @@ mod node;
 mod observations;
 mod positions;
 mod preparation_mapping;
+mod public_continuation;
 mod reconciliation;
 mod restore;
 mod supplementary;
@@ -40,6 +41,9 @@ pub use node::{Gem5NodeResources, Gem5QualifiedNodeFailure, QualifiedGem5Node};
 pub use preparation_mapping::{
     GEM5_PUBLIC_PREPARATION_SPECIFICATION, Gem5PublicPreparationFailure,
     gem5_public_preparation_schema,
+};
+pub use public_continuation::{
+    GEM5_PUBLIC_CONTINUATION_SPECIFICATION, gem5_public_continuation_schema,
 };
 
 /// Names the installed no-ingress O3/stdout full-position execution profile.

@@ -13,10 +13,12 @@
 //! operator. Requests cannot install implementations or mint qualification.
 //! Compilation and dispatch belong to the actual daemon's installed catalog.
 
+mod capability_preparation;
 mod conditional_replay;
 #[cfg(test)]
 mod conditional_replay_tests;
 mod daemon;
+pub use capability_preparation::decode_capability_preparation;
 mod host_state;
 mod host_state_ledger;
 mod host_state_service;
@@ -84,6 +86,16 @@ pub struct NodeControlRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControlCommand {
+    /// Queues original authored capability requirements under control edition seven.
+    CapabilityPreparation {
+        /// Carries only raw demands and complete installed candidate recipes.
+        request: Box<crate::node_observed_executor::CapabilityPreparationRequest>,
+    },
+    /// Reads durable original capability custody without dispatch.
+    CapabilityPreparationStatus {
+        /// Retains the original lowercase execution nonce.
+        execution: String,
+    },
     /// Reuses original deterministic evidence under control edition six.
     CacheReuse {
         /// Pins the complete original selection without a new execution nonce.
@@ -157,6 +169,11 @@ pub struct NodeControlReply {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControlResult {
+    /// Returns original capability admission or qualified Clock preservation bytes.
+    CapabilityPreparation {
+        /// Contains closed canonical data, never imported runtime authority.
+        record: Bytes,
+    },
     /// Returns authenticated original observed bytes without a fresh-execution claim.
     CacheReused {
         /// Binds the exact original nonce/result and complete cache compatibility key.
@@ -292,6 +309,8 @@ impl NodeControlRequest {
 
     fn validate(&self) -> Result<(), NodeControlError> {
         let expected_version = match self.command {
+            NodeControlCommand::CapabilityPreparation { .. }
+            | NodeControlCommand::CapabilityPreparationStatus { .. } => 7,
             NodeControlCommand::CacheReuse { .. } => 6,
             NodeControlCommand::TerminalState { .. } => 4,
             NodeControlCommand::NativeState { .. } => 3,
@@ -304,6 +323,12 @@ impl NodeControlRequest {
             return Err(refused("unsupported local node control edition"));
         }
         match &self.command {
+            NodeControlCommand::CapabilityPreparation { request } => {
+                request.validate().map_err(refused)
+            }
+            NodeControlCommand::CapabilityPreparationStatus { execution } => {
+                execution_id(execution).map(|_| ())
+            }
             NodeControlCommand::CacheReuse { request } => request.validate().map_err(refused),
             NodeControlCommand::TerminalState { request } => request.validate(),
             NodeControlCommand::HostState { request } => {
@@ -413,6 +438,9 @@ pub fn decode_node_state(
         NodeControlResult::Refused { reason } => Err(refused(reason)),
         NodeControlResult::CacheReused { .. } => Err(refused(
             "cache reuse is original evidence, not fresh execution state",
+        )),
+        NodeControlResult::CapabilityPreparation { .. } => Err(refused(
+            "capability custody is not ordinary execution state",
         )),
         NodeControlResult::ConditionalPreparation { .. } => Err(refused(
             "conditional preparation is not admitted observed execution state",

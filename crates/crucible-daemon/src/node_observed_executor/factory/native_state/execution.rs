@@ -63,6 +63,7 @@ pub(super) fn execute(
     )
     .map_err(error)?;
     let mut publisher = NativeCustodyPublisher {
+        restored: None,
         stored,
         queue: engine.native.clone(),
     };
@@ -171,6 +172,14 @@ pub(super) fn execute(
             }
             let original = saved.operations[0].operation.clone();
             let plan = engine.prepare_cold(record.clone(), isa.name())?;
+            if plan.profile.public_continuation {
+                publisher = NativeCustodyPublisher::for_public_restore(
+                    publisher.stored,
+                    engine.native.clone(),
+                    &record,
+                    &plan.target,
+                )?;
+            }
             let graph = plan.graph.clone();
             let target = plan.target.clone();
             let namespace = plan.namespace.clone();

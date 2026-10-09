@@ -29,6 +29,7 @@ pub(super) fn materialize(
         let reference = match &selected.kind {
             InstalledNodeKind::HostIo { profile } => profile.artifact(),
             InstalledNodeKind::HostScripted { profile } => profile.artifact(),
+            InstalledNodeKind::HostSeededLink { profile } => &profile.program,
             _ => continue,
         };
         let artifact = installed

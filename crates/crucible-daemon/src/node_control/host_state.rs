@@ -165,6 +165,7 @@ impl NodeHostStateRequest {
                 InstalledNodeKind::HostClock
                     | InstalledNodeKind::HostIo { .. }
                     | InstalledNodeKind::HostScripted { .. }
+                    | InstalledNodeKind::HostSeededLink { .. }
             )
         }) {
             return Err(refused(

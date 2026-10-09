@@ -46,6 +46,7 @@ pub struct ResolvedCapabilityWorld {
     candidate: InstalledCapabilityCandidate,
     pub(super) requirements: CapabilityRequirements,
     scenario: NodeScenario,
+    pub(super) requirements_bytes: Vec<u8>,
 }
 
 impl ResolvedCapabilityWorld {
@@ -100,11 +101,32 @@ impl InstalledNodeCatalog {
             refused("no complete installed world satisfies mandatory capabilities")
         })?;
         let scenario = bind_requirements(scenario, &requirements)?;
+        let requirements_bytes = canonical::canonical_json(&serde_json::to_value(&requirements)?)?;
         Ok(ResolvedCapabilityWorld {
+            requirements_bytes,
             candidate: candidate.clone(),
             requirements,
             scenario,
         })
+    }
+
+    /// Resolves complete installed worlds while preserving the original authored demand body.
+    ///
+    /// # Errors
+    /// Refuses invalid or excessive raw JSON, unavailable installed combinations,
+    /// ambiguity or changed semantic predicates before native allocation.
+    pub fn resolve_capabilities_raw(
+        &self,
+        candidates: &[InstalledCapabilityCandidate],
+        original: &[u8],
+    ) -> Result<ResolvedCapabilityWorld, NodeObservedError> {
+        let demands: CapabilityRequirements =
+            serde_json::from_value(canonical::parse_json(original, 1024 * 1024)?)?;
+        let mut resolved = self.resolve_capabilities(candidates, demands)?;
+        let baseline = self.scenario(&resolved.candidate.selections)?;
+        resolved.scenario = bind_original_requirements(baseline, &resolved.requirements, original)?;
+        resolved.requirements_bytes = original.to_vec();
+        Ok(resolved)
     }
 
     /// Creates an ordinary observed executor from an authenticated capability resolution.
@@ -163,7 +185,8 @@ impl InstalledNodeCatalog {
             &actual,
             &resolved.requirements,
         )?;
-        if bind_requirements(actual, &resolved.requirements)?.canonical_bytes()?
+        if bind_original_requirements(actual, &resolved.requirements, &resolved.requirements_bytes)?
+            .canonical_bytes()?
             != resolved.scenario.canonical_bytes()?
         {
             return Err(refused(
@@ -198,13 +221,39 @@ impl InstalledNodeCatalog {
 }
 
 pub(super) fn bind_requirements(
-    mut scenario: NodeScenario,
+    scenario: NodeScenario,
     requirements: &CapabilityRequirements,
 ) -> Result<NodeScenario, NodeObservedError> {
     requirements
         .validate()
         .map_err(|error| refused(&error.to_string()))?;
     let bytes = canonical::canonical_json(&serde_json::to_value(requirements)?)?;
+    bind_original_requirements(scenario, requirements, &bytes)
+}
+
+pub(super) fn bind_original_requirements(
+    mut scenario: NodeScenario,
+    requirements: &CapabilityRequirements,
+    original: &[u8],
+) -> Result<NodeScenario, NodeObservedError> {
+    if original.len() > 1024 * 1024 {
+        return Err(refused(
+            "original authored capability body exceeds finite credit",
+        ));
+    }
+    let actual: CapabilityRequirements =
+        serde_json::from_value(canonical::parse_json(original, 1024 * 1024)?)?;
+    actual
+        .validate()
+        .map_err(|error| refused(&error.to_string()))?;
+    if canonical::json_hash("crucible.capability-authored.v1", &actual)?
+        != canonical::json_hash("crucible.capability-authored.v1", requirements)?
+    {
+        return Err(refused(
+            "original authored capability body changed semantic predicates",
+        ));
+    }
+    let bytes = original.to_vec();
     let requirements_ref = canonical::content_ref(
         &bytes,
         crucible::node_admission::CAPABILITY_REQUIREMENTS_MEDIA_TYPE,
@@ -277,7 +326,12 @@ impl InstalledNodeCatalog {
             &baseline,
             &resolved.requirements,
         )?;
-        if bind_requirements(baseline.clone(), &resolved.requirements)?.canonical_bytes()?
+        if bind_original_requirements(
+            baseline.clone(),
+            &resolved.requirements,
+            &resolved.requirements_bytes,
+        )?
+        .canonical_bytes()?
             != resolved.scenario.canonical_bytes()?
         {
             return Err(refused(

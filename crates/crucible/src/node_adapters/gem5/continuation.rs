@@ -24,6 +24,8 @@ use super::{
 pub struct Gem5AuthenticatedContinuation {
     pub(super) record: Gem5ContinuationRecord,
     pub(super) source: RuntimeSnapshot,
+    pub(super) public_preparation:
+        Option<super::public_continuation::AuthenticatedPublicPreparation>,
 }
 
 impl Gem5AuthenticatedContinuation {
@@ -52,9 +54,16 @@ pub fn authenticate_gem5_continuation(
     maximum_microsteps: U64,
 ) -> Result<Gem5AuthenticatedContinuation, OperationFailure> {
     let owner = source.owner();
+    let public =
+        owner.key.profile.as_str() == super::public_continuation::GEM5_PUBLIC_CONTINUATION_PROFILE;
+    let expected_schema = if public {
+        super::public_continuation::gem5_public_continuation_schema()?
+    } else {
+        gem5_native_continuation_schema()?
+    };
     if owner.key.implementation.as_str() != "gem5/native-process-v1"
-        || owner.key.profile.as_str() != GEM5_OPAQUE_PRESERVATION_PROFILE
-        || owner.key.schema != gem5_native_continuation_schema()?
+        || (!public && owner.key.profile.as_str() != GEM5_OPAQUE_PRESERVATION_PROFILE)
+        || owner.key.schema != expected_schema
         || owner.participants.as_slice() != std::slice::from_ref(node)
         || owner.evidence.len() > 65_536
     {
@@ -80,10 +89,31 @@ pub fn authenticate_gem5_continuation(
             bytes: bytes.to_vec(),
         });
     }
+    let native = source
+        .native()
+        .map_err(|error| refusal(&error.to_string()))?;
+    let public_preparation = if public {
+        Some(super::public_continuation::decode_public_preparation(
+            native,
+            source.runtime(),
+            node,
+            &evidence,
+        )?)
+    } else {
+        None
+    };
+    let native_body = if let Some(public) = &public_preparation {
+        evidence
+            .iter()
+            .find(|object| object.reference == public.wire.native_state)
+            .ok_or_else(|| refusal("public native envelope omits its original mechanism state"))?
+            .bytes
+            .as_slice()
+    } else {
+        native
+    };
     let record = decode_gem5_continuation(
-        source
-            .native()
-            .map_err(|error| refusal(&error.to_string()))?,
+        native_body,
         source.runtime(),
         node,
         maximum_microsteps,
@@ -115,6 +145,7 @@ pub fn authenticate_gem5_continuation(
     Ok(Gem5AuthenticatedContinuation {
         record,
         source: source.runtime().clone(),
+        public_preparation,
     })
 }
 

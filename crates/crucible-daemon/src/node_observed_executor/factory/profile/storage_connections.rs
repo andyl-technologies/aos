@@ -21,21 +21,25 @@ pub(super) fn connections(
     let mut connections = Vec::new();
     let mut consumers = BTreeSet::new();
     for selected in selections {
-        let InstalledNodeKind::HostScripted { profile } = &selected.kind else {
-            continue;
+        let consumer = match &selected.kind {
+            InstalledNodeKind::HostScripted { profile } => &profile.consumer,
+            InstalledNodeKind::HostSeededLink { profile } => &profile.consumer,
+            _ => continue,
         };
-        if !consumers.insert(profile.consumer.clone()) {
+        if !consumers.insert(consumer.clone()) {
             return Err(refused(
                 "installed storage input permits exactly one original source",
             ));
         }
         let sink = selections
             .iter()
-            .find(|entry| entry.node == profile.consumer)
+            .find(|entry| entry.node == *consumer)
             .ok_or_else(|| {
                 refused("scripted request consumer is absent from complete selection")
             })?;
-        if !matches!(sink.kind, InstalledNodeKind::HostIo { .. }) {
+        if !matches!(&sink.kind, InstalledNodeKind::HostIo { .. })
+            && !matches!(&sink.kind, InstalledNodeKind::HostSeededLink {profile} if profile.producer == selected.node)
+        {
             return Err(refused(
                 "installed request source requires an actual storage consumer",
             ));

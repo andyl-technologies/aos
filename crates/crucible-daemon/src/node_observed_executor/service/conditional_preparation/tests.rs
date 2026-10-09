@@ -180,6 +180,12 @@ fn pending_status_and_exact_retry_do_not_wait_for_the_owning_actor() {
         roots: Arc::new(Mutex::new(Default::default())),
         retired: Arc::new(AtomicBool::new(false)),
         preparations: Some(ledger.clone()),
+        capabilities:
+            super::super::capability_preparation::ledger::CapabilityPreparationLedger::new(
+                blobs.clone(),
+                refs.clone(),
+            )
+            .unwrap(),
     };
     let retention = service.retention_owner();
     let original = request();
@@ -521,6 +527,13 @@ fn queued_shutdown_completion_panic_preserves_original_and_reclaims_native_world
             catalog,
             1,
             ActorStorage {
+                capability_archive: directory.path().join("capability-clock-archive"),
+                capabilities:
+                    super::super::capability_preparation::ledger::CapabilityPreparationLedger::new(
+                        durable.clone(),
+                        refs.clone(),
+                    )
+                    .unwrap(),
                 preparations: Some(ledger.clone()),
                 transcripts: None,
                 repository: Arc::new(CampaignRepository::new(durable.clone(), refs.clone())),

@@ -20,11 +20,11 @@ use super::{
 
 /// Preserves exact first preparation bodies before a public receipt is exposed.
 pub(super) struct Gem5PreparedMapping {
-    world: ActivationRecord,
-    ready: ReadyAttestation,
-    owners: Vec<PreparedOwner>,
-    original_session: ContentRef,
-    original_packet: ContentRef,
+    pub(super) world: ActivationRecord,
+    pub(super) ready: ReadyAttestation,
+    pub(super) owners: Vec<PreparedOwner>,
+    pub(super) original_session: ContentRef,
+    pub(super) original_packet: ContentRef,
 }
 
 impl QualifiedGem5Node {
@@ -37,7 +37,7 @@ impl QualifiedGem5Node {
         if self.quarantined
             || self.active.is_some()
             || self.ledger.operations().len() != 0
-            || self.restored.is_some()
+            || (self.restored.is_some() && !self.public_continuation)
             || world.world_binding_hash != self.preparation.world_binding_hash
             || world.boundary != self.readiness_boundary()?
             || ready.boundary != world.boundary
@@ -52,11 +52,16 @@ impl QualifiedGem5Node {
             .ready_receipt
             .verify(ready_bytes)
             .map_err(|error| refusal(&error.to_string()))?;
-        let session = self
-            .preparation
-            .native
-            .initial_prepared_session(&self.authority)
-            .map_err(native_refusal)?;
+        let session = if self.restored.is_some() {
+            self.preparation
+                .native
+                .restored_prepared_session(&self.authority)
+        } else {
+            self.preparation
+                .native
+                .initial_prepared_session(&self.authority)
+        }
+        .map_err(native_refusal)?;
         let (packet, packet_bytes) = session.packet();
         let (transcript, transcript_bytes) = session.transcript();
         let (closure, closure_bytes) = self.authority.evidence();
@@ -119,18 +124,23 @@ impl QualifiedGem5Node {
             || self.world.as_ref() != Some(&(world.clone(), ready.clone()))
             || self.quarantined
             || self.active.is_some()
-            || self.restored.is_some()
+            || (self.restored.is_some() && !self.public_continuation)
             || self.readiness_boundary()? != ready.boundary
         {
             return Err(refusal(
                 "public gem5 preparation mapping is foreign, restored or no longer inactive",
             ));
         }
-        let session = self
-            .preparation
-            .native
-            .initial_prepared_session(&self.authority)
-            .map_err(native_refusal)?;
+        let session = if self.restored.is_some() {
+            self.preparation
+                .native
+                .restored_prepared_session(&self.authority)
+        } else {
+            self.preparation
+                .native
+                .initial_prepared_session(&self.authority)
+        }
+        .map_err(native_refusal)?;
         if session.transcript().0 != &mapping.original_session
             || session.packet().0 != &mapping.original_packet
             || mapping.owners.len() != 1
@@ -205,7 +215,7 @@ impl QualifiedGem5Node {
             let node = &self.preparation.route.node;
             if self.archive.is_some()
                 || !graph.selected_extensions().is_empty()
-                || self.restored.is_some()
+                || (self.restored.is_some() && !self.public_continuation)
                 || self.world.is_some()
                 || self.active.is_some()
                 || self.quarantined

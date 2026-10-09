@@ -104,7 +104,17 @@ impl NativeWorldFactory for MixedNativeFactory {
         let node = &owner.participant_ids[0];
         match node.as_str() {
             "clock" => {
-                let inventory = authenticate_clock_source(graph, node, source, host_resources())?;
+                let inventory = if self.profile.public_continuation {
+                    crucible::node_adapters::validate_public_clock_continuation(
+                        source,
+                        graph,
+                        node,
+                        host_resources(),
+                    )
+                    .map_err(|error| refusal(error.reason))?
+                } else {
+                    authenticate_clock_source(graph, node, source, host_resources())?
+                };
                 if inventory.native_model.bytes
                     != crucible::node_adapters::host_clock_initial_bytes(
                         source.runtime().capture_cut.time_ps.get(),

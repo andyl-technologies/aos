@@ -6,6 +6,8 @@
 
 #[path = "node_cache_reuse.rs"]
 mod cache_reuse;
+#[path = "node_capability.rs"]
+mod capability;
 #[path = "node_conditional_replay.rs"]
 mod conditional_replay;
 
@@ -47,6 +49,8 @@ pub(super) struct NodeArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum NodeCommand {
+    #[command(flatten)]
+    Capability(capability::NodeCapabilityCommand),
     #[command(flatten)]
     CacheReuse(cache_reuse::NodeCacheReuseCommand),
     #[command(flatten)]
@@ -130,6 +134,7 @@ pub(super) fn run_node_invocation(cli: &Cli, args: &NodeArgs) -> Result<(), CliE
         ));
     }
     match &args.command {
+        NodeCommand::Capability(command) => capability::run(command),
         NodeCommand::CacheReuse(command) => cache_reuse::run(command),
         NodeCommand::TerminalState(command) => terminal_state::run(command),
         NodeCommand::ConditionalReplay(command) => conditional_replay::run(command),

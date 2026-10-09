@@ -907,7 +907,7 @@ impl HostModelNode {
             }
             let queued: std::collections::BTreeSet<_> = match self.model.as_ref() {
                 Some(HostModel::Io(io)) => io.pending_completion_keys().collect(),
-                Some(HostModel::Link(link)) => link
+                Some(HostModel::Link(link) | HostModel::SeededLink { link, .. }) => link
                     .snapshot()
                     .inflight
                     .iter()
@@ -1106,6 +1106,10 @@ fn restore_model(
                 ));
             }
             **link = NetLink::restore(&snapshot).map_err(|error| failure(&error.to_string()))?;
+            Ok(())
+        }
+        HostModel::SeededLink { link, definition } => {
+            **link = definition.restore(bytes, maximum)?;
             Ok(())
         }
         HostModel::ScriptedSource(source) => source.restore(bytes),

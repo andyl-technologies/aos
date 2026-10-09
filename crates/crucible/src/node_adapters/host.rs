@@ -18,6 +18,10 @@ pub use preparation::{
     HOST_PUBLIC_CLOCK_PREPARATION_SPECIFICATION, host_public_clock_preparation_schema,
 };
 use preparation::{HostPreparationOrigin, HostPublicPreparation};
+pub use public_continuation::{
+    HOST_PUBLIC_CLOCK_CONTINUATION_PROFILE, HOST_PUBLIC_CLOCK_CONTINUATION_SPECIFICATION,
+    host_public_clock_continuation_schema, validate_public_clock_continuation,
+};
 pub use state::archive::{HostContinuationInventory, validate_host_continuation};
 
 /// Identifies the complete host-model preservation facet.
@@ -44,6 +48,13 @@ pub enum HostModel {
     Io(Box<ScheduledIoNode>),
     /// Owns the directed link's full pending deliveries, faults and RNG cursor.
     Link(Box<NetLink>),
+    /// Owns the selected seeded transport definition and full native fault/RNG queue.
+    SeededLink {
+        /// Owns the unchanged native NetLink state.
+        link: Box<NetLink>,
+        /// Binds original seed, stream and bounded static fault policy.
+        definition: super::SeededLinkDefinition,
+    },
     /// Owns an exact integer coordinator-clock model, without guest timers.
     Clock(VirtualClock),
     /// Owns a finite immutable public request script and its exact native cursor.
@@ -65,6 +76,7 @@ impl HostModel {
             Self::Io(node) if node.block_device().is_some() => "block",
             Self::Io(_) => "filesystem",
             Self::Link(_) => "network_link",
+            Self::SeededLink { .. } => "seeded_byte_transport",
             Self::Clock(_) => "clock",
             Self::ScriptedSource(_) => "scripted_source",
             Self::Semantics(_) => "host_assertions",
@@ -78,7 +90,7 @@ impl HostModel {
                 .map(|d| d.core().current_icount())
                 .or_else(|| node.ninep_device().map(|d| d.core().current_icount()))
                 .ok_or_else(|| failure("unknown concrete host I/O device")),
-            Self::Link(link) => Ok(link.current_icount()),
+            Self::Link(link) | Self::SeededLink { link, .. } => Ok(link.current_icount()),
             Self::Clock(clock) => Ok(clock.current_icount()),
             Self::ScriptedSource(source) => Ok(source.time_ps()),
             Self::Semantics(model) => Ok(model.position().time_ps.get()),
@@ -95,6 +107,7 @@ impl HostModel {
                 .snapshot()
                 .canonical_bytes_with_limit(maximum as u64)
                 .map_err(|e| failure(&e.to_string()))?,
+            Self::SeededLink { link, definition } => definition.capture(link, maximum)?,
             Self::Clock(clock) => host_clock_initial_bytes(clock.current_icount()),
             Self::ScriptedSource(source) => source.capture()?,
             Self::Semantics(model) => model.capture()?,
@@ -219,6 +232,7 @@ pub struct HostModelNode {
     original_model_session: Rc<()>,
     preparation_origin: HostPreparationOrigin,
     public_preparation: Option<HostPublicPreparation>,
+    public_continuation: bool,
 }
 
 impl HostModelNode {
@@ -264,7 +278,18 @@ impl HostModelNode {
         }
         qualification.authenticate_model(&model, descriptor, binding)?;
         let mut facets = Vec::new();
-        let preservation = Id::new("host/preservation-v1").map_err(|e| failure(&e.to_string()))?;
+        let public_preservation = matches!(model, HostModel::Clock(_))
+            && binding
+                .compatibility
+                .implementation
+                .formats
+                .contains(&public_continuation::host_public_clock_continuation_schema()?);
+        let preservation = Id::new(if public_preservation {
+            public_continuation::HOST_PUBLIC_CLOCK_CONTINUATION_PROFILE
+        } else {
+            HOST_PRESERVATION_PROFILE
+        })
+        .map_err(|e| failure(&e.to_string()))?;
         let pause = Id::new("host/physical-pause-v1").map_err(|e| failure(&e.to_string()))?;
         let execution = Id::new(HOST_EXACT_PROFILE).map_err(|e| failure(&e.to_string()))?;
         let terminal =
@@ -346,6 +371,7 @@ impl HostModelNode {
             original_model_session: Rc::new(()),
             preparation_origin: HostPreparationOrigin::Original,
             public_preparation: None,
+            public_continuation: false,
         })
     }
 
@@ -504,6 +530,11 @@ impl SimulationNode for HostModelNode {
         world: &ActivationRecord,
         ready: &ReadyAttestation,
     ) -> Result<(), OperationFailure> {
+        if self.preparation_origin != HostPreparationOrigin::Original {
+            return Err(failure(
+                "restored public Clock cannot authenticate initial preparation",
+            ));
+        }
         self.public_clock_owners(world, ready)?
             .ok_or_else(|| failure("clock did not select genuine public initial preparation"))?;
         Ok(())
@@ -800,6 +831,9 @@ impl SimulationNode for HostModelNode {
         source: &RuntimeSnapshot,
         limits: crate::node_contract::NativeCaptureLimits,
     ) -> Result<crate::node_contract::InstalledNativeCapture, OperationFailure> {
+        if self.public_continuation {
+            return self.capture_public_clock(activation, source, limits);
+        }
         let capture =
             self.capture_host_continuation(activation, source, limits.maximum_record_bytes)?;
 
@@ -894,6 +928,8 @@ mod terminal;
 
 #[path = "host_preparation.rs"]
 mod preparation;
+#[path = "host_public_continuation.rs"]
+mod public_continuation;
 
 pub(super) fn failure(reason: &str) -> OperationFailure {
     OperationFailure {

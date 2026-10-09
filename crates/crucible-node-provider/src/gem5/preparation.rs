@@ -166,6 +166,42 @@ impl Gem5PreparedSession {
         (&self.transcript, &self.transcript_bytes)
     }
 
+    fn authenticate_restored(
+        &self,
+        native: &Gem5NativeProcess,
+        authority: &exact::Gem5ExactAuthority,
+    ) -> Result<(), ProviderError> {
+        let PreparationOrigin::Restored { source_capture } = &self.origin else {
+            return Err(ProviderError::Correlation(
+                "restored preparation lacks an actual reconstructed native birth",
+            ));
+        };
+        self.packet.verify(&self.bytes)?;
+        self.transcript.verify(&self.transcript_bytes)?;
+        if native
+            .source_image
+            .as_ref()
+            .is_none_or(|image| image.capture_id() != source_capture)
+            || native.child_pid() != Some(self.pid)
+            || closure::kernel_start_ticks(self.pid)? != self.start_ticks
+            || closure::source_scope(&native.launch)? != self.launch_scope
+            || native.stream.is_none()
+            || native.listener.is_none()
+            || native.quarantine.is_some()
+            || native.unresolved.is_some()
+            || native.unresolved_capture.is_some()
+            || self.ready.boundary != native.boundary
+        {
+            return Err(ProviderError::Correlation(
+                "restored native preparation changed its real child, source image or parked cut",
+            ));
+        }
+        // This checks the current peer's sealed certificate and exact full native
+        // ledger. An imported source certificate cannot authenticate this peer.
+        native.next_publication_bound(authority)?;
+        Ok(())
+    }
+
     fn authenticate_initial(
         &self,
         native: &Gem5NativeProcess,
@@ -201,6 +237,46 @@ impl Gem5PreparedSession {
 }
 
 impl Gem5NativeProcess {
+    /// Borrows the original validated preparation packet as retained history.
+    ///
+    /// Native progress does not rewrite this packet. This read-only access does
+    /// not qualify initial readiness, restoration or current execution; those
+    /// require the separate authentic session and current authority checks.
+    ///
+    /// # Errors
+    /// Refuses absent bytes, changed owning kernel/control/launch identity, or
+    /// construction provenance that disagrees with the held source image.
+    pub fn preparation_history(&self) -> Result<&Gem5PreparedSession, ProviderError> {
+        let session = self
+            .preparation
+            .session()
+            .ok_or(ProviderError::Correlation(
+                "native preparation history is absent",
+            ))?;
+        session.packet.verify(&session.bytes)?;
+        session.transcript.verify(&session.transcript_bytes)?;
+        let origin_matches = match (&session.origin, &self.source_image) {
+            (PreparationOrigin::Original, None) => true,
+            (PreparationOrigin::Restored { source_capture }, Some(image)) => {
+                image.capture_id() == source_capture
+            }
+            _ => false,
+        };
+        if !origin_matches
+            || self.child_pid() != Some(session.pid)
+            || closure::kernel_start_ticks(session.pid)? != session.start_ticks
+            || closure::source_scope(&self.launch)? != session.launch_scope
+            || self.stream.is_none()
+            || self.listener.is_none()
+            || self.quarantine.is_some()
+        {
+            return Err(ProviderError::Correlation(
+                "native preparation history lost its actual owning session",
+            ));
+        }
+        Ok(session)
+    }
+
     /// Authenticates original native birth under this peer's sealed live exact authority.
     ///
     /// Administrative capture and independent current qualification may precede
@@ -222,5 +298,29 @@ impl Gem5NativeProcess {
             ))?;
         original.authenticate_initial(self, authority)?;
         Ok(original)
+    }
+
+    /// Authenticates the first Ready session of an actual reconstructed stopped peer.
+    ///
+    /// Original native histories remain on the imported image. This handle binds
+    /// the new child and its unchanged reconstructed frontier to that actual image
+    /// and this peer's independently qualified current authority. It cannot pass
+    /// the separate initial-preparation check, including at event zero.
+    ///
+    /// # Errors
+    /// Refuses original birth, changed or uncertain native custody, another source
+    /// image, later native work or a foreign/stale current exact certificate.
+    pub fn restored_prepared_session(
+        &self,
+        authority: &exact::Gem5ExactAuthority,
+    ) -> Result<&Gem5PreparedSession, ProviderError> {
+        let restored = self
+            .preparation
+            .session()
+            .ok_or(ProviderError::Correlation(
+                "restored native preparation transcript is absent",
+            ))?;
+        restored.authenticate_restored(self, authority)?;
+        Ok(restored)
     }
 }

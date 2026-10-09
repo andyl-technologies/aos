@@ -339,6 +339,37 @@ The actual CLI recording/replay fixture passes ten storage-failure controls; two
 real directory-completion panic branches pass the queued-shutdown reclamation
 fixture. These results qualify the selected scopes, not general vendor readiness.
 
+### Public gem5 continuation, seeded transport and capability control
+
+The public fixed RF x86 profile preserves a complete preparation-bearing world
+of the native CPU and integer Clock owners. Original Pending capture retains the
+native seal through every capture failure. Source removal and two independently
+qualified fresh restorations preserve original grants, native images and the
+complete coordinator state; restored recapture remains source-qualified.
+This scope requires the fixed no-ingress profile and does not qualify arbitrary
+ARM, held-publication or full-system device state.
+
+The installed static seeded link uses the existing integer jitter/reorder model
+for original Source-to-Block request octets. Native state retains the exact
+program, fault table, five-draw stream cursor and pending packets; restore does
+not redraw captured frames. Actual worker execution and source-gone fresh worlds
+match uninterrupted payloads, causal history, storage bytes and future RNG draws.
+The [seeded transport workflow](seeded-transport-workflow.md) defines its bounded
+selection and remaining device/fault scope.
+
+Capability requests now have a daemon/CLI queue and durable status route. Exact
+raw authored requirements remain bound to installed source regeneration and
+selected compatibility. Clock continuation loads only the signed local archive;
+its restored owner remains held through subsequent recapture. Existing control
+routes, deadline and conditional-preparation unwind fences are preserved.
+
+The merged stage passes the actual public gem5 continuation (193.12 seconds),
+seeded native and ordinary worker tests, real capability CLI capture and two fresh
+source-gone continuations, original queued-shutdown reclamation and all-target
+strict checks across nine crates. Legacy control/native codecs and the required
+hermetic application unit/integration test-target build pass. These tests qualify
+the recorded selections; unsupported source policies remain refused.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

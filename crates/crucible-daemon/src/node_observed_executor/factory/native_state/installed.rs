@@ -96,7 +96,7 @@ impl InstalledMixedEngine {
 
     /// Prepares an actual closed native peer and clock beneath reserved custody.
     pub(super) fn prepare_live(&self, isa: &str) -> Result<MixedLiveWorld, NodeObservedError> {
-        self.prepare_live_selected(isa, false, None)
+        self.prepare_live_selected(isa, false, false, None)
     }
 
     pub(super) fn prepare_public_initial(
@@ -104,16 +104,31 @@ impl InstalledMixedEngine {
         isa: &str,
         activation_id: Id,
     ) -> Result<MixedLiveWorld, NodeObservedError> {
-        self.prepare_live_selected(isa, true, Some(activation_id))
+        self.prepare_live_selected(isa, true, false, Some(activation_id))
+    }
+
+    pub(super) fn prepare_public_preserving(
+        &self,
+        isa: &str,
+        activation_id: Id,
+    ) -> Result<MixedLiveWorld, NodeObservedError> {
+        self.prepare_live_selected(isa, true, true, Some(activation_id))
     }
 
     fn prepare_live_selected(
         &self,
         isa: &str,
         public: bool,
+        public_continuation: bool,
         activation_id: Option<Id>,
     ) -> Result<MixedLiveWorld, NodeObservedError> {
-        let profile = Rc::new(if public {
+        let profile = Rc::new(if public_continuation {
+            MixedProfile::build_public_preserving(
+                self.installed.clone(),
+                &measure_executable(&self.host)?,
+                isa,
+            )?
+        } else if public {
             MixedProfile::build_public(
                 self.installed.clone(),
                 &measure_executable(&self.host)?,
@@ -217,7 +232,11 @@ impl InstalledMixedEngine {
             host_resources(),
         )
         .map_err(|failure| refused(&failure.reason))?;
-        if public {
+        if public_continuation {
+            clock
+                .qualify_public_preserving_initial_clock(&graph, evidence.as_ref())
+                .map_err(|failure| refused(&failure.reason))?;
+        } else if public {
             clock
                 .qualify_public_initial_clock(&graph, evidence.as_ref())
                 .map_err(|failure| refused(&failure.reason))?;
@@ -226,7 +245,18 @@ impl InstalledMixedEngine {
         let prepared =
             Gem5NodePreparation::from_prepared(&graph, &Id::new("cpu")?, native, &qualification)
                 .map_err(|failure| refused(&failure.error.reason))?;
-        let cpu = if public {
+        let cpu = if public_continuation {
+            prepared
+                .into_qualified_capturing_simulation_node(
+                    &graph,
+                    authority,
+                    native_resources(isa)?,
+                    archive_installation(&self.installed, &namespace)?,
+                )
+                .map_err(|failure| refused(&failure.error.reason))?
+                .into_public_preserving_initial_preparation(&graph, &qualification)
+                .map_err(|failure| refused(&failure.error.reason))?
+        } else if public {
             prepared
                 .into_qualified_simulation_node(&graph, authority, native_resources(isa)?)
                 .map_err(|failure| refused(&failure.error.reason))?
@@ -261,11 +291,22 @@ impl InstalledMixedEngine {
         archive: NativeArchiveRecord,
         isa: &str,
     ) -> Result<MixedColdPlan, NodeObservedError> {
-        let profile = Rc::new(MixedProfile::build(
-            self.installed.clone(),
-            &measure_executable(&self.host)?,
-            isa,
-        )?);
+        let public = archive.owners().iter().any(|owner| {
+            owner.key.schema.id.as_str() == "crucible/gem5-public-native-continuation-v1"
+        });
+        let profile = Rc::new(if public {
+            MixedProfile::build_public_preserving(
+                self.installed.clone(),
+                &measure_executable(&self.host)?,
+                isa,
+            )?
+        } else {
+            MixedProfile::build(
+                self.installed.clone(),
+                &measure_executable(&self.host)?,
+                isa,
+            )?
+        });
         let target = fresh_target(&profile, Some(&archive))?;
         let cpu = cpu_owner(&target)?;
         let artifacts = archive.owner_artifacts(&cpu.owner).map_err(error)?;

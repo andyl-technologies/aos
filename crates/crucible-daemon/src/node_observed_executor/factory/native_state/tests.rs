@@ -34,13 +34,13 @@ use crate::node_observed_executor::StoredWorldActivationPublisher;
 #[test]
 #[ignore = "requires the compiled source-built complete gem5 closed profile"]
 fn pending_native_budget_prefix_survives_source_death_in_two_complete_worlds() {
-    cold_world_witness("x86_64", false);
+    cold_world_witness("x86_64", false, false);
 }
 
 #[test]
 #[ignore = "requires the compiled source-built complete gem5 closed profile"]
 fn held_native_publication_survives_source_death_in_two_complete_worlds() {
-    cold_world_witness("aarch64", true);
+    cold_world_witness("aarch64", true, false);
 }
 
 #[test]
@@ -112,6 +112,32 @@ fn ordinary_public_profile_refuses_preservation_or_legacy_selection_before_alloc
     let queue = super::custody::Gem5CustodyQueue::installed(8).unwrap();
     let original_reserved = queue.reserved_owners();
     assert_eq!(catalog.custody().reserved_worlds(), 0);
+
+    let mut preserving = selected.clone();
+    preserving[1].kind = InstalledNodeKind::Gem5ClosedPreserving {
+        isa: super::control::InstalledGem5Isa::X86_64,
+    };
+    let preserving_world = catalog.scenario(&preserving).unwrap();
+    assert_ne!(
+        preserving_world.canonical_bytes().unwrap(),
+        expected.canonical_bytes().unwrap()
+    );
+    for (selection, authored) in [
+        (&preserving, expected.clone()),
+        (&selected, preserving_world),
+    ] {
+        assert!(
+            catalog
+                .prepare_world(
+                    selection,
+                    authored,
+                    crucible_campaign::ExecutionId::from_bytes([76; 16]).unwrap(),
+                )
+                .is_err()
+        );
+        assert_eq!(catalog.custody().reserved_worlds(), 0);
+        assert_eq!(queue.reserved_owners(), original_reserved);
+    }
 
     let mut capture = expected.clone();
     capture.requirements.exact_capture = true;
@@ -414,33 +440,111 @@ fn ordinary_installed_gem5_scenario_executes_through_observed_attempt_worker() {
     panic!("original observed journals and all native groups did not retire");
 }
 
-fn cold_world_witness(isa: &str, held_publication: bool) {
+#[test]
+#[ignore = "requires genuine source-installed public preparation, images and fresh native authority"]
+fn public_preparation_pending_native_survives_source_death_in_two_complete_worlds() {
+    cold_world_witness("x86_64", false, true);
+}
+
+fn cold_world_witness(isa: &str, held_publication: bool, public: bool) {
     // Failed native callbacks keep their original backing tree until the owning
     // supervisor proves reclamation. A temporary-directory Drop cannot decide
     // when live images and process-private files are safe to unlink.
     let directory = tempfile::tempdir().unwrap().keep();
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let engine = InstalledMixedEngine::new(directory.clone(), 8).unwrap();
+    let mut catalog = if public {
+        let companion = std::path::PathBuf::from(
+            std::env::var_os("CRUCIBLE_REFERENCE_DEVICE")
+                .expect("explicit genuine installed companion is required"),
+        );
+        Some(
+            super::super::InstalledNodeCatalog::new(
+                companion.clone(),
+                super::super::measure_executable(&companion).unwrap(),
+                directory.clone(),
+                Duration::from_secs(30),
+                8,
+            )
+            .unwrap(),
+        )
+    } else {
+        None
+    };
+    let engine = match &catalog {
+        Some(catalog) => {
+            InstalledMixedEngine::with_runtime(directory.clone(), catalog.custody().clone())
+                .unwrap()
+        }
+        None => InstalledMixedEngine::new(directory.clone(), 8).unwrap(),
+    };
     let _supervision = FailedWitnessSupervision { engine: &engine };
-    let live = engine.prepare_live(isa).unwrap();
-    let factory = Rc::new(MixedNativeFactory::for_live(&live, engine.native.clone()));
-    let namespace = live.namespace.clone();
-    let graph = live.graph.clone();
-    let source_target = live.target.clone();
+    let (graph, source_target, realization, factory, namespace) =
+        if let Some(catalog) = &mut catalog {
+            let selections = vec![
+                super::super::InstalledNodeSelection {
+                    node: id("clock"),
+                    owner: id("owner/clock"),
+                    kind: super::super::InstalledNodeKind::HostClock,
+                },
+                super::super::InstalledNodeSelection {
+                    node: id("cpu"),
+                    owner: id("owner/cpu"),
+                    kind: super::super::InstalledNodeKind::Gem5ClosedPreserving {
+                        isa: super::control::InstalledGem5Isa::X86_64,
+                    },
+                },
+            ];
+            let scenario = catalog.scenario(&selections).unwrap();
+            let prepared = catalog
+                .prepare_native_world(
+                    &selections,
+                    scenario,
+                    crucible_campaign::ExecutionId::from_bytes([78; 16]).unwrap(),
+                )
+                .unwrap();
+            let target = prepared.world.realization.activation_record().clone();
+            (
+                Rc::new(prepared.world.graph),
+                target,
+                prepared.world.realization,
+                prepared.preservation.factory,
+                prepared.preservation.namespace,
+            )
+        } else {
+            let live = engine.prepare_live(isa).unwrap();
+            let factory = Rc::new(MixedNativeFactory::for_live(&live, engine.native.clone()));
+            (
+                live.graph,
+                live.target,
+                live.realization,
+                factory,
+                live.namespace,
+            )
+        };
     let blobs: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
         "mixed-native",
         directory.join("cas"),
     ));
     let refs: Arc<dyn MutableRefBackend> =
         Arc::new(DirectoryRefBackend::new(directory.join("refs")));
-    let mut runtime = live
-        .realization
+    let mut runtime = realization
         .admit(&graph)
         .unwrap_or_else(|failure| panic!("{}", failure.error));
     runtime.arm_all().unwrap();
-    let activation = runtime
-        .activate(&mut publisher(&blobs, &refs, "original"))
-        .unwrap();
+    let mut original_publisher = publisher(&blobs, &refs, "original");
+    if public {
+        let nodes = runtime.prepared_node_records().unwrap().to_vec();
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes.iter().all(|node| node.prepared_owners().is_some()));
+        let coordinator = runtime
+            .initial_coordinator_snapshot(&graph, 16 * 1024 * 1024)
+            .unwrap();
+        original_publisher = original_publisher
+            .with_prepared_coordinator(source_target.clone(), nodes, coordinator)
+            .unwrap();
+    }
+    let activation = runtime.activate(&mut original_publisher).unwrap();
+    assert_eq!(activation.prepared_owners().is_some(), public);
     engine
         .native
         .record_publication(&source_target, PublicationKnowledge::Committed)
@@ -513,9 +617,66 @@ fn cold_world_witness(isa: &str, held_publication: bool) {
             factory.as_ref(),
         )
         .unwrap();
+    if public {
+        let retry = archive
+            .capture_world(
+                &graph,
+                &mut runtime,
+                &activation,
+                cut,
+                ordinal,
+                id("mixed/original-capture-retry"),
+                requirements(),
+                &factory.immutable(),
+                factory.as_ref(),
+            )
+            .unwrap();
+        assert_eq!(retry.owners(), record.owners());
+        // The signed owner state includes the original native capture identity,
+        // image hashes and exact role/name roster. A second mechanical capture
+        // would change that identity; identical state proves original seal reuse.
+        assert_eq!(retry.runtime_snapshot().unwrap(), before);
+    }
     assert_eq!(record.owners().len(), 2);
     assert_eq!(record.manifest().owners.len(), 2);
     assert_eq!(record.runtime_snapshot().unwrap(), before);
+    if public {
+        // These are the bytes actually acknowledged by the durable publisher,
+        // not a fresh receipt inferred from a label or current native state.
+        let published_id = refs
+            .read_ref(&RefName::new("node-world-activations/original").unwrap())
+            .unwrap()
+            .unwrap();
+        let published = blobs
+            .read(published_id, None)
+            .unwrap()
+            .read_all(16 * 1024 * 1024)
+            .unwrap();
+        for owner in record.owners() {
+            let envelope = record.object_bytes(&owner.state, 16 * 1024 * 1024).unwrap();
+            let envelope: serde_json::Value = serde_json::from_slice(&envelope).unwrap();
+            let world_ref: crucible_node_contract::ContentRef =
+                serde_json::from_value(envelope["world_preparation"].clone()).unwrap();
+            let world = record.object_bytes(&world_ref, 16 * 1024 * 1024).unwrap();
+            let world: serde_json::Value = serde_json::from_slice(&world).unwrap();
+            let publication_ref: crucible_node_contract::ContentRef =
+                serde_json::from_value(world["publication"].clone()).unwrap();
+            assert_eq!(
+                record
+                    .object_bytes(&publication_ref, 16 * 1024 * 1024)
+                    .unwrap(),
+                published
+            );
+            let coordinator_ref: crucible_node_contract::ContentRef =
+                serde_json::from_value(world["coordinator"].clone()).unwrap();
+            assert_eq!(
+                record
+                    .object_bytes(&coordinator_ref, 16 * 1024 * 1024)
+                    .unwrap(),
+                activation.coordinator_snapshot().unwrap().bytes
+            );
+        }
+    }
     let original_scheduler = record.scheduling_snapshot().unwrap();
     assert_eq!(original_scheduler.reservations.len(), 1);
     assert_eq!(
@@ -549,7 +710,13 @@ fn cold_world_witness(isa: &str, held_publication: bool) {
         configuration["native_poll"]["maximum_events_per_poll"],
         expected_native_credit.to_string()
     );
-    let native_record: serde_json::Value = serde_json::from_slice(&native_source).unwrap();
+    let mut native_record: serde_json::Value = serde_json::from_slice(&native_source).unwrap();
+    if public {
+        let inner: crucible_node_contract::ContentRef =
+            serde_json::from_value(native_record["native_state"].clone()).unwrap();
+        let bytes = record.object_bytes(&inner, 16 * 1024 * 1024).unwrap();
+        native_record = serde_json::from_slice(&bytes).unwrap();
+    }
     let prefix_refs: Vec<crucible_node_contract::ContentRef> =
         serde_json::from_value(native_record["native_prefixes"].clone()).unwrap();
     assert!(!prefix_refs.is_empty());
@@ -597,9 +764,10 @@ fn cold_world_witness(isa: &str, held_publication: bool) {
             .unwrap(),
         native_source
     );
-    let (left_graph, mut left) =
+    let (left_graph, mut left, left_factory) =
         restore(&engine, record.clone(), isa, &blobs, &refs, "left", limits);
-    let (right_graph, mut right) = restore(&engine, record, isa, &blobs, &refs, "right", limits);
+    let (right_graph, mut right, right_factory) =
+        restore(&engine, record, isa, &blobs, &refs, "right", limits);
     assert_ne!(
         left.activation().record().owners,
         right.activation().record().owners
@@ -626,6 +794,40 @@ fn cold_world_witness(isa: &str, held_publication: bool) {
     }
     let left_activation = left.activation().clone();
     let right_activation = right.activation().clone();
+    if public {
+        // A current fresh preparation can become a later signed source while
+        // retaining the prior original Ready and coordinator bodies unchanged.
+        let recaptured = archive
+            .capture_world(
+                &left_graph,
+                left.runtime_mut(),
+                &left_activation,
+                cut,
+                ordinal,
+                id("mixed/restored-capture"),
+                requirements(),
+                &left_factory.immutable(),
+                left_factory.as_ref(),
+            )
+            .unwrap();
+        recaptured
+            .admit(&left_graph, requirements(), left_factory.as_ref())
+            .unwrap();
+        assert_eq!(recaptured.runtime_snapshot().unwrap(), left_snapshot);
+        for owner in recaptured.owners() {
+            let bytes = recaptured
+                .object_bytes(&owner.state, 16 * 1024 * 1024)
+                .unwrap();
+            let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let previous: crucible_node_contract::ContentRef =
+                serde_json::from_value(wire["previous"].clone()).unwrap();
+            let original = recaptured
+                .object_bytes(&previous, 16 * 1024 * 1024)
+                .unwrap();
+            let original: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            assert!(original["previous"].is_null());
+        }
+    }
     let left_original = left
         .runtime_mut()
         .recover(&id("original/cpu-grant"))
@@ -674,6 +876,8 @@ fn cold_world_witness(isa: &str, held_publication: bool) {
     drop(right_original);
     drop(left);
     drop(right);
+    drop(left_factory);
+    drop(right_factory);
     reclaim(&engine);
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -686,29 +890,55 @@ fn restore(
     refs: &Arc<dyn MutableRefBackend>,
     name: &str,
     limits: NativeArchiveLimits,
-) -> (Rc<AdmittedGraph>, Box<RestoredWorld>) {
+) -> (
+    Rc<AdmittedGraph>,
+    Box<RestoredWorld>,
+    Rc<MixedNativeFactory>,
+) {
     let plan = engine.prepare_cold(record.clone(), isa).unwrap();
+    let public = plan.profile.public_continuation;
     let graph = plan.graph.clone();
     let target = plan.target.clone();
     let factory = Rc::new(MixedNativeFactory::for_cold(plan, engine.native.clone()));
     let verified = record
         .admit(&graph, requirements(), factory.as_ref())
         .unwrap();
-    let mut driver =
-        NativeWorldRestoreDriver::new(graph.clone(), record, factory, engine.runtime.clone())
-            .unwrap();
+    let mut driver = NativeWorldRestoreDriver::new(
+        graph.clone(),
+        record.clone(),
+        factory.clone(),
+        engine.runtime.clone(),
+    )
+    .unwrap();
     let prepared = stage_restore(&graph, verified, target.clone(), &mut driver, limits.state)
         .unwrap_or_else(|failure| panic!("{}", failure.error));
-    let RestorePublication::Committed(restored) =
-        prepared.publish(&mut publisher(blobs, refs, name))
-    else {
-        panic!("actual mixed native world did not commit");
+    let mut stored = publisher(blobs, refs, name);
+    let restored = if public {
+        let mut source_publisher = super::publication::NativeCustodyPublisher::for_public_restore(
+            stored,
+            engine.native.clone(),
+            &record,
+            &target,
+        )
+        .unwrap();
+        let RestorePublication::Committed(restored) = prepared.publish(&mut source_publisher)
+        else {
+            panic!("actual public restored native world did not commit");
+        };
+        assert_eq!(restored.activation().prepared_owners().unwrap().len(), 2);
+        assert!(restored.activation().coordinator_snapshot().is_some());
+        restored
+    } else {
+        let RestorePublication::Committed(restored) = prepared.publish(&mut stored) else {
+            panic!("actual mixed native world did not commit");
+        };
+        restored
     };
     engine
         .native
         .record_publication(&target, PublicationKnowledge::Committed)
         .unwrap();
-    (graph, restored)
+    (graph, restored, factory)
 }
 
 fn finish_poll(runtime: &mut NodeRuntime, token: &OperationToken) -> OperationOutcome {

@@ -67,6 +67,12 @@ impl AdmissionEvidence for MixedEvidence {
             .map_err(|error| evidence(&error.reason))?;
         let public_clock = crucible::node_adapters::host_public_clock_preparation_schema()
             .map_err(|error| evidence(&error.reason))?;
+        let public_native_continuation =
+            crucible::node_adapters::gem5::gem5_public_continuation_schema()
+                .map_err(|error| evidence(&error.reason))?;
+        let public_clock_continuation =
+            crucible::node_adapters::host_public_clock_continuation_schema()
+                .map_err(|error| evidence(&error.reason))?;
         let selected = self.bindings.values().any(|binding| {
             binding
                 .compatibility
@@ -75,7 +81,11 @@ impl AdmissionEvidence for MixedEvidence {
                 .contains(schema)
         });
         let supported = if schema == &native
-            || (selected && (schema == &public_native || schema == &public_clock))
+            || (selected
+                && (schema == &public_native
+                    || schema == &public_clock
+                    || schema == &public_native_continuation
+                    || schema == &public_clock_continuation))
         {
             true
         } else if schema.id.as_str() == NATIVE_OCTET_SCHEMA_ID

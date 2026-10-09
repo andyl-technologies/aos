@@ -634,7 +634,10 @@ fn insert_evidence(
     Ok(())
 }
 
-fn bounded_canonical(value: &impl Serialize, maximum: usize) -> Result<Vec<u8>, OperationFailure> {
+pub(super) fn bounded_canonical(
+    value: &impl Serialize,
+    maximum: usize,
+) -> Result<Vec<u8>, OperationFailure> {
     let mut count = CountWriter { remaining: maximum };
     serde_json::to_writer(&mut count, value).map_err(|error| refusal(&error.to_string()))?;
     let value = serde_json::to_value(value).map_err(|error| refusal(&error.to_string()))?;

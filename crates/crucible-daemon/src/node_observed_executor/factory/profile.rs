@@ -6,6 +6,7 @@ mod direct_recording_pair;
 mod io;
 mod linked;
 mod scripted;
+mod seeded;
 mod semantic_connections;
 mod semantics;
 mod storage_connections;
@@ -60,7 +61,12 @@ pub(super) fn build_world(
     let terminal = terminal::selected(selections, artifacts)?;
     let qualification = put(
         &mut contents,
-        if terminal {
+        if selections
+            .iter()
+            .any(|selection| matches!(selection.kind, InstalledNodeKind::HostSeededLink { .. }))
+        {
+            b"crucible installed seeded storage transport v1: independently measured program and host implementation; complete original NetLink RNG/fault/queue state, native endpoint envelopes and coordinator FIFO/input/ACK custody; finite immutable storage scripts, static jitter/reorder only, no guest CPU, external inputs or dynamic fault control".to_vec()
+        } else if terminal {
             b"crucible installed closed terminal profile v2: one independently enrolled host assertion program plus integer clock peers; actual evaluator/event prefix/emitted-result registry/finalization context/report and ACK custody; original full native envelopes and coordinator/runtime terminal codecs; immutable program and measured host code; no nonempty input provenance, external ingress, mutable faults/controllers/debug state, guest CPU or RAM, or fork".to_vec()
         } else {
             b"crucible installed clock/checksum profiles v1: exact regenerated semantics; private measured native custody; installed clock complete runtime envelopes support authenticated durable restart; no guest CPU, external ingress, native RAM capture or fork; connected transfer custody and reference native state have no installed durable archive".to_vec()
@@ -139,6 +145,18 @@ pub(super) fn build_world(
                     &mut contents,
                 )?
             }
+            InstalledNodeKind::HostSeededLink { profile } => {
+                accepted_limited.push(selection.node.clone());
+                seeded::profile(
+                    selection,
+                    selections,
+                    profile,
+                    artifacts,
+                    host,
+                    &qualification,
+                    &mut contents,
+                )?
+            }
             InstalledNodeKind::HostIo { profile } => {
                 accepted_limited.push(selection.node.clone());
                 io::io_profile(
@@ -161,7 +179,8 @@ pub(super) fn build_world(
                     &mut contents,
                 )?
             }
-            InstalledNodeKind::Gem5Closed { .. } => {
+            InstalledNodeKind::Gem5Closed { .. }
+            | InstalledNodeKind::Gem5ClosedPreserving { .. } => {
                 return Err(refused(
                     "closed gem5 requires its distinct public profile compiler",
                 ));
@@ -218,6 +237,7 @@ pub(super) fn build_world(
                 InstalledNodeKind::HostClock
                     | InstalledNodeKind::HostIo { .. }
                     | InstalledNodeKind::HostScripted { .. }
+                    | InstalledNodeKind::HostSeededLink { .. }
                     | InstalledNodeKind::HostSemantics { .. }
             ),
             isolated_fork: false,

@@ -12,7 +12,13 @@ use crucible_campaign::{
 use crucible_cas::content_store::{ContentId, ImmutableBlobBackend, MutableRefBackend};
 use crucible_node_contract::ContentRef;
 
+mod capability_preparation;
 mod replay;
+use capability_preparation::ledger::CapabilityPreparationLedger;
+pub use capability_preparation::{
+    CapabilityCandidateRecipe, CapabilityPreparationAction, CapabilityPreparationRecord,
+    CapabilityPreparationRequest, CapabilityPreparationState,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     panic::{AssertUnwindSafe, catch_unwind},
@@ -69,6 +75,11 @@ pub use conditional_preparation::{
 type Reply = SyncSender<Result<ObservedAttemptState, NodeObservationServiceError>>;
 
 enum Command {
+    CapabilityPreparation {
+        request: CapabilityPreparationRequest,
+        reservation: Box<capability_preparation::ledger::CapabilityReservation>,
+        ledger: CapabilityPreparationLedger,
+    },
     CacheReuse {
         request: super::NodeCacheReuseRequest,
         reply: SyncSender<Result<super::NodeCacheReuseReceipt, NodeObservationServiceError>>,
@@ -108,7 +119,9 @@ struct ActorWorker {
 }
 
 struct ActorStorage {
+    capability_archive: PathBuf,
     preparations: Option<ConditionalPreparationLedger>,
+    capabilities: CapabilityPreparationLedger,
     transcripts: Option<crucible::node_adapters::transcript::TranscriptArchive>,
     repository: Arc<CampaignRepository>,
     blobs: Arc<dyn ImmutableBlobBackend>,
@@ -132,6 +145,7 @@ pub struct NodeObservationRetention {
     roots: Arc<Mutex<BTreeSet<ContentId>>>,
     retired: Arc<AtomicBool>,
     preparations: Option<ConditionalPreparationLedger>,
+    capabilities: CapabilityPreparationLedger,
 }
 
 impl NodeObservationRetention {
@@ -145,6 +159,7 @@ impl NodeObservationRetention {
             .lock()
             .map_err(|_| refused("operational retention fence is poisoned"))?
             .clone();
+        roots.extend(self.capabilities.retention_roots()?);
         if let Some(preparations) = &self.preparations {
             roots.extend(preparations.retention_roots()?);
         }
@@ -171,6 +186,7 @@ pub struct NodeObservationService {
     roots: Arc<Mutex<BTreeSet<ContentId>>>,
     retired: Arc<AtomicBool>,
     preparations: Option<ConditionalPreparationLedger>,
+    capabilities: CapabilityPreparationLedger,
 }
 
 impl NodeObservationService {
@@ -210,6 +226,9 @@ impl NodeObservationService {
         } else {
             None
         };
+        let capabilities = CapabilityPreparationLedger::new(blobs.clone(), refs.clone())?;
+        let actor_capabilities = capabilities.clone();
+        let capability_archive = configuration.socket_parent.join("capability-clock-archive");
         let (commands, receiver) = mpsc::sync_channel(configuration.maximum_pending_requests);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let stopping = Arc::new(AtomicBool::new(false));
@@ -241,6 +260,8 @@ impl NodeObservationService {
                             configuration.maximum_worlds,
                             ActorStorage {
                                 preparations: actor_preparations,
+                                capabilities: actor_capabilities,
+                                capability_archive,
                                 transcripts,
                                 repository,
                                 blobs,
@@ -269,6 +290,7 @@ impl NodeObservationService {
             roots,
             retired,
             preparations,
+            capabilities,
         })
     }
 
@@ -384,6 +406,7 @@ impl NodeObservationService {
             roots: self.roots.clone(),
             retired: self.retired.clone(),
             preparations: self.preparations.clone(),
+            capabilities: self.capabilities.clone(),
         }
     }
 
@@ -553,6 +576,18 @@ fn handle_command(
         ..
     } = storage;
     match command {
+        Command::CapabilityPreparation {
+            request,
+            reservation,
+            ledger,
+        } => {
+            let result =
+                capability_preparation::execute(request, workers, catalog, maximum_worlds, storage);
+            let outcome = result.unwrap_or_else(|error| CapabilityPreparationState::Unavailable {
+                reason: error.to_string(),
+            });
+            let _ = ledger.complete(&reservation, outcome);
+        }
         Command::ConditionalPreparation {
             request,
             reservation,
@@ -560,6 +595,11 @@ fn handle_command(
         } => {
             let result =
                 conditional_preparation::execution_id(&request.execution).and_then(|execution| {
+                    if storage.capabilities.owns(&request.execution)? {
+                        return Err(refused(
+                            "execution nonce belongs to original capability custody",
+                        ));
+                    }
                     replay::submit(
                         replay::ReplayRequest {
                             ledger: request.ledger,
@@ -587,7 +627,17 @@ fn handle_command(
             let _ = ledger.complete(&reservation, outcome);
         }
         Command::ConditionalReplay { request, reply } => {
-            let result = replay::submit(request, workers, catalog, maximum_worlds, storage, None);
+            let result = storage
+                .capabilities
+                .owns(&capability_preparation::execution_text(request.execution))
+                .and_then(|owned| {
+                    if owned {
+                        return Err(refused(
+                            "execution nonce belongs to original capability custody",
+                        ));
+                    }
+                    replay::submit(request, workers, catalog, maximum_worlds, storage, None)
+                });
             let _ = reply.send(result);
         }
         Command::CacheReuse { request, reply } => {
@@ -623,6 +673,14 @@ fn handle_command(
             reply,
         } => {
             let result = (|| {
+                if storage
+                    .capabilities
+                    .owns(&capability_preparation::execution_text(execution))?
+                {
+                    return Err(refused(
+                        "execution nonce belongs to original capability custody",
+                    ));
+                }
                 let scenario = NodeScenario::from_json(&scenario).map_err(refused)?;
                 let configuration =
                     NodeRunConfiguration::from_json(&configuration).map_err(refused)?;
@@ -717,6 +775,18 @@ fn handle_command(
 
 fn reply_refusal(command: Command, error: NodeObservationServiceError) {
     match command {
+        Command::CapabilityPreparation {
+            reservation,
+            ledger,
+            ..
+        } => {
+            let _ = ledger.complete(
+                &reservation,
+                CapabilityPreparationState::Unavailable {
+                    reason: error.to_string(),
+                },
+            );
+        }
         Command::CacheReuse { reply, .. } => {
             let _ = reply.send(Err(error));
         }

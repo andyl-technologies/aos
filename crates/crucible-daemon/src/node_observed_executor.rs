@@ -19,18 +19,20 @@ pub use factory::{
     InstalledClockLabelProfile, InstalledConditionalReplay, InstalledGem5ClosedProfile,
     InstalledGem5Isa, InstalledHostIoProfile, InstalledHostSemanticProfile,
     InstalledHostStateFactory, InstalledIoArtifact, InstalledIoArtifactSource,
-    InstalledNodeCatalog, InstalledNodeKind, InstalledNodeSelection, InstalledPreparedWorld,
-    InstalledPublicReferencePackage, InstalledRecordedWorld, InstalledReferenceQualifier,
-    InstalledReferenceRecording, InstalledReplayRecipe, InstalledScriptedSourceProfile,
-    MAX_KVM_CANDIDATE_POLICY_BYTES, NativeCapturePoint, NativeWorldOutcome, NativeWorldRecord,
-    NativeWorldRequest, NativeWorldRetention, NativeWorldService, QualificationRunError,
+    InstalledNativePreservation, InstalledNodeCatalog, InstalledNodeKind, InstalledNodeSelection,
+    InstalledPreparedNativeWorld, InstalledPreparedWorld, InstalledPublicReferencePackage,
+    InstalledRecordedWorld, InstalledReferenceQualifier, InstalledReferenceRecording,
+    InstalledReplayRecipe, InstalledScriptedSourceProfile, MAX_KVM_CANDIDATE_POLICY_BYTES,
+    NativeCapturePoint, NativeWorldOutcome, NativeWorldRecord, NativeWorldRequest,
+    NativeWorldRetention, NativeWorldService, QualificationRunError,
     ReferenceQualificationObservation, ReferenceQualificationRun, ResolvedCapabilityWorld,
     load_installed_kvm_candidate, prepare_installed_kvm_candidate,
 };
 pub use service::{
-    ConditionalPreparationRecord, ConditionalPreparationRequest, ConditionalPreparationState,
-    NodeObservationRetention, NodeObservationService, NodeObservationServiceConfig,
-    NodeObservationServiceError,
+    CapabilityCandidateRecipe, CapabilityPreparationAction, CapabilityPreparationRecord,
+    CapabilityPreparationRequest, CapabilityPreparationState, ConditionalPreparationRecord,
+    ConditionalPreparationRequest, ConditionalPreparationState, NodeObservationRetention,
+    NodeObservationService, NodeObservationServiceConfig, NodeObservationServiceError,
 };
 pub use terminal_publication::StoredTerminalResultPublisher;
 

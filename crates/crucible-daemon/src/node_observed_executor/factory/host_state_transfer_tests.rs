@@ -10,6 +10,9 @@
 #[path = "host_state_ninep_transfer_tests.rs"]
 mod ninep;
 
+#[path = "host_state_seeded_tests.rs"]
+mod seeded;
+
 use std::{
     rc::Rc,
     sync::Arc,

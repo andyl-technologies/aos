@@ -465,6 +465,22 @@ impl NodeControlDaemon {
             .as_ref()
             .ok_or_else(|| refused("node actor admission stopped"))?;
         match command {
+            NodeControlCommand::CapabilityPreparation { request } => {
+                let record = service
+                    .submit_capability_preparation(*request)
+                    .map_err(super::refused)?;
+                Ok(NodeControlResult::CapabilityPreparation {
+                    record: Bytes::new(record.canonical_bytes().map_err(super::refused)?),
+                })
+            }
+            NodeControlCommand::CapabilityPreparationStatus { execution } => {
+                let record = service
+                    .capability_preparation_status(&execution)
+                    .map_err(super::refused)?;
+                Ok(NodeControlResult::CapabilityPreparation {
+                    record: Bytes::new(record.canonical_bytes().map_err(super::refused)?),
+                })
+            }
             NodeControlCommand::CacheReuse { request } => {
                 let receipt = service.reuse_cache(*request).map_err(refused)?;
                 Ok(NodeControlResult::CacheReused {

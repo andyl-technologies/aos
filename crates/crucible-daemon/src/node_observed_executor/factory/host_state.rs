@@ -106,6 +106,7 @@ impl InstalledNodeCatalog {
                 InstalledNodeKind::HostClock
                     | InstalledNodeKind::HostIo { .. }
                     | InstalledNodeKind::HostScripted { .. }
+                    | InstalledNodeKind::HostSeededLink { .. }
                     | InstalledNodeKind::HostSemantics { .. }
             )
         }) {
@@ -133,7 +134,9 @@ impl InstalledNodeCatalog {
                 .formats
                 .iter()
                 .filter(|schema| {
-                    (schema.id.as_str() == "host/native-continuation-v1" && schema.version == 1)
+                    ((schema.id.as_str() == "host/native-continuation-v1"
+                        || schema.id.as_str() == "host/native-seeded-link-v1")
+                        && schema.version == 1)
                         || (schema.id.as_str() == "host/native-semantic-continuation-v2"
                             && schema.version == 2)
                 })
@@ -238,6 +241,16 @@ impl InstalledHostStateFactory {
         }
         match (&selection.kind, model) {
             (InstalledNodeKind::HostClock, HostModel::Clock(_)) => {}
+            (
+                InstalledNodeKind::HostSeededLink { profile },
+                HostModel::SeededLink { definition, .. },
+            ) => {
+                let bytes = canonical::canonical_json(
+                    &serde_json::to_value(definition).map_err(no_effect)?,
+                )
+                .map_err(no_effect)?;
+                profile.program.verify(&bytes).map_err(no_effect)?;
+            }
             (InstalledNodeKind::HostIo { profile }, HostModel::Io(actual)) => {
                 if let Some(block) = actual.block_device() {
                     profile
@@ -284,6 +297,7 @@ impl InstalledHostStateFactory {
     ) -> Result<Option<&'a [u8]>, StateError> {
         let reference = match &self.selection(node)?.kind {
             InstalledNodeKind::HostClock => return Ok(None),
+            InstalledNodeKind::HostSeededLink { profile } => &profile.program,
             InstalledNodeKind::HostIo { profile } => profile.artifact(),
             InstalledNodeKind::HostScripted { profile } => &profile.script,
             InstalledNodeKind::HostSemantics { profile } => &profile.program,
@@ -300,6 +314,22 @@ impl InstalledHostStateFactory {
         let selected = self.selection(node)?;
         match &selected.kind {
             InstalledNodeKind::HostClock => Ok(HostModel::Clock(VirtualClock::new())),
+            InstalledNodeKind::HostSeededLink { .. } => {
+                let definition: crucible::node_adapters::SeededLinkDefinition =
+                    serde_json::from_slice(
+                        self.immutable_input(node, content)?
+                            .ok_or_else(|| refusal("seeded original program absent"))?,
+                    )
+                    .map_err(state_error)?;
+                Ok(HostModel::SeededLink {
+                    link: Box::new(
+                        definition
+                            .instantiate()
+                            .map_err(|error| refusal(error.reason))?,
+                    ),
+                    definition,
+                })
+            }
             InstalledNodeKind::HostIo { profile } => io::build_model_from_bytes(
                 selected,
                 profile,
@@ -464,6 +494,7 @@ impl HostWorldFactory for InstalledHostStateFactory {
         let immutable_bytes = match &self.selection(node)?.kind {
             InstalledNodeKind::HostIo { profile } => profile.artifact().length.get(),
             InstalledNodeKind::HostScripted { profile } => profile.script.length.get(),
+            InstalledNodeKind::HostSeededLink { profile } => profile.program.length.get(),
             InstalledNodeKind::HostClock => 0,
             InstalledNodeKind::HostSemantics { profile } => profile.program.length.get(),
             _ => return Err(refusal("unsupported installed native reservation family")),
@@ -490,7 +521,9 @@ impl HostWorldFactory for InstalledHostStateFactory {
             .formats
             .iter()
             .find(|schema| {
-                (schema.id.as_str() == "host/native-continuation-v1" && schema.version == 1)
+                ((schema.id.as_str() == "host/native-continuation-v1"
+                    || schema.id.as_str() == "host/native-seeded-link-v1")
+                    && schema.version == 1)
                     || (schema.id.as_str() == "host/native-semantic-continuation-v2"
                         && schema.version == 2)
             })
@@ -535,6 +568,42 @@ impl HostWorldFactory for InstalledHostStateFactory {
         // immutable graph; native validators below check both endpoint ledgers.
         crucible::node_scheduling::validate_saved_source(graph, scheduler).map_err(state_error)?;
         for delivery in &scheduler.pending_deliveries {
+            if let InstalledNodeKind::HostSeededLink { profile } =
+                &self.selection(&delivery.producer)?.kind
+            {
+                let bytes = content
+                    .get(&delivery.payload)
+                    .ok_or_else(|| refusal("original seeded payload absent"))?;
+                delivery.payload.verify(bytes).map_err(state_error)?;
+                let original = runtime
+                    .operations
+                    .iter()
+                    .filter(|operation| operation.route.node == delivery.producer)
+                    .filter_map(|operation| match &operation.result {
+                        crucible::node_contract::SavedRuntimeResult::Complete(outcome)
+                        | crucible::node_contract::SavedRuntimeResult::Acknowledged(outcome) => {
+                            outcome.scheduling.as_ref()
+                        }
+                        _ => None,
+                    })
+                    .flat_map(|observation| &observation.publications)
+                    .find(|publication| publication.publication_id == delivery.publication_id);
+                if delivery.consumer != profile.consumer
+                    || original.is_none_or(|publication| {
+                        publication.payload != delivery.payload
+                            || publication.payload_bytes != bytes
+                            || publication.native_sequence != delivery.native_sequence
+                            || publication.publication != delivery.publication
+                            || publication.evaluation != delivery.evaluation
+                            || publication.causal_parents != delivery.causal_parents
+                    })
+                {
+                    return Err(refusal(
+                        "seeded transfer differs from authentic original native publication",
+                    ));
+                }
+                continue;
+            }
             let InstalledNodeKind::HostScripted { profile } =
                 &self.selection(&delivery.producer)?.kind
             else {
@@ -631,6 +700,17 @@ impl HostWorldFactory for InstalledHostStateFactory {
                         "actual clock codec or closed input inventory differs",
                     ));
                 }
+            }
+            InstalledNodeKind::HostSeededLink { .. } => {
+                let definition: crucible::node_adapters::SeededLinkDefinition =
+                    serde_json::from_slice(
+                        self.immutable_input(node, content)?
+                            .ok_or_else(|| refusal("complete seeded program absent"))?,
+                    )
+                    .map_err(state_error)?;
+                definition
+                    .restore(&inventory.native_model.bytes, 64 * 1024 * 1024)
+                    .map_err(|error| refusal(error.reason))?;
             }
             InstalledNodeKind::HostIo { profile } => io::validate_native_storage(
                 self.selection(node)?,

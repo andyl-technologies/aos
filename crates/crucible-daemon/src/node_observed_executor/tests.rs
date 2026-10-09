@@ -396,3 +396,6 @@ mod storage;
 mod ninep_storage;
 
 mod cache_workflow;
+
+#[path = "tests/seeded_storage.rs"]
+mod seeded_storage;

@@ -141,6 +141,16 @@ impl QualifiedGem5Node {
             self.resources.maximum_prefixes,
             self.resources.maximum_retained_bytes,
         )?;
+        // Preserve both the source preparation ancestry and the newly armed
+        // target preparation before replacing this node's original ledger.
+        if let Some(public) = &restored.public_preparation {
+            for original in &public.history {
+                ledger.retain_standalone(&[(&original.reference, &original.bytes)])?;
+            }
+            for current in self.ledger.standalone() {
+                ledger.retain_standalone(&[(&current.reference, &current.bytes)])?;
+            }
+        }
         super::observations::retain_historical_observations(&mut ledger, &restored.record)?;
         let mut unique = BTreeSet::new();
         let mut active = None;

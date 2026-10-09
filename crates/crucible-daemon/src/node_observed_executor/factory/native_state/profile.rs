@@ -37,6 +37,7 @@ pub(super) struct MixedProfile {
     pub(super) qualification: ContentRef,
     pub(super) isa: String,
     pub(super) public_preparation: bool,
+    pub(super) public_continuation: bool,
 }
 
 impl MixedProfile {
@@ -50,7 +51,7 @@ impl MixedProfile {
         host: &ContentRef,
         isa: &str,
     ) -> Result<Self, NodeObservedError> {
-        Self::build_selected(installed, host, isa, false)
+        Self::build_selected(installed, host, isa, false, false)
     }
 
     pub(super) fn build_public(
@@ -58,7 +59,15 @@ impl MixedProfile {
         host: &ContentRef,
         isa: &str,
     ) -> Result<Self, NodeObservedError> {
-        Self::build_selected(installed, host, isa, true)
+        Self::build_selected(installed, host, isa, true, false)
+    }
+
+    pub(super) fn build_public_preserving(
+        installed: Rc<InstalledGem5ClosedProfile>,
+        host: &ContentRef,
+        isa: &str,
+    ) -> Result<Self, NodeObservedError> {
+        Self::build_selected(installed, host, isa, true, true)
     }
 
     fn build_selected(
@@ -66,6 +75,7 @@ impl MixedProfile {
         host: &ContentRef,
         isa: &str,
         public_preparation: bool,
+        public_continuation: bool,
     ) -> Result<Self, NodeObservedError> {
         let guest = installed.guest(isa)?;
         let mut contents = BTreeMap::new();
@@ -95,6 +105,12 @@ impl MixedProfile {
                 "unsupported: preparation-bearing archive codec not selected".into();
             qualification_body["public_preparation"] = true.into();
         }
+        if public_continuation {
+            qualification_body["schema"] =
+                "crucible.installed-public-native-preservation.v1".into();
+            qualification_body["restart"] = "exact original public preparation/coordinator and native custody; fresh independently audited restored sessions; complete coupled publication".into();
+            qualification_body["public_continuation"] = true.into();
+        }
         let qualification = put_json(&mut contents, &qualification_body)?;
         let clock = InstalledNodeSelection {
             node: Id::new("clock")?,
@@ -118,7 +134,12 @@ impl MixedProfile {
         let mut captures = Vec::new();
         for (mut descriptor, mut binding, mut owner, _) in [clock_profile, cpu_profile] {
             if public_preparation {
-                select_public_preparation(&mut descriptor, &mut binding, &mut contents)?;
+                select_public_preparation(
+                    &mut descriptor,
+                    &mut binding,
+                    &mut contents,
+                    public_continuation,
+                )?;
             }
             let domain = owner
                 .owner
@@ -147,10 +168,10 @@ impl MixedProfile {
             });
             captures.push(OwnerCapturePolicy {
                 owner_id: owner.owner.id.clone(),
-                complete_model: !public_preparation,
-                unchanged_cut: !public_preparation,
-                exact_continuation: !public_preparation,
-                durable_restart: !public_preparation,
+                complete_model: (!public_preparation || public_continuation),
+                unchanged_cut: (!public_preparation || public_continuation),
+                exact_continuation: (!public_preparation || public_continuation),
+                durable_restart: (!public_preparation || public_continuation),
                 isolated_fork: false,
                 dependencies: Vec::new(),
                 cut_procedure_ref: qualification.clone(),
@@ -189,6 +210,11 @@ impl MixedProfile {
         if public_preparation {
             scenario_body["schema"] = "crucible.installed-public-native-scenario.v1".into();
             scenario_body["public_preparation"] = true.into();
+        }
+        if public_continuation {
+            scenario_body["schema"] =
+                "crucible.installed-public-native-preservation-scenario.v1".into();
+            scenario_body["public_continuation"] = true.into();
         }
         let scenario_ref = put_json(&mut contents, &scenario_body)?;
         let initialization_ref = put_json(
@@ -232,10 +258,10 @@ impl MixedProfile {
             owners,
             requirements: ScenarioRequirements {
                 deterministic: true,
-                exact_capture: !public_preparation,
-                exact_continuation: !public_preparation,
-                durable_restart: !public_preparation,
-                accepted_limited_state_nodes: if public_preparation {
+                exact_capture: (!public_preparation || public_continuation),
+                exact_continuation: (!public_preparation || public_continuation),
+                durable_restart: (!public_preparation || public_continuation),
+                accepted_limited_state_nodes: if public_preparation && !public_continuation {
                     vec![Id::new("clock")?, Id::new("cpu")?]
                 } else {
                     Vec::new()
@@ -251,6 +277,7 @@ impl MixedProfile {
             qualification,
             isa: isa.to_owned(),
             public_preparation,
+            public_continuation,
         })
     }
 }
@@ -260,6 +287,7 @@ fn select_public_preparation(
     descriptor: &mut NodeDescriptor,
     binding: &mut BindingCompatibility,
     contents: &mut BTreeMap<String, ScenarioContent>,
+    preservation: bool,
 ) -> Result<(), NodeObservedError> {
     use crucible::node_adapters::{
         HOST_PUBLIC_CLOCK_PREPARATION_SPECIFICATION,
@@ -285,10 +313,12 @@ fn select_public_preparation(
     }
     let mut guarantee: GuaranteeProfile =
         serde_json::from_slice(&contents[&binding.guarantees_ref.hash.digest].bytes)?;
-    guarantee.capture_scope = crucible_node_contract::CaptureScope::None;
-    guarantee.continuation = crucible_node_contract::Continuation::Unsupported;
-    guarantee.durable_restart = false;
-    guarantee.isolated_fork = false;
+    if !preservation {
+        guarantee.capture_scope = crucible_node_contract::CaptureScope::None;
+        guarantee.continuation = crucible_node_contract::Continuation::Unsupported;
+        guarantee.durable_restart = false;
+        guarantee.isolated_fork = false;
+    }
     guarantee.conditional_replay = false;
     binding.guarantees_ref = put_json(contents, &guarantee)?;
     let mut configuration: serde_json::Value =
@@ -296,11 +326,58 @@ fn select_public_preparation(
     configuration["public_preparation_schema"] = serde_json::to_value(&schema)?;
     descriptor.configuration_ref = put_json(contents, &configuration)?;
     binding.configuration_ref = descriptor.configuration_ref.clone();
-    binding.implementation.formats = vec![schema];
+    if preservation {
+        let (continuation, specification, profile) = if descriptor.id.as_str() == "clock" {
+            (
+                crucible::node_adapters::host_public_clock_continuation_schema(),
+                crucible::node_adapters::HOST_PUBLIC_CLOCK_CONTINUATION_SPECIFICATION,
+                crucible::node_adapters::HOST_PUBLIC_CLOCK_CONTINUATION_PROFILE,
+            )
+        } else {
+            (
+                crucible::node_adapters::gem5::gem5_public_continuation_schema(),
+                crucible::node_adapters::gem5::GEM5_PUBLIC_CONTINUATION_SPECIFICATION,
+                "gem5/public-process-preservation-v1",
+            )
+        };
+        let continuation = continuation.map_err(|error| super::super::refused(&error.reason))?;
+        if put(contents, specification.as_bytes().to_vec(), "text/plain")?
+            != continuation.definition
+        {
+            return Err(super::super::refused(
+                "public preservation schema bytes differ",
+            ));
+        }
+        binding
+            .implementation
+            .formats
+            .extend([schema, continuation.clone()]);
+        binding
+            .implementation
+            .formats
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        configuration["public_continuation_schema"] = serde_json::to_value(&continuation)?;
+        descriptor.configuration_ref = put_json(contents, &configuration)?;
+        binding.configuration_ref = descriptor.configuration_ref.clone();
+        for facet in &mut binding.operating_contract.facets {
+            if matches!(
+                facet.id.as_str(),
+                "host/preservation-v1" | GEM5_OPAQUE_PRESERVATION_PROFILE
+            ) {
+                facet.id = Id::new(profile)?;
+            }
+        }
+    } else {
+        binding.implementation.formats = vec![schema];
+        binding
+            .operating_contract
+            .facets
+            .retain(|facet| facet.id.as_str() != GEM5_OPAQUE_PRESERVATION_PROFILE);
+    }
     binding
         .operating_contract
         .facets
-        .retain(|facet| facet.id.as_str() != GEM5_OPAQUE_PRESERVATION_PROFILE);
+        .sort_by(|left, right| left.id.cmp(&right.id));
     for facet in &mut binding.operating_contract.facets {
         facet.guarantees_ref = binding.guarantees_ref.clone();
         facet.configuration_ref = descriptor.configuration_ref.clone();
@@ -320,7 +397,7 @@ fn select_public_preparation(
             "descriptor":descriptor,"implementation":binding.implementation,
             "operating_contract":binding.operating_contract,
             "capabilities":capabilities,"guarantees":guarantee,
-            "preservation":"unsupported until original preparation-bearing codec qualification",
+            "preservation":if preservation { "complete original preparation-bearing native owner codec" } else { "unsupported until original preparation-bearing codec qualification" },
         }),
     )?;
     Ok(())

@@ -42,6 +42,7 @@ pub(super) fn materialize(
     for selected in selections {
         let reference = match &selected.kind {
             InstalledNodeKind::HostClock => continue,
+            InstalledNodeKind::HostSeededLink { profile } => &profile.program,
             InstalledNodeKind::HostIo { profile } => profile.artifact(),
             InstalledNodeKind::HostScripted { profile } => profile.artifact(),
             InstalledNodeKind::HostSemantics { profile } => &profile.program,

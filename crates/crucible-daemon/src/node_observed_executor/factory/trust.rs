@@ -264,6 +264,7 @@ impl AdmissionEvidence for InstalledEvidence {
                     | "reference-device/content-possession-v1"
                     | "crucible/octet-stream-v1"
                     | "host/native-continuation-v1"
+                    | "host/native-seeded-link-v1"
                     | "crucible/block-request-v1"
                     | "crucible/block-response-v1"
                     | "crucible/filesystem-request-v1"

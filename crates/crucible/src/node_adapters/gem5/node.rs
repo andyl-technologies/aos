@@ -97,6 +97,7 @@ pub struct QualifiedGem5Node {
     pub(super) capture_roots: Vec<std::path::PathBuf>,
     pub(super) restored: Option<Gem5AuthenticatedContinuation>,
     pub(super) public_preparation: bool,
+    pub(super) public_continuation: bool,
     pub(super) prepared_mapping: Option<super::preparation_mapping::Gem5PreparedMapping>,
     thread: std::thread::ThreadId,
     facet: ExactFacet,
@@ -135,6 +136,17 @@ impl QualifiedGem5Node {
                         "gem5 qualified native scope, graph or finite callback credit differs",
                     ));
                 }
+                let public_preservation = preparation
+                    .binding
+                    .compatibility
+                    .implementation
+                    .formats
+                    .contains(&super::public_continuation::gem5_public_continuation_schema()?);
+                let preservation_profile = if public_preservation {
+                    super::public_continuation::GEM5_PUBLIC_CONTINUATION_PROFILE
+                } else {
+                    GEM5_OPAQUE_PRESERVATION_PROFILE
+                };
                 let operating = &preparation.binding.compatibility.operating_contract;
                 if operating.mode != OperatingMode::Exact
                     || operating.resolution_ps != Some(1.into())
@@ -146,8 +158,7 @@ impl QualifiedGem5Node {
                     || operating.facets.iter().any(|facet| {
                         facet.version != 1
                             || (facet.id.as_str() != GEM5_CLOSED_EXACT_PROFILE
-                                && (archive.is_none()
-                                    || facet.id.as_str() != GEM5_OPAQUE_PRESERVATION_PROFILE))
+                                && (archive.is_none() || facet.id.as_str() != preservation_profile))
                     })
                     || graph
                         .world()
@@ -203,6 +214,26 @@ impl QualifiedGem5Node {
                     .map_err(native_refusal)?;
                 if let Some(restored) = &restored {
                     super::restore::validate_fresh_continuation(&preparation, restored)?;
+                    if let Some(public) = &restored.public_preparation {
+                        if public.world.activation != restored.source.source_activation
+                            || !preparation
+                                .binding
+                                .compatibility
+                                .implementation
+                                .formats
+                                .contains(
+                                    &super::public_continuation::gem5_public_continuation_schema()?,
+                                )
+                        {
+                            return Err(refusal(
+                                "restored public native source differs from its selected graph",
+                            ));
+                        }
+                        preparation
+                            .native
+                            .restored_prepared_session(&authority)
+                            .map_err(native_refusal)?;
+                    }
                 } else if preparation.native.pending_completion().is_some() {
                     return Err(refusal(
                         "gem5 initial qualification retains an unbound native publication",
@@ -259,7 +290,13 @@ impl QualifiedGem5Node {
                     .operating_contract
                     .facets
                     .iter()
-                    .find(|selected| selected.id.as_str() == GEM5_OPAQUE_PRESERVATION_PROFILE)
+                    .find(|selected| {
+                        matches!(
+                            selected.id.as_str(),
+                            GEM5_OPAQUE_PRESERVATION_PROFILE
+                                | super::public_continuation::GEM5_PUBLIC_CONTINUATION_PROFILE
+                        )
+                    })
                     .map(|selected| selected.id.clone())
                     .unwrap_or_else(|| facet.clone());
                 let sequence = preparation
@@ -269,6 +306,9 @@ impl QualifiedGem5Node {
                     .map(|birth| birth.output_id.get())
                     .max()
                     .unwrap_or(0);
+                let public_continuation = restored
+                    .as_ref()
+                    .is_some_and(|source| source.public_preparation.is_some());
                 Ok(Self {
                     preparation,
                     authority,
@@ -292,7 +332,8 @@ impl QualifiedGem5Node {
                     captures: Vec::new(),
                     capture_roots: Vec::new(),
                     restored,
-                    public_preparation: false,
+                    public_preparation: public_continuation,
+                    public_continuation,
                     prepared_mapping: None,
                     thread: std::thread::current().id(),
                     facet: ExactFacet(facet),
@@ -493,6 +534,11 @@ impl SimulationNode for QualifiedGem5Node {
         world: &ActivationRecord,
         ready: &ReadyAttestation,
     ) -> Result<(), OperationFailure> {
+        if self.restored.is_some() {
+            return Err(refusal(
+                "restored public native custody cannot authenticate initial preparation",
+            ));
+        }
         let mapping = self.prepared_mapping.as_ref().ok_or_else(|| {
             refusal("gem5 source did not select genuine public initial preparation")
         })?;
@@ -644,6 +690,9 @@ impl SimulationNode for QualifiedGem5Node {
         source: &RuntimeSnapshot,
         limits: NativeCaptureLimits,
     ) -> Result<InstalledNativeCapture, OperationFailure> {
+        if self.public_continuation {
+            return self.capture_public_installed(activation, source, limits);
+        }
         if self.public_preparation {
             return Err(refusal(
                 "public gem5 preparation requires a distinct preparation-bearing capture codec",
