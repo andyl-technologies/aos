@@ -14,6 +14,7 @@
 //! SHA-256 digest covers a domain separator and every preceding byte, including
 //! all variable bytes.
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use sha2::{Digest as _, Sha256};
 
 use super::{DurableNamespaceTargetReferenceV1, MountAttemptError, Record};
@@ -85,31 +86,33 @@ impl Record {
         bytes
     }
 
-    pub(super) fn decode(mut bytes: &[u8]) -> Result<Self, MountAttemptError> {
-        if bytes.len() < FIXED_RECORD_BYTES || take::<8>(&mut bytes)? != *MAGIC {
+    pub(super) fn decode(bytes: &[u8]) -> Result<Self, MountAttemptError> {
+        let mut reader = BoundedReader::new(bytes, |_| MountAttemptError::CorruptState);
+
+        if bytes.len() < FIXED_RECORD_BYTES || reader.array::<8>()? != *MAGIC {
             return Err(MountAttemptError::CorruptState);
         }
-        if take::<1>(&mut bytes)? != [STATE_ADMITTED] {
+        if reader.array::<1>()? != [STATE_ADMITTED] {
             return Err(MountAttemptError::CorruptState);
         }
-        let flags = take::<1>(&mut bytes)?[0];
-        if flags & !HAS_CATALOG != 0 || take::<2>(&mut bytes)? != [0; 2] {
+        let flags = reader.array::<1>()?[0];
+        if flags & !HAS_CATALOG != 0 || reader.array::<2>()? != [0; 2] {
             return Err(MountAttemptError::CorruptState);
         }
 
-        let request_id = take(&mut bytes)?;
+        let request_id = reader.array()?;
         let namespace_target = DurableNamespaceTargetReferenceV1::from_parts(
-            SandboxId::from_bytes(take(&mut bytes)?),
-            IncarnationId::from_bytes(take(&mut bytes)?),
-            u64::from_be_bytes(take(&mut bytes)?),
-            take(&mut bytes)?,
-            u64::from_be_bytes(take(&mut bytes)?),
-            take(&mut bytes)?,
+            SandboxId::from_bytes(reader.array()?),
+            IncarnationId::from_bytes(reader.array()?),
+            u64::from_be_bytes(reader.array()?),
+            reader.array()?,
+            u64::from_be_bytes(reader.array()?),
+            reader.array()?,
         );
-        let assignment_epoch = u64::from_be_bytes(take(&mut bytes)?);
-        let desired_generation = u64::from_be_bytes(take(&mut bytes)?);
-        let assignment_digest = take(&mut bytes)?;
-        let catalog_bytes = take(&mut bytes)?;
+        let assignment_epoch = u64::from_be_bytes(reader.array()?);
+        let desired_generation = u64::from_be_bytes(reader.array()?);
+        let assignment_digest = reader.array()?;
+        let catalog_bytes = reader.array()?;
         let catalog_commitment = if flags & HAS_CATALOG != 0 {
             Some(catalog_bytes)
         } else if catalog_bytes == [0; 32] {
@@ -117,27 +120,27 @@ impl Record {
         } else {
             return Err(MountAttemptError::CorruptState);
         };
-        let semantic_digest = take(&mut bytes)?;
-        let plan_digest = take(&mut bytes)?;
-        let template_digest = take(&mut bytes)?;
-        let lease_digest = take(&mut bytes)?;
-        let lease_generation = u64::from_be_bytes(take(&mut bytes)?);
-        let deadline_boottime_nanoseconds = u64::from_be_bytes(take(&mut bytes)?);
-        let template_body_bytes = length(&mut bytes)?;
-        let body_bytes = length(&mut bytes)?;
-        let packet_bytes = length(&mut bytes)?;
+        let semantic_digest = reader.array()?;
+        let plan_digest = reader.array()?;
+        let template_digest = reader.array()?;
+        let lease_digest = reader.array()?;
+        let lease_generation = u64::from_be_bytes(reader.array()?);
+        let deadline_boottime_nanoseconds = u64::from_be_bytes(reader.array()?);
+        let template_body_bytes = length(&mut reader)?;
+        let body_bytes = length(&mut reader)?;
+        let packet_bytes = length(&mut reader)?;
         let variable_bytes = template_body_bytes
             .checked_add(body_bytes)
             .and_then(|size| size.checked_add(packet_bytes))
             .ok_or(MountAttemptError::CorruptState)?;
-        if bytes.len() != variable_bytes.saturating_add(DIGEST_BYTES) {
+        if reader.remaining() != variable_bytes.saturating_add(DIGEST_BYTES) {
             return Err(MountAttemptError::CorruptState);
         }
 
-        let template_body = take_vec(&mut bytes, template_body_bytes)?;
-        let body = take_vec(&mut bytes, body_bytes)?;
-        let packet = take_vec(&mut bytes, packet_bytes)?;
-        let digest = take(&mut bytes)?;
+        let template_body = reader.bytes(template_body_bytes)?.to_vec();
+        let body = reader.bytes(body_bytes)?.to_vec();
+        let packet = reader.bytes(packet_bytes)?.to_vec();
+        let digest = reader.array()?;
         let record = Self {
             request_id,
             namespace_target,
@@ -156,32 +159,13 @@ impl Record {
             packet,
             digest,
         };
-        if !bytes.is_empty() || record.compute_digest() != record.digest {
+        if !reader.is_empty() || record.compute_digest() != record.digest {
             return Err(MountAttemptError::CorruptState);
         }
         Ok(record)
     }
 }
 
-fn length(bytes: &mut &[u8]) -> Result<usize, MountAttemptError> {
-    usize::try_from(u32::from_be_bytes(take(bytes)?)).map_err(|_| MountAttemptError::CorruptState)
-}
-
-fn take_vec(bytes: &mut &[u8], length: usize) -> Result<Vec<u8>, MountAttemptError> {
-    let (prefix, remaining) = bytes
-        .split_at_checked(length)
-        .ok_or(MountAttemptError::CorruptState)?;
-    *bytes = remaining;
-    Ok(prefix.to_vec())
-}
-
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], MountAttemptError> {
-    let (prefix, remaining) = bytes
-        .split_at_checked(N)
-        .ok_or(MountAttemptError::CorruptState)?;
-    let value = prefix
-        .try_into()
-        .map_err(|_| MountAttemptError::CorruptState)?;
-    *bytes = remaining;
-    Ok(value)
+fn length(reader: &mut BoundedReader<'_, MountAttemptError>) -> Result<usize, MountAttemptError> {
+    usize::try_from(u32::from_be_bytes(reader.array()?)).map_err(|_| MountAttemptError::CorruptState)
 }

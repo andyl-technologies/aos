@@ -8,6 +8,7 @@
 //! Integers and lengths are big endian. The final SHA-256 digest covers a
 //! domain separator and every preceding byte, including the receipt.
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use sha2::{Digest as _, Sha256};
 
 use super::CompletionRecord;
@@ -52,54 +53,37 @@ impl CompletionRecord {
         bytes
     }
 
-    pub(in crate::mount_attempt) fn decode(mut bytes: &[u8]) -> Result<Self, MountAttemptError> {
-        if bytes.len() < FIXED_RECORD_BYTES || take::<8>(&mut bytes)? != *MAGIC {
+    pub(in crate::mount_attempt) fn decode(bytes: &[u8]) -> Result<Self, MountAttemptError> {
+        let mut reader = BoundedReader::new(bytes, |_| MountAttemptError::CorruptState);
+
+        if bytes.len() < FIXED_RECORD_BYTES || reader.array::<8>()? != *MAGIC {
             return Err(MountAttemptError::CorruptState);
         }
-        if take::<1>(&mut bytes)? != [STATE_SUCCEEDED]
-            || take::<1>(&mut bytes)? != [0]
-            || take::<2>(&mut bytes)? != [0; 2]
+        if reader.array::<1>()? != [STATE_SUCCEEDED]
+            || reader.array::<1>()? != [0]
+            || reader.array::<2>()? != [0; 2]
         {
             return Err(MountAttemptError::CorruptState);
         }
 
-        let request_id = take(&mut bytes)?;
-        let attempt_digest = take(&mut bytes)?;
-        let receipt_bytes = usize::try_from(u32::from_be_bytes(take(&mut bytes)?))
+        let request_id = reader.array()?;
+        let attempt_digest = reader.array()?;
+        let receipt_bytes = usize::try_from(u32::from_be_bytes(reader.array()?))
             .map_err(|_| MountAttemptError::CorruptState)?;
-        if bytes.len() != receipt_bytes.saturating_add(DIGEST_BYTES) {
+        if reader.remaining() != receipt_bytes.saturating_add(DIGEST_BYTES) {
             return Err(MountAttemptError::CorruptState);
         }
-        let receipt = take_vec(&mut bytes, receipt_bytes)?;
-        let digest = take(&mut bytes)?;
+        let receipt = reader.bytes(receipt_bytes)?.to_vec();
+        let digest = reader.array()?;
         let record = Self {
             request_id,
             attempt_digest,
             receipt,
             digest,
         };
-        if !bytes.is_empty() || record.compute_digest() != record.digest {
+        if !reader.is_empty() || record.compute_digest() != record.digest {
             return Err(MountAttemptError::CorruptState);
         }
         Ok(record)
     }
-}
-
-fn take_vec(bytes: &mut &[u8], length: usize) -> Result<Vec<u8>, MountAttemptError> {
-    let (prefix, remaining) = bytes
-        .split_at_checked(length)
-        .ok_or(MountAttemptError::CorruptState)?;
-    *bytes = remaining;
-    Ok(prefix.to_vec())
-}
-
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], MountAttemptError> {
-    let (prefix, remaining) = bytes
-        .split_at_checked(N)
-        .ok_or(MountAttemptError::CorruptState)?;
-    let value = prefix
-        .try_into()
-        .map_err(|_| MountAttemptError::CorruptState)?;
-    *bytes = remaining;
-    Ok(value)
 }

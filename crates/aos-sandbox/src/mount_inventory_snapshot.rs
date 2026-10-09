@@ -10,6 +10,7 @@
 //! and same-sequence conflict rule. This module only retains the common bounded
 //! framing and durable replay order; a snapshot never grants Mount authority.
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use std::marker::PhantomData;
 
 use aos_proto::aos::sandbox::local::v1::{Audience, BrokerClientHello, BrokerMethod};
@@ -301,36 +302,38 @@ impl<Kind: InventorySnapshotKind> SnapshotRecord<Kind> {
     /// # Errors
     ///
     /// Rejects foreign framing, bad lengths, and changed digest bytes.
-    pub(crate) fn decode(mut bytes: &[u8]) -> Result<Self, MountAttemptError> {
-        if bytes.len() < FIXED_RECORD_BYTES || take::<8>(&mut bytes)? != *Kind::MAGIC {
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, MountAttemptError> {
+        let mut reader = BoundedReader::new(bytes, |_| MountAttemptError::CorruptState);
+
+        if bytes.len() < FIXED_RECORD_BYTES || reader.array::<8>()? != *Kind::MAGIC {
             return Err(MountAttemptError::CorruptState);
         }
-        if take::<1>(&mut bytes)? != [COMPLETE]
-            || take::<1>(&mut bytes)? != [0]
-            || take::<2>(&mut bytes)? != [0; 2]
+        if reader.array::<1>()? != [COMPLETE]
+            || reader.array::<1>()? != [0]
+            || reader.array::<2>()? != [0; 2]
         {
             return Err(MountAttemptError::CorruptState);
         }
 
-        let request_id = take(&mut bytes)?;
-        let controller_state_digest = take(&mut bytes)?;
-        let request_bytes = length(&mut bytes)?;
-        let response_bytes = length(&mut bytes)?;
+        let request_id = reader.array()?;
+        let controller_state_digest = reader.array()?;
+        let request_bytes = length(&mut reader)?;
+        let response_bytes = length(&mut reader)?;
         let variable_bytes = request_bytes
             .checked_add(response_bytes)
             .ok_or(MountAttemptError::CorruptState)?;
-        if bytes.len() != variable_bytes.saturating_add(DIGEST_BYTES) {
+        if reader.remaining() != variable_bytes.saturating_add(DIGEST_BYTES) {
             return Err(MountAttemptError::CorruptState);
         }
         let record = Self {
             request_id,
             controller_state_digest,
-            request_body: take_vec(&mut bytes, request_bytes)?,
-            response_body: take_vec(&mut bytes, response_bytes)?,
-            digest: take(&mut bytes)?,
+            request_body: reader.bytes(request_bytes)?.to_vec(),
+            response_body: reader.bytes(response_bytes)?.to_vec(),
+            digest: reader.array()?,
             kind: PhantomData,
         };
-        if !bytes.is_empty() || record.compute_digest() != record.digest {
+        if !reader.is_empty() || record.compute_digest() != record.digest {
             return Err(MountAttemptError::CorruptState);
         }
         Ok(record)
@@ -440,27 +443,8 @@ pub(crate) fn persist_snapshot<Kind: InventorySnapshotKind>(
     Ok((record, inventory, recorded))
 }
 
-fn length(bytes: &mut &[u8]) -> Result<usize, MountAttemptError> {
-    usize::try_from(u32::from_be_bytes(take(bytes)?)).map_err(|_| MountAttemptError::CorruptState)
-}
-
-fn take_vec(bytes: &mut &[u8], length: usize) -> Result<Vec<u8>, MountAttemptError> {
-    let (prefix, remaining) = bytes
-        .split_at_checked(length)
-        .ok_or(MountAttemptError::CorruptState)?;
-    *bytes = remaining;
-    Ok(prefix.to_vec())
-}
-
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], MountAttemptError> {
-    let (prefix, remaining) = bytes
-        .split_at_checked(N)
-        .ok_or(MountAttemptError::CorruptState)?;
-    let value = prefix
-        .try_into()
-        .map_err(|_| MountAttemptError::CorruptState)?;
-    *bytes = remaining;
-    Ok(value)
+fn length(reader: &mut BoundedReader<'_, MountAttemptError>) -> Result<usize, MountAttemptError> {
+    usize::try_from(u32::from_be_bytes(reader.array()?)).map_err(|_| MountAttemptError::CorruptState)
 }
 
 #[cfg(test)]

@@ -13,6 +13,7 @@
 //! Integers and lengths are big endian. The final digest covers a domain
 //! separator and every preceding byte, including both raw kernel paths.
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{AttachmentId, IncarnationId, SandboxId};
 use sha2::{Digest as _, Sha256};
 
@@ -91,64 +92,66 @@ impl Record {
         bytes
     }
 
-    pub(super) fn decode(mut bytes: &[u8]) -> Result<Self, AttachmentVerificationError> {
-        if bytes.len() < FIXED_RECORD_BYTES || take::<8>(&mut bytes)? != *MAGIC {
+    pub(super) fn decode(bytes: &[u8]) -> Result<Self, AttachmentVerificationError> {
+        let mut reader = BoundedReader::new(bytes, |_| AttachmentVerificationError::CorruptState);
+
+        if bytes.len() < FIXED_RECORD_BYTES || reader.array::<8>()? != *MAGIC {
             return Err(AttachmentVerificationError::CorruptState);
         }
-        if take::<1>(&mut bytes)? != [STATE_VERIFIED]
-            || take::<1>(&mut bytes)? != [0]
-            || take::<2>(&mut bytes)? != [0; 2]
+        if reader.array::<1>()? != [STATE_VERIFIED]
+            || reader.array::<1>()? != [0]
+            || reader.array::<2>()? != [0; 2]
         {
             return Err(AttachmentVerificationError::CorruptState);
         }
 
-        let attachment_id = AttachmentId::from_bytes(take(&mut bytes)?);
-        let desired_generation = u64::from_be_bytes(take(&mut bytes)?);
-        let desired_record_digest = take(&mut bytes)?;
+        let attachment_id = AttachmentId::from_bytes(reader.array()?);
+        let desired_generation = u64::from_be_bytes(reader.array()?);
+        let desired_record_digest = reader.array()?;
         let namespace_target = DurableNamespaceTargetReferenceV1::from_parts(
-            SandboxId::from_bytes(take(&mut bytes)?),
-            IncarnationId::from_bytes(take(&mut bytes)?),
-            u64::from_be_bytes(take(&mut bytes)?),
-            take(&mut bytes)?,
-            u64::from_be_bytes(take(&mut bytes)?),
-            take(&mut bytes)?,
+            SandboxId::from_bytes(reader.array()?),
+            IncarnationId::from_bytes(reader.array()?),
+            u64::from_be_bytes(reader.array()?),
+            reader.array()?,
+            u64::from_be_bytes(reader.array()?),
+            reader.array()?,
         );
-        let assignment_epoch = u64::from_be_bytes(take(&mut bytes)?);
-        let assignment_generation = u64::from_be_bytes(take(&mut bytes)?);
-        let assignment_digest = take(&mut bytes)?;
-        let inventory_snapshot_digest = take(&mut bytes)?;
-        let inventory_request_id = take(&mut bytes)?;
-        let mount_handle = take(&mut bytes)?;
-        let resource_revision = u64::from_be_bytes(take(&mut bytes)?);
-        let resource_kernel_boot_id = take(&mut bytes)?;
-        let recipe_digest = take(&mut bytes)?;
-        let resource_digest = take(&mut bytes)?;
+        let assignment_epoch = u64::from_be_bytes(reader.array()?);
+        let assignment_generation = u64::from_be_bytes(reader.array()?);
+        let assignment_digest = reader.array()?;
+        let inventory_snapshot_digest = reader.array()?;
+        let inventory_request_id = reader.array()?;
+        let mount_handle = reader.array()?;
+        let resource_revision = u64::from_be_bytes(reader.array()?);
+        let resource_kernel_boot_id = reader.array()?;
+        let recipe_digest = reader.array()?;
+        let resource_digest = reader.array()?;
         let observation = ObservationRecord {
-            unique_mount_id: u64::from_be_bytes(take(&mut bytes)?),
-            parent_mount_id: u64::from_be_bytes(take(&mut bytes)?),
-            mount_namespace_id: u64::from_be_bytes(take(&mut bytes)?),
-            device_major: u32::from_be_bytes(take(&mut bytes)?),
-            device_minor: u32::from_be_bytes(take(&mut bytes)?),
-            superblock_magic: u64::from_be_bytes(take(&mut bytes)?),
-            superblock_flags: u32::from_be_bytes(take(&mut bytes)?),
-            mount_attributes: u64::from_be_bytes(take(&mut bytes)?),
-            propagation: u64::from_be_bytes(take(&mut bytes)?),
-            identity_map_digest: take(&mut bytes)?,
+            unique_mount_id: u64::from_be_bytes(reader.array()?),
+            parent_mount_id: u64::from_be_bytes(reader.array()?),
+            mount_namespace_id: u64::from_be_bytes(reader.array()?),
+            device_major: u32::from_be_bytes(reader.array()?),
+            device_minor: u32::from_be_bytes(reader.array()?),
+            superblock_magic: u64::from_be_bytes(reader.array()?),
+            superblock_flags: u32::from_be_bytes(reader.array()?),
+            mount_attributes: u64::from_be_bytes(reader.array()?),
+            propagation: u64::from_be_bytes(reader.array()?),
+            identity_map_digest: reader.array()?,
             root: Vec::new(),
             mount_point: Vec::new(),
         };
-        let root_bytes = length(&mut bytes)?;
-        let mount_point_bytes = length(&mut bytes)?;
+        let root_bytes = length(&mut reader)?;
+        let mount_point_bytes = length(&mut reader)?;
         let variable_bytes = root_bytes
             .checked_add(mount_point_bytes)
             .ok_or(AttachmentVerificationError::CorruptState)?;
-        if bytes.len() != variable_bytes.saturating_add(DIGEST_BYTES) {
+        if reader.remaining() != variable_bytes.saturating_add(DIGEST_BYTES) {
             return Err(AttachmentVerificationError::CorruptState);
         }
         let mut observation = observation;
-        observation.root = take_vec(&mut bytes, root_bytes)?;
-        observation.mount_point = take_vec(&mut bytes, mount_point_bytes)?;
-        let digest = take(&mut bytes)?;
+        observation.root = reader.bytes(root_bytes)?.to_vec();
+        observation.mount_point = reader.bytes(mount_point_bytes)?.to_vec();
+        let digest = reader.array()?;
         let record = Self {
             attachment_id,
             desired_generation,
@@ -167,33 +170,14 @@ impl Record {
             observation,
             digest,
         };
-        if !bytes.is_empty() || record.compute_digest() != record.digest {
+        if !reader.is_empty() || record.compute_digest() != record.digest {
             return Err(AttachmentVerificationError::CorruptState);
         }
         Ok(record)
     }
 }
 
-fn length(bytes: &mut &[u8]) -> Result<usize, AttachmentVerificationError> {
-    usize::try_from(u32::from_be_bytes(take(bytes)?))
+fn length(reader: &mut BoundedReader<'_, AttachmentVerificationError>) -> Result<usize, AttachmentVerificationError> {
+    usize::try_from(u32::from_be_bytes(reader.array()?))
         .map_err(|_| AttachmentVerificationError::CorruptState)
-}
-
-fn take_vec(bytes: &mut &[u8], length: usize) -> Result<Vec<u8>, AttachmentVerificationError> {
-    let (prefix, remaining) = bytes
-        .split_at_checked(length)
-        .ok_or(AttachmentVerificationError::CorruptState)?;
-    *bytes = remaining;
-    Ok(prefix.to_vec())
-}
-
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], AttachmentVerificationError> {
-    let (prefix, remaining) = bytes
-        .split_at_checked(N)
-        .ok_or(AttachmentVerificationError::CorruptState)?;
-    let value = prefix
-        .try_into()
-        .map_err(|_| AttachmentVerificationError::CorruptState)?;
-    *bytes = remaining;
-    Ok(value)
 }
