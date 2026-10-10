@@ -845,8 +845,10 @@ fn q04_history(
         .get(&(RecordNamespace::ControllerPolicyHold, CONTROLLER_IDENTITY_KEY.to_vec()))
         .ok_or(JournalError::ProtectedBoundary)?;
     let identity = Q04CutIdentityV1::decode(identity)?;
-    let origin = state.get(&(RecordNamespace::ControllerPolicyHold,
-        aos_sandbox_protocol::domain_ledger::resource_bank::CONTROLLER_INPUT_ORIGIN_KEY.to_vec()));
+    let origin = state.get(&(
+        RecordNamespace::ControllerPolicyHold,
+        aos_sandbox_protocol::domain_ledger::resource_bank::CONTROLLER_INPUT_ORIGIN_KEY.to_vec(),
+    ));
     aos_sandbox_protocol::domain_ledger::resource_bank::require_input_history(
         state, &identity, origin.map(Vec::as_slice),
     ).map_err(|_| JournalError::ProtectedBoundary)?;

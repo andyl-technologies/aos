@@ -20,7 +20,9 @@ mod settlement;
 
 use std::collections::BTreeMap;
 
-use aos_sandbox_core::{AccountingError, ObjectDigest, RecordNamespace, ResourceAccount, ResourceVector};
+use aos_sandbox_core::{
+    AccountingError, ObjectDigest, RecordNamespace, ResourceAccount, ResourceVector,
+};
 use aos_sandbox_journal::framing::FrameError;
 use aos_sandbox_policy::{PublisherPolicyDataError, RetainedPublisherCompilerOriginV3};
 
@@ -29,10 +31,20 @@ use super::protected_names::ProtectedJournalNamesV1;
 use super::transaction::{JournalRecord, JournalTransaction};
 use super::{JournalTransactionDataError, ProtectedHistoryDataErrorV1};
 
-pub use account::{first_global_prefix_append_bytes, project_child, project_grant_claim, project_preparation_claim, require_grant_generation, reserve_head, settled_pair};
+pub use account::{
+    first_global_prefix_append_bytes, project_child, project_grant_claim,
+    project_preparation_claim, require_grant_generation, reserve_head, settled_pair,
+};
 pub use bootstrap::{initial_enrollment_claims, prepare_enrollment_subdivisions};
-pub use codec::{decode_image_policy, decode_pid1_delivery, IMAGE_POLICY_BYTES, HOST_IMAGE_POLICY_BYTES, FIRST_GLOBAL_IMAGE_POLICY_BYTES, NIX_INTAKE_IMAGE_POLICY_BYTES, Q04_INTAKE_IMAGE_POLICY_BYTES, ROOT_IMAGE_POLICY_BYTES};
-pub use q04::{BANK_MEMBERS, inclusive_claim_for_cut, retained_use_claim_for_cut, sandbox_child, require_input_history};
+pub use codec::{
+    decode_image_policy, decode_pid1_delivery, IMAGE_POLICY_BYTES, HOST_IMAGE_POLICY_BYTES,
+    FIRST_GLOBAL_IMAGE_POLICY_BYTES, NIX_INTAKE_IMAGE_POLICY_BYTES, Q04_INTAKE_IMAGE_POLICY_BYTES,
+    ROOT_IMAGE_POLICY_BYTES,
+};
+pub use q04::{
+    BANK_MEMBERS, inclusive_claim_for_cut, retained_use_claim_for_cut, sandbox_child,
+    require_input_history,
+};
 pub use replay::{find_head, has_head, prior_initial_project_grant, validate};
 pub use settlement::{PhysicalHistory, transaction_digest};
 
@@ -89,7 +101,10 @@ impl NativeLayoutDemand {
     /// The Native caller supplies widths from its actual types. This value carries no
     /// owner or proof that a layout fits the failure allowance.
     pub const fn new(q04_attempt_bytes: usize, preparation_attempt_bytes: usize) -> Self {
-        Self { q04_attempt_bytes, preparation_attempt_bytes }
+        Self {
+            q04_attempt_bytes,
+            preparation_attempt_bytes,
+        }
     }
 }
 
@@ -142,7 +157,9 @@ impl ImageBootstrapPolicy {
             aos_sandbox_core::ResourceCeilings::bounded(self.capacity),
             self.baseline,
             ResourceVector::ZERO,
-        )?.reserve(self.controller)?.reserve(self.components)?;
+        )?
+        .reserve(self.controller)?
+        .reserve(self.components)?;
         for envelope in [self.controller, self.components] {
             for dimension in [
                 aos_sandbox_core::ResourceDimension::MemoryBytes,
@@ -191,7 +208,8 @@ impl ImageBootstrapPolicy {
             }
         }
         if let Some(intake) = self.nix_original_start_intake {
-            let prefix = self.first_global_prefix
+            let prefix = self
+                .first_global_prefix
                 .ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
             self.controller.checked_sub(prefix)?.checked_sub(intake)?;
             for dimension in [
@@ -208,16 +226,21 @@ impl ImageBootstrapPolicy {
         }
         if let Some(intake) = self.q04_original_intake {
             intake.checked_sub(minimum_q04_failure_demand(layout)?)?;
-            let prefix = self.first_global_prefix
+            let prefix = self
+                .first_global_prefix
                 .ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
             if intake.get(aos_sandbox_core::ResourceDimension::CpuMicrosPerPeriod)
                 < prefix.get(aos_sandbox_core::ResourceDimension::CpuMicrosPerPeriod)
             {
                 return Err(ResourceBankDataError::EnrollmentUnavailable);
             }
-            let nix = self.nix_original_start_intake
+            let nix = self
+                .nix_original_start_intake
                 .ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
-            self.controller.checked_sub(prefix)?.checked_sub(nix)?.checked_sub(intake)?;
+            self.controller
+                .checked_sub(prefix)?
+                .checked_sub(nix)?
+                .checked_sub(intake)?;
             for dimension in [
                 aos_sandbox_core::ResourceDimension::CpuMicrosPerPeriod,
                 aos_sandbox_core::ResourceDimension::MemoryBytes,
@@ -231,10 +254,14 @@ impl ImageBootstrapPolicy {
             }
         }
         if let Some(root) = self.root_receiving {
-            let host = self.host.ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
+            let host = self
+                .host
+                .ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
             self.q04_original_intake
                 .ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
-            self.components.checked_sub(host.service)?.checked_sub(host.control)?
+            self.components
+                .checked_sub(host.service)?
+                .checked_sub(host.control)?
                 .checked_sub(root)?;
             require_root_service_envelope(root)?;
         }
@@ -316,7 +343,6 @@ pub enum ClaimPurpose {
     /// Distinct Root receiving subdivision.
     RootReceiving,
 }
-
 
 /// Retains the historical boot or sampled operation clock cut.
 ///
@@ -443,19 +469,23 @@ pub const FAILURE_MEMORY_BYTES: u64 = 2 * 1024 * 1024;
 ///
 /// # Errors
 /// Rejects checked arithmetic overflow or a payload beyond the fixed allowance.
-pub fn minimum_q04_failure_demand(layout: NativeLayoutDemand) -> Result<ResourceVector, ResourceBankDataError> {
+pub fn minimum_q04_failure_demand(
+    layout: NativeLayoutDemand,
+) -> Result<ResourceVector, ResourceBankDataError> {
     // These are fixed retained slots, not observations or retry allowances:
     // original, receiver, preparation, initial clock, Controller/Source/profile/
     // CPU posts, LAST, clock comparison, and the CPU owner's native failure.
     // Before attachment, journal errors carry static reasons or raw errno;
     // Linux path/CPU/boot errors have only closed messages below 128 bytes.
     let error_slots = 1_usize + 1 + 1 + 1 + 4 + 1 + 1 + 1;
-    let errors = error_slots.checked_mul(128)
+    let errors = error_slots
+        .checked_mul(128)
         .ok_or(ResourceBankDataError::Conflict)?;
     // Journal basenames are bounded at 255 bytes. The lock suffix adds five;
     // the two writers' name checks and two independent posts are distinct.
     // Source's fixed ancestry walk holds only its current directory pair.
-    let names = (255_usize + 5 + 1).checked_mul(4)
+    let names = (255_usize + 5 + 1)
+        .checked_mul(4)
         .and_then(|bytes| bytes.checked_add(2 * (4096 + 1)))
         .ok_or(ResourceBankDataError::Conflict)?;
     // kernel_pair reads boot_id twice per sample. Its genuine procfs ABI is
@@ -463,7 +493,8 @@ pub fn minimum_q04_failure_demand(layout: NativeLayoutDemand) -> Result<Resource
     // and at most a 64-byte Vec for this zero-size, 37-byte kernel file.
     // Include both samples, probes, and the fixed pathname conversion.
     let clocks = 2_usize * 2 * (64 + 32 + 37);
-    let payload = layout.q04_attempt_bytes
+    let payload = layout
+        .q04_attempt_bytes
         .checked_add(errors)
         .and_then(|bytes| bytes.checked_add(names))
         .and_then(|bytes| bytes.checked_add(clocks))
@@ -479,8 +510,28 @@ pub fn minimum_q04_failure_demand(layout: NativeLayoutDemand) -> Result<Resource
         // One cell per possible owned byte bounds the fixed owners without an
         // invented entry count. Full history, native append and archive rows
         // are priced separately before their first allocation or effect.
-        1, FAILURE_MEMORY_BYTES, 1, 4, 0, 0, 0, 0, 0, 0, FAILURE_MEMORY_BYTES, 0, 0, 0,
-        FAILURE_MEMORY_BYTES, 0, 0, 0, 0, FAILURE_MEMORY_BYTES, FAILURE_MEMORY_BYTES, 1,
+        1,
+        FAILURE_MEMORY_BYTES,
+        1,
+        4,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        FAILURE_MEMORY_BYTES,
+        0,
+        0,
+        0,
+        FAILURE_MEMORY_BYTES,
+        0,
+        0,
+        0,
+        0,
+        FAILURE_MEMORY_BYTES,
+        FAILURE_MEMORY_BYTES,
+        1,
     ]))
 }
 
@@ -493,17 +544,21 @@ pub fn require_root_service_envelope(
 ) -> Result<(), ResourceBankDataError> {
     let cpu = envelope.get(aos_sandbox_core::ResourceDimension::CpuMicrosPerPeriod);
     let memory = envelope.get(aos_sandbox_core::ResourceDimension::MemoryBytes);
-    if cpu == 0 || cpu % 1000 != 0 || cpu.checked_mul(10).is_none()
-        || memory == 0 || memory % 4096 != 0
-        || envelope.get(aos_sandbox_core::ResourceDimension::Pids) < 2 || envelope.get(aos_sandbox_core::ResourceDimension::Pids) == u64::MAX
-        || envelope.get(aos_sandbox_core::ResourceDimension::OpenFiles) < 80 || envelope.get(aos_sandbox_core::ResourceDimension::OpenFiles) == u64::MAX
+    if cpu == 0
+        || cpu % 1000 != 0
+        || cpu.checked_mul(10).is_none()
+        || memory == 0
+        || memory % 4096 != 0
+        || envelope.get(aos_sandbox_core::ResourceDimension::Pids) < 2
+        || envelope.get(aos_sandbox_core::ResourceDimension::Pids) == u64::MAX
+        || envelope.get(aos_sandbox_core::ResourceDimension::OpenFiles) < 80
+        || envelope.get(aos_sandbox_core::ResourceDimension::OpenFiles) == u64::MAX
         || envelope.get(aos_sandbox_core::ResourceDimension::ConcurrentOperations) == 0
     {
         return Err(ResourceBankDataError::EnrollmentUnavailable);
     }
     Ok(())
 }
-
 
 /// Compares complete retained Policy provenance with the four Q04 preimages.
 ///
@@ -515,8 +570,10 @@ pub fn require_origin_identity(
 ) -> Result<(), OriginIdentityDataError> {
     let original = RetainedPublisherCompilerOriginV3::from_record_bytes(bytes)
         .map_err(OriginIdentityDataError::Policy)?;
-    if original.project() != identity.project() || original.original_target() != identity.sandbox()
-        || original.normalized_input() != ObjectDigest::from_bytes(fixed_identity(identity.bytes(), 456))
+    if original.project() != identity.project()
+        || original.original_target() != identity.sandbox()
+        || original.normalized_input()
+            != ObjectDigest::from_bytes(fixed_identity(identity.bytes(), 456))
         || original.candidate() != ObjectDigest::from_bytes(fixed_identity(identity.bytes(), 488))
     {
         return Err(OriginIdentityDataError::IdentityMismatch);
@@ -553,9 +610,30 @@ pub struct AccountMutation<'a> {
 
 impl<'a> AccountMutation<'a> {
     /// Borrows the eight existing fields without validation or allocation.
-    pub fn new(parts: (&'a [u8; 16], &'a AccountHead, &'a AccountHead, &'a Claim, &'a Option<Claim>, &'a Option<AccountHead>, &'a Option<PreparationBinding>, &'a Option<TerminalBinding>)) -> Self {
-        let (transaction_id, before, after, claim, previous_claim, child, preparation, terminal) = parts;
-        Self { transaction_id, before, after, claim, previous_claim, child, preparation, terminal }
+    pub fn new(
+        parts: (
+            &'a [u8; 16],
+            &'a AccountHead,
+            &'a AccountHead,
+            &'a Claim,
+            &'a Option<Claim>,
+            &'a Option<AccountHead>,
+            &'a Option<PreparationBinding>,
+            &'a Option<TerminalBinding>,
+        ),
+    ) -> Self {
+        let (transaction_id, before, after, claim, previous_claim, child, preparation, terminal) =
+            parts;
+        Self {
+            transaction_id,
+            before,
+            after,
+            claim,
+            previous_claim,
+            child,
+            preparation,
+            terminal,
+        }
     }
 }
 
@@ -573,9 +651,38 @@ pub struct EnrollmentMutation<'a> {
 
 impl<'a> EnrollmentMutation<'a> {
     /// Borrows the eight existing fields without admission or account issuance.
-    pub fn new(parts: (&'a [u8; 16], &'a [AccountHead; 3], &'a [Claim; 2], &'a Option<(AccountHead, [Claim; 2])>, &'a Option<Claim>, &'a Option<Claim>, &'a Option<Claim>, &'a Option<Claim>)) -> Self {
-        let (transaction_id, heads, claims, host, first_global, nix_intake, q04_intake, root_receiving) = parts;
-        Self { transaction_id, heads, claims, host, first_global, nix_intake, q04_intake, root_receiving }
+    pub fn new(
+        parts: (
+            &'a [u8; 16],
+            &'a [AccountHead; 3],
+            &'a [Claim; 2],
+            &'a Option<(AccountHead, [Claim; 2])>,
+            &'a Option<Claim>,
+            &'a Option<Claim>,
+            &'a Option<Claim>,
+            &'a Option<Claim>,
+        ),
+    ) -> Self {
+        let (
+            transaction_id,
+            heads,
+            claims,
+            host,
+            first_global,
+            nix_intake,
+            q04_intake,
+            root_receiving,
+        ) = parts;
+        Self {
+            transaction_id,
+            heads,
+            claims,
+            host,
+            first_global,
+            nix_intake,
+            q04_intake,
+            root_receiving,
+        }
     }
 }
 
@@ -590,9 +697,23 @@ pub struct CoissuanceMutation<'a> {
 
 impl<'a> CoissuanceMutation<'a> {
     /// Borrows the five original DATA fields without a specification or clock loan.
-    pub fn new(parts: (&'a AccountHead, &'a AccountHead, &'a Claim, &'a AccountHead, &'a CoissuanceBinding)) -> Self {
+    pub fn new(
+        parts: (
+            &'a AccountHead,
+            &'a AccountHead,
+            &'a Claim,
+            &'a AccountHead,
+            &'a CoissuanceBinding,
+        ),
+    ) -> Self {
         let (before, after, residual, child, binding) = parts;
-        Self { before, after, residual, child, binding }
+        Self {
+            before,
+            after,
+            residual,
+            child,
+            binding,
+        }
     }
 }
 
@@ -714,8 +835,17 @@ impl EnrollmentIdentity {
     /// Compares the four supplied historical Host identity fields.
     ///
     /// Recipient invocation and Host policy comparisons remain separate.
-    pub fn matches_host_fields(self, node: [u8; 16], epoch: [u8; 16], manifest: [u8; 32], producer: [u8; 16]) -> bool {
-        self.node == node && self.epoch == epoch && self.manifest == manifest && self.invocation == producer
+    pub fn matches_host_fields(
+        self,
+        node: [u8; 16],
+        epoch: [u8; 16],
+        manifest: [u8; 32],
+        producer: [u8; 16],
+    ) -> bool {
+        self.node == node
+            && self.epoch == epoch
+            && self.manifest == manifest
+            && self.invocation == producer
     }
 
     /// Computes the existing canonical account identity for the supplied role bytes.
@@ -776,8 +906,16 @@ impl AccountHead {
     /// # Errors
     ///
     /// Retains the original resource-account reservation failure.
-    pub fn reserve_at_generation(self, generation: u64, amount: ResourceVector) -> Result<Self, ResourceBankDataError> {
-        Ok(Self { generation, account: self.account.reserve(amount)?, ..self })
+    pub fn reserve_at_generation(
+        self,
+        generation: u64,
+        amount: ResourceVector,
+    ) -> Result<Self, ResourceBankDataError> {
+        Ok(Self {
+            generation,
+            account: self.account.reserve(amount)?,
+            ..self
+        })
     }
 
     /// Reads every account dimension as a finite historical ceiling.
@@ -827,13 +965,44 @@ impl PreparationBinding {
     ///
     /// The tuple contains claim, nonce, Controller names, Source names, Source sequence,
     /// floor, tree head and lineage head. No original loan is retained.
-    pub fn from_parts(parts: (Claim, [u8; 16], ProtectedJournalNamesV1, ProtectedJournalNamesV1, u64, [u8; 32], [u8; 32], [u8; 32])) -> Self {
-        let (claim, nonce, controller_names, source_names, source_sequence, floor, tree_head, lineage_head) = parts;
-        Self { claim, nonce, controller_names, source_names, source_sequence, floor, tree_head, lineage_head }
+    pub fn from_parts(
+        parts: (
+            Claim,
+            [u8; 16],
+            ProtectedJournalNamesV1,
+            ProtectedJournalNamesV1,
+            u64,
+            [u8; 32],
+            [u8; 32],
+            [u8; 32],
+        ),
+    ) -> Self {
+        let (
+            claim,
+            nonce,
+            controller_names,
+            source_names,
+            source_sequence,
+            floor,
+            tree_head,
+            lineage_head,
+        ) = parts;
+        Self {
+            claim,
+            nonce,
+            controller_names,
+            source_names,
+            source_sequence,
+            floor,
+            tree_head,
+            lineage_head,
+        }
     }
 
     /// Returns the complete historical preparation claim.
-    pub const fn claim(self) -> Claim { self.claim }
+    pub const fn claim(self) -> Claim {
+        self.claim
+    }
 
     /// Compares operation, Project, nonce and floor with the historical Q04 cut.
     pub fn matches_q04_cut(self, identity: &Q04CutIdentityV1) -> bool {
@@ -861,7 +1030,14 @@ impl InputAssociation {
     /// count, continuation amount, intake identity and observer quota.
     pub fn from_parts(parts: ([u8; 32], [u8; 32], u64, ResourceVector, [u8; 16], u64)) -> Self {
         let (normalized, digest, bytes, continuation, intake, observations) = parts;
-        Self { normalized, digest, bytes, continuation, intake, observations }
+        Self {
+            normalized,
+            digest,
+            bytes,
+            continuation,
+            intake,
+            observations,
+        }
     }
 }
 
@@ -872,9 +1048,47 @@ impl CoissuanceBinding {
     /// commitment and byte count, Spec-record commitment and operation, Spec request,
     /// candidate, policy binding and optional input association. It retains no Native
     /// Spec, original input owner, clock or authority.
-    pub fn from_parts(parts: (PreparationBinding, Claim, Claim, [u8; 32], u64, [u8; 32], [u8; 16], [u8; 32], [u8; 32], [u8; 32], Option<InputAssociation>)) -> Self {
-        let (original, grant, use_claim, specification, specification_size, specification_record, specification_operation, specification_request, candidate, policy_binding, origin) = parts;
-        Self { original, grant, use_claim, specification, specification_size, specification_record, specification_operation, specification_request, candidate, policy_binding, origin }
+    pub fn from_parts(
+        parts: (
+            PreparationBinding,
+            Claim,
+            Claim,
+            [u8; 32],
+            u64,
+            [u8; 32],
+            [u8; 16],
+            [u8; 32],
+            [u8; 32],
+            [u8; 32],
+            Option<InputAssociation>,
+        ),
+    ) -> Self {
+        let (
+            original,
+            grant,
+            use_claim,
+            specification,
+            specification_size,
+            specification_record,
+            specification_operation,
+            specification_request,
+            candidate,
+            policy_binding,
+            origin,
+        ) = parts;
+        Self {
+            original,
+            grant,
+            use_claim,
+            specification,
+            specification_size,
+            specification_record,
+            specification_operation,
+            specification_request,
+            candidate,
+            policy_binding,
+            origin,
+        }
     }
 
     /// Returns the five historical co-issuance comparison values.
@@ -923,7 +1137,9 @@ impl CoissuanceBinding {
 }
 
 impl TerminalBinding {
-    fn original_id(self) -> [u8; 16] { self.original }
+    fn original_id(self) -> [u8; 16] {
+        self.original
+    }
 
     /// Assembles the complete terminal association without accepting a returned commit.
     ///
@@ -932,12 +1148,49 @@ impl TerminalBinding {
     /// prior end, Root-final commitment and eight origin position tuples. Each origin
     /// contains transaction identity, member commitment, commit sequence and durable
     /// end. The Native caller retains its actual results and final checks.
-    pub fn from_parts(parts: (bool, [u8; 16], [u8; 32], [u8; 16], ProtectedJournalNamesV1, u64, u64, [u8; 32], [([u8; 16], [u8; 32], u64, u64); 8])) -> Self {
-        let (input_origin, original, coissuance, transaction, names, next, prior_end, root_final, positions) = parts;
+    pub fn from_parts(
+        parts: (
+            bool,
+            [u8; 16],
+            [u8; 32],
+            [u8; 16],
+            ProtectedJournalNamesV1,
+            u64,
+            u64,
+            [u8; 32],
+            [([u8; 16], [u8; 32], u64, u64); 8],
+        ),
+    ) -> Self {
+        let (
+            input_origin,
+            original,
+            coissuance,
+            transaction,
+            names,
+            next,
+            prior_end,
+            root_final,
+            positions,
+        ) = parts;
         let origins = positions.map(|(id, members, commit_sequence, durable_bytes)| Origin {
-            id, members, returned: CommitPosition { commit_sequence, durable_bytes },
+            id,
+            members,
+            returned: CommitPosition {
+                commit_sequence,
+                durable_bytes,
+            },
         });
-        Self { input_origin, original, coissuance, transaction, names, next, prior_end, root_final, origins }
+        Self {
+            input_origin,
+            original,
+            coissuance,
+            transaction,
+            names,
+            next,
+            prior_end,
+            root_final,
+            origins,
+        }
     }
 
     /// Returns the two historical terminal comparison values.
@@ -966,7 +1219,11 @@ impl TerminalBinding {
     ///
     /// Rejects missing or inconsistent original co-issuance and replay rows, an already
     /// recorded terminal, or differing transaction, claim or account predecessors.
-    pub fn require_predecessor(self, state: &State, mutation: AccountMutation<'_>) -> Result<(), ResourceBankDataError> {
+    pub fn require_predecessor(
+        self,
+        state: &State,
+        mutation: AccountMutation<'_>,
+    ) -> Result<(), ResourceBankDataError> {
         settlement::require_predecessor(state, self, &mutation)
     }
 }
@@ -999,7 +1256,8 @@ pub fn terminal_bytes(state: &State, id: [u8; 16]) -> Option<&[u8]> {
 ///
 /// Complete key and record validation belongs to the later canonical decoder and replay.
 pub fn is_head_entry(namespace: RecordNamespace, key: &[u8]) -> bool {
-    namespace == RecordNamespace::ControllerResourceReservation && key.first() == Some(&replay::HEAD_PREFIX)
+    namespace == RecordNamespace::ControllerResourceReservation
+        && key.first() == Some(&replay::HEAD_PREFIX)
 }
 
 #[cfg(test)]
@@ -1012,16 +1270,26 @@ mod physical_history_tests {
     // This fixture contains historical DATA; it owns no original files or loans.
     fn historical_coissuance(names: ProtectedJournalNamesV1) -> CoissuanceBinding {
         let identity = EnrollmentIdentity {
-            node: [1; 16], epoch: [2; 16], boot: [3; 16],
-            invocation: [4; 16], manifest: [5; 32],
+            node: [1; 16],
+            epoch: [2; 16],
+            boot: [3; 16],
+            invocation: [4; 16],
+            manifest: [5; 32],
         };
         let original = Claim {
-            enrollment: identity, id: [6; 16], account: [7; 16], child: [0; 16],
-            owner: [8; 32], purpose: ClaimPurpose::ProjectPreparation,
-            operation: [9; 16], project: [10; 16], sandbox: [0; 16],
+            enrollment: identity,
+            id: [6; 16],
+            account: [7; 16],
+            child: [0; 16],
+            owner: [8; 32],
+            purpose: ClaimPurpose::ProjectPreparation,
+            operation: [9; 16],
+            project: [10; 16],
+            sandbox: [0; 16],
             tree_revision: [11; 32],
             cut: ClaimCut::Operation {
-                original_wall_seconds: 1, original_boottime_nanoseconds: 2,
+                original_wall_seconds: 1,
+                original_boottime_nanoseconds: 2,
                 deadline_boottime_nanoseconds: 3,
             },
             genesis_instance: [12; 32],
@@ -1029,24 +1297,41 @@ mod physical_history_tests {
             state: ClaimState::Reserved,
         };
         let grant = Claim {
-            id: [13; 16], child: [14; 16], sandbox: [14; 16],
+            id: [13; 16],
+            child: [14; 16],
+            sandbox: [14; 16],
             purpose: ClaimPurpose::InclusiveGrant,
-            amount: ResourceVector::new([1; ResourceDimension::COUNT]), ..original
+            amount: ResourceVector::new([1; ResourceDimension::COUNT]),
+            ..original
         };
         let use_claim = Claim {
-            id: [15; 16], account: grant.child, child: [0; 16],
-            purpose: ClaimPurpose::Q04Preparation, ..grant
+            id: [15; 16],
+            account: grant.child,
+            child: [0; 16],
+            purpose: ClaimPurpose::Q04Preparation,
+            ..grant
         };
         CoissuanceBinding {
             original: PreparationBinding {
-                claim: original, nonce: [16; 16], controller_names: names,
-                source_names: names, source_sequence: 1, floor: [17; 32],
-                tree_head: [18; 32], lineage_head: [19; 32],
+                claim: original,
+                nonce: [16; 16],
+                controller_names: names,
+                source_names: names,
+                source_sequence: 1,
+                floor: [17; 32],
+                tree_head: [18; 32],
+                lineage_head: [19; 32],
             },
-            grant, use_claim, specification: [20; 32], specification_size: 1,
-            specification_record: [21; 32], specification_operation: [22; 16],
-            specification_request: [23; 32], candidate: [24; 32],
-            policy_binding: [25; 32], origin: None,
+            grant,
+            use_claim,
+            specification: [20; 32],
+            specification_size: 1,
+            specification_record: [21; 32],
+            specification_operation: [22; 16],
+            specification_request: [23; 32],
+            candidate: [24; 32],
+            policy_binding: [25; 32],
+            origin: None,
         }
     }
 
@@ -1056,12 +1341,16 @@ mod physical_history_tests {
         let original = historical_coissuance(names);
         let transactions: [JournalTransaction; 8] = std::array::from_fn(|index| {
             let mut records = vec![JournalRecord::put(
-                RecordNamespace::ControllerPolicyHold, vec![0], vec![1],
+                RecordNamespace::ControllerPolicyHold,
+                vec![0],
+                vec![1],
             )];
             if index == 0 {
                 for key in 1..8 {
                     records.push(JournalRecord::put(
-                        RecordNamespace::ControllerPolicyHold, vec![key], vec![1],
+                        RecordNamespace::ControllerPolicyHold,
+                        vec![key],
+                        vec![1],
                     ));
                 }
                 records.push(JournalRecord::put(
@@ -1081,18 +1370,31 @@ mod physical_history_tests {
             },
         });
         let terminal = TerminalBinding {
-            input_origin: false, original: original.original.claim.id,
+            input_origin: false,
+            original: original.original.claim.id,
             coissuance: Sha256::digest(q04::encode(original).unwrap()).into(),
-            transaction: [30; 16], names, next: 33, prior_end: 800,
-            root_final: [31; 32], origins,
+            transaction: [30; 16],
+            names,
+            next: 33,
+            prior_end: 800,
+            root_final: [31; 32],
+            origins,
         };
         let mut state = State::new();
-        state.insert((RecordNamespace::ControllerResourceReservation,
-            replay::key(q04::PREFIX, terminal.original).to_vec()),
-            q04::encode(original).unwrap().to_vec());
-        state.insert((RecordNamespace::ControllerResourceReservation,
-            replay::key(settlement::PREFIX, terminal.original).to_vec()),
-            settlement::encode(terminal).unwrap().to_vec());
+        state.insert(
+            (
+                RecordNamespace::ControllerResourceReservation,
+                replay::key(q04::PREFIX, terminal.original).to_vec(),
+            ),
+            q04::encode(original).unwrap().to_vec(),
+        );
+        state.insert(
+            (
+                RecordNamespace::ControllerResourceReservation,
+                replay::key(settlement::PREFIX, terminal.original).to_vec(),
+            ),
+            settlement::encode(terminal).unwrap().to_vec(),
+        );
 
         // Correct digest and returned positions cannot replace physical adjacency.
         for (begin_sequence, begin_offset) in [(11, 100), (12, 99)] {
@@ -1105,27 +1407,61 @@ mod physical_history_tests {
 
         let mut history = PhysicalHistory::new(&state).unwrap();
         for (index, transaction) in transactions.iter().enumerate() {
-            let begin = if index == 0 { 1 } else { origins[index - 1].returned.commit_sequence + 1 };
-            let offset = if index == 0 { 0 } else { origins[index - 1].returned.durable_bytes };
-            history.observe(transaction, begin, origins[index].returned.commit_sequence,
-                offset, origins[index].returned.durable_bytes).unwrap();
+            let begin = if index == 0 {
+                1
+            } else {
+                origins[index - 1].returned.commit_sequence + 1
+            };
+            let offset = if index == 0 {
+                0
+            } else {
+                origins[index - 1].returned.durable_bytes
+            };
+            history
+                .observe(
+                    transaction,
+                    begin,
+                    origins[index].returned.commit_sequence,
+                    offset,
+                    origins[index].returned.durable_bytes,
+                )
+                .unwrap();
         }
         let (claim, head) = settlement::current_use(&state, original).unwrap();
-        let committed = JournalTransaction::new(terminal.transaction, vec![
-            JournalRecord::put(RecordNamespace::ControllerResourceReservation,
-                replay::key(replay::HEAD_PREFIX, head.id).to_vec(), codec::encode_head(head).unwrap().to_vec()),
-            JournalRecord::put(RecordNamespace::ControllerResourceReservation,
-                replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(), codec::encode_claim(claim).unwrap().to_vec()),
-            JournalRecord::put(RecordNamespace::ControllerResourceReservation,
-                replay::key(settlement::PREFIX, terminal.original).to_vec(), settlement::encode(terminal).unwrap().to_vec()),
-        ]).unwrap();
+        let committed = JournalTransaction::new(
+            terminal.transaction,
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::ControllerResourceReservation,
+                    replay::key(replay::HEAD_PREFIX, head.id).to_vec(),
+                    codec::encode_head(head).unwrap().to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::ControllerResourceReservation,
+                    replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(),
+                    codec::encode_claim(claim).unwrap().to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::ControllerResourceReservation,
+                    replay::key(settlement::PREFIX, terminal.original).to_vec(),
+                    settlement::encode(terminal).unwrap().to_vec(),
+                ),
+            ],
+        )
+        .unwrap();
         history.observe(&committed, 33, 37, 800, 900).unwrap();
-        let mut ids = transactions.iter().map(|transaction| *transaction.id())
-            .chain(std::iter::once(terminal.transaction)).collect::<std::collections::BTreeSet<_>>();
+        let mut ids = transactions
+            .iter()
+            .map(|transaction| *transaction.id())
+            .chain(std::iter::once(terminal.transaction))
+            .collect::<std::collections::BTreeSet<_>>();
 
         history.finish(&ids, names).unwrap();
         ids.remove(&origins[7].id);
-        assert!(matches!(history.finish(&ids, names), Err(ResourceBankDataError::CorruptLedger)));
+        assert!(matches!(
+            history.finish(&ids, names),
+            Err(ResourceBankDataError::CorruptLedger)
+        ));
     }
 
     #[test]
@@ -1140,19 +1476,32 @@ mod physical_history_tests {
         body[152..160].copy_from_slice(&65_000_000_002_u64.to_be_bytes());
         let identity = Q04CutIdentityV1::from_body(body).unwrap();
         let malformed = [1, 2, 3];
-        let mut binding = historical_coissuance(ProtectedJournalNamesV1::from_bytes(&[1; 48]).unwrap());
+        let mut binding =
+            historical_coissuance(ProtectedJournalNamesV1::from_bytes(&[1; 48]).unwrap());
         binding.origin = Some(InputAssociation {
-            normalized: [1; 32], digest: Sha256::digest(malformed).into(),
-            bytes: 3, continuation: ResourceVector::ZERO, intake: [26; 16], observations: 27,
+            normalized: [1; 32],
+            digest: Sha256::digest(malformed).into(),
+            bytes: 3,
+            continuation: ResourceVector::ZERO,
+            intake: [26; 16],
+            observations: 27,
         });
         let mut state = State::new();
-        state.insert((RecordNamespace::ControllerResourceReservation,
-            replay::key(q04::PREFIX, binding.original.claim.id).to_vec()),
-            q04::encode(binding).unwrap().to_vec());
+        state.insert(
+            (
+                RecordNamespace::ControllerResourceReservation,
+                replay::key(q04::PREFIX, binding.original.claim.id).to_vec(),
+            ),
+            q04::encode(binding).unwrap().to_vec(),
+        );
 
-        assert!(matches!(require_origin_identity(&malformed, &identity),
-            Err(OriginIdentityDataError::Policy(_))));
-        assert!(matches!(require_input_history(&state, &identity, Some(&malformed)),
-            Err(ResourceBankDataError::CorruptLedger)));
+        assert!(matches!(
+            require_origin_identity(&malformed, &identity),
+            Err(OriginIdentityDataError::Policy(_))
+        ));
+        assert!(matches!(
+            require_input_history(&state, &identity, Some(&malformed)),
+            Err(ResourceBankDataError::CorruptLedger)
+        ));
     }
 }

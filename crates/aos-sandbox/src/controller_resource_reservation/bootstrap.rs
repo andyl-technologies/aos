@@ -15,9 +15,8 @@ use rustix::fs::{OFlags, SealFlags, fcntl_get_seals, fcntl_getfl, fstatfs};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    AccountHead, Claim,
-    ControllerResourceEnrollmentCaptureV1, EnrollmentIdentity, ImageBootstrapPolicy,
-    ResourceReservationErrorV1, State, Transition, TransitionOriginal, bank,
+    AccountHead, Claim, ControllerResourceEnrollmentCaptureV1, EnrollmentIdentity,
+    ImageBootstrapPolicy, ResourceReservationErrorV1, State, Transition, TransitionOriginal, bank,
 };
 use crate::{Journal, JournalError, JournalTransaction};
 
@@ -38,7 +37,8 @@ impl ControllerResourceEnrollmentCaptureV1 {
         }
         let (invocation, producer) = profile.require_resource_producer()?;
         let original = observe_original_pair(&self.policy, &self.enrollment)?;
-        if original.recipient_invocation != invocation || original.identity.native_fields().invocation != producer
+        if original.recipient_invocation != invocation
+            || original.identity.native_fields().invocation != producer
             || profile.require_resource_producer()? != (invocation, producer)
         {
             return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
@@ -290,7 +290,8 @@ fn observe_original_pair_into<const RETAINED: bool>(
             )?
         };
     if !identity.matches_image(policy, manifest)
-        || identity.native_fields().boot != original_pair_boot::<RETAINED>(observations, retained_boot)?
+        || identity.native_fields().boot
+            != original_pair_boot::<RETAINED>(observations, retained_boot)?
     {
         return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
     }
@@ -359,12 +360,15 @@ fn read_original_pair_buffers<const RETAINED: bool>(
     );
 
     let policy = *original_pair_outcome!(
-        RETAINED, observations.policy_decode, bank::decode_image_policy(policy_bytes, super::q04_intake::native_layout())
+        RETAINED,
+        observations.policy_decode,
+        bank::decode_image_policy(policy_bytes, super::q04_intake::native_layout())
             .map_err(ResourceReservationErrorV1::from)
     );
     let (identity, recipient_invocation) = *original_pair_outcome!(
-        RETAINED, observations.delivery_decode, bank::decode_pid1_delivery(delivery_bytes)
-            .map_err(ResourceReservationErrorV1::from)
+        RETAINED,
+        observations.delivery_decode,
+        bank::decode_pid1_delivery(delivery_bytes).map_err(ResourceReservationErrorV1::from)
     );
     let manifest = <[u8; 32]>::from(Sha256::digest(policy_bytes));
     observations.manifest = Some(manifest);
@@ -387,8 +391,12 @@ impl EnrollmentTransition {
         let identity = original.identity;
         let policy = original.policy;
         let (heads, host, first_global, nix_intake, q04_intake, root_receiving) =
-            bank::prepare_enrollment_subdivisions(identity, policy, super::q04_intake::native_layout())
-                .map_err(ResourceReservationErrorV1::from)?;
+            bank::prepare_enrollment_subdivisions(
+                identity,
+                policy,
+                super::q04_intake::native_layout(),
+            )
+            .map_err(ResourceReservationErrorV1::from)?;
 
         Ok(Self {
             transaction_id: aos_sandbox_core::OperationId::new().into_bytes(),
@@ -404,13 +412,21 @@ impl EnrollmentTransition {
 
     fn history(&self) -> bank::EnrollmentMutation<'_> {
         bank::EnrollmentMutation::new((
-            &self.transaction_id, &self.heads, &self.claims, &self.host,
-            &self.first_global, &self.nix_intake, &self.q04_intake, &self.root_receiving,
+            &self.transaction_id,
+            &self.heads,
+            &self.claims,
+            &self.host,
+            &self.first_global,
+            &self.nix_intake,
+            &self.q04_intake,
+            &self.root_receiving,
         ))
     }
 
     fn transaction(&self) -> Result<JournalTransaction, ResourceReservationErrorV1> {
-        self.history().transaction().map_err(ResourceReservationErrorV1::from)
+        self.history()
+            .transaction()
+            .map_err(ResourceReservationErrorV1::from)
     }
 
     pub(super) fn require_current(
@@ -426,17 +442,22 @@ impl EnrollmentTransition {
         state: &State,
         transaction: &JournalTransaction,
     ) -> Result<(), ResourceReservationErrorV1> {
-        self.history().require_exact(state, transaction).map_err(ResourceReservationErrorV1::from)
+        self.history()
+            .require_exact(state, transaction)
+            .map_err(ResourceReservationErrorV1::from)
     }
 
     fn require_returned(&self, journal: &Journal) -> Result<(), ResourceReservationErrorV1> {
         let state = journal.controller_resource_state_v1()?;
-        if bank::validate(state).map_err(ResourceReservationErrorV1::from)? != Some(self.heads[0].native_fields().enrollment)
+        if bank::validate(state).map_err(ResourceReservationErrorV1::from)?
+            != Some(self.heads[0].native_fields().enrollment)
             || !journal.controller_resource_contains_transaction_v1(&self.transaction_id)?
         {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        self.history().require_returned_rows(state).map_err(ResourceReservationErrorV1::from)
+        self.history()
+            .require_returned_rows(state)
+            .map_err(ResourceReservationErrorV1::from)
     }
 }
 
@@ -475,9 +496,18 @@ impl ControllerResourceBankOpeningV1 {
         {
             return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
         }
-        let original = self.observed.as_ref().and_then(|result| result.as_ref().ok())
-            .copied().ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        if original.policy.bootstrap_provisions().q04_original_intake.is_none() {
+        let original = self
+            .observed
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .copied()
+            .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+        if original
+            .policy
+            .bootstrap_provisions()
+            .q04_original_intake
+            .is_none()
+        {
             return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
         }
         // This first short borrow uses the actual already-enrolled owner.
@@ -498,9 +528,16 @@ impl ControllerResourceBankOpeningV1 {
         {
             return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
         }
-        let original = self.observed.as_ref().and_then(|result| result.as_ref().ok())
-            .copied().ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        let provision = original.policy.bootstrap_provisions().nix_original_start_intake
+        let original = self
+            .observed
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .copied()
+            .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
+        let provision = original
+            .policy
+            .bootstrap_provisions()
+            .nix_original_start_intake
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
         provision.checked_sub(super::nix_intake::minimum_failure_demand()?)?;
 
@@ -536,8 +573,11 @@ impl ControllerResourceBankOpeningV1 {
         let names = self.names.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
         let actual = observe_original_pair(&self.original.policy, &self.original.enrollment)?;
-        if actual != original || journal.protected_writer_physical_names_v1()? != *names
-            || bank::validate(journal.controller_resource_state_v1()?).map_err(ResourceReservationErrorV1::from)? != Some(original.identity)
+        if actual != original
+            || journal.protected_writer_physical_names_v1()? != *names
+            || bank::validate(journal.controller_resource_state_v1()?)
+                .map_err(ResourceReservationErrorV1::from)?
+                != Some(original.identity)
         {
             return Err(ResourceReservationErrorV1::Conflict);
         }
@@ -563,7 +603,9 @@ impl ControllerResourceBankOpeningV1 {
         if current.identity != original.identity || current.policy != original.policy
             || current.recipient_invocation != original.recipient_invocation
             || journal.protected_writer_physical_names_v1()? != *names
-            || bank::validate(journal.controller_resource_state_v1()?).map_err(ResourceReservationErrorV1::from)? != Some(original.identity)
+            || bank::validate(journal.controller_resource_state_v1()?)
+                .map_err(ResourceReservationErrorV1::from)?
+                != Some(original.identity)
         {
             return Err(ResourceReservationErrorV1::Conflict);
         }
@@ -780,8 +822,10 @@ impl ControllerResourcePreopenPostV1 {
                 .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
             let after = self.after.as_ref().and_then(|result| result.as_ref().ok())
                 .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-            if original.process != std::process::id() || before != after
-                || pair.recipient_invocation != before.0 || pair.identity.native_fields().invocation != before.1
+            if original.process != std::process::id()
+                || before != after
+                || pair.recipient_invocation != before.0
+                || pair.identity.native_fields().invocation != before.1
                 || admitted.is_some_and(|previous| {
                     previous.identity != pair.identity || previous.policy != pair.policy
                         || previous.recipient_invocation != pair.recipient_invocation

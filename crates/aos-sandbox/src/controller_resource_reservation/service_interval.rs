@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 use aos_sandbox_core::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
 
 use super::{
-    AccountTransition, ClaimState, ControllerResourceBankOpeningV1,
-    ResourceReservationErrorV1, ReturnedAppend, bank, bootstrap,
+    AccountTransition, ClaimState, ControllerResourceBankOpeningV1, ResourceReservationErrorV1,
+    ReturnedAppend, bank, bootstrap,
 };
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::normal_root::ProductionControllerNormalRootProfileV1;
@@ -99,7 +99,10 @@ impl OriginalControllerCpuContainment<'_> {
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
         let (quota, period) = self.prefix.cpu.quota_and_period()
             .ok_or(ResourceReservationErrorV1::Conflict)?;
-        let provision = (original.policy.bootstrap_provisions().nix_original_start_intake)
+        let provision = (original
+            .policy
+            .bootstrap_provisions()
+            .nix_original_start_intake)
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
         let prefix = (original.policy.bootstrap_provisions().first_global_prefix)
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
@@ -221,7 +224,12 @@ impl ObserverAdmission<'_> {
     pub(crate) fn belongs_to_q04_intake(&self, profile: &ProductionControllerNormalRootProfileV1) -> bool {
         self.purpose == ObserverPurpose::Q04Intake
             && std::ptr::eq(self.profile, profile)
-            && (self.original.policy.bootstrap_provisions().q04_original_intake).is_some()
+            && (self
+                .original
+                .policy
+                .bootstrap_provisions()
+                .q04_original_intake)
+                .is_some()
     }
 
     pub(super) fn for_q04_intake<'original>(
@@ -236,13 +244,23 @@ impl ObserverAdmission<'_> {
     pub(crate) fn belongs_to(&self, profile: &ProductionControllerNormalRootProfileV1) -> bool {
         self.purpose == ObserverPurpose::FirstGlobal
             && std::ptr::eq(self.profile, profile)
-            && (self.original.policy.bootstrap_provisions().first_global_prefix).is_some()
+            && (self
+                .original
+                .policy
+                .bootstrap_provisions()
+                .first_global_prefix)
+                .is_some()
     }
 
     pub(crate) fn belongs_to_nix_intake(&self, profile: &ProductionControllerNormalRootProfileV1) -> bool {
         self.purpose == ObserverPurpose::NixIntake
             && std::ptr::eq(self.profile, profile)
-            && (self.original.policy.bootstrap_provisions().nix_original_start_intake).is_some()
+            && (self
+                .original
+                .policy
+                .bootstrap_provisions()
+                .nix_original_start_intake)
+                .is_some()
     }
 
     pub(super) fn for_nix_intake<'original>(
@@ -513,13 +531,18 @@ impl ControllerFirstGlobalPrefixAttemptV1 {
             }
         }
         let state = journal.controller_resource_state_v1()?;
-        let id = original.identity.account_id(b"controller-first-global-prefix-v1");
-        let claim = super::Claim::decode(bank::claim_bytes(state, id)
-            .ok_or(ResourceReservationErrorV1::Conflict)?)
-            .map_err(ResourceReservationErrorV1::from)?;
+        let id = original
+            .identity
+            .account_id(b"controller-first-global-prefix-v1");
+        let claim = super::Claim::decode(
+            bank::claim_bytes(state, id).ok_or(ResourceReservationErrorV1::Conflict)?,
+        )
+        .map_err(ResourceReservationErrorV1::from)?;
         let before = bank::find_head(state, claim.native_fields().account)
             .map_err(ResourceReservationErrorV1::from)?;
-        if claim.native_fields().amount != provision || claim.native_fields().state != ClaimState::Reserved {
+        if claim.native_fields().amount != provision
+            || claim.native_fields().state != ClaimState::Reserved
+        {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         let mut transition = AccountTransition::settle(before, claim, true)?;

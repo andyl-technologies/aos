@@ -22,9 +22,8 @@ use crate::policy_compiler::CompletedRootSourceGenesisFloorV1;
 use crate::Journal;
 
 use super::{
-    AccountKind, AccountTransition, Claim, ClaimCut,
-    ControllerResourceBankOpeningV1, EnrollmentIdentity,
-    ResourceReservationErrorV1, ReturnedAppend, bank,
+    AccountKind, AccountTransition, Claim, ClaimCut, ControllerResourceBankOpeningV1,
+    EnrollmentIdentity, ResourceReservationErrorV1, ReturnedAppend, bank,
 };
 
 struct OriginalProjectGrantData {
@@ -307,10 +306,13 @@ impl OriginalProjectGrantData {
         enrollment: EnrollmentIdentity,
     ) -> Result<Option<Claim>, ResourceReservationErrorV1> {
         let state = journal.controller_resource_state_v1()?;
-        if bank::validate(state).map_err(ResourceReservationErrorV1::from)? != Some(enrollment) || enrollment.native_fields().boot != self.original_boot {
+        if bank::validate(state).map_err(ResourceReservationErrorV1::from)? != Some(enrollment)
+            || enrollment.native_fields().boot != self.original_boot
+        {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        let parent = bank::find_head(state, enrollment.native_fields().node).map_err(ResourceReservationErrorV1::from)?;
+        let parent = bank::find_head(state, enrollment.native_fields().node)
+            .map_err(ResourceReservationErrorV1::from)?;
         if parent.native_fields().kind != AccountKind::Node {
             return Err(ResourceReservationErrorV1::Conflict);
         }
@@ -320,7 +322,8 @@ impl OriginalProjectGrantData {
                 .map_err(ResourceReservationErrorV1::from)?,
             self.acceptance,
             self.instance,
-        ).map_err(ResourceReservationErrorV1::from)
+        )
+        .map_err(ResourceReservationErrorV1::from)
     }
 
     fn transition(
@@ -328,18 +331,30 @@ impl OriginalProjectGrantData {
         journal: &Journal,
         enrollment: EnrollmentIdentity,
     ) -> Result<AccountTransition, ResourceReservationErrorV1> {
-        let before = bank::find_head(journal.controller_resource_state_v1()?, enrollment.native_fields().node).map_err(ResourceReservationErrorV1::from)?;
-        if before.native_fields().kind != AccountKind::Node || enrollment.native_fields().boot != self.original_boot {
+        let before = bank::find_head(
+            journal.controller_resource_state_v1()?,
+            enrollment.native_fields().node,
+        )
+        .map_err(ResourceReservationErrorV1::from)?;
+        if before.native_fields().kind != AccountKind::Node
+            || enrollment.native_fields().boot != self.original_boot
+        {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         let child = bank::project_child(enrollment, before, self.project, self.tree, self.amount)
             .map_err(ResourceReservationErrorV1::from)?;
         let operation = aos_sandbox_core::OperationId::new().into_bytes();
         let claim = bank::project_grant_claim(
-            enrollment, operation,
+            enrollment,
+            operation,
             before.native_fields().id,
             child.native_fields().id,
-            self.acceptance, self.project, self.tree, self.cut, self.instance, self.amount,
+            self.acceptance,
+            self.project,
+            self.tree,
+            self.cut,
+            self.instance,
+            self.amount,
         );
         AccountTransition::grant(before, child, claim, self.original_clock)
     }

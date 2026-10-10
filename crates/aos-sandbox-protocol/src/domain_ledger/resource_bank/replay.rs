@@ -13,7 +13,10 @@ use std::collections::BTreeMap;
 
 use aos_sandbox_core::{ResourceAccount, ResourceDimension, ResourceLimit, ResourceVector};
 
-use super::{AccountHead, AccountKind, ClaimPurpose, ClaimState, EnrollmentIdentity, ResourceBankDataError, codec, q04, settlement};
+use super::{
+    AccountHead, AccountKind, ClaimPurpose, ClaimState, EnrollmentIdentity, ResourceBankDataError,
+    codec, q04, settlement,
+};
 use aos_sandbox_core::RecordNamespace;
 
 pub(super) type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
@@ -54,7 +57,9 @@ pub fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, ResourceBan
                 let head = codec::decode_head(bytes)?;
                 require_key(key_bytes, HEAD_PREFIX, head.id)?;
                 require_enrollment(&mut enrollment, head.enrollment)?;
-                heads = heads.checked_add(1).ok_or(ResourceBankDataError::CorruptLedger)?;
+                heads = heads
+                    .checked_add(1)
+                    .ok_or(ResourceBankDataError::CorruptLedger)?;
                 match head.kind {
                     AccountKind::Node => roots += 1,
                     AccountKind::Controller => controllers += 1,
@@ -81,8 +86,10 @@ pub fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, ResourceBan
             Some(&settlement::PREFIX) => {
                 let terminal = settlement::decode(bytes)?;
                 require_key(key_bytes, settlement::PREFIX, terminal.original_id())?;
-                let binding = q04::decode(record_bytes(state, q04::PREFIX, terminal.original_id())
-                    .ok_or(ResourceBankDataError::CorruptLedger)?)?;
+                let binding = q04::decode(
+                    record_bytes(state, q04::PREFIX, terminal.original_id())
+                        .ok_or(ResourceBankDataError::CorruptLedger)?,
+                )?;
                 require_enrollment(&mut enrollment, q04::original_claim(binding).enrollment)?;
             }
             _ => return Err(ResourceBankDataError::CorruptLedger),
@@ -121,8 +128,10 @@ pub fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, ResourceBan
             q04::require_replayed(state, q04::decode(bytes)?)?;
         } else if key_bytes[0] == settlement::PREFIX {
             let terminal = settlement::decode(bytes)?;
-            let binding = q04::decode(record_bytes(state, q04::PREFIX, terminal.original_id())
-                .ok_or(ResourceBankDataError::CorruptLedger)?)?;
+            let binding = q04::decode(
+                record_bytes(state, q04::PREFIX, terminal.original_id())
+                    .ok_or(ResourceBankDataError::CorruptLedger)?,
+            )?;
             settlement::current_use(state, binding)?;
         } else {
             let claim = codec::decode_claim(bytes)?;
@@ -132,33 +141,45 @@ pub fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, ResourceBan
             }
             if claim.child != [0; 16] {
                 let child = find_head(state, claim.child)?;
-                if child.parent != parent.id || child.enrollment != parent.enrollment
-                    || claim.state != ClaimState::Reserved || !allowed_edge(parent.kind, child.kind)
+                if child.parent != parent.id
+                    || child.enrollment != parent.enrollment
+                    || claim.state != ClaimState::Reserved
+                    || !allowed_edge(parent.kind, child.kind)
                     || finite_ceilings(child)? != claim.amount
-                    || claim.project != child.project || claim.sandbox != child.sandbox
+                    || claim.project != child.project
+                    || claim.sandbox != child.sandbox
                     || claim.tree_revision != child.tree_revision
                     || (matches!(parent.kind, AccountKind::Project | AccountKind::Sandbox)
-                        && (parent.project != child.project || parent.tree_revision != child.tree_revision))
+                        && (parent.project != child.project
+                            || parent.tree_revision != child.tree_revision))
                 {
                     return Err(ResourceBankDataError::CorruptLedger);
                 }
                 let purpose_matches = match claim.purpose {
                     ClaimPurpose::ControllerBootstrap => child.kind == AccountKind::Controller,
                     ClaimPurpose::ComponentEnvelope => child.kind == AccountKind::Components,
-                    ClaimPurpose::InclusiveGrant => matches!(child.kind,
-                        AccountKind::Project | AccountKind::Sandbox | AccountKind::Operation),
-                    ClaimPurpose::HostComponentBootstrap =>
-                        parent.kind == AccountKind::Components && child.kind == AccountKind::Operation,
-                    ClaimPurpose::Snapshot | ClaimPurpose::ProjectPreparation
-                        | ClaimPurpose::Q04Preparation | ClaimPurpose::HostControlInterval
-                        | ClaimPurpose::ControllerFirstGlobalPrefix
-                        | ClaimPurpose::NixOriginalStartIntake | ClaimPurpose::Q04OriginalIntake
-                        | ClaimPurpose::RootReceiving => false,
+                    ClaimPurpose::InclusiveGrant => matches!(
+                        child.kind,
+                        AccountKind::Project | AccountKind::Sandbox | AccountKind::Operation
+                    ),
+                    ClaimPurpose::HostComponentBootstrap => {
+                        parent.kind == AccountKind::Components
+                            && child.kind == AccountKind::Operation
+                    }
+                    ClaimPurpose::Snapshot
+                    | ClaimPurpose::ProjectPreparation
+                    | ClaimPurpose::Q04Preparation
+                    | ClaimPurpose::HostControlInterval
+                    | ClaimPurpose::ControllerFirstGlobalPrefix
+                    | ClaimPurpose::NixOriginalStartIntake
+                    | ClaimPurpose::Q04OriginalIntake
+                    | ClaimPurpose::RootReceiving => false,
                 };
                 if !purpose_matches {
                     return Err(ResourceBankDataError::CorruptLedger);
                 }
-            } else if claim.project != parent.project || claim.sandbox != parent.sandbox
+            } else if claim.project != parent.project
+                || claim.sandbox != parent.sandbox
                 || claim.tree_revision != parent.tree_revision
             {
                 return Err(ResourceBankDataError::CorruptLedger);
@@ -180,57 +201,76 @@ pub fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, ResourceBan
                     || !state.iter().any(|((namespace, key), bytes)| {
                         *namespace == RecordNamespace::ControllerResourceReservation
                             && key.first() == Some(&q04::PREFIX)
-                            && q04::decode(bytes).is_ok_and(|binding|
-                                q04::contains_use(binding, claim))
+                            && q04::decode(bytes)
+                                .is_ok_and(|binding| q04::contains_use(binding, claim))
                     }))
             {
                 return Err(ResourceBankDataError::CorruptLedger);
             }
-            if matches!(claim.purpose,
-                ClaimPurpose::HostComponentBootstrap | ClaimPurpose::HostControlInterval)
-            {
+            if matches!(
+                claim.purpose,
+                ClaimPurpose::HostComponentBootstrap | ClaimPurpose::HostControlInterval
+            ) {
                 require_host_component(state, claim)?;
             }
             if claim.purpose == ClaimPurpose::ControllerFirstGlobalPrefix {
                 require_first_global_prefix(state, parent, claim)?;
             }
             if claim.purpose == ClaimPurpose::NixOriginalStartIntake {
-                let intake_id = super::bootstrap::account_id(claim.enrollment,
-                    b"controller-nix-original-start-intake-v1");
-                let expected = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, intake_id)
-                    .ok_or(ResourceBankDataError::CorruptLedger)?)?;
-                if claim.id != intake_id || claim != expected
-                    || claim.account != super::bootstrap::account_id(claim.enrollment, b"controller")
+                let intake_id = super::bootstrap::account_id(
+                    claim.enrollment,
+                    b"controller-nix-original-start-intake-v1",
+                );
+                let expected = codec::decode_claim(
+                    record_bytes(state, CLAIM_PREFIX, intake_id)
+                        .ok_or(ResourceBankDataError::CorruptLedger)?,
+                )?;
+                if claim.id != intake_id
+                    || claim != expected
+                    || claim.account
+                        != super::bootstrap::account_id(claim.enrollment, b"controller")
                     || parent.enrollment != claim.enrollment
                 {
                     return Err(ResourceBankDataError::CorruptLedger);
                 }
-                let prefix_id = super::bootstrap::account_id(claim.enrollment,
-                    b"controller-first-global-prefix-v1");
-                let prefix = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, prefix_id)
-                    .ok_or(ResourceBankDataError::CorruptLedger)?)?;
+                let prefix_id = super::bootstrap::account_id(
+                    claim.enrollment,
+                    b"controller-first-global-prefix-v1",
+                );
+                let prefix = codec::decode_claim(
+                    record_bytes(state, CLAIM_PREFIX, prefix_id)
+                        .ok_or(ResourceBankDataError::CorruptLedger)?,
+                )?;
                 require_first_global_prefix(state, parent, prefix)?;
             }
             if claim.purpose == ClaimPurpose::Q04OriginalIntake {
-                let expected_id = super::bootstrap::account_id(claim.enrollment,
-                    b"controller-q04-original-intake-v1");
+                let expected_id = super::bootstrap::account_id(
+                    claim.enrollment,
+                    b"controller-q04-original-intake-v1",
+                );
                 if claim.id != expected_id
-                    || claim.account != super::bootstrap::account_id(claim.enrollment, b"controller")
+                    || claim.account
+                        != super::bootstrap::account_id(claim.enrollment, b"controller")
                     || parent.enrollment != claim.enrollment
                 {
                     return Err(ResourceBankDataError::CorruptLedger);
                 }
-                let prefix_id = super::bootstrap::account_id(claim.enrollment,
-                    b"controller-first-global-prefix-v1");
-                let prefix = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, prefix_id)
-                    .ok_or(ResourceBankDataError::CorruptLedger)?)?;
+                let prefix_id = super::bootstrap::account_id(
+                    claim.enrollment,
+                    b"controller-first-global-prefix-v1",
+                );
+                let prefix = codec::decode_claim(
+                    record_bytes(state, CLAIM_PREFIX, prefix_id)
+                        .ok_or(ResourceBankDataError::CorruptLedger)?,
+                )?;
                 require_first_global_prefix(state, parent, prefix)?;
             }
             if claim.purpose == ClaimPurpose::RootReceiving {
-                let expected_id = super::bootstrap::account_id(claim.enrollment,
-                    b"root-receiving-v1");
+                let expected_id =
+                    super::bootstrap::account_id(claim.enrollment, b"root-receiving-v1");
                 if claim.id != expected_id
-                    || claim.account != super::bootstrap::account_id(claim.enrollment, b"components")
+                    || claim.account
+                        != super::bootstrap::account_id(claim.enrollment, b"components")
                     || parent.kind != AccountKind::Components
                     || parent.enrollment != claim.enrollment
                 {
@@ -241,14 +281,22 @@ pub fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, ResourceBan
                 // Complete replay sums both claims against K only once.
                 let host_id = super::bootstrap::account_id(claim.enrollment, b"host-component-v2");
                 let host_claim_id = super::bootstrap::account_id(claim.enrollment, &host_id);
-                let host = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, host_claim_id)
-                    .ok_or(ResourceBankDataError::CorruptLedger)?)?;
+                let host = codec::decode_claim(
+                    record_bytes(state, CLAIM_PREFIX, host_claim_id)
+                        .ok_or(ResourceBankDataError::CorruptLedger)?,
+                )?;
                 require_host_component(state, host)?;
-                finite_ceilings(parent)?.checked_sub(host.amount)?.checked_sub(claim.amount)?;
-                let q04_id = super::bootstrap::account_id(claim.enrollment,
-                    b"controller-q04-original-intake-v1");
-                let q04 = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, q04_id)
-                    .ok_or(ResourceBankDataError::CorruptLedger)?)?;
+                finite_ceilings(parent)?
+                    .checked_sub(host.amount)?
+                    .checked_sub(claim.amount)?;
+                let q04_id = super::bootstrap::account_id(
+                    claim.enrollment,
+                    b"controller-q04-original-intake-v1",
+                );
+                let q04 = codec::decode_claim(
+                    record_bytes(state, CLAIM_PREFIX, q04_id)
+                        .ok_or(ResourceBankDataError::CorruptLedger)?,
+                )?;
                 if q04.purpose != ClaimPurpose::Q04OriginalIntake {
                     return Err(ResourceBankDataError::CorruptLedger);
                 }
@@ -270,22 +318,26 @@ fn require_first_global_prefix(
     let controller_id = super::bootstrap::account_id(identity, b"controller");
     let claim_id = super::bootstrap::account_id(identity, b"controller-first-global-prefix-v1");
     let ceiling = finite_ceilings(controller)?;
-    let intake_id = super::bootstrap::account_id(identity,
-        b"controller-nix-original-start-intake-v1");
+    let intake_id =
+        super::bootstrap::account_id(identity, b"controller-nix-original-start-intake-v1");
     if let Some(bytes) = record_bytes(state, CLAIM_PREFIX, intake_id) {
         let intake = codec::decode_claim(bytes)?;
         let q04_id = super::bootstrap::account_id(identity, b"controller-q04-original-intake-v1");
         let q04 = record_bytes(state, CLAIM_PREFIX, q04_id)
-            .map(codec::decode_claim).transpose()?;
+            .map(codec::decode_claim)
+            .transpose()?;
         if let Some(part) = q04 {
             if part.purpose != ClaimPurpose::Q04OriginalIntake
-                || part.enrollment != identity || part.id != q04_id
+                || part.enrollment != identity
+                || part.id != q04_id
                 || part.account != controller_id
             {
                 return Err(ResourceBankDataError::CorruptLedger);
             }
         }
-        let retained = ceiling.checked_sub(claim.amount)?.checked_sub(intake.amount)?
+        let retained = ceiling
+            .checked_sub(claim.amount)?
+            .checked_sub(intake.amount)?
             .checked_sub(q04.map_or(ResourceVector::ZERO, |part| part.amount))?;
         let mut committed = retained;
         let mut reserved = ResourceVector::ZERO;
@@ -301,15 +353,21 @@ fn require_first_global_prefix(
             }
         }
         let expected = ResourceAccount::from_usage(
-            aos_sandbox_core::ResourceCeilings::bounded(ceiling), committed, reserved,
+            aos_sandbox_core::ResourceCeilings::bounded(ceiling),
+            committed,
+            reserved,
         )?;
         if claim.purpose != ClaimPurpose::ControllerFirstGlobalPrefix
             || intake.purpose != ClaimPurpose::NixOriginalStartIntake
-            || intake.enrollment != identity || intake.id != intake_id
+            || intake.enrollment != identity
+            || intake.id != intake_id
             || intake.account != controller_id
-            || controller.kind != AccountKind::Controller || controller.id != controller_id
-            || claim.account != controller_id || claim.id != claim_id
-            || controller.baseline != retained || controller.account != expected
+            || controller.kind != AccountKind::Controller
+            || controller.id != controller_id
+            || claim.account != controller_id
+            || claim.id != claim_id
+            || controller.baseline != retained
+            || controller.account != expected
             || controller.generation != generation
         {
             return Err(ResourceBankDataError::CorruptLedger);
@@ -334,10 +392,18 @@ fn require_first_global_prefix(
         )?,
         ClaimState::Released => return Err(ResourceBankDataError::CorruptLedger),
     };
-    if controller.kind != AccountKind::Controller || controller.id != controller_id
-        || claim.account != controller_id || claim.id != claim_id
-        || controller.baseline != retained || controller.account != expected
-        || controller.generation != if claim.state == ClaimState::Reserved { 1 } else { 2 }
+    if controller.kind != AccountKind::Controller
+        || controller.id != controller_id
+        || claim.account != controller_id
+        || claim.id != claim_id
+        || controller.baseline != retained
+        || controller.account != expected
+        || controller.generation
+            != if claim.state == ClaimState::Reserved {
+                1
+            } else {
+                2
+            }
     {
         return Err(ResourceBankDataError::CorruptLedger);
     }
@@ -346,10 +412,7 @@ fn require_first_global_prefix(
 
 // The Host record is a single Components subdivision with a reserved control
 // interval. Neither claim can be interpreted as a Global or Sandbox grant.
-fn require_host_component(
-    state: &State,
-    claim: super::Claim,
-) -> Result<(), ResourceBankDataError> {
+fn require_host_component(state: &State, claim: super::Claim) -> Result<(), ResourceBankDataError> {
     let identity = claim.enrollment;
     let host_id = super::bootstrap::account_id(identity, b"host-component-v2");
     let components_id = super::bootstrap::account_id(identity, b"components");
@@ -365,20 +428,28 @@ fn require_host_component(
         record_bytes(state, CLAIM_PREFIX, control_claim_id)
             .ok_or(ResourceBankDataError::CorruptLedger)?,
     )?;
-    if host.kind != AccountKind::Operation || host.parent != components_id
-        || host.generation != 1 || host.enrollment != identity
-        || host.project != [0; 16] || host.sandbox != [0; 16]
+    if host.kind != AccountKind::Operation
+        || host.parent != components_id
+        || host.generation != 1
+        || host.enrollment != identity
+        || host.project != [0; 16]
+        || host.sandbox != [0; 16]
         || host.tree_revision != [0; 32]
         || host.account.committed() != host.baseline
         || components.kind != AccountKind::Components
         || components.enrollment != identity
         || component.purpose != ClaimPurpose::HostComponentBootstrap
-        || component.id != component_claim_id || component.account != components_id
-        || component.child != host_id || component.amount != finite_ceilings(host)?
+        || component.id != component_claim_id
+        || component.account != components_id
+        || component.child != host_id
+        || component.amount != finite_ceilings(host)?
         || control.purpose != ClaimPurpose::HostControlInterval
-        || control.id != control_claim_id || control.account != host_id
-        || control.child != [0; 16] || control.amount != host.account.reserved()
-        || component.enrollment != identity || control.enrollment != identity
+        || control.id != control_claim_id
+        || control.account != host_id
+        || control.child != [0; 16]
+        || control.amount != host.account.reserved()
+        || component.enrollment != identity
+        || control.enrollment != identity
         || (claim != component && claim != control)
     {
         return Err(ResourceBankDataError::CorruptLedger);
@@ -386,18 +457,26 @@ fn require_host_component(
     Ok(())
 }
 
-fn validate_head(state: &State, head: AccountHead, maximum_depth: usize) -> Result<(), ResourceBankDataError> {
+fn validate_head(
+    state: &State,
+    head: AccountHead,
+    maximum_depth: usize,
+) -> Result<(), ResourceBankDataError> {
     let mut reserved = ResourceVector::ZERO;
     let mut committed = head.baseline;
     let mut incoming = 0_usize;
 
     for ((namespace, key_bytes), bytes) in state {
-        if *namespace != RecordNamespace::ControllerResourceReservation || key_bytes[0] != CLAIM_PREFIX {
+        if *namespace != RecordNamespace::ControllerResourceReservation
+            || key_bytes[0] != CLAIM_PREFIX
+        {
             continue;
         }
         let claim = codec::decode_claim(bytes)?;
         if claim.child == head.id {
-            incoming = incoming.checked_add(1).ok_or(ResourceBankDataError::CorruptLedger)?;
+            incoming = incoming
+                .checked_add(1)
+                .ok_or(ResourceBankDataError::CorruptLedger)?;
         }
         if claim.account != head.id {
             continue;
@@ -408,7 +487,8 @@ fn validate_head(state: &State, head: AccountHead, maximum_depth: usize) -> Resu
             ClaimState::Released => {}
         }
     }
-    if reserved != head.account.reserved() || committed != head.account.committed()
+    if reserved != head.account.reserved()
+        || committed != head.account.committed()
         || incoming != usize::from(head.kind != AccountKind::Node)
     {
         return Err(ResourceBankDataError::CorruptLedger);
@@ -446,8 +526,10 @@ pub fn prior_initial_project_grant(
     acceptance: [u8; 32],
     instance: [u8; 32],
 ) -> Result<Option<super::Claim>, ResourceBankDataError> {
-    if expected.kind != AccountKind::Project || expected.generation != 1
-        || expected.sandbox != [0; 16] || expected.baseline != ResourceVector::ZERO
+    if expected.kind != AccountKind::Project
+        || expected.generation != 1
+        || expected.sandbox != [0; 16]
+        || expected.baseline != ResourceVector::ZERO
     {
         return Err(ResourceBankDataError::Conflict);
     }
@@ -459,19 +541,30 @@ pub fn prior_initial_project_grant(
             continue;
         }
         let claim = codec::decode_claim(bytes)?;
-        if claim.child != expected.id { continue; }
+        if claim.child != expected.id {
+            continue;
+        }
         let child = find_head(state, expected.id)?;
-        if prior.is_some() || claim.enrollment != expected.enrollment
-            || claim.account != expected.parent || claim.owner != acceptance
+        if prior.is_some()
+            || claim.enrollment != expected.enrollment
+            || claim.account != expected.parent
+            || claim.owner != acceptance
             || claim.purpose != ClaimPurpose::InclusiveGrant
-            || claim.project != expected.project || claim.sandbox != expected.sandbox
-            || claim.tree_revision != expected.tree_revision || claim.genesis_instance != instance
-            || claim.amount != finite_ceilings(expected)? || claim.state != ClaimState::Reserved
+            || claim.project != expected.project
+            || claim.sandbox != expected.sandbox
+            || claim.tree_revision != expected.tree_revision
+            || claim.genesis_instance != instance
+            || claim.amount != finite_ceilings(expected)?
+            || claim.state != ClaimState::Reserved
             || !matches!(claim.cut, super::ClaimCut::Operation { .. })
-            || child.enrollment != expected.enrollment || child.id != expected.id
-            || child.parent != expected.parent || child.kind != expected.kind
-            || child.project != expected.project || child.sandbox != expected.sandbox
-            || child.tree_revision != expected.tree_revision || child.baseline != expected.baseline
+            || child.enrollment != expected.enrollment
+            || child.id != expected.id
+            || child.parent != expected.parent
+            || child.kind != expected.kind
+            || child.project != expected.project
+            || child.sandbox != expected.sandbox
+            || child.tree_revision != expected.tree_revision
+            || child.baseline != expected.baseline
             || finite_ceilings(child)? != finite_ceilings(expected)?
         {
             return Err(ResourceBankDataError::Conflict);
@@ -492,8 +585,7 @@ pub fn prior_initial_project_grant(
 ///
 /// Rejects an absent or malformed retained account head.
 pub fn find_head(state: &State, id: [u8; 16]) -> Result<AccountHead, ResourceBankDataError> {
-    let bytes = record_bytes(state, HEAD_PREFIX, id)
-        .ok_or(ResourceBankDataError::CorruptLedger)?;
+    let bytes = record_bytes(state, HEAD_PREFIX, id).ok_or(ResourceBankDataError::CorruptLedger)?;
     let head = codec::decode_head(bytes)?;
     if head.id != id {
         return Err(ResourceBankDataError::CorruptLedger);
@@ -528,11 +620,20 @@ pub(super) fn finite_ceilings(head: AccountHead) -> Result<ResourceVector, Resou
 }
 
 pub(super) fn allowed_edge(parent: AccountKind, child: AccountKind) -> bool {
-    matches!((parent, child),
-        (AccountKind::Node, AccountKind::Controller | AccountKind::Components | AccountKind::Project)
-        | (AccountKind::Project, AccountKind::Sandbox)
-        | (AccountKind::Sandbox, AccountKind::Sandbox | AccountKind::Operation)
-        | (AccountKind::Controller | AccountKind::Components, AccountKind::Operation)
+    matches!(
+        (parent, child),
+        (
+            AccountKind::Node,
+            AccountKind::Controller | AccountKind::Components | AccountKind::Project
+        ) | (AccountKind::Project, AccountKind::Sandbox)
+            | (
+                AccountKind::Sandbox,
+                AccountKind::Sandbox | AccountKind::Operation
+            )
+            | (
+                AccountKind::Controller | AccountKind::Components,
+                AccountKind::Operation
+            )
     )
 }
 
@@ -543,7 +644,10 @@ fn require_key(bytes: &[u8], prefix: u8, id: [u8; 16]) -> Result<(), ResourceBan
     Ok(())
 }
 
-fn require_enrollment(current: &mut Option<EnrollmentIdentity>, value: EnrollmentIdentity) -> Result<(), ResourceBankDataError> {
+fn require_enrollment(
+    current: &mut Option<EnrollmentIdentity>,
+    value: EnrollmentIdentity,
+) -> Result<(), ResourceBankDataError> {
     match current {
         Some(expected) if *expected != value => Err(ResourceBankDataError::CorruptLedger),
         Some(_) => Ok(()),

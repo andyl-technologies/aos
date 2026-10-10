@@ -47,10 +47,15 @@
 //! appends Root R at 1624..1800, and checksums 1800..1832. Its same-width
 //! `AOSRSC08` admits only purpose 13, RootReceiving, in Components.
 
-use aos_sandbox_core::{ResourceAccount, ResourceCeilings, ResourceDimension, ResourceLimit, ResourceVector};
+use aos_sandbox_core::{
+    ResourceAccount, ResourceCeilings, ResourceDimension, ResourceLimit, ResourceVector,
+};
 use sha2::{Digest as _, Sha256};
 
-use super::{AccountHead, AccountKind, Claim, ClaimCut, ClaimPurpose, ClaimState, EnrollmentIdentity, ImageBootstrapPolicy, ResourceBankDataError};
+use super::{
+    AccountHead, AccountKind, Claim, ClaimCut, ClaimPurpose, ClaimState, EnrollmentIdentity,
+    ImageBootstrapPolicy, ResourceBankDataError,
+};
 use super::PreparationBinding;
 
 pub(super) const HEAD_BYTES: usize = 945;
@@ -232,9 +237,10 @@ pub(super) fn encode_claim(claim: Claim) -> Result<[u8; CLAIM_BYTES], ResourceBa
     if claim.purpose == ClaimPurpose::RootReceiving {
         bytes[..8].copy_from_slice(b"AOSRSC08");
     }
-    if matches!(claim.purpose,
-        ClaimPurpose::HostComponentBootstrap | ClaimPurpose::HostControlInterval)
-    {
+    if matches!(
+        claim.purpose,
+        ClaimPurpose::HostComponentBootstrap | ClaimPurpose::HostControlInterval
+    ) {
         bytes[..8].copy_from_slice(b"AOSRSC03");
     }
     encode_enrollment(claim.enrollment, &mut bytes[8..104]);
@@ -264,7 +270,8 @@ pub(super) fn encode_claim(claim: Claim) -> Result<[u8; CLAIM_BYTES], ResourceBa
         original_wall_seconds,
         original_boottime_nanoseconds,
         deadline_boottime_nanoseconds,
-    } = claim.cut {
+    } = claim.cut
+    {
         bytes[265] = 1;
         bytes[266..274].copy_from_slice(&original_wall_seconds.to_be_bytes());
         bytes[274..282].copy_from_slice(&original_boottime_nanoseconds.to_be_bytes());
@@ -308,12 +315,24 @@ pub(super) fn decode_claim(bytes: &[u8]) -> Result<Claim, ResourceBankDataError>
         child: fixed(&bytes[136..152])?,
         owner: fixed(&bytes[152..184])?,
         purpose: match bytes[184] {
-            1 if !host && !first_global && !intake && !q04_intake && !root => ClaimPurpose::ControllerBootstrap,
-            2 if !host && !first_global && !intake && !q04_intake && !root => ClaimPurpose::ComponentEnvelope,
-            3 if !host && !first_global && !intake && !q04_intake && !root => ClaimPurpose::InclusiveGrant,
-            4 if !host && !first_global && !intake && !q04_intake && !root => ClaimPurpose::Snapshot,
-            5 if !host && !first_global && !intake && !q04_intake && !root => ClaimPurpose::ProjectPreparation,
-            6 if !host && !first_global && !intake && !q04_intake && !root => ClaimPurpose::Q04Preparation,
+            1 if !host && !first_global && !intake && !q04_intake && !root => {
+                ClaimPurpose::ControllerBootstrap
+            }
+            2 if !host && !first_global && !intake && !q04_intake && !root => {
+                ClaimPurpose::ComponentEnvelope
+            }
+            3 if !host && !first_global && !intake && !q04_intake && !root => {
+                ClaimPurpose::InclusiveGrant
+            }
+            4 if !host && !first_global && !intake && !q04_intake && !root => {
+                ClaimPurpose::Snapshot
+            }
+            5 if !host && !first_global && !intake && !q04_intake && !root => {
+                ClaimPurpose::ProjectPreparation
+            }
+            6 if !host && !first_global && !intake && !q04_intake && !root => {
+                ClaimPurpose::Q04Preparation
+            }
             7 if host => ClaimPurpose::HostComponentBootstrap,
             8 if host => ClaimPurpose::HostControlInterval,
             9 if first_global => ClaimPurpose::ControllerFirstGlobalPrefix,
@@ -350,9 +369,12 @@ pub(super) fn decode_claim(bytes: &[u8]) -> Result<Claim, ResourceBankDataError>
 
 // This historical association retains original joins, not a transferable
 // Root or Source loan. The nested claim uses the same sole canonical codec.
-pub(super) fn encode_preparation(binding: PreparationBinding) -> Result<[u8; PREPARATION_BYTES], ResourceBankDataError> {
+pub(super) fn encode_preparation(
+    binding: PreparationBinding,
+) -> Result<[u8; PREPARATION_BYTES], ResourceBankDataError> {
     if binding.claim.purpose != ClaimPurpose::ProjectPreparation
-        || binding.nonce == [0; 16] || binding.source_sequence == 0
+        || binding.nonce == [0; 16]
+        || binding.source_sequence == 0
         || [binding.floor, binding.tree_head, binding.lineage_head].contains(&[0; 32])
     {
         return Err(ResourceBankDataError::CorruptLedger);
@@ -372,7 +394,9 @@ pub(super) fn encode_preparation(binding: PreparationBinding) -> Result<[u8; PRE
     Ok(bytes)
 }
 
-pub(super) fn decode_preparation(bytes: &[u8]) -> Result<PreparationBinding, ResourceBankDataError> {
+pub(super) fn decode_preparation(
+    bytes: &[u8],
+) -> Result<PreparationBinding, ResourceBankDataError> {
     require_record(bytes, PREPARATION_BYTES, b"AOSRSP01")?;
     let binding = PreparationBinding {
         claim: decode_claim(&bytes[8..539])?,
@@ -394,7 +418,8 @@ pub(super) fn decode_preparation(bytes: &[u8]) -> Result<PreparationBinding, Res
 
 fn validate_head(head: AccountHead) -> Result<(), ResourceBankDataError> {
     validate_enrollment(head.enrollment)?;
-    if head.id == [0; 16] || head.generation == 0
+    if head.id == [0; 16]
+        || head.generation == 0
         || (head.kind == AccountKind::Node) != (head.parent == [0; 16])
         || head.id == head.parent
     {
@@ -403,16 +428,33 @@ fn validate_head(head: AccountHead) -> Result<(), ResourceBankDataError> {
     head.account.committed().checked_sub(head.baseline)?;
     match head.kind {
         AccountKind::Node | AccountKind::Controller | AccountKind::Components
-            if head.project != [0; 16] || head.sandbox != [0; 16] || head.tree_revision != [0; 32] =>
-                return Err(ResourceBankDataError::CorruptLedger),
-        AccountKind::Project if head.project == [0; 16] || head.sandbox != [0; 16]
-            || head.tree_revision == [0; 32] => return Err(ResourceBankDataError::CorruptLedger),
-        AccountKind::Sandbox if head.project == [0; 16] || head.sandbox == [0; 16]
-            || head.tree_revision == [0; 32] => return Err(ResourceBankDataError::CorruptLedger),
+            if head.project != [0; 16]
+                || head.sandbox != [0; 16]
+                || head.tree_revision != [0; 32] =>
+        {
+            return Err(ResourceBankDataError::CorruptLedger);
+        }
+        AccountKind::Project
+            if head.project == [0; 16]
+                || head.sandbox != [0; 16]
+                || head.tree_revision == [0; 32] =>
+        {
+            return Err(ResourceBankDataError::CorruptLedger);
+        }
+        AccountKind::Sandbox
+            if head.project == [0; 16]
+                || head.sandbox == [0; 16]
+                || head.tree_revision == [0; 32] =>
+        {
+            return Err(ResourceBankDataError::CorruptLedger);
+        }
         _ => {}
     }
     for dimension in ResourceDimension::ALL {
-        if !matches!(head.account.ceilings().get(dimension), ResourceLimit::Bounded(_)) {
+        if !matches!(
+            head.account.ceilings().get(dimension),
+            ResourceLimit::Bounded(_)
+        ) {
             return Err(ResourceBankDataError::CorruptLedger);
         }
     }
@@ -421,7 +463,9 @@ fn validate_head(head: AccountHead) -> Result<(), ResourceBankDataError> {
 
 fn validate_claim(claim: Claim) -> Result<(), ResourceBankDataError> {
     validate_enrollment(claim.enrollment)?;
-    if claim.id == [0; 16] || claim.account == [0; 16] || claim.owner == [0; 32]
+    if claim.id == [0; 16]
+        || claim.account == [0; 16]
+        || claim.owner == [0; 32]
         || claim.child == claim.account
     {
         return Err(ResourceBankDataError::CorruptLedger);
@@ -429,62 +473,103 @@ fn validate_claim(claim: Claim) -> Result<(), ResourceBankDataError> {
     match (claim.purpose, claim.cut) {
         (ClaimPurpose::RootReceiving, ClaimCut::BootLifetime)
             if claim.state == ClaimState::Reserved
-            && claim.owner == claim.enrollment.manifest
-            && claim.child == [0; 16] && claim.operation == [0; 16]
-            && claim.project == [0; 16] && claim.sandbox == [0; 16]
-            && claim.tree_revision == [0; 32] && claim.genesis_instance == [0; 32] => {}
-        (ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake
+                && claim.owner == claim.enrollment.manifest
+                && claim.child == [0; 16]
+                && claim.operation == [0; 16]
+                && claim.project == [0; 16]
+                && claim.sandbox == [0; 16]
+                && claim.tree_revision == [0; 32]
+                && claim.genesis_instance == [0; 32] => {}
+        (
+            ClaimPurpose::ControllerFirstGlobalPrefix
+            | ClaimPurpose::NixOriginalStartIntake
             | ClaimPurpose::Q04OriginalIntake,
-            ClaimCut::BootLifetime)
-            if matches!(claim.state, ClaimState::Reserved | ClaimState::Committed)
+            ClaimCut::BootLifetime,
+        ) if matches!(claim.state, ClaimState::Reserved | ClaimState::Committed)
             && claim.owner == claim.enrollment.manifest
-            && claim.child == [0; 16] && claim.operation == [0; 16]
-            && claim.project == [0; 16] && claim.sandbox == [0; 16]
-            && claim.tree_revision == [0; 32] && claim.genesis_instance == [0; 32] => {}
-        (ClaimPurpose::HostComponentBootstrap | ClaimPurpose::HostControlInterval,
-            ClaimCut::BootLifetime)
-            if claim.state == ClaimState::Reserved
+            && claim.child == [0; 16]
+            && claim.operation == [0; 16]
+            && claim.project == [0; 16]
+            && claim.sandbox == [0; 16]
+            && claim.tree_revision == [0; 32]
+            && claim.genesis_instance == [0; 32] => {}
+        (
+            ClaimPurpose::HostComponentBootstrap | ClaimPurpose::HostControlInterval,
+            ClaimCut::BootLifetime,
+        ) if claim.state == ClaimState::Reserved
             && claim.owner == claim.enrollment.manifest
-            && claim.operation == [0; 16] && claim.project == [0; 16]
-            && claim.sandbox == [0; 16] && claim.tree_revision == [0; 32]
+            && claim.operation == [0; 16]
+            && claim.project == [0; 16]
+            && claim.sandbox == [0; 16]
+            && claim.tree_revision == [0; 32]
             && claim.genesis_instance == [0; 32]
             && ((claim.purpose == ClaimPurpose::HostComponentBootstrap
                 && claim.child != [0; 16])
                 || (claim.purpose == ClaimPurpose::HostControlInterval
                     && claim.child == [0; 16])) => {}
-        (ClaimPurpose::ProjectPreparation, ClaimCut::Operation {
-            original_boottime_nanoseconds, deadline_boottime_nanoseconds, ..
-        }) if claim.operation != [0; 16] && claim.project != [0; 16]
-            && claim.sandbox == [0; 16] && claim.tree_revision != [0; 32]
-            && claim.child == [0; 16] && claim.genesis_instance != [0; 32]
+        (
+            ClaimPurpose::ProjectPreparation,
+            ClaimCut::Operation {
+                original_boottime_nanoseconds,
+                deadline_boottime_nanoseconds,
+                ..
+            },
+        ) if claim.operation != [0; 16]
+            && claim.project != [0; 16]
+            && claim.sandbox == [0; 16]
+            && claim.tree_revision != [0; 32]
+            && claim.child == [0; 16]
+            && claim.genesis_instance != [0; 32]
             && original_boottime_nanoseconds < deadline_boottime_nanoseconds => {}
-        (ClaimPurpose::Snapshot | ClaimPurpose::Q04Preparation, ClaimCut::Operation {
-            original_boottime_nanoseconds, deadline_boottime_nanoseconds, ..
-        }) if claim.operation != [0; 16] && claim.project != [0; 16]
-            && claim.sandbox != [0; 16] && claim.tree_revision != [0; 32]
+        (
+            ClaimPurpose::Snapshot | ClaimPurpose::Q04Preparation,
+            ClaimCut::Operation {
+                original_boottime_nanoseconds,
+                deadline_boottime_nanoseconds,
+                ..
+            },
+        ) if claim.operation != [0; 16]
+            && claim.project != [0; 16]
+            && claim.sandbox != [0; 16]
+            && claim.tree_revision != [0; 32]
             && claim.child == [0; 16]
             && ((claim.purpose == ClaimPurpose::Snapshot && claim.genesis_instance == [0; 32])
-                || (claim.purpose == ClaimPurpose::Q04Preparation && claim.genesis_instance != [0; 32]))
+                || (claim.purpose == ClaimPurpose::Q04Preparation
+                    && claim.genesis_instance != [0; 32]))
             && original_boottime_nanoseconds < deadline_boottime_nanoseconds => {}
-        (ClaimPurpose::Snapshot | ClaimPurpose::Q04Preparation, _) =>
-            return Err(ResourceBankDataError::CorruptLedger),
-        (ClaimPurpose::InclusiveGrant, ClaimCut::Operation {
-            original_boottime_nanoseconds, deadline_boottime_nanoseconds, ..
-        }) if claim.child != [0; 16] && claim.operation != [0; 16]
-            && claim.genesis_instance != [0; 32] && claim.project != [0; 16]
+        (ClaimPurpose::Snapshot | ClaimPurpose::Q04Preparation, _) => {
+            return Err(ResourceBankDataError::CorruptLedger);
+        }
+        (
+            ClaimPurpose::InclusiveGrant,
+            ClaimCut::Operation {
+                original_boottime_nanoseconds,
+                deadline_boottime_nanoseconds,
+                ..
+            },
+        ) if claim.child != [0; 16]
+            && claim.operation != [0; 16]
+            && claim.genesis_instance != [0; 32]
+            && claim.project != [0; 16]
             && claim.tree_revision != [0; 32]
             && original_boottime_nanoseconds < deadline_boottime_nanoseconds => {}
-        (ClaimPurpose::ControllerBootstrap | ClaimPurpose::ComponentEnvelope, ClaimCut::BootLifetime)
-            if claim.child != [0; 16]
-            && claim.operation == [0; 16] && claim.genesis_instance == [0; 32] => {}
+        (
+            ClaimPurpose::ControllerBootstrap | ClaimPurpose::ComponentEnvelope,
+            ClaimCut::BootLifetime,
+        ) if claim.child != [0; 16]
+            && claim.operation == [0; 16]
+            && claim.genesis_instance == [0; 32] => {}
         _ => return Err(ResourceBankDataError::CorruptLedger),
     }
     Ok(())
 }
 
 fn validate_enrollment(value: EnrollmentIdentity) -> Result<(), ResourceBankDataError> {
-    if value.node == [0; 16] || value.epoch == [0; 16] || value.boot == [0; 16]
-        || value.invocation == [0; 16] || value.manifest == [0; 32]
+    if value.node == [0; 16]
+        || value.epoch == [0; 16]
+        || value.boot == [0; 16]
+        || value.invocation == [0; 16]
+        || value.manifest == [0; 32]
     {
         return Err(ResourceBankDataError::CorruptLedger);
     }
@@ -520,7 +605,9 @@ fn encode_vector(vector: ResourceVector, bytes: &mut [u8]) {
 fn decode_vector(bytes: &[u8]) -> Result<ResourceVector, ResourceBankDataError> {
     let mut values = [0; ResourceDimension::COUNT];
     for (index, chunk) in bytes.chunks_exact(8).enumerate() {
-        let slot = values.get_mut(index).ok_or(ResourceBankDataError::CorruptLedger)?;
+        let slot = values
+            .get_mut(index)
+            .ok_or(ResourceBankDataError::CorruptLedger)?;
         *slot = u64::from_be_bytes(fixed(chunk)?);
     }
     if bytes.len() != ResourceDimension::COUNT * 8 {
@@ -529,8 +616,13 @@ fn decode_vector(bytes: &[u8]) -> Result<ResourceVector, ResourceBankDataError> 
     Ok(ResourceVector::new(values))
 }
 
-fn require_record(bytes: &[u8], length: usize, magic: &[u8; 8]) -> Result<(), ResourceBankDataError> {
-    if bytes.len() != length || &bytes[..8] != magic
+fn require_record(
+    bytes: &[u8],
+    length: usize,
+    magic: &[u8; 8],
+) -> Result<(), ResourceBankDataError> {
+    if bytes.len() != length
+        || &bytes[..8] != magic
         || Sha256::digest(&bytes[..length - 32])[..] != bytes[length - 32..]
     {
         return Err(ResourceBankDataError::CorruptLedger);
@@ -539,7 +631,9 @@ fn require_record(bytes: &[u8], length: usize, magic: &[u8; 8]) -> Result<(), Re
 }
 
 fn fixed<const N: usize>(bytes: &[u8]) -> Result<[u8; N], ResourceBankDataError> {
-    bytes.try_into().map_err(|_| ResourceBankDataError::CorruptLedger)
+    bytes
+        .try_into()
+        .map_err(|_| ResourceBankDataError::CorruptLedger)
 }
 
 #[cfg(test)]
@@ -723,8 +817,7 @@ mod image_policy_tests {
     #[test]
     fn image_policy_q_failure_precedes_invalid_root_service() {
         let (expected, mut bytes) = fixture(6);
-        let minimum =
-            super::super::minimum_q04_failure_demand(INERT_LAYOUT).unwrap();
+        let minimum = super::super::minimum_q04_failure_demand(INERT_LAYOUT).unwrap();
         let undersized = minimum.with(ResourceDimension::MemoryBytes, 0);
         encode_vector(undersized, &mut bytes[1448..1624]);
         encode_vector(ResourceVector::ZERO, &mut bytes[1624..1800]);
@@ -763,34 +856,70 @@ mod image_policy_tests {
         for version in 1..=6 {
             let (policy, _) = fixture(version);
             let identity = super::super::EnrollmentIdentity {
-                node: policy.node, epoch: policy.epoch, boot: [3; 16],
-                invocation: [4; 16], manifest: [5; 32],
+                node: policy.node,
+                epoch: policy.epoch,
+                boot: [3; 16],
+                invocation: [4; 16],
+                manifest: [5; 32],
             };
             let (heads, host, first_global, nix_intake, q04_intake, root_receiving) =
-                super::super::prepare_enrollment_subdivisions(identity, policy, INERT_LAYOUT).unwrap();
+                super::super::prepare_enrollment_subdivisions(identity, policy, INERT_LAYOUT)
+                    .unwrap();
             let claims = super::super::initial_enrollment_claims(identity, policy, &heads);
             let transaction_id = [6; 16];
             let mutation = super::super::EnrollmentMutation::new((
-                &transaction_id, &heads, &claims, &host, &first_global,
-                &nix_intake, &q04_intake, &root_receiving,
+                &transaction_id,
+                &heads,
+                &claims,
+                &host,
+                &first_global,
+                &nix_intake,
+                &q04_intake,
+                &root_receiving,
             ));
             let transaction = mutation.transaction().unwrap();
-            mutation.require_exact(&super::super::State::new(), &transaction).unwrap();
-            let mut retained = transaction.records().iter().map(|record| (
-                (record.namespace(), record.key().to_vec()), record.value().unwrap().to_vec(),
-            )).collect::<super::super::State>();
+            mutation
+                .require_exact(&super::super::State::new(), &transaction)
+                .unwrap();
+            let mut retained = transaction
+                .records()
+                .iter()
+                .map(|record| {
+                    (
+                        (record.namespace(), record.key().to_vec()),
+                        record.value().unwrap().to_vec(),
+                    )
+                })
+                .collect::<super::super::State>();
 
             // Independent owned rows reproduce the same complete replay and joins.
             assert_eq!(super::super::validate(&retained).unwrap(), Some(identity));
             mutation.require_returned_rows(&retained).unwrap();
-            let claim_key = (aos_sandbox_core::RecordNamespace::ControllerResourceReservation,
-                super::super::replay::key(super::super::replay::CLAIM_PREFIX, claims[0].id).to_vec());
-            retained.insert(claim_key.clone(), super::encode_claim(super::super::Claim {
-                amount: claims[0].amount.checked_sub(ResourceVector::new([1; ResourceDimension::COUNT])).unwrap(),
-                ..claims[0]
-            }).unwrap().to_vec());
-            assert!(matches!(super::super::validate(&retained), Err(ResourceBankDataError::CorruptLedger)));
-            assert!(matches!(mutation.require_returned_rows(&retained), Err(ResourceBankDataError::Conflict)));
+            let claim_key = (
+                aos_sandbox_core::RecordNamespace::ControllerResourceReservation,
+                super::super::replay::key(super::super::replay::CLAIM_PREFIX, claims[0].id)
+                    .to_vec(),
+            );
+            retained.insert(
+                claim_key.clone(),
+                super::encode_claim(super::super::Claim {
+                    amount: claims[0]
+                        .amount
+                        .checked_sub(ResourceVector::new([1; ResourceDimension::COUNT]))
+                        .unwrap(),
+                    ..claims[0]
+                })
+                .unwrap()
+                .to_vec(),
+            );
+            assert!(matches!(
+                super::super::validate(&retained),
+                Err(ResourceBankDataError::CorruptLedger)
+            ));
+            assert!(matches!(
+                mutation.require_returned_rows(&retained),
+                Err(ResourceBankDataError::Conflict)
+            ));
 
             retained.insert(claim_key, super::encode_claim(claims[0]).unwrap().to_vec());
             assert_eq!(super::super::validate(&retained).unwrap(), Some(identity));
@@ -802,10 +931,16 @@ mod image_policy_tests {
         let (_, mut bytes) = fixture(6);
         let overflow = NativeLayoutDemand::new(usize::MAX, 1);
 
-        assert!(matches!(decode_image_policy(&bytes, overflow), Err(ResourceBankDataError::Conflict)));
+        assert!(matches!(
+            decode_image_policy(&bytes, overflow),
+            Err(ResourceBankDataError::Conflict)
+        ));
         bytes[8..24].fill(0);
         refresh_checksum(&mut bytes);
-        assert!(matches!(decode_image_policy(&bytes, overflow), Err(ResourceBankDataError::EnrollmentUnavailable)));
+        assert!(matches!(
+            decode_image_policy(&bytes, overflow),
+            Err(ResourceBankDataError::EnrollmentUnavailable)
+        ));
 
         let (policy, _) = fixture(4);
         policy.validate(overflow).unwrap();

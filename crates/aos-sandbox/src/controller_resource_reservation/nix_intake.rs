@@ -291,7 +291,10 @@ impl NixOriginalStartIntakeAttemptV1 {
             .ok_or(ResourceReservationErrorV1::Conflict)?;
         let original = self.original.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        let provision = (original.policy.bootstrap_provisions().nix_original_start_intake)
+        let provision = (original
+            .policy
+            .bootstrap_provisions()
+            .nix_original_start_intake)
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
         let clock = self.initial_clock.as_ref().and_then(|result| result.as_ref().ok())
             .copied().ok_or(ResourceReservationErrorV1::Conflict)?;
@@ -331,15 +334,24 @@ impl NixOriginalStartIntakeAttemptV1 {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         let state = controller.controller_resource_state_v1()?;
-        let id = original.identity.account_id(b"controller-nix-original-start-intake-v1");
-        let claim = super::Claim::decode(bank::claim_bytes(state, id)
-            .ok_or(ResourceReservationErrorV1::Conflict)?)
-            .map_err(ResourceReservationErrorV1::from)?;
-        if claim.native_fields().amount != provision || claim.native_fields().state != ClaimState::Reserved {
+        let id = original
+            .identity
+            .account_id(b"controller-nix-original-start-intake-v1");
+        let claim = super::Claim::decode(
+            bank::claim_bytes(state, id).ok_or(ResourceReservationErrorV1::Conflict)?,
+        )
+        .map_err(ResourceReservationErrorV1::from)?;
+        if claim.native_fields().amount != provision
+            || claim.native_fields().state != ClaimState::Reserved
+        {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        let mut transition = AccountTransition::settle(bank::find_head(state, claim.native_fields().account)
-            .map_err(ResourceReservationErrorV1::from)?, claim, true)?;
+        let mut transition = AccountTransition::settle(
+            bank::find_head(state, claim.native_fields().account)
+                .map_err(ResourceReservationErrorV1::from)?,
+            claim,
+            true,
+        )?;
         transition.original_clock = Some(clock);
         self.append.append_into(controller, Ok(transition));
         self.append.require_committed()?;

@@ -23,11 +23,7 @@ use crate::policy_compiler::create_q04::{
 };
 use crate::Journal;
 
-use super::{
-    AccountTransition, ResourceReservationErrorV1,
-    bank,
-};
-
+use super::{AccountTransition, ResourceReservationErrorV1, bank};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct NativeOrigin {
@@ -93,7 +89,9 @@ impl Q04TerminalDispositionV1 {
             }
             origins[index] = NativeOrigin {
                 id: *recipe.transaction().id(),
-                members: bank::transaction_digest(recipe.transaction()).map_err(ResourceReservationErrorV1::from).map_err(resource_error)?,
+                members: bank::transaction_digest(recipe.transaction())
+                    .map_err(ResourceReservationErrorV1::from)
+                    .map_err(resource_error)?,
                 returned: *result,
             };
             next = result.commit_sequence.checked_add(1).ok_or(CreateQ04ErrorV1::Bounds)?;
@@ -108,8 +106,17 @@ impl Q04TerminalDispositionV1 {
         transition.original_clock = Some(original.original_clock);
         let binding = bank::TerminalBinding::from_parts((
             original.binding.native_fields().has_input_origin,
-            original.binding.native_fields().original_claim.native_fields().id,
-            original.binding.commitment().map_err(ResourceReservationErrorV1::from).map_err(resource_error)?,
+            original
+                .binding
+                .native_fields()
+                .original_claim
+                .native_fields()
+                .id,
+            original
+                .binding
+                .commitment()
+                .map_err(ResourceReservationErrorV1::from)
+                .map_err(resource_error)?,
             transition.transaction_id,
             journal.protected_writer_physical_names_v1()?,
             next, prior_end,
@@ -118,7 +125,10 @@ impl Q04TerminalDispositionV1 {
                 origin.id, origin.members, origin.returned.commit_sequence, origin.returned.durable_bytes,
             )),
         ));
-        binding.require_predecessor(state, transition.history()).map_err(ResourceReservationErrorV1::from).map_err(resource_error)?;
+        binding
+            .require_predecessor(state, transition.history())
+            .map_err(ResourceReservationErrorV1::from)
+            .map_err(resource_error)?;
         transition.terminal = Some(binding);
         root.recheck()?;
         Ok(Self { transition })

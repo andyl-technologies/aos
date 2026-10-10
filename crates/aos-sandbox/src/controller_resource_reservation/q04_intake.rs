@@ -181,19 +181,27 @@ impl Q04OriginalIntakeAttemptV1 {
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
         let provision = (original.policy.bootstrap_provisions().q04_original_intake)
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        let id = original.identity.account_id(b"controller-q04-original-intake-v1");
+        let id = original
+            .identity
+            .account_id(b"controller-q04-original-intake-v1");
         let state = controller.controller_resource_state_v1()?;
-        let claim = super::Claim::decode(bank::claim_bytes(state, id)
-            .ok_or(ResourceReservationErrorV1::Conflict)?)
-            .map_err(ResourceReservationErrorV1::from)?;
+        let claim = super::Claim::decode(
+            bank::claim_bytes(state, id).ok_or(ResourceReservationErrorV1::Conflict)?,
+        )
+        .map_err(ResourceReservationErrorV1::from)?;
         if claim.native_fields().purpose != ClaimPurpose::Q04OriginalIntake
-            || claim.native_fields().enrollment != original.identity || claim.native_fields().amount != provision
+            || claim.native_fields().enrollment != original.identity
+            || claim.native_fields().amount != provision
             || claim.native_fields().state != ClaimState::Reserved
         {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        let mut transition = AccountTransition::settle(bank::find_head(state, claim.native_fields().account)
-            .map_err(ResourceReservationErrorV1::from)?, claim, true)?;
+        let mut transition = AccountTransition::settle(
+            bank::find_head(state, claim.native_fields().account)
+                .map_err(ResourceReservationErrorV1::from)?,
+            claim,
+            true,
+        )?;
         self.source_shape = Some(source.journal().first_global_allocation_shape_v1()?);
         let fixed = fixed_demand(&controller.first_global_allocation_shape_v1()?,
             self.source_shape.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?, provision)?;
@@ -227,9 +235,14 @@ impl Q04OriginalIntakeAttemptV1 {
         );
         profile.attach_q04_intake_observers(&admission)?;
         let (recipient, producer) = profile.require_resource_producer()?;
-        if recipient != original.recipient_invocation || producer != original.identity.native_fields().invocation
-            || self.bank.lock().map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)?
-                .first_global_original(controller)? != *original
+        if recipient != original.recipient_invocation
+            || producer != original.identity.native_fields().invocation
+            || self
+                .bank
+                .lock()
+                .map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)?
+                .first_global_original(controller)?
+                != *original
         {
             return Err(ResourceReservationErrorV1::Conflict);
         }
@@ -268,9 +281,15 @@ impl Q04OriginalIntakeAttemptV1 {
         self.require_original(profile)?;
         let original = self.original.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or(ResourceReservationErrorV1::Conflict)?;
-        let capacity = self.observation_capacity.ok_or(ResourceReservationErrorV1::Conflict)?;
-        Ok((original.identity.account_id(b"controller-q04-original-intake-v1"),
-            u64::try_from(capacity).map_err(|_| ResourceReservationErrorV1::Conflict)?))
+        let capacity = self
+            .observation_capacity
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        Ok((
+            original
+                .identity
+                .account_id(b"controller-q04-original-intake-v1"),
+            u64::try_from(capacity).map_err(|_| ResourceReservationErrorV1::Conflict)?,
+        ))
     }
 
     pub(super) fn preparation_source_shape(
@@ -373,13 +392,19 @@ mod layout_bridge_tests {
     #[test]
     fn authentic_native_intake_and_preparation_fit_the_failure_allowance() {
         let actual_native_bytes = std::mem::size_of::<Q04OriginalIntakeAttemptV1>()
-            .checked_add(std::mem::size_of::<crate::ProjectPreparationReservationAttemptV1>())
+            .checked_add(std::mem::size_of::<
+                crate::ProjectPreparationReservationAttemptV1,
+            >())
             .unwrap();
         let demand = minimum_failure_demand().unwrap();
 
         assert!(u64::try_from(actual_native_bytes).unwrap() < demand.get(D::MemoryBytes));
-        assert!(matches!(ResourceReservationErrorV1::from(
-            bank::minimum_q04_failure_demand(bank::NativeLayoutDemand::new(usize::MAX, 1)).unwrap_err(),
-        ), ResourceReservationErrorV1::Conflict));
+        assert!(matches!(
+            ResourceReservationErrorV1::from(
+                bank::minimum_q04_failure_demand(bank::NativeLayoutDemand::new(usize::MAX, 1))
+                    .unwrap_err(),
+            ),
+            ResourceReservationErrorV1::Conflict
+        ));
     }
 }

@@ -28,8 +28,7 @@ use aos_sandbox_protocol::domain_ledger::resource_bank::{
 };
 
 use super::{
-    AccountHead, Claim, NativeCrossing,
-    ResourceReservationErrorV1, Transition, TransitionOriginal,
+    AccountHead, Claim, NativeCrossing, ResourceReservationErrorV1, Transition, TransitionOriginal,
     State, bank,
 };
 
@@ -102,33 +101,55 @@ impl Q04ResourceTransferV1 {
         let (intake, observations) = root.original_intake_association()?;
         prepared.input_origin().require_identity(identity)?;
         let origin = InputAssociation::from_parts((
-            identity.bytes()[456..488].try_into().map_err(|_| CreateQ04ErrorV1::Bounds)?,
+            identity.bytes()[456..488]
+                .try_into()
+                .map_err(|_| CreateQ04ErrorV1::Bounds)?,
             prepared.input_origin().raw_digest(),
-            u64::try_from(prepared.input_origin().bytes().len()).map_err(|_| CreateQ04ErrorV1::Bounds)?,
-            demand.continuation(), intake, observations,
+            u64::try_from(prepared.input_origin().bytes().len())
+                .map_err(|_| CreateQ04ErrorV1::Bounds)?,
+            demand.continuation(),
+            intake,
+            observations,
         ));
-        let residual_amount = retained.claim().native_fields().amount.checked_sub(amount).map_err(|error| resource_error(error.into()))?;
+        let residual_amount = retained
+            .claim()
+            .native_fields()
+            .amount
+            .checked_sub(amount)
+            .map_err(|error| resource_error(error.into()))?;
         let residual = retained.claim().with_amount(residual_amount);
         let state = journal.controller_resource_state_v1()?;
-        bank::validate(state).map_err(ResourceReservationErrorV1::from).map_err(resource_error)?;
-        let before = bank::find_head(state, retained.claim().native_fields().account).map_err(ResourceReservationErrorV1::from).map_err(resource_error)?;
-        let generation = before.native_fields().generation.checked_add(1).ok_or(CreateQ04ErrorV1::Bounds)?;
+        bank::validate(state)
+            .map_err(ResourceReservationErrorV1::from)
+            .map_err(resource_error)?;
+        let before = bank::find_head(state, retained.claim().native_fields().account)
+            .map_err(ResourceReservationErrorV1::from)
+            .map_err(resource_error)?;
+        let generation = before
+            .native_fields()
+            .generation
+            .checked_add(1)
+            .ok_or(CreateQ04ErrorV1::Bounds)?;
         // Subdivision changes no total charge in this immediate parent.
         let after = before.with_generation(generation);
         let sandbox = identity.sandbox().into_bytes();
         let child = bank::sandbox_child(before, sandbox, amount, retained_use)
-            .map_err(ResourceReservationErrorV1::from).map_err(resource_error)?;
+            .map_err(ResourceReservationErrorV1::from)
+            .map_err(resource_error)?;
         let grant = bank::inclusive_claim_for_cut(retained.claim(), identity, sandbox, amount);
         let use_claim = bank::retained_use_claim_for_cut(grant, identity, sandbox, retained_use);
         let binding = Binding::from_parts((
-            retained, grant, use_claim,
+            retained,
+            grant,
+            use_claim,
             *specification.descriptor().digest().as_bytes(),
             specification.descriptor().encoded_size(),
             *specification.record_digest().as_bytes(),
             specification.operation_id().into_bytes(),
             *specification.request_digest().as_bytes(),
             *candidate.commitment().digest().as_bytes(),
-            *identity.binding().as_bytes(), Some(origin),
+            *identity.binding().as_bytes(),
+            Some(origin),
         ));
         let transfer = Self {
             before, after, residual, child, binding,
@@ -159,20 +180,31 @@ impl Q04ResourceTransferV1 {
 
     fn history(&self) -> CoissuanceMutation<'_> {
         CoissuanceMutation::new((
-            &self.before, &self.after, &self.residual, &self.child, &self.binding,
+            &self.before,
+            &self.after,
+            &self.residual,
+            &self.child,
+            &self.binding,
         ))
     }
 
     fn records(&self) -> Result<[JournalRecord; BANK_MEMBERS], ResourceReservationErrorV1> {
-        self.history().records().map_err(ResourceReservationErrorV1::from)
+        self.history()
+            .records()
+            .map_err(ResourceReservationErrorV1::from)
     }
 
     fn require_predecessor(&self, state: &State) -> Result<(), ResourceReservationErrorV1> {
-        self.history().require_predecessor(state).map_err(ResourceReservationErrorV1::from)
+        self.history()
+            .require_predecessor(state)
+            .map_err(ResourceReservationErrorV1::from)
     }
 
-
-    pub(crate) fn require_current(&self, state: &State, transaction: &JournalTransaction) -> Result<(), ResourceReservationErrorV1> {
+    pub(crate) fn require_current(
+        &self,
+        state: &State,
+        transaction: &JournalTransaction,
+    ) -> Result<(), ResourceReservationErrorV1> {
         self.require_predecessor(state)?;
         if transaction.records().len() != 4 + BANK_MEMBERS
             || transaction.records()[3..9] != self.records()?
@@ -184,8 +216,17 @@ impl Q04ResourceTransferV1 {
     }
 
     pub(crate) fn crossing(&self) -> Transition<'_> {
-        let deadline = match self.binding.native_fields().original_claim.native_fields().cut {
-            super::ClaimCut::Operation { deadline_boottime_nanoseconds, .. } => deadline_boottime_nanoseconds,
+        let deadline = match self
+            .binding
+            .native_fields()
+            .original_claim
+            .native_fields()
+            .cut
+        {
+            super::ClaimCut::Operation {
+                deadline_boottime_nanoseconds,
+                ..
+            } => deadline_boottime_nanoseconds,
             super::ClaimCut::BootLifetime => 0,
         };
         Transition {
@@ -236,9 +277,14 @@ impl Q04ResourceTransferV1 {
         if !matches!(self.crossing.get(), Some(Ok(_))) {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        if self.specification.descriptor().digest().as_bytes() != &self.binding.native_fields().specification
-            || self.specification.record_digest().as_bytes() != &self.binding.native_fields().specification_record
-            || !self.binding.matches_origin_bytes(&self.input_origin).map_err(ResourceReservationErrorV1::from)?
+        if self.specification.descriptor().digest().as_bytes()
+            != &self.binding.native_fields().specification
+            || self.specification.record_digest().as_bytes()
+                != &self.binding.native_fields().specification_record
+            || !self
+                .binding
+                .matches_origin_bytes(&self.input_origin)
+                .map_err(ResourceReservationErrorV1::from)?
         {
             return Err(ResourceReservationErrorV1::Conflict);
         }
@@ -248,10 +294,15 @@ impl Q04ResourceTransferV1 {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         bank::validate(state).map_err(ResourceReservationErrorV1::from)?;
-        if bank::find_head(state, self.after.native_fields().id).map_err(ResourceReservationErrorV1::from)? != self.after {
+        if bank::find_head(state, self.after.native_fields().id)
+            .map_err(ResourceReservationErrorV1::from)?
+            != self.after
+        {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        self.binding.require_replayed(state).map_err(ResourceReservationErrorV1::from)
+        self.binding
+            .require_replayed(state)
+            .map_err(ResourceReservationErrorV1::from)
     }
 
     fn matches_retained_origin(&self, record: &JournalRecord) -> bool {
@@ -264,4 +315,3 @@ impl Q04ResourceTransferV1 {
 fn resource_error(error: ResourceReservationErrorV1) -> CreateQ04ErrorV1 {
     CreateQ04ErrorV1::ResourceReservation(Box::new(error))
 }
-

@@ -43,9 +43,8 @@ pub use component::{
 
 use aos_sandbox_core::{AccountingError, ResourceVector};
 use aos_sandbox_protocol::domain_ledger::resource_bank::{
-    self as bank, AccountHead, AccountKind, AccountMutation, Claim, ClaimCut,
-    ClaimPurpose, ClaimState, EnrollmentIdentity, ImageBootstrapPolicy,
-    PreparationBinding, TerminalBinding,
+    self as bank, AccountHead, AccountKind, AccountMutation, Claim, ClaimCut, ClaimPurpose,
+    ClaimState, EnrollmentIdentity, ImageBootstrapPolicy, PreparationBinding, TerminalBinding,
 };
 
 type State = std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
@@ -164,10 +163,11 @@ pub fn require_original_host_component_pair_v2(
     let host_service = *expected_host_service;
     let host_control = *expected_host_control;
     if !original.identity.matches_host_fields(
-        *expected_node, *expected_epoch, *expected_policy_sha256,
+        *expected_node,
+        *expected_epoch,
+        *expected_policy_sha256,
         *expected_producer_invocation,
-    )
-        || original.recipient_invocation != *expected_recipient_invocation
+    ) || original.recipient_invocation != *expected_recipient_invocation
         || !original.policy.host_matches(host_service, host_control)
     {
         return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
@@ -277,8 +277,7 @@ struct AccountTransition {
 
 impl AccountTransition {
     fn reserve(before: AccountHead, claim: Claim) -> Result<Self, ResourceReservationErrorV1> {
-        let after = bank::reserve_head(before, claim)
-            .map_err(ResourceReservationErrorV1::from)?;
+        let after = bank::reserve_head(before, claim).map_err(ResourceReservationErrorV1::from)?;
         Ok(Self {
             transaction_id: aos_sandbox_core::OperationId::new().into_bytes(),
             before,
@@ -321,7 +320,9 @@ impl AccountTransition {
         Ok(Self {
             transaction_id: aos_sandbox_core::OperationId::new().into_bytes(),
             before,
-            after: before.reserve_at_generation(generation, claim.native_fields().amount).map_err(ResourceReservationErrorV1::from)?,
+            after: before
+                .reserve_at_generation(generation, claim.native_fields().amount)
+                .map_err(ResourceReservationErrorV1::from)?,
             claim,
             previous_claim: None,
             child: Some(child),
@@ -334,13 +335,21 @@ impl AccountTransition {
 
     fn history(&self) -> AccountMutation<'_> {
         AccountMutation::new((
-            &self.transaction_id, &self.before, &self.after, &self.claim,
-            &self.previous_claim, &self.child, &self.preparation, &self.terminal,
+            &self.transaction_id,
+            &self.before,
+            &self.after,
+            &self.claim,
+            &self.previous_claim,
+            &self.child,
+            &self.preparation,
+            &self.terminal,
         ))
     }
 
     fn transaction(&self) -> Result<JournalTransaction, ResourceReservationErrorV1> {
-        self.history().transaction().map_err(ResourceReservationErrorV1::from)
+        self.history()
+            .transaction()
+            .map_err(ResourceReservationErrorV1::from)
     }
 
     pub(crate) fn require_current(
@@ -352,8 +361,14 @@ impl AccountTransition {
             .map_err(|_| crate::JournalError::ProtectedBoundary)
     }
 
-    fn require_exact(&self, state: &State, transaction: &JournalTransaction) -> Result<(), ResourceReservationErrorV1> {
-        self.history().require_exact(state, transaction).map_err(ResourceReservationErrorV1::from)
+    fn require_exact(
+        &self,
+        state: &State,
+        transaction: &JournalTransaction,
+    ) -> Result<(), ResourceReservationErrorV1> {
+        self.history()
+            .require_exact(state, transaction)
+            .map_err(ResourceReservationErrorV1::from)
     }
 }
 
@@ -413,7 +428,10 @@ impl ReturnedAppend {
                     transaction,
                     &Transition {
                         original: TransitionOriginal::Account(original),
-                        crossing: match (original.original_clock, original.claim.native_fields().cut) {
+                        crossing: match (
+                            original.original_clock,
+                            original.claim.native_fields().cut,
+                        ) {
                             (Some(clock), ClaimCut::BootLifetime)
                                 if matches!(original.claim.native_fields().purpose,
                                     ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake
@@ -482,16 +500,23 @@ impl ReturnedAppend {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         let state = journal.controller_resource_state_v1()?;
-        if bank::validate(state).map_err(ResourceReservationErrorV1::from)? != Some(original.before.native_fields().enrollment) {
+        if bank::validate(state).map_err(ResourceReservationErrorV1::from)?
+            != Some(original.before.native_fields().enrollment)
+        {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        let head = bank::find_head(state, original.before.native_fields().id).map_err(ResourceReservationErrorV1::from)?;
-        let claim = bank::claim_bytes(state, original.claim.native_fields().id).map(|bytes| Claim::decode(bytes).map_err(ResourceReservationErrorV1::from)).transpose()?;
-        let recorded = journal.controller_resource_contains_transaction_v1(
-            &original.transaction_id,
-        )?;
-        if head == original.before && claim == original.previous_claim
-            && original.child.is_none_or(|child| !bank::has_head(state, child.native_fields().id))
+        let head = bank::find_head(state, original.before.native_fields().id)
+            .map_err(ResourceReservationErrorV1::from)?;
+        let claim = bank::claim_bytes(state, original.claim.native_fields().id)
+            .map(|bytes| Claim::decode(bytes).map_err(ResourceReservationErrorV1::from))
+            .transpose()?;
+        let recorded =
+            journal.controller_resource_contains_transaction_v1(&original.transaction_id)?;
+        if head == original.before
+            && claim == original.previous_claim
+            && original
+                .child
+                .is_none_or(|child| !bank::has_head(state, child.native_fields().id))
             && !recorded
             && original.preparation.is_none_or(|binding|
                 bank::preparation_bytes(state, binding.claim().native_fields().id).is_none())
@@ -510,7 +535,10 @@ impl ReturnedAppend {
             if let Some(binding) = original.preparation {
                 let bytes = bank::preparation_bytes(state, binding.claim().native_fields().id)
                     .ok_or(ResourceReservationErrorV1::Conflict)?;
-                if !binding.matches_canonical(bytes).map_err(ResourceReservationErrorV1::from)? {
+                if !binding
+                    .matches_canonical(bytes)
+                    .map_err(ResourceReservationErrorV1::from)?
+                {
                     return Err(ResourceReservationErrorV1::Conflict);
                 }
             }
@@ -524,7 +552,10 @@ impl ReturnedAppend {
                 }
                 let bytes = bank::terminal_bytes(state, binding.native_fields().original_id)
                     .ok_or(ResourceReservationErrorV1::Conflict)?;
-                if !binding.matches_canonical(bytes).map_err(ResourceReservationErrorV1::from)? {
+                if !binding
+                    .matches_canonical(bytes)
+                    .map_err(ResourceReservationErrorV1::from)?
+                {
                     return Err(ResourceReservationErrorV1::Conflict);
                 }
                 journal.require_controller_resource_history_v1()

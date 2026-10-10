@@ -17,9 +17,8 @@ use crate::policy_compiler::create_q04::{
 use crate::Journal;
 
 use super::{
-    AccountKind, AccountTransition, ClaimCut,
-    ControllerResourceBankOpeningV1, EnrollmentIdentity, ResourceReservationErrorV1,
-    ReturnedAppend, bank,
+    AccountKind, AccountTransition, ClaimCut, ControllerResourceBankOpeningV1, EnrollmentIdentity,
+    ResourceReservationErrorV1, ReturnedAppend, bank,
 };
 
 // Fixed original association DATA is never an allocation permit. Only the
@@ -584,15 +583,22 @@ impl OriginalPreparationData {
         let mut selected = None;
         for head in &mut projects {
             let head = head?;
-            if head.native_fields().kind == AccountKind::Project && head.native_fields().project == self.project {
+            if head.native_fields().kind == AccountKind::Project
+                && head.native_fields().project == self.project
+            {
                 if selected.replace(head).is_some() {
                     return Err(ResourceReservationErrorV1::Conflict);
                 }
             }
         }
         let before = selected.ok_or(ResourceReservationErrorV1::Conflict)?;
-        if before.native_fields().enrollment != enrollment || enrollment.native_fields().boot != self.original.host_boot_id()
-            || before.native_fields().tree_revision != self.tree || before.finite_ceilings().map_err(ResourceReservationErrorV1::from)? != self.amount
+        if before.native_fields().enrollment != enrollment
+            || enrollment.native_fields().boot != self.original.host_boot_id()
+            || before.native_fields().tree_revision != self.tree
+            || before
+                .finite_ceilings()
+                .map_err(ResourceReservationErrorV1::from)?
+                != self.amount
         {
             return Err(ResourceReservationErrorV1::Conflict);
         }
@@ -609,13 +615,27 @@ impl OriginalPreparationData {
         };
         let amount = self.amount;
         let claim = bank::project_preparation_claim(
-            enrollment, operation, account, authorization, project, tree, cut, instance, amount,
+            enrollment,
+            operation,
+            account,
+            authorization,
+            project,
+            tree,
+            cut,
+            instance,
+            amount,
         );
         let mut transition = AccountTransition::reserve(before, claim)?;
         transition.original_clock = Some(self.original);
         transition.preparation = Some(super::PreparationBinding::from_parts((
-            claim, self.nonce, self.controller_names, self.source_names,
-            self.source_sequence, self.floor, self.tree_head, self.lineage_head,
+            claim,
+            self.nonce,
+            self.controller_names,
+            self.source_names,
+            self.source_sequence,
+            self.floor,
+            self.tree_head,
+            self.lineage_head,
         )));
         Ok(transition)
     }

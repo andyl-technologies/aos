@@ -48,8 +48,8 @@ pub(crate) use root::{
 pub(crate) use root::capacity_shape_digest as q04_capacity_shape_digest_v1;
 pub(crate) use root::root_consumed_gate_record as root_consumed_gate_v1;
 pub(crate) use input_origin::{
-    Q04OriginalInputDemandV1, Q04PreparedInputOriginV1,
-    cache_replay_cell_bytes, candidate_capacity, original_input_demand,
+    Q04OriginalInputDemandV1, Q04PreparedInputOriginV1, cache_replay_cell_bytes,
+    candidate_capacity, original_input_demand,
 };
 
 pub(crate) const CLAIM_INDEX_BYTES: usize = 96;
