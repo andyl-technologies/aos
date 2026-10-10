@@ -75,6 +75,8 @@ pub enum AssessmentObjectKind {
     SubscriptionReadSnapshot,
     /// Immutable scoped attention revisions for bounded pagination.
     AlertReadSnapshot,
+    /// Immutable scoped public schedule reviews and opaque page handles.
+    ScheduleReadSnapshot,
 }
 
 impl AssessmentObjectKind {
@@ -85,6 +87,9 @@ impl AssessmentObjectKind {
     #[must_use]
     pub fn domain(self) -> &'static str {
         match self {
+            Self::ScheduleReadSnapshot => {
+                aos_assessment_runtime::read_snapshot::schedules::SCHEDULE_READ_SNAPSHOT_V1
+            }
             Self::AlertReadSnapshot => {
                 aos_assessment_runtime::read_snapshot::alerts::ALERT_READ_SNAPSHOT_V1
             }
@@ -115,6 +120,7 @@ impl AssessmentObjectKind {
 
     fn normalize(self, bytes: &[u8]) -> Result<Vec<u8>> {
         match self {
+            Self::ScheduleReadSnapshot => aos_assessment_runtime::read_snapshot::schedules::ScheduleReadSnapshotV1::from_slice(bytes)?.to_bytes(),
             Self::AlertReadSnapshot => aos_assessment_runtime::read_snapshot::alerts::AlertReadSnapshotV1::from_slice(bytes)?.to_bytes(),
             Self::SubscriptionReadSnapshot => {
                 aos_assessment_runtime::read_snapshot::subscriptions::SubscriptionReadSnapshotV1::from_slice(bytes)?.to_bytes()
@@ -210,7 +216,10 @@ impl AssessmentObjectKind {
     fn is_read_snapshot(self) -> bool {
         matches!(
             self,
-            Self::ScanReadSnapshot | Self::SubscriptionReadSnapshot | Self::AlertReadSnapshot
+            Self::ScanReadSnapshot
+                | Self::SubscriptionReadSnapshot
+                | Self::AlertReadSnapshot
+                | Self::ScheduleReadSnapshot
         )
     }
 }

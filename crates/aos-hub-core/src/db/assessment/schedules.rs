@@ -479,17 +479,84 @@ impl Database {
         Statement::new(format!("UPDATE assessment_schedules SET updated_at = updated_at WHERE registry_id = ?1 AND schedule_id = ?2 AND resource_version = ?3{}", if live { format!(" AND enabled = 1 AND ?4 > {clock}") } else { String::new() }), if live { vals![registry_id, record.key, record.revision, record.review.authority_expires_at.unix_seconds()] } else { vals![registry_id, record.key, record.revision] }).expecting(1)
     }
 
-    async fn schedule_record(&self, registry_id: i64, key: &str) -> Result<Option<Record>> {
-        self.backend.query_opt("SELECT actor_ref, resource_version, enabled, next_due_at, configuration_json FROM assessment_schedules WHERE registry_id = ?1 AND schedule_id = ?2", &vals![@slice registry_id, key]).await?.map(|row| {
-            let bytes: Vec<u8> = row.get(4)?;
-            canonical::require_canonical(&bytes, "private schedule review")?;
-            let review: PrivateReview = LIMITS.decode(&bytes, "private schedule review")?;
-            review.configuration.validate()?;
-            let actor: String = row.get(0)?;
-            ensure!(assessment_actor_ref(&review.claims)? == actor && review.authority_expires_at.unix_seconds() <= u64::try_from(review.claims.exp)? && review.authority_expires_at <= review.configuration.review_expires_at, "private schedule authority differs from its review");
-            Ok(Record { key: key.into(), actor, revision: row.get(1)?, enabled: row.get::<i64>(2)? == 1, next_due: Timestamp::from_unix_seconds(row.get(3)?)?, review })
-        }).transpose()
+    /// Captures finite public reviews from one bounded SQL observation.
+    ///
+    /// # Errors
+    /// Returns an error for excessive records/bytes, corrupt original reviews,
+    /// conflicting resource custody or unavailable persistence.
+    pub(super) async fn assessment_schedule_capture(
+        &self,
+        registry_id: i64,
+        scope: &str,
+    ) -> Result<Vec<ScheduleV1>> {
+        use aos_assessment_runtime::read_snapshot::ScanPageError;
+
+        // Metadata and original reviews share one observation. Oversized private
+        // review sets never cross the backend boundary for projection.
+        const MAX_RAW_BYTES: u64 = 8 * 1024 * 1024 - 16_384;
+        let rows = self.backend.query(
+            "WITH schedule_capture AS (
+                SELECT schedule_id, actor_ref, resource_version, enabled, next_due_at,
+                    configuration_json FROM assessment_schedules WHERE registry_id = ?1
+             ), capture_bounds AS (
+                SELECT COUNT(*) AS record_count, COALESCE(SUM(LENGTH(configuration_json)), 0)
+                    AS byte_count FROM schedule_capture
+             )
+             SELECT '' AS schedule_id, '' AS actor_ref, 0 AS resource_version, 0 AS enabled,
+                0 AS next_due_at, NULL AS configuration_json, record_count, byte_count, 0 AS row_kind
+             FROM capture_bounds
+             UNION ALL
+             SELECT s.schedule_id, s.actor_ref, s.resource_version, s.enabled, s.next_due_at,
+                s.configuration_json, b.record_count, b.byte_count, 1 AS row_kind
+             FROM schedule_capture s CROSS JOIN capture_bounds b
+             WHERE b.record_count <= 64 AND b.byte_count <= ?2
+             ORDER BY row_kind, schedule_id",
+            &vals![@slice registry_id, MAX_RAW_BYTES],
+        ).await?;
+        let bounds = rows.first().context("schedule capture bounds are absent")?;
+        let record_count = bounds.get::<u64>(6)?;
+        if record_count > 64 || bounds.get::<u64>(7)? > MAX_RAW_BYTES {
+            return Err(ScanPageError::CapacityExceeded.into());
+        }
+        ensure!(
+            bounds.get::<u64>(8)? == 0 && rows.len() as u64 == record_count + 1,
+            "schedule capture differs from its atomic bounds"
+        );
+        rows.iter()
+            .skip(1)
+            .map(|row| project(scope, decode_record(row)?))
+            .collect()
     }
+
+    async fn schedule_record(&self, registry_id: i64, key: &str) -> Result<Option<Record>> {
+        self.backend.query_opt(
+            "SELECT schedule_id, actor_ref, resource_version, enabled, next_due_at, configuration_json
+             FROM assessment_schedules WHERE registry_id = ?1 AND schedule_id = ?2",
+            &vals![@slice registry_id, key],
+        ).await?.map(|row| decode_record(&row)).transpose()
+    }
+}
+
+fn decode_record(row: &crate::value::Row) -> Result<Record> {
+    let bytes: Vec<u8> = row.get(5)?;
+    canonical::require_canonical(&bytes, "private schedule review")?;
+    let review: PrivateReview = LIMITS.decode(&bytes, "private schedule review")?;
+    review.configuration.validate()?;
+    let actor: String = row.get(1)?;
+    ensure!(
+        assessment_actor_ref(&review.claims)? == actor
+            && review.authority_expires_at.unix_seconds() <= u64::try_from(review.claims.exp)?
+            && review.authority_expires_at <= review.configuration.review_expires_at,
+        "private schedule authority differs from its review"
+    );
+    Ok(Record {
+        key: row.get(0)?,
+        actor,
+        revision: row.get(2)?,
+        enabled: row.get::<i64>(3)? == 1,
+        next_due: Timestamp::from_unix_seconds(row.get(4)?)?,
+        review,
+    })
 }
 
 fn schedule_key(scope: &str, identity: &str) -> Result<String> {

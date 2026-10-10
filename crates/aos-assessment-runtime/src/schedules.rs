@@ -171,7 +171,7 @@ pub struct ScheduleQueryV1 {
     /// Optional exact public identity; cannot be combined with pagination.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule_id: Option<String>,
-    /// Exclusive last public identity from the prior page.
+    /// Opaque retained-page handle from the prior response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_schedule: Option<String>,
 }
@@ -195,8 +195,11 @@ impl ScheduleQueryV1 {
         if let Some(scope) = &value.resource_scope {
             text(scope, 128, "schedule query resource")?;
         }
-        for identity in value.schedule_id.iter().chain(value.after_schedule.iter()) {
+        if let Some(identity) = &value.schedule_id {
             text(identity, 128, "schedule query identity")?;
+        }
+        if let Some(cursor) = &value.after_schedule {
+            crate::read_snapshot::schedules::parse_schedule_cursor(cursor)?;
         }
         Ok(value)
     }
@@ -210,11 +213,11 @@ pub struct SchedulePageV1 {
     pub schema: String,
     /// Current registry incarnation.
     pub resource_scope: String,
-    /// Database time at which this page was assembled.
+    /// Original database observation time, fixed across retained pages.
     pub as_of: Timestamp,
     /// Public projections, in scoped identity digest order.
     pub schedules: Vec<ScheduleV1>,
-    /// Exclusive public continuation identity when another schedule exists.
+    /// Opaque retained-page handle when another original page exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_schedule: Option<String>,
 }
@@ -244,13 +247,11 @@ impl SchedulePageV1 {
             }
             previous = Some(key);
         }
-        if let Some(next) = &self.next_schedule
-            && self
-                .schedules
-                .last()
-                .is_none_or(|schedule| &schedule.schedule_id != next)
-        {
-            bail!("schedule page cursor differs from its last identity");
+        if let Some(next) = &self.next_schedule {
+            if self.schedules.is_empty() {
+                bail!("empty schedule page carries a continuation");
+            }
+            crate::read_snapshot::schedules::parse_schedule_cursor(next)?;
         }
         let value = serde_json::to_value(self)?;
         page_limits().check_value(&value, "schedule page")?;

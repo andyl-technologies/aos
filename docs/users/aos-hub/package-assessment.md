@@ -463,6 +463,22 @@ Hybrid edge profiles reject this member because Native owns coordination and SQL
 
 ## Reviewed recurring scans
 
+Schedule listings retain the original public review revisions, due times and
+observation time for fifteen minutes. Continue with `nextSchedule` as
+`--after-schedule`, the same `--limit 1..10`, and the returned `--resource-scope`.
+Pages preserve those original values across replacement, due-time advancement
+and database restart. Refresh from the first page for current reviews; exact
+`--schedule-id` detail reads current state.
+
+Each resource admits sixteen active captures, with at most sixty-four complete
+public reviews and eight MiB per capture. Oversized review sets fail explicitly;
+they do not return partial apparently complete listings. Private authenticated
+review provenance is excluded. Every continuation requires current read access,
+and retained expired or disabled reviews confer no execution or write authority.
+The web view displays the captured observation time, holds paginated reviews
+until refresh, and starts a new listing when refreshed. Single-page listings
+continue to poll for current state.
+
 The remote CLI exposes `aos hub maintain schedules` and
 `aos hub maintain schedule --request FILE --idempotency-key KEY`. The latter
 retains an immutable plan and prints its exact effects, expiry and confirmation

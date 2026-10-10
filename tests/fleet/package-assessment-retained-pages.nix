@@ -41,5 +41,12 @@ in {
         timeout=240,
     )
     assert "PASS: actual CLI retained alert revisions survive acknowledgement and database reopen" in output, output
+    output = hub.succeed(
+        "AOS_ASSESSMENT_CLI=${pkgs.aos}/bin/aos TOKIO_WORKER_THREADS=2 "
+        "${fixture}/bin/aos-assessment-retained-pages-fixture "
+        "--ignored --exact ${fixture.passthru.scheduleTestSelector} --nocapture --test-threads=1",
+        timeout=240,
+    )
+    assert "PASS: actual CLI retained schedule reviews survive replacement and database reopen" in output, output
   '';
 }

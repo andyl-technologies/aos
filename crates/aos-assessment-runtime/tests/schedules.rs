@@ -5,7 +5,7 @@ use aos_assessment::input::{FreshnessMode, Profile};
 use aos_assessment::time::Timestamp;
 use aos_assessment_runtime::scan::ScanLimits;
 use aos_assessment_runtime::schedules::{
-    ScheduleConfigurationV1, SchedulePageV1, ScheduleV1, ScheduleWriteV1,
+    ScheduleConfigurationV1, SchedulePageV1, ScheduleQueryV1, ScheduleV1, ScheduleWriteV1,
 };
 
 fn configuration() -> Result<ScheduleConfigurationV1> {
@@ -70,7 +70,7 @@ fn public_schedule_pages_bind_scope_and_continuation() -> Result<()> {
             next_due_at: now,
             configuration: configuration()?,
         }],
-        next_schedule: Some("daily".into()),
+        next_schedule: Some(format!("r1:{}:{}", "a".repeat(64), "b".repeat(32))),
     };
     assert_eq!(SchedulePageV1::from_slice(&page.to_bytes()?)?, page);
     page.schedules[0].resource_scope = "other".into();
@@ -102,5 +102,34 @@ fn schedule_change_events_round_trip_without_authority_metadata() -> Result<()> 
         enabled: false,
     };
     assert!(event.to_bytes().is_err());
+    Ok(())
+}
+
+#[test]
+fn schedule_continuations_require_original_scope_and_opaque_cursor_kind() -> Result<()> {
+    let token = format!("r1:{}:{}", "a".repeat(64), "b".repeat(32));
+    let query = ScheduleQueryV1 {
+        schema: "aos.assessment-schedule-query/v1".into(),
+        limit: 1,
+        resource_scope: Some("registry-incarnation".into()),
+        schedule_id: None,
+        after_schedule: Some(token.clone()),
+    };
+    ScheduleQueryV1::from_slice(&serde_json::to_vec(&query)?)?;
+    for cursor in [
+        "daily".to_string(),
+        token.replacen("r1:", "a1:", 1),
+        token.to_uppercase(),
+    ] {
+        let mut changed = query.clone();
+        changed.after_schedule = Some(cursor);
+        assert!(ScheduleQueryV1::from_slice(&serde_json::to_vec(&changed)?).is_err());
+    }
+    let mut changed = query.clone();
+    changed.resource_scope = None;
+    assert!(ScheduleQueryV1::from_slice(&serde_json::to_vec(&changed)?).is_err());
+    let mut changed = query;
+    changed.schedule_id = Some("daily".into());
+    assert!(ScheduleQueryV1::from_slice(&serde_json::to_vec(&changed)?).is_err());
     Ok(())
 }

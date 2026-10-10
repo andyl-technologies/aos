@@ -8,6 +8,7 @@
   selector = "db::assessment::read_snapshot_tests::actual_cli_retains_scan_pages_across_database_reopen";
   subscriptionSelector = "db::assessment::subscription_snapshot::tests::actual_cli_retains_subscription_pages_across_database_reopen";
   alertSelector = "db::assessment::alert_snapshot::tests::actual_cli_retains_alert_revisions_across_database_reopen";
+  scheduleSelector = "db::assessment::schedule_snapshot::tests::actual_cli_retains_schedule_reviews_across_database_reopen";
 in
   assert builtins.pathExists (source + "/crates/aos-hub-worker/src/oci_manifest_ingress.rs");
     pkgs.mkCargoPackage {
@@ -48,9 +49,12 @@ in
         grep -Fx '${subscriptionSelector}: test' "$out/nix-support/subscription-test-registration.txt"
         "$out/bin/aos-assessment-retained-pages-fixture" --list --ignored --exact '${alertSelector}' > "$out/nix-support/alert-test-registration.txt"
         grep -Fx '${alertSelector}: test' "$out/nix-support/alert-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --ignored --exact '${scheduleSelector}' > "$out/nix-support/schedule-test-registration.txt"
+        grep -Fx '${scheduleSelector}: test' "$out/nix-support/schedule-test-registration.txt"
       '';
       passthru.testSelector = selector;
       passthru.subscriptionTestSelector = subscriptionSelector;
       passthru.alertTestSelector = alertSelector;
-      meta.description = "Retained assessment scan, subscription and alert database and CLI acceptance fixture";
+      passthru.scheduleTestSelector = scheduleSelector;
+      meta.description = "Retained assessment scan, subscription, alert and schedule database and CLI acceptance fixture";
     }

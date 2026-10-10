@@ -81,46 +81,34 @@ impl RpcService {
                 "assessment schedule resource was replaced",
             ));
         }
-        let (schedules, next_schedule) = if let Some(identity) = &query.schedule_id {
+        let page = if let Some(identity) = &query.schedule_id {
             let schedule = self
                 .db
                 .assessment_schedule(registry.id, identity)
                 .await
                 .map_err(RpcError::internal)?
                 .ok_or_else(|| RpcError::not_found("assessment schedule"))?;
-            (vec![schedule], None)
+            SchedulePageV1 {
+                schema: "aos.assessment-schedule-page/v1".into(),
+                resource_scope: registry.scope_key.clone(),
+                as_of: self
+                    .db
+                    .assessment_database_time()
+                    .await
+                    .map_err(RpcError::internal)?,
+                schedules: vec![schedule],
+                next_schedule: None,
+            }
         } else {
-            let schedules = self
-                .db
-                .assessment_schedule_page(
+            self.db
+                .assessment_retained_schedule_page(
                     registry.id,
-                    query.after_schedule.as_deref().unwrap_or(""),
+                    &registry.scope_key,
                     query.limit,
+                    query.after_schedule.as_deref(),
                 )
                 .await
-                .map_err(RpcError::internal)?;
-            let next = if let Some(last) = schedules.last() {
-                let more = self
-                    .db
-                    .assessment_schedule_page(registry.id, &last.schedule_id, 1)
-                    .await
-                    .map_err(RpcError::internal)?;
-                (!more.is_empty()).then(|| last.schedule_id.clone())
-            } else {
-                None
-            };
-            (schedules, next)
-        };
-        let page = SchedulePageV1 {
-            schema: "aos.assessment-schedule-page/v1".into(),
-            resource_scope: registry.scope_key.clone(),
-            as_of: self
-                .db
-                .assessment_database_time()
-                .await
-                .map_err(RpcError::internal)?,
-            schedules,
-            next_schedule,
+                .map_err(super::assessment_notifications::retained_page_error)?
         };
         let document_json = page.to_bytes().map_err(RpcError::internal)?;
         self.recheck_assessment(&claims, &registry, "assessment.read")

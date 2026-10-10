@@ -87,8 +87,15 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({"schema_version":"aos.hub.cli/v1", "kind":"assessment-schedules", "data":page}));
             } else {
-                for schedule in page.schedules {
-                    render_schedule(printer, &schedule);
+                for schedule in &page.schedules {
+                    render_schedule(printer, schedule);
+                }
+                if let Some(next) = &page.next_schedule {
+                    printer.info(&format!(
+                        "Next page: --after-schedule {}; --resource-scope {}",
+                        escape_terminal(next),
+                        escape_terminal(&page.resource_scope)
+                    ));
                 }
             }
             Ok(())

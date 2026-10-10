@@ -201,3 +201,22 @@ async fn retained_attention_revisions_and_capture_capacity_on_postgresql() -> Re
     let db = Database::with_backend(Box::new(backend)).await?;
     super::alert_snapshot::tests::oversized_capture(db).await
 }
+
+#[tokio::test]
+#[ignore = "Requires AOS_ASSESSMENT_PG_URL_FILE pointing to a disposable PostgreSQL database"]
+async fn retained_schedule_reviews_and_capture_capacity_on_postgresql() -> Result<()> {
+    let path = std::env::var_os("AOS_ASSESSMENT_PG_URL_FILE")
+        .context("disposable PostgreSQL URL file required")?;
+    let url = std::fs::read_to_string(path)?;
+    let backend = SqlxBackend::connect_postgres(url.trim()).await?;
+    let db = Database::with_backend(Box::new(backend)).await?;
+    super::schedule_snapshot::tests::retained_reviews(db).await?;
+
+    let backend = SqlxBackend::connect_postgres(url.trim()).await?;
+    let db = Database::with_backend(Box::new(backend)).await?;
+    super::schedule_snapshot::tests::storage_bounds(db).await?;
+
+    let backend = SqlxBackend::connect_postgres(url.trim()).await?;
+    let db = Database::with_backend(Box::new(backend)).await?;
+    super::schedule_snapshot::tests::oversized_capture(db).await
+}

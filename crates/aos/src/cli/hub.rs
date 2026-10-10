@@ -420,7 +420,7 @@ pub enum HubAssessmentCmd {
         /// Select one exact schedule
         #[arg(long, conflicts_with = "after_schedule")]
         schedule_id: Option<String>,
-        /// Continue after a schedule from the preceding page
+        /// Continue with the opaque nextSchedule handle from the preceding page
         #[arg(long, requires = "resource_scope")]
         after_schedule: Option<String>,
         /// Pin the non-reusable registry scope from the preceding page

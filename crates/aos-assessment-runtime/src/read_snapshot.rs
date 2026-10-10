@@ -25,6 +25,8 @@ use crate::validation::{reject_null, text};
 
 pub mod alerts;
 
+pub mod schedules;
+
 pub mod subscriptions;
 
 /// Identifies immutable retained scan-list snapshots.

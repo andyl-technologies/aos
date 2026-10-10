@@ -23,6 +23,7 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
     let tasks = scoped_workflow_tasks();
     let epoch = RwSignal::new(0_u64);
     let polling = RwSignal::new(true);
+    let live_poll = RwSignal::new(true);
     let active = RwSignal::new(0_u32);
     let scope = RwSignal::new(None::<String>);
     let after = RwSignal::new(None::<String>);
@@ -76,16 +77,22 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
                     );
                 }
                 scope.set(Some(page.resource_scope.clone()));
+                // Hold paginated reviews until refresh instead of consuming a
+                // new retained capture on every periodic first-page read.
+                if page.next_schedule.is_some() || query.after_schedule.is_some() {
+                    live_poll.set(false);
+                }
                 Ok::<_, String>(page)
             }
             .await;
             if outcome.is_err() {
                 polling.set(false);
+                live_poll.set(false);
             }
             outcome
         }
     });
-    start_status_poll(epoch, polling, active);
+    start_status_poll(epoch, live_poll, active);
 
     let review = move |_| {
         if busy.get_untracked() || !can_review || !polling.get_untracked() {
@@ -251,7 +258,7 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
     view! {
         <section class="assessment-schedules">
             <div class="section-heading"><h3>"Recurring scans"</h3><button class="secondary-button" on:click=move |_| {
-                pending.set(None); selected.set(None); scope.set(None); after.set(None); polling.set(true);
+                pending.set(None); selected.set(None); scope.set(None); after.set(None); polling.set(true); live_poll.set(true);
                 epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
             }>"Refresh schedules"</button></div>
             <Suspense fallback=move || view! { <p>"Loading recurring reviews…"</p> }>
@@ -259,6 +266,7 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
                     match page.await.as_ref() {
                         Err(error) => view! { <InlineError detail=error.clone()/> }.into_any(),
                         Ok(page) => {
+                            let observed_at = page.as_of.to_string();
                             let now = page.as_of.clone();
                             let rows = page.schedules.iter().cloned().map(move |schedule| {
                                 let label = schedule.schedule_id.clone();
@@ -276,7 +284,7 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
                                 </td></tr> }
                             }).collect_view();
                             let next = page.next_schedule.clone();
-                            view! { <table><thead><tr><th>"Schedule"</th><th>"State"</th><th>"Next due"</th><th>"Authority expires"</th><th>"Review"</th></tr></thead><tbody>{rows}</tbody></table>
+                            view! { <p>"Observed at "{observed_at}</p><table><thead><tr><th>"Schedule"</th><th>"State"</th><th>"Next due"</th><th>"Authority expires"</th><th>"Review"</th></tr></thead><tbody>{rows}</tbody></table>
                                 {next.map(|identity| view! { <button class="secondary-button" on:click=move |_| after.set(Some(identity.clone()))>"Next schedules"</button> })}
                             }.into_any()
                         }
