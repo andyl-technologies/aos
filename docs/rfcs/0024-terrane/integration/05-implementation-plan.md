@@ -125,7 +125,7 @@ empty `terrane` binary.
 ### T1 — Local repository
 
 **Status:** In progress; eight of twenty-two T1 tasks are complete.
-Current combined candidate `6889de2180` passes native build, strict all-target
+Earlier combined candidate `6889de2180` passes native build, strict all-target
 Clippy, fresh compilation with 1,037 nonignored tests and the three new pure
 selection-memo tests. The independent application check compiles 114 test
 targets across 29 packages, including 77 integration targets, against the same
@@ -150,9 +150,28 @@ the divergent/missing-closure rebuild case with pack-identity corruption;
 the third case remains unrun. The reviewed exact two-duty recovery oracle and
 both native-reading fixtures are composed in `2a303ddb63` for fresh combined
 qualification. Independent chunking, algebra, property and six-population
-worklines are qualifying that same frozen candidate alongside the full GC suite and
-application compilation. All original faults remain preserved. No task, exit
-or freeze advances from these partial results.
+worklines qualify fourteen Nix checks on that frozen candidate: all five
+chunking checks, all three property checks, graft, diff, acyclic trees, merge,
+native loading (23 cases) and backfill (six cases). Its required formatter pair,
+native build, strict all-target Clippy, fresh compilation of 1,037 tests and
+application compilation of 114 targets across 29 packages also pass. Fork's
+first native prerequisite refuses an omitted native closing projection; the
+reviewed fixture correction is under qualification. Locality expires during
+the 1,024-entry update at 30.336 seconds against genuine C=30; its diagnostic
+charges 16.492 seconds to admission before required staging and current checks.
+Ordinary 1,024-entry accounting fails baseline publication with commit denial
+at 64.237 seconds; the remaining five required populations are unrun.
+The permanent GC suite passes its after-unlink case in 103.860 seconds, then
+times out before-unlink at 120.009 seconds; 32 cases remain unrun. A separate
+archived trace completes before-unlink in 110.315 seconds with all four progress
+events and genuine pack/trash recovery. The exact-case 180-second functional
+runner bound awaits fresh untraced qualification; collector and whole-lease
+clocks remain unchanged. The reviewed closed-absence diagnosis in `3f598fed48`
+preserves present corruption refusal; its first verify case passes, but the
+second rebuild case refuses an ordinary absent observation without a retained
+closing recipe. A scoped actual protected-absence capture remains required.
+All original faults remain preserved. No task, exit or freeze advances from
+these partial results.
 
 The earlier combined read candidate `be832963c4` failed strict native all-target
 Clippy on two large enum variants. The reviewed enum, PACK-16 attribution,

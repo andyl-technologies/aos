@@ -25,6 +25,15 @@ threads-required = "num-test-threads"
 filter = 'package(terrane) & test(=gc::runner::permanent_local_tests::recovery::permanent_local_pass_reclaims_pack_index_and_all_observed_trash_cycles)'
 slow-timeout = { period = "60s", terminate-after = 15 }
 
+# This fault case keeps the pack through its first failed reclaim, then performs
+# genuine pack and trash recovery after a sixty-second ownership barrier. Its
+# separate trace completes in 110 seconds; reserve a finite three-minute runner
+# so ordinary scheduling variation does not consume the closing recovery work.
+# C/G/D and live whole-lease clocks remain unchanged and asserted by the case.
+[[profile.default.overrides]]
+filter = 'package(terrane) & test(=gc::runner::permanent_local_tests::faults::permanent_local_before_unlink_failure_keeps_selected_recovery_duties)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
 # The ten native local-deletion cases include real grace waits and repeated
 # durable fault/recovery prefixes. Their owning Nix run measured 100-210 seconds
 # per case. Reserve all test slots and bound each runner process to five minutes;
