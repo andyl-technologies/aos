@@ -87,6 +87,36 @@
     ];
   };
   weakenedAssertions = builtins.filter (check: !check.assertion) weakened.config.assertions;
+  withoutPacket = evaluation.extendModules {
+    modules = [{aos.sandbox.policyAuthority.credentials.projectHeadPacketV2 = lib.mkForce null;}];
+  };
+  withoutInput = evaluation.extendModules {
+    modules = [{aos.sandbox.policyAuthority.credentials.projectLayerV2 = lib.mkForce null;}];
+  };
+  withoutPair = evaluation.extendModules {
+    modules = [
+      {
+        aos.sandbox.policyAuthority.credentials = {
+          projectHeadPacketV2 = lib.mkForce null;
+          projectLayerV2 = lib.mkForce null;
+        };
+      }
+    ];
+  };
+  hasRefusal = result:
+    lib.any (check:
+      !check.assertion
+      && lib.hasInfix "V2 project" check.message)
+    result.config.assertions;
+  strictOptionAccepted = extraModule:
+    (builtins.tryEval (builtins.deepSeq
+      (evaluation.extendModules {
+        modules = [
+          {_module.strict = true;}
+          extraModule
+        ];
+      }).config.systemd.services
+      true)).success;
 in
   assert lib.all (check: check.assertion) evaluation.config.assertions;
   assert recovery.wantedBy == ["multi-user.target"];
@@ -105,6 +135,10 @@ in
   assert service.ProtectSystem == "strict" && service.CapabilityBoundingSet == "";
   assert lib.any (check: lib.hasInfix "must not depend on policy credentials" check.message) weakenedAssertions;
   assert builtins.length normal.LoadCredential == 9;
+  assert hasRefusal withoutPacket && hasRefusal withoutInput && hasRefusal withoutPair;
+  assert strictOptionAccepted {};
+  assert !(strictOptionAccepted {aos.sandbox.policyAuthority.credentials.projectHeadPacket = "retired-input";});
+  assert !(strictOptionAccepted {aos.sandbox.policyAuthority.credentials.projectLayer = "retired-input";});
     pkgs.mkDerivation {
       pname = "sandbox-policy-cache-recovery-service-eval";
       version = "0";

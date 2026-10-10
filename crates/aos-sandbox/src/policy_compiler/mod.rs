@@ -333,7 +333,7 @@ pub use deployment_head::{
     admit_fixed_policy_deployment_profile_v2, admit_fixed_policy_signer_pins_v1,
     admit_fixed_signed_project_policy_source_v1, decode_policy_deployment_sources_v1,
     verify_current_policy_deployment_profile_v2, verify_policy_deployment_head_v1,
-    verify_signed_project_policy_source_v1, with_fixed_current_policy_head_lease_v1,
+    verify_signed_project_policy_source_v1,
 };
 pub use project_admission_root::{
     RootProjectAdmissionIntentV1, RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeV1,

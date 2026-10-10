@@ -69,8 +69,6 @@
     projectPublicKey = "project-public-key";
   };
   projectCredentials = {
-    projectHeadPacket = "project-head.packet";
-    projectLayer = "project-layer.json";
     projectHeadPacketV2 = "project-head-v2.packet";
     projectLayerV2 = "project-layer-v2.json";
   };
@@ -243,7 +241,7 @@ in {
           else if option == "gitEvidenceProvision"
           then "Optional bounded AOSGEP01 trusted Root-administration Git evidence instruction, not a dynamic validator attestation or Git activation."
           else if option == "projectHeadPacketV2" || option == "projectLayerV2"
-          then "Optional AOSPPH02/AOSPPL02 project source; both credentials are required for the closed AOSPHQ04 path."
+          then "Required paired AOSPPH02/AOSPPL02 project source for the normal policy authority; bare AOSPHQ04 remains denied."
           else "Externally provisioned signed deployment policy authority input.";
       })
     credentialFiles;
@@ -286,21 +284,13 @@ in {
         }
         {
           assertion =
-            (cfg.credentials.projectHeadPacket == null)
-            == (cfg.credentials.projectLayer == null);
-          message = "aos.sandbox.policyAuthority V1 project packet and input credentials must be provisioned together";
-        }
-        {
-          assertion =
             (cfg.credentials.projectHeadPacketV2 == null)
             == (cfg.credentials.projectLayerV2 == null);
           message = "aos.sandbox.policyAuthority V2 project packet and input credentials must be provisioned together";
         }
         {
-          assertion =
-            (cfg.credentials.projectHeadPacket != null)
-            != (cfg.credentials.projectHeadPacketV2 != null);
-          message = "aos.sandbox.policyAuthority requires exactly one project source version";
+          assertion = cfg.credentials.projectHeadPacketV2 != null;
+          message = "aos.sandbox.policyAuthority requires the V2 project source credentials";
         }
         {
           assertion =

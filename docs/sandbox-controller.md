@@ -48,10 +48,11 @@ provisioning and its authenticated carrier, the Cache journal and signed-name
 join, and crash-safe all-owner release still have to compose before Q04 can
 accept a proposal. This root session cannot publish Create or dispatch effects.
 
-Provision exactly one project-source credential pair. A V2-only service rejects
-legacy `AOSPHQ02`/`AOSPHQ03` queries; all services reject `AOSPHQ04`.
-The two versions cannot be configured together, and neither request version
-can select the other's signed project source.
+Provision the paired `project-head-v2.packet` and `project-layer-v2.json`
+credentials for the normal policy authority. The retired `project-head.packet`
+and `project-layer.json` names and `AOSPHQ02`/`AOSPHQ03` queries are refused;
+bare `AOSPHQ04` remains denied. Canonical V1 project verification and retained
+history remain separate from the removed socket profile.
 
 The physical Cache owner can now refuse release when volatile memory,
 quarantined orphans, staged disk operations, or uncertain manifest durability

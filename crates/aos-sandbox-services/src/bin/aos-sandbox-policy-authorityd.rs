@@ -59,17 +59,16 @@ use aos_sandbox::policy_compiler::{
     CLOSED_POLICY_BINDING_BYTES_V2, CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1,
     CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1, CONTROLLER_PROJECT_TERMINAL_READBACK_BYTES_V1,
     CacheSignerRootChallengeStatusV2, CacheSignerRootSettlementStateV2,
-    ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2,
-    ClosedSourceTerminalClaimV1, ControllerEffectAckChallengeV1, PinnedSourceHoldReadbackSignerV1,
-    PolicyDeploymentInputsV1, ROOT_PROJECT_ADMISSION_ABORT_QUERY_MAGIC,
-    ROOT_PROJECT_ADMISSION_COMMIT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_CURRENT_QUERY_MAGIC,
-    ROOT_PROJECT_ADMISSION_INTENT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_INTENT_REPLAY_MAGIC,
-    ROOT_PROJECT_ADMISSION_OUTCOME_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_STAGE_QUERY_MAGIC,
-    ROOT_PROJECT_HISTORY_FLOOR_QUERY_MAGIC, ROOT_PROJECT_HISTORY_RETIRE_MAGIC,
-    ROOT_PROJECT_NEGATIVE_INTENT_QUERY_MAGIC, ROOT_PROJECT_RESERVATION_CANCEL_MAGIC,
-    ROOT_PROJECT_RESERVATION_CANCEL_QUERY_MAGIC, ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1,
-    ROOT_V8_SETTLED_QUERY_MAGIC, RootPolicyStartupDeploymentV1, RootPolicyStartupJournalV1,
-    RootV8HeldTerminalStepV1, SourceHoldReadbackChallengeV1,
+    ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, ClosedSourceTerminalClaimV1,
+    ControllerEffectAckChallengeV1, PinnedSourceHoldReadbackSignerV1, PolicyDeploymentInputsV1,
+    ROOT_PROJECT_ADMISSION_ABORT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_COMMIT_QUERY_MAGIC,
+    ROOT_PROJECT_ADMISSION_CURRENT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_INTENT_QUERY_MAGIC,
+    ROOT_PROJECT_ADMISSION_INTENT_REPLAY_MAGIC, ROOT_PROJECT_ADMISSION_OUTCOME_QUERY_MAGIC,
+    ROOT_PROJECT_ADMISSION_STAGE_QUERY_MAGIC, ROOT_PROJECT_HISTORY_FLOOR_QUERY_MAGIC,
+    ROOT_PROJECT_HISTORY_RETIRE_MAGIC, ROOT_PROJECT_NEGATIVE_INTENT_QUERY_MAGIC,
+    ROOT_PROJECT_RESERVATION_CANCEL_MAGIC, ROOT_PROJECT_RESERVATION_CANCEL_QUERY_MAGIC,
+    ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1, ROOT_V8_SETTLED_QUERY_MAGIC, RootPolicyStartupDeploymentV1,
+    RootPolicyStartupJournalV1, RootV8HeldTerminalStepV1, SourceHoldReadbackChallengeV1,
     StagedClosedPolicyRootBaseV2, abandon_fixed_cache_signer_challenge_v2,
     abort_fixed_root_project_admission_v1, acknowledge_and_verify_fixed_closed_root_v8_terminal_v1,
     acknowledge_fixed_closed_root_effect_v1, acknowledge_fixed_closed_root_v8_effect_v1,
@@ -109,9 +108,7 @@ use aos_sandbox::policy_compiler::{
     require_no_fixed_closed_policy_binding_hold_v1, retire_fixed_root_project_history_v1,
     stage_fixed_cache_signer_challenge_v2, stage_fixed_root_project_admission_v1,
     staged_closed_policy_signer_challenge_v2, verify_fixed_policy_cache_owner_readback_v2,
-    verify_signed_project_policy_source_v1,
-    verify_signed_project_policy_source_v2,
-    with_fixed_current_policy_head_lease_v1, with_fixed_explicit_closed_policy_binding_session_v2,
+    verify_signed_project_policy_source_v2, with_fixed_explicit_closed_policy_binding_session_v2,
 };
 use aos_sandbox::{Journal, journal::controller::production_journal_limits};
 use aos_sandbox_cache_signer::cache_signer_exchange::{
@@ -126,8 +123,8 @@ use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_BINDING_REPLAY_QUERY_MAGIC_V5,
     POLICY_BINDING_REPLAY_REPLY_MAGIC_V5, POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V7,
     POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V8, POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V7,
-    POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V8,
-    POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V7, POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V8,
+    POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V8, POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V7,
+    POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V8,
     POLICY_BINDING_SOURCE_FLIGHT_REPLAY_QUERY_MAGIC_V7,
     POLICY_BINDING_SOURCE_FLIGHT_REPLAY_QUERY_MAGIC_V8,
     POLICY_BINDING_SOURCE_FLIGHT_REPLAY_REPLY_MAGIC_V7,
@@ -135,10 +132,7 @@ use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V7, POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V8,
     POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V7, POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V8,
     POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V7, POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V8,
-    POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
-    POLICY_BINDING_STAGE_REPLY_MAGIC_V4, POLICY_HEAD_LEASE_ACK_MAGIC_V3,
-    POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
-    POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
+    POLICY_BINDING_STAGE_QUERY_MAGIC_V4, POLICY_BINDING_STAGE_REPLY_MAGIC_V4,
 };
 use aos_sandbox_broker_session_security::policy_cache_readback_client::{
     CLOSED_CACHE_SIGNER_RECOVERY_FRAME_BYTES_V7, CLOSED_CACHE_SIGNER_SUBMIT_FRAME_BYTES_V6,
@@ -191,7 +185,6 @@ const SOURCE_DOMAIN_JOURNAL: &str = "source-domains-v1.journal";
 const REQUEST_BYTES: usize = 32;
 const MAXIMUM_RECEIPT_BYTES: usize = 224 + 4 * (4 + 64 * 1024) + 312 + 4 + 3 * 1024 + 24;
 const EXPLICIT_PROJECT_PACKET_BYTES: usize = 328;
-const LEASE_ACK_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSED_BINDING_REPLAY_CLAIM_BYTES: usize = 32 + 8;
 const CLOSED_BINDING_PREVIEW_CLAIM_BYTES: usize = 96 + CLOSED_POLICY_BINDING_BYTES_V2;
 const CLOSED_BINDING_FLIGHT_HOLD_BYTES: usize = 16 + 16 + 32 + 32 + 32 + 8;
@@ -203,8 +196,6 @@ const CACHE_SIGNER_RPC_TIMEOUT: Duration = Duration::from_secs(75);
 enum HeadRequestMode {
     GitEvidenceView,
     GitCoverageEnrollment,
-    Query,
-    Lease,
     SourceGenesis,
     SourceResourceGlobalGenesis,
     SourceFirstSuccessor,
@@ -254,7 +245,6 @@ struct CurrentRootCredentials {
     catalogs: Vec<u8>,
     deployment_signer: PinnedPolicySignerV1,
     project_signer: PinnedPolicySignerV1,
-    legacy_project: Option<(Vec<u8>, Vec<u8>)>,
     explicit_project: Option<(Vec<u8>, Vec<u8>)>,
     cache_pin: Option<Vec<u8>>,
     controller_hold_pin: Option<Vec<u8>>,
@@ -634,10 +624,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         let project_key_bytes = read_bounded(&root.join("project-public-key"), 80)?;
         let project_signer =
             PinnedPolicySignerV1::decode(PolicySignerRoleV1::Project, &project_key_bytes)?;
-        let legacy_project =
-            read_optional_project(root, "project-head.packet", 312, "project-layer.json")?;
+        require_no_retired_project_credentials(root)?;
         let explicit_project = read_optional_explicit_project(root)?;
-        require_single_project_source(legacy_project.is_some(), explicit_project.is_some())?;
+        require_explicit_project_source(explicit_project.is_some())?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
         let now_unix_seconds = i64::try_from(now.as_secs())?;
 
@@ -654,21 +643,6 @@ fn run() -> Result<(), Box<dyn Error>> {
             deployment_signer.generation(),
             now_unix_seconds,
         )?;
-        if let Some((project_packet, project_input)) = legacy_project.as_ref() {
-            let project = verify_signed_project_policy_source_v1(
-                project_packet,
-                project_input,
-                project_signer.verifying_key(),
-                now_unix_seconds,
-            )?;
-            if project.head().prerequisite_claims()[1] != deployment.head().packet_digest() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "project deployment head mismatch",
-                )
-                .into());
-            }
-        }
         if let Some((project_packet_v2, project_input_v2)) = explicit_project.as_ref() {
             let verified = verify_signed_project_policy_source_v2(
                 project_packet_v2,
@@ -756,7 +730,6 @@ fn run() -> Result<(), Box<dyn Error>> {
             catalogs,
             deployment_signer,
             project_signer,
-            legacy_project,
             explicit_project,
             cache_pin,
             controller_hold_pin,
@@ -807,7 +780,6 @@ fn run() -> Result<(), Box<dyn Error>> {
         catalogs,
         deployment_signer,
         project_signer,
-        legacy_project,
         explicit_project,
         cache_pin,
         controller_hold_pin,
@@ -859,9 +831,6 @@ fn run() -> Result<(), Box<dyn Error>> {
             &inputs,
             deployment_signer.verifying_key(),
             deployment_signer.generation(),
-            legacy_project
-                .as_ref()
-                .map(|(packet, input)| (packet.as_slice(), input.as_slice())),
             explicit_project
                 .as_ref()
                 .map(|(packet, input)| (packet.as_slice(), input.as_slice())),
@@ -1371,8 +1340,6 @@ fn read_head_request(
         return Ok((request, HeadRequestMode::ConsumerReadPreRoot));
     }
     let mode = match request.get(..8) {
-        Some(magic) if magic == POLICY_HEAD_QUERY_MAGIC_V2 => HeadRequestMode::Query,
-        Some(magic) if magic == POLICY_HEAD_LEASE_QUERY_MAGIC_V3 => HeadRequestMode::Lease,
         Some(magic) if magic == aos_sandbox::policy_compiler::ROOT_SOURCE_RESOURCE_GENESIS_QUERY_MAGIC_V2 => {
             if request[8..24] == [0; 16] || request[24..] != [0; 8] {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid resource Global query").into());
@@ -1647,7 +1614,6 @@ fn serve_current_head(
     inputs: &PolicyDeploymentInputsV1<'_>,
     verifying_key: &VerifyingKey,
     deployment_signer_generation: u64,
-    legacy_project: Option<(&[u8], &[u8])>,
     explicit_project: Option<(&[u8], &[u8])>,
     project_key: &VerifyingKey,
     project_signer_generation: u64,
@@ -2035,25 +2001,13 @@ fn serve_current_head(
     {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "zero Cache client nonce").into());
     }
-    // Reject a cross-version request before touching the protected root head.
-    let (project_packet, project_input) =
-        select_project_source(mode, legacy_project, explicit_project)?;
+    // Require the selected mode's explicit source before touching the protected root head.
+    let (project_packet, project_input) = select_project_source(mode, explicit_project)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
     let now_unix_seconds = i64::try_from(now.as_secs())?;
     let deployment =
         admit_fixed_policy_deployment_head_v1(packet, inputs, verifying_key, now_unix_seconds)?;
-    let (selected_project_packet, selected_project_input, receipt_magic, project_expires_at) = if matches!(
-        mode,
-        HeadRequestMode::ClosedBinding
-            | HeadRequestMode::QualifiedClosedBinding
-            | HeadRequestMode::ClosedBindingStage
-            | HeadRequestMode::ClosedBindingPreview
-            | HeadRequestMode::ClosedBindingSignerFlight
-            | HeadRequestMode::ClosedBindingSourceWriterSignedFlight
-            | HeadRequestMode::ClosedBindingSourceWriterCasFlight
-            | HeadRequestMode::ClosedBindingSourceTerminalReplay
-            | HeadRequestMode::StagedCacheSigner
-    ) {
+    let (selected_project_packet, selected_project_input, receipt_magic, project_expires_at) = {
         let verified = verify_signed_project_policy_source_v2(
             project_packet,
             project_input,
@@ -2074,26 +2028,6 @@ fn serve_current_head(
             project_packet,
             project_input,
             POLICY_BINDING_RECEIPT_MAGIC_V4,
-            verified.head().expires_at(),
-        )
-    } else {
-        let verified = verify_signed_project_policy_source_v1(
-            project_packet,
-            project_input,
-            project_key,
-            now_unix_seconds,
-        )?;
-        if verified.head().prerequisite_claims()[1] != deployment.packet_digest() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "project deployment head mismatch",
-            )
-            .into());
-        }
-        (
-            project_packet,
-            project_input,
-            POLICY_HEAD_RECEIPT_MAGIC_V2,
             verified.head().expires_at(),
         )
     };
@@ -2287,26 +2221,6 @@ fn serve_current_head(
             "closed policy binding admission is unavailable",
         )
         .into());
-    } else if matches!(mode, HeadRequestMode::Lease) {
-        with_fixed_current_policy_head_lease_v1(packet, || -> io::Result<()> {
-            let length = u32::try_from(receipt.len()).map_err(io::Error::other)?;
-            stream.write_all(&length.to_be_bytes())?;
-            stream.write_all(&receipt)?;
-            // This protocol only permits a read-only candidate inspection;
-            // it confers no binding or effect authority. A missing ACK must
-            // release the root writer instead of pinning it indefinitely.
-            stream.set_read_timeout(Some(LEASE_ACK_TIMEOUT))?;
-
-            let mut acknowledgement = [0_u8; 24];
-            stream.read_exact(&mut acknowledgement)?;
-            validate_lease_ack(&acknowledgement, &request[8..24])?;
-
-            check_signed_head_expiration(deployment.expires_at(), project_expires_at)
-        })??;
-        stream.write_all(POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3)?;
-        stream.write_all(&request[8..24])?;
-    } else {
-        stream.write_all(&receipt)?;
     }
     Ok(())
 }
@@ -2519,16 +2433,6 @@ fn decode_cache_signer_submission(
     submission[24..].try_into().map_err(io::Error::other)
 }
 
-fn validate_lease_ack(acknowledgement: &[u8; 24], nonce: &[u8]) -> io::Result<()> {
-    if &acknowledgement[..8] != POLICY_HEAD_LEASE_ACK_MAGIC_V3 || &acknowledgement[8..] != nonce {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid lease acknowledgement",
-        ));
-    }
-    Ok(())
-}
-
 fn write_closed_binding_stage_reply(
     stream: &mut std::os::unix::net::UnixStream,
     nonce: &[u8],
@@ -2571,8 +2475,8 @@ fn check_signed_head_expiration(deployment_expires: i64, project_expires: i64) -
     Ok(())
 }
 
-fn require_single_project_source(legacy_present: bool, explicit_present: bool) -> io::Result<()> {
-    if legacy_present == explicit_present {
+fn require_explicit_project_source(explicit_present: bool) -> io::Result<()> {
+    if !explicit_present {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "exactly one project source version is required",
@@ -3881,7 +3785,6 @@ fn read_closed_binding_claim_frame(
 
 fn select_project_source<'a>(
     mode: HeadRequestMode,
-    legacy: Option<(&'a [u8], &'a [u8])>,
     explicit: Option<(&'a [u8], &'a [u8])>,
 ) -> io::Result<(&'a [u8], &'a [u8])> {
     match mode {
@@ -3897,12 +3800,6 @@ fn select_project_source<'a>(
             io::Error::new(
                 io::ErrorKind::NotFound,
                 "explicit project source is unavailable",
-            )
-        }),
-        HeadRequestMode::Query | HeadRequestMode::Lease => legacy.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "legacy project source is unavailable",
             )
         }),
         HeadRequestMode::SourceGenesis
@@ -3971,7 +3868,7 @@ mod tests {
         assert_eq!(gates.get(), 0);
         assert!(require_pre_root_startup(None).is_err());
         assert!(!project_recovery_mode_allowed(mode));
-        assert!(select_project_source(mode, None, None).is_err());
+        assert!(select_project_source(mode, None).is_err());
         for offset in [8, 24] {
             let (mut client, mut server) = UnixStream::pair().unwrap();
             let mut malformed = request;
@@ -4007,7 +3904,7 @@ mod tests {
         assert!(matches!(mode, HeadRequestMode::SourceGenesis));
         assert_eq!(gates.get(), 1);
         assert!(project_recovery_mode_allowed(mode));
-        assert!(select_project_source(mode, None, None).is_err());
+        assert!(select_project_source(mode, None).is_err());
     }
 
     #[test]
@@ -4914,28 +4811,33 @@ mod tests {
     }
 
     #[test]
-    fn retired_cache_readback_is_refused_before_root_custody() {
-        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
-        let mut request = [0_u8; REQUEST_BYTES];
-        request[..8].copy_from_slice(b"AOSPHQ05");
-        request[8..24].copy_from_slice(&[1; 16]);
-        client.write_all(&request).expect("retired Cache query");
+    fn retired_queries_are_refused_before_root_custody() {
+        for magic in [b"AOSPHQ05", b"AOSPHQ02", b"AOSPHQ03"] {
+            let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+            let mut request = [0_u8; REQUEST_BYTES];
+            request[..8].copy_from_slice(magic);
+            request[8..24].copy_from_slice(&[1; 16]);
+            client.write_all(&request).expect("retired query");
+            let root_custody_opened = Cell::new(false);
 
-        let root_custody_opened = Cell::new(false);
-        let returned = read_head_request(&mut server, || {
-            root_custody_opened.set(true);
-            Ok(())
-        });
+            let returned = read_head_request(&mut server, || {
+                root_custody_opened.set(true);
+                Ok(())
+            });
 
-        assert!(returned.is_err());
-        assert!(!root_custody_opened.get());
+            let error = returned.err().expect("retired query refused");
+            let native = error
+                .downcast_ref::<io::Error>()
+                .expect("native query cause");
+            assert_eq!(native.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(native.to_string(), "invalid head query");
+            assert!(!root_custody_opened.get());
+        }
     }
 
     #[test]
     fn read_only_and_cache_request_modes_reach_root_custody_gate() {
         for magic in [
-            POLICY_HEAD_QUERY_MAGIC_V2,
-            POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
             POLICY_CACHE_SIGNER_QUERY_MAGIC_V6,
             POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
             POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4,
@@ -4966,18 +4868,6 @@ mod tests {
         assert!(parse_binding_head(&encoded[..63]).is_err());
         assert!(parse_binding_head(&"0".repeat(64)).is_err());
         assert!(parse_binding_head(&"g".repeat(64)).is_err());
-    }
-
-    #[test]
-    fn lease_ack_is_nonce_and_version_bound() {
-        let mut acknowledgement = [0_u8; 24];
-        acknowledgement[..8].copy_from_slice(POLICY_HEAD_LEASE_ACK_MAGIC_V3);
-        acknowledgement[8..].copy_from_slice(&[1; 16]);
-        assert!(validate_lease_ack(&acknowledgement, &[1; 16]).is_ok());
-
-        assert!(validate_lease_ack(&acknowledgement, &[2; 16]).is_err());
-        acknowledgement[0] ^= 1;
-        assert!(validate_lease_ack(&acknowledgement, &[1; 16]).is_err());
     }
 
     #[test]
@@ -5024,36 +4914,85 @@ mod tests {
     }
 
     #[test]
-    fn project_source_modes_reject_missing_and_cross_version_credentials() {
-        assert!(require_single_project_source(false, false).is_err());
-        assert!(require_single_project_source(true, true).is_err());
-        assert!(require_single_project_source(true, false).is_ok());
-        assert!(require_single_project_source(false, true).is_ok());
+    fn project_source_modes_require_the_current_credentials() {
+        let error = require_explicit_project_source(false).expect_err("missing current source");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "exactly one project source version is required"
+        );
+        assert!(require_explicit_project_source(true).is_ok());
 
-        let legacy = Some((b"legacy-packet".as_slice(), b"legacy-input".as_slice()));
         let explicit = Some((b"explicit-packet".as_slice(), b"explicit-input".as_slice()));
-        assert!(select_project_source(HeadRequestMode::Query, None, explicit).is_err());
-        assert!(select_project_source(HeadRequestMode::Lease, None, explicit).is_err());
-        assert!(select_project_source(HeadRequestMode::ClosedBinding, legacy, None).is_err());
-        assert!(select_project_source(HeadRequestMode::StagedCacheSigner, legacy, None).is_err());
+        assert!(select_project_source(HeadRequestMode::ClosedBinding, None).is_err());
+        assert!(select_project_source(HeadRequestMode::StagedCacheSigner, None).is_err());
         assert_eq!(
-            select_project_source(HeadRequestMode::ClosedBinding, None, explicit)
+            select_project_source(HeadRequestMode::ClosedBinding, explicit)
                 .expect("explicit source")
                 .0,
             b"explicit-packet"
         );
         assert_eq!(
-            select_project_source(HeadRequestMode::StagedCacheSigner, None, explicit)
+            select_project_source(HeadRequestMode::StagedCacheSigner, explicit)
                 .expect("explicit source")
                 .0,
             b"explicit-packet"
         );
         assert_eq!(
-            select_project_source(HeadRequestMode::StagedCacheSigner, None, explicit)
+            select_project_source(HeadRequestMode::StagedCacheSigner, explicit)
                 .expect("explicit source")
                 .0,
             b"explicit-packet"
         );
+    }
+
+    #[test]
+    fn retired_project_credentials_refuse_every_present_name() {
+        let directory = tempfile::tempdir().expect("credential directory");
+        require_no_retired_project_credentials(directory.path()).expect("retired names absent");
+        std::fs::write(directory.path().join("project-head-v2.packet"), [1; 328])
+            .expect("current packet");
+        std::fs::write(directory.path().join("project-layer-v2.json"), b"input")
+            .expect("current input");
+
+        for name in ["project-head.packet", "project-layer.json"] {
+            let path = directory.path().join(name);
+            std::fs::write(&path, b"not a supported credential").expect("retired name");
+            let error = require_no_retired_project_credentials(directory.path())
+                .expect_err("partial retired pair refused even with current pair");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            std::fs::remove_file(&path).expect("remove retired file");
+
+            std::os::unix::fs::symlink("missing-target", &path).expect("dangling retired symlink");
+            assert!(require_no_retired_project_credentials(directory.path()).is_err());
+            std::fs::remove_file(&path).expect("remove retired symlink");
+
+            std::fs::create_dir(&path).expect("retired directory name");
+            assert!(require_no_retired_project_credentials(directory.path()).is_err());
+            std::fs::remove_dir(&path).expect("remove retired directory");
+        }
+
+        std::fs::write(directory.path().join("project-head.packet"), b"packet")
+            .expect("retired packet");
+        std::fs::write(directory.path().join("project-layer.json"), b"input")
+            .expect("retired input");
+        assert!(require_no_retired_project_credentials(directory.path()).is_err());
+    }
+
+    #[test]
+    fn retired_name_check_preserves_native_metadata_failure() {
+        let directory = tempfile::tempdir().expect("credential directory");
+        let root = directory.path().join("not-a-directory");
+        std::fs::write(&root, b"file").expect("non-directory credential root");
+
+        let returned =
+            require_no_retired_project_credentials(&root).expect_err("native metadata failure");
+        let original = std::fs::symlink_metadata(root.join("project-head.packet"))
+            .expect_err("same native metadata operation");
+
+        assert_eq!(returned.kind(), original.kind());
+        assert_eq!(returned.raw_os_error(), original.raw_os_error());
+        assert!(returned.raw_os_error().is_some());
     }
 }
 
@@ -5105,6 +5044,23 @@ fn read_optional_pin(root: &Path, name: &str) -> io::Result<Option<Vec<u8>>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+// Retired credential names cannot silently select or fall back to the current profile.
+fn require_no_retired_project_credentials(root: &Path) -> io::Result<()> {
+    for name in ["project-head.packet", "project-layer.json"] {
+        match std::fs::symlink_metadata(root.join(name)) {
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "retired project source credentials are unsupported",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 fn read_optional_explicit_project(root: &Path) -> io::Result<Option<(Vec<u8>, Vec<u8>)>> {
