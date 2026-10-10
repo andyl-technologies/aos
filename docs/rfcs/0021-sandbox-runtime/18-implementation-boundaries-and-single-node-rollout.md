@@ -347,6 +347,10 @@ drop order, native failures, currentness checks, and public paths remain intact.
 Shared session mechanics stay with their original owners. This private grouping
 does not remove domain dependencies or establish runtime qualification.
 
+Initial traffic-key proof stays private and retains only checkpoint drafts.
+Its unused durable typestates are removed; protected Controller and Network
+checkpoint and recovery owners remain in their existing domains.
+
 Controller Runtime's private `resident_custody` child owns the unchanged partial
 parent/worker slots, genuine worker loans, first native causes, and negative
 terminal fences.
