@@ -1119,12 +1119,14 @@ in {
           "systemctl is-active --quiet multi-user.target",
           timeout=420,
       )
+      # Image transitions rebind the active operator configuration. The new
+      # image's initial marker policy must not replace that retained intent.
       consumer.succeed(textwrap.dedent(f"""
           set -eu
           grep -q 'VERSION_ID=0.2.0' /etc/os-release
-          grep -qx 'marker = 1' /etc/aos/upgrade-test/marker.conf
-          systemctl is-active --quiet aos-upgrade-test-marker.service
-          ! systemctl is-active --quiet aos-upgrade-removed.service
+          test ! -e /etc/aos/upgrade-test/marker.conf
+          systemctl is-active --quiet aos-upgrade-removed.service
+          ! systemctl is-active --quiet aos-upgrade-test-marker.service
           {JQ} -e '.running == 2 and .pending == null' \\
             /var/lib/profiles/image/state.json >/dev/null
           {APM} image rollback --generation 1
@@ -1151,7 +1153,9 @@ in {
       consumer.succeed(textwrap.dedent(f"""
           set -eu
           grep -q 'VERSION_ID=0.2.0' /etc/os-release
-          grep -qx 'marker = 1' /etc/aos/upgrade-test/marker.conf
+          test ! -e /etc/aos/upgrade-test/marker.conf
+          systemctl is-active --quiet aos-upgrade-removed.service
+          ! systemctl is-active --quiet aos-upgrade-test-marker.service
           {JQ} -e '.running == 2 and .pending == null' \\
             /var/lib/profiles/image/state.json >/dev/null
       """), timeout=1200)
