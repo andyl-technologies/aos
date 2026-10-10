@@ -7,11 +7,15 @@
   ${script}
   TERRANE_CHECK
   export TERRANE_CHECK_WORKDIR="$PWD"
+  # Genuine procfs read-error fixtures bind only their own process directory
+  # beneath protected fixture storage, retaining every physical ownership check.
+  export TERRANE_TEST_PROC_MOUNT="${util-linux}/bin/mount"
+  export TERRANE_TEST_PROC_UMOUNT="${util-linux}/bin/umount"
 
   # The outer sandbox root may have an unmapped owner. A private user and
   # mount namespace supplies a real protected root while preserving the
   # sandbox's input mounts, network isolation and actual checked files.
-  ${util-linux}/bin/unshare --user --map-root-user --mount "$CONFIG_SHELL" -c '
+  ${util-linux}/bin/unshare --user --map-root-user --mount --propagation private "$CONFIG_SHELL" -c '
     set -eu
     terrane_test_root=$(mktemp -d "$TMPDIR/terrane-protected-root.XXXXXXXX")
     mkdir -p "$terrane_test_root/nix/store" "$terrane_test_root/dev" \

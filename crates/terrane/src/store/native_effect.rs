@@ -16,6 +16,10 @@ use std::sync::Arc;
 
 use super::StoreFailure;
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "native_effect/body_read_eio_fixture.rs"]
+mod body_read_eio_fixture;
+
 #[path = "native_effect/range.rs"]
 mod range;
 
