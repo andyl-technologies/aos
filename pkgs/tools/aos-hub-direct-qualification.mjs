@@ -350,6 +350,7 @@ async function waitForMixedRelease(ready, stage = "admission") {
 async function enqueueMixedWithAdmission(bulkObjects, metadataObjects) {
   if (!bulkObjects.length || !metadataObjects.length) throw new Error("Mixed admission requires both classes.");
   const first = bulkObjects[0];
+  const concurrentBulk = bulkObjects[1];
   const closedCapture = await control({ kind: "inspect", objectId: first.objectId, afterAttempt: 0 });
   const closedPage = closedCapture.result;
   if (closedPage.objectId !== first.objectId || canonicalHash(closedPage.original) !== canonicalHash(original)
@@ -363,7 +364,9 @@ async function enqueueMixedWithAdmission(bulkObjects, metadataObjects) {
     closedSha256: canonicalHash(closedPage.closed), jobProjectionSha256: canonicalHash(closedPage.closed.job),
     inspectionSha256: closedCapture.responseSha256, inspectionFile: closedCapture.captureFile };
   await waitForMixedRelease(cohort, "arm");
-  await control({ kind: "enqueue", objectIds: [first.objectId] });
+  // A queue may serialize invocations. Fill both bulk slots in one batch so
+  // the held first stream does not prevent delivery of the second original.
+  await control({ kind: "enqueue", objectIds: [first, concurrentBulk].filter(Boolean).map(item => item.objectId) });
   const deadline = Date.now() + 35000;
   let pending;
   while (Date.now() < deadline) {
@@ -400,11 +403,9 @@ async function enqueueMixedWithAdmission(bulkObjects, metadataObjects) {
     throw new Error("Mixed Begin closed job changed after arming.");
   }
   await waitForMixedRelease(pending);
-  const concurrentBulk = bulkObjects[1];
   if (concurrentBulk) {
     // Fill the second bulk slot before measuring the reserved metadata slot.
     // The metadata completion receipt must independently confirm both are active.
-    await control({ kind: "enqueue", objectIds: [concurrentBulk.objectId] });
     let started = false;
     while (Date.now() < deadline) {
       if (cancelled) throw new Error("Cancelled before concurrent bulk Begin.");

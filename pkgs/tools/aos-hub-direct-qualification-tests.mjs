@@ -29,10 +29,14 @@ const keyFile = join(root, "control.key");
 await writeFile(keyFile, secret, { mode: 0o600 });
 const payload = Buffer.alloc(16 * 1024 * 1024 + 17, 0x36), payloadFile = join(root, "payload");
 await writeFile(payloadFile, payload, { mode: 0o600 });
+const secondPayload = Buffer.alloc(payload.length, 0x37), secondPayloadFile = join(root, "second-payload");
+await writeFile(secondPayloadFile, secondPayload, { mode: 0o600 });
+const secondPayloadDigest = createHash("sha256").update(secondPayload).digest("hex");
 // These are protocol bytes, not a claim of narinfo semantic verification.
 const metadataPayload = Buffer.alloc(256 * 1024, 0x6d), metadataFile = join(root, "metadata-payload");
 await writeFile(metadataFile, metadataPayload, { mode: 0o600 });
-const sourceBytes = object => object.metadata ? metadataPayload : payload;
+const sourceBytes = object => object.metadata ? metadataPayload
+  : object.expectedSha256 === secondPayloadDigest ? secondPayload : payload;
 const uploadedByObject = new Map(), uploadRoutes = new Set();
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 // Production Grant replies pass through serde_json::Value's sorted maps.
@@ -48,7 +52,7 @@ const baselineDriver = process.argv[6];
 let scenario, child, origin, original, uploaded, receipt;
 let mixedFixture = null;
 const mixedEntries = new Map();
-let mixedDispatches = 0, mixedBulkActive = 0, mixedMetadataAdmissions = 0;
+let mixedDispatches = 0, mixedBulkActive = 0, mixedMetadataAdmissions = 0, mixedPeakActive = 0;
 
 async function verifyMixedObject(object) {
   const before = { isolateId: "driver-isolate", dispatches: mixedDispatches,
@@ -62,9 +66,11 @@ async function verifyMixedObject(object) {
   mixedDispatches += 1;
   const observedObjects = { aggregateActive: mixedBulkActive + Number(object.metadata),
     bulkActive: mixedBulkActive, metadataActive: Number(object.metadata) };
+  mixedPeakActive = Math.max(mixedPeakActive, observedObjects.aggregateActive);
   const observed = await new Promise((done, reject) => {
     const outgoing = httpRequest({ host: "127.0.0.1", port: mixedFixture.listenerPort,
-      path: object.metadata ? "/metadata-payload" : "/bulk-payload", agent: false,
+      path: object.metadata ? "/metadata-payload" : scenario === "mixed-saturation"
+        && object.objectId !== original.objects[0].objectId ? "/bulk-second-payload" : "/bulk-payload", agent: false,
       headers: { host: "s3.fleet.test", "if-match": '"actual-etag"',
         authorization: "AWS4-HMAC-SHA256 Credential=test/20261002/garage/s3/aws4_request, "
           + "SignedHeaders=host;if-match;x-amz-content-sha256;x-amz-date, Signature=" + "a".repeat(64),
@@ -84,7 +90,7 @@ async function verifyMixedObject(object) {
   assert.deepEqual(observed, { sha256: digest(expected), byte_size: String(expected.length) });
   entry.receipt = { attempt, finishedAtMillis: String(Date.now()), queueName: object.metadata ? "driver-metadata" : "driver-bulk",
     messageId: object.objectId, providerAfter: { isolateId: "driver-isolate", dispatches: mixedDispatches,
-      peakActive: 2, metadataAdmissionsDuringBulk: mixedMetadataAdmissions }, objects: observedObjects,
+      peakActive: mixedPeakActive, metadataAdmissionsDuringBulk: mixedMetadataAdmissions }, objects: observedObjects,
     verificationReplayed: false, proof: observed };
   if (!object.metadata) mixedBulkActive -= 1;
 }
@@ -92,6 +98,9 @@ async function verifyMixedObject(object) {
 async function mixedPeer(action) {
   if (action.kind === "enqueue") {
     const objects = original.objects.filter(object => action.objectIds.includes(object.objectId));
+    if (scenario === "mixed-saturation" && objects.some(object => !object.metadata)) {
+      assert.equal(objects.length, 2, "Both bulk originals must share one queue delivery batch");
+    }
     if (scenario === "mixed-baseline" && objects.length === 2) {
       // Actual old producer batch reaches a controlled metadata-first scheduler.
       await verifyMixedObject(objects.find(object => object.metadata));
@@ -134,7 +143,7 @@ async function pumpMixed(output) {
       const state = await mixedFixture.listener.command(command);
       if (state.state === "held") {
         assert.equal(mixedEntries.get(candidate.objectId).attempt.nonce, candidate.attemptNonce);
-        assert.equal(mixedBulkActive, 1);
+        assert.equal(mixedBulkActive, scenario === "mixed-saturation" ? 2 : 1);
         assert.equal(state.receipt.downstreamOfferedBytes, "0");
         await mixedFixture.listener.command({ ...command, kind: "bind_mixed_begin", beginNonce: candidate.attemptNonce });
         await save("mixed-admission-release.json", { version: 1, runId: candidate.runId,
@@ -146,7 +155,7 @@ async function pumpMixed(output) {
     if (finish && !resumed) {
       const state = await mixedFixture.listener.command(command);
       assert.equal(state.state, "held");
-      assert.equal(finish.record.receipt.objects.bulkActive, 1);
+      assert.equal(finish.record.receipt.objects.bulkActive, scenario === "mixed-saturation" ? 2 : 1);
       assert.equal(finish.record.object.metadata, true);
       assert.equal(finish.record.receipt.proof.sha256, digest(metadataPayload));
       assert.equal(finish.record.receipt.proof.byte_size, String(metadataPayload.length));
@@ -294,22 +303,26 @@ await writeFile(manifestFile, JSON.stringify({ provider: { kind: "managed" }, ob
 async function run(name, mode, phase = "run") {
   scenario = mode; calls.length = 0; partOrder.length = 0; uploaded = 0; receipt = null;
   uploadedByObject.clear(); uploadRoutes.clear();
-  const output = join(root, name); await mkdir(output, { mode: 0o700 });
+  const invocation = join(root, name); await mkdir(invocation, { mode: 0o700 });
+  const output = mode.startsWith("mixed-") ? join(invocation, "evidence") : invocation;
+  if (output !== invocation) await mkdir(output, { mode: 0o700 });
   if (mode.startsWith("mixed-")) {
     mixedEntries.clear(); mixedFixture.gets.clear();
-    mixedDispatches = 0; mixedBulkActive = 0; mixedMetadataAdmissions = 0;
+    mixedDispatches = 0; mixedBulkActive = 0; mixedMetadataAdmissions = 0; mixedPeakActive = 0;
     await writeFile(manifestFile, JSON.stringify({ provider: { kind: "managed" }, objects: [
-      { file: payloadFile, metadata: false }, { file: metadataFile, metadata: true }] }), { mode: 0o600 });
+      { file: payloadFile, metadata: false },
+      ...(mode === "mixed-saturation" ? [{ file: secondPayloadFile, metadata: false }] : []),
+      { file: metadataFile, metadata: true }] }), { mode: 0o600 });
   }
   child = spawn(process.execPath, [mode === "mixed-baseline" ? baselineDriver : driver, "--origin", origin, "--control-key-file", keyFile,
     "--identity-file", identityFile, "--manifest-file", manifestFile, "--output-dir", output,
     "--wait-seconds", mode.startsWith("mixed-") ? "15" : "0",
-    ...(mode === "mixed-barrier" ? ["--mixed-admission-file", resolve(output, "..", "mixed-admission-release.json")] : []), ...(phase === "clock" ? ["--phase", "clock", "--run-id", "ef".repeat(32),
+    ...(["mixed-barrier", "mixed-saturation"].includes(mode) ? ["--mixed-admission-file", resolve(output, "..", "mixed-admission-release.json")] : []), ...(phase === "clock" ? ["--phase", "clock", "--run-id", "ef".repeat(32),
       "--clock-uncertainty-seconds", "1"] : phase === "requeue"
       ? ["--phase", "requeue", "--run-id", original.runId] : [])],
     { env: { ...process.env, NODE_EXTRA_CA_CERTS: cert }, stdio: ["ignore", "pipe", "pipe"] });
   let pumpError = null;
-  const pumping = mode === "mixed-barrier" ? pumpMixed(output).catch(error => {
+  const pumping = ["mixed-barrier", "mixed-saturation"].includes(mode) ? pumpMixed(output).catch(error => {
     pumpError = error; child.kill("SIGTERM");
   }) : Promise.resolve();
   let logs = ""; child.stdout.on("data", bytes => { logs += bytes; }); child.stderr.on("data", bytes => { logs += bytes; });
@@ -489,13 +502,23 @@ print('PASS actual driver evidence accepted; old underscore filename refused by 
   // retagged qualification artifact. No rows are manually constructed.
   assert.ok(baselineDriver?.startsWith("/nix/store/"));
   const backend = createHttpServer((request, response) => {
-    assert.ok(request.url === "/bulk-payload" || request.url === "/metadata-payload");
+    assert.ok(["/bulk-payload", "/bulk-second-payload", "/metadata-payload"].includes(request.url));
     assert.equal(request.method, "GET");
     assert.equal(request.headers["if-match"], '"actual-etag"');
     mixedFixture.gets.set(request.url, (mixedFixture.gets.get(request.url) ?? 0) + 1);
-    const bytes = request.url === "/metadata-payload" ? metadataPayload : payload;
+    const bytes = request.url === "/metadata-payload" ? metadataPayload
+      : request.url === "/bulk-second-payload" ? secondPayload : payload;
     response.writeHead(200, { etag: '"actual-etag"', "content-length": String(bytes.length) });
+    if (request.url === "/bulk-second-payload") {
+      // Keep the second real stream active until metadata uses its reserved slot.
+      mixedFixture.secondBulkResponse = response;
+      return;
+    }
     response.end(bytes);
+    if (request.url === "/metadata-payload" && mixedFixture.secondBulkResponse) {
+      mixedFixture.secondBulkResponse.end(secondPayload);
+      mixedFixture.secondBulkResponse = null;
+    }
   });
   await new Promise(done => backend.listen(0, "127.0.0.1", done));
   const holdRoot = join(root, "mixed-holder"); await mkdir(holdRoot, { mode: 0o700 });
@@ -516,6 +539,15 @@ print('PASS actual driver evidence accepted; old underscore filename refused by 
     assert.equal(actual.observations.samples.length, 1);
     assert.ok(Number(actual.observations.samples[0].bulkActive) > 0);
     assert.ok(Number(actual.observations.samples[0].metadataAdmissionsAfter) > Number(actual.observations.samples[0].metadataAdmissionsBefore));
+    mixedFixture.tasks = [];
+    const saturated = await run("mixed-saturation", "mixed-saturation");
+    assert.equal(saturated.exit, 0, saturated.logs);
+    await Promise.all(mixedFixture.tasks);
+    assert.deepEqual(Object.fromEntries(mixedFixture.gets), {
+      "/bulk-payload": 1, "/bulk-second-payload": 1, "/metadata-payload": 1 });
+    const saturation = JSON.parse(await readFile(join(saturated.output, "mixed-load-raw.json")));
+    assert.equal(saturation.observations.samples.length, 1);
+    assert.equal(saturation.observations.samples[0].bulkActive, "2");
   } finally {
     await listener.close(); backend.closeAllConnections(); await new Promise(done => backend.close(done));
   }
