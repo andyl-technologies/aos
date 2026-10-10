@@ -67,112 +67,18 @@ pub(super) const ROOT_IMAGE_POLICY_BYTES: usize = 1832;
 const IMAGE_POLICY_MAGIC: &[u8; 8] = b"AOSRSB01";
 
 pub(super) fn decode_image_policy(bytes: &[u8]) -> Result<ImageBootstrapPolicy, ResourceReservationErrorV1> {
-    if bytes.get(..8) == Some(b"AOSRSB06".as_slice()) {
-        require_record(bytes, ROOT_IMAGE_POLICY_BYTES, b"AOSRSB06")?;
-        let policy = ImageBootstrapPolicy {
-            node: fixed(&bytes[8..24])?,
-            epoch: fixed(&bytes[24..40])?,
-            capacity: decode_vector(&bytes[40..216])?,
-            baseline: decode_vector(&bytes[216..392])?,
-            controller: decode_vector(&bytes[392..568])?,
-            components: decode_vector(&bytes[568..744])?,
-            host: Some(super::HostComponentPolicy {
-                service: decode_vector(&bytes[744..920])?,
-                control: decode_vector(&bytes[920..1096])?,
-            }),
-            first_global_prefix: Some(decode_vector(&bytes[1096..1272])?),
-            nix_original_start_intake: Some(decode_vector(&bytes[1272..1448])?),
-            q04_original_intake: Some(decode_vector(&bytes[1448..1624])?),
-            root_receiving: Some(decode_vector(&bytes[1624..1800])?),
-        };
-        policy.validate()?;
-        return Ok(policy);
-    }
-    if bytes.get(..8) == Some(b"AOSRSB05".as_slice()) {
-        require_record(bytes, Q04_INTAKE_IMAGE_POLICY_BYTES, b"AOSRSB05")?;
-        let policy = ImageBootstrapPolicy {
-            node: fixed(&bytes[8..24])?,
-            epoch: fixed(&bytes[24..40])?,
-            capacity: decode_vector(&bytes[40..216])?,
-            baseline: decode_vector(&bytes[216..392])?,
-            controller: decode_vector(&bytes[392..568])?,
-            components: decode_vector(&bytes[568..744])?,
-            host: Some(super::HostComponentPolicy {
-                service: decode_vector(&bytes[744..920])?,
-                control: decode_vector(&bytes[920..1096])?,
-            }),
-            first_global_prefix: Some(decode_vector(&bytes[1096..1272])?),
-            nix_original_start_intake: Some(decode_vector(&bytes[1272..1448])?),
-            q04_original_intake: Some(decode_vector(&bytes[1448..1624])?),
-            root_receiving: None,
-        };
-        policy.validate()?;
-        return Ok(policy);
-    }
-    if bytes.get(..8) == Some(b"AOSRSB04".as_slice()) {
-        require_record(bytes, NIX_INTAKE_IMAGE_POLICY_BYTES, b"AOSRSB04")?;
-        let policy = ImageBootstrapPolicy {
-            node: fixed(&bytes[8..24])?,
-            epoch: fixed(&bytes[24..40])?,
-            capacity: decode_vector(&bytes[40..216])?,
-            baseline: decode_vector(&bytes[216..392])?,
-            controller: decode_vector(&bytes[392..568])?,
-            components: decode_vector(&bytes[568..744])?,
-            host: Some(super::HostComponentPolicy {
-                service: decode_vector(&bytes[744..920])?,
-                control: decode_vector(&bytes[920..1096])?,
-            }),
-            first_global_prefix: Some(decode_vector(&bytes[1096..1272])?),
-            nix_original_start_intake: Some(decode_vector(&bytes[1272..1448])?),
-            q04_original_intake: None,
-            root_receiving: None,
-        };
-        policy.validate()?;
-        return Ok(policy);
-    }
-    if bytes.get(..8) == Some(b"AOSRSB03".as_slice()) {
-        require_record(bytes, FIRST_GLOBAL_IMAGE_POLICY_BYTES, b"AOSRSB03")?;
-        let policy = ImageBootstrapPolicy {
-            node: fixed(&bytes[8..24])?,
-            epoch: fixed(&bytes[24..40])?,
-            capacity: decode_vector(&bytes[40..216])?,
-            baseline: decode_vector(&bytes[216..392])?,
-            controller: decode_vector(&bytes[392..568])?,
-            components: decode_vector(&bytes[568..744])?,
-            host: Some(super::HostComponentPolicy {
-                service: decode_vector(&bytes[744..920])?,
-                control: decode_vector(&bytes[920..1096])?,
-            }),
-            first_global_prefix: Some(decode_vector(&bytes[1096..1272])?),
-            nix_original_start_intake: None,
-            q04_original_intake: None,
-            root_receiving: None,
-        };
-        policy.validate()?;
-        return Ok(policy);
-    }
-    if bytes.get(..8) == Some(b"AOSRSB02".as_slice()) {
-        require_record(bytes, HOST_IMAGE_POLICY_BYTES, b"AOSRSB02")?;
-        let policy = ImageBootstrapPolicy {
-            node: fixed(&bytes[8..24])?,
-            epoch: fixed(&bytes[24..40])?,
-            capacity: decode_vector(&bytes[40..216])?,
-            baseline: decode_vector(&bytes[216..392])?,
-            controller: decode_vector(&bytes[392..568])?,
-            components: decode_vector(&bytes[568..744])?,
-            host: Some(super::HostComponentPolicy {
-                service: decode_vector(&bytes[744..920])?,
-                control: decode_vector(&bytes[920..1096])?,
-            }),
-            first_global_prefix: None,
-            nix_original_start_intake: None,
-            q04_original_intake: None,
-            root_receiving: None,
-        };
-        policy.validate()?;
-        return Ok(policy);
-    }
-    require_record(bytes, IMAGE_POLICY_BYTES, IMAGE_POLICY_MAGIC)?;
+    let (length, magic) = match bytes.get(..8) {
+        Some(magic) if magic == b"AOSRSB06" => (ROOT_IMAGE_POLICY_BYTES, b"AOSRSB06"),
+        Some(magic) if magic == b"AOSRSB05" => (Q04_INTAKE_IMAGE_POLICY_BYTES, b"AOSRSB05"),
+        Some(magic) if magic == b"AOSRSB04" => (NIX_INTAKE_IMAGE_POLICY_BYTES, b"AOSRSB04"),
+        Some(magic) if magic == b"AOSRSB03" => (FIRST_GLOBAL_IMAGE_POLICY_BYTES, b"AOSRSB03"),
+        Some(magic) if magic == b"AOSRSB02" => (HOST_IMAGE_POLICY_BYTES, b"AOSRSB02"),
+        _ => (IMAGE_POLICY_BYTES, IMAGE_POLICY_MAGIC),
+    };
+    require_record(bytes, length, magic)?;
+
+    // Only the selected closed format enables suffix fields; input length
+    // never selects or admits another layout.
     let policy = ImageBootstrapPolicy {
         node: fixed(&bytes[8..24])?,
         epoch: fixed(&bytes[24..40])?,
@@ -180,11 +86,34 @@ pub(super) fn decode_image_policy(bytes: &[u8]) -> Result<ImageBootstrapPolicy, 
         baseline: decode_vector(&bytes[216..392])?,
         controller: decode_vector(&bytes[392..568])?,
         components: decode_vector(&bytes[568..744])?,
-        host: None,
-        first_global_prefix: None,
-        nix_original_start_intake: None,
-        q04_original_intake: None,
-        root_receiving: None,
+        host: if length >= HOST_IMAGE_POLICY_BYTES {
+            Some(super::HostComponentPolicy {
+                service: decode_vector(&bytes[744..920])?,
+                control: decode_vector(&bytes[920..1096])?,
+            })
+        } else {
+            None
+        },
+        first_global_prefix: if length >= FIRST_GLOBAL_IMAGE_POLICY_BYTES {
+            Some(decode_vector(&bytes[1096..1272])?)
+        } else {
+            None
+        },
+        nix_original_start_intake: if length >= NIX_INTAKE_IMAGE_POLICY_BYTES {
+            Some(decode_vector(&bytes[1272..1448])?)
+        } else {
+            None
+        },
+        q04_original_intake: if length >= Q04_INTAKE_IMAGE_POLICY_BYTES {
+            Some(decode_vector(&bytes[1448..1624])?)
+        } else {
+            None
+        },
+        root_receiving: if length >= ROOT_IMAGE_POLICY_BYTES {
+            Some(decode_vector(&bytes[1624..1800])?)
+        } else {
+            None
+        },
     };
     policy.validate()?;
     Ok(policy)
@@ -585,4 +514,209 @@ fn require_record(bytes: &[u8], length: usize, magic: &[u8; 8]) -> Result<(), Re
 
 fn fixed<const N: usize>(bytes: &[u8]) -> Result<[u8; N], ResourceReservationErrorV1> {
     bytes.try_into().map_err(|_| ResourceReservationErrorV1::CorruptLedger)
+}
+
+#[cfg(test)]
+mod image_policy_tests {
+    use sha2::{Digest as _, Sha256};
+
+    use super::{
+        FIRST_GLOBAL_IMAGE_POLICY_BYTES, HOST_IMAGE_POLICY_BYTES, IMAGE_POLICY_BYTES,
+        ImageBootstrapPolicy, NIX_INTAKE_IMAGE_POLICY_BYTES, Q04_INTAKE_IMAGE_POLICY_BYTES,
+        ROOT_IMAGE_POLICY_BYTES, ResourceDimension, ResourceReservationErrorV1, ResourceVector,
+        decode_image_policy, encode_vector,
+    };
+    use crate::controller_resource_reservation::HostComponentPolicy;
+
+    const FORMATS: [(&[u8; 8], usize); 6] = [
+        (b"AOSRSB01", IMAGE_POLICY_BYTES),
+        (b"AOSRSB02", HOST_IMAGE_POLICY_BYTES),
+        (b"AOSRSB03", FIRST_GLOBAL_IMAGE_POLICY_BYTES),
+        (b"AOSRSB04", NIX_INTAKE_IMAGE_POLICY_BYTES),
+        (b"AOSRSB05", Q04_INTAKE_IMAGE_POLICY_BYTES),
+        (b"AOSRSB06", ROOT_IMAGE_POLICY_BYTES),
+    ];
+
+    // These bytes describe a policy only; no original file or paid owner exists.
+    fn fixture(version: usize) -> (ImageBootstrapPolicy, Vec<u8>) {
+        let subdivision = ResourceVector::new([1; ResourceDimension::COUNT])
+            .with(ResourceDimension::CpuMicrosPerPeriod, 1000)
+            .with(ResourceDimension::MemoryBytes, 4096)
+            .with(ResourceDimension::Pids, 2)
+            .with(ResourceDimension::OpenFiles, 80);
+        let policy = ImageBootstrapPolicy {
+            node: [1; 16],
+            epoch: [2; 16],
+            capacity: ResourceVector::new([100_000_000; ResourceDimension::COUNT]),
+            baseline: ResourceVector::new([1_000_000; ResourceDimension::COUNT]),
+            controller: ResourceVector::new([50_000_000; ResourceDimension::COUNT]),
+            components: ResourceVector::new([20_000_000; ResourceDimension::COUNT]),
+            host: (version >= 2).then_some(HostComponentPolicy {
+                service: subdivision,
+                control: subdivision.with(ResourceDimension::Pids, 3),
+            }),
+            first_global_prefix: (version >= 3).then_some(subdivision),
+            nix_original_start_intake: (version >= 4)
+                .then_some(subdivision.with(ResourceDimension::Pids, 4)),
+            q04_original_intake: (version >= 5)
+                .then_some(ResourceVector::new([2 * 1024 * 1024; ResourceDimension::COUNT])),
+            root_receiving: (version >= 6).then_some(subdivision),
+        };
+        let (magic, length) = FORMATS[version - 1];
+        let mut bytes = vec![0; length];
+        bytes[..8].copy_from_slice(magic);
+        bytes[8..24].copy_from_slice(&policy.node);
+        bytes[24..40].copy_from_slice(&policy.epoch);
+        for (offset, vector) in [
+            (40, policy.capacity),
+            (216, policy.baseline),
+            (392, policy.controller),
+            (568, policy.components),
+        ] {
+            encode_vector(vector, &mut bytes[offset..offset + 176]);
+        }
+        if let Some(host) = policy.host {
+            encode_vector(host.service, &mut bytes[744..920]);
+            encode_vector(host.control, &mut bytes[920..1096]);
+        }
+        for (offset, vector) in [
+            (1096, policy.first_global_prefix),
+            (1272, policy.nix_original_start_intake),
+            (1448, policy.q04_original_intake),
+            (1624, policy.root_receiving),
+        ] {
+            if let Some(vector) = vector {
+                encode_vector(vector, &mut bytes[offset..offset + 176]);
+            }
+        }
+        refresh_checksum(&mut bytes);
+        (policy, bytes)
+    }
+
+    fn refresh_checksum(bytes: &mut [u8]) {
+        let body_end = bytes.len() - 32;
+        let checksum = Sha256::digest(&bytes[..body_end]);
+        bytes[body_end..].copy_from_slice(&checksum);
+    }
+
+    #[test]
+    fn all_image_policy_formats_preserve_vectors_and_optional_fields() {
+        for version in 1..=6 {
+            let (expected, bytes) = fixture(version);
+
+            let actual = decode_image_policy(&bytes).unwrap();
+
+            assert_eq!(actual, expected, "version {version}");
+            assert_eq!(actual.host.is_some(), version >= 2);
+            assert_eq!(actual.first_global_prefix.is_some(), version >= 3);
+            assert_eq!(actual.nix_original_start_intake.is_some(), version >= 4);
+            assert_eq!(actual.q04_original_intake.is_some(), version >= 5);
+            assert_eq!(actual.root_receiving.is_some(), version >= 6);
+        }
+    }
+
+    #[test]
+    fn every_image_policy_short_prefix_and_trailing_byte_is_corrupt() {
+        for version in 1..=6 {
+            let (_, mut bytes) = fixture(version);
+
+            for end in 0..bytes.len() {
+                assert!(matches!(
+                    decode_image_policy(&bytes[..end]),
+                    Err(ResourceReservationErrorV1::CorruptLedger)
+                ), "version {version}, prefix {end}");
+            }
+            bytes.push(0);
+
+            assert!(matches!(
+                decode_image_policy(&bytes),
+                Err(ResourceReservationErrorV1::CorruptLedger)
+            ), "version {version}, trailing byte");
+        }
+    }
+
+    #[test]
+    fn image_policy_framing_refuses_before_semantic_validation() {
+        for version in 1..=6 {
+            let (_, bytes) = fixture(version);
+
+            for (other_magic, _) in FORMATS {
+                if other_magic == FORMATS[version - 1].0 {
+                    continue;
+                }
+                let mut wrong_width = bytes.clone();
+                wrong_width[..8].copy_from_slice(other_magic);
+                wrong_width[8..24].fill(0);
+                refresh_checksum(&mut wrong_width);
+
+                assert!(matches!(
+                    decode_image_policy(&wrong_width),
+                    Err(ResourceReservationErrorV1::CorruptLedger)
+                ));
+            }
+
+            let mut unknown = bytes.clone();
+            unknown[..8].copy_from_slice(b"AOSRSB07");
+            unknown[8..24].fill(0);
+            refresh_checksum(&mut unknown);
+
+            assert!(matches!(
+                decode_image_policy(&unknown),
+                Err(ResourceReservationErrorV1::CorruptLedger)
+            ));
+
+            let mut bad_checksum = bytes.clone();
+            bad_checksum[8..24].fill(0);
+
+            assert!(matches!(
+                decode_image_policy(&bad_checksum),
+                Err(ResourceReservationErrorV1::CorruptLedger)
+            ));
+
+            let mut zero_identity = bytes;
+            zero_identity[8..24].fill(0);
+            refresh_checksum(&mut zero_identity);
+
+            assert!(matches!(
+                decode_image_policy(&zero_identity),
+                Err(ResourceReservationErrorV1::EnrollmentUnavailable)
+            ));
+        }
+    }
+
+    #[test]
+    fn image_policy_q_failure_precedes_invalid_root_service() {
+        let (expected, mut bytes) = fixture(6);
+        let minimum = crate::controller_resource_reservation::q04_intake::minimum_failure_demand()
+            .unwrap();
+        let undersized = minimum.with(ResourceDimension::MemoryBytes, 0);
+        encode_vector(undersized, &mut bytes[1448..1624]);
+        encode_vector(ResourceVector::ZERO, &mut bytes[1624..1800]);
+        refresh_checksum(&mut bytes);
+
+        assert!(matches!(
+            decode_image_policy(&bytes),
+            Err(ResourceReservationErrorV1::Accounting(
+                aos_sandbox_core::AccountingError::InsufficientAmount {
+                    dimension: ResourceDimension::MemoryBytes,
+                    available: 0,
+                    requested,
+                }
+            )) if requested == minimum.get(ResourceDimension::MemoryBytes)
+        ));
+
+        encode_vector(ResourceVector::new([2 * 1024 * 1024; ResourceDimension::COUNT]),
+            &mut bytes[1448..1624]);
+        refresh_checksum(&mut bytes);
+
+        assert!(matches!(
+            decode_image_policy(&bytes),
+            Err(ResourceReservationErrorV1::EnrollmentUnavailable)
+        ));
+
+        encode_vector(expected.root_receiving.unwrap(), &mut bytes[1624..1800]);
+        refresh_checksum(&mut bytes);
+
+        assert_eq!(decode_image_policy(&bytes).unwrap(), expected);
+    }
 }
