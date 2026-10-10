@@ -1907,6 +1907,7 @@ pub(crate) async fn proxy_origin(
         headers.get(aos_hub_core::hybrid_ingress::live::HYBRID_LIVE_DELIVERY_HEADER)?
     {
         if status != 200 || headers.has(HYBRID_DELIVERY_HEADER)? {
+            worker::console_error!("hybrid_origin_response_rejected reason=live_delivery_shape");
             return Response::error("invalid live delivery response", 502);
         }
         if requested_range.is_some() {
@@ -1928,12 +1929,19 @@ pub(crate) async fn proxy_origin(
     if let Some(compact) = headers.get(HYBRID_DELIVERY_HEADER)? {
         if status != 200 || !matches!(request.method(), worker::Method::Get | worker::Method::Head)
         {
+            worker::console_error!("hybrid_origin_response_rejected reason=delivery_shape");
             return Response::error("invalid hybrid delivery response", 502);
         }
         let target =
             match key.verify_delivery(&compact, &assertion, aos_hub_core::clock::now_unix_secs()) {
                 Ok(target) => target,
-                Err(_) => return Response::error("hybrid delivery grant is invalid", 502),
+                Err(error) => {
+                    worker::console_error!(
+                        "hybrid_origin_response_rejected reason=delivery_grant category={:?}",
+                        error,
+                    );
+                    return Response::error("hybrid delivery grant is invalid", 502);
+                }
             };
         worker::console_log!(
             "hybrid_origin_delivery_grant id={} method={} request_bytes={} elapsed_ms={}",
@@ -1962,6 +1970,7 @@ pub(crate) async fn proxy_origin(
         .await;
     }
     let Some(body) = read_bounded_response(response, MAX_CONTROL_RESPONSE_BYTES).await? else {
+        worker::console_error!("hybrid_origin_response_rejected reason=control_response_limit");
         return Response::error("hybrid control response is too large", 502);
     };
     let route_class = if assertion.method == "GET" && assertion.path_and_query == "/-/instance" {
