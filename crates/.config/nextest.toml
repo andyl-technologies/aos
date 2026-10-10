@@ -34,6 +34,14 @@ slow-timeout = { period = "60s", terminate-after = 15 }
 filter = 'package(terrane) & test(=gc::runner::permanent_local_tests::faults::permanent_local_before_unlink_failure_keeps_selected_recovery_duties)'
 slow-timeout = { period = "60s", terminate-after = 3 }
 
+# This case retains its sixty-second ownership barrier, then performs three
+# genuine reconciliation passes and five durable progress events. A separate
+# trace completes all final reopen and ownership checks in 119 seconds. Reserve
+# a finite third minute for scheduling variation; C/G/D and lease checks remain.
+[[profile.default.overrides]]
+filter = 'package(terrane) & test(=gc::runner::permanent_local_tests::recovery::permanent_local_empty_pass_keeps_owner_and_reclaims_late_same_key_residue)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
 # The ten native local-deletion cases include real grace waits and repeated
 # durable fault/recovery prefixes. Their owning Nix run measured 100-210 seconds
 # per case. Reserve all test slots and bound each runner process to five minutes;

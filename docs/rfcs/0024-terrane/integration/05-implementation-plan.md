@@ -178,9 +178,14 @@ first-pack clock and all existing short-deadline controls. Shared preparation
 adds the genuine fixture with an explicit C=6 h/G=24 h policy and retains that
 same validated timing on reopen. Its ordinary constructor remains C=30 s/G=60 s;
 all native operations and fault observers remain unchanged. Only the six capacity
-cases receive a finite thirty-minute runner bound. Their call-site wiring and
-new qualification remain pending; the prepared fixture is dormant on trunk until
-its pending module is integrated. This policy change establishes no speedup.
+cases receive a finite thirty-minute runner bound. The reviewed `6840c6620a`
+call-site change wires those six witnesses in the private candidate. A focused
+hermetic prerequisite executes exactly those populations with the immutable
+native image, fresh protected storage and the same finite process bound; its
+pure target evaluation and Nix formatting pass. Actual population qualification
+remains pending, and the owning index gate's explicit blocker remains intact.
+The prepared fixture is dormant on trunk until its pending module is integrated.
+This policy change establishes no speedup.
 The permanent GC suite passes its after-unlink case in 103.860 seconds, then
 times out before-unlink at 120.009 seconds; 32 cases remain unrun. A separate
 archived trace completes before-unlink in 110.315 seconds with all four progress
@@ -190,18 +195,48 @@ clocks remain unchanged. Continued qualification accounts for fourteen passes,
 one failed replacement-pack error oracle and nineteen unrun cases. The actual
 replacement is refused by the retained descriptor's zero-link policy before
 the later incarnation comparison. The reviewed exact oracle correction in
-`cc74aa4c96` preserves every foreign-byte, ownership and failed-reclaim assertion;
-fresh qualification remains pending. The reviewed closed-absence diagnosis in `3f598fed48`
+`cc74aa4c96` preserves every foreign-byte, ownership and failed-reclaim assertion.
+Its fresh combined `17225d7f3b` qualification passes that exact case in 85.806
+seconds, including all substantive assertions. Continued qualification passes
+both symlink controls, then times out late same-key residue recovery at 120.005
+seconds, leaving sixteen cases unrun. A separate archived trace completes that
+case in 118.707 seconds with five actual durable progress events, seven
+observations, two successful reclaims and all final reopen checks. Its scoped
+180-second runner preparation awaits untraced qualification; operation and
+whole-lease clocks remain unchanged. The earlier fourteen passes retain their
+original source binding and do not establish complete qualification of this candidate.
+The reviewed closed-absence diagnosis in `3f598fed48`
 preserves present corruption refusal; its first verify case passes, but the
 second rebuild case refuses an ordinary absent observation without a retained
 closing recipe. The scoped protected-absence capture and initial retained
 selected observation are implemented, with conservative non-Tokio behavior.
 Their qualification identifies an omitted native range reader in the maintenance
-fixture. Its correction in `75cc7a5438` passes build and strict Clippy; fresh
-compilation and focused rebuild qualification remain in progress. A broader
-earlier feature-matrix run is cancelled after seven actual missing-placement
-failures; it is not a passing matrix result. A separate workline diagnoses those
-failures without changing the sealed maintenance qualification source.
+fixture. Its correction in `75cc7a5438` passes build, strict Clippy and fresh
+compilation of 1,037 tests. Focused native verification passes in 37.92 seconds,
+but the recovery case returns `MalformedRequest` in 153.89 seconds; the third
+case is unrun. Its archived host request times out its first final-ack case at
+120.005 seconds, leaving two unrun. A separate diagnostic reaches a genuine
+thirty-second deadline refusal at 35.633 seconds; this does not establish the
+earlier malformed request's cause. The combined `ea96f79a10` candidate includes
+the separately qualified immutable-leaf lookup. Its new focused request passes
+verification in 50.56 seconds but still returns a source-less `MalformedRequest`
+during recovery in 171.98 seconds. The final-ack case remains unrun; narrow
+test-only stage diagnostics are under review rather than changing this refusal.
+A broader earlier feature-matrix run is cancelled after seven actual
+missing-placement failures; it is not a passing matrix result. A separate archive diagnostic
+reproduces `Unsupported` in signed fixture setup before the intended loss
+operation. The reviewed `fba4f01132` forwarding correction preserves scalar
+unavailable reads and every Raw durability observer. Its focused seven-case Nix
+check passes all seven actual cases, with independent source and execution
+review; it does not establish the broader feature matrix.
+On combined tree `7cba666072`, required application compilation passes all 114
+test targets across 29 packages. Six current foundation checks pass; role
+selection stops before execution at its existing `cargo-nextest` vendor hash.
+The retained vendor output independently matches the pinned source and all 582
+locked packages and 30,796 checked files, with no additions or omissions. A
+scoped hash correction preserves version, source and dependencies; its packaged
+role qualification remains pending. The historical hash mismatch cause is
+unproven.
 All original faults remain preserved. No task, exit or freeze advances from
 these partial results.
 
