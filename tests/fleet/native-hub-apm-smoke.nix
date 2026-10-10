@@ -73,7 +73,8 @@ in {
     consumer = {
       system = fixture.consumerSystem;
       bootMode = "image";
-      imageDiskMiB = 12288;
+      # Cache and import the complete image closure before staging its slot.
+      imageDiskMiB = 32768;
       varProvisioning = "repart";
     };
     hub = {
