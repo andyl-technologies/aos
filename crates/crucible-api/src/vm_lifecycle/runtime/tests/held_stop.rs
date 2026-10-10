@@ -536,6 +536,99 @@ fn production_marker_release_settles_zero_peer_hold_and_retains_refused_park() -
     Ok(())
 }
 
+fn boundary_outcome(lifecycle: &ProductionVmLifecycleLoop) -> QuantumOutcome {
+    let scheduler = lifecycle.inner.loop_impl();
+    QuantumOutcome {
+        configuration: scheduler.configuration().clone(),
+        frontier: scheduler.frontier(),
+        advanced_node: None,
+        resolved_events: Vec::new(),
+        decisions: Vec::new(),
+        discovered_choices: Vec::new(),
+        event_log_entries: Vec::new(),
+        event_log_segment_bytes: Vec::new(),
+        event_log_segment_text: String::new(),
+        event_log_segment_hash: None,
+        event_log_offset: scheduler.event_log_offset(),
+        scheduler_quiescence: None,
+    }
+}
+
+#[test]
+fn production_marker_park_unblocks_network_and_requires_join_before_release() -> TestResult {
+    let mut lifecycle = stopped_lifecycle_with_kind(0, true)?;
+    let witness = lifecycle
+        .inner
+        .held_host_stop_witness()
+        .ok_or("marker hold absent")?;
+    let node = witness.node().clone();
+    let parent = lifecycle.inner.loop_impl().configuration().clone();
+    let selectable = crucible::NetworkFaultSelectable::next(
+        &lifecycle.source,
+        &parent,
+        crucible::NetworkFaultPhase::First,
+        lifecycle.inner.loop_impl().frontier(),
+        &[],
+    )?
+    .ok_or("network selectable absent")?;
+    let value =
+        crucible::NetworkFaultSelectable::selected_value("link_down", "primary", 1_000, 0, 0)?;
+    let branch = selectable.resolve_branch(&selectable.branch_selection(value)?)?;
+    let selected = branch.selected().id();
+    let replay =
+        crucible::NetworkFaultCampaignReplayPlan::new(branch.selected().clone(), vec![branch])?;
+    lifecycle
+        .inner
+        .network_transaction_parts_mut()
+        .2
+        .install_campaign_replay(Some(replay), None)?;
+    let mut outcome = boundary_outcome(&lifecycle);
+
+    // Only the named phase markers park.
+    assert_eq!(
+        lifecycle.park_held_campaign_markers(&["fault.followup.ready"], &mut outcome)?,
+        0
+    );
+    lifecycle.inner.validate_held_host_stop(&witness)?;
+
+    assert_eq!(
+        lifecycle.park_held_campaign_markers(&["fault.transport.ready"], &mut outcome)?,
+        1
+    );
+
+    assert!(!lifecycle.inner.has_unsettled_host_continuation());
+    assert_eq!(
+        lifecycle.inner.loop_impl().campaign_parked_nodes(),
+        vec![node.clone()]
+    );
+    assert!(lifecycle.parked_campaign_marker(&node)?.is_some());
+    assert!(
+        outcome
+            .scheduler_quiescence
+            .as_ref()
+            .is_some_and(SchedulerQuiescence::is_quiescent)
+    );
+    assert!(!lifecycle.exact_checkpoint_ready()?);
+    // The held marker no longer blocks queued network settlement.
+    lifecycle
+        .inner
+        .settle_pending_network_outputs_at_current_frontier()?;
+    assert!(
+        lifecycle
+            .release_parked_campaign_marker(&node, "fault.transport.ready", selected)
+            .is_err()
+    );
+
+    let joined = lifecycle.join_campaign_parks_to_frontier()?;
+
+    assert_eq!(joined, Some(lifecycle.inner.loop_impl().frontier()));
+    assert!(!lifecycle.inner.has_campaign_parks());
+    lifecycle.release_parked_campaign_marker(&node, "fault.transport.ready", selected)?;
+    assert!(lifecycle.parked_campaign_marker(&node)?.is_none());
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
 #[test]
 fn committed_request_visibility_refuses_changed_source_counter() -> TestResult {
     let mut lifecycle = stopped_lifecycle(0)?;

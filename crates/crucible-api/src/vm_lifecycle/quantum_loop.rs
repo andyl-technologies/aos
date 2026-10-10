@@ -28,7 +28,7 @@ use crucible::BackendRngEvidence;
 use debug_policy::private_gateway_listener_request;
 #[cfg(test)]
 use debug_policy::trusted_debug_listener;
-use host_concurrent::merge_host_concurrent_outcomes;
+pub(in crate::vm_lifecycle) use host_concurrent::merge_host_concurrent_outcomes;
 pub(super) const MAX_PRODUCTION_QEMU_HOST_WORKERS: usize = 64;
 
 pub(super) struct PendingHeldHostOutcomes {

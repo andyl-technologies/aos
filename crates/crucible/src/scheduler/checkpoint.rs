@@ -102,6 +102,9 @@ impl SingleScheduler {
         if self.lock_held
             || self.fixed_input_in_progress
             || !self.app_random_branch_selections.is_empty()
+            // A campaign park is live state awaiting its atomic join and is
+            // deliberately absent from the checkpoint format.
+            || self.has_campaign_parks()
         {
             return Err(SingleSchedulerCheckpointError::Transient);
         }
@@ -720,6 +723,8 @@ fn restore_nodes(
         node.network_lookahead = restored.network_lookahead;
         node.exact_local_event = restored.exact_local_event.clone();
         node.vcpu_idle_states = restored.vcpu_idle_states.clone();
+        // Checkpoints are captured only without parks.
+        node.campaign_parked = false;
     }
     Ok(())
 }

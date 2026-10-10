@@ -313,6 +313,34 @@ pub trait QemuFreshAttemptLifecycleOwner {
         })
     }
 
+    /// Parks held campaign markers named in `markers` and publishes their peers.
+    ///
+    /// Owners without held campaign markers return zero. Published peer
+    /// outcomes merge into `outcome`, which then names the post-park boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a held marker lacks its physical park or peer
+    /// publication fails.
+    fn park_held_campaign_markers(
+        &mut self,
+        _markers: &[&str],
+        _outcome: &mut QuantumOutcome,
+    ) -> Result<usize, SchedulerError> {
+        Ok(0)
+    }
+
+    /// Joins every scheduler park to one frontier at a validated all-VM boundary.
+    ///
+    /// Returns the joined frontier, or `None` when no VM was parked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the scheduler rejects the join.
+    fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
+        Ok(None)
+    }
+
     /// Authenticates a previously released physical marker on this selected branch.
     ///
     /// # Errors
@@ -569,6 +597,18 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         selected: ContentHash,
     ) -> Result<(), SchedulerError> {
         ProductionVmLifecycleLoop::release_parked_campaign_marker(self, node, marker, selected)
+    }
+
+    fn park_held_campaign_markers(
+        &mut self,
+        markers: &[&str],
+        outcome: &mut QuantumOutcome,
+    ) -> Result<usize, SchedulerError> {
+        ProductionVmLifecycleLoop::park_held_campaign_markers(self, markers, outcome)
+    }
+
+    fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
+        ProductionVmLifecycleLoop::join_campaign_parks_to_frontier(self)
     }
 
     fn campaign_marker_release_committed(
@@ -863,6 +903,31 @@ impl QemuFreshAttemptLifecycle<'_> {
     ) -> Result<(), SchedulerError> {
         self.owner
             .release_parked_campaign_marker(node, marker, selected)
+    }
+
+    /// Parks held campaign markers named in `markers` and publishes their peers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a held marker lacks its physical park or peer
+    /// publication fails.
+    pub fn park_held_campaign_markers(
+        &mut self,
+        markers: &[&str],
+        outcome: &mut QuantumOutcome,
+    ) -> Result<usize, SchedulerError> {
+        self.owner.park_held_campaign_markers(markers, outcome)
+    }
+
+    /// Joins every scheduler park to one frontier at a validated all-VM boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the scheduler rejects the join.
+    pub fn join_campaign_parks_to_frontier(
+        &mut self,
+    ) -> Result<Option<VirtualTime>, SchedulerError> {
+        self.owner.join_campaign_parks_to_frontier()
     }
 
     /// Authenticates a prior release of one selected physical marker park.

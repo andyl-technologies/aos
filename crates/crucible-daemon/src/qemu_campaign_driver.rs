@@ -73,6 +73,7 @@ use event_log_retention::{RetainedChoiceDiscoveries, append_event_entries, appen
 use network_fault_boundary::validate_network_fault_boundary;
 use network_fault_boundary::{
     discover_initial_network_fault_choice, discover_quantum_network_fault_choice,
+    park_network_fault_markers,
 };
 use observation_candidate::{
     build_observation_candidate, build_observation_candidate_with_supplemental, project_boundary,
@@ -1057,6 +1058,34 @@ pub trait QemuModeledAttemptLifecycle {
         })
     }
 
+    /// Parks held campaign markers named in `markers` and publishes their peers.
+    ///
+    /// Owners without held campaign markers return zero. Published peer
+    /// outcomes merge into `outcome`, which then names the post-park boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a held marker lacks its physical park or peer
+    /// publication fails.
+    fn park_held_campaign_markers(
+        &mut self,
+        _markers: &[&str],
+        _outcome: &mut QuantumOutcome,
+    ) -> Result<usize, SchedulerError> {
+        Ok(0)
+    }
+
+    /// Joins every scheduler park to one frontier at a validated all-VM boundary.
+    ///
+    /// Returns the joined frontier, or `None` when no VM was parked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the scheduler rejects the join.
+    fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
+        Ok(None)
+    }
+
     /// Authenticates a released park against the selected branch continuation.
     ///
     /// # Errors
@@ -1219,6 +1248,18 @@ impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
         selected: ContentHash,
     ) -> Result<(), SchedulerError> {
         QemuFreshAttemptLifecycle::release_parked_campaign_marker(self, node, marker, selected)
+    }
+
+    fn park_held_campaign_markers(
+        &mut self,
+        markers: &[&str],
+        outcome: &mut QuantumOutcome,
+    ) -> Result<usize, SchedulerError> {
+        QemuFreshAttemptLifecycle::park_held_campaign_markers(self, markers, outcome)
+    }
+
+    fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
+        QemuFreshAttemptLifecycle::join_campaign_parks_to_frontier(self)
     }
 
     fn campaign_marker_release_committed(
@@ -1827,6 +1868,9 @@ fn drive_modeled_attempt_inner(
             ));
         }
 
+        if park_network_fault_markers(lifecycle, input, &mut outcome)? {
+            completed_quanta = lifecycle.completed_quanta();
+        }
         discover_quantum_network_fault_choice(
             lifecycle,
             input,

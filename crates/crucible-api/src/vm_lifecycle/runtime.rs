@@ -208,6 +208,7 @@ impl ProductionVmLifecycleLoop {
         // earlier admitted ancestor; its withheld TX suffix is not snapshot state.
         if self.pending_held_host_outcomes.is_some()
             || self.inner.live_network_preselection().is_some()
+            || self.inner.has_campaign_parks()
             || self.inner.loop_impl().pending_branch_effect_choice_count() != 0
             || !self.signal_fault_branches.is_empty()
             || self.inner.pending_network_output_count() != 0

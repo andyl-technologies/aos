@@ -19,6 +19,8 @@ use crate::{
     RngDecision, ScenarioDef, StepObservation,
 };
 
+#[path = "tests/campaign_park.rs"]
+mod campaign_park;
 #[path = "tests/cap_boundary.rs"]
 mod cap_boundary;
 #[path = "tests/concurrent.rs"]

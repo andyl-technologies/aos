@@ -93,6 +93,39 @@ pub(super) fn discover_quantum_network_fault_choice(
     Ok(())
 }
 
+/// Parks staggered network-phase marker holds so later VMs reach theirs.
+///
+/// Each VM stops at its phase marker at a different time, while the atomic
+/// choice needs every VM parked. Without parking, the first held marker would
+/// block every RUN the remaining VMs need. Returns whether any VM parked.
+///
+/// # Errors
+///
+/// Returns an attempt failure when a held marker cannot park or its peer
+/// outcomes cannot be published.
+pub(super) fn park_network_fault_markers(
+    lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
+    input: &CrucibleAttemptExecution,
+    outcome: &mut QuantumOutcome,
+) -> Result<bool, AttemptWorkerFailure<QemuFreshModeledDriverError>> {
+    if input
+        .scenario()
+        .selectables()
+        .declaration("fault.network")
+        .is_none()
+    {
+        return Ok(false);
+    }
+    let markers = [
+        phase_marker(NetworkFaultPhase::First),
+        phase_marker(NetworkFaultPhase::Followup),
+    ];
+    let parks = lifecycle
+        .park_held_campaign_markers(&markers, outcome)
+        .map_err(classify_scheduler_error)?;
+    Ok(parks != 0)
+}
+
 fn phase_marker(phase: NetworkFaultPhase) -> &'static str {
     match phase {
         NetworkFaultPhase::First => "fault.transport.ready",
@@ -199,7 +232,19 @@ pub(super) fn next_network_fault_discovery(
         if marker_phase(&marker.name) != Some(phase) {
             continue;
         }
-        validate_phase_marker_coordinate(phase, entry, node, &expected_nodes, frontier)?;
+        // A VM parked at this marker no longer bounds the frontier, so its
+        // committed marker may lie ahead of it until the all-VM park join.
+        let parked_here = expected_nodes.contains(node)
+            && lifecycle
+                .parked_campaign_marker(node)
+                .map_err(QemuFreshModeledDriverError::Scheduler)?
+                .is_some_and(|proof| proof.marker == phase_marker(phase));
+        let coordinate_bound = if parked_here {
+            frontier.max(entry.at())
+        } else {
+            frontier
+        };
+        validate_phase_marker_coordinate(phase, entry, node, &expected_nodes, coordinate_bound)?;
         if markers
             .insert(
                 node.clone(),
@@ -289,6 +334,13 @@ pub(super) fn next_network_fault_discovery(
         }
         return Ok(None);
     }
+
+    // Every VM is physically parked at this phase. Join their scheduler parks
+    // to one frontier before validating it and capturing the checkpoint.
+    let frontier = lifecycle
+        .join_campaign_parks_to_frontier()
+        .map_err(QemuFreshModeledDriverError::Scheduler)?
+        .map_or(frontier, |joined| joined.max(frontier));
 
     let marker_sequence = markers
         .values()

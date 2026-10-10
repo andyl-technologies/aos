@@ -5,6 +5,7 @@ use crate::BackendEffect;
 
 mod admission;
 mod backend_shutdown;
+mod campaign_park;
 mod cap_boundary;
 mod device_group;
 mod dispatch_boundary;

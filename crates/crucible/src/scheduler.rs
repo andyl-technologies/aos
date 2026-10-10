@@ -93,6 +93,7 @@ mod checkpoint;
 mod concurrent_prepare;
 mod fixed_input;
 pub use fixed_input::{BackendFixedInputResult, BackendFixedInputState, PreparedHostFixedInput};
+mod campaign_park;
 mod control_state;
 mod device_group_selection;
 mod event_codec;

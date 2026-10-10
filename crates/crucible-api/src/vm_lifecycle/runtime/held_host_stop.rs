@@ -322,6 +322,17 @@ impl ProductionVmLifecycleLoop {
                     "marker release cannot bypass an unsettled physical continuation",
                 ),
             });
+        } else if self
+            .inner
+            .loop_impl()
+            .campaign_parked_nodes()
+            .contains(node)
+        {
+            // A scheduler park keeps its pre-join clock; resuming it would run
+            // the VM from a coordinate behind the shared frontier.
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("marker release preceded the all-VM park join"),
+            });
         }
         let released_configuration = self.inner.loop_impl().configuration().clone();
         let release = |backend: &mut QemuNodeSet,
@@ -355,6 +366,89 @@ impl ProductionVmLifecycleLoop {
         };
         self.retain_released_host_outcomes(released_configuration, outcomes)?;
         Ok(())
+    }
+
+    /// Parks every held campaign marker named in `markers` and publishes its peers.
+    ///
+    /// A held marker otherwise blocks every further quantum, while an atomic
+    /// marker choice needs every VM parked first. Each park leaves its VM
+    /// physically paused at the authenticated marker and removes it from RUN
+    /// selection and the frontier. Published peer outcomes are merged into
+    /// `outcome`, whose configuration, frontier, offset, and quiescence then
+    /// describe the boundary after the last park. Returns the number of parks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a held marker lacks its physical park proof, the
+    /// scheduler refuses the park, or peer publication fails.
+    pub fn park_held_campaign_markers(
+        &mut self,
+        markers: &[&str],
+        outcome: &mut QuantumOutcome,
+    ) -> Result<usize, SchedulerError> {
+        let mut parks = 0;
+        while self.pending_held_host_outcomes.is_none()
+            && self.inner.live_network_preselection().is_none()
+        {
+            let Some(witness) = self.inner.held_host_stop_witness() else {
+                break;
+            };
+            if witness.kind() != crucible::HeldHostStopKind::CampaignMarker {
+                break;
+            }
+            let proof = self
+                .inner
+                .backend_mut()
+                .parked_campaign_marker(witness.node())?
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from("held campaign marker has no physical park"),
+                })?;
+            if !markers.contains(&proof.marker.as_str()) {
+                break;
+            }
+
+            let released_configuration = self.inner.loop_impl().configuration().clone();
+            let outcomes = self.inner.park_held_campaign_marker(&witness)?;
+            self.retain_released_host_outcomes(released_configuration.clone(), outcomes)?;
+            if let Some(published) = self.publish_released_host_outcomes(&released_configuration)? {
+                *outcome =
+                    quantum_loop::merge_host_concurrent_outcomes(vec![outcome.clone(), published])?;
+            }
+            parks += 1;
+        }
+
+        if parks != 0 {
+            let scheduler = self.inner.loop_impl();
+            outcome.configuration = scheduler.configuration().clone();
+            outcome.frontier = scheduler.frontier();
+            outcome.event_log_offset = scheduler.event_log_offset();
+            outcome.scheduler_quiescence = Some(scheduler.quiescence()?);
+        }
+        Ok(parks)
+    }
+
+    /// Joins every scheduler park to one frontier at a validated all-VM boundary.
+    ///
+    /// Returns the joined frontier, or `None` when no VM was parked. Joined
+    /// VMs remain physically paused until their marker release.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when peer outcomes remain unpublished or the scheduler
+    /// rejects the join.
+    pub fn join_campaign_parks_to_frontier(
+        &mut self,
+    ) -> Result<Option<VirtualTime>, SchedulerError> {
+        if self.pending_held_host_outcomes.is_some() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("campaign park join preceded retained peer publication"),
+            });
+        }
+        if !self.inner.has_campaign_parks() {
+            return Ok(None);
+        }
+        self.inner.join_campaign_parks_to_frontier()?;
+        Ok(Some(self.inner.loop_impl().frontier()))
     }
 
     /// Publishes already committed peer outcomes without admitting another RUN.

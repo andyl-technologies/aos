@@ -73,6 +73,8 @@ struct NetworkBoundaryLifecycle {
     release_proofs: BTreeSet<(NodeId, String, ContentHash)>,
     checkpoint_ready: bool,
     queues_empty: bool,
+    joined_frontier: Option<VirtualTime>,
+    joins: usize,
 }
 
 impl NetworkBoundaryLifecycle {
@@ -106,6 +108,8 @@ impl NetworkBoundaryLifecycle {
             release_proofs: BTreeSet::new(),
             checkpoint_ready: true,
             queues_empty: true,
+            joined_frontier: None,
+            joins: 0,
         }
     }
 }
@@ -142,6 +146,68 @@ fn ready_marker_with_nonzero_logical_offset_uses_raw_stop_proof() {
         .expect("nonzero logical offset uses the retained raw stop")
         .is_some()
     );
+}
+
+#[test]
+fn staggered_parks_ahead_of_the_frontier_join_before_discovery() {
+    let scenario = network_choice_scenario(&["router-a", "router-b"]);
+    let input = input_for_scenario(scenario, StopCondition::NextChoice);
+    let configuration = starting_configuration(&input);
+    let mut log = EventLog::new();
+    let mut entries = network_phase_marker(&mut log, "router-a", 10);
+    entries.extend(network_phase_marker(&mut log, "router-b", 30));
+    let mut lifecycle = NetworkBoundaryLifecycle::parked(
+        &[("router-a", 10), ("router-b", 30)],
+        "fault.transport.ready",
+    );
+    // The earlier-parked VM ran ahead of the last live participant.
+    lifecycle.joined_frontier = Some(VirtualTime { ticks: 30 });
+
+    let discovery = next_network_fault_discovery(
+        &mut lifecycle,
+        &input,
+        &configuration,
+        &[],
+        &entries,
+        VirtualTime { ticks: 10 },
+        Some(&SchedulerQuiescence::default()),
+    )
+    .expect("parked markers ahead of the frontier join before validation");
+
+    assert!(discovery.is_some());
+    assert_eq!(lifecycle.joins, 1);
+}
+
+#[test]
+fn unparked_marker_ahead_of_the_frontier_still_fails_closed() {
+    let scenario = network_choice_scenario(&["router-a", "router-b"]);
+    let input = input_for_scenario(scenario, StopCondition::NextChoice);
+    let configuration = starting_configuration(&input);
+    let mut log = EventLog::new();
+    let mut entries = network_phase_marker(&mut log, "router-a", 10);
+    entries.extend(network_phase_marker(&mut log, "router-b", 30));
+    let mut lifecycle =
+        NetworkBoundaryLifecycle::parked(&[("router-a", 10)], "fault.transport.ready");
+
+    let error = next_network_fault_discovery(
+        &mut lifecycle,
+        &input,
+        &configuration,
+        &[],
+        &entries,
+        VirtualTime { ticks: 10 },
+        Some(&SchedulerQuiescence::default()),
+    )
+    .expect_err("an unparked future marker must fail closed");
+
+    assert!(matches!(
+        error,
+        QemuFreshModeledDriverError::NetworkFaultMarkerFuture {
+            marker_tick: 30,
+            ..
+        }
+    ));
+    assert_eq!(lifecycle.joins, 0);
 }
 
 impl QemuModeledAttemptLifecycle for NetworkBoundaryLifecycle {
@@ -212,6 +278,11 @@ impl QemuModeledAttemptLifecycle for NetworkBoundaryLifecycle {
 
     fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
         Ok(self.queues_empty)
+    }
+
+    fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
+        self.joins += 1;
+        Ok(self.joined_frontier)
     }
 
     fn drain_pending_selectable_requests(

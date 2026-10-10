@@ -501,6 +501,18 @@ where
             .release_parked_campaign_marker(node, marker, selected)
     }
 
+    fn park_held_campaign_markers(
+        &mut self,
+        markers: &[&str],
+        outcome: &mut QuantumOutcome,
+    ) -> Result<usize, SchedulerError> {
+        self.lifecycle.park_held_campaign_markers(markers, outcome)
+    }
+
+    fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
+        self.lifecycle.join_campaign_parks_to_frontier()
+    }
+
     fn campaign_marker_release_committed(
         &self,
         node: &NodeId,

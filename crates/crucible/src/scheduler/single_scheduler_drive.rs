@@ -110,7 +110,10 @@ impl SingleScheduler {
         &self,
         node: &RuntimeSchedulerNode,
     ) -> SchedulerNodeActivity {
-        if node.activity == SchedulerNodeActivity::Idle
+        if node.campaign_parked {
+            // A parked VM must not run before its atomic choice is released.
+            SchedulerNodeActivity::Halted
+        } else if node.activity == SchedulerNodeActivity::Idle
             && node
                 .vcpu_idle_states
                 .iter()
@@ -377,10 +380,7 @@ impl SingleScheduler {
     ) -> Result<(), SchedulerError> {
         let mut nodes = Vec::new();
         for node in &self.nodes {
-            if matches!(
-                node.activity,
-                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
-            ) {
+            if node.scheduling_inactive() {
                 continue;
             }
 
@@ -1303,10 +1303,7 @@ impl SingleScheduler {
             return Ok(false);
         }
         for node in &self.nodes {
-            if matches!(
-                node.activity,
-                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
-            ) {
+            if node.scheduling_inactive() {
                 continue;
             }
 
