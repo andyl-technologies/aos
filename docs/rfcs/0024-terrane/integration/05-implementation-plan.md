@@ -565,6 +565,15 @@ Independent review of `0aaee64351` verifies all forty-nine packet payloads,
 scripts pass AOS Bash syntax checks. The original frozen GC and property
 qualification processes continue unchanged; later owning qualification must
 bind the final composed source.
+Four owning CDC gates pass on frozen `759c4c9e52`: `cdc-boundaries` executes
+eleven cases, `chunk-codec` twenty, `chunk-bomb-cap` three and `zstd-concat` two.
+The 36 executions cover twenty-nine distinct nonignored tests, including both
+native manifest controls, actual dictionary dependencies and the compressed
+false-size refusal. Independent review verifies all 113 packet payloads,
+6,209 tracked entries including the documentation symlink, 5,155 filtered
+source files, and all four store results, raw inventories and derivers. The
+original runner exits zero. This earlier-source result does not qualify the
+new native wrappers, later production changes or formal T-CDC-1 acceptance.
 The owning `algebra-merge` gate passes separately on frozen `ea64a04697`,
 executing thirty-two core and six native cases with zero failures or ignored
 tests. Independent review verifies all twenty packet files and the actual
