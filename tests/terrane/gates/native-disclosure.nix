@@ -103,6 +103,16 @@ in {
   prov-commit-verify = sourceGate "prov-commit-verify" ''
     cd crates
     ${nativeSuite "ref_advance::" boundaryTests}
+    ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "guard::current_history::tests::" [
+      "guard::current_history::tests::native_current_history_rejects_invalid_token_before_content_reads"
+      "guard::current_history::tests::native_current_history_walks_each_authorization_independently"
+      "guard::current_history::tests::native_current_purpose_refuses_changed_whole_ref_epoch"
+      "guard::current_history::tests::native_current_history_refuses_missing_actual_original_association"
+    ]}
+    ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "guard::history::current_reads::tests::" [
+      "guard::history::current_reads::tests::ordinary_current_binding_preserves_requested_target_and_actual_scope"
+      "guard::history::current_reads::tests::current_scope_refuses_candidate_layer_and_partially_held_observations"
+    ]}
     printf 'PASS: native ref admission, historical original authority and complete disclosure boundaries\n' > "$out/result"
   '';
 }

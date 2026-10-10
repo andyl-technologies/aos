@@ -142,6 +142,20 @@ Guard snapshot recipes are committed; integration and runtime checks remain
 pending.
 No additional task is accepted, and T2 and branch worklines remain deferred.
 
+Reviewed current-history preparation, disclosure integration and recovery are
+composed privately on `ec043f0270`. An additional isolated qualification worker
+now owns the shared compiler lane. Two implementation workers independently
+extend genuine current-token/current-policy and original physical-input refusal
+witnesses in separate test files; another worker reviews the owning gate
+selectors. The twenty existing new selectors are registered without replacing
+the earlier cases. Source review and private composition do not establish
+compiler, runtime, recovery or complete-floor qualification.
+The first combined native build reports an incorrect `IdentityPrefix` import,
+two independent current-purpose lifetimes and a missing candidate-read lifetime
+bound; an unused concrete-reader re-export is also reported. Compiler-directed
+fixes are under review. Clippy, fresh test compilation and runtime checks remain
+unrun for this composition.
+
 Recovery candidate `b6bf1db80f` passes native build, strict all-target Clippy
 and fresh test-target compilation. Its archived verification case passes in
 35.199 seconds, but the recovery case times out at the unchanged 120-second

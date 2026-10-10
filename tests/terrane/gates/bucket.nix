@@ -36,6 +36,19 @@
     "publication::selection::tests::initial_retained_memo_preserves_recipes_and_fresh_physical_refusals"
   ];
 
+  currentHistoryReadTests = [
+    "content::current_node_reads::tests::current_node_reads_share_pack_data_and_refuse_repeated_closing"
+    "content::current_node_reads::tests::current_closing_refuses_in_flight_cached_hit_and_releases_cancelled_consumer"
+    "content::current_node_reads::tests::current_node_original_pack_receipt_refuses_same_byte_replacement"
+    "content::current_node_reads::tests::current_node_reader_refuses_recaptured_selection_and_foreign_holder"
+    "content::current_node_reads::tests::current_history_commit_read_joins_the_same_consumed_data_ledger"
+    "content::current_node_reads::tests::current_node_reader_refuses_corrupt_pack_and_failed_scope_closing"
+    "content::current_node_reads::tests::current_reader_refuses_another_authentication_capture_on_same_selection"
+    "content::current_node_reads::tests::current_original_receipts_refuses_detached_index_and_catalog_reincarnation"
+    "content::current_node_reads::tests::current_original_receipts_refuses_equal_child_bytes_under_reincarnated_parent"
+    "content::current_node_reads::tests::current_node_reader_keeps_public_hardlinked_pack_data_readable"
+  ];
+
   heldSelectedGetTests = [
     "content::selected_get::held_tests::held_get_native_and_scalar_ranges_keep_existing_exclusion_and_bounded_io"
     "content::selected_get::held_tests::held_get_native_refuses_equal_byte_inputs_after_verification"
@@ -159,7 +172,7 @@
 in {
   store-idempotent-put = gate "store-idempotent-put" (physicalExclusionTests ++ ["content_tests::repeated_put_preserves_first_encoding_and_survives_reopen" "readmission_tests::verified_reupload_replaces_gc_retired_placement_without_restoring_old_pack"]);
   store-verify-on-put = gate "store-verify-on-put" ["content_tests::admission_validates_identity_length_profile_and_independent_dedup_context"];
-  store-verify-on-get = gate "store-verify-on-get" (heldContentTests ++ selectedGetTests ++ selectedDecodeTests ++ heldSelectedGetTests ++ indexPolicyTests ++ ["fault_tests::dictionary_backend_unavailability_preserves_put_and_get_failure_kinds" "content_tests::corrupt_bytes_outside_requested_range_are_never_returned"]);
+  store-verify-on-get = gate "store-verify-on-get" (heldContentTests ++ selectedGetTests ++ selectedDecodeTests ++ currentHistoryReadTests ++ heldSelectedGetTests ++ indexPolicyTests ++ ["fault_tests::dictionary_backend_unavailability_preserves_put_and_get_failure_kinds" "content_tests::corrupt_bytes_outside_requested_range_are_never_returned"]);
   store-ranged-get = gate "store-ranged-get" (rangedPackTests ++ heldSelectedGetTests ++ ["content_tests::ranges_address_verified_encoded_bytes_and_check_overflow" "publication::held_read_tests::content::held_content_get_preserves_all_exact_reads_and_reduces_metadata_dispatch" "publication::held_read_tests::content::held_content_get_preserves_unavailable_read_and_complete_body_verification"]);
   store-has-batched = gate "store-has-batched" ["content_tests::batched_membership_preserves_order_duplicates_and_virtual_empty_chunk"];
   store-ref-cas = gate "store-ref-cas" ["tests::whole_record_cas_has_one_winner_across_independent_opens" "tests::ref_successors_fence_epoch_home_and_sequence" "selection_tests::candidates_bind_the_complete_proposal_and_predecessor_before_head_cas" "selection_tests::independent_candidates_select_one_history_under_concurrent_cas"];
@@ -167,6 +180,10 @@ in {
   store-capability-probe = sourceGate "store-capability-probe" ''
     cd crates
     ${focusedTests}
+    run_bucket_test store::native_effect::publication::current_history_inputs::tests::native_token_refusal_preserves_registered_error_kind
+    run_bucket_test store::native_effect::publication::current_history_inputs::tests::current_close_preserves_public_hardlinked_data_under_read_only_holder
+    run_bucket_test store::native_effect::publication::current_history_inputs::tests::current_close_refuses_equal_bytes_replaced_original_data
+    run_bucket_test store::native_effect::publication::current_history_inputs::tests::current_close_keeps_original_control_protection_strict
     run_bucket_test store::bindings::tests::native_lock_rejects_symlinks_hardlinks_and_replaced_open_inodes
     run_bucket_test store::bindings::tests::native_metadata_preserves_links_permissions_and_nofollow_attributes
     run_bucket_test store::protected_read::tests::protected_recipe_preserves_every_ordered_duplicate_parent
@@ -202,7 +219,7 @@ in {
     run_core_bucket_test bucket::records::tests::capability_publication_marker_preserves_legacy_bytes_and_rejects_unknown_versions
     run_bucket_test bucket::tests::registered_publication_marker_cannot_authorize_legacy_probe_writes
     ${builtins.concatStringsSep "\n" (map (test: "run_bucket_test bucket::${test}") ["version_tests::v1_readonly_refuses_an_empty_backend_response_after_initial_validation" "version_tests::v1_readonly_preserves_unknown_inventory_and_refuses_every_effect" "version_tests::v1_readonly_rejects_layout_transition_without_upgrading_or_writing" "tests::probe_revalidates_persisted_layout_and_profile_each_open" "tests::missing_capabilities_cache_recovers_existing_selected_state"])}
-    printf 'PASS: native probe, retained initialization/recovery and canonical publication marker conformance (38 exact cases)\n' > "$out/result"
+    printf 'PASS: native probe, retained initialization/recovery and canonical publication marker conformance (42 exact cases)\n' > "$out/result"
   '';
   store-list-not-authoritative = gate "store-list-not-authoritative" ["fault_tests::stale_directory_listing_cannot_change_content_or_ref_results"];
   store-validates-uploads = gate "store-validates-uploads" ["fault_tests::dictionary_backend_unavailability_preserves_put_and_get_failure_kinds" "requirement_tests::opaque_metadata_callback_verifies_real_chunks_before_every_dedup" "content_tests::configured_schema_validator_rejects_canonical_but_invalid_meta" "content_tests::admission_validates_identity_length_profile_and_independent_dedup_context" "content_tests::dictionaries_are_fetched_by_verified_chunk_identity_before_decode" "container_tests::whole_pack_import_verifies_members_without_admitting_them" "manifest_tests::manifest_admission_rechecks_nonfinal_context_after_inventory_only_import" "manifest_tests::manifest_references_accept_an_honest_nonfinal_boundary_and_verified_lengths"];

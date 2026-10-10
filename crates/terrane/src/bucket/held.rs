@@ -7,7 +7,7 @@
 
 pub(crate) use super::content::BatchOutcome;
 #[cfg(all(feature = "tokio", unix))]
-pub(crate) use super::content::current_node_reads::{CurrentNodeReads, HeldCurrentNodeReads};
+pub(crate) use super::content::current_node_reads::CurrentNodeReads;
 #[cfg(all(feature = "tokio", unix))]
 pub(crate) use super::content::held_nodes::NodeReads;
 
