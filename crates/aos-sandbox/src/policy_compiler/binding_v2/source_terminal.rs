@@ -1597,9 +1597,6 @@ mod tests {
         assert_eq!(committed.binding(), binding_digest);
         assert_eq!(current_root_binding_chain(&session.authority).unwrap().2, 1);
         assert!(session.release_inert_hold(committed).is_err());
-        assert!(
-            ack::current_ack(&session.authority, binding_digest, binding.handoff_epoch).is_err()
-        );
         let consumed = session
             .authority
             .get(&held_cas_proof_key(binding_digest))

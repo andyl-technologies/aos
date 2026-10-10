@@ -366,7 +366,10 @@ fn custody_cut(
     } else {
         matches!(decision, ClosedPolicyBindingDecisionV2::CommittedHeld(_))
     };
-    if !expected_decision || qualified.is_some() || authority.get(ack::ACK_KEY)?.is_some() {
+    if !expected_decision
+        || qualified.is_some()
+        || authority.get(super::RETIRED_EFFECT_ACK_KEY)?.is_some()
+    {
         return Err(RootV8EffectAckErrorV1::Stale);
     }
     let proposal =

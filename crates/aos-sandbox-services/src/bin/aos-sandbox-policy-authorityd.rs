@@ -71,7 +71,7 @@ use aos_sandbox::policy_compiler::{
     RootPolicyStartupJournalV1, RootV8HeldTerminalStepV1, SourceHoldReadbackChallengeV1,
     StagedClosedPolicyRootBaseV2, abandon_fixed_cache_signer_challenge_v2,
     abort_fixed_root_project_admission_v1, acknowledge_and_verify_fixed_closed_root_v8_terminal_v1,
-    acknowledge_fixed_closed_root_effect_v1, acknowledge_fixed_closed_root_v8_effect_v1,
+    acknowledge_fixed_closed_root_v8_effect_v1,
     acknowledge_verify_and_release_fixed_closed_root_v8_terminal_v1,
     admit_fixed_cache_readback_pin_v1, admit_fixed_controller_hold_pin_v1,
     admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
@@ -91,7 +91,7 @@ use aos_sandbox::policy_compiler::{
     read_fixed_policy_cache_hold_v1, record_fixed_cache_signer_root_settlement_v2,
     recover_fixed_cache_signer_abandonment_v2, recover_fixed_cache_signer_root_history_v2,
     recover_fixed_cache_signer_root_settlement_v2, recover_fixed_closed_policy_binding_decision_v2,
-    recover_fixed_closed_root_effect_ack_v1, recover_fixed_closed_root_v8_effect_ack_v1,
+    recover_fixed_closed_root_v8_effect_ack_v1,
     recover_fixed_closed_root_v8_predecessor_settlement_v1,
     recover_fixed_closed_root_v8_terminal_custody_v1,
     recover_fixed_closed_root_v8_verified_terminal_v1,
@@ -141,12 +141,6 @@ use aos_sandbox_broker_session_security::policy_cache_readback_client::{
     POLICY_CACHE_SIGNER_RECOVERY_QUERY_MAGIC_V7, POLICY_CACHE_SIGNER_RECOVERY_SOCKET_PATH_V7,
     POLICY_CACHE_SIGNER_SETTLED_MAGIC_V6, POLICY_CACHE_SIGNER_SUBMIT_MAGIC_V6,
     decode_cache_signer_recovery_submission_v7, encode_cache_signer_recovery_observation_v7,
-};
-use aos_sandbox_broker_session_security::policy_root_ack_client::{
-    ROOT_EFFECT_ACK_CHALLENGE_FRAME_BYTES_V1, ROOT_EFFECT_ACK_CHALLENGE_MAGIC_V1,
-    ROOT_EFFECT_ACK_QUERY_MAGIC_V1, ROOT_EFFECT_ACK_REPLAY_QUERY_MAGIC_V1,
-    ROOT_EFFECT_ACK_SUBMIT_FRAME_BYTES_V1, ROOT_EFFECT_ACK_SUBMIT_MAGIC_V1,
-    encode_root_effect_ack_reply_v1,
 };
 use aos_sandbox_broker_session_security::policy_root_ack_v8_client::{
     ROOT_V8_ACK_CHALLENGE_FRAME_BYTES, ROOT_V8_ACK_CHALLENGE_MAGIC, ROOT_V8_ACK_QUERY_MAGIC,
@@ -206,8 +200,6 @@ enum HeadRequestMode {
     ClosedBinding,
     QualifiedClosedBinding,
     ClosedBindingReplay,
-    RootEffectAck,
-    RootEffectAckReplay,
     RootV8EffectAck,
     RootV8EffectAckReplay,
     RootV8Terminal,
@@ -1067,8 +1059,6 @@ fn serve_held_binding_request(
     if !matches!(
         mode,
         HeadRequestMode::ClosedBindingReplay
-            | HeadRequestMode::RootEffectAck
-            | HeadRequestMode::RootEffectAckReplay
             | HeadRequestMode::RootV8EffectAck
             | HeadRequestMode::RootV8EffectAckReplay
             | HeadRequestMode::RootV8Terminal
@@ -1084,12 +1074,6 @@ fn serve_held_binding_request(
     match mode {
         HeadRequestMode::ClosedBindingReplay => {
             serve_closed_binding_replay(stream, &request[8..24])
-        }
-        HeadRequestMode::RootEffectAck => {
-            serve_root_effect_ack(stream, &request[8..24], controller_uid)
-        }
-        HeadRequestMode::RootEffectAckReplay => {
-            serve_root_effect_ack_replay(stream, &request[8..24])
         }
         HeadRequestMode::RootV8EffectAck => {
             serve_root_v8_effect_ack(stream, &request[8..24], controller_uid)
@@ -1359,10 +1343,6 @@ fn read_head_request(
         Some(magic) if magic == POLICY_BINDING_REPLAY_QUERY_MAGIC_V5 => {
             HeadRequestMode::ClosedBindingReplay
         }
-        Some(magic) if magic == ROOT_EFFECT_ACK_QUERY_MAGIC_V1 => HeadRequestMode::RootEffectAck,
-        Some(magic) if magic == ROOT_EFFECT_ACK_REPLAY_QUERY_MAGIC_V1 => {
-            HeadRequestMode::RootEffectAckReplay
-        }
         Some(magic) if magic == ROOT_V8_ACK_QUERY_MAGIC => HeadRequestMode::RootV8EffectAck,
         Some(magic) if magic == ROOT_V8_ACK_REPLAY_QUERY_MAGIC => {
             HeadRequestMode::RootV8EffectAckReplay
@@ -1469,8 +1449,6 @@ fn read_head_request(
             | HeadRequestMode::ClosedBindingSourceTerminalReplay
             | HeadRequestMode::ClosedBindingSourceCasReplay
             | HeadRequestMode::QualifiedClosedBinding
-            | HeadRequestMode::RootEffectAck
-            | HeadRequestMode::RootEffectAckReplay
             | HeadRequestMode::RootV8EffectAck
             | HeadRequestMode::RootV8EffectAckReplay
             | HeadRequestMode::RootV8Terminal
@@ -1498,8 +1476,6 @@ fn read_head_request(
     if !matches!(
         mode,
         HeadRequestMode::ClosedBindingReplay
-            | HeadRequestMode::RootEffectAck
-            | HeadRequestMode::RootEffectAckReplay
             | HeadRequestMode::RootV8EffectAck
             | HeadRequestMode::RootV8EffectAckReplay
             | HeadRequestMode::RootV8Terminal
@@ -1744,14 +1720,6 @@ fn serve_current_head(
     }
     if matches!(mode, HeadRequestMode::ClosedBindingReplay) {
         serve_closed_binding_replay(stream, &request[8..24])?;
-        return Ok(());
-    }
-    if matches!(mode, HeadRequestMode::RootEffectAck) {
-        serve_root_effect_ack(stream, &request[8..24], controller_uid)?;
-        return Ok(());
-    }
-    if matches!(mode, HeadRequestMode::RootEffectAckReplay) {
-        serve_root_effect_ack_replay(stream, &request[8..24])?;
         return Ok(());
     }
     if matches!(mode, HeadRequestMode::RootV8EffectAck) {
@@ -2556,67 +2524,6 @@ fn read_held_root_ack_claim(
         ));
     }
     Ok((binding, epoch))
-}
-
-fn serve_root_effect_ack_replay(
-    stream: &mut std::os::unix::net::UnixStream,
-    client_nonce: &[u8],
-) -> Result<(), Box<dyn Error>> {
-    let (binding, epoch) = read_held_root_ack_claim(stream, true)?;
-    let ack = recover_fixed_closed_root_effect_ack_v1(binding, epoch)?;
-    let nonce: [u8; 16] = client_nonce.try_into()?;
-    stream.write_all(&encode_root_effect_ack_reply_v1(
-        nonce, binding, epoch, ack,
-    )?)?;
-    Ok(())
-}
-
-fn serve_root_effect_ack(
-    stream: &mut std::os::unix::net::UnixStream,
-    client_nonce: &[u8],
-    controller_uid: u32,
-) -> Result<(), Box<dyn Error>> {
-    let (binding, epoch) = read_held_root_ack_claim(stream, false)?;
-    let nonce: [u8; 16] = client_nonce.try_into()?;
-    let controller_credential =
-        read_optional_pin(Path::new(CREDENTIAL_ROOT), "controller-hold-public-key")?.ok_or_else(
-            || io::Error::new(io::ErrorKind::PermissionDenied, "Controller pin absent"),
-        )?;
-    stream.set_read_timeout(Some(Duration::from_secs(35)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    let ack = acknowledge_fixed_closed_root_effect_v1(
-        binding,
-        epoch,
-        controller_uid,
-        &controller_credential,
-        |challenge| {
-            let mut frame = [0; ROOT_EFFECT_ACK_CHALLENGE_FRAME_BYTES_V1];
-            frame[..8].copy_from_slice(ROOT_EFFECT_ACK_CHALLENGE_MAGIC_V1);
-            frame[8..24].copy_from_slice(&nonce);
-            frame[24..40].copy_from_slice(&challenge.nonce());
-            frame[40..72].copy_from_slice(challenge.cut().as_bytes());
-            stream.write_all(&frame)?;
-            read_root_effect_ack_submission(stream, nonce)
-        },
-    )?;
-    stream.write_all(&encode_root_effect_ack_reply_v1(
-        nonce,
-        binding,
-        epoch,
-        Some(ack),
-    )?)?;
-    Ok(())
-}
-
-fn read_root_effect_ack_submission(
-    stream: &mut std::os::unix::net::UnixStream,
-    nonce: [u8; 16],
-) -> io::Result<Vec<u8>> {
-    read_root_ack_submission::<ROOT_EFFECT_ACK_SUBMIT_FRAME_BYTES_V1>(
-        stream,
-        nonce,
-        ROOT_EFFECT_ACK_SUBMIT_MAGIC_V1,
-    )
 }
 
 fn serve_root_v8_effect_ack_replay(
@@ -3812,8 +3719,6 @@ fn select_project_source<'a>(
         | HeadRequestMode::GitEvidenceView
         | HeadRequestMode::GitCoverageEnrollment
         | HeadRequestMode::ClosedBindingReplay
-        | HeadRequestMode::RootEffectAck
-        | HeadRequestMode::RootEffectAckReplay
         | HeadRequestMode::RootV8EffectAck
         | HeadRequestMode::RootV8EffectAckReplay
         | HeadRequestMode::RootV8Terminal
@@ -4376,10 +4281,37 @@ mod tests {
     }
 
     #[test]
+    fn retired_root_ack_headers_refuse_before_custody_callback() {
+        for magic in [b"AOSPHQ6A", b"AOSPHQ6R"] {
+            for (nonce, reserved) in [(7, 0), (0, 0), (7, 1)] {
+                let (mut client, mut server) = UnixStream::pair().unwrap();
+                let mut request = [0; REQUEST_BYTES];
+                request[..8].copy_from_slice(magic);
+                request[8..24].fill(nonce);
+                request[24] = reserved;
+                client.write_all(&request).unwrap();
+
+                let gate_opened = Cell::new(false);
+                let error = read_head_request(&mut server, || {
+                    gate_opened.set(true);
+                    Ok(())
+                })
+                .err()
+                .expect("retired header");
+                let error = error
+                    .downcast_ref::<io::Error>()
+                    .expect("original I/O refusal");
+
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                assert_eq!(error.to_string(), "invalid head query");
+                assert!(!gate_opened.get());
+            }
+        }
+    }
+
+    #[test]
     fn root_effect_ack_headers_keep_the_held_gate_closed_for_other_modes() {
         for magic in [
-            ROOT_EFFECT_ACK_QUERY_MAGIC_V1,
-            ROOT_EFFECT_ACK_REPLAY_QUERY_MAGIC_V1,
             ROOT_V8_ACK_QUERY_MAGIC,
             ROOT_V8_ACK_REPLAY_QUERY_MAGIC,
             ROOT_V8_TERMINAL_QUERY_MAGIC,
@@ -4402,9 +4334,7 @@ mod tests {
             assert!(!gate_opened.get());
             assert!(matches!(
                 mode,
-                HeadRequestMode::RootEffectAck
-                    | HeadRequestMode::RootEffectAckReplay
-                    | HeadRequestMode::RootV8EffectAck
+                HeadRequestMode::RootV8EffectAck
                     | HeadRequestMode::RootV8EffectAckReplay
                     | HeadRequestMode::RootV8Terminal
                     | HeadRequestMode::RootV8TerminalReplay
@@ -4428,33 +4358,6 @@ mod tests {
             .write_all(&request)
             .expect("reserved Root grant query");
         assert!(read_head_request(&mut server, || Ok(())).is_err());
-    }
-
-    #[test]
-    fn root_effect_ack_submission_rejects_substitution_truncation_and_trailing_bytes() {
-        let mut frame = [0; ROOT_EFFECT_ACK_SUBMIT_FRAME_BYTES_V1];
-        frame[..8].copy_from_slice(ROOT_EFFECT_ACK_SUBMIT_MAGIC_V1);
-        frame[8..24].fill(7);
-        frame[24..].fill(9);
-        let read = |bytes: &[u8], nonce| {
-            let (mut client, mut server) = UnixStream::pair().expect("local ACK submission");
-            client.write_all(bytes).expect("ACK bytes");
-            client.shutdown(std::net::Shutdown::Write).expect("ACK EOF");
-            server
-                .set_read_timeout(Some(Duration::from_millis(20)))
-                .unwrap();
-            read_root_effect_ack_submission(&mut server, nonce)
-        };
-        assert_eq!(
-            read(&frame, [7; 16]).unwrap(),
-            vec![9; aos_sandbox::policy_compiler::CONTROLLER_EFFECT_ACK_READBACK_BYTES_V1]
-        );
-        assert!(read(&frame, [8; 16]).is_err());
-        let mut changed = frame;
-        changed[0] ^= 1;
-        assert!(read(&changed, [7; 16]).is_err());
-        assert!(read(&frame[..frame.len() - 1], [7; 16]).is_err());
-        assert!(read(&[frame.as_slice(), &[1]].concat(), [7; 16]).is_err());
     }
 
     #[test]
@@ -4560,7 +4463,7 @@ mod tests {
         );
         assert!(read(&frame, [8; 16]).is_err());
         let mut old_role = frame;
-        old_role[..8].copy_from_slice(ROOT_EFFECT_ACK_SUBMIT_MAGIC_V1);
+        old_role[..8].copy_from_slice(b"AOSPHS6A");
         assert!(read(&old_role, [7; 16]).is_err());
         assert!(read(&frame[..frame.len() - 1], [7; 16]).is_err());
         assert!(read(&[frame.as_slice(), &[1]].concat(), [7; 16]).is_err());
