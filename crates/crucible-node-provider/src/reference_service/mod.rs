@@ -7,10 +7,13 @@
 mod bootstrap;
 mod control;
 mod effects;
+mod input_reader;
+mod input_reader_rows;
 mod installed;
 mod limits;
 mod lineage_launch;
 mod lineage_measurement;
+mod lineage_reader_launch;
 mod native_child;
 mod native_supervision;
 pub mod profile;
@@ -28,10 +31,13 @@ pub use bootstrap::{
 };
 pub use installed::ReferenceServiceInstalledLaunchBootstrap;
 pub use lineage_launch::ReferenceLineageLaunchBootstrap;
+pub use lineage_reader_launch::{
+    LineageReaderDefinitionSources, ReferenceLineageReaderLaunchBootstrap,
+};
 pub use profile::{ProfileContent, ReferenceProfile};
 pub use progress::{ReferenceProgressLaunchBootstrap, serve_progress};
 pub use resources::{ConsumedRequest, PublicationConsumption, RequestConsumption};
-pub use server::{serve, serve_installed, serve_lineage, serve_selected};
+pub use server::{serve, serve_installed, serve_lineage, serve_lineage_reader, serve_selected};
 
 use crucible_node_contract::ContractError;
 use serde::Serialize;

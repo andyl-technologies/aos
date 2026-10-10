@@ -123,6 +123,30 @@ pub fn serve_lineage(
     )
 }
 
+/// Serves the distinct launch6 reader under independently installed original authority.
+///
+/// # Errors
+/// Refuses changed source definition bodies, legacy launch grammar, mismatched
+/// measured profile or host admission and unavailable native/transport custody.
+pub fn serve_lineage_reader(
+    socket: &Path,
+    child: &Path,
+    launch: super::ReferenceLineageReaderLaunchBootstrap,
+) -> Result<(), ProviderError> {
+    launch.validate()?;
+    let definition = launch.definition_sources.build()?;
+    serve_bound(
+        socket,
+        child,
+        launch.bootstrap,
+        SourceSelection::LineageReader(Box::new(super::profile::InputLineageProfileSelection {
+            closed_ingress: launch.closed_ingress,
+            definition,
+        })),
+        &launch.qualification_refs,
+    )
+}
+
 pub(super) enum SourceSelection {
     Legacy(PublicReferenceProfile),
     Lineage {
@@ -132,6 +156,7 @@ pub(super) enum SourceSelection {
         closed_ingress: bool,
         endpoint: std::path::PathBuf,
     },
+    LineageReader(Box<super::profile::InputLineageProfileSelection>),
 }
 
 pub(super) fn serve_bound(
@@ -201,6 +226,15 @@ pub(super) fn serve_bound(
             bootstrap.host_budget_ns,
             closed_ingress,
         ),
+        SourceSelection::LineageReader(selection) => ReferenceProfile::build_public_lineage_reader(
+            bootstrap.node_id.clone(),
+            bootstrap.owner_id.clone(),
+            provider_executable,
+            device_executable,
+            bootstrap.quantum_ps,
+            bootstrap.host_budget_ns,
+            *selection,
+        ),
     }?;
     let (binding, owner_binding) =
         profile.bind_qualified(bootstrap.authority.clone(), qualifications)?;
@@ -236,6 +270,11 @@ pub(super) fn serve_bound(
             None
         },
         lineage_predecessor: None,
+        lineage_input_rows: if profile.input_lineage_definition().is_some() {
+            Some(super::input_reader_rows::InputReaderRows::new()?)
+        } else {
+            None
+        },
         blobs,
         verified: BTreeMap::new(),
         pins: Vec::new(),
@@ -302,6 +341,11 @@ pub(super) fn serve_bound(
     let mut token = [0; 32];
     token.copy_from_slice(bootstrap.admission_token.as_slice());
     let guarantees = binding.compatibility.guarantees_ref.clone();
+    let mut required_features = vec![core];
+    if profile.input_lineage_definition().is_some() {
+        required_features.push(Id::new(crate::reference_lineage::INPUT_LINEAGE_FEATURE)?);
+        required_features.sort();
+    }
     let mut handshake = Handshake::new(
         TrustedInstallation {
             session_id: bootstrap.authority.session_id.clone(),
@@ -312,7 +356,7 @@ pub(super) fn serve_bound(
         },
         NegotiationPolicy {
             supported_features,
-            required_features: vec![core],
+            required_features,
             provider_limits: bootstrap.limits,
             required_schemas: Vec::new(),
             required_guarantees: guarantees,
@@ -352,7 +396,9 @@ pub(super) fn serve_bound(
             stream,
             authority.clone(),
             Rc::new(supervisor.clone()),
-            Rc::new(SchemaVerifier),
+            Rc::new(SchemaVerifier {
+                reader: profile.input_lineage_definition().cloned(),
+            }),
             EndpointRole::Provider,
         ) else {
             continue;

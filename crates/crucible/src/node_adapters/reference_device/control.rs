@@ -13,6 +13,14 @@ pub(crate) mod sealed {
 /// native resources. Implementing a wire DTO or supplying a receipt reference
 /// cannot implement this contract or issue host execution authority.
 pub trait ControlledReference: sealed::Sealed {
+    /// Returns the exact source-installed quantized facet interpretation.
+    ///
+    /// The graph's independent installation authenticator still checks this
+    /// selection. Returning a name does not qualify a source implementation.
+    fn quantized_facet(&self) -> &str {
+        "reference-device/quantized-v1"
+    }
+
     /// Returns the original controlled application's custody state.
     fn status(&self) -> DeviceStatus;
     /// Returns the actual controlled application process ID.
@@ -39,6 +47,37 @@ pub trait ControlledReference: sealed::Sealed {
         &self,
         _receipt: &DeviceReceipt,
     ) -> Result<Option<(Id, U64)>, OperationFailure> {
+        Ok(None)
+    }
+
+    /// Returns selected source publication causes, or the legacy native mapping.
+    ///
+    /// Cumulative input/checksum ancestry is distinct from same-time Event causes.
+    /// The selected source must authenticate original publication custody first.
+    ///
+    /// # Errors
+    /// Refuses foreign receipts or unrepresentable original public causes.
+    fn publication_causal_parents(
+        &self,
+        _receipt: &DeviceReceipt,
+    ) -> Result<Option<Vec<Position>>, OperationFailure> {
+        Ok(None)
+    }
+
+    /// Returns the actual selected source proof for the original closed window.
+    ///
+    /// The legacy native checksum path returns `None` and retains its unchanged
+    /// DeviceReceipt leaf codec. A selected source returns the original body
+    /// beneath its authenticated owning window; a reconstructed label or matching
+    /// digest cannot substitute for that custody.
+    ///
+    /// # Errors
+    /// Refuses foreign receipts, missing original proof bytes or exhausted
+    /// predeclared evidence credits after original native effects.
+    fn completion_proof(
+        &self,
+        _receipt: &DeviceReceipt,
+    ) -> Result<Option<InputPayload>, OperationFailure> {
         Ok(None)
     }
 
@@ -225,6 +264,58 @@ pub trait ControlledReference: sealed::Sealed {
         _batch: &RuntimeInputBatch,
     ) -> Result<Option<NativeInputAcknowledgement>, OperationFailure> {
         Ok(None)
+    }
+
+    /// Reports whether the selected input needs an opaque original producer view.
+    fn requires_original_input_lineage(&self, _batch: &RuntimeInputBatch) -> bool {
+        false
+    }
+
+    /// Reads original publication claims under retained native custody and credits.
+    ///
+    /// # Errors
+    /// Refuses unsupported selection, foreign scope, missing rows or exhausted credits.
+    fn original_publication_lineage(
+        &self,
+        _original: &OperationAdmission,
+        _outcome: &OperationOutcome,
+        _publication: &crate::node_scheduling::NativePublication,
+        _limits: crate::node_contract::OriginalInputLineageLimits,
+    ) -> Result<crate::node_contract::OriginalPublicationClaim, OperationFailure> {
+        Err(super::no_effect(
+            "controlled original publication lineage is unsupported",
+        ))
+    }
+
+    /// Authenticates the same original publication and every selected row/body.
+    ///
+    /// # Errors
+    /// Refuses unsupported validation, changed source or incomplete dependencies.
+    fn validate_original_publication_lineage(
+        &self,
+        _original: &OperationAdmission,
+        _outcome: &OperationOutcome,
+        _publication: &crate::node_scheduling::NativePublication,
+        _claim: &crate::node_contract::OriginalPublicationClaim,
+    ) -> Result<(), OperationFailure> {
+        Err(super::no_effect(
+            "controlled original publication validation is unsupported",
+        ))
+    }
+
+    /// Stages an exact original runtime-sealed producer association.
+    ///
+    /// # Errors
+    /// Refuses unsupported or changed inputs and retains uncertain native effects.
+    fn stage_runtime_inputs_with_original_lineage(
+        &mut self,
+        _batch: &RuntimeInputBatch,
+        _provenance: &crate::node_contract::InputProvenanceClosure,
+        _lineage: &crate::node_contract::OriginalInputLineage,
+    ) -> Result<Option<NativeInputAcknowledgement>, OperationFailure> {
+        Err(super::no_effect(
+            "controlled original input lineage is unsupported",
+        ))
     }
 
     /// Retains the original opaque operation before issuing remote native work.

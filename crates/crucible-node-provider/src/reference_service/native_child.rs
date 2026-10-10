@@ -23,6 +23,7 @@ pub(super) struct LineagePeer {
     pid: u32,
     timeout: Duration,
     accepted: Vec<AcceptedWindow>,
+    input_reader: Option<crate::reference_lineage::InputLineageDefinition>,
 }
 
 struct AcceptedWindow {
@@ -31,6 +32,11 @@ struct AcceptedWindow {
     credit: Option<ConsumptionRelationCredit>,
     relation: Option<NativeConsumptionRelation>,
     closed: Option<DeviceReceipt>,
+}
+
+enum ChildSelection<'a> {
+    Legacy,
+    Lineage(Option<&'a crate::reference_lineage::InputLineageDefinition>),
 }
 
 impl ReferenceChild {
@@ -43,7 +49,63 @@ impl ReferenceChild {
         timeout: Duration,
         lineage: bool,
     ) -> Result<Self, ProviderError> {
-        if !lineage {
+        Self::spawn_inner(
+            executable,
+            parent,
+            owner,
+            incarnation,
+            generation,
+            timeout,
+            if lineage {
+                ChildSelection::Lineage(None)
+            } else {
+                ChildSelection::Legacy
+            },
+        )
+    }
+
+    pub(super) fn spawn_profile(
+        executable: &Path,
+        parent: &Path,
+        owner: Id,
+        incarnation: Id,
+        generation: U64,
+        timeout: Duration,
+        profile: &super::profile::ReferenceProfile,
+    ) -> Result<Self, ProviderError> {
+        if profile.input_lineage_definition().is_none() {
+            return Self::spawn(
+                executable,
+                parent,
+                owner,
+                incarnation,
+                generation,
+                timeout,
+                profile.is_lineage(),
+            );
+        }
+        let selection = ChildSelection::Lineage(profile.input_lineage_definition());
+        Self::spawn_inner(
+            executable,
+            parent,
+            owner,
+            incarnation,
+            generation,
+            timeout,
+            selection,
+        )
+    }
+
+    fn spawn_inner(
+        executable: &Path,
+        parent: &Path,
+        owner: Id,
+        incarnation: Id,
+        generation: U64,
+        timeout: Duration,
+        selection: ChildSelection<'_>,
+    ) -> Result<Self, ProviderError> {
+        let ChildSelection::Lineage(input_reader) = selection else {
             return ReferenceDevice::spawn(
                 executable,
                 parent,
@@ -53,7 +115,7 @@ impl ReferenceChild {
                 timeout,
             )
             .map(|native| Self::Legacy(Box::new(native)));
-        }
+        };
         let mut accepted = Vec::new();
         accepted.try_reserve_exact(64).map_err(|_| {
             ProviderError::ResourceExhausted("lineage accepted source window slots")
@@ -74,6 +136,7 @@ impl ReferenceChild {
             pid,
             timeout,
             accepted,
+            input_reader: input_reader.cloned(),
         })))
     }
 
@@ -152,12 +215,13 @@ impl ReferenceChild {
                 "accepted source input has unscoped bytes",
             ));
         }
-        let stage = LineageStage::from_input_batch(
-            grant,
-            canonical::content_ref(&raw, "application/json")?,
-            &raw,
-            &payloads,
-        )?;
+        let reference = canonical::content_ref(&raw, "application/json")?;
+        let stage = match &peer.input_reader {
+            Some(definition) => LineageStage::from_reader_input_batch(
+                grant, reference, &raw, &payloads, definition,
+            )?,
+            None => LineageStage::from_input_batch(grant, reference, &raw, &payloads)?,
+        };
         if let Some(original) = peer
             .accepted
             .iter()
@@ -176,7 +240,12 @@ impl ReferenceChild {
                 "lineage source window custody unavailable",
             ));
         }
-        let credit = ConsumptionRelationCredit::reserve(&stage, &raw)?;
+        let credit = match &peer.input_reader {
+            Some(definition) => {
+                ConsumptionRelationCredit::reserve_reader(&stage, &raw, definition)?
+            }
+            None => ConsumptionRelationCredit::reserve(&stage, &raw)?,
+        };
         peer.accepted.push(AcceptedWindow {
             stage: stage.clone(),
             input: raw,
@@ -216,7 +285,13 @@ impl ReferenceChild {
         if let Some(receipt) = &current.closed {
             return Ok(receipt.clone());
         }
-        let native = peer.native.associate_consumption(&closed, &current.input)?;
+        let native = match &peer.input_reader {
+            Some(definition) => {
+                peer.native
+                    .associate_reader_consumption(&closed, &current.input, definition)?
+            }
+            None => peer.native.associate_consumption(&closed, &current.input)?,
+        };
         let measured_host_ns =
             native
                 .window()

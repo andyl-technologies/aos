@@ -8,6 +8,10 @@
 #[path = "profile/lineage.rs"]
 mod lineage;
 
+#[path = "profile/input_reader.rs"]
+mod input_reader;
+pub use input_reader::InputLineageProfileSelection;
+
 use std::collections::BTreeMap;
 
 use crucible_node_contract::{
@@ -68,6 +72,7 @@ pub struct ReferenceProfile {
     ownership_ref: ContentRef,
     content: Vec<ProfileContent>,
     selection: ProfileSelection,
+    input_reader: Option<crate::reference_lineage::InputLineageDefinition>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -778,6 +783,7 @@ impl ReferenceProfile {
             ownership_ref,
             content,
             selection,
+            input_reader: None,
         })
     }
 
@@ -851,7 +857,10 @@ impl ReferenceProfile {
                 capabilities_ref: self.capabilities_ref.clone(),
                 guarantees_ref: self.guarantees_ref.clone(),
                 qualification_refs: qualifications.to_vec(),
-                extensions: Extensions::new(),
+                extensions: match &self.input_reader {
+                    Some(definition) => definition.durable_extensions()?,
+                    None => Extensions::new(),
+                },
             },
             authority,
             extensions: Extensions::new(),

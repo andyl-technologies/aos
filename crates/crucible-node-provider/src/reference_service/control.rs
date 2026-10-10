@@ -185,14 +185,14 @@ impl Resources {
                 endpoint,
             )?))
         } else {
-            ReferenceChild::spawn(
+            ReferenceChild::spawn_profile(
                 &self.child_path,
                 &self.socket_parent,
                 self.bootstrap.owner_id.clone(),
                 self.bootstrap.authority.incarnation_id.clone(),
                 self.bootstrap.authority.owner_generation,
                 self.timeout(),
-                self.profile.is_lineage(),
+                &self.profile,
             )?
         });
         let child = self.child.as_ref().ok_or(ProviderError::Correlation(

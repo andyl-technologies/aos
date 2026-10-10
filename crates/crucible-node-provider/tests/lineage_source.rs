@@ -220,6 +220,33 @@ fn assert_native_inventory(view: &crucible_node_provider::client::OriginalLineag
         evidence.objects().len(),
         view.input_batch().events.len() + 8
     );
+    let measurement = view.measurement_evidence(80, 1024 * 1024).unwrap();
+    assert_eq!(measurement.root(), view.measurement_reference());
+    assert_eq!(measurement.objects().len(), evidence.objects().len() + 4);
+    assert!(view.measurement_evidence(0, 1024 * 1024).is_err());
+    assert!(view.measurement_evidence(80, 1).is_err());
+    let root = measurement
+        .objects()
+        .iter()
+        .find(|object| object.reference() == measurement.root())
+        .unwrap();
+    assert!(
+        root.dependencies()
+            .contains(view.consumption_relation_reference())
+    );
+    for object in measurement.objects() {
+        object.reference().verify(object.bytes()).unwrap();
+        for dependency in object.dependencies() {
+            assert!(
+                measurement.external_dependencies().contains(dependency)
+                    || measurement
+                        .objects()
+                        .iter()
+                        .any(|body| body.reference() == dependency)
+            );
+        }
+    }
+    assert_eq!(view.native_receipt(), &original);
     let source_proof = &view.input_batch().events[0].provenance_ref;
     assert!(evidence.external_dependencies().contains(source_proof));
     assert!(

@@ -201,10 +201,16 @@ pub(super) fn window(
         || request.batch_sequence != view.input.batch_sequence
         || request.batch_hash != view.input.identity()?
         || request.input_epoch != view.input.input_epoch
+        || request.extensions != view.input.extensions
     {
         return Err(ProviderError::Correlation(
             "lineage original input custody differs",
         ));
+    }
+    if let Some(definition) = source.profile.input_lineage_definition() {
+        definition.input_inventory_reference(&view.input.extensions)?;
+    } else if !view.input.extensions.is_empty() {
+        return Err(invalid());
     }
     let custody: ControlReceipt = validated(source, &accepted.custody_receipt)?;
     control(

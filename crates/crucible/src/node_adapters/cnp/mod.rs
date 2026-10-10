@@ -26,7 +26,9 @@ mod readiness;
 mod windows;
 
 pub use control::CnpControlledReference;
-pub use lineage::{OriginalRuntimeLineage, with_original_runtime_lineage};
+pub use lineage::{
+    OriginalRuntimeLineage, with_completed_runtime_lineage, with_original_runtime_lineage,
+};
 pub use preparation::{CnpPreparationFailure, CnpReferencePreparation, CnpReferenceQualification};
 pub use process::{CnpLaunchFailure, CnpLaunchGuard, CnpPeerCustody, CnpProcessCustodySlot};
 
@@ -46,3 +48,10 @@ pub use lifecycle_resend::{
 };
 
 pub use original_conflict::CnpOriginalConflictQualification;
+
+mod lineage_reader;
+
+pub use lineage_reader::{
+    LineageControlledReference, LineagePreparationFailure, LineageReferenceQualification,
+    LineageRuntimeCustody, LineageRuntimeCustodySlot,
+};

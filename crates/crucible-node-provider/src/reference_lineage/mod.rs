@@ -9,6 +9,8 @@ mod child;
 mod custody;
 mod driver;
 mod execution;
+mod input_contract;
+mod input_inventory;
 mod journal;
 mod kernel;
 mod physical_observation;
@@ -35,3 +37,10 @@ pub use relation::{ConsumptionEvidence, ConsumptionRelationCredit, NativeConsump
 
 #[cfg(test)]
 mod tests;
+
+pub use input_inventory::{
+    INPUT_LINEAGE_IDENTIFIER, INPUT_LINEAGE_MEDIA_TYPE, InputLineageEntry, InputLineageInventory,
+    InputLineageProducer, InputLineageRow,
+};
+
+pub use input_contract::{INPUT_LINEAGE_FEATURE, InputLineageDefinition};

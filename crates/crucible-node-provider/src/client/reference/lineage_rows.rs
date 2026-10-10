@@ -39,7 +39,7 @@ impl OriginalLineageObject<'_> {
     }
 }
 
-/// Borrows a finite native relation inventory and its unresolved external edges.
+/// Borrows a finite selected lineage inventory and its unresolved external edges.
 ///
 /// Its private construction starts from actual cached Realize/Input/Begin and
 /// native Close agreement. It cannot be imported from serialized relation data.
@@ -52,12 +52,12 @@ pub struct OriginalLineageEvidence<'a> {
 }
 
 impl OriginalLineageEvidence<'_> {
-    /// Returns the exact selected consumption relation root.
+    /// Returns the exact selected relation or public measurement root.
     pub fn root(&self) -> &ContentRef {
         &self.root
     }
 
-    /// Borrows every locally owned native relation body and its exact row.
+    /// Borrows every locally owned selected body and its exact row.
     pub fn objects(&self) -> &[OriginalLineageObject<'_>] {
         &self.objects
     }
@@ -100,14 +100,18 @@ impl OriginalLineageWindow<'_> {
         let mut rows = Vec::new();
         rows.try_reserve_exact(relation.entries.len() + 8)
             .map_err(|_| credit())?;
-        rows.push((
-            relation.input_batch.clone(),
-            relation
-                .entries
-                .iter()
-                .map(|entry| entry.original_event.clone())
-                .collect(),
-        ));
+        let mut input_dependencies = relation
+            .entries
+            .iter()
+            .map(|entry| entry.original_event.clone())
+            .collect::<Vec<_>>();
+        if let Some(definition) = self.controller.profile.input_lineage_definition() {
+            // The selected accepted batch retains its manifest as an explicit
+            // external edge. This getter cannot authenticate uploaded foreign
+            // rows or reinterpret the manifest as a dependency leaf.
+            input_dependencies.push(definition.input_inventory_reference(&self.input.extensions)?);
+        }
+        rows.push((relation.input_batch.clone(), input_dependencies));
         rows.push((
             relation.native_stage.clone(),
             std::iter::once(relation.input_batch.clone())
@@ -145,7 +149,7 @@ impl OriginalLineageWindow<'_> {
     }
 }
 
-fn collect<'a>(
+pub(super) fn collect<'a>(
     controller: &'a ReferenceController,
     root: ContentRef,
     rows: Vec<(ContentRef, Vec<ContentRef>)>,

@@ -1296,6 +1296,41 @@ committed `596e83bf03` Root/Initial checkpoint, yielding
 `sxpz7dn0fmm1myljgd9j1vpvi9478xfz-aos-test-targets-0.1.0`. That source-specific
 result supplies no subsequent cold-condition or extraction compilation credit.
 
+## Original input lineage and installed reader
+
+The common runtime retains complete original publication bodies, producer
+permissions and consumer input acknowledgements. Source-local FIFO and duplicate
+typed body roles remain distinct. Bounded closure validation checks the original
+source before and after inspection; missing bodies, cycles, foreign scope,
+changed owner epochs and exhausted credits refuse before consumer execution.
+Legacy adapters retain their existing input route. Lineage-bearing capture
+refuses until its complete preservation implementation is available.
+
+A distinct installed candidate exercises three native rolling-checksum peers
+through the common runtime: Source, Link and Disk. Nine actual windows and four
+deliveries preserve original request/reply bytes, cumulative consumption
+relations and cached native acknowledgements. Six complete initial/retired
+journals remain local. Retirement persists every original journal, reclaims all
+three capsules and releases the world reservation. Disk is a checksum peer;
+this test does not exercise Block or 9p device I/O.
+
+Current-source central checks pass 24 provider models, 15 core models, three
+graph cases, the installed native case, the namespace refusal case and 37
+source-hygiene cases. All three affected crates pass repository all-target
+strict checks. The initial strict failure identified fixture panic annotations
+missing from the source; a documented allowance now applies only to that
+`cfg(test)` module and its children. The earlier private command's broader
+allowances supply no equivalent strict credit. Original failures are retained.
+All 8,608 source leaves are verified before and after the functional checks;
+seven actual test/scanner executables and complete native evidence are retained
+outside Git. A separate presentation successor addresses declaration spacing,
+module ordering and exact owned metadata.
+
+These results supply the installed input-lineage mechanism evidence. They do
+not qualify ordinary selection, accepted classes, Ready, source-gone restore,
+physical ingress capture, CutoffFold bodies, Tape2 recording/replay or Linux
+performance.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

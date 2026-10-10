@@ -173,6 +173,7 @@ pub(super) struct Resources {
     pub(super) verified: BTreeMap<String, VerifiedTransfer>,
     pub(super) pins: Vec<OperationContentPin>,
     pub(super) input: Option<InputBatch>,
+    pub(super) lineage_input_rows: Option<super::input_reader_rows::InputReaderRows>,
     pub(super) input_bytes: Vec<u8>,
     pub(super) input_custody: Option<ContentRef>,
     pub(super) next_quantum: U64,

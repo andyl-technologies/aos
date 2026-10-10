@@ -15,7 +15,9 @@ use crucible_node_provider::{
 };
 
 use crate::{
-    node_contract::{OperationAdmission, OperationRequest},
+    node_contract::{
+        OperationAdmission, OperationRequest, OriginalCompletedOperation, ProgressEvidence,
+    },
     node_scheduling::RuntimeInputBatch,
 };
 
@@ -193,4 +195,66 @@ fn validate_input(
 
 fn invalid() -> ProviderError {
     ProviderError::Correlation("original runtime lineage/source association differs")
+}
+
+/// Pairs an actual runtime-retained completion with its owning native source window.
+///
+/// The runtime view selects the original accepted terminal outcome, rather than
+/// accepting a caller-provided observation DTO. Native source/kernel custody and
+/// the installed adopter remain mandatory. Cumulative input ancestry does not
+/// supply same-time scalar causal parents or current readiness.
+///
+/// # Errors
+/// Refuses a nonquantized completion or changed original operation, output,
+/// measurement proof, payload bytes, source endpoint, publication or native FIFO.
+/// Original input/native range checks and installed callback refusals propagate.
+pub fn with_completed_runtime_lineage<T>(
+    guard: &LineageSourceGuard,
+    requests: LineageWindowRequests<'_>,
+    completed: &OriginalCompletedOperation<'_>,
+    adopt: impl FnOnce(OriginalRuntimeLineage<'_>) -> Result<T, ProviderError>,
+) -> Result<T, ProviderError> {
+    with_original_runtime_lineage(guard, requests, completed.admission(), |original| {
+        let outcome = completed.outcome();
+        let source = original.source();
+        let ProgressEvidence::Quantized {
+            window,
+            publication,
+            ..
+        } = &outcome.progress
+        else {
+            return Err(invalid());
+        };
+        let scheduling = outcome.scheduling.as_ref().ok_or_else(invalid)?;
+        let [event] = source.observation().events.as_slice() else {
+            return Err(invalid());
+        };
+        let [native] = scheduling.publications.as_slice() else {
+            return Err(invalid());
+        };
+        if outcome.operation != *original.operation().token().operation()
+            || outcome.node != original.operation().token().route().node
+            || outcome.owners != original.operation().token().route().owners
+            || window != &source.native_receipt().grant.window_id
+            || publication != &source.native_receipt().grant.publication
+            || scheduling.proof_ref != *source.measurement_reference()
+            || scheduling.node != outcome.node
+            || scheduling.owners != outcome.owners
+            || native.publication_id != event.id
+            || native.endpoint != event.source
+            || native.native_sequence != event.source_sequence
+            || native.publication != event.publication_position
+            || native.payload != event.payload
+            || !native.causal_parents.is_empty()
+            || !event.causal_parent_ids.is_empty()
+            || outcome.retained_outputs != [native.publication_id.clone()]
+        {
+            return Err(invalid());
+        }
+        native.payload.verify(&native.payload_bytes)?;
+        if guard.content(&event.payload)? != native.payload_bytes {
+            return Err(invalid());
+        }
+        adopt(original)
+    })
 }

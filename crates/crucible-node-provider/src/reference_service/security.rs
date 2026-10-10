@@ -15,12 +15,14 @@ use crate::reference_device::DeviceStatus;
 
 use super::resources::Resources;
 
-pub(super) struct SchemaVerifier;
+pub(super) struct SchemaVerifier {
+    pub(super) reader: Option<crate::reference_lineage::InputLineageDefinition>,
+}
 
 impl BodySchemaVerifier for SchemaVerifier {
     fn verify(
         &self,
-        _: &ConnectionAuthority,
+        authority: &ConnectionAuthority,
         envelope: &Envelope,
         body: &ReceivedBody,
     ) -> Result<(), ProviderError> {
@@ -57,6 +59,21 @@ impl BodySchemaVerifier for SchemaVerifier {
             },
             ReceivedBody::Notification(notification) => &notification.extensions,
         };
+        if let (Some(definition), ReceivedBody::Request(request)) = (&self.reader, body)
+            && let bodies::RequestBody::Input(_) = request.as_ref()
+        {
+            if !authority
+                .selected_features()
+                .iter()
+                .any(|feature| feature.as_str() == crate::reference_lineage::INPUT_LINEAGE_FEATURE)
+            {
+                return Err(ProviderError::Correlation(
+                    "lineage input reader feature was not negotiated",
+                ));
+            }
+            super::input_reader::inventory_reference(definition, extensions)?;
+            return Ok(());
+        }
         if !extensions.is_empty() {
             return Err(ProviderError::Frame(
                 "reference body extensions unsupported",
@@ -260,7 +277,13 @@ impl NativeInputVerifier<Resources> for NativeVerifier {
                 "lineage original input event slots",
             ));
         }
-        if resources.profile.is_lineage() {
+        if resources.profile.input_lineage_definition().is_some() {
+            super::input_reader::validate_original_input(
+                resources,
+                batch,
+                original.owner_generation,
+            )?;
+        } else if resources.profile.is_lineage() {
             let original_parents: Vec<_> = batch
                 .events
                 .iter()
@@ -309,6 +332,15 @@ impl NativeInputVerifier<Resources> for NativeVerifier {
         resources: &mut Resources,
         batch: &InputBatch,
     ) -> Result<InputResult, ProviderError> {
+        let inventory = if resources.profile.input_lineage_definition().is_some() {
+            Some(super::input_reader::validate_original_input(
+                resources,
+                batch,
+                resources.bootstrap.authority.owner_generation,
+            )?)
+        } else {
+            None
+        };
         let schema = resources
             .profile
             .descriptor
@@ -336,6 +368,15 @@ impl NativeInputVerifier<Resources> for NativeVerifier {
             } else {
                 bytes.extend_from_slice(resources.content(&event.payload)?);
             }
+        }
+        if let Some((reference, inventory)) = inventory {
+            resources
+                .lineage_input_rows
+                .as_mut()
+                .ok_or(ProviderError::Correlation(
+                    "selected lineage row custody absent",
+                ))?
+                .retain(reference, &inventory)?;
         }
         resources.input = Some(batch.clone());
         resources.input_bytes = bytes;

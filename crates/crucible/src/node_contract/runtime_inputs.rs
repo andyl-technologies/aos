@@ -10,6 +10,7 @@ use crate::node_scheduling::{
 pub(super) struct RetainedInput {
     pub(super) batch: RuntimeInputBatch,
     pub(super) provenance: Option<InputProvenanceClosure>,
+    pub(super) lineage: Option<OriginalInputLineage>,
     pub(super) acknowledgement: Option<NativeInputAcknowledgement>,
     pub(super) failure: Option<OperationFailure>,
     pub(super) committed: bool,
@@ -37,7 +38,7 @@ impl NodeRuntime {
                 RuntimeError::OutstandingObligations,
             ));
         }
-        let checked = (|| -> Result<(NodeRoute, OperationToken, Option<InputProvenanceClosure>), RuntimePollFailure> {
+        let checked = (|| -> Result<(NodeRoute, OperationToken, Option<InputProvenanceClosure>, Option<OriginalInputLineage>), RuntimePollFailure> {
             self.validate_activation(batch.activation())
                 .map_err(RuntimePollFailure::Admission)?;
             if self.operations.contains_key(batch.stage_operation())
@@ -75,9 +76,13 @@ impl NodeRuntime {
                 route: route.clone(),
             };
             let provenance = self.prepare_input_provenance(&batch)?;
-            Ok((route, token, provenance))
+            let lineage = self.prepare_original_input_lineage(&batch)?;
+            if lineage.is_some() && provenance.is_none() {
+                return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
+            }
+            Ok((route, token, provenance, lineage))
         })();
-        let (route, token, provenance) = match checked {
+        let (route, token, provenance, lineage) = match checked {
             Ok(checked) => checked,
             Err(error) => {
                 if let Some(scheduler) = &mut self.scheduler {
@@ -99,6 +104,7 @@ impl NodeRuntime {
             RetainedInput {
                 batch,
                 provenance,
+                lineage,
                 acknowledgement: None,
                 failure: None,
                 committed: false,
@@ -110,9 +116,18 @@ impl NodeRuntime {
             self.nodes.get_mut(&route.node),
             self.input_batches.get(&operation),
         ) {
-            (Some(node), Some(retained)) => match &retained.provenance {
-                Some(provenance) => node.stage_inputs_with_provenance(&retained.batch, provenance),
-                None => node.stage_inputs(&retained.batch),
+            (Some(node), Some(retained)) => match (&retained.provenance, &retained.lineage) {
+                (Some(provenance), Some(lineage)) => {
+                    node.stage_inputs_with_original_lineage(&retained.batch, provenance, lineage)
+                }
+                (None, Some(_)) => Err(OperationFailure {
+                    effects: EffectKnowledge::None,
+                    reason: "original lineage omitted provenance".into(),
+                }),
+                (Some(provenance), None) => {
+                    node.stage_inputs_with_provenance(&retained.batch, provenance)
+                }
+                (None, None) => node.stage_inputs(&retained.batch),
             },
             _ => Err(OperationFailure {
                 effects: EffectKnowledge::Unknown,

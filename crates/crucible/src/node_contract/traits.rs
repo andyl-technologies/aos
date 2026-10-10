@@ -430,6 +430,68 @@ pub trait SimulationNode {
         })
     }
 
+    /// Reports whether the selected consumer requires original producer associations.
+    fn requires_original_input_lineage(
+        &self,
+        _batch: &crate::node_scheduling::RuntimeInputBatch,
+    ) -> bool {
+        false
+    }
+
+    /// Reads selected original producer rows beneath actual terminal custody.
+    ///
+    /// The returned claim is inert until the owning runtime checks its original
+    /// permission/publication and calls the independent native validator. All
+    /// supplied aggregate credits must be checked before body copies.
+    ///
+    /// # Errors
+    /// Refuses unsupported selection, foreign originals, missing rows or credit.
+    fn original_publication_lineage(
+        &self,
+        _original: &OperationAdmission,
+        _outcome: &OperationOutcome,
+        _publication: &crate::node_scheduling::NativePublication,
+        _limits: super::OriginalInputLineageLimits,
+    ) -> Result<super::OriginalPublicationClaim, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "original source publication lineage is unsupported".into(),
+        })
+    }
+
+    /// Validates every claimed body/row against the same original native source.
+    ///
+    /// # Errors
+    /// Refuses unsupported validation, changed source scope or incomplete rows.
+    fn validate_original_publication_lineage(
+        &self,
+        _original: &OperationAdmission,
+        _outcome: &OperationOutcome,
+        _publication: &crate::node_scheduling::NativePublication,
+        _claim: &super::OriginalPublicationClaim,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "original source lineage validation is unsupported".into(),
+        })
+    }
+
+    /// Stages only an exact runtime-sealed ordered original input association.
+    ///
+    /// # Errors
+    /// Refuses unsupported input, changed scope or uncertain native staging.
+    fn stage_inputs_with_original_lineage(
+        &mut self,
+        _batch: &crate::node_scheduling::RuntimeInputBatch,
+        _provenance: &super::InputProvenanceClosure,
+        _lineage: &super::OriginalInputLineage,
+    ) -> Result<crate::node_scheduling::NativeInputAcknowledgement, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "staging with original source lineage is unsupported".into(),
+        })
+    }
+
     /// Authenticates native custody of the unchanged complete staged input batch.
     ///
     /// # Errors

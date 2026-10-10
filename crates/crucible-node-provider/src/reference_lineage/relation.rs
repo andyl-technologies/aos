@@ -67,6 +67,27 @@ impl ConsumptionRelationCredit {
     /// Refuses malformed stages, excessive entries, serialization limits, or
     /// unavailable allocation credit before any native effect is permitted.
     pub fn reserve(stage: &LineageStage, original_bytes: &[u8]) -> Result<Self, ProviderError> {
+        Self::reserve_inner(stage, original_bytes, None)
+    }
+
+    /// Reserves exact original input copying for the separately selected reader.
+    ///
+    /// # Errors
+    /// Refuses changed original selection/frame/scope or finite body/slot credit
+    /// before native Stage or activation. Installation remains independently required.
+    pub fn reserve_reader(
+        stage: &LineageStage,
+        original_bytes: &[u8],
+        definition: &super::InputLineageDefinition,
+    ) -> Result<Self, ProviderError> {
+        Self::reserve_inner(stage, original_bytes, Some(definition))
+    }
+
+    fn reserve_inner(
+        stage: &LineageStage,
+        original_bytes: &[u8],
+        input_reader: Option<&super::InputLineageDefinition>,
+    ) -> Result<Self, ProviderError> {
         if original_bytes.is_empty() || original_bytes.len() > MAX_FRAME_BYTES {
             return Err(ProviderError::ResourceExhausted(
                 "consumption original input frame",
@@ -82,7 +103,7 @@ impl ConsumptionRelationCredit {
         }
         let input: InputBatch = serde_json::from_value(value)
             .map_err(|_| ProviderError::Frame("consumption original input format"))?;
-        super::association::validate_original_batch(&input, stage)?;
+        super::association::validate_original_batch_selected(&input, stage, input_reader)?;
         let count = stage
             .entries
             .len()
@@ -317,11 +338,14 @@ impl NativeConsumptionRelation {
         let relation = credit.retain_bytes(&bytes, RELATION_MEDIA)?;
         // These rows come from the actual selected native and original input
         // codecs, not a scan of arbitrary payload bytes or hash-only aliases.
-        let input_dependencies: Vec<_> = record
+        let mut input_dependencies: Vec<_> = record
             .entries
             .iter()
             .map(|entry| entry.original_event.clone())
             .collect();
+        if let Some(manifest) = native.input_manifest()? {
+            input_dependencies.push(manifest);
+        }
         let stage_dependencies = std::iter::once(record.input_batch.clone())
             .chain(stage.entries.iter().map(|entry| entry.payload.clone()))
             .collect();

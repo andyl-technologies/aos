@@ -73,6 +73,7 @@ pub struct NativeConsumedBatch<'a> {
     receipt: &'a NativeLineageReceipt,
     predecessor: Option<&'a NativeLineageWindow>,
     command: &'a NativeCommandRecord,
+    input_reader: Option<&'a super::InputLineageDefinition>,
 }
 
 impl NativeConsumedBatch<'_> {
@@ -155,6 +156,32 @@ impl NativeLineageDevice {
         receipt: &NativeLineageReceipt,
         original_bytes: &'a [u8],
     ) -> Result<NativeConsumedBatch<'a>, ProviderError> {
+        self.associate_consumption_inner(receipt, original_bytes, None)
+    }
+
+    /// Borrows original native consumption under an exact separately selected input definition.
+    ///
+    /// The owning source has already authenticated the original accepted input
+    /// cut. Definition data permits no source class or native readiness itself.
+    ///
+    /// # Errors
+    /// Refuses missing original native closure, changed batch/selection or byte
+    /// geometry, unknown command custody and every legacy association failure.
+    pub fn associate_reader_consumption<'a>(
+        &'a self,
+        receipt: &NativeLineageReceipt,
+        original_bytes: &'a [u8],
+        definition: &'a super::InputLineageDefinition,
+    ) -> Result<NativeConsumedBatch<'a>, ProviderError> {
+        self.associate_consumption_inner(receipt, original_bytes, Some(definition))
+    }
+
+    fn associate_consumption_inner<'a>(
+        &'a self,
+        receipt: &NativeLineageReceipt,
+        original_bytes: &'a [u8],
+        input_reader: Option<&'a super::InputLineageDefinition>,
+    ) -> Result<NativeConsumedBatch<'a>, ProviderError> {
         if original_bytes.is_empty() || original_bytes.len() > MAX_FRAME_BYTES {
             return Err(ProviderError::ResourceExhausted(
                 "native lineage original public batch",
@@ -191,7 +218,12 @@ impl NativeLineageDevice {
         }
         let original: InputBatch = serde_json::from_value(value)
             .map_err(|_| ProviderError::Frame("original public input batch format changed"))?;
-        validate_original_batch(&original, window.stage())?;
+        match input_reader {
+            Some(definition) => {
+                validate_original_batch_selected(&original, window.stage(), Some(definition))?
+            }
+            None => validate_original_batch(&original, window.stage())?,
+        }
         Ok(NativeConsumedBatch {
             original,
             origin: self.origin()?,
@@ -200,6 +232,7 @@ impl NativeLineageDevice {
             receipt,
             predecessor,
             command,
+            input_reader,
         })
     }
 }
@@ -221,6 +254,37 @@ impl super::LineageStage {
         original_bytes: &[u8],
         payloads: &[&[u8]],
     ) -> Result<Self, ProviderError> {
+        Self::from_input_batch_inner(grant, original_batch, original_bytes, payloads, None)
+    }
+
+    /// Freezes the unchanged extended input bytes under an exact selected reader.
+    ///
+    /// # Errors
+    /// Refuses changed selection or any original frame, scope, payload, ordered
+    /// range or finite input credit failure. This data builder issues no authority.
+    pub fn from_reader_input_batch(
+        grant: crate::reference_device::DeviceGrant,
+        original_batch: ContentRef,
+        original_bytes: &[u8],
+        payloads: &[&[u8]],
+        definition: &super::InputLineageDefinition,
+    ) -> Result<Self, ProviderError> {
+        Self::from_input_batch_inner(
+            grant,
+            original_batch,
+            original_bytes,
+            payloads,
+            Some(definition),
+        )
+    }
+
+    fn from_input_batch_inner(
+        grant: crate::reference_device::DeviceGrant,
+        original_batch: ContentRef,
+        original_bytes: &[u8],
+        payloads: &[&[u8]],
+        input_reader: Option<&super::InputLineageDefinition>,
+    ) -> Result<Self, ProviderError> {
         if original_bytes.is_empty() || original_bytes.len() > MAX_FRAME_BYTES {
             return Err(ProviderError::ResourceExhausted(
                 "native lineage original batch frame",
@@ -238,7 +302,6 @@ impl super::LineageStage {
         batch.validate()?;
         if batch.execution_owner_id != grant.owner_id
             || batch.batch_id != grant.input_batch_id
-            || !batch.extensions.is_empty()
             || batch.events.len() != payloads.len()
             || payloads.len() > super::protocol::MAX_ENTRIES
         {
@@ -246,6 +309,7 @@ impl super::LineageStage {
                 "native stage differs from original public batch scope",
             ));
         }
+        validate_input_selection(&batch, input_reader)?;
         super::protocol::validate_grant(&grant)?;
         let mut bytes = 0_usize;
         for (event, payload) in batch.events.iter().zip(payloads) {
@@ -297,11 +361,19 @@ pub(super) fn validate_original_batch(
     batch: &InputBatch,
     stage: &super::LineageStage,
 ) -> Result<(), ProviderError> {
+    validate_original_batch_selected(batch, stage, None)
+}
+
+pub(super) fn validate_original_batch_selected(
+    batch: &InputBatch,
+    stage: &super::LineageStage,
+    input_reader: Option<&super::InputLineageDefinition>,
+) -> Result<(), ProviderError> {
+    validate_input_selection(batch, input_reader)?;
     batch.validate()?;
     if batch.execution_owner_id != stage.grant.owner_id
         || batch.batch_id != stage.grant.input_batch_id
         || batch.events.len() != stage.entries.len()
-        || !batch.extensions.is_empty()
     {
         return Err(ProviderError::Correlation(
             "native consumption changed original public batch scope",
@@ -315,6 +387,32 @@ pub(super) fn validate_original_batch(
         }
     }
     Ok(())
+}
+
+fn validate_input_selection(
+    batch: &InputBatch,
+    definition: Option<&super::InputLineageDefinition>,
+) -> Result<(), ProviderError> {
+    match definition {
+        Some(definition) => {
+            definition.input_inventory_reference(&batch.extensions)?;
+        }
+        None if !batch.extensions.is_empty() => {
+            return Err(ProviderError::Correlation(
+                "legacy native lineage batch extensions unsupported",
+            ));
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+impl NativeConsumedBatch<'_> {
+    pub(super) fn input_manifest(&self) -> Result<Option<ContentRef>, ProviderError> {
+        self.input_reader
+            .map(|definition| definition.input_inventory_reference(&self.original.extensions))
+            .transpose()
+    }
 }
 
 #[cfg(test)]

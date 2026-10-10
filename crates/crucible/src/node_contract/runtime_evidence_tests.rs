@@ -161,3 +161,51 @@ fn quarantined_original_domain_blocks_distinct_writer_after_old_ack() {
     assert_eq!(states[1].borrow().quarantine_calls, 1);
     assert_eq!(states[1].borrow().begin_calls, 0);
 }
+
+#[test]
+fn original_completion_borrows_actual_permission_and_retained_ack_without_effects() {
+    let (mut runtime, state, token, _) = completed_evidence();
+    let cached = match poll(&mut runtime, &token) {
+        Poll::Ready(Ok(outcome)) => outcome,
+        other => panic!("completed fixture lost original outcome: {other:?}"),
+    };
+    {
+        let original = runtime.original_completed_operation(&token).unwrap();
+        assert_eq!(original.admission().token().operation(), token.operation());
+        assert_eq!(original.outcome(), &cached);
+        assert!(!original.acknowledged());
+    }
+
+    runtime.acknowledge(&token, &[]).unwrap();
+    let original = runtime.original_completed_operation(&token).unwrap();
+    assert_eq!(original.outcome(), &cached);
+    assert!(original.acknowledged());
+    assert_eq!(state.borrow().evidence_reads, 0);
+    assert_eq!(state.borrow().begin_calls, 1);
+    assert_eq!(state.borrow().close_calls, 1);
+    assert_eq!(state.borrow().ack_calls, 1);
+}
+
+#[test]
+fn original_completion_refuses_foreign_and_pending_tokens_without_native_reads() {
+    let (mut runtime, states) = runtime(OperatingMode::Quantized);
+    let activation = activate(&mut runtime);
+    let pending = quantum(&mut runtime, &activation);
+    assert!(matches!(
+        runtime.original_completed_operation(&pending),
+        Err(RuntimeError::OutstandingObligations)
+    ));
+
+    let (mut other, _, token, _) = completed_evidence();
+    assert!(matches!(
+        runtime.original_completed_operation(&token),
+        Err(RuntimeError::ForeignAuthority)
+    ));
+    assert!(matches!(
+        other.original_completed_operation(&pending),
+        Err(RuntimeError::ForeignAuthority)
+    ));
+    assert_eq!(states[0].borrow().evidence_reads, 0);
+    assert_eq!(states[0].borrow().close_calls, 0);
+    assert_eq!(states[0].borrow().ack_calls, 0);
+}

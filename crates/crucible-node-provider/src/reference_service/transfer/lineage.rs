@@ -114,6 +114,37 @@ impl Walker<'_> {
             for dependency in object.dependencies() {
                 self.reference(dependency, depth + 1)?;
             }
+        } else if let Some(row) = self
+            .resources
+            .lineage_input_rows
+            .as_ref()
+            .and_then(|registry| registry.row(reference))
+        {
+            // The selected dynamic reader checked this original accepted cut
+            // before staging. Its typed direct row never becomes a guessed leaf.
+            for dependency in &row.dependencies {
+                self.reference(dependency, depth + 1)?;
+            }
+        } else if reference.media_type == crate::reference_lineage::INPUT_LINEAGE_MEDIA_TYPE
+            && self
+                .resources
+                .lineage_input_rows
+                .as_ref()
+                .is_some_and(|registry| registry.is_original_manifest(reference))
+        {
+            let inventory: crate::reference_lineage::InputLineageInventory =
+                canonical::decode(bytes, 16 * 1024 * 1024)?;
+            for entry in &inventory.entries {
+                for root in [
+                    &entry.delivered,
+                    &entry.published,
+                    &entry.producer.observation_batch,
+                    &entry.producer.stop_receipt,
+                    &entry.producer.measurement,
+                ] {
+                    self.reference(root, depth + 1)?;
+                }
+            }
         } else if matches!(
             reference.media_type.as_str(),
             "application/vnd.crucible.reference-consumption-relation+json"

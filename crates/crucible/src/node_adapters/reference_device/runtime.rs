@@ -125,7 +125,7 @@ impl<C: ControlledReference> SimulationNode for ControlledReferenceNode<C> {
         &mut self,
         batch: &RuntimeInputBatch,
     ) -> Result<NativeInputAcknowledgement, OperationFailure> {
-        self.stage_inputs_inner(batch, None)
+        self.stage_inputs_inner(batch, None, None)
     }
 
     fn requires_input_provenance(&self, batch: &RuntimeInputBatch) -> bool {
@@ -137,7 +137,62 @@ impl<C: ControlledReference> SimulationNode for ControlledReferenceNode<C> {
         batch: &RuntimeInputBatch,
         provenance: &crate::node_contract::InputProvenanceClosure,
     ) -> Result<NativeInputAcknowledgement, OperationFailure> {
-        self.stage_inputs_inner(batch, Some(provenance))
+        self.stage_inputs_inner(batch, Some(provenance), None)
+    }
+
+    fn requires_original_input_lineage(&self, batch: &RuntimeInputBatch) -> bool {
+        self.child.requires_original_input_lineage(batch)
+    }
+
+    fn original_publication_lineage(
+        &self,
+        original: &OperationAdmission,
+        outcome: &OperationOutcome,
+        publication: &crate::node_scheduling::NativePublication,
+        limits: crate::node_contract::OriginalInputLineageLimits,
+    ) -> Result<crate::node_contract::OriginalPublicationClaim, OperationFailure> {
+        let retained = self.original(original.token())?;
+        if retained.outcome.as_ref() != Some(outcome)
+            || outcome
+                .scheduling
+                .as_ref()
+                .is_none_or(|observation| !observation.publications.contains(publication))
+        {
+            return Err(no_effect(
+                "original publication changed retained completion",
+            ));
+        }
+        self.child
+            .original_publication_lineage(original, outcome, publication, limits)
+    }
+
+    fn validate_original_publication_lineage(
+        &self,
+        original: &OperationAdmission,
+        outcome: &OperationOutcome,
+        publication: &crate::node_scheduling::NativePublication,
+        claim: &crate::node_contract::OriginalPublicationClaim,
+    ) -> Result<(), OperationFailure> {
+        let retained = self.original(original.token())?;
+        if retained.outcome.as_ref() != Some(outcome)
+            || outcome
+                .scheduling
+                .as_ref()
+                .is_none_or(|observation| !observation.publications.contains(publication))
+        {
+            return Err(no_effect("original lineage changed retained completion"));
+        }
+        self.child
+            .validate_original_publication_lineage(original, outcome, publication, claim)
+    }
+
+    fn stage_inputs_with_original_lineage(
+        &mut self,
+        batch: &RuntimeInputBatch,
+        provenance: &crate::node_contract::InputProvenanceClosure,
+        lineage: &crate::node_contract::OriginalInputLineage,
+    ) -> Result<NativeInputAcknowledgement, OperationFailure> {
+        self.stage_inputs_inner(batch, Some(provenance), Some(lineage))
     }
 
     fn validate_input_acknowledgement(
@@ -321,11 +376,14 @@ impl<C: ControlledReference> SimulationNode for ControlledReferenceNode<C> {
                 )?;
                 let pending_inventory = canonical::content_ref(&pending, "application/json")
                     .map_err(|error| native_failure(&error.to_string()))?;
+                let original_proof = self.completion_proof(&receipt)?;
+                if original_proof.reference != proof {
+                    return Err(native_failure(
+                        "original completion proof changed during closure",
+                    ));
+                }
                 let mut evidence = vec![
-                    InputPayload {
-                        reference: proof.clone(),
-                        bytes: json_bytes(&receipt)?,
-                    },
+                    original_proof,
                     InputPayload {
                         reference: output_inventory.clone(),
                         bytes: output_bytes,
@@ -870,6 +928,7 @@ impl<C: ControlledReference> ControlledReferenceNode<C> {
         &mut self,
         batch: &RuntimeInputBatch,
         provenance: Option<&crate::node_contract::InputProvenanceClosure>,
+        lineage: Option<&crate::node_contract::OriginalInputLineage>,
     ) -> Result<NativeInputAcknowledgement, OperationFailure> {
         if !self.same_world(batch.activation())
             || batch.node() != &self.route.node
@@ -953,11 +1012,17 @@ impl<C: ControlledReference> ControlledReferenceNode<C> {
             },
         };
         self.reserve_boundary_evidence(&fallback)?;
-        let public_acknowledgement = match provenance {
-            Some(provenance) => self
+        let public_acknowledgement = match (provenance, lineage) {
+            (Some(provenance), Some(lineage)) => self
+                .child
+                .stage_runtime_inputs_with_original_lineage(batch, provenance, lineage)?,
+            (None, Some(_)) => {
+                return Err(no_effect("original input lineage omitted proof closure"));
+            }
+            (Some(provenance), None) => self
                 .child
                 .stage_runtime_inputs_with_provenance(batch, provenance)?,
-            None => self.child.stage_runtime_inputs(batch)?,
+            (None, None) => self.child.stage_runtime_inputs(batch)?,
         };
         if public_acknowledgement.is_none() {
             self.retain_boundary_evidence(batch.activation(), fallback)

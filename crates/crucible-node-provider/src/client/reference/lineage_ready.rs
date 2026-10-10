@@ -17,6 +17,20 @@ pub struct OriginalLineageRealization<'a> {
 }
 
 impl OriginalLineageRealization<'_> {
+    /// Borrows the exact installed profile retained by the owning controller.
+    ///
+    /// This metadata supplies no source qualification or current readiness.
+    pub fn profile(&self) -> &crate::reference_service::ReferenceProfile {
+        &self.controller.profile
+    }
+
+    /// Borrows the original private scope retained by the owning controller.
+    ///
+    /// The returned body cannot authorize a new realization or owner alias.
+    pub fn bootstrap(&self) -> &crate::reference_service::ReferenceServiceBootstrap {
+        &self.controller.bootstrap
+    }
+
     /// Returns the exact original sent Realize and its received complete response.
     pub fn original(&self) -> &ClientOriginal {
         self.original

@@ -96,6 +96,14 @@ impl NodeRuntime {
         capture_ordinal: U64,
         maximum_record_bytes: usize,
     ) -> Result<RuntimeSnapshot, RuntimeError> {
+        if self
+            .input_batches
+            .values()
+            .any(|input| input.lineage.is_some())
+        {
+            // No selected whole-runtime codec currently preserves original source associations.
+            return Err(RuntimeError::UnsupportedFacet);
+        }
         if !self.activated {
             return Err(RuntimeError::NotActivated);
         }

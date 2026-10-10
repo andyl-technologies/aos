@@ -391,3 +391,98 @@ fn actual_native_batch_association_retains_scoped_equal_ids_and_zero_entries() {
     assert_eq!(association.receipt(), &closed);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn selected_reader_stage_keeps_extended_original_bytes_and_legacy_refusal() {
+    let role = |value: &[u8]| canonical::content_ref(value, "application/json").unwrap();
+    let definition = crate::reference_lineage::InputLineageDefinition::build(
+        role(b"namespace"),
+        role(b"handler"),
+        role(b"Event"),
+        role(b"InputBatch"),
+        role(b"Stop"),
+    )
+    .unwrap();
+    let manifest = canonical::content_ref(
+        b"original manifest data",
+        crate::reference_lineage::INPUT_LINEAGE_MEDIA_TYPE,
+    )
+    .unwrap();
+    let mut original = batch();
+    original.extensions.insert(
+        crate::reference_lineage::INPUT_LINEAGE_IDENTIFIER.to_owned(),
+        serde_json::to_value(definition.input_application(manifest.clone()).unwrap()).unwrap(),
+    );
+    let raw = bytes(&original);
+    let reference = canonical::content_ref(&raw, "application/json").unwrap();
+    let grant = stage(0, &[]).grant;
+    assert!(
+        crate::reference_lineage::LineageStage::from_input_batch(
+            grant.clone(),
+            reference.clone(),
+            &raw,
+            &[b"same", b"", b"same"]
+        )
+        .is_err()
+    );
+    let selected = crate::reference_lineage::LineageStage::from_reader_input_batch(
+        grant,
+        reference.clone(),
+        &raw,
+        &[b"same", b"", b"same"],
+        &definition,
+    )
+    .unwrap();
+    assert_eq!(selected.original_batch, reference);
+    assert_eq!(selected.entries.len(), 3);
+    assert_eq!(selected.entries[1].byte_start, selected.entries[1].byte_end);
+    crate::reference_lineage::ConsumptionRelationCredit::reserve_reader(
+        &selected,
+        &raw,
+        &definition,
+    )
+    .unwrap();
+    assert!(crate::reference_lineage::ConsumptionRelationCredit::reserve(&selected, &raw).is_err());
+    assert_eq!(
+        definition
+            .input_inventory_reference(&original.extensions)
+            .unwrap(),
+        manifest
+    );
+}
+
+#[test]
+fn selected_reader_stage_rejects_changed_selection_before_native_execution() {
+    let role = |value: &[u8]| canonical::content_ref(value, "application/json").unwrap();
+    let definition = crate::reference_lineage::InputLineageDefinition::build(
+        role(b"namespace"),
+        role(b"handler"),
+        role(b"Event"),
+        role(b"InputBatch"),
+        role(b"Stop"),
+    )
+    .unwrap();
+    let manifest = canonical::content_ref(
+        b"original manifest data",
+        crate::reference_lineage::INPUT_LINEAGE_MEDIA_TYPE,
+    )
+    .unwrap();
+    let mut application = definition.input_application(manifest).unwrap();
+    application.selection.semantic_version.minor = U64::new(1);
+    let mut original = batch();
+    original.extensions.insert(
+        crate::reference_lineage::INPUT_LINEAGE_IDENTIFIER.to_owned(),
+        serde_json::to_value(application).unwrap(),
+    );
+    let raw = bytes(&original);
+    assert!(
+        crate::reference_lineage::LineageStage::from_reader_input_batch(
+            stage(0, &[]).grant,
+            canonical::content_ref(&raw, "application/json").unwrap(),
+            &raw,
+            &[b"same", b"", b"same"],
+            &definition
+        )
+        .is_err()
+    );
+}

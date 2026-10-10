@@ -132,6 +132,30 @@ fn cumulative_lineage_borrows_actual_preceding_public_ack_with_ordered_zero_byte
     let zero_payload = &view.input_batch().events[1].payload;
     assert!(evidence.external_dependencies().contains(zero_payload));
 
+    let measurement = view.measurement_evidence(80, 1024 * 1024).unwrap();
+    let root = measurement
+        .objects()
+        .iter()
+        .find(|object| object.reference() == measurement.root())
+        .unwrap();
+    assert!(root.dependencies().contains(&first_consumption));
+    assert!(
+        measurement
+            .external_dependencies()
+            .contains(&first_consumption)
+    );
+    assert!(
+        measurement
+            .external_dependencies()
+            .contains(&prior_native.identity().unwrap())
+    );
+    assert!(
+        !measurement
+            .objects()
+            .iter()
+            .any(|object| object.reference() == &first_consumption)
+    );
+
     assert_eq!(
         view.preceding_public_acknowledgement(),
         Some(&first_consumption)

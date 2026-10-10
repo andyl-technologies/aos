@@ -376,8 +376,7 @@ impl<C: ControlledReference> ControlledReferenceNode<C> {
         let payload_bytes = json_bytes(&receipt.output)?;
         let payload = canonical::content_ref(&payload_bytes, self.child.output_media_type())
             .map_err(|e| no_effect(&e.to_string()))?;
-        let proof = canonical::content_ref(&json_bytes(receipt)?, "application/json")
-            .map_err(|e| no_effect(&e.to_string()))?;
+        let proof = self.completion_proof(receipt)?.reference;
         let local_publication_id = Id::new(format!(
             "output/{}",
             canonical::hash(
@@ -421,13 +420,18 @@ impl<C: ControlledReference> ControlledReferenceNode<C> {
                 native_sequence,
                 publication: receipt.grant.publication,
                 evaluation: None,
-                causal_parents: input
-                    .deliveries()
-                    .iter()
-                    .map(|delivery| delivery.delivery)
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .into_iter()
-                    .collect(),
+                causal_parents: self
+                    .child
+                    .publication_causal_parents(receipt)?
+                    .unwrap_or_else(|| {
+                        input
+                            .deliveries()
+                            .iter()
+                            .map(|delivery| delivery.delivery)
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .into_iter()
+                            .collect()
+                    }),
                 payload,
                 payload_bytes,
             }],
@@ -446,6 +450,25 @@ impl<C: ControlledReference> ControlledReferenceNode<C> {
             }),
             proof_ref: proof,
         })
+    }
+
+    fn completion_proof(&self, receipt: &DeviceReceipt) -> Result<InputPayload, OperationFailure> {
+        if let Some(original) = self.child.completion_proof(receipt)? {
+            if original.bytes.len() > 1024 * 1024 {
+                return Err(native_failure(
+                    "selected original completion proof exceeds credit",
+                ));
+            }
+            original
+                .reference
+                .verify(&original.bytes)
+                .map_err(|error| native_failure(&error.to_string()))?;
+            return Ok(original);
+        }
+        let bytes = json_bytes(receipt)?;
+        let reference = canonical::content_ref(&bytes, "application/json")
+            .map_err(|error| native_failure(&error.to_string()))?;
+        Ok(InputPayload { reference, bytes })
     }
 }
 

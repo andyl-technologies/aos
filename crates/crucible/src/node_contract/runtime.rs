@@ -1147,6 +1147,11 @@ mod initial;
 #[path = "runtime_evidence.rs"]
 mod evidence;
 
+#[path = "runtime_original_completion.rs"]
+mod original_completion;
+
+pub use original_completion::OriginalCompletedOperation;
+
 #[path = "runtime_boundary_evidence.rs"]
 mod boundary_evidence;
 
@@ -1157,3 +1162,10 @@ pub use continuation::*;
 
 #[path = "runtime_condition_debug.rs"]
 mod condition_debug_runtime;
+
+#[path = "runtime_original_input_lineage.rs"]
+mod original_input_lineage;
+pub use original_input_lineage::{
+    OriginalInputLineage, OriginalInputLineageLimits, OriginalLineageRow, OriginalPublicationClaim,
+    OriginalPublicationOrigin,
+};

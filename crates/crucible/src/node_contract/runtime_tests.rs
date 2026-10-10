@@ -49,6 +49,12 @@ fn blob() -> ContentRef {
 #[derive(Default)]
 struct NativeState {
     terminal_failure: Option<EffectKnowledge>,
+    terminal_scheduling: Option<crate::node_scheduling::NativeSchedulingObservation>,
+    lineage_claim: Option<OriginalPublicationClaim>,
+    lineage_required: bool,
+    lineage_invalid: bool,
+    lineage_reads: usize,
+    lineage_validations: usize,
     arm_fail: bool,
     change_declarations_on_arm: bool,
     changed_declarations: bool,
@@ -117,6 +123,62 @@ impl SimulationNode for TestNode {
         } else {
             &self.facets
         }
+    }
+
+    fn requires_original_input_lineage(
+        &self,
+        _batch: &crate::node_scheduling::RuntimeInputBatch,
+    ) -> bool {
+        self.state.borrow().lineage_required
+    }
+
+    fn original_publication_lineage(
+        &self,
+        original: &OperationAdmission,
+        _outcome: &OperationOutcome,
+        _publication: &crate::node_scheduling::NativePublication,
+        _limits: OriginalInputLineageLimits,
+    ) -> Result<OriginalPublicationClaim, OperationFailure> {
+        let mut state = self.state.borrow_mut();
+        assert!(
+            state
+                .admission
+                .as_ref()
+                .unwrap()
+                .token()
+                .same_authority(original.token())
+        );
+        state.lineage_reads += 1;
+        state.lineage_claim.clone().ok_or(OperationFailure {
+            effects: EffectKnowledge::None,
+            reason: "model has no selected lineage".into(),
+        })
+    }
+
+    fn validate_original_publication_lineage(
+        &self,
+        original: &OperationAdmission,
+        _outcome: &OperationOutcome,
+        _publication: &crate::node_scheduling::NativePublication,
+        claim: &OriginalPublicationClaim,
+    ) -> Result<(), OperationFailure> {
+        let mut state = self.state.borrow_mut();
+        assert!(
+            state
+                .admission
+                .as_ref()
+                .unwrap()
+                .token()
+                .same_authority(original.token())
+        );
+        state.lineage_validations += 1;
+        if state.lineage_invalid || state.lineage_claim.as_ref() != Some(claim) {
+            return Err(OperationFailure {
+                effects: EffectKnowledge::None,
+                reason: "model rejected original source claim".into(),
+            });
+        }
+        Ok(())
     }
 
     fn status(&mut self) -> Result<NodeStatus, OperationFailure> {
@@ -377,7 +439,7 @@ impl SimulationNode for TestNode {
             owners: token.route().owners.clone(),
             progress: state.progress_override.clone().unwrap_or(progress),
             retained_outputs: state.retained_outputs.clone(),
-            scheduling: None,
+            scheduling: state.terminal_scheduling.clone(),
         }))
     }
 
@@ -1580,3 +1642,6 @@ pub(super) fn terminal_read_failure_fixture(
     native[0].borrow_mut().terminal_failure = Some(effects);
     (runtime, activation)
 }
+
+#[path = "runtime_original_input_lineage_models.rs"]
+mod original_lineage_models;

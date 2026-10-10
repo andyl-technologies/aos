@@ -273,6 +273,7 @@ impl PreparedRuntimeRestore {
                         .provenance
                         .clone()
                         .map(|saved| InputProvenanceClosure::restore_validated(activation, saved)),
+                    lineage: None,
                     acknowledgement,
                     failure: input.failure.clone(),
                     committed: input.committed,

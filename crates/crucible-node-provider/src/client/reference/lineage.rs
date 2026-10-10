@@ -19,6 +19,8 @@ use serde_json::{Value, json};
 
 #[path = "lineage_ack.rs"]
 mod acknowledgement;
+#[path = "lineage_measurement_rows.rs"]
+mod measurement_rows;
 #[path = "lineage_records.rs"]
 mod records;
 #[path = "lineage_rows.rs"]
@@ -95,6 +97,14 @@ impl OriginalLineageWindow<'_> {
     /// Returns the selected native stage and every original payload byte range.
     pub fn native_stage(&self) -> &LineageStage {
         &self.stage
+    }
+
+    /// Borrows the actual selected measurement's controlled-window receipt.
+    ///
+    /// This original received value remains distinct from its native ordered
+    /// consumption relation and obtains source authority only through installation.
+    pub fn controlled_receipt(&self) -> &crate::reference_device::DeviceReceipt {
+        &self.measurement.native
     }
 
     /// Returns the unchanged native closed receipt and preceding checksum state.
