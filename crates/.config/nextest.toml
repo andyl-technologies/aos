@@ -134,6 +134,15 @@ package(terrane) & (
 threads-required = "num-test-threads"
 slow-timeout = { period = "60s", terminate-after = 30 }
 
+# This composite rebuild case repairs five independent native populations and
+# verifies fresh reopen, fork, ordinary advance and corrupt-data refusal. Its
+# owning Nix execution passes in 443 seconds. Reserve the runner slots and a
+# finite fifteen minutes; original publication, token and bucket clocks remain.
+[[profile.default.overrides]]
+filter = 'package(terrane) & test(=guard::index_maintenance::tests::native_index_rebuild_recovers_divergent_and_missing_auxiliary_closures)'
+threads-required = "num-test-threads"
+slow-timeout = { period = "60s", terminate-after = 15 }
+
 # This integration test launches a matrix of nested offline Cargo checks. Its
 # bounded work is materially slower than an ordinary unit test when the full
 # workspace suite is running concurrently.
