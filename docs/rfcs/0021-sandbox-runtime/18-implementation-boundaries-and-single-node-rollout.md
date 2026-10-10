@@ -556,8 +556,25 @@ schemas, messages, version negotiation and assignment/watch/transfer models.
 reconciliation, transfer and coordinator transport. Shared identities and
 local ownership contracts remain below both crates.
 
+The first complete extracted Coordinator responsibility contains deterministic
+placement, ordered-watch producer/client handling and committed-lease protobuf
+projection. It depends on selected Domain local-control contracts; Domain has no
+dependency on this implementation. The former remote placement/watch modules
+and inherent intent/lease adapters are removed immediately. Selection owns the
+intent adapter, while a free converter borrows the actual committed lease.
+
+The retained canonical codec owns the six generated watch-data conversions once.
+Public structural cursor/event constructors, bounded body encoding and the exact
+capability-binding copy are explicit undeployed DATA API cutovers. They mint no
+authenticated bootstrap, carrier grant, current observation or ownership lease.
+Sealed producers, protected transport/store orchestration and their genuine
+custody remain Domain-owned. Separate explicit Coordinator test selection keeps
+the normal application/default-member feature graph unchanged. This cohort earns
+no deletion credit for relocation and does not complete Coordinator isolation,
+the protected authority boundary or runtime qualification.
+
 The application-level `multi-node` feature is off by default and uses optional
-dependencies. It is not enabled transitively by any local crate, default
+dependencies. It is not enabled transitively by any single-node role crate, default
 feature, local Nix package or system module. Coordinator services and settings
 require explicit selection. A source-only feature flag is not production
 qualification; remote capabilities remain unadvertised until the later phase.

@@ -872,8 +872,10 @@ impl NodeWatchEventV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`InvalidMultiNodeProtocol::InventoryNotCanonical`] when the
-    /// payload and cursor do not share one node boot.
+    /// Returns [`InvalidMultiNodeProtocol::NonCanonicalFrame`] when bounded
+    /// body encoding fails, or [`InvalidMultiNodeProtocol::InventoryNotCanonical`]
+    /// when payload and cursor name different node boots, a history sequence or
+    /// predecessor is zero, or the cursor UID differs from the canonical event.
     pub fn from_authenticated_history(
         cursor: NodeWatchCursorV1,
         predecessor_event_uid: ObjectDigest,

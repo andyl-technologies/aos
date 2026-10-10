@@ -5,7 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [features]
-# Selects reserved remote placement, transport and watch adapters explicitly.
+# Selects protected remote contracts and orchestration explicitly.
 # Local lease issuance and snapshot inventory remain available without it.
 multi-node = ["dep:aos-sandbox-coordinator-protocol"]
 # Compiles private fixed-helper mechanics without installing an authority caller.
