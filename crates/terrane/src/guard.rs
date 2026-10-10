@@ -12,6 +12,8 @@ mod attributes;
 pub(crate) mod cold_fork;
 #[cfg(feature = "std")]
 mod consumed;
+#[cfg(all(feature = "std", feature = "tokio", unix))]
+mod current_history;
 #[cfg(feature = "std")]
 pub(crate) use consumed::registration as consumed_registration;
 #[cfg(feature = "std")]

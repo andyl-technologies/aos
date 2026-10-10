@@ -32,6 +32,8 @@ use terrane_core::refs::RefRecord;
 
 #[cfg(unix)]
 mod cold;
+#[cfg(all(feature = "tokio", unix))]
+mod current;
 mod requalification;
 
 // Retaining the actual injected clock does not strengthen generic Clock bounds.
