@@ -23,7 +23,7 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, Verifying
 use sha2::{Digest as _, Sha256};
 
 use crate::controller::ControllerRequestScopeV1;
-use crate::controller_service::journal::production_journal_limits;
+use crate::journal::controller::production_journal_limits;
 use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
 use crate::reconciler::EffectPlan;
 use crate::{Journal, RecordNamespace};

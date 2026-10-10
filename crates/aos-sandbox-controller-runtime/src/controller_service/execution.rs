@@ -24,8 +24,12 @@ use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use aos_sandbox::controller_execution_spec_attempt::{
     ControllerExecutionSpecAttemptV1, load_controller_execution_spec_attempt_v1,
 };
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionKindV1,
+    PublicProjectionPlanV1,
+    PublicProjectionResourceV1,
+};
 use aos_sandbox::controller_service::public_projection::{
-    PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1,
 };
 use aos_sandbox::execution_guest_identity::read_execution_guest_identity_v1;

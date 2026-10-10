@@ -213,7 +213,7 @@ pub enum CreateQ04ErrorV1 {
     ControllerSource(#[from] super::CurrentCreatePolicySourceErrorV1),
     /// The canonical original Desired/public projection failed its sole decoder.
     #[error(transparent)]
-    Projection(#[from] crate::controller_service::public_projection::PublicProjectionError),
+    Projection(#[from] aos_sandbox_protocol::public_api::projection::PublicProjectionError),
     /// The sole deterministic compiler rejected the retained original input.
     #[error(transparent)]
     Compilation(#[from] aos_sandbox_policy::PolicyCompilationError),

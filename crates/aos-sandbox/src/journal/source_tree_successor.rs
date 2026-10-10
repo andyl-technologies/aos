@@ -1052,7 +1052,7 @@ pub(crate) fn require_capacity_owner(
                 Path::new("/var/lib/aos/sandboxd"),
                 "controller.journal",
                 location.expected_uid(),
-                crate::controller_service::journal::production_journal_limits(),
+                crate::journal::controller::production_journal_limits(),
             )
         }
         _ => Err(JournalError::ProtectedBoundary),

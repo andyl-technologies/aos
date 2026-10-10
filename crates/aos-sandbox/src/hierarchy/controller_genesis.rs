@@ -17,7 +17,7 @@ use super::genesis_profile::{
 use super::source_genesis::{
     HeldSourceTreeGenesisObservationV1, SourceTreeGenesisReceiptV1, SourceTreeGenesisStateV1,
 };
-use crate::controller_service::journal::production_journal_limits;
+use crate::journal::controller::production_journal_limits;
 use crate::journal::controller_source_genesis::{
     self as records, ControllerSourceGenesisTransition as Transition,
 };
@@ -783,7 +783,7 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
     // view. It neither releases the writer nor turns extent DATA into payment.
     pub(crate) fn q04_preparation_allocation_shape_v1(
         &self,
-    ) -> Result<crate::controller_resource_reservation::service_interval::JournalShape, SourceGenesisErrorV1> {
+    ) -> Result<crate::journal::JournalShape, SourceGenesisErrorV1> {
         self.recheck_current_admission()?;
         Ok(self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?
             .first_global_allocation_shape_v1()?)

@@ -26,8 +26,12 @@ use aos_sandbox_protocol::domain_ledger::project_admission_metadata::ProjectAdmi
 use sha2::{Digest as _, Sha256};
 
 use crate::controller::ControllerRequestScopeV1;
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionKindV1,
+    PublicProjectionRecordV1,
+    PublicProjectionResourceV1,
+};
 use crate::controller_service::public_projection::{
-    PublicProjectionKindV1, PublicProjectionRecordV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1,
 };
 use crate::journal::{
@@ -722,7 +726,7 @@ fn require_controller_writer(journal: &Journal) -> Result<(), JournalError> {
         std::path::Path::new("/var/lib/aos/sandboxd"),
         "controller.journal",
         uid,
-        crate::controller_service::journal::production_journal_limits(),
+        crate::journal::controller::production_journal_limits(),
     )
 }
 

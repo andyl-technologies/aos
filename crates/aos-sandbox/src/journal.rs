@@ -56,6 +56,18 @@ use aos_sandbox_journal::replay::{
 use aos_sandbox_journal::owner::{NativeJournal, NativeJournalState};
 use aos_sandbox_journal::transaction::{self, NativePendingTransaction};
 
+#[cfg(target_os = "linux")]
+pub mod controller;
+
+#[cfg(target_os = "linux")]
+pub(crate) struct JournalShape {
+    pub(crate) retained_bytes: usize,
+    pub(crate) cells: usize,
+    pub(crate) native_bytes: u64,
+    pub(crate) maximum_transaction_bytes: usize,
+    pub(crate) maximum_record_bytes: usize,
+}
+
 mod delete_batch;
 mod semantic_append;
 #[cfg(target_os = "linux")]
@@ -1339,7 +1351,7 @@ impl Journal {
     // DATA until the entered prefix joins the same original bank and writer.
     pub(crate) fn first_global_allocation_shape_v1(
         &self,
-    ) -> Result<crate::controller_resource_reservation::service_interval::JournalShape, JournalError> {
+    ) -> Result<crate::journal::JournalShape, JournalError> {
         self.ensure_healthy()?;
         let mut retained_bytes = 0_usize;
         for ((_, key), value) in self.native.state() {
@@ -1355,7 +1367,7 @@ impl Journal {
             .and_then(|count| count.checked_add(self.native.transaction_ids().len()))
             .and_then(|count| count.checked_add(self.native.committed_namespaces().len()))
             .ok_or(JournalError::JournalTooLarge)?;
-        Ok(crate::controller_resource_reservation::service_interval::JournalShape {
+        Ok(crate::journal::JournalShape {
             retained_bytes,
             cells,
             native_bytes: self.native.file().metadata()?.len(),
@@ -3759,7 +3771,7 @@ impl Journal {
             OriginalReleaseNativeCutPurposeV1::Controller => self.require_protected_named_location(
                 Path::new("/var/lib/aos/sandboxd"), "controller.journal",
                 self.protected_owner_uid()?,
-                crate::controller_service::journal::production_journal_limits(),
+                crate::journal::controller::production_journal_limits(),
             ),
             OriginalReleaseNativeCutPurposeV1::Root => self.require_protected_named_location(
                 Path::new("/var/lib/aos/sandbox-mount"), "mount.journal", 0, self.native.limits(),
@@ -4714,7 +4726,7 @@ pub(crate) fn q04_controller_before_rows_digest_v1(
     desired: &[u8],
     effect: &[u8],
 ) -> Result<ObjectDigest, JournalError> {
-    use crate::controller_service::public_projection::{PublicProjectionKindV1, projection_key};
+    use aos_sandbox_protocol::public_api::projection::{PublicProjectionKindV1, projection_key};
 
     let desired_key = projection_key(PublicProjectionKindV1::Sandbox, sandbox);
     let effect_key = aos_sandbox_protocol::domain_ledger::operation::effect_key(operation_id, 0);

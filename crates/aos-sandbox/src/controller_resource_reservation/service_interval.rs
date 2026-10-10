@@ -21,6 +21,7 @@ use super::{
 };
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::normal_root::ProductionControllerNormalRootProfileV1;
+use crate::journal::JournalShape;
 use crate::{Journal, JournalError};
 
 /// Keeps the entered FirstGlobal prefix and its native uncertainty resident.
@@ -63,14 +64,6 @@ enum PrefixFailureSite {
     CpuPost,
     FinalClock,
     FinalClockCheck,
-}
-
-pub(crate) struct JournalShape {
-    pub(crate) retained_bytes: usize,
-    pub(crate) cells: usize,
-    pub(crate) native_bytes: u64,
-    pub(crate) maximum_transaction_bytes: usize,
-    pub(crate) maximum_record_bytes: usize,
 }
 
 pub(crate) struct GlobalShape {

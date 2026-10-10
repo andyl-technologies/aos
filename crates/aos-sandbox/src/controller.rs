@@ -3634,10 +3634,10 @@ where
     /// ledger, or project linkage.
     pub fn public_projection(
         &mut self,
-        kind: crate::controller_service::public_projection::PublicProjectionKindV1,
+        kind: aos_sandbox_protocol::public_api::projection::PublicProjectionKindV1,
         resource_id: [u8; 16],
     ) -> Result<
-        Option<crate::controller_service::public_projection::PublicProjectionRecordV1>,
+        Option<aos_sandbox_protocol::public_api::projection::PublicProjectionRecordV1>,
         ControllerServiceError,
     > {
         let projection =
@@ -3665,10 +3665,10 @@ where
     /// ledger, or project linkage.
     pub fn public_projections(
         &mut self,
-        kind: crate::controller_service::public_projection::PublicProjectionKindV1,
+        kind: aos_sandbox_protocol::public_api::projection::PublicProjectionKindV1,
         project: aos_sandbox_core::ProjectId,
     ) -> Result<
-        Vec<crate::controller_service::public_projection::PublicProjectionRecordV1>,
+        Vec<aos_sandbox_protocol::public_api::projection::PublicProjectionRecordV1>,
         ControllerServiceError,
     > {
         let projections =
@@ -3693,7 +3693,7 @@ where
         &mut self,
         operation: OperationId,
     ) -> Result<
-        Vec<crate::controller_service::public_projection::PublicProjectionRecordV1>,
+        Vec<aos_sandbox_protocol::public_api::projection::PublicProjectionRecordV1>,
         ControllerServiceError,
     > {
         let projections =
@@ -3710,7 +3710,7 @@ where
 
     fn validate_public_projection_operation(
         &mut self,
-        projection: &crate::controller_service::public_projection::PublicProjectionRecordV1,
+        projection: &aos_sandbox_protocol::public_api::projection::PublicProjectionRecordV1,
     ) -> Result<(), ControllerServiceError> {
         let operation = projection.operation();
         if self.reconciler.public_operation(operation)?.is_none() {
@@ -3826,7 +3826,7 @@ pub enum ControllerServiceError {
     PublicAuthorizationUnavailable,
     /// A durable public-resource projection is malformed or inconsistent.
     #[error(transparent)]
-    PublicProjection(#[from] crate::controller_service::public_projection::PublicProjectionError),
+    PublicProjection(#[from] aos_sandbox_protocol::public_api::projection::PublicProjectionError),
     /// Durable admission or reconciliation failed.
     #[error(transparent)]
     Reconciler(#[from] ReconcilerError),

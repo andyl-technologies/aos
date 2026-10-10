@@ -4,9 +4,14 @@ use aos_proto::aos::sandbox::v1::{Attachment, FilesystemView};
 use aos_sandbox_core::{IncarnationId, ObjectDigest, OperationId, PrincipalId, ProjectId};
 use aos_sandbox_protocol::public_api::mutation_history::ControllerFuseAdmissionCarrierV1 as HistoricalCarrier;
 use super::{ControllerFuseAdmissionErrorV1, exact_id};
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionKindV1,
+    PublicProjectionPlanV1,
+    PublicProjectionResourceV1,
+    decode_checked_public_projection_v1,
+};
 use crate::controller_service::public_projection::{
-    PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
-    PublicProjectionStoreV1, decode_checked_public_projection_v1,
+    PublicProjectionStoreV1,
 };
 use crate::public_mutation_compiler::AuthorizedPublicMutationRequestV1;
 use crate::{Journal, PublicMutationEffectV1};

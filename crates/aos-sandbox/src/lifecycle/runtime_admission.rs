@@ -9,8 +9,12 @@
 use aos_sandbox_core::{NodeId, ProjectId, Revision, SandboxId};
 
 use crate::Journal;
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionError,
+    PublicProjectionKindV1,
+    PublicProjectionResourceV1,
+};
 use crate::controller_service::public_projection::{
-    PublicProjectionError, PublicProjectionKindV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1,
 };
 use crate::runtime_authority::{

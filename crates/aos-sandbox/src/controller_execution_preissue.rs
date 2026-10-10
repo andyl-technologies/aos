@@ -23,8 +23,12 @@ use rand::{TryRngCore as _, rngs::OsRng};
 use sha2::{Digest as _, Sha256};
 
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionError,
+    PublicProjectionKindV1,
+    PublicProjectionResourceV1,
+};
 use crate::controller_service::public_projection::{
-    PublicProjectionError, PublicProjectionKindV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1,
 };
 use aos_sandbox_protocol::public_api::create_holder_proof::{self, CreateHolderProofErrorV1};

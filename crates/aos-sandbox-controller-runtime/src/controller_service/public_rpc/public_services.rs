@@ -40,9 +40,13 @@ use aos_sandbox_protocol::public_api::{
     QuerySortDigestV1,
     QueryVisibilityDigestV1,
 };
-use aos_sandbox::controller_service::public_projection::{
-    PublicProjectionKindV1, PublicProjectionQueryV1, PublicProjectionRecordV1,
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionKindV1,
+    PublicProjectionRecordV1,
     PublicProjectionResourceV1,
+};
+use aos_sandbox::controller_service::public_projection::{
+    PublicProjectionQueryV1,
 };
 use aos_sandbox_core::{ObjectDigest, Operation, ProjectId, ResourceId, ResourceKind, Selector};
 use connectrpc::{

@@ -61,7 +61,7 @@ fn source_genesis_packet_delivery_is_data_and_does_not_adopt_another_writer() {
     let journal = Journal::open_protected_at_uid(
         directory.path(),
         "controller.journal",
-        crate::controller_service::journal::production_journal_limits(),
+        crate::journal::controller::production_journal_limits(),
         rustix::process::geteuid().as_raw(),
     )
     .unwrap()

@@ -17,7 +17,7 @@ use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
 
 use crate::cache_residency::CacheResidencyWriterReadbackV2;
-use crate::controller_service::journal::production_journal_limits;
+use crate::journal::controller::production_journal_limits;
 use crate::journal::{Journal, ProtectedJournalAuthority, RecordNamespace};
 use crate::policy_compiler::controller_effect_ack_readback::{
     ControllerEffectAckChallengeV1, ControllerEffectAckReadbackErrorV1,

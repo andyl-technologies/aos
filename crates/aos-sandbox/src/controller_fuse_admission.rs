@@ -20,8 +20,12 @@ use aos_proto::aos::sandbox::v1::{Attachment, AttachmentPhase, ViewPhase};
 use aos_sandbox_core::{ObjectDigest, OperationId};
 
 use crate::Journal;
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionKindV1,
+    PublicProjectionResourceV1,
+};
 use crate::controller_service::public_projection::{
-    PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
+    PublicProjectionStoreV1,
 };
 
 mod authority;
@@ -53,7 +57,7 @@ impl ControllerAdmissionLocationV1 {
             std::path::Path::new(CONTROLLER_STATE_DIRECTORY),
             CONTROLLER_JOURNAL,
             journal.protected_owner_uid()?,
-            crate::controller_service::journal::production_journal_limits(),
+            crate::journal::controller::production_journal_limits(),
         )
     }
 }

@@ -26,7 +26,7 @@ use crate::cli_model::authorization_adapter::{
     evaluate_current_protected_capability_retained, RetainedAuthorizationTimeFloorV1,
 };
 use crate::controller::ControllerProtectedClockV1;
-use crate::controller_service::journal::{ControllerJournalError, validate_controller_journal};
+use crate::journal::controller::{ControllerJournalError, validate_controller_journal};
 use crate::publisher_authority::PublisherAuthorityLimits;
 use crate::publisher_policy::PublisherPolicyLimits;
 use crate::reconciler::EffectPlan;
@@ -523,8 +523,8 @@ impl ControllerNixStartRecipeSelectorV2 {
     }
 
     pub(crate) fn original_start_intake_demand(
-        controller: &crate::controller_resource_reservation::service_interval::JournalShape,
-        source: &crate::controller_resource_reservation::service_interval::JournalShape,
+        controller: &crate::journal::JournalShape,
+        source: &crate::journal::JournalShape,
         provision: aos_sandbox_core::ResourceVector,
         intake_owner_bytes: usize,
     ) -> Result<aos_sandbox_core::ResourceVector, crate::ResourceReservationErrorV1> {

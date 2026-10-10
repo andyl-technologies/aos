@@ -239,7 +239,7 @@ fn require_projection(
     batch: DeleteBatchViewV1<'_>,
     row: &[u8],
 ) -> Result<(), JournalError> {
-    use crate::controller_service::public_projection::{
+    use aos_sandbox_protocol::public_api::projection::{
         PublicProjectionKindV1 as Kind, PublicProjectionRecordV1, PublicProjectionResourceV1 as Resource,
         projection_key,
     };
@@ -414,7 +414,7 @@ impl Journal {
             Path::new("/var/lib/aos/sandboxd"),
             "controller.journal",
             self.protected_owner_uid()?,
-            crate::controller_service::journal::production_journal_limits(),
+            crate::journal::controller::production_journal_limits(),
         )
     }
 }

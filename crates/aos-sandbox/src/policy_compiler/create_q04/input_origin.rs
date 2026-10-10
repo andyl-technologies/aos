@@ -8,7 +8,7 @@ use aos_sandbox_core::{ObjectDigest, ResourceVector};
 use sha2::{Digest as _, Sha256};
 
 use crate::controller_resource_reservation::ResourceReservationErrorV1;
-use crate::controller_resource_reservation::service_interval::JournalShape;
+use crate::journal::JournalShape;
 use super::CreateQ04ErrorV1;
 
 pub(crate) const CONTROLLER_INPUT_ORIGIN_KEY: &[u8] = b"\0aos-controller-q04-input-origin-v1\0";

@@ -19,7 +19,7 @@ use std::path::Path;
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 
-use crate::controller_service::journal::production_journal_limits;
+use crate::journal::controller::production_journal_limits;
 use crate::journal::{ControllerPolicyHoldV1, Journal, JournalError, RecordNamespace};
 use crate::role_credential::{decode_role_credential, encode_role_credential};
 

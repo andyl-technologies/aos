@@ -15,9 +15,14 @@ use sha2::{Digest as _, Sha256};
 
 use crate::Journal;
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionError,
+    PublicProjectionKindV1,
+    PublicProjectionRecordV1,
+    PublicProjectionResourceV1,
+};
 use crate::controller_service::public_projection::{
-    PublicProjectionError, PublicProjectionKindV1, PublicProjectionRecordV1,
-    PublicProjectionResourceV1, PublicProjectionStoreV1,
+    PublicProjectionStoreV1,
 };
 
 use super::{

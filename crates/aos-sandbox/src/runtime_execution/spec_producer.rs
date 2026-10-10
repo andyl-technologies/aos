@@ -39,8 +39,12 @@ use crate::controller_execution_output_settlement::{
     ControllerExecutionOutputSettlementErrorV1, read_current_controller_output_settlement_v1,
 };
 use crate::controller_execution_spec_attempt::execution_spec_attempt_request_digest_v1;
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionError,
+    PublicProjectionKindV1,
+    PublicProjectionResourceV1,
+};
 use crate::controller_service::public_projection::{
-    PublicProjectionError, PublicProjectionKindV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1,
 };
 use aos_sandbox_protocol::public_api::create_holder_proof::{self, CreateHolderProofErrorV1};

@@ -13,7 +13,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
-use aos_sandbox::controller_service::journal::production_journal_limits;
+use aos_sandbox::journal::controller::production_journal_limits;
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1, PinnedControllerHoldSignerV1,

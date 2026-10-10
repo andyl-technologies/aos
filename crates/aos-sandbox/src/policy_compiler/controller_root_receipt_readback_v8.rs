@@ -13,7 +13,7 @@ use std::path::Path;
 
 use ed25519_dalek::SigningKey;
 
-use crate::controller_service::journal::production_journal_limits;
+use crate::journal::controller::production_journal_limits;
 use crate::journal::{Journal, RecordNamespace};
 
 use super::binding_v2::{ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1, RootV8EffectAckV1};

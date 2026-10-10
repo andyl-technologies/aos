@@ -14,13 +14,8 @@ use aos_sandbox_protocol::public_api::projection::{
     PROJECTION_KEY_PREFIX, decode_checked_public_projection_v1 as decode_record,
     projection_kind_prefix, select_parentless_create_sandbox,
 };
-pub use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionError, PublicProjectionKindV1, PublicProjectionPlanV1,
-    PublicProjectionRecordV1, PublicProjectionResourceV1,
-};
-pub(crate) use aos_sandbox_protocol::public_api::projection::{
-    decode_checked_public_projection_v1, is_public_projection_deletion_record_v1, projection_key,
-    public_projection_deletion_record_v1,
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionError, PublicProjectionKindV1, PublicProjectionRecordV1, projection_key,
 };
 
 /// Selects one bounded public projection read inside the controller worker.

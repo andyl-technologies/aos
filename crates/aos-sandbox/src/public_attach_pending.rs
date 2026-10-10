@@ -25,8 +25,12 @@ use aos_sandbox_protocol::semantics::host_attach_gate::{
 use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
 
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionKindV1,
+    PublicProjectionResourceV1,
+};
 use crate::controller_service::public_projection::{
-    PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
+    PublicProjectionStoreV1,
 };
 use crate::publication::AuthorityPublicationStore;
 use crate::runtime_authority::{

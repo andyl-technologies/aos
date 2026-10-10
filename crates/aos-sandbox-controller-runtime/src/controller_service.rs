@@ -68,7 +68,7 @@ use aos_sandbox::cache_residency::{
 use aos_sandbox::cli_model::PublicMutationRequestV1;
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use aos_sandbox::controller::DormantControllerCompositionV1;
-use aos_sandbox::controller_service::journal::{
+use aos_sandbox::journal::controller::{
     production_journal_limits, validate_controller_journal,
 };
 use aos_sandbox::hierarchy::controller_genesis_input::{
@@ -329,7 +329,7 @@ pub enum ControllerRuntimeError {
     PublisherIngress(String),
     /// Controller journal identity or assignment validation failed.
     #[error(transparent)]
-    ControllerJournal(#[from] aos_sandbox::controller_service::journal::ControllerJournalError),
+    ControllerJournal(#[from] aos_sandbox::journal::controller::ControllerJournalError),
     /// The diagnostic socket parent or stale entry violates ownership and type rules.
     #[error("controller diagnostic socket path is unsafe")]
     UnsafeDiagnosticSocket,

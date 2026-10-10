@@ -221,7 +221,7 @@ impl OperationPlan {
             || local_records.len() > MAXIMUM_EFFECTS
             || local_records.iter().any(|record| {
                 (record.namespace() != RecordNamespace::PublisherAuthority
-                    && !crate::controller_service::public_projection::is_public_projection_deletion_record_v1(record))
+                    && !aos_sandbox_protocol::public_api::projection::is_public_projection_deletion_record_v1(record))
                     || record.key().is_empty()
                     || (record.namespace() == RecordNamespace::PublisherAuthority
                         && record.value().is_none())
@@ -4766,7 +4766,7 @@ mod tests {
             PublicOperationMethodV1,
             semantic_feature_v1,
         };
-        use crate::controller_service::public_projection::{
+        use aos_sandbox_protocol::public_api::projection::{
             PublicProjectionPlanV1, PublicProjectionResourceV1,
         };
 
@@ -7749,8 +7749,12 @@ mod tests {
         use aos_proto::aos::sandbox::v1::{ExecutionPhase, OperationPhase};
         use sha2::{Digest as _, Sha256};
 
+        use aos_sandbox_protocol::public_api::projection::{
+            PublicProjectionKindV1,
+            PublicProjectionResourceV1,
+        };
         use crate::controller_service::public_projection::{
-            PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
+            PublicProjectionStoreV1,
         };
 
         let directory = TestDirectory::new();

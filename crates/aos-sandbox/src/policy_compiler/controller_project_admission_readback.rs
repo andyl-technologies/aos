@@ -22,7 +22,7 @@ use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, RevocationScopeId, 
 use ed25519_dalek::{Signature, Signer as _, SigningKey};
 
 use crate::controller::ControllerRequestScopeV1;
-use crate::controller_service::journal::production_journal_limits;
+use crate::journal::controller::production_journal_limits;
 use crate::journal::{Journal, JournalError, RecordNamespace};
 use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
 use crate::reconciler::EffectPlan;

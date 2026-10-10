@@ -23,7 +23,7 @@ use aos_sandbox::cache_residency::{
     encode_cache_owner_readback_signer_credential_v1, sign_fixed_signer_cache_owner_readback_v2,
     verify_closed_cache_owner_readback_v2,
 };
-use aos_sandbox::controller_service::journal::production_journal_limits;
+use aos_sandbox::journal::controller::production_journal_limits;
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     PinnedControllerHoldSignerV1, PinnedSourceHoldReadbackSignerV1, PolicyCompilerProtectedOwnerV1,

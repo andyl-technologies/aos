@@ -539,14 +539,14 @@ fn select_original_candidates(
         }
         let Some(projection) = projections
             .get(
-                crate::controller_service::public_projection::PublicProjectionKindV1::Execution,
+                aos_sandbox_protocol::public_api::projection::PublicProjectionKindV1::Execution,
                 ticket.execution_id,
             )
             .map_err(rejected)?
         else {
             continue;
         };
-        let crate::controller_service::public_projection::PublicProjectionResourceV1::Execution(
+        let aos_sandbox_protocol::public_api::projection::PublicProjectionResourceV1::Execution(
             execution,
         ) = projection.resource()
         else {

@@ -362,7 +362,7 @@ fn execution_projection(
     operation: OperationId,
     phase: aos_proto::aos::sandbox::v1::ExecutionPhase,
 ) -> crate::JournalRecord {
-    use crate::controller_service::public_projection::{
+    use aos_sandbox_protocol::public_api::projection::{
         PublicProjectionPlanV1, PublicProjectionResourceV1,
     };
     use aos_proto::aos::sandbox::v1::{Command, Duration, Execution, ExecutionIoMode, Timestamp};

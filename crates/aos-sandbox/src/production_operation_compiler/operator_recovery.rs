@@ -19,8 +19,12 @@ use aos_sandbox_protocol::public_api::{
     CheckedSandboxResourceV1,
     PublicOperationMethodV1,
 };
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionKindV1,
+    PublicProjectionResourceV1,
+};
 use crate::controller_service::public_projection::{
-    PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
+    PublicProjectionStoreV1,
 };
 use crate::{
     EffectPlan, IdempotencyKey, IdempotencyOutcome, Journal, OperationCompilationError,

@@ -321,7 +321,7 @@ fn validate_root(
                 Path::new(CONTROLLER_ROOT),
                 CONTROLLER_JOURNAL,
                 *configured_uid,
-                crate::controller_service::journal::production_journal_limits(),
+                crate::journal::controller::production_journal_limits(),
             )?;
         }
         #[cfg(test)]

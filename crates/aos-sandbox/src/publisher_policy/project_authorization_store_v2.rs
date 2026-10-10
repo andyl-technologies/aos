@@ -35,7 +35,7 @@ use sha2::{Digest as _, Sha256};
 #[cfg(any(target_os = "linux", test))]
 use thiserror::Error;
 
-use crate::controller_service::journal::production_journal_limits;
+use crate::journal::controller::production_journal_limits;
 #[cfg(target_os = "linux")]
 use crate::hierarchy::source_seed::verify_controller_source_tree_seed_from_fixed_issuer_v1;
 #[cfg(any(target_os = "linux", test))]

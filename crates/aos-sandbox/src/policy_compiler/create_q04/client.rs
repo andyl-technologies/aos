@@ -121,7 +121,7 @@ pub(crate) struct OriginalQ04CompletedPreparationLoanV1<'cut, 'controller, 'sour
 impl OriginalQ04CompletedPreparationLoanV1<'_, '_, '_, '_, '_> {
     pub(crate) fn allocation_shape(
         &self,
-    ) -> Result<crate::controller_resource_reservation::service_interval::JournalShape, SourceGenesisErrorV1> {
+    ) -> Result<crate::journal::JournalShape, SourceGenesisErrorV1> {
         self.original.controller.q04_preparation_allocation_shape_v1()
     }
 

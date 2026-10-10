@@ -44,8 +44,12 @@ use aos_sandbox_protocol::nix_build::{
 use sha2::{Digest as _, Sha256};
 
 use crate::Journal;
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionKindV1,
+    PublicProjectionResourceV1,
+};
 use crate::controller_service::public_projection::{
-    PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
+    PublicProjectionStoreV1,
 };
 use crate::normal_root::{ProductionControllerNixStartupCaptureV1, ProductionControllerNixStartupV1};
 use crate::public_api_session::{
@@ -1208,7 +1212,7 @@ fn require_desired_assignment(
     binding: &RuntimeAuthorityBindingV1,
 ) -> Result<(), NixStartAdmissionErrorV2> {
     let (key, value) = carrier.desired();
-    let projection = crate::controller_service::public_projection::decode_checked_public_projection_v1(key, value)
+    let projection = aos_sandbox_protocol::public_api::projection::decode_checked_public_projection_v1(key, value)
         .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
     let PublicProjectionResourceV1::Sandbox(sandbox) = projection.resource() else {
         return Err(NixStartAdmissionErrorV2::Invalid);

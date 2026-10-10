@@ -13,7 +13,7 @@ use std::path::Path;
 
 use ed25519_dalek::SigningKey;
 
-use crate::controller_service::journal::production_journal_limits;
+use crate::journal::controller::production_journal_limits;
 use crate::journal::{ControllerPolicyV8EffectAckV1, Journal, RecordNamespace};
 
 use super::controller_effect_ack_readback::{

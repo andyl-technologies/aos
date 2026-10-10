@@ -12,7 +12,7 @@ use aos_sandbox_core::{OperationId, SandboxId};
 
 use crate::Journal;
 use crate::cache_residency::{CacheResidencyProtectedOwnerV1, DormantCacheOwnerV1};
-use crate::controller_service::journal::production_journal_limits;
+use crate::journal::controller::production_journal_limits;
 use crate::journal::SourceDomainPolicyHoldV1;
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;

@@ -4,6 +4,5 @@
 //! runtime integration remains in the broker-session-security crate,
 //! above both the controller core and the authenticated broker transports.
 
-pub mod journal;
 pub mod public_observation;
 pub mod public_projection;

@@ -29,8 +29,12 @@ use aos_sandbox_core::{
 use sha2::{Digest as _, Sha256};
 
 use crate::Journal;
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionKindV1,
+    PublicProjectionResourceV1,
+};
 use crate::controller_service::public_projection::{
-    PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
+    PublicProjectionStoreV1,
 };
 use crate::execution_parent_resource::{
     ExecutionParentResourceSourceV1, revalidate_execution_parent_resource_from_journal_v1,

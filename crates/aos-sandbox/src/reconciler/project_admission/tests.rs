@@ -13,7 +13,7 @@ use aos_proto::aos::sandbox::v1::{
 use aos_sandbox_core::{OperationId, RevocationScopeId};
 
 use super::*;
-use crate::controller_service::public_projection::PublicProjectionPlanV1;
+use aos_sandbox_protocol::public_api::projection::PublicProjectionPlanV1;
 use crate::policy_compiler::HistoricalCreateProjectSourceHeadsV1;
 use crate::reconciler::effect::EffectState;
 
@@ -39,7 +39,7 @@ impl Fixture {
         let journal = Journal::open_protected_at_uid(
             directory.path(),
             "controller.journal",
-            crate::controller_service::journal::production_journal_limits(),
+            crate::journal::controller::production_journal_limits(),
             uid,
         )
         .unwrap()
@@ -219,7 +219,7 @@ impl Fixture {
         let placeholder = Journal::open_protected_at_uid(
             self.directory.path(),
             "fixture-placeholder.journal",
-            crate::controller_service::journal::production_journal_limits(),
+            crate::journal::controller::production_journal_limits(),
             self.uid,
         )
         .unwrap()
@@ -228,7 +228,7 @@ impl Fixture {
         self.journal = Journal::open_protected_at_uid(
             self.directory.path(),
             "controller.journal",
-            crate::controller_service::journal::production_journal_limits(),
+            crate::journal::controller::production_journal_limits(),
             self.uid,
         )
         .unwrap()

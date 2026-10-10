@@ -10,9 +10,13 @@ use aos_sandbox::cli_model::PublicApiAuditMethodV1;
 use aos_sandbox_protocol::public_api::proto_json::{
     sandbox_tree_preorder_advance_v1, sandbox_tree_preorder_seed_v1,
 };
-use aos_sandbox::controller_service::public_projection::{
-    PublicProjectionKindV1, PublicProjectionQueryV1, PublicProjectionRecordV1,
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionKindV1,
+    PublicProjectionRecordV1,
     PublicProjectionResourceV1,
+};
+use aos_sandbox::controller_service::public_projection::{
+    PublicProjectionQueryV1,
 };
 use aos_sandbox_core::{Operation, ResourceKind};
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};

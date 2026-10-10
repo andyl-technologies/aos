@@ -522,8 +522,8 @@ impl<'source> CurrentNixPreflightAttemptV1<'source> {
     /// Refuses representation arithmetic overflow or existing journal bounds.
     /// A large valid cut may exceed I; no journal or image ceiling is raised.
     pub(crate) fn input_capture_demand_v1(
-        controller: &crate::controller_resource_reservation::service_interval::JournalShape,
-        source: &crate::controller_resource_reservation::service_interval::JournalShape,
+        controller: &crate::journal::JournalShape,
+        source: &crate::journal::JournalShape,
     ) -> Result<aos_sandbox_core::ResourceVector, crate::ResourceReservationErrorV1> {
         use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
         use crate::hierarchy::protected_journal::{

@@ -19,7 +19,7 @@ use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
 use ed25519_dalek::{Signature, Signer as _, SigningKey};
 use sha2::{Digest as _, Sha256};
 
-use crate::controller_service::journal::production_journal_limits;
+use crate::journal::controller::production_journal_limits;
 use crate::journal::{
     ControllerPolicyEffectAckV1, ControllerPolicyHoldV1, Journal, JournalError, RecordNamespace,
 };

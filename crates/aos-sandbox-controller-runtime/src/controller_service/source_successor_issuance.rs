@@ -5,7 +5,7 @@
 //! parked before later checks. Every failure terminates with those resources
 //! resident; armed Drop fences unwinding before their fields are released.
 
-use aos_sandbox::controller_service::journal::{
+use aos_sandbox::journal::controller::{
     production_journal_limits, validate_controller_journal,
 };
 use aos_sandbox::normal_root::{

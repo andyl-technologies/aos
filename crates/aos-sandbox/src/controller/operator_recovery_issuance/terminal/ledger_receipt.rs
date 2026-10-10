@@ -39,8 +39,12 @@ use super::super::{
 use super::{StoredProofV2, issued_intent};
 use crate::controller::recovery_current_key;
 use aos_sandbox_protocol::public_api::MAXIMUM_PUBLIC_RESOURCE_BYTES;
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionKindV1,
+    PublicProjectionPlanV1,
+};
 use crate::controller_service::public_projection::{
-    PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionStoreV1,
+    PublicProjectionStoreV1,
 };
 use crate::lifecycle::LifecycleAuthenticatedStorageInventoryV1;
 use crate::{Journal, JournalRecord, RecordNamespace};

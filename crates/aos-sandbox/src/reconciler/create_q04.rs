@@ -7,8 +7,12 @@
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use sha2::{Digest as _, Sha256};
 
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionKindV1,
+    PublicProjectionRecordV1,
+    PublicProjectionResourceV1,
+};
 use crate::controller_service::public_projection::{
-    PublicProjectionKindV1, PublicProjectionRecordV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1,
 };
 use crate::journal::{Journal, JournalRecord, RecordNamespace};
@@ -720,7 +724,7 @@ impl OriginalQ04ControllerLedgerV1 {
         let sandbox_bytes: [u8; 16] = projection.resource().resource_id().try_into()
             .map_err(|_| ReconcilerError::CorruptLedger("Q04 original sandbox is malformed"))?;
         let sandbox = SandboxId::from_bytes(sandbox_bytes);
-        let desired_key = crate::controller_service::public_projection::projection_key(
+        let desired_key = aos_sandbox_protocol::public_api::projection::projection_key(
             PublicProjectionKindV1::Sandbox, sandbox_bytes,
         );
         let desired_bytes = journal.get(RecordNamespace::DesiredState, &desired_key)

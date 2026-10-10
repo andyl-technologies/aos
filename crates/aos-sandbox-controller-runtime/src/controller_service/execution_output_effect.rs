@@ -11,8 +11,11 @@ use aos_sandbox::controller_execution_preissue::{
     load_controller_execution_output_attempt_v1, preissue_accepted_execution_source_v1,
     revalidate_historical_execution_preissue_source_v1,
 };
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionResourceV1,
+};
 use aos_sandbox::controller_service::public_projection::{
-    PublicProjectionResourceV1, PublicProjectionStoreV1,
+    PublicProjectionStoreV1,
 };
 use aos_sandbox::environment::EnvironmentProtectedEvidenceOwnerV1;
 use aos_sandbox::execution_parent_resource::current_execution_parent_resource_from_journal_v1;
