@@ -3,6 +3,9 @@
 use super::*;
 use crucible_cas::content_store::ObjectKind;
 
+/// Bounds the stop outcome rendered into the opt-in seal diagnostic.
+const STOP_DIAGNOSTIC_CHARS: usize = 512;
+
 pub(super) fn project_boundary(
     mut pending: QemuFreshPendingObservation,
     project_stop: bool,
@@ -375,9 +378,18 @@ fn build_observation_candidate_inner(
     };
     let result =
         PreparedSemanticAttemptResult::new(candidate, vec![projection.measurement_evidence], None)?;
-    crate::crucible_execution::record_execution_phase_diagnostic(
+    // The stop names any assertion that will start automatic finding
+    // reduction; bound it so an observation proof cannot flood stderr.
+    crate::crucible_execution::record_execution_phase_diagnostic_lazy(
         "seal-candidate-return",
-        format_args!("completed=true"),
+        || {
+            let stop = result.observation().observation().stop();
+            let stop: String = format!("{stop:?}")
+                .chars()
+                .take(STOP_DIAGNOSTIC_CHARS)
+                .collect();
+            format!("completed=true stop={stop}")
+        },
     );
     Ok(AttemptExecutionProduct::prepared_semantic(result))
 }

@@ -814,6 +814,23 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
         })
     }
 
+    fn park_held_campaign_markers(
+        &mut self,
+        markers: &[&str],
+        _outcome: &mut crucible::QuantumOutcome,
+    ) -> Result<usize, SchedulerError> {
+        if markers != crate::qemu_campaign_driver::NETWORK_FAULT_PHASE_MARKERS {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!("unexpected parked campaign markers: {markers:?}"),
+            });
+        }
+        self.order
+            .lock()
+            .expect("fresh lifecycle order")
+            .push("park");
+        Ok(1)
+    }
+
     fn publish_released_host_outcomes(
         &mut self,
         _configuration: &Configuration,
@@ -3957,3 +3974,6 @@ fn test_checkpoint_product() -> AttemptExecutionProduct {
 
 #[path = "tests/released_publication.rs"]
 mod released_publication;
+
+#[path = "tests/network_fault_replay.rs"]
+mod network_fault_replay;

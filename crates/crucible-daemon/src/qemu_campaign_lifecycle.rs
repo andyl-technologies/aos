@@ -2498,6 +2498,7 @@ pub(crate) fn materialize_start_from<F, D>(
                 control: Vec::new(),
             })
             .map_err(map_start_replay_scheduler_failure)?;
+        park_replayed_network_fault_markers(lifecycle, input, &mut outcome)?;
         if lifecycle.live_network_preselection().is_some_and(|choice| {
             !reserved_live_network_choice_matches(
                 &choice,
@@ -2636,6 +2637,29 @@ pub(crate) fn materialize_start_from<F, D>(
             ));
         }
     }
+}
+
+/// Parks VMs held at network fault phase markers during start replay.
+///
+/// The modeled driver parks these holds after every quantum so staggered VMs
+/// each reach their marker before the atomic choice. Replay must do the same:
+/// an unparked hold blocks every later RUN, so a replay crossing the first
+/// marker would otherwise fail before reaching its target.
+fn park_replayed_network_fault_markers<F, D>(
+    lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
+    input: &CrucibleAttemptExecution,
+    outcome: &mut QuantumOutcome,
+) -> Result<(), AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>> {
+    if !crate::qemu_campaign_driver::declares_network_fault(input) {
+        return Ok(());
+    }
+    lifecycle
+        .park_held_campaign_markers(
+            &crate::qemu_campaign_driver::NETWORK_FAULT_PHASE_MARKERS,
+            outcome,
+        )
+        .map_err(map_start_replay_scheduler_failure)?;
+    Ok(())
 }
 
 fn apply_replayed_live_network_selection<F, D>(

@@ -108,25 +108,33 @@ pub(super) fn park_network_fault_markers(
     input: &CrucibleAttemptExecution,
     outcome: &mut QuantumOutcome,
 ) -> Result<bool, AttemptWorkerFailure<QemuFreshModeledDriverError>> {
-    if input
-        .scenario()
-        .selectables()
-        .declaration("fault.network")
-        .is_none()
-    {
+    if !declares_network_fault(input) {
         return Ok(false);
     }
-    let markers = [
-        phase_marker(NetworkFaultPhase::First),
-        phase_marker(NetworkFaultPhase::Followup),
-    ];
     let parks = lifecycle
-        .park_held_campaign_markers(&markers, outcome)
+        .park_held_campaign_markers(&NETWORK_FAULT_PHASE_MARKERS, outcome)
         .map_err(classify_scheduler_error)?;
     Ok(parks != 0)
 }
 
-fn phase_marker(phase: NetworkFaultPhase) -> &'static str {
+/// Guest markers at which each VM parks before a network fault phase.
+pub(crate) const NETWORK_FAULT_PHASE_MARKERS: [&str; 2] = [
+    phase_marker(NetworkFaultPhase::First),
+    phase_marker(NetworkFaultPhase::Followup),
+];
+
+/// Returns whether the attempt's scenario declares the network fault choice.
+///
+/// Without the declaration, a same-named guest marker is inert.
+pub(crate) fn declares_network_fault(input: &CrucibleAttemptExecution) -> bool {
+    input
+        .scenario()
+        .selectables()
+        .declaration("fault.network")
+        .is_some()
+}
+
+const fn phase_marker(phase: NetworkFaultPhase) -> &'static str {
     match phase {
         NetworkFaultPhase::First => "fault.transport.ready",
         NetworkFaultPhase::Followup => "fault.followup.ready",
