@@ -67,7 +67,11 @@ pub use kernel_swap_residency::{
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 pub use readonly_backing_transport::BackingCaptureFailure as QmpReadOnlyBackingCaptureFailure;
 #[cfg(any(test, feature = "test-support"))]
+mod cpu_write_observation;
+#[cfg(any(test, feature = "test-support"))]
 mod performance_observation;
+#[cfg(any(test, feature = "test-support"))]
+pub use cpu_write_observation::QemuCpuWriteObservation;
 pub use paused_cpu::{QMP_PAUSED_CPU_SCHEMA_VERSION, QMP_QUERY_PAUSED_CPU_COMMAND, QmpPausedCpu};
 #[cfg(any(test, feature = "test-support"))]
 pub use performance_observation::QemuPerformanceObservation;

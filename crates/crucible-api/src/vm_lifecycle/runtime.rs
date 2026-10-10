@@ -14,6 +14,9 @@ pub(super) mod progress;
 use debug_evidence::*;
 use observation::*;
 
+#[cfg(all(target_os = "linux", feature = "test-support"))]
+pub(super) mod checkpoint_consumer;
+
 fn release_then_record_campaign_marker(
     release: impl FnOnce() -> Result<(), SchedulerError>,
     record: impl FnOnce() -> Result<(), SchedulerError>,
@@ -283,6 +286,45 @@ impl ProductionVmLifecycleLoop {
             .network_output_interceptor()
             .active_queue_evidence()?
             .is_empty())
+    }
+
+    /// Reads the actual native checkpoint consumer epoch for a fixture node.
+    ///
+    /// This is read-only evidence from the existing admitted node set; it is
+    /// neither a checkpoint constructor nor an authority/grant surface.
+    ///
+    /// # Errors
+    /// Refuses missing nodes, original supervision and QMP uncertainty.
+    #[cfg(all(target_os = "linux", feature = "test-support"))]
+    pub fn checkpoint_consumer_epoch_for_test(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<CheckpointConsumerEpochEvidence, SchedulerError> {
+        let epoch = self
+            .inner
+            .backend_mut()
+            .query_exact_checkpoint_epoch(node)
+            .map_err(SchedulerError::from)?;
+
+        Ok(CheckpointConsumerEpochEvidence {
+            epoch_generation: epoch.epoch_generation(),
+            committed: epoch.committed().map(|identity| {
+                [
+                    identity.checkpoint(),
+                    identity.target(),
+                    identity.frontier(),
+                ]
+            }),
+            candidate: epoch.candidate().map(|identity| {
+                [
+                    identity.checkpoint(),
+                    identity.target(),
+                    identity.frontier(),
+                ]
+            }),
+            committed_capture_generation: epoch.committed_capture_generation(),
+            candidate_capture_generation: epoch.candidate_capture_generation(),
+        })
     }
 
     /// Captures a portable exact checkpoint under an operational boundary.

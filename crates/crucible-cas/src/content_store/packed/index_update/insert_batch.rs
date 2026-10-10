@@ -62,7 +62,32 @@ type BatchControls = (
     Root,
     ChildWork,
     StoreError,
+    PageScratch,
 );
+
+// One input and one output retain their original loans across this traversal.
+// Contents never stand in for a fresh read. Output admission stays lazy so an
+// authenticated duplicate or malformed leaf still precedes its first debit.
+#[derive(Default)]
+struct PageScratch {
+    input: Option<Bytes>,
+    output: Option<Bytes>,
+}
+
+fn page_buffer<'a>(
+    slot: &'a mut Option<Bytes>,
+    operation: &Operation<'_>,
+) -> Result<&'a mut Bytes, StoreError> {
+    if slot.is_none() {
+        *slot = Some(operation.buffer(wire::PAGE_BYTES)?);
+    } else if let Some(original) = operation.original {
+        // Reuse removes a reservation, not its live-owner supervision cut.
+        original
+            .verify_live()
+            .map_err(|error| batch::admission_under(original, error))?;
+    }
+    slot.as_mut().ok_or(StoreError::Incompatible)
+}
 
 #[derive(Clone, Copy)]
 struct PageTask {
@@ -202,10 +227,14 @@ impl Update {
                     .checked_add(rows.values.len())
                     .ok_or(StoreError::Quota)?;
                 if count <= wire::MAX_ROWS {
-                    let bytes = merged_leaf(&node, &rows.values, 0, count, operation)?;
-                    Root::Inline(bytes)
+                    let mut output = None;
+                    merged_leaf(&node, &rows.values, 0, count, &mut output, operation)?;
+                    Root::Inline(output.ok_or(StoreError::Incompatible)?)
                 } else {
-                    let children = self.insert_leaf(backend, &node, &rows.values, operation)?;
+                    let mut output = None;
+                    let children =
+                        self.insert_leaf(backend, &node, &rows.values, &mut output, operation)?;
+                    drop(output);
                     Root::Page(self.make_root(backend, children, operation)?)
                 }
             }
@@ -244,11 +273,12 @@ impl Update {
         operation: &mut Operation<'_>,
     ) -> Result<Replacement, StoreError> {
         let mut frames = Ledger::<Frame>::new(wire::MAX_HEIGHT, operation)?;
+        let mut scratch = PageScratch::default();
         let mut task = Some(initial);
         let mut ready = None;
         loop {
             if let Some(next) = task.take() {
-                match self.prepare_page(backend, next, rows, operation)? {
+                match self.prepare_page(backend, next, rows, &mut scratch, operation)? {
                     Prepared::Leaf(result) => ready = Some(result),
                     Prepared::Branch(frame) => {
                         if frames.values.len() == wire::MAX_HEIGHT {
@@ -270,7 +300,7 @@ impl Update {
                 continue;
             }
             let frame = frames.values.pop().ok_or(StoreError::Incompatible)?;
-            ready = Some(self.finish_branch(backend, &frame, operation)?);
+            ready = Some(self.finish_branch(backend, &frame, &mut scratch, operation)?);
         }
     }
 
@@ -279,22 +309,29 @@ impl Update {
         backend: &PackedBlobBackend,
         task: PageTask,
         rows: &[Row],
+        scratch: &mut PageScratch,
         operation: &mut Operation<'_>,
     ) -> Result<Prepared, StoreError> {
-        let mut bytes = operation.buffer(wire::PAGE_BYTES)?;
+        let bytes = page_buffer(&mut scratch.input, operation)?;
         self.load(
             task.reference,
             task.root,
             false,
             task.lower,
             task.upper,
-            &mut bytes,
+            bytes,
             operation,
         )?;
         let node = Node::parse(&bytes.value, task.root)?;
         if node.height == 0 {
             return self
-                .insert_leaf(backend, &node, &rows[task.start..task.end], operation)
+                .insert_leaf(
+                    backend,
+                    &node,
+                    &rows[task.start..task.end],
+                    &mut scratch.output,
+                    operation,
+                )
                 .map(Prepared::Leaf);
         }
         let mut children = Ledger::new(node.count, operation)?;
@@ -322,6 +359,7 @@ impl Update {
         backend: &PackedBlobBackend,
         node: &Node<'_>,
         rows: &[Row],
+        output: &mut Option<Bytes>,
         operation: &mut Operation<'_>,
     ) -> Result<Replacement, StoreError> {
         let count = node
@@ -329,13 +367,12 @@ impl Update {
             .checked_add(rows.len())
             .ok_or(StoreError::Quota)?;
         let first_count = split_count(count)?;
-        let bytes = merged_leaf(node, rows, 0, first_count, operation)?;
+        let bytes = merged_leaf(node, rows, 0, first_count, output, operation)?;
         let first = self.append_page(backend, &bytes.value, operation)?;
-        drop(bytes);
         if first_count == count {
             return Ok(Replacement::one(first));
         }
-        let bytes = merged_leaf(node, rows, first_count, count, operation)?;
+        let bytes = merged_leaf(node, rows, first_count, count, output, operation)?;
         let second = self.append_page(backend, &bytes.value, operation)?;
         Ok(Replacement {
             first: Some(first),
@@ -347,17 +384,18 @@ impl Update {
         &mut self,
         backend: &PackedBlobBackend,
         frame: &Frame,
+        scratch: &mut PageScratch,
         operation: &mut Operation<'_>,
     ) -> Result<Replacement, StoreError> {
         // Revalidate old parent bytes after all child work and before output.
-        let mut bytes = operation.buffer(wire::PAGE_BYTES)?;
+        let bytes = page_buffer(&mut scratch.input, operation)?;
         self.load(
             frame.task.reference,
             frame.task.root,
             false,
             frame.task.lower,
             frame.task.upper,
-            &mut bytes,
+            bytes,
             operation,
         )?;
         let node = Node::parse(&bytes.value, frame.task.root)?;
@@ -369,7 +407,6 @@ impl Update {
                 return Err(StoreError::Incompatible);
             }
         }
-        drop(bytes);
         let count = frame
             .children
             .values
@@ -379,13 +416,12 @@ impl Update {
                     .ok_or(StoreError::Quota)
             })?;
         let first_count = split_count(count)?;
-        let bytes = merged_branch(frame, 0, first_count, operation)?;
+        let bytes = merged_branch(frame, 0, first_count, &mut scratch.output, operation)?;
         let first = self.append_page(backend, &bytes.value, operation)?;
-        drop(bytes);
         if first_count == count {
             return Ok(Replacement::one(first));
         }
-        let bytes = merged_branch(frame, first_count, count, operation)?;
+        let bytes = merged_branch(frame, first_count, count, &mut scratch.output, operation)?;
         let second = self.append_page(backend, &bytes.value, operation)?;
         Ok(Replacement {
             first: Some(first),
@@ -411,13 +447,14 @@ fn split_count(count: usize) -> Result<usize, StoreError> {
     })
 }
 
-fn merged_leaf(
+fn merged_leaf<'a>(
     node: &Node<'_>,
     rows: &[Row],
     start: usize,
     end: usize,
+    output: &'a mut Option<Bytes>,
     operation: &mut Operation<'_>,
-) -> Result<Bytes, StoreError> {
+) -> Result<&'a Bytes, StoreError> {
     if node.height != 0
         || start > end
         || end > node.count + rows.len()
@@ -431,7 +468,7 @@ fn merged_leaf(
             return Err(duplicate());
         }
     }
-    let mut out = operation.buffer(wire::PAGE_BYTES)?;
+    let out = page_buffer(output, operation)?;
     wire::begin_node(&mut out.value, 0);
     let mut old_slot = 0;
     let mut new_slot = 0;
@@ -458,16 +495,17 @@ fn merged_leaf(
     Ok(out)
 }
 
-fn merged_branch(
+fn merged_branch<'a>(
     frame: &Frame,
     start: usize,
     end: usize,
+    output: &'a mut Option<Bytes>,
     operation: &mut Operation<'_>,
-) -> Result<Bytes, StoreError> {
+) -> Result<&'a Bytes, StoreError> {
     if start > end || end - start > wire::MAX_ROWS {
         return Err(StoreError::Incompatible);
     }
-    let mut out = operation.buffer(wire::PAGE_BYTES)?;
+    let out = page_buffer(output, operation)?;
     wire::begin_node(&mut out.value, frame.height);
     let mut slot = 0;
     for child in &frame.children.values {

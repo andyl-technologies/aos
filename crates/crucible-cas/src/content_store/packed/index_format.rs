@@ -494,13 +494,29 @@ impl<'a> Node<'a> {
     }
 
     pub(super) fn position(&self, key: Key) -> Result<usize, StoreError> {
-        for slot in 0..self.count {
-            if self.key(slot)? >= key {
-                return Ok(slot);
-            }
-        }
-        Ok(self.count)
+        // Parsing proves strict key order before lookup can borrow this node.
+        lower_bound(self.count, key, |slot| self.key(slot))
     }
+}
+
+// The same bounded search serves leaves and branch upper bounds without
+// retaining keys or weakening their preceding page authentication.
+fn lower_bound(
+    count: usize,
+    key: Key,
+    mut key_at: impl FnMut(usize) -> Result<Key, StoreError>,
+) -> Result<usize, StoreError> {
+    let mut lower = 0;
+    let mut upper = count;
+    while lower < upper {
+        let middle = lower + (upper - lower) / 2;
+        if key_at(middle)? < key {
+            lower = middle + 1;
+        } else {
+            upper = middle;
+        }
+    }
+    Ok(lower)
 }
 
 pub(super) fn begin_node(bytes: &mut Vec<u8>, height: u8) {
@@ -615,3 +631,6 @@ fn decode_kind(code: u8) -> Result<ObjectKind, StoreError> {
         _ => Err(StoreError::Incompatible),
     }
 }
+
+#[cfg(test)]
+mod tests;

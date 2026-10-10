@@ -114,6 +114,28 @@ impl QemuNode {
             })
     }
 
+    /// Reads the fixed two-page CPU writer arena under the existing original.
+    ///
+    /// The caller retains its prepaid reply/parser/sample loan. This closed
+    /// fixture method neither accepts an address nor starts another deadline.
+    ///
+    /// # Errors
+    /// Refuses running/unadmitted QEMU, original refusal, malformed or oversized
+    /// replies, and uncertain transport.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn observe_cpu_write_fixture(
+        &mut self,
+        guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        resident: crucible_ram::ResourceLoan,
+    ) -> Result<crate::qmp::QemuCpuWriteObservation, QemuNodeError> {
+        self.channels
+            .qmp_machine_control
+            .cpu_write_observation(guard, resident)
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
+            })
+    }
+
     pub(crate) fn paused_cpu(
         &mut self,
         vcpu: u32,

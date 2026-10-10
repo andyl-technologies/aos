@@ -57,6 +57,46 @@ fn ram_checkpoint_failure(
 }
 
 impl ProductionVmLifecycleLoop {
+    /// Refuses a completed real paged capture before durable publication.
+    ///
+    /// This closed fixture cut uses the actual current scheduler and native
+    /// capture, then the ordinary abort/reconciliation owner. It creates no
+    /// guest grant or synthetic checkpoint provenance.
+    ///
+    /// # Errors
+    /// Always refuses; the caller must require the precise completed-capture
+    /// refusal, and separately authenticate native cleanup/parent preservation.
+    #[cfg(all(target_os = "linux", feature = "test-support"))]
+    pub fn refuse_completed_capture_publication_for_test(
+        &mut self,
+        boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
+    ) -> Result<ContentHash, SchedulerError> {
+        if !self.exact_checkpoint_ready()? {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("CPU oracle has no genuine checkpoint-ready boundary"),
+            });
+        }
+        let configuration = self.inner.loop_impl().configuration().clone();
+        let id = configuration.id();
+        if self.checkpoint_targets.contains_key(&id) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("CPU oracle requires a fresh unpublished configuration"),
+            });
+        }
+        self.checkpoint_targets
+            .insert(id, ExactCheckpointPublicationState::Preparing);
+        let result = self.capture_reserved_exact_checkpoint_set_inner::<true>(
+            &configuration,
+            &BTreeSet::new(),
+            boundary,
+        );
+        super::checkpoint_capture::finish_exact_checkpoint_transaction(
+            &mut self.checkpoint_targets,
+            id,
+            result,
+        )
+    }
+
     /// Captures and publishes one scheduler-reserved exact world boundary.
     ///
     /// # Errors
@@ -64,6 +104,19 @@ impl ProductionVmLifecycleLoop {
     /// Preserves unpublished capture cleanup or indeterminate native commit
     /// ownership when capture, authentication, publication, or supervision fails.
     pub(super) fn capture_reserved_exact_checkpoint_set(
+        &mut self,
+        configuration: &Configuration,
+        terminal_nodes: &BTreeSet<NodeId>,
+        boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
+    ) -> Result<ContentHash, ExactCheckpointTransactionError> {
+        self.capture_reserved_exact_checkpoint_set_inner::<false>(
+            configuration,
+            terminal_nodes,
+            boundary,
+        )
+    }
+
+    fn capture_reserved_exact_checkpoint_set_inner<const REFUSE_PUBLICATION: bool>(
         &mut self,
         configuration: &Configuration,
         terminal_nodes: &BTreeSet<NodeId>,
@@ -562,6 +615,27 @@ impl ProductionVmLifecycleLoop {
         }
 
         let preparation = (|| -> Result<_, ExactCheckpointTransactionError> {
+            // The closed test entry refuses only after every real native
+            // candidate and RAM image is retained. Ordinary capture instantiates
+            // false; no production fault selector or renewed authority exists.
+            if REFUSE_PUBLICATION {
+                if captured.is_empty()
+                    || captured.iter().any(|capture| {
+                        capture.exact_checkpoint.is_none() || capture.exact_ram.is_none()
+                    })
+                {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "CPU oracle requires a completed native paged candidate",
+                        ),
+                    }
+                    .into());
+                }
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from("CPU oracle refused completed capture publication"),
+                }
+                .into());
+            }
             let mut targets = BTreeMap::new();
             for capture in &captured {
                 boundary()?;

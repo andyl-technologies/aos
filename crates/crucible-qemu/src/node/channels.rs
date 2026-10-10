@@ -657,6 +657,24 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
         })
     }
 
+    /// Reads only the closed two-page CPU writer fixture window.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when fixed observation is unavailable, its evidence is
+    /// invalid, or the retained original refuses the operation.
+    #[cfg(any(test, feature = "test-support"))]
+    fn cpu_write_observation(
+        &mut self,
+        _guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        _resident: crucible_ram::ResourceLoan,
+    ) -> Result<crate::qmp::QemuCpuWriteObservation, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "CPU write observation",
+            "fixed observation unavailable",
+        ))
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     fn performance_observation(
         &mut self,

@@ -11,6 +11,8 @@ use std::os::unix::fs::FileExt;
 use super::index_format::{self as wire, Header, Key, Node, PageReference, Value};
 use super::index_io::{self, Bytes, IndexFile, Operation};
 
+mod presence;
+
 pub(super) struct IndexSnapshot {
     bytes: Bytes,
     pub(super) header: Header,

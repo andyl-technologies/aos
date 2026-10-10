@@ -315,6 +315,8 @@ pub use production_fault_runtime::{
 };
 pub use production_fault_sink::ProductionFaultActionSink;
 #[cfg(any(test, feature = "test-support"))]
+pub use qmp::QemuCpuWriteObservation;
+#[cfg(any(test, feature = "test-support"))]
 pub use qmp::QemuPerformanceObservation;
 pub(crate) use qmp::QmpCheckpointRestoreRequest;
 #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]

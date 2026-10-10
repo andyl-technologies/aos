@@ -7,9 +7,11 @@
 //! omits the RAM range client only afterward. Native scalar records must be
 //! validated separately by the exact artifact-bound evidence checker.
 //!
-//! This ignored source fixture is one CPU-path test. DMA, reset, restore,
-//! remap/discard, fork/stream and complete scratch/payer qualifications are not
-//! inferred from its arithmetic witness or from parser unit controls.
+//! Each selected profile repeats an actual ordinary CPU store across already-
+//! dirty and rearmed pages. Scalar, SSE128 and atomic paths have independent
+//! whole-two-page byte and partial-loop register witnesses. These ignored
+//! source fixtures do not widen the byte-only delayed MemoryService capability.
+//! DMA, reset, restore and complete payer qualification remain separate.
 
 use super::super::hot_fork_native::{native_repository, native_request};
 use super::*;
@@ -21,6 +23,9 @@ use crucible::SimulationBackend;
 use crucible_campaign::{CampaignExecutorStore, ExecutorService, SubmitAttemptDisposition};
 use crucible_qemu::{QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig};
 
+mod consumers;
+mod model;
+
 const FIRST: u64 = 700_000;
 const SECOND: u64 = 1_400_000;
 const MEMORY_MIB: u32 = 64;
@@ -28,6 +33,7 @@ const MEMORY_MIB: u32 = 64;
 #[test]
 #[ignore = "requires final paired native artifact, complete scratch/payer proof, and owned kernel admission"]
 fn managed_complete_write_oracle() {
+    let profile = model::Profile::selected();
     let negative = match std::env::var("CRUCIBLE_COMPLETE_WRITE_ORACLE_ROLE").as_deref() {
         Ok("oracle-positive") => false,
         Ok("notification-adversary") => true,
@@ -54,7 +60,7 @@ fn managed_complete_write_oracle() {
         root_image: None,
         initrd: None,
     }])
-    .expect("unchanged arithmetic ROM machine");
+    .expect("unchanged 64 MiB one-CPU ROM machine");
     let source = ScenarioDefForm::from_components(
         &world,
         &Plan::empty(),
@@ -93,6 +99,7 @@ fn managed_complete_write_oracle() {
                     store,
                     config: config.clone(),
                     negative,
+                    profile,
                     observed: false,
                 },
             );
@@ -122,12 +129,17 @@ fn managed_complete_write_oracle() {
         },
     );
     println!("COMPLETE_WRITE_ORACLE_ONE_CPU_FIXTURE_PASS");
+    println!(
+        "complete_write_oracle_profile name={} arena_bytes=8192",
+        profile.name
+    );
 }
 
 struct DiagnosticModel {
     store: CampaignExecutorStore,
     config: PackagedQemuExecutorConfig,
     negative: bool,
+    profile: model::Profile,
     observed: bool,
 }
 
@@ -217,10 +229,10 @@ impl AttemptExecutionModel for DiagnosticModel {
             .observation_guard()
             .expect("original fixed observation budget");
         let before = node
-            .observe_performance_fixture(&guard, factory.evidence_custody())
-            .expect("first paused arithmetic witness");
+            .observe_cpu_write_fixture(&guard, factory.evidence_custody())
+            .expect("first actual CPU writer witness");
         guard.complete().expect("original observation boundary");
-        require_arithmetic(&before.registers, before.bios_prefix, FIRST);
+        self.profile.require(&before, FIRST);
         assert_eq!(
             node.logical_time_calibration()
                 .expect("first coordinate")
@@ -245,10 +257,10 @@ impl AttemptExecutionModel for DiagnosticModel {
             .observation_guard()
             .expect("original second observation budget");
         let after = node
-            .observe_performance_fixture(&guard, factory.evidence_custody())
+            .observe_cpu_write_fixture(&guard, factory.evidence_custody())
             .expect("actual paused CPU write witness before root request");
         guard.complete().expect("original observation boundary");
-        require_arithmetic(&after.registers, after.bios_prefix, SECOND);
+        self.profile.require(&after, SECOND);
         assert_eq!(
             node.logical_time_calibration()
                 .expect("second coordinate")
@@ -256,14 +268,13 @@ impl AttemptExecutionModel for DiagnosticModel {
             SECOND
         );
         assert_ne!(
-            &before.bios_prefix[..8],
-            &after.bios_prefix[..8],
+            &before.arena, &after.arena,
             "a real supported CPU store must change the independently read RAM"
         );
         println!(
             "complete_write_oracle_write raw=1400000 before={:016x} after={:016x}",
-            u64::from_le_bytes(before.bios_prefix),
-            u64::from_le_bytes(after.bios_prefix)
+            u64::from(self.profile.observed_counter(&before)),
+            u64::from(self.profile.observed_counter(&after))
         );
         let final_root = node.execution_fingerprint();
         if self.negative {
@@ -294,48 +305,5 @@ impl AttemptExecutionModel for DiagnosticModel {
         Err(AttemptWorkerFailure::Canceled(std::io::Error::other(
             "fixed diagnostic observed and original process physically closed",
         )))
-    }
-}
-
-fn require_arithmetic(registers: &str, prefix: [u8; 8], stop: u64) {
-    let complete = (stop - 6) / 7;
-    let partial = (stop - 6) % 7;
-    let mut accumulator = 0x51f1_5eed_u32;
-    for _ in 0..complete {
-        accumulator = (accumulator.rotate_left(13) ^ 0x9e37_79b9).wrapping_add(0x6d2b_79f5);
-    }
-    let mut memory_accumulator = accumulator;
-    let mut counter = u32::try_from(complete).expect("fixed instruction horizon");
-    let mut memory_counter = counter;
-    if partial >= 1 {
-        accumulator = accumulator.rotate_left(13);
-    }
-    if partial >= 2 {
-        accumulator ^= 0x9e37_79b9;
-    }
-    if partial >= 3 {
-        accumulator = accumulator.wrapping_add(0x6d2b_79f5);
-    }
-    if partial >= 4 {
-        memory_accumulator = accumulator;
-    }
-    if partial >= 5 {
-        counter = counter.wrapping_add(1);
-    }
-    if partial >= 6 {
-        memory_counter = counter;
-    }
-    let mut expected = [0_u8; 8];
-    expected[..4].copy_from_slice(&memory_accumulator.to_le_bytes());
-    expected[4..].copy_from_slice(&memory_counter.to_le_bytes());
-    assert_eq!(prefix, expected, "independent actual CPU store oracle");
-    for (name, value) in [("EAX", accumulator), ("ECX", counter)] {
-        let observed = registers.split_whitespace().find_map(|field| {
-            let (field_name, encoded) = field.split_once('=')?;
-            (field_name == name)
-                .then(|| u32::from_str_radix(encoded, 16).ok())
-                .flatten()
-        });
-        assert_eq!(observed, Some(value), "independent stopped register oracle");
     }
 }

@@ -2297,6 +2297,8 @@ use process_owners::{
 };
 mod quantum_loop;
 mod runtime;
+#[cfg(all(target_os = "linux", feature = "test-support"))]
+pub use runtime::checkpoint_consumer::CheckpointConsumerEpochEvidence;
 mod search;
 mod storage_faults;
 // crucible-lint: allow stringly-error -- private run-directory decoding diagnostics are immediately wrapped in LifecycleApiError.

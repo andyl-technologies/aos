@@ -27,8 +27,10 @@ pub(super) fn publish_prefix(
     }
     let _state = checked_io::lock(backend, STATE_LOCK_FILE, false, original, boundary)?;
     let index = index_snapshot::IndexSnapshot::load(backend, original, boundary)?;
-    let first = index.find(backend, objects[0].0, original, boundary)?;
+    let mut presence = None;
+    let first = index.find_for_group(backend, objects[0].0, original, &mut presence, boundary)?;
     if first.is_some() {
+        drop(presence);
         publish_one_locked(
             backend,
             original,
@@ -75,6 +77,7 @@ pub(super) fn publish_prefix(
         length = candidate;
     }
     if count < 2 {
+        drop(presence);
         publish_one_locked(
             backend,
             original,
@@ -139,7 +142,11 @@ pub(super) fn publish_prefix(
         io::write_all(staging.file(), &bytes, 0, original, boundary)?;
         let prospective_count = count;
         for (position, (id, source)) in objects[..prospective_count].iter().enumerate() {
-            if position != 0 && index.find(backend, *id, original, boundary)?.is_some() {
+            if position != 0
+                && index
+                    .find_for_group(backend, *id, original, &mut presence, boundary)?
+                    .is_some()
+            {
                 count = position;
                 break;
             }
@@ -155,6 +162,9 @@ pub(super) fn publish_prefix(
                 boundary,
             )?;
         }
+        // This buffer overlaps source copying, but never prefix compaction or
+        // the replacement traversal's independently admitted page buffers.
+        drop(presence.take());
         if count != prospective_count {
             entries.retain(|entry| objects[..count].iter().any(|(id, _)| *id == entry.id));
             let header_bytes =
@@ -230,6 +240,8 @@ pub(super) fn publish_prefix(
         )?;
         checked_reader::check(original, boundary)
     })();
+    // Preserve the actual work result while storage closes before cleanup.
+    drop(presence);
     let cleanup = staging.cleanup();
     let result = record_cleanup(work, cleanup, progress);
     drop(bytes);

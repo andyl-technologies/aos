@@ -156,6 +156,17 @@ where
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn cpu_write_observation(
+        &mut self,
+        guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        resident: crucible_ram::ResourceLoan,
+    ) -> Result<crate::qmp::QemuCpuWriteObservation, QemuNodeChannelError> {
+        self.client
+            .cpu_write_observation(guard, resident)
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn performance_observation(
         &mut self,
         guard: &crucible_linux_resource::host_supervision::HostOperationGuard,

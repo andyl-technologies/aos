@@ -62,7 +62,10 @@ impl<S: QmpTimeoutStream> QmpClient<S> {
         })
     }
 
-    fn performance_paused(&mut self, guard: &HostOperationGuard) -> Result<(), QmpError> {
+    pub(super) fn performance_paused(
+        &mut self,
+        guard: &HostOperationGuard,
+    ) -> Result<(), QmpError> {
         let response = self.exchange_under(QmpCommand::QueryStatus, guard)?;
         if response.value.get("status").and_then(Value::as_str) != Some("paused")
             || response.value.get("running").and_then(Value::as_bool) != Some(false)
@@ -74,7 +77,7 @@ impl<S: QmpTimeoutStream> QmpClient<S> {
         Ok(())
     }
 
-    fn performance_text(
+    pub(super) fn performance_text(
         &mut self,
         command: &'static str,
         guard: &HostOperationGuard,
@@ -90,7 +93,7 @@ impl<S: QmpTimeoutStream> QmpClient<S> {
     }
 }
 
-fn parse_window<const N: usize>(text: &str, base: u64) -> Result<[u8; N], QmpError> {
+pub(super) fn parse_window<const N: usize>(text: &str, base: u64) -> Result<[u8; N], QmpError> {
     let invalid = || QmpError::InvalidBound {
         operation: "fixed physical RAM observation window",
     };

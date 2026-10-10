@@ -451,3 +451,152 @@ fn unordered_private_group_refuses_before_page_io() -> Result<(), FixtureError> 
     assert_eq!(fixture.usage()?, baseline);
     Ok(())
 }
+
+#[test]
+fn paid_pages_reuse_actual_loans_through_leaf_and_parent_work() -> Result<(), FixtureError> {
+    let fixture = Fixture::new()?;
+    let baseline = fixture.usage()?;
+    {
+        let snapshot = seeded(&fixture, 65)?;
+        let mut operation = Operation {
+            original: Some(&fixture.original),
+            boundary: &mut || Ok(()),
+        };
+        let mut update = Update::new(&snapshot, &fixture.backend, &mut operation)?;
+        let _controls = operation.reserve_array::<BatchControls>(1)?;
+        let rows = [1, 3].map(|ordinal| Row {
+            key: Key::object(object(ordinal)),
+            value: value(ordinal),
+        });
+        let task = root_task(&update, rows.len());
+        let mut scratch = PageScratch::default();
+        let Prepared::Branch(mut frame) =
+            update.prepare_page(&fixture.backend, task, &rows, &mut scratch, &mut operation)?
+        else {
+            panic!("seeded root has a branch");
+        };
+        let child = frame
+            .next(&rows)?
+            .expect("two insertions share the first leaf");
+        let Prepared::Leaf(first) =
+            update.prepare_page(&fixture.backend, child, &rows, &mut scratch, &mut operation)?
+        else {
+            panic!("seeded child is a leaf");
+        };
+        let usage = fixture.usage()?;
+
+        // The actual resource issuer now rejects every new PAGE_BYTES loan.
+        // Repeated leaf output and fresh parent reads must use the paid bodies.
+        fixture.refuse_page_reservations();
+        let Prepared::Leaf(second) =
+            update.prepare_page(&fixture.backend, child, &rows, &mut scratch, &mut operation)?
+        else {
+            panic!("the same authenticated old child remains a leaf");
+        };
+        assert_eq!(fixture.usage()?, usage);
+        assert_eq!(
+            first.first.expect("first output").reference.records,
+            split_count(child.reference.records as usize + rows.len())? as u64
+        );
+        frame.accept(second)?;
+        assert!(frame.next(&rows)?.is_none());
+        let parent =
+            update.finish_branch(&fixture.backend, &frame, &mut scratch, &mut operation)?;
+        assert_eq!(parent.first.expect("parent output").reference.records, 67);
+        assert_eq!(fixture.usage()?, usage);
+    }
+    assert_eq!(fixture.usage()?, baseline);
+    Ok(())
+}
+
+#[test]
+fn reused_input_reauthenticates_parent_and_duplicate_precedes_output_debit()
+-> Result<(), FixtureError> {
+    let fixture = Fixture::new()?;
+    let baseline = fixture.usage()?;
+    {
+        let snapshot = seeded(&fixture, 65)?;
+        let mut operation = Operation {
+            original: Some(&fixture.original),
+            boundary: &mut || Ok(()),
+        };
+        let mut update = Update::new(&snapshot, &fixture.backend, &mut operation)?;
+        let _controls = operation.reserve_array::<BatchControls>(1)?;
+        let rows = [Row {
+            key: Key::object(object(0)),
+            value: value(0),
+        }];
+        let task = root_task(&update, rows.len());
+        let mut scratch = PageScratch::default();
+        let Prepared::Branch(mut frame) =
+            update.prepare_page(&fixture.backend, task, &rows, &mut scratch, &mut operation)?
+        else {
+            panic!("seeded root has a branch");
+        };
+        let child = frame.next(&rows)?.expect("existing row has a child");
+        let usage = fixture.usage()?;
+        fixture.refuse_page_reservations();
+        assert!(matches!(
+            update.prepare_page(&fixture.backend, child, &rows, &mut scratch, &mut operation),
+            Err(StoreError::InvalidComposition {
+                reason: "Packed insertion requires confirmed absence"
+            })
+        ));
+        assert!(scratch.output.is_none());
+        assert!(!update.uncommitted_backing());
+        assert_eq!(fixture.usage()?, usage);
+
+        // A retained input buffer must not turn its previous root contents into
+        // an authentication cache after child work.
+        update
+            .arena
+            .file()?
+            .write_all_at(&[0], task.reference.offset)?;
+        assert!(matches!(
+            update.finish_branch(&fixture.backend, &frame, &mut scratch, &mut operation),
+            Err(StoreError::Incompatible)
+        ));
+        assert_eq!(fixture.usage()?, usage);
+    }
+    assert_eq!(fixture.usage()?, baseline);
+    Ok(())
+}
+
+fn root_task(update: &Update, end: usize) -> PageTask {
+    let Root::Page(reference) = update.root else {
+        panic!("seeded root owns a page");
+    };
+    PageTask {
+        reference,
+        root: true,
+        lower: None,
+        upper: None,
+        start: 0,
+        end,
+    }
+}
+
+#[test]
+fn retained_page_refuses_revoked_original_without_another_reservation() -> Result<(), FixtureError>
+{
+    let fixture = Fixture::new()?;
+    let mut operation = Operation {
+        original: Some(&fixture.original),
+        boundary: &mut || Ok(()),
+    };
+    let _controls = operation.reserve_array::<BatchControls>(1)?;
+    let mut scratch = PageScratch::default();
+    page_buffer(&mut scratch.input, &operation)?;
+    fixture.close_original();
+
+    let error = page_buffer(&mut scratch.input, &operation)
+        .err()
+        .expect("retained storage does not renew the original owner");
+    assert!(matches!(error, StoreError::DecodeAdmission { .. }));
+    assert!(matches!(error.original_failure(), StoreError::Unauthorized));
+    assert!(scratch.input.is_some());
+    assert!(scratch.output.is_none());
+    // The final callback still refuses through the same saved original.
+    assert!(operation.check().is_err());
+    Ok(())
+}

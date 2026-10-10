@@ -31,6 +31,27 @@ class LogControls(unittest.TestCase):
         evidence.validate(fixture(), "oracle-positive")
         evidence.validate(fixture(True), "notification-adversary")
 
+    def test_matrix_profile_binding_is_required_exact_and_single_use(self):
+        line = "complete_write_oracle_profile name=vector128 arena_bytes=8192"
+        evidence.validate(fixture() + [line], "oracle-positive", "vector128")
+        for rows, profile in [(fixture(), "vector128"), (fixture() + [line], "scalar32"),
+                              (fixture() + [line, line], "vector128"),
+                              (fixture() + [line], "unlisted")]:
+            with self.subTest(profile=profile, rows=len(rows)):
+                with self.assertRaises(ValueError):
+                    evidence.validate(rows, "oracle-positive", profile)
+
+    def test_extended_profiles_bind_exact_names_and_retain_all_required_events(self):
+        for profile in evidence.PROFILES[15:]:
+            line = f"complete_write_oracle_profile name={profile} arena_bytes=8192"
+            with self.subTest(profile=profile):
+                evidence.validate(fixture() + [line], "oracle-positive", profile)
+                evidence.validate(fixture(True) + [line], "notification-adversary", profile)
+                with self.assertRaises(ValueError):
+                    evidence.validate(fixture()[1:] + [line], "oracle-positive", profile)
+                with self.assertRaises(ValueError):
+                    evidence.validate(fixture() + [line], "oracle-positive", "vector128")
+
     def test_every_required_event_is_mandatory(self):
         original = fixture(True)
         for index in range(len(original)):

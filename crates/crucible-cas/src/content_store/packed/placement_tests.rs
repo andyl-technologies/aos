@@ -73,6 +73,12 @@ impl Fixture {
         self.quota.closed.store(true, Ordering::SeqCst);
     }
 
+    pub(super) fn refuse_page_reservations(&self) {
+        self.quota
+            .refuse_page_reservation
+            .store(true, Ordering::SeqCst);
+    }
+
     pub(super) fn new() -> Result<Self, FixtureError> {
         let directory = TempDir::new()?;
         let backend = PackedBlobBackend::open(

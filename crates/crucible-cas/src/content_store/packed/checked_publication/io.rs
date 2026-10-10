@@ -256,14 +256,21 @@ pub(in crate::content_store::packed) fn copy(
     checked_reader::check(original, boundary)?;
     let mut reader = BlobSource::open_with_boundary(source, original, boundary)?;
     let source_original = reader.original_account().clone();
+    // Keep one surplus byte for short sources: an oversized first read must
+    // refuse before any declared prefix is written to staging. Large sources
+    // retain the existing 64 KiB streaming bound and every original cut.
+    let capacity = source
+        .logical_length()
+        .min((checked_io::READ_BYTES - 1) as u64) as usize
+        + 1;
     let _credit = source_original
-        .reserve_scratch_bytes(checked_io::READ_BYTES as u64)
+        .reserve_scratch_bytes(capacity as u64)
         .map_err(|error| batch::admission_under(&source_original, error))?;
     let mut bytes = Vec::new();
     bytes
-        .try_reserve_exact(checked_io::READ_BYTES)
+        .try_reserve_exact(capacity)
         .map_err(|error| batch::allocation_under(&source_original, error))?;
-    bytes.resize(checked_io::READ_BYTES, 0);
+    bytes.resize(capacity, 0);
     let mut hasher = (source.authenticated_id != Some(id)
         || reader.full_eof_identity() != Some(id))
     .then(|| content_hasher(id.kind(), id.schema_version(), source.logical_length()));
@@ -381,3 +388,6 @@ pub(in crate::content_store::packed) fn compare(
     }
     checked_reader::check(original, boundary)
 }
+
+#[cfg(test)]
+mod tests;

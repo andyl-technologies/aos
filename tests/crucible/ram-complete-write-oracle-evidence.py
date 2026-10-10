@@ -22,6 +22,18 @@ BASELINE = re.compile(r"complete_write_oracle_baseline raw=1 hash=[0-9a-f]{64}")
 FIRST_ROOT = re.compile(r"complete_write_oracle_first raw=700000 hash=[0-9a-f]{64}")
 WRITE = re.compile(r"complete_write_oracle_write raw=1400000 before=([0-9a-f]{16}) after=([0-9a-f]{16})")
 
+PROFILES = [
+    "scalar8", "scalar16", "scalar32", "unaligned32", "cross-page32",
+    "exchange8", "exchange16", "exchange32", "unaligned-exchange32", "cross-page-exchange32",
+    "compare-exchange64", "failed-compare-exchange32",
+    "vector128", "unaligned-vector128", "cross-page-vector128",
+    "locked-add8", "locked-add16", "locked-add32", "unaligned-locked-add32",
+    "cross-page-locked-add32", "locked-xadd32", "unaligned-locked-xadd32",
+    "cross-page-locked-xadd32", "successful-compare-exchange32",
+    "cross-page-successful-compare-exchange32", "unaligned-compare-exchange64",
+    "cross-page-compare-exchange64", "compound-two-store32",
+]
+
 
 def records(stream):
     while first := stream.readline(MAX_RECORD + 1):
@@ -38,9 +50,11 @@ def records(stream):
             yield first.rstrip(b"\n").decode("ascii")
 
 
-def validate(lines, role):
+def validate(lines, role, profile=None):
     if role not in ["oracle-positive", "notification-adversary"]:
         raise ValueError("explicit fixed artifact role required")
+    if profile is not None and profile not in PROFILES:
+        raise ValueError("explicit closed CPU profile required")
     negative = role == "notification-adversary"
     phase = 0
     owners = []
@@ -85,9 +99,11 @@ def validate(lines, role):
             phase = 6
         elif phase == 6 and line == "complete_write_oracle_cleanup reaped=true resources_restored=true":
             phase = 7
+        elif phase == 7 and profile is not None and line == f"complete_write_oracle_profile name={profile} arena_bytes=8192":
+            phase = 8
         else:
             raise ValueError("unexpected, duplicated, stale or out-of-order oracle record")
-    if phase != 7 or len(owners) != 2:
+    if phase != (8 if profile is not None else 7) or len(owners) != 2:
         raise ValueError("incomplete genuine baseline/write/comparison/cleanup evidence")
 
 
@@ -95,9 +111,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--role", choices=["oracle-positive", "notification-adversary"], required=True)
+    parser.add_argument("--profile", required=True, choices=PROFILES)
     args = parser.parse_args()
     with args.log.open("rb") as stream:
-        validate(records(stream), args.role)
+        validate(records(stream), args.role, args.profile)
     print("COMPLETE_WRITE_ORACLE_ONE_CPU_LOG_CONTRACT_PASS")
 
 

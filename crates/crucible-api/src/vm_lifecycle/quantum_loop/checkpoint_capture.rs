@@ -802,7 +802,7 @@ fn cleanup_exact_captures_with<T, E>(
     first_error.map_or(Ok(()), Err)
 }
 
-fn finish_exact_checkpoint_transaction(
+pub(super) fn finish_exact_checkpoint_transaction(
     publications: &mut BTreeMap<ContentHash, ExactCheckpointPublicationState>,
     configuration: ContentHash,
     result: Result<ContentHash, ExactCheckpointTransactionError>,
