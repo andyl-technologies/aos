@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod executor;
+pub mod credentials;
 pub mod remote;
 
 #[cfg(test)]

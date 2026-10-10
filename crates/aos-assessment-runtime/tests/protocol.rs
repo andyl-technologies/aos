@@ -19,6 +19,61 @@ fn now() -> Result<Timestamp> {
 }
 
 #[test]
+fn installed_credentials_require_exact_partition_provider_version_and_current_authority()
+-> Result<()> {
+    use aos_assessment_runtime::credentials::{SourceCredentialGrant, SourceCredentialSetV1};
+    let mut work = plan()?;
+    work.operation = ProviderOperation::ObserveTags {
+        repository: "example/fixture".into(),
+        tag_prefix: "v".into(),
+        page: 1,
+    };
+    work.adapter_version = work.operation.adapter_version().into();
+    work.credential_ref = Some("github-read-v1".into());
+    let grants = SourceCredentialSetV1 {
+        schema: "aos.assessment-source-credentials/v1".into(),
+        grants: vec![SourceCredentialGrant {
+            reference: "github-read-v1".into(),
+            partition: work.authorization_partition.clone(),
+            provider: "github-tags".into(),
+            secret_binding: "ASSESSMENT_GITHUB_V1".into(),
+            expires_at: Timestamp::from_unix_seconds(now()?.unix_seconds() + 60)?,
+        }],
+    };
+    assert_eq!(
+        grants.resolve(&work, &now()?)?.secret_binding,
+        "ASSESSMENT_GITHUB_V1"
+    );
+    let mut changed = work.clone();
+    changed.authorization_partition = "other-partition".into();
+    assert!(grants.resolve(&changed, &now()?).is_err());
+    changed = work.clone();
+    changed.credential_ref = Some("github-read-v2".into());
+    assert!(grants.resolve(&changed, &now()?).is_err());
+    changed = work.clone();
+    changed.operation = ProviderOperation::ObserveReleases {
+        repository: "example/fixture".into(),
+        tag_prefix: "v".into(),
+        page: 1,
+    };
+    assert!(grants.resolve(&changed, &now()?).is_err());
+    let mut expired = grants.clone();
+    expired.grants[0].expires_at = now()?;
+    assert!(expired.resolve(&work, &now()?).is_err());
+    let bytes = aos_contract::canonical::to_vec(&grants)?;
+    assert_eq!(SourceCredentialSetV1::from_slice(&bytes)?, grants);
+    for suffix in [",\"unexpected\":true}", ",\"grants\":[]}"] {
+        let mut ambiguous = bytes[..bytes.len() - 1].to_vec();
+        ambiguous.extend_from_slice(suffix.as_bytes());
+        assert!(SourceCredentialSetV1::from_slice(&ambiguous).is_err());
+    }
+    let mut unsafe_binding = grants;
+    unsafe_binding.grants[0].secret_binding = "https://unrelated.invalid/secret".into();
+    assert!(unsafe_binding.validate().is_err());
+    Ok(())
+}
+
+#[test]
 fn conditional_revalidation_preserves_the_admitted_original_source_time_and_exact_validators()
 -> Result<()> {
     use aos_assessment::observation::HttpValidators;
