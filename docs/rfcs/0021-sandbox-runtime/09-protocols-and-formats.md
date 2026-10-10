@@ -52,10 +52,12 @@ observation sequence and reconciliation time.
 
 Source-only checked projections validate the complete established protobuf
 resource, phase and placement legality, condition correlation, bounds, and
-public/operator redaction before a service or CLI may return it. The pure Get
-and watch handler is deliberately not registered with the production Connect
-router. These models define no second public schema, grant no read authority,
-and activate no point-read, watch, audit, or mutation route.
+public/operator redaction before a service or CLI may return it.
+The Protocol checked models and bounded watch reducer remain canonical. The
+unregistered generic Get/watch facade is removed; a truthful protected
+observation and event-history producer, and its production qualification,
+remain unfinished. These models define no second public schema, grant no read
+authority, and activate no point-read, watch, audit, or mutation route.
 
 ### Runtime and guest-agent source status
 

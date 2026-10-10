@@ -1,4 +1,4 @@
-//! Native projection queries and dormant public-observation handlers.
+//! Native journal queries for public projections.
 //!
 //! HTTP assembly lives in sandbox-services. Protected runtime integration
 //! lives in sandbox-controller-runtime; Controller Journal admission and
