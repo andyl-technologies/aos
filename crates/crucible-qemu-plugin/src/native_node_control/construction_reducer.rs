@@ -121,9 +121,11 @@ impl NativeConstructionReducer {
             return Err(NativeCommandError::ResourceLimit);
         }
 
-        let frame = actor
-            .original_frame(cursor)
-            .map_err(|_| NativeCommandError::Conflict)?;
+        let frame = match actor.original_frame(cursor) {
+            Ok(frame) => frame,
+            Err(NativeAdministrativeInboxError::Busy) => return Ok(false),
+            Err(_) => return Err(NativeCommandError::Conflict),
+        };
         if !matches!(
             frame,
             NativeFrame::QueryInitialization(_)
@@ -134,9 +136,11 @@ impl NativeConstructionReducer {
             state.failed = true;
             return Err(NativeCommandError::Conflict);
         }
-        let credit = actor
-            .reserve_construction_reply(cursor)
-            .map_err(|_| NativeCommandError::Conflict)?;
+        let credit = match actor.reserve_construction_reply(cursor) {
+            Ok(credit) => credit,
+            Err(NativeAdministrativeInboxError::Busy) => return Ok(false),
+            Err(_) => return Err(NativeCommandError::Conflict),
+        };
         if credit.cursor() != cursor {
             state.failed = true;
             return Err(NativeCommandError::Conflict);

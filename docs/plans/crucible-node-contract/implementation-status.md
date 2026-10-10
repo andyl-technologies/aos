@@ -974,6 +974,14 @@ and ten-crate all-target strict checks. All 23 owned Rust files pass formatting.
 This stage covers proof-bearing pending/staged recorded Block custody; it adds no initial-runtime,
 9p, physical-ingress, replay/fork or cold-debug authority.
 
+Temporary administrative mailbox contention now leaves the original construction
+request pending before command, record or reply-credit admission. A real socket
+regression holds the mailbox mutex, checks unchanged request bytes and cursor,
+then admits that same request after release. The predecessor fails this case;
+central verification passes all 671 plugin cases, 37 current-source hygiene
+cases, plugin all-target strict checks and both owned-file formatting checks.
+This transport correction establishes no additional native readiness authority.
+
 The complete 49-path controller suite passes 6,536 cases with 230 skipped. Its
 combined ABI/license gate subsequently fails because the packaging identity
 probe omitted the required `patch` argument when importing the QEMU recipe.

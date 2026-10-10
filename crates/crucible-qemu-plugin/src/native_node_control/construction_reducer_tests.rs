@@ -257,6 +257,32 @@ fn identical_scope_on_another_actual_inbox_does_not_adopt_original_native_custod
 }
 
 #[test]
+fn busy_original_packet_stays_pending_before_command_or_credit_admission() {
+    let (initializer, command, _) = fixture();
+    let initializer = Arc::new(initializer);
+    let (host, actor) = inbox(&initializer);
+    let reducer =
+        NativeConstructionReducer::new(Arc::clone(&actor), Arc::clone(&initializer), None, 8)
+            .unwrap();
+    let frame = NativeFrame::Initialize(Box::new(command));
+    let cursor = receive(&host, &actor, &frame);
+    let original_bytes = actor.original(cursor).unwrap();
+    let held = actor.test_hold_mailbox();
+
+    assert!(!reducer.try_admit(&actor, cursor).unwrap());
+    assert!(reducer.state.lock().unwrap().requests.is_empty());
+    assert!(initializer.command().is_none());
+    assert!(host.receive().unwrap().is_none());
+    drop(held);
+
+    assert_eq!(actor.original(cursor).unwrap(), original_bytes);
+    assert!(reducer.try_admit(&actor, cursor).unwrap());
+    assert_eq!(reducer.state.lock().unwrap().requests[0].cursor, cursor);
+    assert!(initializer.command().is_some());
+    assert!(host.receive().unwrap().is_none());
+}
+
+#[test]
 fn native_reply_seam_does_not_wait_for_busy_inbox_or_abandon_original_credit() {
     let (initializer, command, raw_receipt) = fixture();
     let initializer = Arc::new(initializer);
