@@ -1041,14 +1041,14 @@ in {
           mkdir -p /var/tmp/aos-publication-system
           set -- {UPGRADE_UKI}/*.efi
           test "$#" -eq 1
-          candidate_uki="$1"
+          test -s "$1"
           {APR} release 3.0.0 --registry production \\
             --store-path {UPGRADE_TOPLEVEL} --name aos --version test-2 \\
             --sysroot --previous 0.1.0 \\
             --image-payload {UPGRADE_IMAGE} \\
             --image-disk {UPGRADE_IMAGE_DISK} \\
             --image-info {UPGRADE_IMAGE_INFO} --image-format raw \\
-            --image-uki "$candidate_uki" \\
+            --image-contract-schema aos.image.metadata/v1 \\
             --description 'AOS native Hub system upgrade fixture' --license MIT \\
             --maintainer publisher@example.test --key-id initial \\
             --channel stable --count 256 --cache-url {REGISTRY} \\
