@@ -331,6 +331,10 @@ in {
   integration.native-index-rebuild = import ./native-index-rebuild.nix {sourceGate = nativeSdkGate;};
   integration.native-index-backfill = import ./native-index-backfill.nix {sourceGate = nativeSdkGate;};
   integration.native-index-locality = import ./native-index-locality.nix {sourceGate = nativeSdkGate;};
+  integration.native-index-populations = import ./native-index-populations.nix {
+    sourceGate = nativeSdkGateWithInputs {extraBuildDeps = [pkgs.coreutils];};
+    coreutils = pkgs.coreutils;
+  };
   integration.native-memo-persistence = import ./native-memo-persistence.nix {sourceGate = nativeSdkGate;};
   integration.native-memo-retention = import ./native-memo-retention.nix {sourceGate = nativeSdkGate;};
   integration.native-source-preserving-retirement = nativeForkPrerequisites.sourcePreservation;
