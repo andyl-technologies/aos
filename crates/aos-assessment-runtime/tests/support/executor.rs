@@ -72,6 +72,7 @@ impl SourceTransport for RemainingBudgetSource {
             body: self.first.clone(),
             transferred_bytes: self.first.len() as u64,
             validators: None,
+            throttle: Default::default(),
         })
     }
 }
@@ -129,10 +130,167 @@ impl Source {
                 transferred_bytes: body.len() as u64,
                 body,
                 validators: None,
+                throttle: Default::default(),
             }])),
             requests: Mutex::new(vec![]),
         }
     }
+}
+
+#[tokio::test]
+async fn throttled_batches_stop_and_bind_cooldown_to_the_exact_failed_observation() -> Result<()> {
+    let mut plan = super::plan()?;
+    plan.operation = ProviderOperation::RetrieveAdvisories {
+        project: "fixture-query".into(),
+        ids: vec!["OSV-2026-1".into(), "OSV-2026-2".into()],
+    };
+    plan.adapter_version = plan.operation.adapter_version().into();
+    plan.budget_reservation.requests = 2;
+    plan.limits.requests = 2;
+    plan.limits.concurrency = 1;
+    let source = Source::new(429, b"rate limited".to_vec());
+    source.responses.lock().expect("fixture queue")[0]
+        .throttle
+        .retry_after = Some("7200".into());
+    let result = execute_source(
+        &source,
+        &Custody::default(),
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+
+    assert_eq!(source.requests.lock().expect("fixture requests").len(), 1);
+    assert_eq!(result.usage.requests, 1);
+    assert_eq!(result.outcome, WorkOutcome::Failed);
+    let retry = result.retry.as_ref().expect("source cooldown");
+    assert_eq!(retry.status, 429);
+    assert_eq!(retry.source_digest, Sha256Digest::of_bytes("rate limited"));
+    assert_eq!(retry.not_before.elapsed_since(&retry.observed_at)?, 7200);
+    result.validate_for(&plan, &FixedClock.now()?)?;
+
+    let mut changed = result.clone();
+    changed
+        .retry
+        .as_mut()
+        .expect("source cooldown")
+        .source_digest = Sha256Digest::of_bytes("substituted response");
+    assert!(changed.validate_for(&plan, &FixedClock.now()?).is_err());
+    changed = result.clone();
+    changed.retry.as_mut().expect("source cooldown").status = 503;
+    assert!(changed.validate_for(&plan, &FixedClock.now()?).is_err());
+    changed = result.clone();
+    changed.normalized_objects.clear();
+    changed.observation_refs.clear();
+    assert!(changed.validate_for(&plan, &FixedClock.now()?).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn ordinary_denials_have_no_cooldown_and_explicit_github_throttling_does() -> Result<()> {
+    let mut plan = super::plan()?;
+    plan.operation = ProviderOperation::ObserveTags {
+        repository: "example/fixture".into(),
+        tag_prefix: "v".into(),
+        page: 1,
+    };
+    plan.adapter_version = plan.operation.adapter_version().into();
+    let source = Source::new(403, b"forbidden".to_vec());
+    let denied = execute_source(
+        &source,
+        &Custody::default(),
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+    assert!(denied.retry.is_none());
+    assert_eq!(denied.diagnostics, ["source-http-403"]);
+
+    let source = Source::new(403, b"rate limited".to_vec());
+    source.responses.lock().expect("fixture queue")[0].throttle = SourceThrottleHeaders {
+        rate_limit_remaining: Some("0".into()),
+        rate_limit_reset: Some((FixedClock.now()?.unix_seconds() + 3600).to_string()),
+        ..Default::default()
+    };
+    let throttled = execute_source(
+        &source,
+        &Custody::default(),
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+    assert_eq!(
+        throttled.diagnostics,
+        ["provider-rate-limited", "source-http-403"]
+    );
+    assert_eq!(
+        throttled
+            .retry
+            .as_ref()
+            .expect("explicit rate limit")
+            .not_before
+            .elapsed_since(&FixedClock.now()?)?,
+        3600
+    );
+    throttled.validate_for(&plan, &FixedClock.now()?)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn outage_after_a_valid_record_preserves_positive_evidence_and_stops_the_batch() -> Result<()>
+{
+    let mut plan = super::plan()?;
+    plan.operation = ProviderOperation::RetrieveAdvisories {
+        project: "fixture-query".into(),
+        ids: vec![
+            "OSV-2026-1".into(),
+            "OSV-2026-2".into(),
+            "OSV-2026-3".into(),
+        ],
+    };
+    plan.adapter_version = plan.operation.adapter_version().into();
+    plan.budget_reservation.requests = 3;
+    plan.limits.requests = 3;
+    plan.limits.concurrency = 1;
+    let source = Source::new(503, b"unavailable".to_vec());
+    let body = br#"{"schema_version":"1.9.1","id":"OSV-2026-1","modified":"2026-10-09T01:00:00Z","affected":[{"package":{"ecosystem":"crates.io","name":"fixture"},"versions":["1.2.0"]}]}"#.to_vec();
+    source
+        .responses
+        .lock()
+        .expect("fixture queue")
+        .push_front(SourceResponse {
+            status: 200,
+            transferred_bytes: body.len() as u64,
+            body,
+            validators: None,
+            throttle: Default::default(),
+        });
+
+    let result = execute_source(
+        &source,
+        &Custody::default(),
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+    assert_eq!(source.requests.lock().expect("fixture requests").len(), 2);
+    assert_eq!(result.usage.requests, 2);
+    assert_eq!(result.outcome, WorkOutcome::Partial);
+    assert!(!result.coverage.is_complete());
+    assert_eq!(result.diagnostics, ["source-http-503"]);
+    assert!(result.normalized_objects.iter().any(|projection| matches!(
+        &projection.object, NormalizedObject::Advisory(record) if record.id == "OSV-2026-1"
+    )));
+    result.validate_for(&plan, &FixedClock.now()?)?;
+    Ok(())
 }
 
 #[async_trait::async_trait]

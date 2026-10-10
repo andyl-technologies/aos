@@ -12,20 +12,24 @@ use aos_contract::Sha256Digest;
 use crate::backend::{CheckedStatement, Statement};
 use crate::db::Database;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod retry_tests;
+
 /// Separates upstream outages from invalid questions and incomplete enumeration.
 pub(super) fn indicates_outage(result: &ProviderWorkResultV1) -> bool {
     matches!(result.outcome, WorkOutcome::Failed | WorkOutcome::Partial)
-        && result.diagnostics.iter().any(|code| {
-            code == "source-request-incomplete"
-                || code == "source-http-429"
-                || code.strip_prefix("source-http-").is_some_and(|status| {
-                    status.len() == 3
-                        && status.bytes().all(|byte| byte.is_ascii_digit())
-                        && status
-                            .parse::<u16>()
-                            .is_ok_and(|status| (500..=599).contains(&status))
-                })
-        })
+        && (result.retry.is_some()
+            || result.diagnostics.iter().any(|code| {
+                code == "source-request-incomplete"
+                    || code == "source-http-429"
+                    || code.strip_prefix("source-http-").is_some_and(|status| {
+                        status.len() == 3
+                            && status.bytes().all(|byte| byte.is_ascii_digit())
+                            && status
+                                .parse::<u16>()
+                                .is_ok_and(|status| (500..=599).contains(&status))
+                    })
+            }))
 }
 
 impl Database {
@@ -36,6 +40,7 @@ impl Database {
     pub(super) fn assessment_provider_failure_budget_statement(
         &self,
         claim: &TaskClaim,
+        retry_not_before: Option<&aos_assessment::time::Timestamp>,
     ) -> Result<CheckedStatement> {
         let clock = self.backend.dialect().unix_time_expression();
         let jitter = u32::from(
@@ -54,14 +59,17 @@ impl Database {
             ELSE 3600 END"
         );
         let circuit_delay = format!("CASE WHEN ({delay}) < 300 THEN 300 ELSE ({delay}) END");
+        let eligible =
+            format!("CASE WHEN ?5 > {clock} + ({delay}) THEN ?5 ELSE {clock} + ({delay}) END");
+        let circuit = format!("CASE WHEN ?5 > {clock} + ({circuit_delay}) THEN ?5 ELSE {clock} + ({circuit_delay}) END");
         Ok(Statement::new(
             format!(
                 "UPDATE assessment_source_budgets SET
-                 next_eligible_at = CASE WHEN next_eligible_at > {clock} + ({delay})
-                    THEN next_eligible_at ELSE {clock} + ({delay}) END,
+                 next_eligible_at = CASE WHEN next_eligible_at > ({eligible})
+                    THEN next_eligible_at ELSE ({eligible}) END,
                  circuit_until = CASE WHEN failure_count >= 4 THEN
-                    CASE WHEN circuit_until > {clock} + ({circuit_delay})
-                         THEN circuit_until ELSE {clock} + ({circuit_delay}) END
+                    CASE WHEN circuit_until > ({circuit})
+                         THEN circuit_until ELSE ({circuit}) END
                     ELSE circuit_until END,
                  failure_count = CASE WHEN failure_count < 20 THEN failure_count + 1 ELSE 20 END,
                  resource_version = resource_version + 1
@@ -77,7 +85,8 @@ impl Database {
                 claim.scan_id,
                 claim.task_id,
                 claim.attempt,
-                claim.generation
+                claim.generation,
+                retry_not_before.map_or(0, aos_assessment::time::Timestamp::unix_seconds)
             ],
         )
         .expecting(1))

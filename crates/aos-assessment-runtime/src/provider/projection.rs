@@ -161,6 +161,9 @@ pub struct ProviderWorkResultV1 {
     pub continuation: Option<Sha256Digest>,
     /// Physical usage checked against the current reservation and limits.
     pub usage: ProviderUsage,
+    /// Exact bounded source cooldown, admitted atomically with this result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<super::ProviderRetryV1>,
     /// Executor completion time validated within the plan window.
     pub completed_at: Timestamp,
     /// Sorted stable sanitized diagnostic codes; raw response text is absent.
@@ -359,6 +362,26 @@ impl ProviderWorkResultV1 {
         }
         if self.outcome == WorkOutcome::Failed && self.diagnostics.is_empty() {
             bail!("failed provider outcome lacks a diagnostic");
+        }
+        if let Some(retry) = &self.retry {
+            retry.validate()?;
+            let status_code = format!("source-http-{}", retry.status);
+            if !matches!(self.outcome, WorkOutcome::Failed | WorkOutcome::Partial)
+                || retry.observed_at < plan.issued_at
+                || retry.observed_at > self.completed_at
+                || self.diagnostics.binary_search(&status_code).is_err()
+                || (retry.status == 403
+                    && (!matches!(plan.operation.provider(), "github-releases" | "github-tags")
+                        || self.diagnostics.binary_search(&"provider-rate-limited".into()).is_err()))
+                || !self.normalized_objects.iter().any(|projection| {
+                    matches!(&projection.object, NormalizedObject::Observation(observation)
+                        if observation.response_digest == retry.source_digest
+                        && observation.validated_at == retry.observed_at
+                        && matches!(&observation.coverage, ProviderCoverage::Unknown { reason } if reason == &status_code))
+                })
+            {
+                bail!("source cooldown differs from its exact failed response observation");
+            }
         }
         Ok(())
     }

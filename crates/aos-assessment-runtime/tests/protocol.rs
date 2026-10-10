@@ -475,6 +475,7 @@ fn result(plan: &ProviderWorkPlanV1) -> Result<ProviderWorkResultV1> {
             decompressed_bytes: raw.len() as u64,
             duration_milliseconds: 10,
         },
+        retry: None,
         completed_at: now()?,
         diagnostics: vec![],
     })

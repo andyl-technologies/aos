@@ -413,6 +413,7 @@ pub(super) fn failure(plan: &ProviderWorkPlanV1) -> Result<ProviderWorkResultV1>
             requests: 1,
             ..Default::default()
         },
+        retry: None,
         completed_at: plan.issued_at.clone(),
         diagnostics: vec!["provider-unavailable".into()],
     })

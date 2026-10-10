@@ -63,6 +63,7 @@ impl SourceTransport for EmptyTags {
             body: b"[]".to_vec(),
             transferred_bytes: 2,
             validators: None,
+            throttle: Default::default(),
         })
     }
 }

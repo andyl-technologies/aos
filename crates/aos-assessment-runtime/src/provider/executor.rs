@@ -16,6 +16,7 @@ use aos_assessment::time::Timestamp;
 use aos_assessment_providers::{kev, nvd, osv, upstream};
 use aos_contract::Sha256Digest;
 
+use super::throttle::source_retry;
 use super::{
     AdvisoryRevisionReference, NormalizedObject, ObjectProjection, PROVIDER_WORK_RESULT_V1,
     ProviderOperation, ProviderPageV1, ProviderUsage, ProviderWorkPlanV1, ProviderWorkResultV1,
@@ -34,6 +35,8 @@ pub struct SourceResponse {
     pub transferred_bytes: u64,
     /// Safe conditional validators from the final installed source response.
     pub validators: Option<HttpValidators>,
+    /// Bounded operational hints, parsed identically in every execution mode.
+    pub throttle: super::SourceThrottleHeaders,
 }
 
 /// Executes only requests selected by an authenticated installed source profile.
@@ -94,6 +97,7 @@ pub async fn execute_source<T: SourceTransport, E: EvidenceStore, C: Clock>(
     let mut continuation = None;
     let mut outcome = WorkOutcome::Observed;
     let mut coverage = complete();
+    let mut retry = None;
     for request in requests {
         plan.validate_at(&clock.now()?)?;
         let remaining = plan
@@ -203,11 +207,25 @@ pub async fn execute_source<T: SourceTransport, E: EvidenceStore, C: Clock>(
                 .checked_add(u64::from(observation_ttl_seconds))
                 .context("source observation expiry overflow")?,
         )?;
+        retry = source_retry(
+            plan.operation.provider(),
+            response.status,
+            &response.throttle,
+            source.digest,
+            &validated_at,
+        )?;
+        if response.status == 403 && retry.is_some() {
+            diagnostics.insert("provider-rate-limited".into());
+        }
 
         let mut projection = if response.status == 200 || response.status == 304 {
             normalize(plan, &request, &bytes, &retrieved_at)?
         } else {
-            outcome = WorkOutcome::Failed;
+            outcome = if objects.is_empty() {
+                WorkOutcome::Failed
+            } else {
+                WorkOutcome::Partial
+            };
             diagnostics.insert(format!("source-http-{}", response.status));
             Projection {
                 objects: vec![],
@@ -253,6 +271,11 @@ pub async fn execute_source<T: SourceTransport, E: EvidenceStore, C: Clock>(
                 }));
         }
         objects.extend(projection.objects);
+        // A batched question does not authorize hammering an unavailable source.
+        // Further records need a later coordinator reservation after cooldown.
+        if retry.is_some() || (500..=599).contains(&response.status) {
+            break;
+        }
     }
     let completed_at = clock.now()?;
     usage.duration_milliseconds =
@@ -290,6 +313,7 @@ pub async fn execute_source<T: SourceTransport, E: EvidenceStore, C: Clock>(
         coverage,
         continuation,
         usage,
+        retry,
         completed_at,
         diagnostics: diagnostics.into_iter().collect(),
     };

@@ -13,8 +13,8 @@ use aos_assessment_providers::{kev, nvd, osv, UPSTREAM_ADAPTER_VERSION};
 use aos_assessment_runtime::ports::{Clock, EvidenceStore};
 use aos_assessment_runtime::provider::{
     execute_source, ProviderCapabilitiesV1, ProviderLimits, ProviderWorkAuth, ProviderWorkPlanV1,
-    SourceMethod, SourceRequest, SourceResponse, SourceTransport, PROVIDER_CAPABILITIES_PATH,
-    PROVIDER_SIGNATURE_HEADER, PROVIDER_WORK_PATH,
+    SourceMethod, SourceRequest, SourceResponse, SourceThrottleHeaders, SourceTransport,
+    PROVIDER_CAPABILITIES_PATH, PROVIDER_SIGNATURE_HEADER, PROVIDER_WORK_PATH,
 };
 use aos_contract::Sha256Digest;
 use base64::Engine as _;
@@ -412,6 +412,14 @@ impl SourceTransport for WorkerSourceTransport {
                 bail!("source ignored the installed identity encoding profile");
             }
             let status = response.status_code();
+            let bounded_hint = |value: Option<String>| value.filter(|value| value.len() <= 128);
+            let throttle = SourceThrottleHeaders {
+                retry_after: bounded_hint(response.headers().get("retry-after")?),
+                rate_limit_remaining: bounded_hint(
+                    response.headers().get("x-ratelimit-remaining")?,
+                ),
+                rate_limit_reset: bounded_hint(response.headers().get("x-ratelimit-reset")?),
+            };
             let validators = HttpValidators {
                 etag: safe_validator(response.headers().get("etag")?)?,
                 last_modified: safe_validator(response.headers().get("last-modified")?)?,
@@ -427,6 +435,7 @@ impl SourceTransport for WorkerSourceTransport {
                 body,
                 validators: (validators.etag.is_some() || validators.last_modified.is_some())
                     .then_some(validators),
+                throttle,
             })
         };
         let deadline = worker::Delay::from(Duration::from_secs(

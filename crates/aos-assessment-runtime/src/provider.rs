@@ -19,6 +19,7 @@ mod executor;
 mod page;
 mod projection;
 mod requests;
+mod throttle;
 
 pub use auth::ProviderWorkAuth;
 pub use capabilities::{CapabilityChallenge, ProviderCapabilitiesV1};
@@ -28,6 +29,7 @@ pub use projection::{
     NormalizedObject, ObjectProjection, ProviderUsage, ProviderWorkResultV1, WorkOutcome,
 };
 pub use requests::{SourceMethod, SourceRequest};
+pub use throttle::{MAX_SOURCE_RETRY_SECONDS, ProviderRetryV1, SourceThrottleHeaders};
 
 use crate::scan::TaskClaim;
 use crate::validation::{decode, encoded, sorted, text};

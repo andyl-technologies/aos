@@ -70,6 +70,7 @@ impl SourceTransport for Source {
             transferred_bytes: bytes.len() as u64,
             body: bytes,
             validators: None,
+            throttle: Default::default(),
         })
     }
 }

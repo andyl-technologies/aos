@@ -90,6 +90,8 @@ async function main() {
   const { Miniflare, Response } = load('miniflare');
   let physicalCalls = 0;
   let sourceBody = '[]';
+  let sourceStatus = 200;
+  let sourceHeaders = {};
   let expectedAuthorization = null;
   const outboundService = async request => {
     physicalCalls += 1;
@@ -97,7 +99,9 @@ async function main() {
     assert.equal(request.url, 'https://api.github.com/repos/example/fixture/tags?per_page=20&page=1');
     assert.equal(request.headers.get('accept-encoding'), 'identity');
     assert.equal(request.headers.get('authorization'), expectedAuthorization);
-    return new Response(sourceBody, { headers: { etag: 'fleet-tags' } });
+    return new Response(sourceBody, {
+      status: sourceStatus, headers: { etag: 'fleet-tags', ...sourceHeaders },
+    });
   };
 
   const options = {
@@ -254,7 +258,70 @@ async function main() {
     assert.equal(physicalCalls, 4);
     const persisted = await runtime.getR2Bucket('ASSESSMENT_EVIDENCE');
     assert.equal(await (await persisted.get(evidenceKey)).text(), '[]');
-    console.log(JSON.stringify({ status: 'passed', physicalCalls, concurrentReceipts: receipts.length }));
+
+    // Throttle hints cross the real physical port, shared parser, signed result
+    // and durable replay. Plain permission denials have no source cooldown.
+    sourceStatus = 403;
+    sourceBody = 'forbidden';
+    const denied = await receipt(
+      await request(runtime, WORK, plan(), 'aos-provider-plan-v1'), WORK, 'aos-provider-result-v1',
+    );
+    assert.equal(denied.document.outcome, 'failed');
+    assert.equal(denied.document.retry, undefined);
+    assert.equal(physicalCalls, 5);
+
+    sourceStatus = 429;
+    sourceBody = 'rate limited';
+    sourceHeaders = { 'retry-after': '120' };
+    const throttled = plan();
+    const throttleResponses = await Promise.all(Array.from({ length: 4 }, () =>
+      request(runtime, WORK, throttled, 'aos-provider-plan-v1')));
+    const throttleReceipts = await Promise.all(throttleResponses.map(response =>
+      receipt(response, WORK, 'aos-provider-result-v1')));
+    const retry = throttleReceipts[0].document.retry;
+    assert.equal(retry.status, 429);
+    assert.equal(retry.sourceDigest, digest(sourceBody));
+    assert.equal(Date.parse(retry.notBefore) - Date.parse(retry.observedAt), 120_000);
+    for (const result of throttleReceipts) assert.equal(result.body, throttleReceipts[0].body);
+    assert.equal(physicalCalls, 6);
+
+    sourceStatus = 403;
+    const reset = Math.floor(Date.now() / 1000) + 3600;
+    sourceHeaders = { 'retry-after': '120', 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(reset) };
+    const primary = await receipt(
+      await request(runtime, WORK, plan(), 'aos-provider-plan-v1'), WORK, 'aos-provider-result-v1',
+    );
+    assert.equal(primary.document.retry.status, 403);
+    assert.equal(primary.document.retry.notBefore, timestamp(reset));
+    assert.deepEqual(primary.document.diagnostics, ['provider-rate-limited', 'source-http-403']);
+    assert.equal(physicalCalls, 7);
+
+    sourceStatus = 503;
+    const resume = Math.floor(Date.now() / 1000) + 120;
+    sourceHeaders = { 'retry-after': new Date(resume * 1000).toUTCString() };
+    const unavailable = await receipt(
+      await request(runtime, WORK, plan(), 'aos-provider-plan-v1'), WORK, 'aos-provider-result-v1',
+    );
+    assert.equal(unavailable.document.retry.status, 503);
+    assert.equal(unavailable.document.retry.notBefore, timestamp(resume));
+    assert.equal(physicalCalls, 8);
+
+    sourceStatus = 429;
+    sourceHeaders = { 'retry-after': '9'.repeat(100) };
+    const capped = await receipt(
+      await request(runtime, WORK, plan(), 'aos-provider-plan-v1'), WORK, 'aos-provider-result-v1',
+    );
+    assert.equal(Date.parse(capped.document.retry.notBefore) - Date.parse(capped.document.retry.observedAt), 86_400_000);
+    assert.equal(physicalCalls, 9);
+
+    await runtime.dispose();
+    runtime = new Miniflare(options);
+    const throttleReplay = await receipt(
+      await request(runtime, WORK, throttled, 'aos-provider-plan-v1'), WORK, 'aos-provider-result-v1',
+    );
+    assert.equal(throttleReplay.body, throttleReceipts[0].body);
+    assert.equal(physicalCalls, 9);
+    console.log(JSON.stringify({ status: 'passed', physicalCalls, concurrentReceipts: receipts.length, throttleReplay: true }));
   } finally {
     await runtime.dispose();
   }

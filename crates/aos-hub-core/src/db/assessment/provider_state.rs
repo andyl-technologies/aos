@@ -248,7 +248,7 @@ impl Database {
                 values,
             )
             .expecting(1),
-            self.assessment_provider_failure_budget_statement(claim)?,
+            self.assessment_provider_failure_budget_statement(claim, None)?,
         ]);
         self.backend.checked_batch(&statements).await
     }
@@ -489,7 +489,10 @@ impl Database {
                 state, result_digest.to_string(), result_bytes, result.continuation.map(|digest| digest.to_string()), plan.budget_reservation.reservation_id],
         ).expecting(1));
         if super::source_health::indicates_outage(result) {
-            statements.push(self.assessment_provider_failure_budget_statement(&plan.claim)?);
+            statements.push(self.assessment_provider_failure_budget_statement(
+                &plan.claim,
+                result.retry.as_ref().map(|retry| &retry.not_before),
+            )?);
         } else if matches!(
             result.outcome,
             WorkOutcome::Observed | WorkOutcome::NotModified

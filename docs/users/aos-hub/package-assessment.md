@@ -147,6 +147,16 @@ current job and IAM guards through the budget and attempt transaction.
 Provider health remains operational state, separate from vulnerability
 applicability and evidence freshness.
 
+Native and Worker executors share source throttling normalization. HTTP
+`Retry-After` accepts seconds or an HTTP-date. GitHub HTTP 403 responses count
+as throttling only with an explicit retry hint or an exhausted primary quota;
+ordinary permission denials do not open a source circuit. An exhausted GitHub
+quota preserves the later of the retry hint and `x-ratelimit-reset`. HTTP 429
+without a usable hint waits at least sixty seconds. Source-directed delays
+are capped at one day and never shorten existing cooldowns. A retryable
+response stops further source calls in that physical batch. Its exact
+observation and cooldown commit together; replay cannot extend the deadline.
+
 Authenticated source routes refer to immutable credential grants. Grants constrain
 provider, partition, source scope, secret binding and expiry. Native
 `secretVersions` maps each selected binding to an immutable installed secret

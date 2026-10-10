@@ -30,7 +30,7 @@ use aos_assessment::time::Timestamp;
 use aos_assessment_runtime::ports::Clock;
 use aos_assessment_runtime::provider::{
     ProviderOperation, ProviderWorkPlanV1, SourceMethod, SourceRequest, SourceResponse,
-    SourceTransport,
+    SourceThrottleHeaders, SourceTransport,
 };
 use reqwest::header::{HeaderMap, HeaderValue};
 use zeroize::Zeroizing;
@@ -198,6 +198,7 @@ impl SourceTransport for NativeSourceTransport {
             bail!("source ignored the installed identity encoding profile");
         }
         let validators = response_validators(response.headers())?;
+        let throttle = source_throttle_headers(response.headers());
         let mut body = Vec::new();
         while let Some(chunk) = response
             .chunk()
@@ -221,7 +222,24 @@ impl SourceTransport for NativeSourceTransport {
             transferred_bytes: body.len() as u64,
             body,
             validators,
+            throttle,
         })
+    }
+}
+
+fn source_throttle_headers(headers: &HeaderMap) -> SourceThrottleHeaders {
+    let single = |name: &str| {
+        let mut values = headers.get_all(name).iter();
+        let value = values.next()?;
+        if values.next().is_some() || value.as_bytes().len() > 128 {
+            return None;
+        }
+        value.to_str().ok().map(str::to_owned)
+    };
+    SourceThrottleHeaders {
+        retry_after: single("retry-after"),
+        rate_limit_remaining: single("x-ratelimit-remaining"),
+        rate_limit_reset: single("x-ratelimit-reset"),
     }
 }
 

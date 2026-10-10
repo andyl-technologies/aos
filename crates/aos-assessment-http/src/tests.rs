@@ -159,6 +159,32 @@ async fn native_source_does_not_follow_cross_authority_redirects() -> Result<()>
 }
 
 #[tokio::test]
+async fn native_tls_source_preserves_bounded_throttle_headers_and_rejects_duplicates() -> Result<()>
+{
+    let (transport, task) = fixture(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nRetry-After: 120\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset: 1791594000\r\nConnection: close\r\n\r\n").await?;
+    let plan = plan()?;
+    let response = transport
+        .fetch(&plan, &plan.operation.source_requests()?[0])
+        .await?;
+    assert_eq!(response.status, 403);
+    assert_eq!(response.throttle.retry_after.as_deref(), Some("120"));
+    assert_eq!(response.throttle.rate_limit_remaining.as_deref(), Some("0"));
+    assert_eq!(
+        response.throttle.rate_limit_reset.as_deref(),
+        Some("1791594000")
+    );
+    task.await??;
+
+    let (transport, task) = fixture(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nRetry-After: 120\r\nRetry-After: 240\r\nConnection: close\r\n\r\n").await?;
+    let response = transport
+        .fetch(&plan, &plan.operation.source_requests()?[0])
+        .await?;
+    assert!(response.throttle.retry_after.is_none());
+    task.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_source_streaming_ceiling_applies_without_content_length() -> Result<()> {
     let (transport, task) = fixture(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n9\r\n123456789\r\n0\r\n\r\n").await?;
     let mut plan = plan()?;
