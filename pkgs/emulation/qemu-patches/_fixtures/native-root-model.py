@@ -105,6 +105,13 @@ def mutations(case):
             ("no-prior-execution", "if (qemu_plugin_icount_raw() ||", "if (false ||"),
         ]
     return [
+        ("sealed-lifetime",
+         "if (crucible_firmware_alias.sealed &&\n"
+         "        (crucible_firmware_alias.original_process != getpid() ||\n"
+         "         owner == crucible_firmware_alias.owner)) {",
+         "if (false &&\n"
+         "        (crucible_firmware_alias.original_process != getpid() ||\n"
+         "         owner == crucible_firmware_alias.owner)) {"),
         ("original-data-owner", "held->data != entry->data", "false"),
         ("original-process", "(crucible_firmware_alias.original_process != getpid() ||\n         crucible_firmware_alias.owner != original ||", "(false ||\n         crucible_firmware_alias.owner != original ||"),
         ("bounded-source", "entry->len > FW_CFG_CRUCIBLE_ROOT_MAX_BYTES - total", "false"),

@@ -991,8 +991,11 @@ Independent source review approves this scope. All four original scheduling
 cases, 37 current-source hygiene cases, daemon all-target strict checks and the
 owned-file formatting check pass. The fresh corrected checkpoint's full
 controller suite passes 6,578 cases with 242 skipped in 466.735 seconds.
-Its enclosing ABI/license build remains in progress; this result does not
-qualify subsequent network, live-debug or native-effect changes.
+The enclosing ABI/license gate also passes, yielding
+`siyn3jizlvvnxa9pmy8q1j28v5sps4a9-crucible-phase2-abi-conformance-0`.
+Its license component reconstructs the matching complete source and plugin.
+This result qualifies that historical checkpoint; it supplies no subsequent
+network, live-debug, KVM or native-effect credit.
 
 The complete 49-path controller suite passes 6,536 cases with 230 skipped. Its
 combined ABI/license gate subsequently fails because the packaging identity
@@ -1079,6 +1082,58 @@ This machine has no `/dev/kvm`; the hardware probe remains ignored. These
 component results supply no whole-node readiness, common grants, device,
 input/output or archive qualification. The new native-effect production tuple
 and current hermetic controller/ABI/license builds require separate evidence.
+The exact committed component checkpoint also passes hermetic compilation of
+every application unit and integration target, yielding
+`fwdl248b1n6ii5a9zyiq600i2286ry44-aos-test-targets-0.1.0`.
+This result is compilation evidence, with no hardware execution credit.
+
+## Native effect preparation and original CPU service
+
+Native source `6016e9a056f07ef093dd38692e350ae413f9ed91` binds effect
+preparation to the installed endpoint owner and original native execution
+root. Pending and active epochs retain their original command, result and
+acknowledgment identity. Observer callbacks cannot manufacture execution
+authority. The plugin keeps semantic computation separate from publication,
+retains immutable results for exact retries, and contains installed workers
+and teardown under their original finite ownership.
+
+The signed atomic patch and bundle reconstruct the exact native tree. The
+configured production build passes both ISA targets, mandatory source and
+mutation checks, and atomic patch regeneration. Four independently reviewed
+fixture repairs preserve the native source and strengthen the sealed-owner
+lifetime oracle. The first production attempt's extraction-anchor failure
+remains recorded separately.
+
+The matching production pair uses QEMU
+`6n18q3i9xzzyarma6jbl8wzd4qr29ijg-qemu-crucible-11.1.1`, plugin
+`rvp8rqair0z295rgx15n2wwf7dj2bqmy-crucible-qemu-plugin-0.1.0`, and complete
+source `397lxbqjiaj4yqaaws0c1bszxrbmyhrp-qemu-crucible-source-11.1.1`.
+Build identity is
+`ab6c94899190535813e4b1e3b6922dab5d596dab6b94c9432f1e6dd292934f5a`.
+Independent review matches all 42 host/plugin source postimages in the complete
+source output and verifies the actual installed binaries and metadata.
+
+The public service executes one instruction, retains its partial result, and
+returns byte-identical history on the original command's resend. A genuine
+observer probe verifies registration, acquired-root checks, pending-state
+refusal and historical-result behavior. Both production cohorts pass once;
+the release plugin passes 707 cases. The first instruction does not observe
+an active callback, so these probes establish no active output authority.
+
+Central verification passes 703 plugin cases, 227 protocol cases and 803 host
+cases, plus one nested child case. It also passes 37 current-source hygiene
+cases, five unsafe-boundary cases, the source-size check, host all-target
+compilation and three-crate all-target strict checks. All 40 Rust files pass
+formatting. Process-fixture cases in that central suite use the separately
+identified earlier native build. A distinct current-build component cohort
+passes 66 KVM custody cases and eight two-ISA native refusal groups; hardware
+execution remains unavailable.
+
+These results qualify preparation and one original CPU service. Complete
+grants, continued execution, typed timers and IRQs, output publication and
+prefix acknowledgment, common readiness, capture, fork and restore remain
+unqualified. The new committed checkpoint requires its own complete
+controller/ABI/license and application compilation runs.
 
 ## Performance evidence
 

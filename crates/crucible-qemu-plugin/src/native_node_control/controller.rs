@@ -39,6 +39,9 @@ struct State {
 /// activation and original complete input custody before calling `retain`.
 /// This correlation mechanism does not qualify complete native queue closure.
 pub(crate) struct NativeNodeControl {
+    pub(crate) effect: Option<Arc<crate::runtime::semantic_effect::SemanticEffectOwner>>,
+    installed_endpoint:
+        OnceLock<Arc<crate::runtime::installed_endpoint_owner::InstalledEndpointCustody>>,
     pub(super) root_run_control:
         OnceLock<Arc<crate::runtime::native_run_control::NativeRunControlCustody>>,
     pub(super) root_policy: Option<super::root_policy::RootPolicyCustody>,
@@ -69,6 +72,45 @@ pub(crate) struct NativeNodeControl {
 mod administration_reader;
 
 impl NativeNodeControl {
+    /// Observes the actual original ACK without treating a busy journal as success.
+    pub(crate) fn semantic_initialization_acknowledged(&self) -> bool {
+        self.initialization.as_ref().is_some_and(|initialization| {
+            matches!(
+                initialization.try_pending_acknowledged_original(),
+                Ok(Some(_))
+            )
+        })
+    }
+
+    pub(crate) fn semantic_administration_failed(&self) -> bool {
+        self.administration_faulted.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn original_administrative_actor(
+        &self,
+    ) -> Option<&Arc<super::administrative_inbox::NativeAdministrativeInbox>> {
+        self.administrative_actor.as_ref()
+    }
+
+    /// Publishes the already registered local owner to the sole original reader.
+    #[cfg(not(test))]
+    pub(crate) fn publish_installed_endpoint(
+        &self,
+        owner: Arc<crate::runtime::installed_endpoint_owner::InstalledEndpointCustody>,
+    ) -> Result<(), NativeCommandError> {
+        self.installed_endpoint
+            .set(owner)
+            .map_err(|_| NativeCommandError::Conflict)
+    }
+
+    /// Tries source enrollment on the actual existing administrative thread.
+    pub(super) fn enroll_current_administrative_endpoint(&self) -> Result<bool, i32> {
+        let Some(owner) = self.installed_endpoint.get() else {
+            return Ok(false);
+        };
+        owner.enroll_administration()
+    }
+
     /// Borrows only the original installed owners; missing RUN custody stays pending.
     pub(crate) fn prepare_runtime_epoch_transport(
         &self,
@@ -113,7 +155,9 @@ impl NativeNodeControl {
     ) -> Result<Self, NativeCommandError> {
         let prepared_scope_hash = scope.identity_digest()?;
         Ok(Self {
+            effect: None,
             root_run_control: OnceLock::new(),
+            installed_endpoint: OnceLock::new(),
             root_policy: None,
             construction: None,
             administration_faulted: AtomicBool::new(false),
@@ -232,7 +276,10 @@ impl NativeNodeControl {
                 self.send_cpu_park()
             }
             Some(
-                NativeFrame::Stopped(_)
+                NativeFrame::PrepareEffect(_)
+                | NativeFrame::EffectCompute(_)
+                | NativeFrame::EffectProgress(_)
+                | NativeFrame::Stopped(_)
                 | NativeFrame::Prepare(_)
                 | NativeFrame::Acknowledged(_)
                 | NativeFrame::CpuPark(_)
@@ -475,7 +522,13 @@ impl NativeNodeControl {
             (self as *const Self).cast_mut().cast(),
         );
         if result == 0 {
-            if self.register_phase_projection().is_err() || self.register_root_policy().is_err() {
+            if self.register_phase_projection().is_err()
+                || self.register_root_policy().is_err()
+                || self
+                    .effect
+                    .as_ref()
+                    .is_some_and(|effect| effect.register_policy().is_err())
+            {
                 // Native control already retains callbacks into this library.
                 // An ordinary error return could unload still-referenced code.
                 std::process::abort();
@@ -748,6 +801,16 @@ extern "C" fn get_command(out: *mut NativeNodeCommand, userdata: *mut c_void) ->
             state.quarantined = true;
             state.current = None;
         }
+        return false;
+    }
+    if let Some(endpoint) = owner.installed_endpoint.get()
+        && owner
+            .initialization
+            .as_ref()
+            .is_some_and(|initialization| initialization.permits_execution_transport())
+        && endpoint.observe_local_hold().is_err()
+    {
+        owner.fail_administration();
         return false;
     }
     let Some(command) = owner.command() else {

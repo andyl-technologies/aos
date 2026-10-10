@@ -269,3 +269,6 @@ fn cpu_only_frames_are_closed_bounded_and_never_generic_coverage() {
     }
     assert!(encode_frame(&NativeFrame::QueryCpuPark([0; 32])).is_err());
 }
+
+#[path = "effect_tests.rs"]
+mod effect;

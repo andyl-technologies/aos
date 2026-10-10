@@ -475,3 +475,7 @@ crucible-node-provider	tests/lineage_guarded/fixture	std::thread::sleep	1
 # SHA-256: e7cfff159b7ac2dca2ed0ee66695fe796e5afaf5f112362636988aa54ffd48e2
 crucible-node-provider	tests/lineage_source/fixture	thread::sleep	1
 crucible-node-provider	tests/lineage_source/fixture	std::thread::sleep	1
+
+# Both finite teardown tests supervise one actual producer child with one fixed5s deadline. The1ms wait only observes SIGABRT; expiry kills/reaps and fails, including the held-stderr adversary. Neither test retries a failed case or accepts deadline extension.
+crucible-qemu-plugin	src/runtime/teardown_channel_tests	thread::sleep	1
+crucible-qemu-plugin	src/runtime/teardown_channel_tests	std::thread::sleep	1

@@ -20,6 +20,7 @@ pub struct NativeAdministrationTransport {
     original: Option<NativeAdministrativeFacts>,
     expected_process: Option<u32>,
     fixed_microvm: Option<crucible_protocol::node_control::NativeFixedMicrovmPreparation>,
+    effect: Option<crucible_protocol::node_control::NativeEffectPreparation>,
     requested: bool,
     failed: bool,
 }
@@ -87,6 +88,81 @@ impl NativeAdministrationTransport {
         )
     }
 
+    /// Pins the complete original effect preparation on a distinct controller-eight endpoint.
+    ///
+    /// This mechanism supplies no common activation or source RootSeal. The actual
+    /// native issuer must independently join original roles, ACK and source roots.
+    ///
+    /// # Errors
+    /// Rejects invalid companions, widened budgets or socket/framing failure.
+    pub fn prepare_effect(
+        phase: NativePhasePreparation,
+        reader_policy_digest: [u8; 32],
+        descriptor_slot: i32,
+        parameters: super::super::root::NativeFixedMicrovmParameters,
+        effect_policy_digest: [u8; 32],
+        maximum_callbacks: u32,
+        maximum_service_span: crucible_node_contract::U64,
+    ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
+        use crucible_protocol::node_control::NativeEffectPreparation;
+        phase.validate()?;
+        let edition = NativeControlEdition::FiniteEffect;
+        let (channel, provider) = NativeChannel::supervised_pair_for_edition(edition)?;
+        let descriptor = provider
+            .prepared_descriptor()
+            .try_clone_to_owned()
+            .map_err(crucible_protocol::node_control::NativeChannelError::from)?;
+        let metadata = std::fs::File::from(descriptor)
+            .metadata()
+            .map_err(crucible_protocol::node_control::NativeChannelError::from)?;
+        let preparation = NativeAdministrativePreparation {
+            phase: phase.clone(),
+            policy_digest: reader_policy_digest,
+            descriptor_slot,
+            socket_device: metadata.dev(),
+            socket_inode: metadata.ino(),
+        };
+        preparation.validate()?;
+        let original_root = parameters.bind(preparation.clone())?;
+        let effect = NativeEffectPreparation {
+            original_root: original_root.clone(),
+            policy_digest: effect_policy_digest,
+            maximum_callbacks,
+            maximum_service_span,
+        };
+        effect.validate()?;
+        if !channel.send(&NativeFrame::PrepareEffect(Box::new(effect.clone())))? {
+            return Err(NativeCommandError::ResourceLimit.into());
+        }
+        let scope_digest = phase.initialization.preparation.scope.identity_digest()?;
+        Ok((
+            Self {
+                channel,
+                preparation,
+                original: None,
+                expected_process: None,
+                fixed_microvm: Some(original_root),
+                effect: Some(effect),
+                requested: false,
+                failed: false,
+            },
+            NativeLaunchEndpoint {
+                socket: provider.into_prepared_socket(),
+                scope_digest,
+                edition,
+                initialization: Some(phase.initialization.clone()),
+                phase_projection: Some(phase),
+            },
+        ))
+    }
+
+    /// Borrows complete immutable effect preparation without supplying effect authority.
+    pub fn effect_preparation(
+        &self,
+    ) -> Option<&crucible_protocol::node_control::NativeEffectPreparation> {
+        self.effect.as_ref()
+    }
+
     fn prepare_for_edition(
         phase: NativePhasePreparation,
         policy_digest: [u8; 32],
@@ -138,6 +214,7 @@ impl NativeAdministrationTransport {
                 original: None,
                 expected_process: None,
                 fixed_microvm,
+                effect: None,
                 requested: false,
                 failed: false,
             },
@@ -160,7 +237,9 @@ impl NativeAdministrationTransport {
             || self.original.is_none()
             || !matches!(
                 self.channel.edition(),
-                NativeControlEdition::Construction | NativeControlEdition::FixedMicrovm
+                NativeControlEdition::Construction
+                    | NativeControlEdition::FixedMicrovm
+                    | NativeControlEdition::FiniteEffect
             )
         {
             return Err(NativeCommandError::Conflict.into());
@@ -177,7 +256,9 @@ impl NativeAdministrationTransport {
             || self.original.is_none()
             || !matches!(
                 self.channel.edition(),
-                NativeControlEdition::Construction | NativeControlEdition::FixedMicrovm
+                NativeControlEdition::Construction
+                    | NativeControlEdition::FixedMicrovm
+                    | NativeControlEdition::FiniteEffect
             )
         {
             return Err(NativeCommandError::Conflict.into());

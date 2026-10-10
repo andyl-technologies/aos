@@ -12,6 +12,158 @@ use crucible_protocol::node_control::{
 
 use super::*;
 
+fn original_effect_pair() -> (
+    NativeChannel,
+    NativeAdministrativeMailbox,
+    crucible_protocol::node_control::NativeEffectCompute,
+    crucible_protocol::node_control::NativeEffectProgress,
+) {
+    use crucible_protocol::node_control::{
+        NativeEffectCompute, NativeEffectProgress, NativeEffectProgressStatus,
+    };
+    let plan = preparation();
+    let limit = Position {
+        time_ps: U64::new(110),
+        ..plan.boundary
+    };
+    let mut command = crucible_protocol::node_control::ExecutionCommand {
+        sequence: U64::new(1),
+        input_batch_hash: plan.scope.world_binding.clone(),
+        scope: plan.scope,
+        operation: Id::new("operation/1").unwrap(),
+        grant: Id::new("grant/1").unwrap(),
+        input_epoch: Id::new("input/epoch").unwrap(),
+        input_batch: Id::new("batch/1").unwrap(),
+        closed_input_prefix: limit,
+        authorization_digest: [7; 32],
+        kind: crucible_protocol::node_control::ExecutionKind::ExactRun {
+            start: plan.boundary,
+            limit,
+            boundary_policy: crucible_protocol::node_control::BoundaryPolicy::HorizonPark,
+        },
+    };
+    let batch = crucible_node_contract::InputBatch {
+        schema_version: 1,
+        execution_owner_id: command.scope.owner.clone(),
+        input_epoch: command.input_epoch.clone(),
+        batch_id: command.input_batch.clone(),
+        batch_sequence: U64::new(1),
+        events: Vec::new(),
+        extensions: Default::default(),
+    };
+    command.input_batch_hash = batch.identity().unwrap();
+    let original = NativeEffectCompute {
+        command,
+        effect_preparation: [8; 32],
+        maximum_callbacks: 64,
+        maximum_service_span: U64::new(1),
+        input_batch_sequence: U64::new(1),
+    };
+    let evaluated = Position {
+        time_ps: U64::new(50),
+        microstep: U64::new(0),
+        phase: Phase::Reaction,
+    };
+    let result = NativeEffectProgress {
+        scope: original.command.scope.identity_digest().unwrap(),
+        effect_preparation: original.effect_preparation,
+        grant_digest: original.command.authorization_digest,
+        command_digest: original.command.identity_digest().unwrap(),
+        sequence: original.command.sequence,
+        cut_id: U64::new(1),
+        raw_before: U64::new(0),
+        raw_after: U64::new(1),
+        evaluated,
+        evaluation_id: U64::new(1),
+        evaluation_generation: U64::new(26),
+        resulting: evaluated,
+        returned_service_count: U64::new(1),
+        status: NativeEffectProgressStatus::PartialPrefix,
+        end_result: 0,
+    };
+    result.validate_against(&original).unwrap();
+    let (host, native) =
+        NativeChannel::supervised_pair_for_edition(NativeControlEdition::FiniteEffect).unwrap();
+    let mut endpoint = Some(native);
+    let mailbox =
+        NativeAdministrativeMailbox::from_pinned_endpoint(&mut endpoint, result.scope, 8, 65536)
+            .unwrap();
+    (host, mailbox, original, result)
+}
+
+#[test]
+fn original_effect_progress_uses_retained_credit_and_identical_cached_bytes() {
+    // The result is modeled; actual datagrams and reservation custody exercise
+    // publication only, without manufacturing source execution authority.
+    let (host, mut mailbox, original, result) = original_effect_pair();
+    let request = NativeFrame::EffectCompute(Box::new(original));
+    let reply = NativeFrame::EffectProgress(Box::new(result.clone()));
+    assert!(host.send(&request).unwrap());
+    assert!(matches!(
+        mailbox.receive().unwrap(),
+        NativeAdministrativeReceive::Retained(1, NativeAdministrativeClass::Modeled)
+    ));
+    let bytes = mailbox.original(1).unwrap().to_vec();
+    let credit = mailbox.reserve_construction_reply(1).unwrap();
+
+    mailbox.retain_reply(credit, &reply).unwrap();
+    assert!(mailbox.send_reply(1).unwrap());
+    assert_eq!(host.receive().unwrap(), Some(reply.clone()));
+    assert!(mailbox.send_reply(1).unwrap());
+    assert_eq!(host.receive().unwrap(), Some(reply));
+    assert_eq!(mailbox.original(1).unwrap(), bytes);
+
+    let mut changed = result;
+    changed.evaluation_generation = U64::new(27);
+    let credit = NativeAdministrativeReplyCredit {
+        owner: Arc::clone(&mailbox.owner),
+        cursor: 1,
+    };
+    assert!(
+        mailbox
+            .retain_reply(credit, &NativeFrame::EffectProgress(Box::new(changed)))
+            .is_err()
+    );
+    assert!(mailbox.failed);
+    assert!(host.receive().unwrap().is_none());
+    assert_eq!(mailbox.original(1).unwrap(), bytes);
+}
+
+#[test]
+fn original_effect_progress_refuses_foreign_grant_command_scope_and_counts() {
+    for field in 0..7 {
+        let (host, mut mailbox, original, mut result) = original_effect_pair();
+        match field {
+            0 => result.command_digest[0] ^= 1,
+            1 => result.grant_digest[0] ^= 1,
+            2 => result.effect_preparation[0] ^= 1,
+            3 => result.scope[0] ^= 1,
+            4 => result.sequence = U64::new(2),
+            5 => result.returned_service_count = U64::new(2),
+            _ => result.evaluated.time_ps = U64::new(120),
+        }
+        assert!(
+            host.send(&NativeFrame::EffectCompute(Box::new(original)))
+                .unwrap()
+        );
+        assert!(matches!(
+            mailbox.receive().unwrap(),
+            NativeAdministrativeReceive::Retained(1, _)
+        ));
+        let bytes = mailbox.original(1).unwrap().to_vec();
+        let credit = mailbox.reserve_construction_reply(1).unwrap();
+
+        assert!(
+            mailbox
+                .retain_reply(credit, &NativeFrame::EffectProgress(Box::new(result)))
+                .is_err()
+        );
+        assert!(host.receive().unwrap().is_none());
+        assert!(mailbox.records.get(&1).unwrap().reply.is_none());
+        assert_eq!(mailbox.original(1).unwrap(), bytes);
+    }
+}
+
 fn preparation() -> NativePreparation {
     let id = |value| Id::new(value).unwrap();
     let hash = |domain: &str| HashRef {

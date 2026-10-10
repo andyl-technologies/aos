@@ -105,6 +105,12 @@ impl NativePreparation {
 /// Selects a closed frame of the independently negotiated native channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeFrame {
+    /// Pins the complete original effect preparation on an independently selected controller.
+    PrepareEffect(Box<super::NativeEffectPreparation>),
+    /// Retains an original compute command pending genuine native epoch and cut admission.
+    EffectCompute(Box<super::NativeEffectCompute>),
+    /// Preserves an immutable native original service prefix without re-execution.
+    EffectProgress(Box<super::NativeEffectProgress>),
     /// Preserves every original root companion before native fixed-profile enrollment.
     ///
     /// This portable preparation grants no root closure, readiness or effect permission.

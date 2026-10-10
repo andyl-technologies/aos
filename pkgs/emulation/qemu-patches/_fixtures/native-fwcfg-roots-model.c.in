@@ -6,6 +6,7 @@
 #include "qemu/cutils.h"
 #include "hw/nvram/fw_cfg.h"
 #include "system/address-spaces.h"
+#include <sys/wait.h>
 
 AddressSpace address_space_memory;
 
@@ -42,6 +43,25 @@ void error_report(const char *format, ...)
 
 @NATIVE_FWCFG@
 
+/* The extracted native lifetime guard must refuse the original sealed owner
+ * before a replacement could run. An unrelated owner remains available. */
+static void original_firmware_lifetime(FWCfgState *original)
+{
+    FWCfgState unrelated = { 0 };
+    int status;
+    pid_t child;
+
+    fw_cfg_crucible_firmware_mutation_guard(&unrelated);
+    child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        fw_cfg_crucible_firmware_mutation_guard(original);
+        _exit(94);
+    }
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 125);
+}
+
 int main(int argc, char **argv)
 {
     FWCfgState original = { 0 };
@@ -70,7 +90,9 @@ int main(int argc, char **argv)
     original.entries[0][FW_CFG_FILE_FIRST].data = bytes;
     original.entries[0][FW_CFG_FILE_FIRST].len = sizeof(bytes);
 
+    fw_cfg_crucible_firmware_mutation_guard(&original);
     assert(fw_cfg_crucible_root_firmware_seal(&original) == 0);
+    original_firmware_lifetime(&original);
     assert(fw_cfg_crucible_root_firmware_inventory(&before) == 0);
     assert(before.flags == 7 && before.entry_count == 1);
     assert(before.retained_bytes == sizeof(bytes));

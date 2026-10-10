@@ -1289,9 +1289,10 @@ impl LiveVcpuTimeCallbackState {
 
     /// Delivers the first shared shutdown proof without waiting on capacity.
     ///
-    /// The standard channel is unbounded, so `send` never waits for a receiver
-    /// to drain capacity. A disconnected worker is returned as a fatal callback
-    /// error rather than allowing QEMU to continue after shutdown was observed.
+    /// Legacy installation retains its unbounded sender. The finite selector
+    /// reserves trigger credit before publication and refuses contention or
+    /// exhaustion through supervised fail-stop, retaining the original proof.
+    /// A disconnected legacy worker is a fatal callback error.
     fn signal_shared_shutdown(&self) -> Result<(), LiveVcpuTimeCallbackError> {
         let proof = PluginShutdownRequested::from_region_header(self.header.get())
             .map_err(|_error| LiveVcpuTimeCallbackError::SharedShutdownProofUnavailable)?;
@@ -2741,7 +2742,12 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_vcpu_idle_cb(
     raw_icount: u64,
     userdata: *mut c_void,
 ) {
-    if crate::native_node_control::registered_owner().is_some() {
+    if let Some(owner) = crate::native_node_control::registered_owner() {
+        if let Some(effect) = &owner.effect
+            && effect.observe_active_if_staged().is_err()
+        {
+            std::process::abort();
+        }
         // The independent native controller owns time and original command
         // custody. Legacy scalar publication or idle/control work cannot grant
         // a transition or reconstruct administrative park service credit.
@@ -2761,7 +2767,12 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_vcpu_resume_cb(
     raw_icount: u64,
     userdata: *mut c_void,
 ) {
-    if crate::native_node_control::registered_owner().is_some() {
+    if let Some(owner) = crate::native_node_control::registered_owner() {
+        if let Some(effect) = &owner.effect
+            && effect.observe_active_if_staged().is_err()
+        {
+            std::process::abort();
+        }
         // The independent native controller owns time and original command
         // custody. Legacy scalar publication or idle/control work cannot grant
         // a transition or reconstruct administrative park service credit.

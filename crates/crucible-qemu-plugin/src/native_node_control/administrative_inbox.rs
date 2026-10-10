@@ -174,17 +174,6 @@ impl NativeAdministrativeInbox {
         Ok(self.try_mailbox()?.decode_original(cursor)?)
     }
 
-    /// Borrows the original pre-dequeue response allowance, never native effect authority.
-    ///
-    /// # Errors
-    /// Refuses busy, unknown, modeled, invalid or completed original requests.
-    pub(crate) fn reserve_reply(
-        &self,
-        cursor: u64,
-    ) -> Result<NativeAdministrativeReplyCredit, NativeAdministrativeInboxError> {
-        Ok(self.try_mailbox()?.reserve_reply(cursor)?)
-    }
-
     /// Recovers original construction reply credit before native admission.
     ///
     /// # Errors
@@ -230,6 +219,22 @@ impl NativeAdministrativeInbox {
         Ok(self.try_mailbox()?.send_reply(cursor)?)
     }
 
+    /// Publishes only the unchanged historical reply for an original query.
+    ///
+    /// Reservation validation, cached-byte comparison and publication share the
+    /// actual mailbox lock. Contention and socket backpressure leave that same
+    /// original pending; no second request is received by this operation.
+    ///
+    /// # Errors
+    /// Refuses busy/poisoned custody, changed correlation or transport failure.
+    pub(crate) fn reply_administration(
+        &self,
+        cursor: u64,
+        reply: &NativeFrame,
+    ) -> Result<bool, NativeAdministrativeInboxError> {
+        Ok(self.try_mailbox()?.reply_administration(cursor, reply)?)
+    }
+
     /// Holds the original ledger for contention and poison tests.
     ///
     /// # Panics
@@ -245,8 +250,9 @@ impl NativeAdministrativeInbox {
     fn try_mailbox(
         &self,
     ) -> Result<MutexGuard<'_, NativeAdministrativeMailbox>, NativeAdministrativeInboxError> {
-        self.mailbox
-            .try_lock()
-            .map_err(|_| NativeAdministrativeInboxError::Busy)
+        self.mailbox.try_lock().map_err(|error| match error {
+            std::sync::TryLockError::WouldBlock => NativeAdministrativeInboxError::Busy,
+            std::sync::TryLockError::Poisoned(_) => NativeAdministrativeInboxError::Poisoned,
+        })
     }
 }

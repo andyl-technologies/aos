@@ -170,6 +170,29 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-acpi-pm-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-ich9-aux-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 
+| `accel/tcg/crucible-effect-root-rr.inc.c` | MIT | Explicit SPDX identifier |
+| `accel/tcg/crucible-node-effect.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `accel/tcg/crucible-semantic-input-owner.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-active-effect.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-installed-endpoint-owner.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-memory-payload-roots.h` | MIT | Explicit SPDX identifier |
+| `include/qemu/crucible-memory-roots.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-node-effect.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-semantic-input-owner.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-service-finite.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-timer-finite.h` | MIT | Explicit SPDX identifier |
+| `include/qom/crucible-constructor-retirement.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qom/crucible-property-roots.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `qom/crucible-constructor-retirement.inc` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `qom/crucible-property-link-roots.inc` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `qom/crucible-property-roots.inc` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-constructor-retirement.inc` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-installed-endpoint-owner.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-memory-dispatch-roots.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-memory-payload-roots.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-memory-roots.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `util/crucible-timer-finite.inc.c` | MIT | Explicit SPDX identifier |
+
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated
 `crucible_shmem_abi.h` process-protocol header is `MIT OR Apache-2.0`; AOS

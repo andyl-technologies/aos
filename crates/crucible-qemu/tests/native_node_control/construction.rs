@@ -30,6 +30,15 @@ fn actual_fixed_microvm_dormant_epoch_registration_has_no_effect_permission()
     run_original_construction(true, None, true)
 }
 
+#[test]
+#[ignore = "requires source-built installed endpoint owner and matching GPL plugin"]
+// crucible-lint: allow clippy-disallowed-method -- Absolute external-child watchdogs measure process responsiveness, never guest time.
+#[allow(clippy::disallowed_methods)]
+fn actual_fixed_microvm_installed_original_workers_retain_local_custody_without_epoch()
+-> Result<(), Box<dyn Error>> {
+    run_selected_construction(true, None, true, true)
+}
+
 // crucible-lint: allow clippy-disallowed-method -- Absolute external-child watchdogs measure process responsiveness, never guest time.
 #[allow(clippy::disallowed_methods)]
 fn run_original_construction(
@@ -37,6 +46,86 @@ fn run_original_construction(
     containment: Option<(&str, &str, &str)>,
     dormant_epoch: bool,
 ) -> Result<(), Box<dyn Error>> {
+    run_selected_construction(pin_fixed_root, containment, dormant_epoch, false)
+}
+
+// crucible-lint: allow clippy-disallowed-method -- Absolute external-child watchdogs measure process responsiveness, never guest time.
+#[allow(clippy::disallowed_methods)]
+fn run_selected_construction(
+    pin_fixed_root: bool,
+    containment: Option<(&str, &str, &str)>,
+    dormant_epoch: bool,
+    endpoint_owner: bool,
+) -> Result<(), Box<dyn Error>> {
+    run_selected_construction_with_finite_teardown(
+        pin_fixed_root,
+        containment,
+        dormant_epoch,
+        endpoint_owner,
+        false,
+    )
+}
+
+#[test]
+#[ignore = "requires source-built installed endpoint owner and matching GPL plugin"]
+// crucible-lint: allow clippy-disallowed-method -- Absolute external-child watchdogs measure responsiveness, never guest time.
+#[allow(clippy::disallowed_methods)]
+fn actual_fixed_microvm_bounded_original_teardown_keeps_source_custody_without_epoch()
+-> Result<(), Box<dyn Error>> {
+    run_selected_construction_with_finite_teardown(true, None, true, true, true)
+}
+
+// crucible-lint: allow clippy-disallowed-method -- Absolute external-child watchdogs measure responsiveness, never guest time.
+#[allow(clippy::disallowed_methods)]
+fn run_selected_construction_with_finite_teardown(
+    pin_fixed_root: bool,
+    containment: Option<(&str, &str, &str)>,
+    dormant_epoch: bool,
+    endpoint_owner: bool,
+    bounded_teardown: bool,
+) -> Result<(), Box<dyn Error>> {
+    run_selected_original_effect(
+        pin_fixed_root,
+        containment,
+        dormant_epoch,
+        endpoint_owner,
+        bounded_teardown,
+        false,
+    )
+}
+
+#[test]
+#[ignore = "requires genuine source-issued effect root, matching GPL plugin and explicit controller-eight preparation"]
+// crucible-lint: allow clippy-disallowed-method -- Absolute external-child watchdogs measure responsiveness, never guest time.
+#[allow(clippy::disallowed_methods)]
+fn actual_controller8_original_service_returns_retained_partial_prefix()
+-> Result<(), Box<dyn Error>> {
+    run_selected_original_effect(true, None, true, true, true, true)
+}
+
+// crucible-lint: allow clippy-disallowed-method -- Absolute external-child watchdogs measure responsiveness, never guest time.
+#[allow(clippy::disallowed_methods)]
+fn run_selected_original_effect(
+    pin_fixed_root: bool,
+    containment: Option<(&str, &str, &str)>,
+    dormant_epoch: bool,
+    endpoint_owner: bool,
+    bounded_teardown: bool,
+    finite_effect: bool,
+) -> Result<(), Box<dyn Error>> {
+    let endpoint_proof = if endpoint_owner && !finite_effect {
+        let path = std::env::var_os("CRUCIBLE_NATIVE_INSTALLED_OWNER_LOG")
+            .map(PathBuf::from)
+            .ok_or("installed-owner native proof path missing")?;
+        let offset = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+            Err(error) => return Err(error.into()),
+        };
+        Some((path, offset))
+    } else {
+        None
+    };
     let containment_log = containment
         .map(|_| {
             std::env::var_os("CRUCIBLE_NATIVE_PROBE_CONTAINMENT_LOG")
@@ -94,16 +183,35 @@ fn run_original_construction(
     });
     let (mut native, endpoint) = if pin_fixed_root {
         use sha2::{Digest, Sha256};
-        NativeAdministrationTransport::prepare_fixed_microvm(
-            phase_preparation.as_ref().ok_or("phase absent")?.clone(), [14;32], 9,
-            crucible_qemu::native_node_control::NativeFixedMicrovmParameters {
-                policy_digest: [15;32], firmware_sha256: Sha256::digest(&rom).into(),
-                firmware_length: U64::new(rom.len() as u64), ram_length: U64::new(32*1024*1024),
-                seed: U64::new(8254), maximum_service_span: U64::new(64),
-                mapping: crucible_protocol::node_control::NativeFixedMicrovmMapping::InstructionThenTimers,
-                maximum_callbacks: 64,
-            },
-        )?
+        let parameters = crucible_qemu::native_node_control::NativeFixedMicrovmParameters {
+            policy_digest: [15; 32],
+            firmware_sha256: Sha256::digest(&rom).into(),
+            firmware_length: U64::new(rom.len() as u64),
+            ram_length: U64::new(32 * 1024 * 1024),
+            seed: U64::new(8254),
+            maximum_service_span: U64::new(64),
+            mapping:
+                crucible_protocol::node_control::NativeFixedMicrovmMapping::InstructionThenTimers,
+            maximum_callbacks: 64,
+        };
+        if finite_effect {
+            NativeAdministrationTransport::prepare_effect(
+                phase_preparation.as_ref().ok_or("phase absent")?.clone(),
+                [14; 32],
+                9,
+                parameters,
+                [16; 32],
+                64,
+                U64::new(1),
+            )?
+        } else {
+            NativeAdministrationTransport::prepare_fixed_microvm(
+                phase_preparation.as_ref().ok_or("phase absent")?.clone(),
+                [14; 32],
+                9,
+                parameters,
+            )?
+        }
     } else {
         NativeAdministrationTransport::prepare_construction(
             phase_preparation.as_ref().ok_or("phase absent")?.clone(),
@@ -116,6 +224,7 @@ fn run_original_construction(
     // immutable edition-seven bootstrap. Source policy enrollment still provides
     // no epoch or finite effect permission; old compute frames remain refused.
     let fixed_root = native.fixed_microvm_preparation().cloned();
+    let effect_preparation = native.effect_preparation().cloned();
     let hex = |bytes: &[u8]| {
         bytes
             .iter()
@@ -188,6 +297,18 @@ fn run_original_construction(
     if dormant_epoch {
         plugin_args.push_str(",node_root_epoch_version=1");
     }
+    if endpoint_owner {
+        plugin_args.push_str(",node_endpoint_owner_version=1");
+    }
+    if let Some(effect) = &effect_preparation {
+        plugin_args.push_str(&format!(
+            ",node_effect_commitment={}",
+            hex(&effect.identity_digest()?)
+        ));
+    }
+    if bounded_teardown {
+        plugin_args.push_str(",node_bounded_teardown_version=1");
+    }
     if let Some(initialization) = &initialization {
         let hex = |bytes: &[u8]| {
             bytes
@@ -221,6 +342,11 @@ fn run_original_construction(
         ));
     }
     let mut command = Command::new(qemu);
+    if let Some(effect) = &effect_preparation {
+        command
+            .arg("-crucible-node-effect")
+            .arg(effect.early_launch_argument()?);
+    }
     if let Some(root) = &fixed_root {
         command
             .arg("-crucible-node-root")
@@ -270,6 +396,12 @@ fn run_original_construction(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
+    if finite_effect {
+        // Diagnostic-only source artifacts retain the exact original argv;
+        // these launch bytes are correlation, never native effect authority.
+        eprintln!("original-controller-eight-command={command:?}");
+    }
+
     // SAFETY: The child closure uses only async-signal-safe dup2/close syscalls
     // over prevalidated disjoint scalar mappings. Pins remain live through exec.
     unsafe {
@@ -656,6 +788,113 @@ fn run_original_construction(
             .send_construction(&NativeFrame::Command(Box::new(original(1, 0, 350))))
             .is_err()
     );
+    if finite_effect {
+        let preparation = effect_preparation
+            .as_ref()
+            .ok_or("effect preparation absent")?;
+        let mut command = original(1, 0, 350);
+        let empty = crucible_node_contract::InputBatch {
+            schema_version: 1,
+            execution_owner_id: command.scope.owner.clone(),
+            input_epoch: command.input_epoch.clone(),
+            batch_id: command.input_batch.clone(),
+            batch_sequence: U64::new(1),
+            events: Vec::new(),
+            extensions: Default::default(),
+        };
+        command.input_batch_hash = empty.identity()?;
+        let compute = crucible_protocol::node_control::NativeEffectCompute {
+            command,
+            effect_preparation: preparation.identity_digest()?,
+            maximum_callbacks: 64,
+            maximum_service_span: U64::new(1),
+            input_batch_sequence: U64::new(1),
+        };
+        let request = NativeFrame::EffectCompute(Box::new(compute.clone()));
+        assert!(native.send_construction(&request)?);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let result = loop {
+            match native.receive_construction()? {
+                Some(NativeFrame::EffectProgress(result)) => break result,
+                Some(_) => return Err("foreign effect response".into()),
+                None => {}
+            }
+            if let Some(status) = child.0.try_wait()? {
+                let started = deadline - Duration::from_secs(10);
+                eprintln!(
+                    "original-effect-child-exit status={status} elapsed={:?}",
+                    Instant::now().saturating_duration_since(started)
+                );
+                return Err("original effect service watchdog".into());
+            }
+            if Instant::now() >= deadline {
+                eprintln!("original-effect-deadline-expired seconds=10");
+                return Err("original effect service watchdog".into());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        result.validate_against(&compute)?;
+        assert_eq!(
+            result.status,
+            crucible_protocol::node_control::NativeEffectProgressStatus::PartialPrefix
+        );
+        assert_eq!(result.raw_before.get(), 0);
+        assert_eq!(result.raw_after.get(), 1);
+        assert_eq!(result.returned_service_count.get(), 1);
+        assert_eq!(result.end_result, 0);
+        assert!(native.send_construction(&request)?);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match native.receive_construction()? {
+                Some(NativeFrame::EffectProgress(cached_result)) => {
+                    assert_eq!(cached_result, result);
+                    break;
+                }
+                Some(_) => return Err("changed original effect retry response".into()),
+                None => {}
+            }
+            if child.0.try_wait()?.is_some() || Instant::now() >= deadline {
+                return Err("original effect retry watchdog".into());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    if endpoint_owner && !finite_effect {
+        let (proof, offset) = endpoint_proof
+            .as_ref()
+            .ok_or("installed-owner original proof missing")?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let complete = std::fs::read(proof)?;
+            let start = usize::try_from(*offset)?;
+            let log = std::str::from_utf8(
+                complete
+                    .get(start..)
+                    .ok_or("original native log truncated")?,
+            )?;
+            if log.contains(
+                "installed-endpoint-fixture PASS local-held original-roles=3 no-RootSeal-no-effect",
+            ) {
+                break;
+            }
+            if child.0.try_wait()?.is_some() || Instant::now() >= deadline {
+                return Err("native original local-owner hold watchdog".into());
+            }
+            // Administrative retry wakes the actual RR getter without issuing
+            // any guest execution or replacing an original construction object.
+            let wake = NativeFrame::QueryPreparationSuccessor(
+                crucible_protocol::node_control::NativePreparationSuccessorQuery {
+                    prepared_scope_hash: initialize.prepared_scope_hash,
+                    initialization_sequence: initialize.sequence,
+                    original_cut_digest: cut.original_cut_digest,
+                    offset: U64::new(0),
+                },
+            );
+            let _ = native.send_construction(&wake)?;
+            let _ = native.receive_construction()?;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
     assert!(child.0.try_wait()?.is_none());
     drop(child);
     Ok(())

@@ -8,8 +8,8 @@
 mod abi;
 mod administration_abi;
 mod administration_custody;
-mod administrative_inbox;
-mod administrative_mailbox;
+pub(crate) mod administrative_inbox;
+pub(crate) mod administrative_mailbox;
 mod construction_reducer;
 mod controller;
 mod initialization_abi;
@@ -21,6 +21,7 @@ mod phase_custody;
 mod preparation_successor_abi;
 mod preparation_successor_custody;
 mod root_policy;
+pub(crate) use root_policy::NativeRootPolicy;
 mod source_fault_abi;
 mod writer_abi;
 pub(crate) use install::{install, registered_owner};

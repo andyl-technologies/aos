@@ -21,9 +21,27 @@ pub struct NativeNodeControlConfig {
     fixed_microvm: Option<super::NativeFixedMicrovmConfig>,
     fingerprint_worker: bool,
     root_epoch_version: Option<u32>,
+    endpoint_owner_version: Option<u32>,
+    bounded_teardown_version: Option<u32>,
+    effect_commitment: Option<[u8; 32]>,
 }
 
 impl NativeNodeControlConfig {
+    /// Returns the separately pinned complete original effect preparation.
+    pub const fn effect_commitment(self) -> Option<[u8; 32]> {
+        self.effect_commitment
+    }
+
+    /// Returns the separately selected finite producer mechanism, never epoch authority.
+    pub const fn bounded_teardown_version(self) -> Option<u32> {
+        self.bounded_teardown_version
+    }
+
+    /// Returns the explicitly selected local original-owner observation ABI.
+    pub const fn endpoint_owner_version(self) -> Option<u32> {
+        self.endpoint_owner_version
+    }
+
     /// Returns the explicitly selected dormant native callback ABI.
     pub const fn root_epoch_version(self) -> Option<u32> {
         self.root_epoch_version
@@ -81,6 +99,21 @@ pub(super) fn parse(
         Some("1") if fixed_microvm.is_some() => Some(1),
         _ => return Err(PluginArgsParseError::InvalidNativeNodeControl),
     };
+    let endpoint_owner_version = match parsed.value("node_endpoint_owner_version") {
+        None => None,
+        Some("1") if root_epoch_version == Some(1) => Some(1),
+        _ => return Err(PluginArgsParseError::InvalidNativeNodeControl),
+    };
+    let bounded_teardown_version = match parsed.value("node_bounded_teardown_version") {
+        None => None,
+        Some("1") if endpoint_owner_version == Some(1) => Some(1),
+        _ => return Err(PluginArgsParseError::InvalidNativeNodeControl),
+    };
+    let effect_commitment = if parsed.value("node_effect_commitment").is_some() {
+        Some(parse_required_hash(parsed, "node_effect_commitment")?)
+    } else {
+        None
+    };
     if keys.iter().all(|key| parsed.value(key).is_none())
         && initialization.is_none()
         && phase.is_none()
@@ -103,6 +136,15 @@ pub(super) fn parse(
         Some("4") if phase.is_some() => {
             crucible_protocol::node_control::NativeControlEdition::PreparationSuccessor
         }
+        Some("8")
+            if phase.is_some()
+                && administration.is_some()
+                && fixed_microvm.is_some()
+                && bounded_teardown_version == Some(1)
+                && effect_commitment.is_some_and(|value| value != [0; 32]) =>
+        {
+            crucible_protocol::node_control::NativeControlEdition::FiniteEffect
+        }
         Some("7") if phase.is_some() && administration.is_some() && fixed_microvm.is_some() => {
             crucible_protocol::node_control::NativeControlEdition::FixedMicrovm
         }
@@ -122,13 +164,20 @@ pub(super) fn parse(
                     | crucible_protocol::node_control::NativeControlEdition::PreparationSuccessor
                     | crucible_protocol::node_control::NativeControlEdition::Administration
                     | crucible_protocol::node_control::NativeControlEdition::Construction
+                    | crucible_protocol::node_control::NativeControlEdition::FiniteEffect
                     | crucible_protocol::node_control::NativeControlEdition::FixedMicrovm)))
         || (administration.is_some()
             && !matches!(edition, crucible_protocol::node_control::NativeControlEdition::Administration
                 | crucible_protocol::node_control::NativeControlEdition::Construction
-                | crucible_protocol::node_control::NativeControlEdition::FixedMicrovm))
+                | crucible_protocol::node_control::NativeControlEdition::FiniteEffect
+                    | crucible_protocol::node_control::NativeControlEdition::FixedMicrovm))
         || (fixed_microvm.is_some()
-            && edition != crucible_protocol::node_control::NativeControlEdition::FixedMicrovm)
+            && !matches!(edition, crucible_protocol::node_control::NativeControlEdition::FixedMicrovm | crucible_protocol::node_control::NativeControlEdition::FiniteEffect))
+    {
+        return Err(PluginArgsParseError::InvalidNativeNodeControl);
+    }
+    if effect_commitment.is_some()
+        && edition != crucible_protocol::node_control::NativeControlEdition::FiniteEffect
     {
         return Err(PluginArgsParseError::InvalidNativeNodeControl);
     }
@@ -141,6 +190,9 @@ pub(super) fn parse(
         administration,
         fixed_microvm,
         root_epoch_version,
+        endpoint_owner_version,
+        bounded_teardown_version,
+        effect_commitment,
         fingerprint_worker: parsed.value(super::PLUGIN_ARG_FINGERPRINT) == Some("on"),
     }))
 }
@@ -152,7 +204,10 @@ pub(super) fn is_key(key: &str) -> bool {
         || super::native_initialization::is_key(key)
         || matches!(
             key,
-            "node_root_epoch_version"
+            "node_effect_commitment"
+                | "node_root_epoch_version"
+                | "node_endpoint_owner_version"
+                | "node_bounded_teardown_version"
                 | PLUGIN_ARG_NODE_CONTROL_FD
                 | PLUGIN_ARG_NODE_CONTROL_SCOPE_HASH
                 | PLUGIN_ARG_NODE_CONTROL_VERSION
@@ -170,6 +225,35 @@ mod tests {
             "simfd=3,slot=0,fault_node_hash={},process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576",
             "01".repeat(32)
         )
+    }
+
+    #[test]
+    fn finite_teardown_selector_requires_the_same_original_endpoint_owner() {
+        for selection in ["0", "1", "2", "future"] {
+            assert!(
+                PluginArgs::parse(&format!(
+                    "{},node_bounded_teardown_version={selection}",
+                    base()
+                ))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn local_endpoint_owner_requires_the_original_root_and_dormant_epoch_selection() {
+        for selection in ["0", "1", "2", "future"] {
+            let args = format!("{},node_endpoint_owner_version={selection}", base());
+            assert!(matches!(
+                PluginArgs::parse(&args),
+                Err(super::PluginArgsParseError::InvalidNativeNodeControl)
+            ));
+        }
+        let args = format!(
+            "{},node_root_epoch_version=1,node_endpoint_owner_version=1",
+            base()
+        );
+        assert!(PluginArgs::parse(&args).is_err());
     }
 
     #[test]

@@ -311,12 +311,13 @@ impl StoredTerminal {
 }
 
 /// Receives through the actual modeled gate, keeping every partial prefix in custody.
-pub(crate) fn run_reader(
+pub(super) fn run_reader(
     custody: Arc<NativeRunControlCustody>,
-    sender: std::sync::mpsc::Sender<LiveRuntimeTeardownTrigger>,
+    sender: impl Into<super::teardown_channel::TeardownSender>,
     workers: Arc<super::worker_quiescence::LiveWorkerQuiescence>,
 ) -> bool {
     use super::worker_quiescence::WORKER_RUN_CONTROL;
+    let sender = sender.into();
     let descriptor = match custody.descriptor() {
         Ok(descriptor) => descriptor,
         Err(error) => {

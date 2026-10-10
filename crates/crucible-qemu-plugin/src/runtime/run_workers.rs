@@ -6,14 +6,16 @@
 //! worker creation and retained socket prefixes do not grant native permission.
 
 use std::os::unix::net::UnixStream;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
+
+use super::teardown_channel::{TeardownReceiver, TeardownSender};
 
 use crucible_protocol::ControlLifecycleStream;
 
 use super::{
-    LiveRuntimeTeardownTrigger, PluginArgs, PluginRuntimeInstallError, PostRegistrationFatalPolicy,
-    QemuRequestShutdownFn, RequiredOwnedCallbacksRegistered, native_run_control,
-    run_control_reader, run_runtime_thread_fail_loud, run_teardown_worker,
+    PluginArgs, PluginRuntimeInstallError, PostRegistrationFatalPolicy, QemuRequestShutdownFn,
+    RequiredOwnedCallbacksRegistered, native_run_control, run_control_reader,
+    run_runtime_thread_fail_loud, run_teardown_worker,
 };
 
 /// Starts the two original workers in their existing order after RUN entry.
@@ -24,8 +26,8 @@ pub(super) fn start<F: PostRegistrationFatalPolicy>(
     args: &PluginArgs,
     callbacks_registered: &RequiredOwnedCallbacksRegistered,
     control_stream: ControlLifecycleStream<UnixStream>,
-    teardown_receiver: mpsc::Receiver<LiveRuntimeTeardownTrigger>,
-    teardown_sender: &mpsc::Sender<LiveRuntimeTeardownTrigger>,
+    teardown_receiver: TeardownReceiver,
+    teardown_sender: &TeardownSender,
     request_shutdown: QemuRequestShutdownFn,
     fatal_policy: &F,
 ) -> (std::thread::JoinHandle<()>, std::thread::JoinHandle<()>) {

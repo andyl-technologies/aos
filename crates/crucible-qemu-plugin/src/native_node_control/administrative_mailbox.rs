@@ -370,7 +370,10 @@ impl NativeAdministrativeMailbox {
         cursor: u64,
     ) -> Result<NativeAdministrativeReplyCredit, NativeAdministrativeError> {
         let frame = self.decode_original(cursor)?;
-        if matches!(frame, NativeFrame::Initialize(_)) {
+        if matches!(
+            frame,
+            NativeFrame::Initialize(_) | NativeFrame::EffectCompute(_)
+        ) {
             let record = self
                 .records
                 .get(&cursor)
@@ -425,6 +428,36 @@ impl NativeAdministrativeMailbox {
             record.reply = Some(std::mem::take(&mut record.reply_storage));
         }
         Ok(())
+    }
+
+    /// Retains or compares one historical query reply under its original reservation.
+    ///
+    /// Cached reply recovery uses the same pre-dequeue storage and never reserves
+    /// a replacement credit. This operation accepts only administrative queries;
+    /// it cannot admit a construction command or native effect.
+    ///
+    /// # Errors
+    /// Refuses an unknown/non-query original, changed reply or transport failure.
+    pub(crate) fn reply_administration(
+        &mut self,
+        cursor: u64,
+        reply: &NativeFrame,
+    ) -> Result<bool, NativeAdministrativeError> {
+        if self.failed
+            || !matches!(
+                self.decode_original(cursor)?,
+                NativeFrame::QueryAdministration { .. }
+            )
+            || !matches!(reply, NativeFrame::AdministrationFacts(_))
+        {
+            return Err(NativeAdministrativeError::Conflict);
+        }
+        let credit = NativeAdministrativeReplyCredit {
+            owner: Arc::clone(&self.owner),
+            cursor,
+        };
+        self.retain_reply(credit, reply)?;
+        self.send_reply(cursor)
     }
 
     /// Returns immutable original wire bytes without decoding or native dispatch.
@@ -581,6 +614,12 @@ fn reply_matches(original: &NativeFrame, reply: &NativeFrame, scope: [u8; 32]) -
                 && receipt.original_cut_digest == command.original_cut_digest
                 && receipt.realize_request_digest == command.realize_request_digest
         }
+        (NativeFrame::EffectCompute(original), NativeFrame::EffectProgress(progress)) => {
+            // Source-result custody authenticates the native cut before this
+            // publication step. The mailbox additionally checks the complete
+            // original command/grant and retains byte-identical reply history.
+            progress.scope == scope && progress.validate_against(original).is_ok()
+        }
         (NativeFrame::Acknowledge(original), NativeFrame::Acknowledged(reply)) => original == reply,
         (
             NativeFrame::AcknowledgeInitialization(original),
@@ -600,6 +639,24 @@ fn classify(
         return NativeAdministrativeClass::Invalid;
     };
     match frame {
+        NativeFrame::PrepareEffect(plan)
+            if plan
+                .original_root
+                .administration
+                .phase
+                .initialization
+                .preparation
+                .scope
+                .identity_digest()
+                == Ok(scope) =>
+        {
+            NativeAdministrativeClass::Preparation
+        }
+        NativeFrame::EffectCompute(compute)
+            if compute.command.scope.identity_digest() == Ok(scope) =>
+        {
+            NativeAdministrativeClass::Modeled
+        }
         NativeFrame::PrepareFixedMicrovm(plan)
             if plan
                 .administration

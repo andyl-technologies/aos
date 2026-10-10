@@ -107,3 +107,11 @@ pub use phase_timers::{
     NATIVE_PHASE_TIMER_SUMMARY_BYTES, NativePhaseTimerArm, NativePhaseTimerObservation,
     NativeTimerBirth, NativeTimerParent,
 };
+
+mod effect_preparation;
+pub use effect_preparation::NativeEffectPreparation;
+mod effect_frames;
+pub use effect_frames::NativeEffectCompute;
+
+mod effect_progress;
+pub use effect_progress::{NativeEffectProgress, NativeEffectProgressStatus};

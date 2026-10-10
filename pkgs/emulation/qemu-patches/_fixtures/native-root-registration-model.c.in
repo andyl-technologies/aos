@@ -3,6 +3,7 @@
 #include "qemu/osdep.h"
 #include "qemu/main-loop.h"
 #include "qemu/crucible-node-root.h"
+#include "plugins/qemu-plugin.h"
 
 static CrucibleNodeRootPolicy node_root_policy;
 static bool node_root_launch_pinned;
@@ -31,7 +32,7 @@ static bool icount_crucible_sim_configuration_valid(void)
     return model_icount;
 }
 
-static uint64_t qemu_plugin_icount_raw(void)
+uint64_t qemu_plugin_icount_raw(void)
 {
     return model_raw;
 }

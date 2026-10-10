@@ -13,6 +13,8 @@ use crucible_node_contract::U64;
 /// Selects one explicitly prepared native process-protocol edition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeControlEdition {
+    /// Selects independently pinned source-native finite effect command custody.
+    FiniteEffect,
     /// Preserves original command, stop, acknowledgement and timer packet bytes.
     Original,
     /// Selects the opt-in protocol for retained writer and complete custody records.
@@ -36,6 +38,7 @@ impl NativeControlEdition {
     /// Returns the exact portable header version selected before native launch.
     pub const fn version(self) -> u16 {
         match self {
+            Self::FiniteEffect => 8,
             Self::Original => 1,
             Self::OwnedCustody => 2,
             Self::PhaseProjection => 3,
@@ -59,6 +62,17 @@ pub fn encode_frame_for_edition(
     edition: NativeControlEdition,
     frame: &NativeFrame,
 ) -> Result<Vec<u8>, NativeCommandError> {
+    if edition == NativeControlEdition::FiniteEffect {
+        return super::effect_frames::encode(frame);
+    }
+    if matches!(
+        frame,
+        NativeFrame::PrepareEffect(_)
+            | NativeFrame::EffectCompute(_)
+            | NativeFrame::EffectProgress(_)
+    ) {
+        return Err(NativeCommandError::UnsupportedVersion(8));
+    }
     if edition == NativeControlEdition::FixedMicrovm {
         return super::fixed_microvm_frames::encode(frame);
     }
@@ -229,6 +243,9 @@ pub fn decode_frame_for_edition(
     }
     if edition == NativeControlEdition::Original {
         return super::decode_frame(bytes);
+    }
+    if edition == NativeControlEdition::FiniteEffect {
+        return super::effect_frames::decode(bytes);
     }
     if edition == NativeControlEdition::FixedMicrovm {
         return super::fixed_microvm_frames::decode(bytes);
