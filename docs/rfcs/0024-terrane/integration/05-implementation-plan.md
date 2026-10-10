@@ -126,73 +126,66 @@ empty `terrane` binary.
 
 **Status:** In progress; eight of twenty-two T1 tasks are complete.
 Parallel worklines cover codec and domain conformance, index lookup, collector
-synchronization, permanent recovery and growing-index source acquisition.
-Workers retain disjoint file ownership and separate worktrees. Independent
-review remains separate, and one coordinated compiler serves executable and Nix
-gate requests. Shared storage currently delays fresh compilation; source
-investigation and review continue. T2 and branch worklines remain deferred.
+lifetimes, permanent recovery, growing-index source acquisition, SDK completion
+and derived-record verification. Workers retain disjoint file ownership and
+separate worktrees. Independent review remains separate, and one coordinated
+compiler serves build and Nix requests. T2 and branch worklines remain deferred.
 
-Reviewed candidate `3f9230be533` (tree `36c83412443`) passes native library build,
-fresh all-target SDK test compilation, strict all-target Clippy and the exact
-formatter pair. Its SDK inventory contains 1,081 tests. Genuine no-default Core
-compilation separately passes, with 761 tests across eleven binaries; SDK
-executables do not substitute for those Core witnesses. Full source, compiler
-inputs, actual executable hashes and raw child terminals bind these results.
-Fresh exact host executions on that source pass the twelve paired disclosure
-regressions, all eight epoch/watch cases including the losing-writer merge, the
-projection rebuild, four Core history/producer witnesses, and all sixty-one
-Core index prerequisites. Ten additional retained payload cases pass. A
-cancellation lifetime test fails because its Original strong count expires
-before ancestor fields finish destruction; the reviewed test-only correction
-waits for both within the unchanged five-second bound and preserves its final
-assertions. A separate reviewed index fixture fix forwards genuine native
-payload capture and closing after the first current snapshot returns
-`Unsupported`. Both corrections await a fresh joint executable.
+Frozen private tree `d66765bf3c76` passes the native library build, fresh
+all-target SDK test compilation, strict all-target Clippy and the exact
+formatter pair. Its actual SDK inventory contains 1,085 tests across three
+executables. Genuine no-default Core compilation separately passes, with 761
+tests across eleven executables and no enabled features. Full 6,245-file source
+seals, 3,236 compiler inputs, executable hashes and actual child terminals bind
+these results. The mandatory application-target check is now running on that
+source; its result remains pending.
 
-The same frozen source passes all five owning codec gates:
-`object-identity-from-manifest`, `cdc-boundaries`, `chunk-codec`,
-`chunk-bomb-cap` and `zstd-concat`. Together they execute 41 cases with
-registered outputs and nonempty result receipts; another 34 exact SDK and
-Core executions pass separately. Native domain baseline coverage passes
-seventeen SDK and fifteen Core cases. A held-publication timing failure is
-preserved alongside its unchanged passing retry and thirteen separately
-executed cases; these observations do not make the original grouped run green.
+Fresh exact executions on this source pass all six index lookup regressions,
+including current ACL, trust and producer checks; all nineteen SDK domain
+cases, including empty-domain admission and a genuine failed durable audit
+intent; and all fifteen Core domain cases. Four Core history/producer witnesses
+and all sixty-one Core index prerequisites also pass. These executions retain
+the original assertions and bounds and do not establish owning Nix acceptance.
 
-Reviewed private candidate `279017b295f` (tree `b6350d547d8`) composes the
-cancellation and lookup corrections, domain admission and genuine failed audit
-intent coverage, and removal of the unused generic domain deletion interface.
-Its native directory cohorts share the same original descriptor while every
-fresh capture remains distinct; registry entries require original lifetime and
-replaced ancestor regressions. Empty test fault lists skip an otherwise
-unconditional whole-inventory prescan, while nonempty fault ordering and all
-physical refreshes remain unchanged. Existing opt-in permanent progress tracing
-now identifies stage starts separately from completions. Fresh compilation,
-regression execution and owning qualification of this changed source remain
-pending; older gate results do not qualify it.
+Collector coverage passes thirty-two cases but fails the queued-worker teardown
+helper because that fixture deliberately has no Tokio timer driver. The
+reviewed test-only correction uses a monotonic elapsed check and yields within
+the unchanged thirty-second bound, retaining both weak-owner checks and final
+release assertions. It is composed privately and awaits a fresh executable.
+Two current heavy collector cases remain red: ancestry fails with actual
+descriptor exhaustion after 52.293 seconds, and indexed replay reaches its
+unchanged 120-second limit. The ancestry observer records 512 descriptors in
+its largest sample, mostly repeated directory descriptors, under the actual
+unchanged 1,024 soft limit. That sample does not establish the failing peak or
+its owning lifetime; source investigation continues without reopening by path
+or weakening Original identity checks.
 
-All three genuine body-read error witnesses pass on the current host archive
-and in a registered protected runtime diagnostic, including the compiled
-best-effort Drop diagnostic. The protected run preserves inherited procfs
-ownership, requires both alias tools, and verifies normal and unwind cleanup.
-It consumes an opaque host archive; source-built SDK and owning gate
-qualification remain required.
+The permanent before-open recovery case now passes in 108.165 seconds under
+its unchanged 120-second limit. The next case loses its terminal receipt when
+shared storage becomes full and remains an environment failure with incomplete
+evidence; four later cases remain unrun. Retained source and executable seals
+are unchanged. Earlier source-specific codec, disclosure, epoch/watch, projection,
+recovery and body-read results remain recorded below, including their original
+failures. Older results do not qualify subsequently changed source.
 
-The current indexed collector replay reaches its unchanged 120-second limit.
-The ancestry case separately fails with actual descriptor exhaustion. Its
-bounded observer records 128 descriptors at the sampled maximum under the
-unchanged 1,024 soft limit; it does not capture or establish the failing peak.
-Neither ancestor sharing nor the reviewed cohort correction qualifies that
-case yet. Permanent recovery before-open again reaches its unchanged
-120-second limit, while the after-directory-sync case passes in 109.651
-seconds. The current ordinary 2,048-entry growing case times out at 1,800.055
-seconds. Its last marker spans publication, reopening and independent output
-verification, so the unfinished operation remains unresolved. All five trace
-flags are unset for qualification. Recorded descriptor limits distinguish
-launchers and actual test children; a high-limit pass cannot qualify the earlier
-low-limit failure. The preceding owning source passes both 1,024-entry
-populations, but the third 2,048-entry population times out and three remain
-unrun. The DRV-29 blocker remains until all six current owning populations
-qualify.
+The ordinary 2,048-entry growing-index case previously reached its unchanged
+1,800-second limit. Reviewed opt-in markers now distinguish publication,
+reopening and independent output verification; a separate diagnostic is
+running on the current executable. All six current owning populations remain
+required under DRV-29. Traced diagnostics do not qualify the gate.
+
+A separate derived-data audit finds that a cyclic dictionary read returns the
+same public derived error used for a proven attribute contradiction. The
+current verification path consequently quarantines a valid signed record before
+plaintext recomputation completes. The shared gate now requires a genuine
+cyclic-read preservation and restored-retry witness alongside the original
+deterministic executable-quarantine case. The reviewed private per-verification
+reader marker is committed and awaits fresh compilation and execution. It
+preserves exact public errors while separating failed reads from recomputed
+contradictions under DRV-2 and DRV-28. No format,
+identity or specification change is needed. The two native directory cohort
+selectors are also corrected against the actual compiled lexical module names;
+the gate's required count remains forty-eight.
 
 These results accept no additional task, milestone exit or freeze. Every owning
 task gate and the complete current T1 floor remain required before a formal
