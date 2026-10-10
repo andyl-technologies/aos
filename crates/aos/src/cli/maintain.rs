@@ -250,6 +250,26 @@ pub struct MaintainStatusArgs {
     /// Show only nonterminal runs
     #[arg(long)]
     pub active: bool,
+
+    /// Inspect shared assessment profile status instead of maintenance runs
+    #[arg(long, value_enum, value_delimiter = ',', conflicts_with_all = ["run", "active"])]
+    pub profiles: Vec<super::AssessmentProfileArg>,
+
+    /// Limit the assessment page to one through one hundred subjects
+    #[arg(long, requires = "profiles", value_parser = clap::value_parser!(u32).range(1..=100))]
+    pub limit: Option<u32>,
+
+    /// Continue after an exact subject in the pinned inventory and policy
+    #[arg(long, requires_all = ["profiles", "inventory_digest", "policy_digest"])]
+    pub after_subject: Option<String>,
+
+    /// Pin the exact inventory digest for assessment status
+    #[arg(long, requires = "profiles")]
+    pub inventory_digest: Option<String>,
+
+    /// Pin the exact policy digest for assessment status
+    #[arg(long, requires = "profiles")]
+    pub policy_digest: Option<String>,
 }
 
 #[derive(Args)]

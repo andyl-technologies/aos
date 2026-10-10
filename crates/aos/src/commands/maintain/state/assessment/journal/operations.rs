@@ -193,6 +193,12 @@ impl StateStore {
                 journal.receipts.len() < MAX_LOCAL_SCANS && !journal.receipts.contains_key(scan_id),
                 "local assessment scan retention is exhausted or identity is already consumed"
             );
+            self.upgrade_local_profiles(&mut journal)?;
+            if journal.inventory_digest != Some(inventory_digest)
+                || journal.policy_digest != Some(request.policy_digest)
+            {
+                journal.profiles.clear();
+            }
             let generation = journal
                 .generation
                 .checked_add(1)
@@ -218,6 +224,18 @@ impl StateStore {
             journal.policy_digest = Some(receipt.request.policy_digest);
             journal.idempotency.insert(key, scan_id.into());
             self.retain_local_receipt(&mut journal, &receipt)?;
+            journal.desire_profiles(&receipt)?;
+            let directory = self.assessment_directory()?;
+            write_immutable(
+                &directory,
+                &format!("inventory-{}.json", inventory_digest.hex()),
+                &data.inventory,
+            )?;
+            write_immutable(
+                &directory,
+                &format!("policy-{}.json", receipt.request.policy_digest.hex()),
+                &data.policy,
+            )?;
             self.write_local_journal(&journal)?;
             Ok((receipt, true))
         })
@@ -313,10 +331,7 @@ impl StateStore {
                     && input.profiles == receipt.request.profiles,
                 "local assessment commit differs from its admitted request"
             );
-            if journal.generation != receipt.generation
-                || journal.inventory_digest != Some(input.inventory_digest)
-                || journal.policy_digest != Some(input.policy_digest)
-            {
+            if !journal.is_current(&receipt) {
                 receipt.failure_code = Some("local-scan-superseded".into());
                 self.transition_local_receipt(&mut journal, &mut receipt, ScanState::Superseded)?;
                 self.write_local_journal(&journal)?;
@@ -352,12 +367,30 @@ impl StateStore {
                 ScanState::Partial
             };
             self.transition_local_receipt(&mut journal, &mut receipt, state)?;
-            journal.head = Some(LocalHead {
+            let head = LocalHead {
                 scan_id: scan_id.into(),
                 assessment_digest,
                 closure_digest,
                 input_digest: input.digest()?,
-            });
+            };
+            for subject in &receipt.request.subjects {
+                for profile in &receipt.request.profiles {
+                    journal
+                        .profiles
+                        .get_mut(&profile_key(subject, *profile))
+                        .context("committed local profile is absent")?
+                        .committed = Some(head.clone());
+                }
+            }
+            let replace_last = match &journal.head {
+                Some(previous) => {
+                    self.local_receipt(&journal, &previous.scan_id)?.generation < receipt.generation
+                }
+                None => true,
+            };
+            if replace_last {
+                journal.head = Some(head);
+            }
             self.write_local_journal(&journal)?;
             Ok(receipt)
         })
@@ -370,6 +403,20 @@ impl StateStore {
         let Some(head) = &journal.head else {
             return Ok(None);
         };
+        self.local_head_evaluation(&journal, head)
+            .map(|(data, _, _, _)| Some(data))
+    }
+
+    pub(super) fn local_head_evaluation(
+        &self,
+        journal: &LocalJournal,
+        head: &LocalHead,
+    ) -> Result<(
+        EvaluationData,
+        ScanInputV1,
+        PackageAssessmentV1,
+        ScanReceiptV1,
+    )> {
         let receipt = self.local_receipt(&journal, &head.scan_id)?;
         anyhow::ensure!(
             receipt.assessment_digest == Some(head.assessment_digest),
@@ -418,6 +465,6 @@ impl StateStore {
                 )? == input,
             "local assessment head custody differs from its frozen request"
         );
-        Ok(Some(data))
+        Ok((data, input, result, receipt))
     }
 }

@@ -1,8 +1,62 @@
-//! Shared human rendering of exact local and hosted advisory projections.
+//! Shared human rendering of exact local and hosted assessment projections.
 
 use aos_assessment_runtime::advisories::AdvisoryPageV1;
+use aos_assessment_runtime::application::AssessmentStatusV1;
 use aos_core::output::Printer;
 use aos_maintain::presentation::escape_terminal;
+
+/// Renders independent profile status with the same vocabulary in both placements.
+pub(in crate::commands) fn render_status(printer: &Printer, status: &AssessmentStatusV1) {
+    let escape = |value: &str| escape_terminal(value, 4096);
+    for subject in &status.subjects {
+        printer.info(&format!(
+            "{} {} ({}) [{}]",
+            escape(&subject.package_coordinate),
+            escape(&subject.version),
+            escape(&subject.platform),
+            escape(&subject.output)
+        ));
+        for profile in &subject.profiles {
+            let evidence = if profile.committed_generation == 0 {
+                "unassessed"
+            } else if profile.fresh {
+                "complete and fresh"
+            } else {
+                "incomplete or expired"
+            };
+            printer.info(&format!(
+                "  {:?}: {evidence}{}; desired {}, committed {}",
+                profile.profile,
+                if profile.pending {
+                    "; scan pending"
+                } else {
+                    ""
+                },
+                profile.desired_generation,
+                profile.committed_generation,
+            ));
+        }
+    }
+    printer.info(&format!("Observed at {}", status.as_of));
+    if status.source_status.is_empty() {
+        printer.info("Source reservation availability is not reported.");
+    }
+    for source in &status.source_status {
+        printer.info(&format!(
+            "{}: {}",
+            escape(&source.provider),
+            source.availability.description()
+        ));
+    }
+    if let Some(next) = &status.next_subject {
+        printer.info(&format!(
+            "Next page: --after-subject {} --inventory-digest {} --policy-digest {}",
+            escape(next),
+            status.inventory_digest,
+            status.policy_digest
+        ));
+    }
+}
 
 /// Renders a validated retained-revision page without treating missing evidence as clean.
 pub(in crate::commands) fn render_advisory(printer: &Printer, page: &AdvisoryPageV1) {

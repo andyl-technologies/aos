@@ -35,6 +35,12 @@ pub async fn aos_main() {
         color,
     );
     if let Commands::Maintain(args) = &cli.command {
+        if let Some(MaintainCommand::Status(command)) = &args.command
+            && !command.profiles.is_empty()
+        {
+            let result = commands::maintain::run_local_status(&cli, args, command, &printer);
+            exit_with_result(result, &printer);
+        }
         if let Some(MaintainCommand::Scans { command }) = &args.command {
             let result = commands::maintain::run_local_scans(&cli, args, command, &printer).await;
             exit_with_result(result, &printer);

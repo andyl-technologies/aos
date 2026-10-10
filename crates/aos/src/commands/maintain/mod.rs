@@ -3,6 +3,7 @@
 mod confinement;
 mod assessment;
 mod assessment_scans;
+mod assessment_status;
 mod advisories;
 mod discovery;
 mod evidence;
@@ -42,6 +43,7 @@ const MAX_SCAN_DIAGNOSTICS: usize = 128;
 
 pub use assessment::run_assessment;
 pub use assessment_scans::run_local_scans;
+pub use assessment_status::run_local_status;
 pub use advisories::run_advisory;
 
 /// Dispatches one recognized maintenance command to a typed completion.

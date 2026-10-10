@@ -35,6 +35,47 @@ fn cli_command() -> Command {
 }
 
 #[test]
+fn local_assessment_status_uses_explicit_profiles_and_bound_continuations() {
+    let parsed = parse_cli(["aos", "maintain", "status", "--profiles", "all"]).unwrap();
+    let cli::Commands::Maintain(args) = parsed.command else {
+        panic!("maintenance command");
+    };
+    let Some(cli::MaintainCommand::Status(status)) = args.command else {
+        panic!("status command");
+    };
+    assert_eq!(cli::assessment_profiles(&status.profiles).len(), 3);
+    for extra in [
+        vec!["--active"],
+        vec!["some-run"],
+        vec!["--after-subject", "subject"],
+        vec!["--limit", "101"],
+    ] {
+        let mut arguments = vec!["aos", "maintain", "status", "--profiles", "all"];
+        arguments.extend(extra);
+        assert!(parse_cli(arguments).is_err());
+    }
+    assert!(parse_cli(["aos", "maintain", "status", "--limit", "10"]).is_err());
+    assert!(
+        parse_cli([
+            "aos",
+            "maintain",
+            "status",
+            "--profiles",
+            "all",
+            "--after-subject",
+            "subject",
+            "--inventory-digest",
+            "sha256:inventory",
+            "--policy-digest",
+            "sha256:policy"
+        ])
+        .is_ok()
+    );
+    assert!(parse_cli(["aos", "maintain", "status", "--active"]).is_ok());
+}
+
+
+#[test]
 fn local_and_hub_scans_expand_all_and_accept_the_same_freshness_modes() {
     use aos_assessment::input::{FreshnessMode, Profile};
 

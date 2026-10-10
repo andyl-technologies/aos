@@ -7,10 +7,10 @@
 //!
 //! ```json
 //! {
-//!   "schema": "aos.local-assessment-journal/v1",
+//!   "schema": "aos.local-assessment-journal/v2",
 //!   "generation": 0, "inventoryRevision": 0,
 //!   "inventoryDigest": null, "policyDigest": null,
-//!   "receipts": {}, "idempotency": {}, "head": null
+//!   "receipts": {}, "idempotency": {}, "head": null, "profiles": {}
 //! }
 //! ```
 
@@ -28,6 +28,10 @@ use std::collections::BTreeSet;
 use super::*;
 
 mod operations;
+mod profiles;
+mod status;
+
+use profiles::{LocalProfileHead, profile_key};
 
 #[cfg(test)]
 mod tests;
@@ -46,6 +50,8 @@ struct LocalJournal {
     receipts: BTreeMap<String, LocalReceiptReference>,
     idempotency: BTreeMap<String, String>,
     head: Option<LocalHead>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    profiles: BTreeMap<String, LocalProfileHead>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -55,7 +61,7 @@ struct LocalReceiptReference {
     state: ScanState,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct LocalHead {
     scan_id: String,
@@ -67,7 +73,7 @@ struct LocalHead {
 impl Default for LocalJournal {
     fn default() -> Self {
         Self {
-            schema: "aos.local-assessment-journal/v1".into(),
+            schema: "aos.local-assessment-journal/v2".into(),
             generation: 0,
             inventory_revision: 0,
             inventory_digest: None,
@@ -75,13 +81,32 @@ impl Default for LocalJournal {
             receipts: BTreeMap::new(),
             idempotency: BTreeMap::new(),
             head: None,
+            profiles: BTreeMap::new(),
         }
     }
 }
 
 impl LocalJournal {
     fn is_current(&self, receipt: &ScanReceiptV1) -> bool {
-        self.generation == receipt.generation
+        !receipt.state.is_terminal()
+            && self
+                .receipts
+                .get(&receipt.scan_id)
+                .is_some_and(|reference| reference.state == receipt.state)
+            && (if self.schema == "aos.local-assessment-journal/v1" {
+                self.generation == receipt.generation
+            } else {
+                receipt.request.subjects.iter().all(|subject| {
+                    receipt.request.profiles.iter().all(|profile| {
+                        self.profiles
+                            .get(&profile_key(subject, *profile))
+                            .is_some_and(|head| {
+                                head.desired_generation == receipt.generation
+                                    && head.desired_scan_id == receipt.scan_id
+                            })
+                    })
+                })
+            })
             && self.inventory_revision == receipt.request.inventory_revision
             && self.inventory_digest == Some(receipt.request.inventory_digest)
             && self.policy_digest == Some(receipt.request.policy_digest)
@@ -89,13 +114,16 @@ impl LocalJournal {
 
     fn validate(&self) -> Result<()> {
         anyhow::ensure!(
-            self.schema == "aos.local-assessment-journal/v1"
-                && self.generation <= MAX_LOCAL_REVISION
+            matches!(
+                self.schema.as_str(),
+                "aos.local-assessment-journal/v1" | "aos.local-assessment-journal/v2"
+            ) && self.generation <= MAX_LOCAL_REVISION
                 && self.inventory_revision <= MAX_LOCAL_REVISION
                 && self.receipts.len() <= MAX_LOCAL_SCANS
                 && self.idempotency.len() == self.receipts.len(),
             "invalid local assessment journal schema or bounds"
         );
+        self.validate_profile_heads()?;
         anyhow::ensure!(
             self.inventory_digest.is_some() == (self.inventory_revision > 0)
                 && self.policy_digest.is_some() == self.inventory_digest.is_some()

@@ -179,5 +179,48 @@ in {
       maintainer.succeed("printf '%s' " + encoded + " > /var/lib/assessment/tampered.json")
       maintainer.fail("aos-release-fleet-fixture assessment-verify /var/lib/assessment/tampered.json")
       maintainer.fail(advisory_command.replace("evidence.json", "tampered.json"))
+
+      status_command = (
+          "AOS_ROOT=/var/lib/assessment/repository aos --json maintain "
+          "--state-dir /var/lib/assessment/state status --profiles all "
+      )
+      baseline = json.loads(maintainer.succeed(status_command))["data"]
+      profiles = baseline["subjects"][0]["profiles"]
+      assert profiles[0]["profile"] == "license-signals" and profiles[0]["committedGeneration"] == 0, baseline
+      assert profiles[1]["profile"] == "updates" and profiles[1]["committedGeneration"] == 0, baseline
+      assert profiles[2]["profile"] == "vulnerabilities" and profiles[2]["fresh"], baseline
+      assert profiles[2]["assessmentDigest"] == fixed["execution"]["scan"]["assessmentDigest"], baseline
+      maintainer.fail(status_command + "--inventory-digest sha256:" + "0" * 64)
+      maintainer.fail(status_command + "--active")
+
+      # Two real CLI processes admit different profiles behind the same physical
+      # source lane. Both must remain eligible and retain independent heads.
+      maintainer.succeed("systemd-run --unit=assessment-profile-lane-fixture aos-release-fleet-fixture assessment-lane-lock " + lock + " /var/lib/assessment/profile-ready /var/lib/assessment/profile-release")
+      maintainer.wait_until_succeeds("test -f /var/lib/assessment/profile-ready")
+      update_command = command.replace("--profile vulnerabilities", "--profile updates")
+      maintainer.succeed("systemd-run --unit=assessment-profile-updates " + unit_environment + " --property=StandardOutput=file:/var/lib/assessment/profile-updates.json --property=StandardError=file:/var/lib/assessment/profile-updates-error.txt ${pkgs.bash}/bin/bash -c " + shlex.quote(update_command + "--idempotency-key fixture-profile-updates"))
+      maintainer.wait_until_succeeds(scans_command + "list | jq -e '[.data.scans[] | select(.state == \"queued\")] | length == 1'")
+      update_scan = next(scan for scan in json.loads(maintainer.succeed(scans_command + "list"))["data"]["scans"] if scan["state"] == "queued")
+      pending = json.loads(maintainer.succeed(status_command))["data"]["subjects"][0]["profiles"]
+      assert pending[1]["pending"] and pending[1]["committedGeneration"] == 0, pending
+      assert pending[2] == profiles[2], pending
+
+      maintainer.succeed("systemd-run --unit=assessment-profile-security " + unit_environment + " --property=StandardOutput=file:/var/lib/assessment/profile-security.json --property=StandardError=file:/var/lib/assessment/profile-security-error.txt ${pkgs.bash}/bin/bash -c " + shlex.quote(command + "--idempotency-key fixture-profile-security"))
+      maintainer.wait_until_succeeds(scans_command + "list | jq -e '[.data.scans[] | select(.state == \"queued\")] | length == 2'")
+      security_scan = next(scan for scan in json.loads(maintainer.succeed(scans_command + "list"))["data"]["scans"] if scan["state"] == "queued" and scan["scanId"] != update_scan["scanId"])
+      pending = json.loads(maintainer.succeed(status_command))["data"]["subjects"][0]["profiles"]
+      assert pending[1]["pending"] and pending[2]["pending"], pending
+      assert pending[2]["assessmentDigest"] == profiles[2]["assessmentDigest"], pending
+      maintainer.succeed("touch /var/lib/assessment/profile-release")
+      update_receipt = json.loads(maintainer.succeed(scans_command + "wait " + update_scan["scanId"] + " --timeout 60"))["data"]
+      security_receipt = json.loads(maintainer.succeed(scans_command + "wait " + security_scan["scanId"] + " --timeout 60"))["data"]
+      assert update_receipt["state"] == "partial", update_receipt
+      assert security_receipt["state"] == "succeeded", security_receipt
+      completed = json.loads(maintainer.succeed(status_command))["data"]["subjects"][0]["profiles"]
+      assert completed[1]["committedGeneration"] == update_receipt["generation"], completed
+      assert completed[2]["committedGeneration"] == security_receipt["generation"], completed
+      assert completed[1]["assessmentDigest"] == update_receipt["assessmentDigest"] and not completed[1]["fresh"], completed
+      assert completed[2]["assessmentDigest"] == security_receipt["assessmentDigest"] and completed[2]["fresh"], completed
+      assert all(not profile["pending"] for profile in completed), completed
     '';
 }

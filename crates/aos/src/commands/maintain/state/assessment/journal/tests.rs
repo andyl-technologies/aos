@@ -52,6 +52,338 @@ fn semantic(data: &EvaluationData) -> Result<(ScanInputV1, PackageAssessmentV1)>
     Ok((input, result))
 }
 
+fn admit_profiles(
+    store: &StateStore,
+    number: u32,
+    data: &EvaluationData,
+    profiles: Vec<Profile>,
+) -> Result<ScanReceiptV1> {
+    let (receipt, fresh) = store.admit_local_assessment_scan(
+        &id(number),
+        data,
+        vec!["subject".into()],
+        profiles,
+        FreshnessMode::Offline,
+        &format!("request-{number}"),
+        common::evaluated_at()?,
+    )?;
+    assert!(fresh);
+    Ok(receipt)
+}
+
+fn commit_profiles(
+    store: &StateStore,
+    receipt: &ScanReceiptV1,
+    data: &EvaluationData,
+) -> Result<ScanReceiptV1> {
+    let input = data.freeze_selected(
+        receipt.request.profiles.clone(),
+        receipt.request.subjects.clone(),
+        common::evaluated_at()?,
+    )?;
+    let result = evaluate(&input, data)?;
+    store.commit_local_assessment_scan(
+        &receipt.scan_id,
+        &input,
+        data,
+        &result,
+        &ScanUsage::default(),
+    )
+}
+
+#[test]
+fn disjoint_profiles_commit_in_either_order_without_replacing_each_others_heads() -> Result<()> {
+    let (_directory, store) = store()?;
+    let data = common::fixture("1.2.0")?;
+    let security = admit_profiles(&store, 1, &data, vec![Profile::Vulnerabilities])?;
+    store.start_local_assessment_scan(&security.scan_id)?;
+    let updates = admit_profiles(&store, 2, &data, vec![Profile::Updates])?;
+    store.start_local_assessment_scan(&updates.scan_id)?;
+
+    let updates = commit_profiles(&store, &updates, &data)?;
+    let security = commit_profiles(&store, &security, &data)?;
+    assert!(matches!(
+        updates.state,
+        ScanState::Partial | ScanState::Succeeded
+    ));
+    assert!(matches!(
+        security.state,
+        ScanState::Partial | ScanState::Succeeded
+    ));
+    let journal = store.local_journal()?;
+    assert_eq!(
+        journal.profiles[&profile_key("subject", Profile::Updates)]
+            .committed
+            .as_ref()
+            .context("updates head")?
+            .scan_id,
+        updates.scan_id
+    );
+    assert_eq!(
+        journal.profiles[&profile_key("subject", Profile::Vulnerabilities)]
+            .committed
+            .as_ref()
+            .context("security head")?
+            .scan_id,
+        security.scan_id
+    );
+    assert_eq!(
+        journal
+            .head
+            .as_ref()
+            .context("latest admitted committed closure")?
+            .scan_id,
+        updates.scan_id
+    );
+
+    let older = admit_profiles(&store, 3, &data, vec![Profile::Vulnerabilities])?;
+    let newer = admit_profiles(&store, 4, &data, vec![Profile::Vulnerabilities])?;
+    assert_eq!(
+        store.start_local_assessment_scan(&older.scan_id)?.state,
+        ScanState::Superseded
+    );
+    assert_eq!(
+        store.start_local_assessment_scan(&newer.scan_id)?.state,
+        ScanState::Running
+    );
+    assert_eq!(
+        store.local_journal()?.profiles[&profile_key("subject", Profile::Updates)]
+            .committed
+            .as_ref()
+            .context("retained updates head")?
+            .scan_id,
+        updates.scan_id
+    );
+    Ok(())
+}
+
+#[test]
+fn legacy_migration_preserves_only_published_head_and_does_not_resurrect_active_work() -> Result<()>
+{
+    let (_directory, store) = store()?;
+    let data = common::fixture("1.2.0")?;
+    let first = admit_profiles(&store, 1, &data, vec![Profile::Vulnerabilities])?;
+    store.start_local_assessment_scan(&first.scan_id)?;
+    let first = commit_profiles(&store, &first, &data)?;
+    let active = admit_profiles(&store, 2, &data, vec![Profile::Vulnerabilities])?;
+    store.start_local_assessment_scan(&active.scan_id)?;
+    let mut legacy = store.local_journal()?;
+    legacy.schema = "aos.local-assessment-journal/v1".into();
+    legacy.profiles.clear();
+    store.write_local_journal(&legacy)?;
+
+    let updates = admit_profiles(&store, 3, &data, vec![Profile::Updates])?;
+    let journal = store.local_journal()?;
+    assert_eq!(journal.schema, "aos.local-assessment-journal/v2");
+    assert_eq!(
+        store.inspect_local_assessment_scan(&active.scan_id)?.state,
+        ScanState::Superseded
+    );
+    let security = &journal.profiles[&profile_key("subject", Profile::Vulnerabilities)];
+    assert_eq!(
+        security
+            .committed
+            .as_ref()
+            .context("retained legacy head")?
+            .scan_id,
+        first.scan_id
+    );
+    assert_eq!(security.desired_generation, active.generation);
+    assert!(journal.is_current(&updates));
+    assert!(!journal.is_current(&active));
+    Ok(())
+}
+
+#[test]
+fn policy_replacement_invalidates_disjoint_profiles_without_claiming_a_new_head() -> Result<()> {
+    let (_directory, store) = store()?;
+    let data = common::fixture("1.2.0")?;
+    let security = admit_profiles(&store, 1, &data, vec![Profile::Vulnerabilities])?;
+    store.start_local_assessment_scan(&security.scan_id)?;
+    let mut replacement = data.clone();
+    replacement.policy.advisory_max_age_seconds += 1;
+    admit_profiles(&store, 2, &replacement, vec![Profile::Updates])?;
+    assert_eq!(
+        commit_profiles(&store, &security, &data)?.state,
+        ScanState::Superseded
+    );
+    let journal = store.local_journal()?;
+    assert!(
+        !journal
+            .profiles
+            .contains_key(&profile_key("subject", Profile::Vulnerabilities))
+    );
+    assert!(
+        journal
+            .profiles
+            .values()
+            .all(|head| head.committed.is_none())
+    );
+    Ok(())
+}
+
+fn status_query() -> aos_assessment_runtime::application::StatusQueryV1 {
+    aos_assessment_runtime::application::StatusQueryV1 {
+        schema: "aos.assessment-status-query/v1".into(),
+        profiles: vec![
+            Profile::LicenseSignals,
+            Profile::Updates,
+            Profile::Vulnerabilities,
+        ],
+        limit: 100,
+        after_subject: None,
+        inventory_digest: None,
+        policy_digest: None,
+    }
+}
+
+#[test]
+fn status_includes_unassessed_profiles_and_reads_do_not_start_or_recover_work() -> Result<()> {
+    let (_directory, store) = store()?;
+    let data = common::fixture("1.2.0")?;
+    let scan = admit(&store, 1, &data)?;
+    let index_path = store.repository.join("assessments/journal.json");
+    let original = std::fs::read(&index_path)?;
+
+    let status = store.local_assessment_status(&status_query(), common::evaluated_at()?)?;
+    assert_eq!(status.subjects.len(), 1);
+    assert_eq!(status.subjects[0].profiles.len(), 3);
+    for profile in &status.subjects[0].profiles {
+        assert_eq!(profile.committed_generation, 0);
+        assert!(profile.assessment_digest.is_none());
+        assert!(!profile.fresh);
+        assert_eq!(profile.pending, profile.profile == Profile::Vulnerabilities);
+    }
+    assert_eq!(
+        store.inspect_local_assessment_scan(&scan.scan_id)?.state,
+        ScanState::Queued
+    );
+    assert_eq!(std::fs::read(index_path)?, original);
+    Ok(())
+}
+
+#[test]
+fn status_preserves_independent_freshness_and_failed_refresh_is_not_a_clean_head() -> Result<()> {
+    let (_directory, store) = store()?;
+    let data = common::fixture("1.2.0")?;
+    let security = admit_profiles(&store, 1, &data, vec![Profile::Vulnerabilities])?;
+    store.start_local_assessment_scan(&security.scan_id)?;
+    let security = commit_profiles(&store, &security, &data)?;
+    let updates = admit_profiles(&store, 2, &data, vec![Profile::Updates])?;
+    store.start_local_assessment_scan(&updates.scan_id)?;
+    commit_profiles(&store, &updates, &data)?;
+
+    let status = store.local_assessment_status(&status_query(), common::evaluated_at()?)?;
+    let profiles = &status.subjects[0].profiles;
+    assert_eq!(profiles[0].committed_generation, 0);
+    assert!(!profiles[1].fresh);
+    assert!(profiles[2].fresh);
+    assert_eq!(profiles[2].assessment_digest, security.assessment_digest);
+    let refreshing = admit_profiles(&store, 3, &data, vec![Profile::Vulnerabilities])?;
+    store.start_local_assessment_scan(&refreshing.scan_id)?;
+    assert!(
+        store
+            .local_assessment_status(&status_query(), common::evaluated_at()?)?
+            .subjects[0]
+            .profiles[2]
+            .pending
+    );
+    store.fail_local_assessment_scan(&refreshing.scan_id, "fixture-failed-refresh")?;
+    let status = store.local_assessment_status(&status_query(), common::evaluated_at()?)?;
+    assert!(!status.subjects[0].profiles[2].pending);
+    assert_eq!(
+        status.subjects[0].profiles[2].committed_generation,
+        security.generation
+    );
+    assert_eq!(
+        status.subjects[0].profiles[2].desired_generation,
+        refreshing.generation
+    );
+    let deadline = status.subjects[0].profiles[2]
+        .validated_until
+        .clone()
+        .context("fresh security deadline")?;
+    assert!(
+        !store
+            .local_assessment_status(&status_query(), deadline)?
+            .subjects[0]
+            .profiles[2]
+            .fresh
+    );
+    Ok(())
+}
+
+#[test]
+fn status_refuses_changed_pins_missing_inventory_and_broken_profile_custody() -> Result<()> {
+    let (_directory, store) = store()?;
+    let data = common::fixture("1.2.0")?;
+    let scan = admit(&store, 1, &data)?;
+    store.start_local_assessment_scan(&scan.scan_id)?;
+    commit_profiles(&store, &scan, &data)?;
+    let mut query = status_query();
+    query.inventory_digest = Some(Sha256Digest::of_bytes(b"different inventory"));
+    assert!(
+        store
+            .local_assessment_status(&query, common::evaluated_at()?)
+            .is_err()
+    );
+    query.inventory_digest = None;
+    let mut journal = store.local_journal()?;
+    journal
+        .profiles
+        .get_mut(&profile_key("subject", Profile::Vulnerabilities))
+        .context("profile head")?
+        .committed
+        .as_mut()
+        .context("committed result")?
+        .input_digest = Sha256Digest::of_bytes(b"missing input");
+    store.write_local_journal(&journal)?;
+    assert!(
+        store
+            .local_assessment_status(&query, common::evaluated_at()?)
+            .is_err()
+    );
+    std::fs::remove_file(
+        store
+            .repository
+            .join("assessments")
+            .join(format!("inventory-{}.json", data.inventory.digest()?.hex())),
+    )?;
+    assert!(
+        store
+            .local_assessment_status(&query, common::evaluated_at()?)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn status_refuses_excessive_custody_before_loading_a_large_body() -> Result<()> {
+    let (_directory, store) = store()?;
+    let data = common::fixture("1.2.0")?;
+    let scan = admit(&store, 1, &data)?;
+    store.start_local_assessment_scan(&scan.scan_id)?;
+    commit_profiles(&store, &scan, &data)?;
+    let journal = store.local_journal()?;
+    let head = journal.head.as_ref().context("committed head")?;
+    let path = store
+        .repository
+        .join("assessments")
+        .join(format!("data-{}.json", head.closure_digest.hex()));
+    // A sparse invalid file exercises the read budget without allocating its
+    // body or allowing an oversized closure to masquerade as missing coverage.
+    OpenOptions::new()
+        .write(true)
+        .open(path)?
+        .set_len(256 * 1024 * 1024 + 1)?;
+    let error = store
+        .local_assessment_status(&status_query(), common::evaluated_at()?)
+        .err()
+        .context("excessive custody must fail")?;
+    assert!(error.to_string().contains("status custody limit exceeded"));
+    Ok(())
+}
+
 fn work(receipt: &ScanReceiptV1) -> Result<ProviderWorkPlanV1> {
     let issued_at = common::evaluated_at()?;
     let expires_at = Timestamp::from_unix_seconds(issued_at.unix_seconds() + 60)?;

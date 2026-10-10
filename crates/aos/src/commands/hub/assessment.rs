@@ -264,11 +264,12 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
             let receipt = ScanReceiptV1::from_slice(&response.document_json)?;
             anyhow::ensure!(
                 receipt.admission_complete
-                    && receipt.request == submission.bind(
-                        &receipt.request.resource_scope,
-                        &receipt.request.authorization_partition,
-                        &receipt.request.actor_ref,
-                    )?,
+                    && receipt.request
+                        == submission.bind(
+                            &receipt.request.resource_scope,
+                            &receipt.request.authorization_partition,
+                            &receipt.request.actor_ref,
+                        )?,
                 "Hub scan receipt differs from the exact submitted selection"
             );
             let receipt = if *wait {
@@ -318,48 +319,7 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({"schema_version":"aos.hub.cli/v1", "kind":"assessment-status", "data":status}));
             } else {
-                for subject in &status.subjects {
-                    printer.info(&format!(
-                        "{} {} ({})",
-                        escape_terminal(&subject.package_coordinate),
-                        escape_terminal(&subject.version),
-                        escape_terminal(&subject.platform)
-                    ));
-                    for profile in &subject.profiles {
-                        let evidence = if profile.committed_generation == 0 {
-                            "unassessed"
-                        } else if profile.fresh {
-                            "complete and fresh"
-                        } else {
-                            "incomplete or expired"
-                        };
-                        printer.info(&format!(
-                            "  {:?}: {evidence}{}",
-                            profile.profile,
-                            if profile.pending {
-                                "; scan pending"
-                            } else {
-                                ""
-                            }
-                        ));
-                    }
-                }
-                printer.info(&format!("Observed at {}", status.as_of));
-                for source in &status.source_status {
-                    printer.info(&format!(
-                        "{}: {}",
-                        escape_terminal(&source.provider),
-                        source.availability.description(),
-                    ));
-                }
-                if let Some(next) = status.next_subject {
-                    printer.info(&format!(
-                        "Next page: --after-subject {} --inventory-digest {} --policy-digest {}",
-                        escape_terminal(&next),
-                        status.inventory_digest,
-                        status.policy_digest
-                    ));
-                }
+                crate::commands::assessment_presentation::render_status(printer, &status);
             }
             Ok(())
         }

@@ -112,6 +112,7 @@ aos maintain scans inspect SCAN_ID
 aos maintain scans cancel SCAN_ID --expected-revision REVISION
 aos maintain scans wait SCAN_ID --timeout 300
 aos maintain scans recover --limit 100
+aos maintain status --profiles all --limit 100
 ```
 
 Use `scan --profile … --idempotency-key KEY` to name one exact request. Repeating
@@ -129,6 +130,30 @@ before finalizing interrupted work; active queued and running processes remain
 eligible to finish. A new scan also performs bounded recovery. The namespace
 retains at most 4,096 operations and returns an explicit capacity error on further
 admission. A wait timeout or interrupt leaves the operation available to inspect.
+
+Journal v2 maintains independent desired generations and committed heads for
+each subject/profile. Disjoint update and vulnerability scans remain eligible
+in either completion order. An overlapping newer request supersedes older work;
+inventory or policy replacement invalidates every prior current slot. A failed,
+cancelled refresh retains its prior evidence; incomplete profile evidence never
+becomes fresh merely because its operation finished.
+
+`aos maintain status --profiles all` reads the same inner status document and
+uses the same human renderer as `aos hub maintain status`. It includes admitted
+subjects even when a profile is unassessed, retains prior committed evidence
+while newer work is pending, and computes freshness independently. Reads make
+no provider calls and do not recover operations. Continuations require the exact
+`--inventory-digest` and `--policy-digest` returned with `--after-subject`.
+Immutable inventory, policy, input, closure and result custody is verified;
+missing or inconsistent evidence fails the read instead of appearing clean.
+
+The first new admission upgrades a v1 journal atomically. It preserves the head
+v1 actually published and the latest desired requests, and seals active legacy
+operations as superseded (or cancelled when already cancelling), preserving
+v1's global supersession rule. It does not resurrect disjoint historical work
+or treat every old terminal result as a previously committed profile head.
+Shared status requires a new admission to pin inventory/policy custody when
+reading a legacy journal. Existing immutable receipts remain inspectable.
 
 ## Native controller
 
