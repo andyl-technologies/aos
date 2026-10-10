@@ -377,23 +377,30 @@ def observe_direct_sparse_publisher(client, tools, process, signed, corpus):
         if (root / 'result.json').exists():
             print(json.dumps({'version': 1, 'state': 'terminal', 'sparse': False}))
         else:
-            inputs = _inputs(root, selected['signed'], process)
-            supervisor = _pin(process['supervisorPid'], process['supervisorArguments'],
-                process['supervisorExecutable'], process['supervisorUid'], process['supervisorStartTicks'])
-            children = (Path('/proc') / str(supervisor['pid']) / 'task' / str(supervisor['pid']) / 'children').read_text().split()
-            if len(children) != 1:
-                raise ValueError('recorded publisher supervisor has no unique CLI child')
-            publisher = _pin(int(children[0]), inputs['arguments'], os.path.realpath(inputs['arguments'][0]), os.getuid())
-            journal = Path(selected['signed']['publisherHome']) / 'direct-upload.sqlite'
             try:
-                snapshot = _snapshot(journal, selected['sources'])
-                admission = _snapshot(Path(str(journal) + '.admission'), selected['sources'])
-            except (FileNotFoundError, sqlite3.OperationalError):
-                snapshot, admission = None, None
-            sparse = snapshot is not None and any(item['sparseGaps'] and item['completeSha256'] is None for item in snapshot['sessions'])
-            print(json.dumps({'version': 1, 'state': 'live', 'sparse': sparse,
-                'publisher': publisher, 'supervisor': supervisor, 'checkpoint': snapshot, 'admission': admission,
-                'scope': 'actual higher positive part with a lower receipt hole; unknown grant outcomes retained'}))
+                inputs = _inputs(root, selected['signed'], process)
+                supervisor = _pin(process['supervisorPid'], process['supervisorArguments'],
+                    process['supervisorExecutable'], process['supervisorUid'], process['supervisorStartTicks'])
+                children = (Path('/proc') / str(supervisor['pid']) / 'task' / str(supervisor['pid']) / 'children').read_text().split()
+                if len(children) != 1:
+                    raise ValueError('recorded publisher supervisor has no unique CLI child')
+                publisher = _pin(int(children[0]), inputs['arguments'], os.path.realpath(inputs['arguments'][0]), os.getuid())
+                journal = Path(selected['signed']['publisherHome']) / 'direct-upload.sqlite'
+                try:
+                    snapshot = _snapshot(journal, selected['sources'])
+                    admission = _snapshot(Path(str(journal) + '.admission'), selected['sources'])
+                except (FileNotFoundError, sqlite3.OperationalError):
+                    snapshot, admission = None, None
+                sparse = snapshot is not None and any(item['sparseGaps'] and item['completeSha256'] is None for item in snapshot['sessions'])
+                print(json.dumps({'version': 1, 'state': 'live', 'sparse': sparse,
+                    'publisher': publisher, 'supervisor': supervisor, 'checkpoint': snapshot, 'admission': admission,
+                    'scope': 'actual higher positive part with a lower receipt hole; unknown grant outcomes retained'}))
+            except FileNotFoundError:
+                # The supervisor publishes its terminal result before exiting.
+                # A process can disappear between the first check and /proc.
+                if not (root / 'result.json').is_file():
+                    raise
+                print(json.dumps({'version': 1, 'state': 'terminal', 'sparse': False}))
     """)
     return json.loads(direct_guest_python(client, tools["python"], program, selected))
 

@@ -4,9 +4,11 @@ SQLite rows below are explicitly controlled records. They are never VM,
 authenticated issuer, provider or runtime qualification evidence.
 """
 
+import contextlib
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -230,6 +232,53 @@ class ContinuityFences(unittest.TestCase):
             guest["_client_writes_zero"](summary.replace("abort=0", "abort=1"))
         with self.assertRaises(ValueError):
             guest["_client_writes_zero"](summary.replace("status=0", "caps=0"))
+
+    def test_supervisor_disappearance_rechecks_its_actual_terminal_result(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            process = {
+                "label": "a", "attempt": 1, "directory": str(root),
+                "supervisorPid": 123, "supervisorArguments": [],
+                "supervisorExecutable": "controlled-python",
+                "supervisorUid": os.getuid(), "supervisorStartTicks": "456",
+            }
+            tools = {"python": "controlled-python"}
+            corpus = {"large_objects": []}
+
+            def execute(_client, _python, program, selected, **_options):
+                namespace = {
+                    "selected": selected, "Path": Path, "json": json,
+                    "_inputs": lambda *args: {}, "_pin": lambda *args: {"pid": 123},
+                }
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    exec(compile(program, "<controlled-process-race>", "exec"), namespace)
+                return output.getvalue()
+
+            for retained_result in (True, False):
+                with self.subTest(retained_result=retained_result):
+                    result = root / "result.json"
+                    if result.exists():
+                        result.unlink()
+
+                    def disappeared(_path, *args, **kwargs):
+                        if retained_result:
+                            result.write_bytes(b'{"exitCode":1}')
+                        raise FileNotFoundError("controlled supervisor exited")
+
+                    with patch.object(sparse, "_guest_definitions", return_value=""), \
+                         patch.object(sparse, "direct_guest_python", execute, create=True), \
+                         patch.object(Path, "read_text", disappeared):
+                        if retained_result:
+                            observed = sparse.observe_direct_sparse_publisher(
+                                None, tools, process, {}, corpus)
+                            self.assertEqual(observed,
+                                {"version": 1, "state": "terminal", "sparse": False})
+                            self.assertNotIn("exitCode", observed)
+                        else:
+                            with self.assertRaises(FileNotFoundError):
+                                sparse.observe_direct_sparse_publisher(
+                                    None, tools, process, {}, corpus)
 
     def test_each_actual_guest_program_compiles_before_any_execution(self):
         class CapturedProgram(Exception):
