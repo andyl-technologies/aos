@@ -26,6 +26,76 @@ fn metadata() -> serde_json::Value {
 }
 
 #[test]
+fn published_artifacts_bind_exact_bytes_and_preserve_unknown_composition() -> Result<()> {
+    use aos_assessment::metadata::{ArtifactScanBinding, published_artifact_inventory};
+    use aos_contract::Sha256Digest;
+
+    let inventory = PackageAssessmentInventoryV1::from_slice(&serde_json::to_vec(&metadata())?)?;
+    let publication = inventory.publication(
+        aos_assessment::identity::MemberId::parse("example")?,
+        "example".into(),
+        "1.2.0".into(),
+        "x86_64-linux".into(),
+    )?;
+    let first = ArtifactScanBinding {
+        declaration: publication.clone(),
+        artifact_digest: Sha256Digest::of_bytes("exact first NAR"),
+    };
+    let mut second = first.clone();
+    second.declaration.version = "1.3.0".into();
+    second.declaration.definitions[0].components[0]
+        .current
+        .comparison_version = "1.3.0".into();
+    second.declaration.definitions[0].components[0]
+        .current
+        .upstream_id = "v1.3.0".into();
+    second.artifact_digest = Sha256Digest::of_bytes("exact second NAR");
+
+    let (projected, definitions) = published_artifact_inventory(
+        &[second.clone(), first.clone()],
+        "registry:fixture/release:1",
+    )?;
+    assert_eq!(projected.subjects.len(), 2);
+    assert_eq!(definitions.len(), 2);
+    assert_eq!(
+        projected.coverage.state,
+        aos_assessment::security::CoverageState::Unknown
+    );
+    assert!(
+        projected
+            .components
+            .iter()
+            .all(|component| component.artifact_digest.is_some()
+                && component.source_content_digest.is_none()
+                && component.patch_set_digest.is_none())
+    );
+    assert_eq!(
+        projected,
+        published_artifact_inventory(&[first.clone(), second], "registry:fixture/release:1")?.0
+    );
+
+    let mut changed = first.clone();
+    changed.artifact_digest = Sha256Digest::of_bytes("replacement NAR");
+    assert_ne!(
+        published_artifact_inventory(std::slice::from_ref(&first), "registry:fixture/release:1")?
+            .0
+            .subjects[0]
+            .subject_ref,
+        published_artifact_inventory(std::slice::from_ref(&changed), "registry:fixture/release:1")?
+            .0
+            .subjects[0]
+            .subject_ref
+    );
+    assert!(
+        published_artifact_inventory(&[first.clone(), changed], "registry:fixture/release:1")
+            .is_err()
+    );
+    assert!(published_artifact_inventory(&[], "registry:fixture/release:1").is_err());
+    assert!(published_artifact_inventory(&[first], "/private/checkout").is_err());
+    Ok(())
+}
+
+#[test]
 fn source_sidecars_preserve_legacy_nulls_and_project_exact_security_definitions() -> Result<()> {
     let value = metadata();
     let inventory = PackageAssessmentInventoryV1::from_slice(&serde_json::to_vec(&value)?)?;

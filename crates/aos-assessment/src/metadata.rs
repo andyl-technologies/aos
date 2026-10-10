@@ -22,9 +22,11 @@ use crate::security::SecurityDeclaration;
 use crate::time::Timestamp;
 use crate::validation::{DOCUMENT_LIMITS, decode};
 
+mod artifact;
 mod publication;
 mod source;
 
+pub use artifact::{ArtifactScanBinding, published_artifact_inventory};
 pub use publication::{PACKAGE_SCAN_PUBLICATION_V1, PackageScanPublicationV1};
 pub use source::SourcePackageBindingV1;
 
