@@ -1450,6 +1450,8 @@
   assert registry_stage["index_digest"] == finalized_container["index_digest"]
   session_token = refresh_session_token()
   client.succeed("install -d -m 0700 /var/lib/hybrid-container-upload-state")
+  # Guarded Hybrid uploads pin an API credential's current owner incarnation.
+  # Use the existing publisher credential rather than a browser session subject.
   container_stage = json.loads(client.succeed(
       "XDG_CACHE_HOME=/var/lib/hybrid-container-upload-state "
       f"{AOS} --json --progress off --color never container publish aos "
@@ -1458,10 +1460,10 @@
       f"--release-layout {shlex.quote(finalized_container['layout'])} "
       f"--signature-input {shlex.quote(finalized_container['signature_input'])} "
       "--registry fleet/containers --registry-origin https://aos.fleet.test "
-      f"--registry-token {shlex.quote(session_token)} "
+      f"--registry-token {shlex.quote(publisher_token)} "
       "--registry-stage /var/lib/hybrid-container-registry-stage.json "
       "--hub https://aos.fleet.test "
-      f"--token {shlex.quote(session_token)} "
+      f"--token {shlex.quote(publisher_token)} "
       "--idempotency-key hybrid-container-parity-stage --stage-only",
       timeout=900,
   ))
