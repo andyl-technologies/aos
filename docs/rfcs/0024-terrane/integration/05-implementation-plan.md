@@ -601,7 +601,32 @@ formatting, syntax and eleven sealed packet payloads verify; runtime remains
 unrun. Private composition `912feb3b11` contains exactly five reviewed changed
 files relative to `1a12676434`. Frozen qualification `178824f9a1` starts a fresh
 native build with 6,224 tracked entries and unchanged profiles, limits and
-tracing settings. Its tests and owning gates remain pending.
+tracing settings. Its build, strict all-target Clippy and actual test compilation
+pass; fresh inventory binds 1,034 tests across three current executables.
+The six-case regression request stops after three metadata-confirmation passes
+and a paired-history failure: baseline historical publication returns a typed
+Commit denial for `refs/heads/_/historical`. Two paired tests and every downstream
+group, including GC, broader native coverage and all six population witnesses,
+remain unrun. Source and executable seals remain unchanged. The sealed original
+failure is preserved before an isolated fixture investigation; no deadline cause
+or production defect is inferred from this refusal.
+Independent review verifies all sixty-four sealed packet payloads, every tracked
+Git blob and filesystem mode, three fresh compiler records and archived
+executables, and the actual first-failure output.
+Final-source pure preflight preserves the 292-gate registry, 89-gate floor plus
+three workflows, all 203 future explicit failures, the DRV-29 blocker and ten
+shared-image consumers. All 299 generated root scripts pass AOS Bash syntax
+checks. The actual index argument, including its terminating NUL, fits the
+measured per-argument limit with 7,315 bytes remaining. All 335 packet payload
+hashes verify independently; a separate review also checks the actual source,
+derivations and generated arguments. This source-only evidence executes no gate.
+Two further disjoint T-GC-1 implementation worklines extend the existing native
+test image to the five ordinary ownership/deletion/restore/conformance checks
+and the copied-ownership/permanent-recovery pair. Shared factory exposure lands
+first, retaining the complete conformance prerequisite closure. Every original
+selector and independent case execution remains required. A separate reviewer
+checks both worklines while historical-fixture investigation proceeds in another
+checkout. These preparations do not advance a task checkbox or milestone exit.
 The frozen GC observation qualification `9a16f49c8a` stops at its first
 auxiliary case after genuine compilation and an inventory of 1,016 tests.
 Baseline fixture publication returns `Unsupported` before observation or
