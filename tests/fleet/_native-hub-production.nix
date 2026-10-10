@@ -151,15 +151,17 @@
     enable = true;
     lifecycle = {
       inherit description;
-      execution_model = "oneshot";
+      # Reboots must restore a live process. An unchanged one-shot action is
+      # deliberately not dispatched again by native reconciliation.
+      execution_model = "foreground";
       environment_files = [];
       condition = [];
       pre_start = [];
       start = [
         {
           executable = {
-            path = "${pkgs.coreutils}/bin/true";
-            arguments = [];
+            path = "${pkgs.coreutils}/bin/sleep";
+            arguments = ["infinity"];
           };
           ignore_failure = false;
         }
@@ -170,7 +172,7 @@
       restart = "never";
       restart_delay_millis = 0;
       configuration_change_action = "restart";
-      remain_after_exit = true;
+      remain_after_exit = false;
       start_timeout_millis = 30000;
       stop_timeout_millis = 30000;
     };
