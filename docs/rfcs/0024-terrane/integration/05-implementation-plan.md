@@ -125,6 +125,33 @@ empty `terrane` binary.
 ### T1 — Local repository
 
 **Status:** In progress; eight of twenty-two T1 tasks are complete.
+Parallel work now includes two additional isolated GPT 6.1 Sol worklines for
+T-DRV-3 index-format conformance and T-CDC-1 chunk/dictionary validation.
+The ref, history, collector, permanent-recovery, EIO, Memo and full-floor
+reviewers independently map remaining requirement and execution obligations;
+one coordinated host compiler serves their immutable executable requests.
+Fresh native test compilation of private tree `355ac2f7` reports a private
+pack-header field access in the collector fixture. Its owner corrects that
+single access to the public accessor without changing the identity assertion.
+Reviewed candidate `4431b3571c` (tree `d974908398`) includes that correction,
+the bounded collector candidate oracle, genuine retained payload-range
+forwarding, the isolated namespace-attribute fixture, bounded cancellation
+exclusion reacquisition and the genuine procfs body-read fixture. Its native
+library build and required formatter pair pass; fresh test compilation, strict
+all-target Clippy and current-source runtime qualification remain pending.
+The preceding frozen `8b70b0edf5` archive supplies 55 independently audited
+exact host diagnostics: 35 pass, 20 fail, none time out or are ignored.
+Those results remain bound to that preceding source. Three cancellation
+cases additionally pass under their original finite limits; a storage failure
+prevents a terminal receipt for the fourth and leaves the next two unrun.
+An isolated registered harness probe verifies three genuine body-read EIOs,
+inode continuity and normal/unwind cleanup; native Rust and owning-gate
+qualification of the new fixture remain pending. The first ordinary 1,024
+entry index population passes in 1,397.98 seconds on its separate frozen
+owning source; the other five populations and the DRV-29 blocker remain.
+These parallel results accept no additional task or milestone, and T2 remains
+deferred until the complete current T1 gate floor is green.
+
 Current qualification of frozen tree `a067e57b21` passes all 28 owning
 `derivation-memo` cases. Parent review confirms actual exact executions,
 registered Nix output and a nonempty result receipt. Native recovery authority
