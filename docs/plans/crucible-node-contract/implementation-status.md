@@ -982,6 +982,15 @@ central verification passes all 671 plugin cases, 37 current-source hygiene
 cases, plugin all-target strict checks and both owned-file formatting checks.
 This transport correction establishes no additional native readiness authority.
 
+The subsequent complete condition-stage run exposes four shared-owner fixture
+failures because their scenario omitted the original authored input-context
+bytes. Current-source reproduction fails all four before scheduling. A test-only
+repair retains the exact scenario reference and bytes already verified by graph
+admission; production authentication and scheduling assertions stay unchanged.
+Independent source review approves this scope. All four original scheduling
+cases, 37 current-source hygiene cases, daemon all-target strict checks and the
+owned-file formatting check pass. A fresh complete gate remains required.
+
 The complete 49-path controller suite passes 6,536 cases with 230 skipped. Its
 combined ABI/license gate subsequently fails because the packaging identity
 probe omitted the required `patch` argument when importing the QEMU recipe.

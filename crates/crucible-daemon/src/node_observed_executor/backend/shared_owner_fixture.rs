@@ -10,7 +10,7 @@ use crucible::node_admission::*;
 use crucible_node_contract::*;
 use serde::Serialize;
 
-use crate::node_scenario::NodeScenario;
+use crate::node_scenario::{NodeScenario, ScenarioContent};
 
 use super::id;
 
@@ -202,6 +202,12 @@ pub(super) fn graph(topology: Topology) -> (AdmittedGraph, NodeScenario) {
         AdmissionLimits::default(),
     )
     .unwrap();
+    // The observed executor authenticates authored input context from the same
+    // scenario bytes that graph admission already verified.
+    let authored = ScenarioContent {
+        reference: world.scenario_ref.clone(),
+        bytes: evidence.0[&world.scenario_ref.hash.digest].clone(),
+    };
     let scenario = NodeScenario {
         format: "crucible.node-scenario".into(),
         version: 1,
@@ -213,7 +219,7 @@ pub(super) fn graph(topology: Topology) -> (AdmittedGraph, NodeScenario) {
             .collect(),
         owners,
         requirements,
-        content: vec![],
+        content: vec![authored],
     };
     (admitted, scenario)
 }
