@@ -103,9 +103,10 @@ impl PlacementSelectionV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`InvalidAssignmentModel::PlacementMismatch`] when the
-    /// deterministic selection names another node. The canonical manifest has
-    /// already validated every assignment identity and derives its own digest.
+    /// Returns [`InvalidAssignmentModel::PlacementMismatch`] when the manifest's
+    /// node, sandbox, reservations or required features differ from this selection,
+    /// or its retained capability binding is invalid. The canonical manifest has
+    /// already validated its identities and derives its own digest.
     pub fn assignment_intent(
         &self,
         assignment: CanonicalAssignmentManifestV1,

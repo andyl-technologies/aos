@@ -13,9 +13,10 @@
 //! Their canonical domains and fixed protected names remain unchanged. The
 //! fixed local lease issuer belongs to [`crate::local_ownership`].
 //!
-//! Placement, transport and ordered-watch adapters require `multi-node` and
-//! are selected through `local_inventory::remote`. The transport verifier
-//! retains its private feature-gated child to preserve custody. Protected-store
+//! The optional Coordinator owns placement, ordered-watch adapters and committed
+//! lease projection. Its selected `multi-node` inputs retain their sealed Native
+//! producers here. `local_inventory::remote` exposes protected transport and store
+//! orchestration. The verifier retains its private child and custody. Protected-store
 //! remote exchange, assignment, drain, watch writes, and destination transfer
 //! orchestration are feature-gated private children of that same owner. Local
 //! opener, inventory discovery, readback, and all retained-history checks remain

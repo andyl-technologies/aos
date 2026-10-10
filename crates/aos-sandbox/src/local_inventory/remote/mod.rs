@@ -1,4 +1,4 @@
-//! Explicitly selected remote placement, transport, and protected orchestration.
+//! Explicitly selected protected transport and store orchestration.
 //!
 //! This module is absent without `multi-node`. Its adapters consume the local
 //! protected owner's validated views; they do not replace lease or complete

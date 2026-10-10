@@ -307,6 +307,8 @@
     pname = "aos-test-targets";
     cargoFlags = applicationTestFlags;
   };
+  # Keep explicit Coordinator selection separate so its Domain multi-node
+  # dependency cannot unify into the normal application test invocation.
   coordinatorTestTargets = mkTestTargets {
     pname = "aos-sandbox-coordinator-test-targets";
     cargoFlags = "-p aos-sandbox-coordinator";
