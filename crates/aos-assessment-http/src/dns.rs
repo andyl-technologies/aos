@@ -6,6 +6,24 @@ use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 
 pub(super) struct PublicSourceResolver;
 
+/// Resolves a separately registered callback host and pins only public answers.
+pub(super) struct PublicNotificationResolver;
+
+impl Resolve for PublicNotificationResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_owned();
+        Box::pin(async move {
+            let answers = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|_| refused("notification DNS resolution is unavailable"))?
+                .take(33)
+                .collect::<Vec<_>>();
+            validate_answers(&answers)?;
+            Ok(Box::new(answers.into_iter()) as Addrs)
+        })
+    }
+}
+
 impl Resolve for PublicSourceResolver {
     fn resolve(&self, name: Name) -> Resolving {
         let host = name.as_str().to_owned();

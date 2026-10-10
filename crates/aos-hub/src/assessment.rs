@@ -26,14 +26,18 @@ use aos_assessment_runtime::routes::{
 };
 use aos_contract::limits::JsonLimits;
 use aos_hub_core::assessment_execution::{
-    run_assessment_controller_pass, AssessmentControllerPorts, CoordinatorEvidenceStore,
-    DatabaseAssessmentAuthority, InstalledAssessmentRoutes,
+    run_assessment_controller_pass, run_assessment_notification_pass, AssessmentControllerPorts,
+    CoordinatorEvidenceStore, DatabaseAssessmentAuthority, InstalledAssessmentRoutes,
 };
 use aos_hub_core::secret_version::{validate_secret_version_ref, SecretVersionResolver};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::server::AppState;
+
+mod notifications;
+pub use notifications::AssessmentNotificationInstallation;
+use notifications::InstalledNotificationExecutor;
 
 /// Declares bounded physical controller installation without containing secrets.
 #[derive(Clone, Serialize, Deserialize)]
@@ -59,6 +63,9 @@ pub struct AssessmentInstallationV1 {
     pub coordinator_concurrency: u32,
     /// Provider observation freshness, one to eighty-six thousand seconds.
     pub source_ttl_seconds: u32,
+    /// Independent notification destination and quota installation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notifications: Option<AssessmentNotificationInstallation>,
 }
 
 /// Selects an installed executor without permitting topology fallback.
@@ -151,6 +158,26 @@ impl AssessmentInstallationV1 {
                     "remote source credentials belong to Worker custody"
                 );
             }
+        }
+        if let Some(notifications) = &installation.notifications {
+            notifications.validate(&installation.executor)?;
+            ensure!(
+                notifications
+                    .installation
+                    .budgets
+                    .iter()
+                    .all(|notification| {
+                        installation
+                            .budgets
+                            .iter()
+                            .all(|source| source.key != notification.key)
+                    }),
+                "notification and source quota domains must be independent"
+            );
+            ensure!(
+                notifications.installation.deployment_id == installation.routes.deployment_id,
+                "assessment and notification deployment incarnations differ"
+            );
         }
         Ok(installation)
     }
@@ -268,7 +295,19 @@ pub async fn install_controller(
             InstalledTransport::Worker(RemoteProviderTransport::new(origin, auth)?)
         }
     };
+    let notification_executor = installation
+        .notifications
+        .as_ref()
+        .map(|configuration| {
+            InstalledNotificationExecutor::install(state, configuration, &installation.executor)
+        })
+        .transpose()?;
     let db = Arc::clone(&state.db);
+    if let Some(configuration) = &installation.notifications {
+        for budget in &configuration.installation.budgets {
+            db.install_assessment_source_budget(&budget.into()).await?;
+        }
+    }
     for budget in &installation.budgets {
         db.install_assessment_source_budget(&budget.into()).await?;
     }
@@ -284,6 +323,13 @@ pub async fn install_controller(
         .routes
         .iter()
         .map(|route| route.partition.clone())
+        .chain(installation.notifications.iter().flat_map(|configuration| {
+            configuration
+                .installation
+                .destinations
+                .iter()
+                .map(|route| route.destination.resource_scope.clone())
+        }))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -296,6 +342,10 @@ pub async fn install_controller(
         evidence,
         routes,
         transport,
+        notifications: installation
+            .notifications
+            .map(|configuration| configuration.installation),
+        notification_executor,
         policy: installation.policy,
         poll_seconds: installation.poll_seconds,
     });
@@ -323,6 +373,8 @@ struct ControllerRuntime {
     evidence: CoordinatorEvidenceStore,
     routes: InstalledAssessmentRoutes,
     transport: InstalledTransport,
+    notifications: Option<aos_assessment_runtime::notifications::NotificationInstallationV1>,
+    notification_executor: Option<InstalledNotificationExecutor>,
     policy: AssessmentPolicyV1,
     poll_seconds: u32,
 }
@@ -345,6 +397,16 @@ impl ControllerRuntime {
                     continue;
                 }
             };
+            if let (Some(installation), Some(executor)) =
+                (&self.notifications, &self.notification_executor)
+            {
+                if run_assessment_notification_pass(&self.db, registry, installation, 1, executor)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("assessment notification journal pass unavailable");
+                }
+            }
             let cursor = cursors.get(partition).map(String::as_str).unwrap_or("");
             if self
                 .db
@@ -461,5 +523,70 @@ mod tests {
             AssessmentInstallationV1::from_slice(&serde_json::to_vec(&configuration)?).is_err()
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod notification_installation_tests {
+    use super::{AssessmentExecutorInstallation, AssessmentNotificationInstallation};
+    use aos_assessment::time::Timestamp;
+    use aos_assessment_runtime::notifications::{
+        InstalledNotificationDestination, NotificationDestinationV1, NotificationInstallationV1,
+    };
+    use aos_assessment_runtime::routes::InstalledSourceBudget;
+    use aos_contract::Sha256Digest;
+
+    fn fixture() -> AssessmentNotificationInstallation {
+        AssessmentNotificationInstallation {
+            installation: NotificationInstallationV1 {
+                schema: "aos.assessment-notification-installation/v1".into(),
+                deployment_id: "deployment".into(),
+                coordinator_id: "notification-coordinator".into(),
+                executor_id: "notification-executor".into(),
+                destinations: vec![InstalledNotificationDestination {
+                    destination: NotificationDestinationV1 {
+                        schema: "aos.assessment-notification-destination/v1".into(),
+                        destination_reference: "webhook:42".into(),
+                        revision: 3,
+                        resource_scope: "registry-incarnation".into(),
+                        url: "https://receiver.example/callback".into(),
+                        secret_version_reference: "native://assessment/notification/v1".into(),
+                        credential_fingerprint: Sha256Digest::of_bytes([7; 32]),
+                        expires_at: Timestamp::from_unix_seconds(2_000_000_000).unwrap(),
+                    },
+                    budget_key: "notification:account".into(),
+                }],
+                budgets: vec![InstalledSourceBudget {
+                    key: "notification:account".into(),
+                    window_seconds: 60,
+                    allowance: 10,
+                    min_interval_seconds: 1,
+                }],
+            },
+            work_key_file: None,
+        }
+    }
+
+    #[test]
+    fn notification_installation_requires_exact_topology_and_immutable_key_custody() {
+        let native = AssessmentExecutorInstallation::Native {
+            evidence_root: "/fixture/private/evidence".into(),
+        };
+        let worker = AssessmentExecutorInstallation::Worker {
+            origin: "https://worker.example/".into(),
+            work_key_file: "/fixture/private/provider-key".into(),
+        };
+        let mut installation = fixture();
+        installation.validate(&native).unwrap();
+        assert!(installation.validate(&worker).is_err());
+        installation.work_key_file = Some("/fixture/private/provider-key".into());
+        assert!(installation.validate(&worker).is_err());
+        installation.work_key_file = Some("/fixture/private/notification-key".into());
+        installation.validate(&worker).unwrap();
+        assert!(installation.validate(&native).is_err());
+        installation.installation.destinations[0]
+            .destination
+            .secret_version_reference = "native://assessment/notification/latest".into();
+        assert!(installation.validate(&worker).is_err());
     }
 }

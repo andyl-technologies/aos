@@ -3259,6 +3259,27 @@
          "service" : "AssessmentService"
       },
       {
+         "method" : "ListSubscriptions",
+         "path" : "aos.hub.v1.AssessmentService/ListSubscriptions",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "WriteSubscription",
+         "path" : "aos.hub.v1.AssessmentService/WriteSubscription",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "ReviewNotificationDestination",
+         "path" : "aos.hub.v1.AssessmentService/ReviewNotificationDestination",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
          "method" : "RequestScan",
          "path" : "aos.hub.v1.ScanService/RequestScan",
          "request" : "AssessmentControlRequest",

@@ -7,6 +7,7 @@ use leptos::prelude::*;
 
 use super::assessment_scans::AssessmentScanControls;
 use super::assessment_schedules::RegistryAssessmentSchedules;
+use super::assessment_notifications::RegistryAssessmentNotifications;
 use super::assessment_attention::RegistryAssessmentAttention;
 use crate::components::InlineError;
 use crate::transport::ApiClient;
@@ -143,6 +144,7 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
             />
             <RegistryAssessmentAttention client=controls.get_value().0 slug=controls.get_value().1/>
             <RegistryAssessmentSchedules client=controls.get_value().0 slug=controls.get_value().1/>
+            <RegistryAssessmentNotifications client=controls.get_value().0 slug=controls.get_value().1/>
             <Suspense fallback=move || view! { <p>"Loading retained assessment…"</p> }>
                 {move || Suspend::new(async move {
                     match detail.await.as_ref() {

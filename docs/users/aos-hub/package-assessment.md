@@ -144,3 +144,73 @@ does not silently turn a short-lived credential into permanent execution authori
 Missed slots coalesce into one scan; deterministic jitter spreads subsequent slots.
 Manual and recurring requests share the durable scan journal and result contracts.
 Acknowledgements remain attention state and cannot suppress vulnerability evidence.
+
+## Reviewed notification subscriptions
+
+`aos hub maintain notification-destination` reads the exact registered webhook
+commitment for a registry and review expiry. The webhook must be active and owned
+by that registry's organization. `aos hub maintain subscription` creates, replaces
+or disables a closed subscription review; `aos hub maintain subscriptions` reads
+its public projection. The web console exposes these same controls. Generic
+webhook wildcards do not subscribe to assessment events.
+
+A subscription chooses explicit event kinds, issue families, all attention or
+confirmed attention, and immediate delivery or a UTC digest window of 60 through
+86,400 seconds. It binds the exact destination revision and digest. The effective
+review expiry is capped by the original authenticated credential expiry. Replaying
+an identical write preserves that original authority; replacing or disabling a
+review revokes its pending and leased deliveries. A disabled or rotated destination
+does not prevent an unchanged subscription from being disabled.
+
+Native controller configuration accepts an optional `notifications` member:
+
+```json
+{
+  "installation": {
+    "schema": "aos.assessment-notification-installation/v1",
+    "deploymentId": "hub-installation-1",
+    "coordinatorId": "notification-coordinator",
+    "executorId": "notification-native",
+    "destinations": [{
+      "destination": "REPLACE_WITH_EXACT_REVIEWED_DESTINATION_DOCUMENT",
+      "budgetKey": "notification:registered-account"
+    }],
+    "budgets": [{
+      "key": "notification:registered-account",
+      "windowSeconds": 3600,
+      "allowance": 100,
+      "minIntervalSeconds": 1
+    }]
+  }
+}
+```
+
+Replace the destination placeholder with the complete destination document returned
+by the review command, including the exact review expiry and credential fingerprint.
+Sort grants by resource scope and destination reference, and budgets by key. Each
+required quota must be declared exactly once. The configured immutable signing-key
+version must also be available through the Native secret-version resolver.
+Installation grants no subscription permission. Current read and subscription
+management authority are rechecked before every effect and receipt admission.
+
+Bodies contain compact committed event facts. They exclude raw advisory text,
+source URLs, provider credentials and acknowledgement notes. A digest freezes at
+most 50 events; retries preserve those exact bytes and event identities. Every new
+attempt consumes one shared notification quota unit, including uncertain attempts.
+Callbacks use HTTPS with pinned public DNS, refuse redirects, and do not retain
+response bodies. Destination acceptance means a 2xx HTTP response, rather than
+confirmation of any downstream action.
+
+Receivers verify `X-AOS-Signature-Version`, `X-AOS-Signing-Key-Version`,
+`X-AOS-Timestamp`, `X-AOS-Delivery-ID` and `X-AOS-Signature` against the exact
+canonical body. The shared `CallbackSignature::verify` implementation enforces the
+HMAC domain, immutable key version and timestamp window. Receivers also deduplicate
+stable delivery and original event identities. Retryable transport outcomes use
+bounded backoff; attempts stop after 20 tries or seven days, or when review
+revocation prevents another effect.
+
+Worker notification execution and deployment bindings are still under development.
+Hybrid's notification client already requires a dedicated work key and uses only its
+paired Worker. Enabling that placement requires the matching Worker executor; it
+cannot fall back to Native callbacks. Assessment permission policy remains pending,
+so this draft does not yet provide authorized end-user delivery through these controls.

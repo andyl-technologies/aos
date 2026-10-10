@@ -23,6 +23,7 @@ use crate::db::{AssessmentProviderWork, AssessmentScanRecord, Database};
 mod authority;
 mod controller;
 mod custody;
+mod notifications;
 mod routes;
 
 pub use authority::DatabaseAssessmentAuthority;
@@ -30,6 +31,9 @@ pub use controller::{
     run_assessment_controller_pass, AssessmentControllerPass, AssessmentControllerPorts,
 };
 pub use custody::CoordinatorEvidenceStore;
+pub use notifications::{
+    run_assessment_notification_pass, AssessmentNotificationExecutor, AssessmentNotificationPass,
+};
 pub use routes::InstalledAssessmentRoutes;
 
 /// Rechecks a durable operation's current actor and authorization generation.

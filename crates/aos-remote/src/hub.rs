@@ -93,6 +93,9 @@ enum HubTopologyMethod {
     ListAssessmentEvents,
     ListAssessmentSchedules,
     WriteAssessmentSchedule,
+    ListAssessmentSubscriptions,
+    WriteAssessmentSubscription,
+    ReviewAssessmentNotificationDestination,
     /// Selects authenticated direct-upload capability discovery.
     DirectUploadGetCapabilities,
     /// Selects bounded immutable direct-session admission.
@@ -1229,6 +1232,9 @@ impl HubTopologyMethod {
             ListAssessmentEvents => "aos.hub.v1.AssessmentService/ListEvents",
             ListAssessmentSchedules => "aos.hub.v1.AssessmentService/ListSchedules",
             WriteAssessmentSchedule => "aos.hub.v1.AssessmentService/WriteSchedule",
+            ListAssessmentSubscriptions => "aos.hub.v1.AssessmentService/ListSubscriptions",
+            WriteAssessmentSubscription => "aos.hub.v1.AssessmentService/WriteSubscription",
+            ReviewAssessmentNotificationDestination => "aos.hub.v1.AssessmentService/ReviewNotificationDestination",
             PlanUpdateRegistryMetadata => "aos.hub.v1.RegistryService/PlanUpdateRegistryMetadata",
             UpdateRegistryMetadata => "aos.hub.v1.RegistryService/UpdateRegistryMetadata",
             PlanUpdateRegistry => "aos.hub.v1.RegistryService/PlanUpdateRegistry",
@@ -1797,6 +1803,9 @@ pub mod hub_rpc {
         ListAssessmentEvents: AssessmentControlRequest => AssessmentDocumentResponse;
         ListAssessmentSchedules: AssessmentControlRequest => AssessmentDocumentResponse;
         WriteAssessmentSchedule: AssessmentControlRequest => AssessmentDocumentResponse;
+        ListAssessmentSubscriptions: AssessmentControlRequest => AssessmentDocumentResponse;
+        WriteAssessmentSubscription: AssessmentControlRequest => AssessmentDocumentResponse;
+        ReviewAssessmentNotificationDestination: AssessmentControlRequest => AssessmentDocumentResponse;
         PlanUpdateRegistryMetadata: PlanUpdateRegistryMetadataRequest => TopologyPlanResponse;
         UpdateRegistryMetadata: ApplyRegistryMutationRequest => RegistryMetadataChangeResponse;
         PlanUpdateRegistry: PlanUpdateRegistryRequest => TopologyPlanResponse;

@@ -290,6 +290,48 @@ impl From<AssessmentProfileArg> for aos_assessment::input::Profile {
 
 #[derive(Subcommand)]
 pub enum HubAssessmentCmd {
+    /// Read reviewed notification subscriptions without dispatching callbacks
+    Subscriptions {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the registry whose notification reviews are read
+        #[arg(long)]
+        registry: String,
+        /// Select one exact subscription
+        #[arg(long, conflicts_with = "after_subscription")]
+        subscription_id: Option<String>,
+        /// Continue after a public subscription identity from the preceding page
+        #[arg(long, requires = "resource_scope")]
+        after_subscription: Option<String>,
+        /// Pin the non-reusable registry scope from the preceding page
+        #[arg(long)]
+        resource_scope: Option<String>,
+        /// Bound the number of public subscription projections
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
+        limit: u32,
+    },
+    /// Create, replace or disable an exact notification subscription review
+    Subscription {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the registry whose notification review is changed
+        #[arg(long)]
+        registry: String,
+        /// Read a closed aos.assessment-subscription-write/v1 document
+        #[arg(long)]
+        request: PathBuf,
+    },
+    /// Review the exact registered webhook commitment before subscribing
+    NotificationDestination {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the registry whose organization owns the destination
+        #[arg(long)]
+        registry: String,
+        /// Read a closed aos.assessment-notification-destination-query/v1 document
+        #[arg(long)]
+        request: PathBuf,
+    },
     /// Read reviewed recurring scans without triggering execution
     Schedules {
         #[command(flatten)]

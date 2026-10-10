@@ -1323,7 +1323,10 @@
         "AcknowledgeAlert",
         "ListEvents",
         "ListSchedules",
-        "WriteSchedule"
+        "WriteSchedule",
+        "ListSubscriptions",
+        "WriteSubscription",
+        "ReviewNotificationDestination"
       ]
     },
     {

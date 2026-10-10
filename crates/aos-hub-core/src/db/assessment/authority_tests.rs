@@ -111,9 +111,11 @@ async fn revoked_job_admission_cannot_create_private_authority() -> Result<()> {
 }
 
 pub(super) async fn claims(db: &Database) -> Result<Claims> {
-    let user = db
-        .create_user("assessment-admission@fixture.invalid", None)
-        .await?;
+    let email = format!(
+        "assessment-admission-{}@fixture.invalid",
+        uuid::Uuid::new_v4().simple()
+    );
+    let user = db.create_user(&email, None).await?;
     db.grant_membership("user", user, "instance", "owner")
         .await?;
     // Existing read grants exercise the shared authority primitive without

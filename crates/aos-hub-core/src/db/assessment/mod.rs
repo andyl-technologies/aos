@@ -13,6 +13,8 @@ mod clock;
 mod evaluation;
 mod inventory;
 mod job_authority;
+mod notifications;
+mod notification_work;
 mod objects;
 mod provider_index;
 mod provider_state;
@@ -25,6 +27,7 @@ mod status;
 pub use budgets::{AssessmentProviderReservation, AssessmentProviderWork, AssessmentSourceBudget};
 pub use inventory::{AssessmentInventoryAdmission, AssessmentResource};
 pub use job_authority::assessment_actor_ref;
+pub use notification_work::{AssessmentNotificationPlacement, AssessmentNotificationWork};
 pub use publication::AssessmentPublicationRefresh;
 pub use objects::AssessmentObjectKind;
 pub use provider_state::AssessmentProviderReplay;
@@ -62,6 +65,12 @@ mod alerts_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod authority_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod notifications_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod notification_work_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32"), feature = "postgres"))]
 mod postgres_tests;

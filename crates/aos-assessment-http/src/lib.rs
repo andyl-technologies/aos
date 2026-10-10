@@ -13,6 +13,7 @@ pub mod credentials;
 pub mod evidence;
 pub mod executor;
 pub mod remote;
+pub mod notifications;
 
 mod dns;
 

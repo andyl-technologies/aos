@@ -23,6 +23,7 @@ pub mod attention;
 pub mod attention_control;
 pub mod events;
 pub mod installation;
+pub mod notifications;
 pub mod ports;
 pub mod provider;
 pub mod routes;

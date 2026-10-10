@@ -63,6 +63,12 @@ pub enum AssessmentObjectKind {
     SourceChain,
     /// Exact resumable acquisition progress, independent of frozen evaluation.
     AcquisitionCheckpoint,
+    /// Compact immutable notification membership; no raw event payloads or secrets.
+    NotificationBody,
+    /// Exact bounded callback attempt proof, separate from provider work.
+    NotificationWork,
+    /// Compact callback outcome, without response bytes or credentials.
+    NotificationReceipt,
 }
 
 impl AssessmentObjectKind {
@@ -88,11 +94,28 @@ impl AssessmentObjectKind {
             Self::ProviderPage => "aos.provider-page/v1",
             Self::SourceChain => "aos.source-chain-custody/v1",
             Self::AcquisitionCheckpoint => "aos.acquisition-checkpoint/v1",
+            Self::NotificationBody => "aos.assessment-notification-body/v1",
+            Self::NotificationWork => "aos.assessment-notification-work/v1",
+            Self::NotificationReceipt => "aos.assessment-notification-receipt/v1",
         }
     }
 
     fn normalize(self, bytes: &[u8]) -> Result<Vec<u8>> {
         match self {
+            Self::NotificationWork => {
+                let plan: aos_assessment_runtime::notifications::NotificationWorkPlanV1 =
+                    decode(bytes)?;
+                plan.validate_at(&plan.issued_at)?;
+                encode(&plan)
+            }
+            Self::NotificationReceipt => {
+                aos_assessment_runtime::notifications::NotificationWorkReceiptV1::from_slice(bytes)?
+                    .to_bytes()
+            }
+            Self::NotificationBody => {
+                aos_assessment_runtime::notifications::NotificationBodyV1::from_slice(bytes)?
+                    .to_bytes()
+            }
             Self::AcquisitionCheckpoint => {
                 aos_assessment_runtime::acquisition::AcquisitionCheckpointV1::from_slice(bytes)?
                     .encoded()

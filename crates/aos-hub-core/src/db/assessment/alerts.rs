@@ -352,6 +352,9 @@ impl Database {
                 AssessmentEventPayload::ScheduleChanged { .. } => {
                     ("schedule.changed", None, None, None)
                 }
+                AssessmentEventPayload::SubscriptionChanged { .. } => {
+                    ("subscription.changed", None, None, None)
+                }
             };
             let event = AssessmentEventV1 {
                 schema: "aos.assessment-event/v1".into(),
@@ -367,6 +370,10 @@ impl Database {
                 vals![registry_id, event.sequence, event.event_id, kind, issue, episode, digest.map(|digest| digest.to_string()),
                     event.to_bytes()?, now.unix_seconds()],
             ).expecting(1));
+            statements.extend(
+                self.assessment_notification_intent_statements(registry_id, &event)
+                    .await?,
+            );
         }
         Ok(statements)
     }

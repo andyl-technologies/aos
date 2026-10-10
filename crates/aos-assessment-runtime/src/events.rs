@@ -45,6 +45,16 @@ pub enum AssessmentEventPayload {
         /// Current due-execution setting.
         enabled: bool,
     },
+    /// Reports a complete notification review without destination or actor credentials.
+    #[serde(rename_all = "camelCase")]
+    SubscriptionChanged {
+        /// Public identity within the independently authorized registry.
+        subscription_id: String,
+        /// New review revision.
+        revision: u64,
+        /// Whether newly committed events may create delivery intents.
+        enabled: bool,
+    },
     /// Reports admitted results, including results with unknown coverage.
     #[serde(rename_all = "camelCase")]
     ScanCompleted {
@@ -102,6 +112,16 @@ impl AssessmentEventV1 {
                 text(schedule_id, 128, "assessment schedule identity")?;
                 if *revision == 0 || *revision > 9_007_199_254_740_991 {
                     bail!("assessment schedule event revision is invalid");
+                }
+            }
+            AssessmentEventPayload::SubscriptionChanged {
+                subscription_id,
+                revision,
+                ..
+            } => {
+                text(subscription_id, 128, "assessment subscription identity")?;
+                if *revision == 0 || *revision > 9_007_199_254_740_991 {
+                    bail!("assessment subscription event revision is invalid");
                 }
             }
             AssessmentEventPayload::ScanCompleted { scan_id, .. } => {
