@@ -739,7 +739,8 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
             credentials["organization"], credentials["binding"], name,
             [sources[label]["trustKey"]], "primary",
             credentials["binding"]["spec"]["s3"]["prefix"] + "/registry-" + label,
-            credentials["currentSqlPins"]["currentWriteRevision"], False)
+            credentials["currentSqlPins"]["currentWriteRevision"], False,
+            label_prefix="fleet-direct-publication-" + label)
         retain_direct_flow("actual-registry-placement-" + label + ".json", registries[label])
     token = direct_root_browser_token(client, tools["curl"], tools["python"], private_guest_command, reuse_session=True)
     assert_direct_fifo_checkpoint(client, tools, registries["b"]["registry"]["slug"], sources["b"], token)
