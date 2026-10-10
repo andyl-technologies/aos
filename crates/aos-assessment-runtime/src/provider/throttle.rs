@@ -2,6 +2,17 @@
 //!
 //! HTTP headers affect operational eligibility, never vulnerability coverage.
 //! Malformed hints cannot hide a failed response or grant another source call.
+//!
+//! A compact provider result may carry this observation-bound `retry` value:
+//!
+//! ```json
+//! {
+//!   "status": 429,
+//!   "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+//!   "observedAt": "2026-10-10T00:00:00Z",
+//!   "notBefore": "2026-10-10T00:02:00Z"
+//! }
+//! ```
 
 use anyhow::{Result, ensure};
 use aos_assessment::time::Timestamp;
