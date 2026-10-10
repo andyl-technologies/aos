@@ -59,7 +59,11 @@ impl BoundaryTranscript {
     /// evidence or capture reservations smaller than the complete envelope.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, TranscriptError> {
         self.validate_integrity()?;
-        let bytes = encode(self)?;
+        let bytes = if self.schema_version == 2 {
+            super::byte_wire::envelope(self)?
+        } else {
+            encode(self)?
+        };
         if bytes.len() as u64 > self.limits.maximum_total_bytes.get() {
             return Err(TranscriptError::CaptureLimit);
         }
@@ -76,7 +80,15 @@ impl BoundaryTranscript {
             return Err(TranscriptError::CaptureLimit);
         }
         let value = canonical::parse_json(bytes, MAXIMUM_TOTAL_BYTES as usize).map_err(invalid)?;
-        let transcript: Self = serde_json::from_value(value).map_err(invalid)?;
+        let transcript: Self = if value
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            == Some(2)
+        {
+            super::byte_wire::decode(value)?
+        } else {
+            serde_json::from_value(value).map_err(invalid)?
+        };
         if transcript.canonical_bytes()? != bytes {
             return Err(TranscriptError::Invalid("noncanonical envelope".into()));
         }
@@ -85,7 +97,7 @@ impl BoundaryTranscript {
 
     pub(super) fn validate_integrity(&self) -> Result<(), TranscriptError> {
         self.limits.validate()?;
-        if self.schema_version != 1
+        if !matches!(self.schema_version, 1 | 2)
             || self.records.len() as u64 > self.limits.maximum_records.get()
             || self.origin.activation.generation.get() == 0
             || self.origin.route.owners.is_empty()
@@ -163,6 +175,9 @@ impl BoundaryTranscript {
                 objects.retain(&object.reference, &object.bytes)?;
             }
             for object in &record.evidence {
+                // Tape2 roles remain data. Their complete bodies must be in this
+                // interaction; future records cannot repair a missing source row.
+                super::tape2::RecordedTape2::decode(object, &self.origin, record)?;
                 if let Some(closure) =
                     super::proof::RecordedProofClosure::decode(object, &self.origin)?
                 {
@@ -185,7 +200,14 @@ impl BoundaryTranscript {
                     "physical measurement custody".into(),
                 ));
             }
-            if encode(record)?.len() as u64 > self.limits.maximum_record_bytes.get() {
+            if record_bytes(
+                record,
+                self.schema_version,
+                self.limits.maximum_record_bytes.get(),
+            )?
+            .len() as u64
+                > self.limits.maximum_record_bytes.get()
+            {
                 return Err(TranscriptError::CaptureLimit);
             }
         }
@@ -240,4 +262,16 @@ pub(super) fn invalid(error: impl std::fmt::Display) -> TranscriptError {
 
 pub(super) fn encode(value: &impl serde::Serialize) -> Result<Vec<u8>, TranscriptError> {
     canonical::canonical_json(&serde_json::to_value(value).map_err(invalid)?).map_err(invalid)
+}
+
+pub(super) fn record_bytes(
+    record: &TranscriptRecord,
+    edition: u16,
+    maximum: u64,
+) -> Result<Vec<u8>, TranscriptError> {
+    if edition == 2 {
+        super::byte_wire::record(record, maximum)
+    } else {
+        encode(record)
+    }
 }

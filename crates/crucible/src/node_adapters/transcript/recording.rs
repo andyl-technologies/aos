@@ -19,6 +19,9 @@ use super::{
     types::*,
 };
 
+#[path = "recording/lineage.rs"]
+mod lineage;
+
 struct RecordingState {
     capture: Option<CaptureSession>,
     pending: usize,
@@ -111,6 +114,7 @@ pub struct RecordingNode {
     origin: TranscriptOrigin,
     boundary: Position,
     observation_sequence: u64,
+    original_lineage: bool,
 }
 
 impl RecordingNode {
@@ -129,10 +133,57 @@ impl RecordingNode {
         inner: Box<dyn SimulationNode>,
         attempt: Id,
         activation: &ActivationRecord,
-        mut context: Vec<InputPayload>,
+        context: Vec<InputPayload>,
         limits: TranscriptLimits,
     ) -> Result<(Self, RecordingHandle), RecordingPreparationFailure> {
+        Self::new_selected(graph, inner, attempt, activation, context, limits, false)
+    }
+
+    /// Records original lineage through the distinct selected native reader.
+    ///
+    /// This wrapper retains actual source callbacks and raw original bodies. It
+    /// neither qualifies that source nor exposes physical preservation; installed
+    /// source qualification remains the owning adapter's responsibility.
+    ///
+    /// # Errors
+    /// Retains the original native handle on missing reader selection or any
+    /// ordinary recording preparation refusal.
+    pub fn new_original_lineage(
+        graph: &AdmittedGraph,
+        inner: Box<dyn SimulationNode>,
+        attempt: Id,
+        activation: &ActivationRecord,
+        context: Vec<InputPayload>,
+        limits: TranscriptLimits,
+    ) -> Result<(Self, RecordingHandle), RecordingPreparationFailure> {
+        Self::new_selected(graph, inner, attempt, activation, context, limits, true)
+    }
+
+    fn new_selected(
+        graph: &AdmittedGraph,
+        inner: Box<dyn SimulationNode>,
+        attempt: Id,
+        activation: &ActivationRecord,
+        mut context: Vec<InputPayload>,
+        limits: TranscriptLimits,
+        original_lineage: bool,
+    ) -> Result<(Self, RecordingHandle), RecordingPreparationFailure> {
         let prepared: Result<_, TranscriptError> = (|| {
+            if original_lineage
+                && !inner
+                    .binding()
+                    .compatibility
+                    .operating_contract
+                    .facets
+                    .iter()
+                    .any(|facet| {
+                        facet.id.as_str() == "reference-device/quantized-lineage-reader-v1"
+                    })
+            {
+                return Err(TranscriptError::Unqualified(
+                    "original lineage recording requires the selected native reader".into(),
+                ));
+            }
             if graph.descriptor(&inner.route().node) != Some(inner.descriptor())
                 || graph.binding(&inner.route().node) != Some(inner.binding())
                 || graph.world_binding_hash() != &activation.world_binding_hash
@@ -177,7 +228,11 @@ impl RecordingNode {
                 context,
                 repeatability: graph.world_repeatability(),
             };
-            let capture = CaptureSession::new(origin.clone(), limits)?;
+            let capture = if original_lineage {
+                CaptureSession::new_selected(origin.clone(), limits, true)?
+            } else {
+                CaptureSession::new(origin.clone(), limits)?
+            };
             Ok((origin, capture))
         })();
         let (origin, capture) = match prepared {
@@ -196,6 +251,7 @@ impl RecordingNode {
                 origin,
                 boundary: activation.boundary,
                 observation_sequence: 0,
+                original_lineage,
             },
             handle,
         ))
@@ -229,7 +285,8 @@ impl RecordingNode {
             .map_err(|error| failure(error, EffectKnowledge::None))?;
         let request = request(action, id, before, context, body)
             .map_err(|error| failure(error, EffectKnowledge::None))?;
-        if encode(&request)
+        if capture
+            .request_bytes(&request)
             .map_err(|error| failure(error, EffectKnowledge::None))?
             .len() as u64
             > capture.maximum_record_bytes()
@@ -397,6 +454,7 @@ impl RecordingNode {
         &mut self,
         batch: &RuntimeInputBatch,
         provenance: Option<&InputProvenanceClosure>,
+        lineage: Option<&OriginalInputLineage>,
     ) -> Result<NativeInputAcknowledgement, OperationFailure> {
         self.check_activation(batch.activation())?;
         let reservation = self.reserve()?;
@@ -409,15 +467,29 @@ impl RecordingNode {
             self.boundary,
             &body,
         )?;
-        let ack = match provenance {
-            Some(provenance) => self.inner.stage_inputs_with_provenance(batch, provenance)?,
-            None => self.inner.stage_inputs(batch)?,
+        // Copy the original sealed input evidence before the first native Stage.
+        // It remains retained locally while any post-effect refusal is reported.
+        let mut evidence = self.capture_input_lineage(batch, lineage)?;
+        let ack = match (provenance, lineage) {
+            (Some(provenance), Some(lineage)) => self
+                .inner
+                .stage_inputs_with_original_lineage(batch, provenance, lineage)?,
+            (_, Some(_)) => {
+                return Err(failure(
+                    "lineage provenance is missing",
+                    EffectKnowledge::None,
+                ));
+            }
+            (Some(provenance), None) => {
+                self.inner.stage_inputs_with_provenance(batch, provenance)?
+            }
+            (None, None) => self.inner.stage_inputs(batch)?,
         };
         if let Err(error) = self.inner.validate_input_acknowledgement(batch, &ack) {
             self.invalidate();
             return Err(failure(error.reason, EffectKnowledge::MayHaveProgressed));
         }
-        let mut evidence = match self
+        let acknowledgement_evidence = match self
             .boundary_evidence(batch.activation(), std::slice::from_ref(&ack.proof_ref))
         {
             Ok(value) => value,
@@ -426,6 +498,7 @@ impl RecordingNode {
                 return Err(failure(error.reason, EffectKnowledge::MayHaveProgressed));
             }
         };
+        evidence.extend(acknowledgement_evidence);
         if let Err(error) = self.retain_proof_closures(
             batch.activation(),
             std::slice::from_ref(&ack.proof_ref),
@@ -581,7 +654,7 @@ impl SimulationNode for RecordingNode {
         &mut self,
         batch: &RuntimeInputBatch,
     ) -> Result<NativeInputAcknowledgement, OperationFailure> {
-        self.record_stage(batch, None)
+        self.record_stage(batch, None, None)
     }
 
     fn stage_inputs_with_provenance(
@@ -589,11 +662,58 @@ impl SimulationNode for RecordingNode {
         batch: &RuntimeInputBatch,
         provenance: &InputProvenanceClosure,
     ) -> Result<NativeInputAcknowledgement, OperationFailure> {
-        self.record_stage(batch, Some(provenance))
+        self.record_stage(batch, Some(provenance), None)
     }
 
     fn requires_input_provenance(&self, batch: &RuntimeInputBatch) -> bool {
         self.inner.requires_input_provenance(batch)
+    }
+
+    fn requires_original_input_lineage(&self, batch: &RuntimeInputBatch) -> bool {
+        self.inner.requires_original_input_lineage(batch)
+    }
+
+    fn stage_inputs_with_original_lineage(
+        &mut self,
+        batch: &RuntimeInputBatch,
+        provenance: &InputProvenanceClosure,
+        lineage: &OriginalInputLineage,
+    ) -> Result<NativeInputAcknowledgement, OperationFailure> {
+        self.record_stage(batch, Some(provenance), Some(lineage))
+    }
+
+    fn original_publication_lineage(
+        &self,
+        original: &OperationAdmission,
+        outcome: &OperationOutcome,
+        publication: &NativePublication,
+        limits: OriginalInputLineageLimits,
+    ) -> Result<OriginalPublicationClaim, OperationFailure> {
+        if !self.original_lineage {
+            return Err(failure(
+                "original lineage recording is not selected",
+                EffectKnowledge::None,
+            ));
+        }
+        self.inner
+            .original_publication_lineage(original, outcome, publication, limits)
+    }
+
+    fn validate_original_publication_lineage(
+        &self,
+        original: &OperationAdmission,
+        outcome: &OperationOutcome,
+        publication: &NativePublication,
+        claim: &OriginalPublicationClaim,
+    ) -> Result<(), OperationFailure> {
+        if !self.original_lineage {
+            return Err(failure(
+                "original lineage recording is not selected",
+                EffectKnowledge::None,
+            ));
+        }
+        self.inner
+            .validate_original_publication_lineage(original, outcome, publication, claim)
     }
 
     fn validate_input_acknowledgement(
@@ -726,6 +846,7 @@ impl SimulationNode for RecordingNode {
                 .map(|observation| observation.proof_ref.clone())
                 .collect();
             self.retain_proof_closures(admission.activation(), &roots, &mut evidence)?;
+            self.capture_publication_lineage(&admission, &outcome, &mut evidence)?;
             let reservation = self
                 .operations
                 .get_mut(token.operation())

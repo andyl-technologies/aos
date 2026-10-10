@@ -50,6 +50,28 @@ pub trait InstalledReplayPolicy {
         route: &NodeRoute,
         target_context: &[InputPayload],
     ) -> Result<ReplayQualification, TranscriptError>;
+
+    /// Qualifies explicit original-lineage Tape2 applicability independently.
+    ///
+    /// The default refuses. A source-selected installer must authenticate the
+    /// actual producer and consumer journals, original typed rows and installed
+    /// reader semantics; ordinary conditional replay qualification does not
+    /// authorize this additional historical lineage reader.
+    ///
+    /// # Errors
+    /// Refuses unsupported Tape2 code, source journals, owner association or
+    /// changed complete target context before any original response is released.
+    fn qualify_original_lineage(
+        &self,
+        _source: &AuthenticatedTranscript,
+        _target: &AdmittedGraph,
+        _route: &NodeRoute,
+        _target_context: &[InputPayload],
+    ) -> Result<ReplayQualification, TranscriptError> {
+        Err(TranscriptError::Unqualified(
+            "installed original lineage Tape2 qualification is unsupported".into(),
+        ))
+    }
 }
 
 /// Retains complete cursor state without serializing replay or native authority.
@@ -74,6 +96,7 @@ pub(super) struct ReplayCursor {
     pub(super) qualification: ReplayQualification,
     pub(super) next: usize,
     pub(super) diverged: bool,
+    pub(super) original_lineage: Option<ReplayQualification>,
 }
 
 impl ReplayCursor {
@@ -133,6 +156,21 @@ impl ReplayCursor {
         for object in target_context {
             object.reference.verify(&object.bytes).map_err(invalid)?;
         }
+        if source.data.schema_version == 2
+            && !binding
+                .compatibility
+                .operating_contract
+                .facets
+                .iter()
+                .any(|facet| {
+                    facet.id.as_str() == super::tape2::TRANSCRIPT_ORIGINAL_LINEAGE_PROFILE
+                        && facet.version == 2
+                })
+        {
+            return Err(TranscriptError::Unqualified(
+                "byte-string source envelope requires the selected original-lineage reader".into(),
+            ));
+        }
         let qualification = policy.qualify(&source, target, &route, target_context)?;
         qualification
             .proof
@@ -153,11 +191,44 @@ impl ReplayCursor {
                 "installed replay scope differs from actual complete source/target".into(),
             ));
         }
+        let selected_lineage = binding
+            .compatibility
+            .operating_contract
+            .facets
+            .iter()
+            .find(|facet| facet.id.as_str() == super::tape2::TRANSCRIPT_ORIGINAL_LINEAGE_PROFILE);
+        let original_lineage = if let Some(selected) = selected_lineage {
+            if selected.version != 2 {
+                return Err(TranscriptError::Unqualified(
+                    "original lineage Tape2 facet edition is unsupported".into(),
+                ));
+            }
+            let lineage =
+                policy.qualify_original_lineage(&source, target, &route, target_context)?;
+            lineage
+                .proof
+                .reference
+                .verify(&lineage.proof.bytes)
+                .map_err(invalid)?;
+            if lineage.source_context != qualification.source_context
+                || lineage.target_world != qualification.target_world
+                || lineage.target_binding != qualification.target_binding
+                || lineage.target_route != qualification.target_route
+            {
+                return Err(TranscriptError::Unqualified(
+                    "original lineage Tape2 source-to-target qualification differs".into(),
+                ));
+            }
+            Some(lineage)
+        } else {
+            None
+        };
         Ok(Self {
             source,
             qualification,
             next: 0,
             diverged: false,
+            original_lineage,
         })
     }
 

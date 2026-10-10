@@ -148,3 +148,32 @@ mod continuation_restore;
 
 #[cfg(test)]
 mod continuation_publication;
+
+/// Names the existing lossless source context codec for test-only native callers.
+#[cfg(test)]
+pub(super) const ORIGINAL_CONTEXT_FRAGMENT_MEDIA_TYPE: &str =
+    context_fragments::FRAGMENT_MEDIA_TYPE;
+
+/// Fragments original fixture context through the same installed source codec.
+///
+/// # Errors
+/// Refuses changed original bytes, unsupported extents or allocation failure.
+#[cfg(test)]
+pub(super) fn fragment_fixture_context(
+    original: InputPayload,
+) -> Result<Vec<InputPayload>, NodeObservedError> {
+    context_fragments::fragment_source_object(original)
+}
+
+/// Reconstructs original fixture context using the installed bounded reader.
+///
+/// # Errors
+/// Refuses missing, changed, reordered or oversized original source fragments.
+#[cfg(test)]
+pub(super) fn reconstruct_fixture_context(
+    manifest: &InputPayload,
+    objects: &[InputPayload],
+    maximum_bytes: usize,
+) -> Result<InputPayload, NodeObservedError> {
+    context_fragments::reconstruct_source_object(manifest, objects, maximum_bytes)
+}

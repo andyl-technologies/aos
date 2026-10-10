@@ -4,10 +4,7 @@ use std::{collections::BTreeMap, rc::Rc};
 
 use crucible_node_contract::{ContentRef, Position, U64, canonical};
 
-use super::{
-    codec::{TranscriptError, encode},
-    types::*,
-};
+use super::{codec::TranscriptError, types::*};
 
 /// Owns complete recorded source data after every original reservation closed.
 ///
@@ -55,8 +52,16 @@ impl CaptureSession {
         origin: TranscriptOrigin,
         limits: TranscriptLimits,
     ) -> Result<Self, TranscriptError> {
+        Self::new_selected(origin, limits, false)
+    }
+
+    pub(super) fn new_selected(
+        origin: TranscriptOrigin,
+        limits: TranscriptLimits,
+        byte_strings: bool,
+    ) -> Result<Self, TranscriptError> {
         let data = BoundaryTranscript {
-            schema_version: 1,
+            schema_version: if byte_strings { 2 } else { 1 },
             origin,
             limits,
             records: Vec::new(),
@@ -74,6 +79,17 @@ impl CaptureSession {
 
     pub(super) fn context(&self) -> Result<ContentRef, TranscriptError> {
         super::codec::context_commitment(&self.data.origin)
+    }
+
+    pub(super) fn request_bytes(
+        &self,
+        request: &TranscriptRequest,
+    ) -> Result<Vec<u8>, TranscriptError> {
+        if self.data.schema_version == 2 {
+            super::byte_wire::request(request, self.maximum_record_bytes())
+        } else {
+            super::codec::encode(request)
+        }
     }
 
     pub(super) fn maximum_record_bytes(&self) -> u64 {
@@ -145,7 +161,11 @@ impl CaptureSession {
             assigned_positions,
             physical_uncertainty,
         };
-        let bytes = encode(&record)?;
+        let bytes = super::codec::record_bytes(
+            &record,
+            self.data.schema_version,
+            self.maximum_record_bytes(),
+        )?;
         if bytes.len() as u64 > self.data.limits.maximum_record_bytes.get() {
             self.invalid = true;
             return Err(TranscriptError::CaptureLimit);

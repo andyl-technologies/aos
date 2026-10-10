@@ -1167,5 +1167,6 @@ mod condition_debug_runtime;
 mod original_input_lineage;
 pub use original_input_lineage::{
     OriginalInputLineage, OriginalInputLineageLimits, OriginalLineageRow, OriginalPublicationClaim,
-    OriginalPublicationOrigin,
+    OriginalPublicationOrigin, SavedOriginalInputLineage, SavedOriginalInputScope,
+    SavedOriginalPublication,
 };

@@ -16,6 +16,12 @@ use crate::{node_contract::*, node_scheduling::InputPayload};
 
 use super::{capture::CaptureSession, codec::encode, control::*, replay::ReplayCursor, *};
 
+#[path = "byte_wire_tests.rs"]
+mod byte_wire_models;
+
+#[path = "tape2/tests.rs"]
+mod tape2_models;
+
 static NEXT: AtomicU64 = AtomicU64::new(1);
 struct Directory(PathBuf);
 impl Directory {
@@ -56,7 +62,7 @@ fn limits() -> TranscriptLimits {
     }
 }
 
-fn origin() -> TranscriptOrigin {
+pub(super) fn origin() -> TranscriptOrigin {
     let (graph, _) = crate::node_admission::test_fixture_isolated_execution(false);
     let node = graph.node_ids().next().unwrap();
     let binding = graph.binding(node).unwrap();
@@ -133,6 +139,7 @@ pub(super) fn cursor(source: AuthenticatedTranscript) -> ReplayCursor {
         source,
         next: 0,
         diverged: false,
+        original_lineage: None,
     }
 }
 

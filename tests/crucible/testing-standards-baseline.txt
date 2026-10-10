@@ -480,7 +480,7 @@ crucible-node-provider	tests/lineage_source/fixture	std::thread::sleep	1
 crucible-qemu-plugin	src/runtime/teardown_channel_tests	thread::sleep	1
 crucible-qemu-plugin	src/runtime/teardown_channel_tests	std::thread::sleep	1
 # Source: crates/crucible-daemon/src/node_observed_executor/factory/reference_lineage_reader/tests.rs
-# sha256:af0ca373a5b814a291f32106297989a0defec82516c4e67a0d89360c286b36a9
+# sha256:1c3a7764e5b4cfb4512b5993d6d8187b8505efe2a4f0e40bd814265c3aff162d
 # Native fixture socket readiness and original complete-world reclamation use fixed finite watchdogs; elapsed waits never become model coordinates or rerun a failed original attempt.
 crucible-daemon	src/node_observed_executor/factory/reference_lineage_reader/tests	thread::sleep	1
 crucible-daemon	src/node_observed_executor/factory/reference_lineage_reader/tests	std::thread::sleep	1

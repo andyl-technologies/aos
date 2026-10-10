@@ -9,6 +9,7 @@
 //! uncertainty remain distinct from reproducible recorded boundary responses.
 
 mod archive;
+mod byte_wire;
 mod capture;
 mod codec;
 mod control;
@@ -16,6 +17,7 @@ mod node;
 mod proof;
 mod recording;
 mod replay;
+mod tape2;
 mod types;
 
 #[cfg(test)]
@@ -31,6 +33,7 @@ pub use node::{
 };
 pub use recording::{RecordingHandle, RecordingNode, RecordingPreparationFailure};
 pub use replay::{InstalledReplayPolicy, ReplayCursorSnapshot, ReplayQualification};
+pub use tape2::{OriginalLineageTapePrefix, TRANSCRIPT_ORIGINAL_LINEAGE_PROFILE};
 pub use types::{
     BoundaryTranscript, PhysicalTimingUncertainty, ReplayRequestMetadata, TranscriptAction,
     TranscriptLimits, TranscriptOrigin, TranscriptRecord, TranscriptRequest,

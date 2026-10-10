@@ -32,7 +32,8 @@ impl Default for OriginalInputLineageLimits {
 }
 
 /// Describes inert original native scope, separately from producer-local IDs.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OriginalPublicationOrigin {
     /// Binds the complete original owner compatibility.
     pub owner_binding_hash: HashRef,
@@ -63,7 +64,8 @@ pub struct OriginalPublicationOrigin {
 }
 
 /// Declares one inert direct codec row; an empty row does not authenticate a leaf.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OriginalLineageRow {
     /// Preserves the complete original typed role.
     pub object: ContentRef,
@@ -104,6 +106,7 @@ pub struct OriginalInputLineage {
 struct OriginalInputLineageData {
     original: RuntimeInputBatch,
     publications: Vec<OriginalPublicationClaim>,
+    source_scope: SavedOriginalInputScope,
 }
 
 impl OriginalInputLineage {
@@ -130,3 +133,9 @@ impl OriginalInputLineage {
 mod assembly;
 #[path = "runtime_original_input_lineage/geometry.rs"]
 mod geometry;
+
+#[path = "runtime_original_input_lineage/preservation.rs"]
+mod preservation;
+pub use preservation::{
+    SavedOriginalInputLineage, SavedOriginalInputScope, SavedOriginalPublication,
+};

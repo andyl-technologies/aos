@@ -1470,6 +1470,32 @@ the Nix source filter passes AOS formatting. This result supplies compilation
 credit only for that selected application dependency image, without test
 execution or later daemon, CLI, QEMU adapter or native qualification credit.
 
+## Original-lineage transcript recording
+
+The recording adapter retains original input and publication lineage beneath the
+current replay cutoff. Schema 2 encodes explicit byte roles without changing the
+inner control messages or legacy schema 1 encoding. Its signed captures require
+complete original acknowledgements and one-shot export; legacy preservation
+codecs refuse these new lineage bodies.
+
+The current-worktree native recording test passes in 37.83 seconds. Three signed
+tapes are persisted and independently reopened while the original peers remain
+owned, before their actual retirement. Retained evidence preserves nine native
+windows and four delivery joins. Complete content-reference checks pass for
+1,289 tape bodies and 1,293 journal bodies; all nine journal archives preserve
+the original request and object populations through shutdown.
+
+Transcript models (37), context reconstruction (5), source hygiene (37),
+core/provider/daemon all-target strict checks and formatting of 20 Rust files
+pass. The 8,647 source leaves are checked before and after verification. The
+first hygiene run found two stale responsibility hashes/counts; a metadata-only
+successor corrects those cells and passes fresh hygiene checks. Executable
+source and the original successful native cohort remain unchanged. Actual
+executables, signed records, complete journals and the failed check stay local.
+This recording mechanism supplies no conditional replay, physical capture,
+ordinary Ready or complete provider qualification; those require their separate
+native and installed-policy paths.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

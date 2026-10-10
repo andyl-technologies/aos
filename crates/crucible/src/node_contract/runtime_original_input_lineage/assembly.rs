@@ -105,6 +105,7 @@ impl NodeRuntime {
         }
         Ok(Some(OriginalInputLineage {
             data: Rc::new(OriginalInputLineageData {
+                source_scope: SavedOriginalInputScope::from_batch(batch),
                 original: batch.retained_copy(),
                 publications,
             }),

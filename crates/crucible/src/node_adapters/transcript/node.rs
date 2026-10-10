@@ -81,6 +81,23 @@ pub struct TranscriptReplayNode {
 }
 
 impl TranscriptReplayNode {
+    /// Borrows independently qualified original lineage beneath the current cutoff.
+    ///
+    /// This historical view does not install runtime input authority, preserve a
+    /// physical backend or expose unconsumed native responses.
+    ///
+    /// # Errors
+    /// Refuses missing Tape2 qualification or reclaimed original source custody.
+    pub fn original_lineage_tape(
+        &self,
+    ) -> Result<super::tape2::OriginalLineageTapePrefix<'_>, TranscriptError> {
+        let cursor = self
+            .cursor
+            .as_ref()
+            .ok_or_else(|| invalid("original replay source was reclaimed"))?;
+        super::tape2::OriginalLineageTapePrefix::from_cursor(cursor)
+    }
+
     /// Qualifies an independently authenticated source against a fresh sealed graph.
     ///
     /// # Errors
@@ -122,6 +139,11 @@ impl TranscriptReplayNode {
         let preservation = if selected.iter().any(|facet| {
             facet.id.as_str() == TRANSCRIPT_REPLAY_PRESERVATION_PROFILE && facet.version == 1
         }) {
+            if cursor.original_lineage.is_some() {
+                return Err(invalid(
+                    "Tape2 original lineage requires a separately qualified complete continuation codec",
+                ));
+            }
             continuation::validate_preservation_trajectory(&cursor.source)?;
             let schema =
                 transcript_replay_continuation_schema().map_err(|error| invalid(error.reason))?;

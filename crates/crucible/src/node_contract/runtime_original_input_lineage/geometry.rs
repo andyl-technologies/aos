@@ -7,25 +7,46 @@ pub(super) fn validate_claim_geometry(
     limits: OriginalInputLineageLimits,
 ) -> Result<usize, RuntimeError> {
     validate_bodies(claim, limits)?;
-    let edges = claim.rows.iter().try_fold(0usize, |total, row| {
+    validate_reference_rows(
+        &claim.rows,
+        [
+            &claim.published,
+            &claim.origin.observation_batch,
+            &claim.origin.stop_receipt,
+            &claim.origin.measurement,
+        ],
+        limits,
+    )
+}
+
+pub(super) fn validate_reference_rows(
+    rows: &[OriginalLineageRow],
+    roots: [&ContentRef; 4],
+    limits: OriginalInputLineageLimits,
+) -> Result<usize, RuntimeError> {
+    if rows.len() > limits.maximum_objects
+        || rows.windows(2).any(|pair| pair[0].object >= pair[1].object)
+        || rows.iter().any(|row| {
+            row.dependencies.windows(2).any(|pair| pair[0] >= pair[1])
+                || row.dependencies.contains(&row.object)
+        })
+    {
+        return Err(RuntimeError::InvalidReceipt);
+    }
+    let edges = rows.iter().try_fold(0usize, |total, row| {
         total
             .checked_add(row.dependencies.len())
             .filter(|total| *total <= limits.maximum_edges)
             .ok_or(RuntimeError::ResourceLimit)
     })?;
-    let object_count = claim.rows.len();
+    let object_count = rows.len();
 
     // Each row is expanded once. The queue holds four roots plus at most every
     // declared edge, and integer indices borrow the original typed inventory.
     let queue_capacity = edges.checked_add(4).ok_or(RuntimeError::ResourceLimit)?;
     let mut queue = reserved_vec(queue_capacity)?;
-    for reference in [
-        &claim.published,
-        &claim.origin.observation_batch,
-        &claim.origin.stop_receipt,
-        &claim.origin.measurement,
-    ] {
-        queue.push(row_index(claim, reference)?);
+    for reference in roots {
+        queue.push(row_index(rows, reference)?);
     }
     let mut reachable = reserved_vec(object_count)?;
     reachable.resize(object_count, false);
@@ -34,8 +55,8 @@ pub(super) fn validate_claim_geometry(
             continue;
         }
         reachable[index] = true;
-        for dependency in &claim.rows[index].dependencies {
-            queue.push(row_index(claim, dependency)?);
+        for dependency in &rows[index].dependencies {
+            queue.push(row_index(rows, dependency)?);
         }
     }
     if reachable.iter().any(|present| !present) {
@@ -50,10 +71,10 @@ pub(super) fn validate_claim_geometry(
     seen.resize(object_count, false);
     let mut derived_edges = 0usize;
     for _ in 0..object_count {
-        let index = next_complete_row(claim, &completed)?;
+        let index = next_complete_row(rows, &completed)?;
         seen.fill(false);
-        for dependency in &claim.rows[index].dependencies {
-            let dependency = row_index(claim, dependency)?;
+        for dependency in &rows[index].dependencies {
+            let dependency = row_index(rows, dependency)?;
             seen[dependency] = true;
             for descendant in completed[dependency]
                 .as_ref()
@@ -119,33 +140,28 @@ fn validate_bodies(
             return Err(RuntimeError::InvalidReceipt);
         }
         for dependency in &row.dependencies {
-            row_index(claim, dependency)?;
+            row_index(&claim.rows, dependency)?;
         }
     }
     Ok(())
 }
 
-fn row_index(
-    claim: &OriginalPublicationClaim,
-    reference: &ContentRef,
-) -> Result<usize, RuntimeError> {
-    claim
-        .rows
-        .binary_search_by(|row| row.object.cmp(reference))
+fn row_index(rows: &[OriginalLineageRow], reference: &ContentRef) -> Result<usize, RuntimeError> {
+    rows.binary_search_by(|row| row.object.cmp(reference))
         .map_err(|_| RuntimeError::InvalidReceipt)
 }
 
 fn next_complete_row(
-    claim: &OriginalPublicationClaim,
+    rows: &[OriginalLineageRow],
     completed: &[Option<Vec<usize>>],
 ) -> Result<usize, RuntimeError> {
-    for (index, row) in claim.rows.iter().enumerate() {
+    for (index, row) in rows.iter().enumerate() {
         if completed[index].is_some() {
             continue;
         }
         let mut ready = true;
         for dependency in &row.dependencies {
-            ready &= completed[row_index(claim, dependency)?].is_some();
+            ready &= completed[row_index(rows, dependency)?].is_some();
         }
         if ready {
             return Ok(index);

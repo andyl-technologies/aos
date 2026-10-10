@@ -41,6 +41,9 @@ mod graph;
 #[path = "namespace_tests.rs"]
 mod namespace_tests;
 
+#[path = "recording_tests.rs"]
+mod recording;
+
 struct Installed {
     profile: ReferenceProfile,
     bootstrap: ReferenceServiceBootstrap,
@@ -648,6 +651,7 @@ struct World {
     directory: Option<tempfile::TempDir>,
     policies: Vec<Rc<InstalledReaderPolicy>>,
     observations: Vec<Rc<RefCell<Option<ObservationHandle>>>>,
+    recording: Option<recording::RecordingCustody>,
 }
 
 impl World {
@@ -703,6 +707,14 @@ impl World {
         if let Some(root) = &root {
             eprintln!("original reader evidence retained: {}", root.display());
             originals_persisted = self.persist_observations(root, "");
+        }
+        if let Some(recording) = &mut self.recording {
+            // Failed wrapper construction still owns its original native adapter.
+            // Drop that handle into its pre-reserved host slot before polling.
+            recording.transfer_failed_nodes();
+            if let Some(root) = &root {
+                originals_persisted &= recording.persist_disposition(root);
+            }
         }
         drop(self.runtime.take());
         drop(self.pending_slot.take());
@@ -774,6 +786,10 @@ impl World {
 
 impl World {
     fn prepare(package: Rc<InstalledReaderPackage>) -> Self {
+        Self::prepare_selected(package, false)
+    }
+
+    fn prepare_selected(package: Rc<InstalledReaderPackage>, record_tapes: bool) -> Self {
         let profiles = ["disk", "link", "source"]
             .into_iter()
             .map(|node| {
@@ -815,6 +831,7 @@ impl World {
                 "host_content_bytes": 16777216
             },
             "class_accepted": false,
+            "live_recording": record_tapes.then(recording::declared_scope),
             "adverse_source_inspection": include_str!("namespace_tests.rs"),
             "observation_limits": {
                 "maximum_requests": 4096,
@@ -822,6 +839,17 @@ impl World {
                 "maximum_bytes": 33554432
             },
             "sources": {
+                "recording_fixture": include_str!("recording_tests.rs"),
+                "recording_context_fragments": include_str!("../transcript/context_fragments.rs"),
+                "recording_original_lineage": include_str!("../../../../../crucible/src/node_adapters/transcript/recording/lineage.rs"),
+                "recording_envelope_codec": include_str!("../../../../../crucible/src/node_adapters/transcript/byte_wire.rs"),
+                "recording_envelope_models": include_str!("../../../../../crucible/src/node_adapters/transcript/byte_wire_tests.rs"),
+                "recording_module": include_str!("../../../../../crucible/src/node_adapters/transcript/mod.rs"),
+                "recording_models": include_str!("../../../../../crucible/src/node_adapters/transcript/tests.rs"),
+                "recording_capture": include_str!("../../../../../crucible/src/node_adapters/transcript/capture.rs"),
+                "recording_replay": include_str!("../../../../../crucible/src/node_adapters/transcript/replay.rs"),
+                "recording_adapter": include_str!("../../../../../crucible/src/node_adapters/transcript/recording.rs"),
+                "recording_canonical_codec": include_str!("../../../../../crucible/src/node_adapters/transcript/codec.rs"),
                 "fixture": include_str!("tests.rs"),
                 "policy": include_str!("policy.rs"),
                 "package": include_str!("package.rs"),
@@ -910,12 +938,16 @@ impl World {
             source,
             host,
             directory: Some(directory),
+            recording: None,
             observations: (0..3).map(|_| Rc::new(RefCell::new(None))).collect(),
             policies: installations
                 .iter()
                 .map(|node| node.policy.clone())
                 .collect(),
         };
+        if record_tapes {
+            world.recording = Some(recording::RecordingCustody::reserve());
+        }
         let mut controls = Vec::with_capacity(3);
         for (index, installation) in installations.iter_mut().enumerate() {
             let source_slot = Box::new(SourceSlot {
@@ -943,17 +975,30 @@ impl World {
             ));
         }
         let graph = definition.admit(&installations, &registry);
-        let nodes: Vec<Box<dyn SimulationNode>> = controls
-            .into_iter()
-            .zip(&installations)
-            .map(|(control, installed)| {
-                Box::new(
-                    control
-                        .into_node(&graph, &installed.profile.descriptor.id, 16)
-                        .unwrap(),
-                ) as Box<dyn SimulationNode>
-            })
-            .collect();
+        let context = if record_tapes {
+            recording::original_context(
+                &package,
+                &definition,
+                &record,
+                &installations,
+                &world.observations,
+            )
+        } else {
+            Vec::new()
+        };
+        let mut nodes: Vec<Box<dyn SimulationNode>> = Vec::with_capacity(3);
+        for (control, installed) in controls.into_iter().zip(&installations) {
+            let node: Box<dyn SimulationNode> = Box::new(
+                control
+                    .into_node(&graph, &installed.profile.descriptor.id, 16)
+                    .unwrap(),
+            );
+            let node = match &mut world.recording {
+                Some(recording) => recording.wrap(&graph, &record, node, context.clone()),
+                None => node,
+            };
+            nodes.push(node);
+        }
         let runtime = NodeRuntime::new(
             &graph,
             nodes,
