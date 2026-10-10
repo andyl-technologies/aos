@@ -127,7 +127,9 @@ empty `terrane` binary.
 **Status:** In progress; eight of twenty-two T1 tasks are complete.
 Parallel worklines cover codec and domain conformance, index lookup, collector
 lifetimes, permanent recovery, growing-index source acquisition, SDK completion
-and derived-record verification. Workers retain disjoint file ownership and
+and derived-record verification. Separate workers now isolate retirement-barrier
+directory cohorts and the indexed overlay replay timeout. Workers retain
+disjoint file ownership and
 separate worktrees. Independent review remains separate, and one coordinated
 compiler serves build and Nix requests. T2 and branch worklines remain deferred.
 
@@ -137,8 +139,9 @@ formatter pair. Its actual SDK inventory contains 1,085 tests across three
 executables. Genuine no-default Core compilation separately passes, with 761
 tests across eleven executables and no enabled features. Full 6,245-file source
 seals, 3,236 compiler inputs, executable hashes and actual child terminals bind
-these results. The mandatory application-target check is now running on that
-source; its result remains pending.
+these results. The mandatory application-target check passes on that source in
+450.223 seconds, compiling all twenty-nine Linux application packages. All
+3,236 tracked compiler inputs match the actual Nix source byte for byte.
 
 Fresh exact executions on this source pass all six index lookup regressions,
 including current ACL, trust and producer checks; all nineteen SDK domain
@@ -151,14 +154,25 @@ Collector coverage passes thirty-two cases but fails the queued-worker teardown
 helper because that fixture deliberately has no Tokio timer driver. The
 reviewed test-only correction uses a monotonic elapsed check and yields within
 the unchanged thirty-second bound, retaining both weak-owner checks and final
-release assertions. It is composed privately and awaits a fresh executable.
+release assertions. Fresh tree `d116ffe6239a` passes this exact queued-worker
+case in 0.235 seconds, with all trace flags unset and actual child soft limit
+1,024 unchanged. Its full source, compiler inputs and executable seals match.
 Two current heavy collector cases remain red: ancestry fails with actual
 descriptor exhaustion after 52.293 seconds, and indexed replay reaches its
 unchanged 120-second limit. The ancestry observer records 512 descriptors in
 its largest sample, mostly repeated directory descriptors, under the actual
 unchanged 1,024 soft limit. That sample does not establish the failing peak or
-its owning lifetime; source investigation continues without reopening by path
-or weakening Original identity checks.
+its owning lifetime. Source review identifies retirement-barrier preparation
+opening each row's repeated ancestor directories and retaining them all until
+durability completes. A reviewed private cohort correction retains one original
+descriptor per path/root/owner/protection scope within one barrier, replays fresh
+named, descriptor and complete ancestry checks for every occurrence, and keeps
+independent barriers' captures distinct. Leaf descriptors and every body,
+association and synchronization step remain unchanged. Six required regressions
+are registered before source adoption; compilation and collector qualification
+remain pending. The indexed timeout is separately attributed to the genuine
+overlay replay test, which does not enter collector index expansion; a separate
+worker investigates its actual setup, publication and SDK stages.
 
 The permanent before-open recovery case now passes in 108.165 seconds under
 its unchanged 120-second limit. The next case loses its terminal receipt when
@@ -180,12 +194,18 @@ current verification path consequently quarantines a valid signed record before
 plaintext recomputation completes. The shared gate now requires a genuine
 cyclic-read preservation and restored-retry witness alongside the original
 deterministic executable-quarantine case. The reviewed private per-verification
-reader marker is committed and awaits fresh compilation and execution. It
+reader marker passes fresh all-target SDK compilation on tree `d116ffe6239a`.
+Both exact cyclic-read/restored-retry and genuine executable-quarantine witnesses
+pass in one untraced archived execution, retaining all original assertions.
+Full 6,246-file source, 3,237 compiler inputs and three executable bindings
+remain unchanged. The actual inventory has 1,086 tests; the exact formatter pair,
+native build and strict all-target Clippy also pass. The correction
 preserves exact public errors while separating failed reads from recomputed
 contradictions under DRV-2 and DRV-28. No format,
-identity or specification change is needed. The two native directory cohort
-selectors are also corrected against the actual compiled lexical module names;
-the gate's required count remains forty-eight.
+identity or specification change is needed. The two initialization directory
+cohort selectors are also corrected against the actual compiled lexical module
+names. The six new retirement-barrier witnesses raise the capability gate's
+required count from forty-eight to fifty-four and await a subsequent candidate.
 
 These results accept no additional task, milestone exit or freeze. Every owning
 task gate and the complete current T1 floor remain required before a formal
