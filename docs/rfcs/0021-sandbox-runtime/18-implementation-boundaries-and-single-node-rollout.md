@@ -408,6 +408,13 @@ existing dependencies. Protected current-Create source joins, Root binding,
 journal admission, held-cut decisions, publication, and recovery remain in the
 domain integration and still require the larger Policy ownership extraction.
 
+Protected compiler Candidate V3 is the sole retained body grammar. The earlier
+plan-less V2 path and its optional preimage/readback state are removed; old bytes
+are refused without repair or deletion. Canonical fixtures share the existing
+real compiler and V3 encoder across all four cache domains. Current V1 and the
+compiler commitment hash remain unchanged. Complete preimage consistency still
+grants no current Root or read authority.
+
 ### Effects, views, and application assembly
 
 Host, Storage, Mount, and Network retain their existing implementation crates

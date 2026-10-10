@@ -2265,15 +2265,14 @@ Version 3 changes retained evidence, not that hash or its serializer. New
 Candidate bodies are encoded from the actual `PolicyCompilerV1` result;
 decoding reconstructs the same tuple and rejects a different candidate digest.
 
-Version 2 remains structurally replayable with its 478-byte fixed prefix and
-the same four output fields. It supplies no retained plan preimage and is
-observation-only for any new worker-read authority join. Relabeling a V2 body
-as V3 does not upgrade it. The unchanged Current V1 record joins the exact
-project, sandbox, publication generation, candidate, normalized input,
+Version 2 is retired. Protected replay, structural state readback and consumer
+transport refuse it without rewriting or discarding retained journal bytes.
+Relabeling a V2 body as V3 does not upgrade it. The unchanged Current V1 record
+joins the exact project, sandbox, publication generation, candidate, normalized input,
 diagnostics, and complete prerequisite tuple; this local equality alone does
 not authenticate any of those claims.
 
-Neither version proves that plan semantics came from authentic current inputs,
+Version 3 does not prove that plan semantics came from authentic current inputs,
 that Root's signed history and rollback floor accept the candidate, or that
 Controller, Policy state, Source, Cache, and Root/Mount retain the same cut.
 Worker-read admission therefore remains closed pending that genuine owner-held
