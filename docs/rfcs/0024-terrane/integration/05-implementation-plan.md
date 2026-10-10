@@ -297,6 +297,15 @@ and credentials; exact physical absence and destination-only reopen assertions
 remain required. Corrected composition `7d7f050095` proceeds to fresh native
 qualification and the independent hermetic `golden-vectors` gate. These earlier
 core results do not replace qualification of the final aggregate source.
+Native candidate `7d7f050095` passes its library build and then fails strict
+all-target checking on five test-only `unwrap`/`expect` lints. Reviewed
+correction `fa83a94182` propagates the canonical occurrence witness's errors
+and preserves exact protected Original identity assertions with explicit
+diagnostic panics. It adds no suppression and changes no production behavior
+or assertion. Corrected composition `66c861a2b6` proceeds to fresh native
+qualification while the independent golden-vector check continues on its
+unchanged frozen candidate. No dependent native runtime is claimed from the
+failed all-target check.
 No owning gate or task is accepted by these results.
 The same frozen retained-read candidate passes all twenty-nine mandatory
 native read cases in 46.960 seconds and the public SDK case in 0.009 seconds,
