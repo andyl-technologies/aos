@@ -16,6 +16,7 @@ import re
 import socket
 import stat
 import struct
+import sys
 
 
 FIELDS = frozenset((
@@ -196,6 +197,15 @@ def observe(options):
     if len(command) > 65536 or command.split(b"\x00")[:-1] != [os.fsencode(value) for value in expected_command]:
         raise ValueError("runner command differs from selected immutable inputs")
     actual = read_socket_reply(options.socket_file, runner)
+    if (isinstance(actual, dict) and set(actual) == {"version", "status", "namespaceCheckLine"}
+            and actual["version"] == 1 and actual["status"] == "refused"
+            and isinstance(actual["namespaceCheckLine"], str)
+            and re.fullmatch(r"[0-9]{1,8}|unknown", actual["namespaceCheckLine"])):
+        # The peer supplies only its installed source line, never exception text.
+        print("local OCI runner check refused at line " + actual["namespaceCheckLine"], file=sys.stderr)
+        raise ValueError("namespace runner refused")
+    if not isinstance(actual, dict) or set(actual) != FIELDS:
+        raise ValueError("namespace readback fields differ")
     workerd = process_identity(actual["workerdPid"], options.workerd_file)
     observed_files = {"configurationSha256": hashlib.sha256(configuration_bytes).hexdigest()}
     for name, path, maximum in (

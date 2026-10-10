@@ -69,8 +69,7 @@ function acceptanceRegistryServer(
             // failed check in this installed runner for local fleet debugging.
             const frame = error.stack?.split('\n').find(line => line.includes(`${__filename}:`));
             const line = frame?.split(`${__filename}:`)[1]?.match(/^[0-9]+/)?.[0] ?? 'unknown';
-            console.error(`Local OCI namespace observation refused at runner line ${line}`);
-            throw error;
+            socket.end(JSON.stringify({ version: 1, status: 'refused', namespaceCheckLine: line }) + '\n');
           }
           return;
         }

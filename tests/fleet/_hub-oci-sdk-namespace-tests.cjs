@@ -245,16 +245,12 @@ test('owner-private socket keeps old variant and External verifier; new request 
     }
     assert.equal(sdkDispatches, 0);
     refuse = true;
-    const diagnostics = [], originalError = console.error;
-    console.error = message => diagnostics.push(message);
-    try {
-      assert.deepEqual(await socketRequest(path.join(root, 'control.sock'),
-        { version: 1, kind: 'oci-sdk-namespace-readback' }), { version: 1, status: 'refused' });
-      assert.equal(diagnostics.length, 1);
-      assert.match(diagnostics[0], /^Local OCI namespace observation refused at runner line [0-9]+$/);
-    } finally {
-      console.error = originalError;
-    }
+    const refusal = await socketRequest(path.join(root, 'control.sock'),
+      { version: 1, kind: 'oci-sdk-namespace-readback' });
+    assert.deepEqual(Object.keys(refusal).sort(), ['namespaceCheckLine', 'status', 'version']);
+    assert.equal(refusal.status, 'refused');
+    assert.equal(refusal.version, 1);
+    assert.match(refusal.namespaceCheckLine, /^[0-9]+$/);
   } finally {
     await server.close();
     rmSync(root, { recursive: true });
