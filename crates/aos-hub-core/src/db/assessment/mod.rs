@@ -5,6 +5,7 @@
 //! Raw source bodies stay on the admitted evidence path, including in Hybrid.
 
 mod alerts;
+mod authority;
 mod budgets;
 mod cache;
 mod clock;
@@ -47,6 +48,9 @@ mod status_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod alerts_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod authority_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32"), feature = "postgres"))]
 mod postgres_tests;

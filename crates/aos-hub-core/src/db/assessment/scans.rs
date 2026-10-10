@@ -1,12 +1,12 @@
 //! Idempotent paged scan admission, database leases and immutable cancellation.
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use aos_assessment::input::Profile;
 use aos_assessment::time::Timestamp;
 use aos_assessment_runtime::scan::{ScanRequestV1, ScanState, ScanUsage, TaskClaim};
 use aos_contract::Sha256Digest;
 
-use crate::backend::Statement;
+use crate::backend::{CheckedStatement, Statement};
 use crate::db::Database;
 
 /// Describes one immutable request and its durable execution state.
@@ -159,6 +159,32 @@ impl Database {
         registry_id: i64,
         request: &ScanRequestV1,
     ) -> Result<AssessmentScanRecord> {
+        self.request_assessment_scan_fenced(registry_id, request, &[])
+            .await
+    }
+
+    /// Admits a scan while holding current granting authority in every write page.
+    ///
+    /// The caller constructs exact current IAM locks and eligibility checks.
+    /// Those checks run atomically with generation allocation, each target/head
+    /// page and final admission. Revocation can leave a hidden resumable partial
+    /// admission, but cannot authorize its remaining writes or provider dispatch.
+    ///
+    /// # Errors
+    /// Returns an error for exceeded fence bounds, revoked granting authority,
+    /// changed resource, selector or idempotency conflicts, or persistence failure.
+    pub async fn request_assessment_scan_fenced(
+        &self,
+        registry_id: i64,
+        request: &ScanRequestV1,
+        authority_fences: &[CheckedStatement],
+    ) -> Result<AssessmentScanRecord> {
+        if authority_fences.len() > 32 {
+            bail!("assessment admission authority exceeds its transaction fence bound");
+        }
+        if !authority_fences.is_empty() {
+            self.backend.checked_batch(authority_fences).await?;
+        }
         request.validate()?;
         let digest = request.digest()?;
         let registry = self
@@ -236,7 +262,8 @@ impl Database {
             }
             let scan_id = uuid::Uuid::new_v4().simple().to_string();
             let now = self.assessment_database_time().await?.unix_seconds();
-            let admission = self.backend.checked_batch(&[
+            let mut statements = authority_fences.to_vec();
+            statements.extend([
                 Statement::new(
                     "UPDATE assessment_resources SET next_generation = next_generation + 1,
                          resource_version = resource_version + 1, updated_at = ?7
@@ -255,8 +282,12 @@ impl Database {
                         resource.next_generation, resource.inventory_revision, resource.inventory_digest.to_string(), resource.policy_digest.to_string(),
                         resource.authorization_revision, request.actor_ref, request.idempotency_key, serde_json::to_vec(&ScanUsage::default())?, now],
                 ).expecting(1),
-            ]).await;
+            ]);
+            let admission = self.backend.checked_batch(&statements).await;
             if let Err(error) = admission {
+                if !authority_fences.is_empty() {
+                    self.backend.checked_batch(authority_fences).await?;
+                }
                 let winner = self
                     .backend
                     .query_opt(
@@ -283,7 +314,21 @@ impl Database {
         if record.admission_complete || record.state.is_terminal() {
             return Ok(record);
         }
-        let mut page = Vec::with_capacity(120);
+        let resource_guard = Statement::new(
+            "UPDATE assessment_resources SET updated_at = updated_at
+             WHERE registry_id = ?1 AND partition_key = ?2 AND inventory_digest = ?3
+               AND policy_digest = ?4 AND inventory_revision = ?5 AND authorization_revision = ?6",
+            vals![
+                registry_id,
+                resource.partition,
+                request.inventory_digest.to_string(),
+                request.policy_digest.to_string(),
+                request.inventory_revision,
+                record.authorization_revision
+            ],
+        )
+        .expecting(1);
+        let mut page = Vec::with_capacity(90);
         for subject in &request.subjects {
             for profile in &request.profiles {
                 // A subject must be present in the exact ready inventory. The
@@ -315,22 +360,34 @@ impl Database {
                     vals![registry_id, request.inventory_digest.to_string(), subject, profile_name(*profile), request.policy_digest.to_string(),
                         record.generation, record.created_at.unix_seconds()],
                 ));
-                if page.len() == 120 {
-                    self.backend.batch(&page).await?;
+                if page.len() == 90 {
+                    let mut statements = authority_fences.to_vec();
+                    statements.push(resource_guard.clone());
+                    statements.extend(page.iter().cloned().map(Statement::unchecked));
+                    self.backend.checked_batch(&statements).await?;
                     page.clear();
                 }
             }
         }
         if !page.is_empty() {
-            self.backend.batch(&page).await?;
+            let mut statements = authority_fences.to_vec();
+            statements.push(resource_guard.clone());
+            statements.extend(page.into_iter().map(Statement::unchecked));
+            self.backend.checked_batch(&statements).await?;
         }
-        let completed = self.backend.checked_batch(&[Statement::new(
+        let mut statements = authority_fences.to_vec();
+        statements.push(resource_guard);
+        statements.push(Statement::new(
             "UPDATE assessment_scans SET admission_complete = 1, resource_version = resource_version + 1
              WHERE scan_id = ?1 AND state = 'queued' AND admission_complete = 0
                AND (SELECT count(*) FROM assessment_scan_targets WHERE scan_id = ?1) = ?2",
             vals![scan_id, (request.subjects.len() * request.profiles.len()) as u64],
-        ).expecting(1)]).await;
+        ).expecting(1));
+        let completed = self.backend.checked_batch(&statements).await;
         if let Err(error) = completed {
+            if !authority_fences.is_empty() {
+                self.backend.checked_batch(authority_fences).await?;
+            }
             let current = self.assessment_scan(registry_id, &scan_id).await?;
             if !current
                 .is_some_and(|record| record.admission_complete && record.request_digest == digest)
@@ -415,12 +472,32 @@ impl Database {
         scan_id: &str,
         expected_version: u64,
     ) -> Result<()> {
+        self.cancel_assessment_scan_fenced(registry_id, scan_id, expected_version, &[])
+            .await
+    }
+
+    /// Cancels an operation while holding its current granting authority atomically.
+    ///
+    /// # Errors
+    /// Returns an error for exceeded fence bounds, revoked authority, missing or
+    /// terminal operations, changed resource version, or persistence failure.
+    pub async fn cancel_assessment_scan_fenced(
+        &self,
+        registry_id: i64,
+        scan_id: &str,
+        expected_version: u64,
+        authority_fences: &[CheckedStatement],
+    ) -> Result<()> {
+        if authority_fences.len() > 32 {
+            bail!("assessment cancellation authority exceeds its transaction fence bound");
+        }
         let clock = self.backend.dialect().unix_time_expression();
-        let mut statements = vec![Statement::new(format!(
+        let mut statements = authority_fences.to_vec();
+        statements.push(Statement::new(format!(
             "UPDATE assessment_scans SET state = 'cancelling', claim_token = NULL, lease_expires_at = NULL,
                  updated_at = {clock}, resource_version = resource_version + 1
              WHERE registry_id = ?1 AND scan_id = ?2 AND resource_version = ?3 AND state IN('queued', 'running', 'cancelling')"
-        ), vals![registry_id, scan_id, expected_version]).expecting(1)];
+        ), vals![registry_id, scan_id, expected_version]).expecting(1));
         statements.extend(self.assessment_cancellation_statements(registry_id, scan_id));
         self.backend.checked_batch(&statements).await
     }

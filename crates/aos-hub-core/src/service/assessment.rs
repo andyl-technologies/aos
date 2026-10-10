@@ -189,4 +189,24 @@ impl RpcService {
         }
         Ok(())
     }
+
+    pub(super) async fn assessment_mutation_fences(
+        &self,
+        claims: &Claims,
+        registry: &RegistryRecord,
+        verb: &str,
+    ) -> Result<Vec<crate::backend::CheckedStatement>, RpcError> {
+        self.recheck_assessment(claims, registry, verb).await?;
+        let permission = Permission::parse(verb).ok_or_else(|| {
+            RpcError::PermissionDenied("assessment permission policy is unavailable".into())
+        })?;
+        self.db
+            .assessment_iam_statements(claims, &registry.scope_key, permission)
+            .await
+            .map_err(|_| {
+                RpcError::PermissionDenied(
+                    "assessment granting authority is no longer current".into(),
+                )
+            })
+    }
 }

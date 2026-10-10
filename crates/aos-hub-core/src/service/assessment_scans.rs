@@ -38,11 +38,12 @@ impl RpcService {
                 &actor_ref(&claims)?,
             )
             .map_err(|error| RpcError::invalid(error.to_string()))?;
-        self.recheck_assessment(&claims, &registry, "assessment.scan")
+        let fences = self
+            .assessment_mutation_fences(&claims, &registry, "assessment.scan")
             .await?;
         let scan = self
             .db
-            .request_assessment_scan(registry.id, &request)
+            .request_assessment_scan_fenced(registry.id, &request, &fences)
             .await
             .map_err(|error| RpcError::FailedPrecondition(error.to_string()))?;
         self.recheck_assessment(&claims, &registry, "assessment.scan")
@@ -154,8 +155,16 @@ impl RpcService {
         let claims = self
             .authorize_assessment(auth, &registry, "assessment.scan")
             .await?;
+        let fences = self
+            .assessment_mutation_fences(&claims, &registry, "assessment.scan")
+            .await?;
         self.db
-            .cancel_assessment_scan(registry.id, &query.scan_id, query.expected_revision)
+            .cancel_assessment_scan_fenced(
+                registry.id,
+                &query.scan_id,
+                query.expected_revision,
+                &fences,
+            )
             .await
             .map_err(|error| RpcError::FailedPrecondition(error.to_string()))?;
         let scan = self
@@ -207,11 +216,12 @@ impl RpcService {
         .map_err(RpcError::internal)?
         .to_string();
         request.trigger = "manual".into();
-        self.recheck_assessment(&claims, &registry, "assessment.scan")
+        let fences = self
+            .assessment_mutation_fences(&claims, &registry, "assessment.scan")
             .await?;
         let scan = self
             .db
-            .request_assessment_scan(registry.id, &request)
+            .request_assessment_scan_fenced(registry.id, &request, &fences)
             .await
             .map_err(|error| RpcError::FailedPrecondition(error.to_string()))?;
         self.recheck_assessment(&claims, &registry, "assessment.scan")
