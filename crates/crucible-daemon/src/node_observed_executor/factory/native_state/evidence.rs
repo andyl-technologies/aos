@@ -144,14 +144,25 @@ impl MixedEvidence {
         });
         if !extra.is_empty() {
             body["schema"] = "crucible.mixed-host-clock-list-live-enrollment.v1".into();
-            body["host_clocks"] = serde_json::to_value(extra.iter().map(|(node, bytes)| {
-                let selected = profile.host_clocks.iter().find(|selected| &selected.node == node)
-                    .ok_or_else(|| refused("actual host Clock lost its source owner"))?;
-                Ok(serde_json::json!({
-                    "node":node, "owner":selected.owner,
-                    "initialization":canonical::content_ref(bytes,"application/octet-stream")?,
-                }))
-            }).collect::<Result<Vec<_>, NodeObservedError>>()?)?;
+            let enrollment_rows = extra
+                .iter()
+                .map(|(node, bytes)| {
+                    let selected_clock = profile
+                        .host_clocks
+                        .iter()
+                        .find(|selected| &selected.node == node)
+                        .ok_or_else(|| refused("actual host Clock lost its source owner"))?;
+
+                    let enrollment = serde_json::json!({
+                        "node": node,
+                        "owner": selected_clock.owner,
+                        "initialization": canonical::content_ref(bytes, "application/octet-stream")?,
+                    });
+                    Ok(enrollment)
+                })
+                .collect::<Result<Vec<_>, NodeObservedError>>()?;
+
+            body["host_clocks"] = serde_json::to_value(enrollment_rows)?;
         }
         receipt(&body)
     }

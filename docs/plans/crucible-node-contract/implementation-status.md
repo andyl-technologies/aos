@@ -1501,6 +1501,18 @@ independently checked; all builds run locally with remote builders disabled.
 This historical result supplies application compilation evidence only, without
 test execution or later daemon, CLI, QEMU adapter or native qualification credit.
 
+Fresh local release compilation passes for the selected application dependency
+image frozen at the generic typed-peer consumer join, before its ledger edit.
+All eleven consumer source paths are present in its immutable 5,679-file source,
+which contains no Python bytecode caches. Output
+`mk52jil5pcdaiyyizrxxs9xisydklczr-aos-test-targets-0.1.0` records 943 compiler
+artifacts, all 167 test targets, 69 integration targets and successful build
+completion. Independent review checks 11,366 source and artifact bindings with
+no errors. The actual derivation, command and output are retained locally;
+remote builders were disabled. This historical image supplies application
+compilation evidence only, without test execution or later source, daemon, CLI,
+QEMU adapter or native qualification credit.
+
 
 ## Original-lineage transcript recording
 

@@ -16,13 +16,13 @@ use crucible_device::{
 };
 use crucible_node_contract::{Id, canonical};
 
-const MAXIMUM_NODES: usize = 64;
-const MAXIMUM_INITIALIZATION_BYTES: usize = 4 * 1024 * 1024;
-
 use super::{
     InstalledIoArtifact, InstalledNodeKind, InstalledNodeSelection, NodeObservedError,
     condition_debug, controlled, faulted, io, native, refused, scripted, seeded, semantics,
 };
+
+const MAXIMUM_NODES: usize = 64;
+const MAXIMUM_INITIALIZATION_BYTES: usize = 4 * 1024 * 1024;
 
 /// Holds each independently constructed original model and pre-reserved node slots.
 pub(super) struct PreparedModelRoster {
