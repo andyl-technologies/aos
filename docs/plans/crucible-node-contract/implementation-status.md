@@ -989,7 +989,10 @@ repair retains the exact scenario reference and bytes already verified by graph
 admission; production authentication and scheduling assertions stay unchanged.
 Independent source review approves this scope. All four original scheduling
 cases, 37 current-source hygiene cases, daemon all-target strict checks and the
-owned-file formatting check pass. A fresh complete gate remains required.
+owned-file formatting check pass. The fresh corrected checkpoint's full
+controller suite passes 6,578 cases with 242 skipped in 466.735 seconds.
+Its enclosing ABI/license build remains in progress; this result does not
+qualify subsequent network, live-debug or native-effect changes.
 
 The complete 49-path controller suite passes 6,536 cases with 230 skipped. Its
 combined ABI/license gate subsequently fails because the packaging identity
@@ -1044,6 +1047,10 @@ and the original future read exactly once, including its causal parent and
 reopening retain the original ownership and publication boundaries. A separate
 format-only follow-up passes independent token-equivalence review, all 18 owned
 Rust formatting checks and another 37 current-source hygiene checks.
+The exact committed live-debug and formatting successor also passes hermetic
+compilation of every application unit and integration target, yielding
+`nzj8walq7j2rwqp0vc9y1mavh3s3x80q-aos-test-targets-0.1.0`.
+This compilation result supplies no execution or later KVM/native-effect credit.
 This stage supplies live Debug8 operations; cold debug preservation, Scheduler4,
 scenario finalization and broader device support remain unqualified.
 
