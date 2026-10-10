@@ -139,7 +139,7 @@ struct ParentFence {
 /// Only descendant native factories populate these private fields. A directory
 /// descriptor is an incarnation observation, never a substitute for a lock.
 struct NativeOpenedDirectory {
-    file: File,
+    file: Arc<File>,
     path: PathBuf,
     stamp: MetadataStamp,
     policy: FencePolicy,

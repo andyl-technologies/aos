@@ -615,7 +615,7 @@ fn directories_below(
             })
             .collect();
         let receipt = NativeOpenedDirectory {
-            file,
+            file: Arc::new(file),
             path: parent.path.clone(),
             stamp,
             policy,

@@ -50,7 +50,7 @@ fn directory(path: &std::path::Path) -> NativeOpenedDirectory {
     let file = File::open(path).unwrap();
     let stamp = MetadataStamp::checked(&file.metadata().unwrap()).unwrap();
     NativeOpenedDirectory {
-        file,
+        file: Arc::new(file),
         path: path.to_owned(),
         stamp,
         policy: FencePolicy::PrivateControlDirectory { owner: stamp.owner },

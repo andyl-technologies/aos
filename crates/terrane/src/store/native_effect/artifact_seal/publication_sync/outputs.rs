@@ -14,6 +14,7 @@ use std::{
     fs::File,
     io,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 /// Records a fixed output body or completed removal under its actual boundary.
@@ -165,7 +166,7 @@ fn original_directory(
         ));
     }
     let directory = NativeOpenedDirectory {
-        file,
+        file: Arc::new(file),
         path: path.to_owned(),
         stamp,
         policy: FencePolicy::PrivateControlDirectory { owner },

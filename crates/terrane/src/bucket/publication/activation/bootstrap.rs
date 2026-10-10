@@ -62,7 +62,7 @@ pub(in super::super) fn directory(
         MetadataStamp::checked(&file.metadata().map_err(io_failure)?).map_err(io_failure)?;
     policy.validate(stamp).map_err(io_failure)?;
     let receipt = NativeOpenedDirectory {
-        file,
+        file: Arc::new(file),
         path: path.to_owned(),
         stamp,
         policy,
@@ -85,7 +85,7 @@ pub(super) fn retain_directory(
     for old in current.iter() {
         old.check().map_err(io_failure)?;
         next.push(NativeOpenedDirectory {
-            file: old.file.try_clone().map_err(io_failure)?,
+            file: Arc::new(old.file.try_clone().map_err(io_failure)?),
             path: old.path.clone(),
             stamp: old.stamp,
             policy: old.policy,
