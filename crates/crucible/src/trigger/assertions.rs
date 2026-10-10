@@ -752,6 +752,7 @@ impl OfflineAssertionChecker {
             && intermediate_prefix_times_are_visible_or_atomic(event_log);
         let mut pending_enabled_marker = false;
         let mut latest_entry_ticks = 0;
+        let mut prefixes = RecordedPrefixCursor::new(recorded_log);
 
         for index in 0..event_log.len() {
             let prefix_len = index + 1;
@@ -783,11 +784,7 @@ impl OfflineAssertionChecker {
             if require_recorded_offsets && recorded_offset.is_none() {
                 continue;
             }
-            let prefix = match condition_prefix_from_recorded_log(
-                recorded_log,
-                prefix_len,
-                require_recorded_offsets,
-            ) {
+            let prefix = match prefixes.prefix(prefix_len, require_recorded_offsets) {
                 Ok(prefix) => prefix,
                 Err(OfflineAssertionCheckError::ConditionEvaluation(
                     ConditionEvaluationError::FutureEventLogEntry { .. },
@@ -798,7 +795,7 @@ impl OfflineAssertionChecker {
                 }
                 Err(error) => return Err(error),
             };
-            evaluator.observe_prefix(&prefix, oracle);
+            evaluator.observe_prefix(prefix, oracle);
             pending_enabled_marker = false;
         }
 

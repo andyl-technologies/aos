@@ -51,6 +51,9 @@ mod guest_assertion_observation;
 mod native_console_tests;
 mod observability;
 mod observation_time;
+mod recorded_prefix;
+#[cfg(test)]
+mod recorded_prefix_tests;
 
 pub use assertions::*;
 pub(crate) use conditions::guest_assertion_marker_from_whitebox_body;
@@ -61,6 +64,7 @@ use evidence::*;
 use guest_assertion_declarations::*;
 use guest_assertion_observation::*;
 pub use observability::*;
+use recorded_prefix::*;
 
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
