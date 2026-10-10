@@ -118,7 +118,9 @@ where
         let Some(handle) = handle else {
             return Ok(None);
         };
-        if handle.resources != resources || !handle.cancellation.same_incarnation(cancellation) {
+        if !admits_auxiliary_request(handle.resources, resources)
+            || !handle.cancellation.same_incarnation(cancellation)
+        {
             return Err(world_resource_error(
                 "hot-fork world auxiliary request differs from the admitted attempt contract",
             ));
@@ -126,8 +128,25 @@ where
         let state = handle.state.upgrade().ok_or_else(|| {
             world_resource_error("hot-fork world auxiliary aggregate owner was released")
         })?;
-        auxiliary_guard_from_state(state, handle.resources, handle.cancellation).map(Some)
+        auxiliary_guard_from_state(state, resources, handle.cancellation).map(Some)
     }
+}
+
+/// Returns whether a private lifecycle may lease the admitted aggregate.
+///
+/// The aggregate was admitted with the execution's full semantic ceiling. A
+/// later private lifecycle requests only the unspent execution-quantum
+/// allowance, so its quantum ceiling may shrink, but its CPU, memory, and disk
+/// ceilings must name the same physical reservation. Every lease still charges
+/// quanta through the aggregate guard, so the full ceiling bounds combined work.
+const fn admits_auxiliary_request(
+    admitted: AttemptResourceLimits,
+    requested: AttemptResourceLimits,
+) -> bool {
+    requested.maximum_vcpus() == admitted.maximum_vcpus()
+        && requested.maximum_resident_bytes() == admitted.maximum_resident_bytes()
+        && requested.maximum_disk_bytes() == admitted.maximum_disk_bytes()
+        && requested.maximum_execution_quanta() <= admitted.maximum_execution_quanta()
 }
 
 pub(crate) struct QemuHotForkWorldAuxiliaryResourceBinding<G>
