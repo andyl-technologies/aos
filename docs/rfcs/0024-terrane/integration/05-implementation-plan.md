@@ -128,10 +128,10 @@ empty `terrane` binary.
 Parallel worklines cover codec and domain conformance, index lookup, collector
 lifetimes, permanent recovery, growing-index source acquisition, SDK completion
 and derived-record verification. Separate workers now isolate retirement-barrier
-directory cohorts and the indexed overlay replay timeout. Workers retain
-disjoint file ownership and
-separate worktrees. Independent review remains separate, and one coordinated
-compiler serves build and Nix requests. T2 and branch worklines remain deferred.
+directory cohorts, indexed overlay replay and index admission/publication.
+Workers retain disjoint file ownership and separate worktrees. Independent
+review remains separate. One coordinated compiler serves build and Nix requests.
+T2 and branch worklines remain deferred.
 
 Frozen private tree `d66765bf3c76` passes the native library build, fresh
 all-target SDK test compilation, strict all-target Clippy and the exact
@@ -174,6 +174,16 @@ remain pending. The indexed timeout is separately attributed to the genuine
 overlay replay test, which does not enter collector index expansion; a separate
 worker investigates its actual setup, publication and SDK stages.
 
+The subsequent cohort candidate `05417ce79389` passes the exact formatter pair
+in 22.428 seconds and native build in 36.236 seconds. Fresh all-target SDK
+compilation stops after 376.353 seconds when monitored available storage falls
+below the two-GiB reserve. Only that owned compiler process is terminated; its
+actual signal exit, raw logs and unchanged 6,246-file source and 3,237 compiler
+inputs are retained. This environment interruption yields no fresh archive,
+Clippy result or full current T1 gate result. Independently reviewed test-only
+admission/publication markers are now composed privately for a subsequent
+diagnostic. They retain every original check, error order and deadline input.
+
 The permanent before-open recovery case now passes in 108.165 seconds under
 its unchanged 120-second limit. The next case loses its terminal receipt when
 shared storage becomes full and remains an environment failure with incomplete
@@ -183,10 +193,15 @@ recovery and body-read results remain recorded below, including their original
 failures. Older results do not qualify subsequently changed source.
 
 The ordinary 2,048-entry growing-index case previously reached its unchanged
-1,800-second limit. Reviewed opt-in markers now distinguish publication,
-reopening and independent output verification; a separate diagnostic is
-running on the current executable. All six current owning populations remain
-required under DRV-29. Traced diagnostics do not qualify the gate.
+1,800-second limit. A separate traced diagnostic on `d66765bf3c76` also reaches
+that unchanged limit. Maintained commit publication returns at 1,760.155
+seconds after about 1,377.377 seconds inside that call; reopening is the final
+unfinished operation. Independent output assertions and accounting are never
+reached. Actual terminal, raw logs and all source/input/executable seals are
+retained. Reviewed opt-in markers now distinguish the internal admission and
+publication boundaries without removing fresh checks. All six current owning
+populations remain required under DRV-29. Traced diagnostics do not qualify the
+gate.
 
 A separate derived-data audit finds that a cyclic dictionary read returns the
 same public derived error used for a proven attribute contradiction. The
