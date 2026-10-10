@@ -4,11 +4,14 @@
 //! next opens; object-to-pack relationships are checked by authenticated point
 //! lookups in the same retained arena rather than a process-wide map.
 
+mod append_bound;
+
 use super::index_format::{self as wire, Key, PackRecord, Value};
 use super::index_io::Operation;
 use super::placement_index::IndexSnapshot;
 use super::*;
 use crate::owned_decode::DecodeScratch;
+use append_bound::AppendBound;
 
 pub(super) struct Manifest {
     pub(super) entries: Vec<PackManifestEntry>,
@@ -198,6 +201,11 @@ pub(super) fn validate(
 }
 
 /// Checks current additional native storage before opening a pack candidate.
+///
+/// # Errors
+///
+/// Refuses overflowing append geometry, insufficient native headroom, IO
+/// failures, or the original operation's refusal.
 pub(super) fn publication_headroom(
     backend: &PackedBlobBackend,
     index: &IndexSnapshot,
@@ -205,14 +213,8 @@ pub(super) fn publication_headroom(
     pack_bytes: u64,
     operation: &mut Operation<'_>,
 ) -> Result<(), StoreError> {
-    let changes = objects.checked_add(1).ok_or(StoreError::Quota)?;
-    let page_bytes = u64::from(index.header.height)
-        .checked_add(1)
-        .and_then(|levels| levels.checked_mul(4))
-        .and_then(|pages| pages.checked_add(2))
-        .and_then(|pages| pages.checked_mul(changes))
-        .and_then(|pages| pages.checked_mul(wire::PAGE_BYTES as u64))
-        .ok_or(StoreError::Quota)?;
+    let append = AppendBound::batch(index.header.height, objects)?;
+    let page_bytes = append.bytes()?;
     operation.require_headroom(
         backend,
         pack_bytes
@@ -227,14 +229,14 @@ pub(super) fn publication_headroom(
 fn prepared_update(
     backend: &PackedBlobBackend,
     index: &IndexSnapshot,
-    changes: u64,
+    append: AppendBound,
     operation: &mut Operation<'_>,
     progress: &mut checked_publication::Progress,
 ) -> Result<index_update::Update, StoreError> {
     let projected_records = index
         .header
         .records
-        .checked_add(changes)
+        .checked_add(append.changes)
         .ok_or(StoreError::Quota)?;
     let reachable_pages = projected_records
         .checked_add(15)
@@ -245,17 +247,9 @@ fn prepared_update(
     let reachable_bytes = reachable_pages
         .checked_mul(wire::PAGE_BYTES as u64)
         .ok_or(StoreError::Quota)?;
-    // A changed level can emit two split pages or replace a sibling pair.
-    // The two extra pages cover the root split/collapse endpoints.
-    let append_pages = u64::from(index.header.height)
-        .checked_add(1)
-        .and_then(|levels| levels.checked_mul(4))
-        .and_then(|pages| pages.checked_add(2))
-        .and_then(|pages| pages.checked_mul(changes))
-        .ok_or(StoreError::Quota)?;
-    let append_bytes = append_pages
-        .checked_mul(wire::PAGE_BYTES as u64)
-        .ok_or(StoreError::Quota)?;
+    // The operation supplies its proven append geometry. Existing failed tails
+    // remain part of physical_bytes and the same two-live-tree limit.
+    let append_bytes = append.bytes()?;
     let Some(identity) = index.header.arena else {
         return index_update::Update::new(index, backend, operation);
     };
@@ -356,9 +350,7 @@ pub(super) fn replacement(
     let mut update = prepared_update(
         backend,
         index,
-        (entries.len() as u64)
-            .checked_add(1)
-            .ok_or(StoreError::Quota)?,
+        AppendBound::batch(index.header.height, entries.len() as u64)?,
         operation,
         progress,
     )?;
@@ -410,7 +402,13 @@ pub(super) fn removed(
     else {
         return Ok(None);
     };
-    let mut update = prepared_update(backend, index, 2, operation, progress)?;
+    let mut update = prepared_update(
+        backend,
+        index,
+        AppendBound::point(index.header.height, 2)?,
+        operation,
+        progress,
+    )?;
     let mut record = update
         .find(Key::pack(entry.pack), operation)?
         .ok_or(StoreError::Incompatible)?

@@ -143,3 +143,122 @@ fn canonical_decode_retains_body_without_duplicate_authentication_images()
     assert_eq!(authority.0.usage()?, (0, 0));
     Ok(())
 }
+
+#[test]
+fn scalar_child_id_borrows_input_without_a_temporary_string() -> Result<(), Box<dyn Error>> {
+    use crucible_linux_resource::test_support::TestAllocationObserver;
+
+    let id = ContentId::for_bytes(ObjectKind::MerkleNode, u32::MAX, b"child");
+    let text = id.encode();
+    let mut bytes = Vec::new();
+    put_short_bytes(&mut bytes, text.as_bytes());
+
+    // Retain the owning predecessor's actual allocation past capture so an
+    // optimized build cannot discard this independent physical witness.
+    let (owned, owning_events) = TestAllocationObserver::capture_allocation_events(|| {
+        std::hint::black_box(
+            Decoder::new(&bytes)
+                .string(MAX_CONTENT_ID_BYTES, "content-id-bytes")
+                .map(|text| (ContentId::parse(&text), text)),
+        )
+    })?;
+    let (owning_id, owned) = owned?;
+    assert_eq!(owning_id?, id);
+    assert_eq!(owned, text);
+    assert!(!owning_events.overflow);
+    assert_eq!(owning_events.reallocations, 0);
+    assert!(
+        owning_events
+            .entries()
+            .any(|event| event.allocated && event.bytes == text.len())
+    );
+
+    let (borrowed, borrowing_events) = TestAllocationObserver::capture_allocation_events(|| {
+        Decoder::new(&bytes)
+            .borrowed_string(MAX_CONTENT_ID_BYTES, "content-id-bytes")
+            .map(|text| (ContentId::parse(text), text))
+    })?;
+    let (borrowing_id, borrowed) = borrowed?;
+    assert_eq!(borrowed.as_ptr(), bytes[2..].as_ptr());
+    assert_eq!(borrowing_id?, id);
+    assert_eq!(borrowing_events.count, 0);
+    assert_eq!(borrowing_events.reallocations, 0);
+    assert!(!borrowing_events.overflow);
+    Ok(())
+}
+
+#[test]
+fn borrowed_child_text_preserves_original_admission_and_format_priority()
+-> Result<(), Box<dyn Error>> {
+    let id = ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"child");
+    let text = id.encode();
+    let mut bytes = Vec::new();
+    put_short_bytes(&mut bytes, text.as_bytes());
+
+    for owning in [true, false] {
+        let authority = Arc::new(Authority(FixtureResourceBudget::new(0, 16 * 1024)));
+        let budget = DecodeBudget::new(authority.clone(), 16 * 1024)?;
+        let scope = budget.enter();
+        let before = authority.0.usage()?.1;
+        let mut decoder = Decoder::new(&bytes);
+        if owning {
+            assert_eq!(
+                decoder.string(MAX_CONTENT_ID_BYTES, "content-id-bytes")?,
+                text
+            );
+        } else {
+            assert_eq!(
+                decoder.borrowed_string(MAX_CONTENT_ID_BYTES, "content-id-bytes")?,
+                text
+            );
+        }
+        assert_eq!(
+            authority.0.usage()?.1 - before,
+            text.len() as u64 + 4 * std::mem::size_of::<crate::owned_decode::ResourceLoan>() as u64
+        );
+        drop(scope);
+        drop(budget);
+        assert_eq!(authority.0.usage()?, (0, 0));
+    }
+
+    // The original control fits, but neither text decoder may pass its next
+    // admission. A syntactically valid scalar is not an admission exemption.
+    for owning in [true, false] {
+        let authority = Arc::new(Authority(FixtureResourceBudget::new(0, 16 * 1024)));
+        let budget = DecodeBudget::new(authority, DecodeBudget::allocation_bytes())?;
+        let scope = budget.enter();
+        let mut decoder = Decoder::new(&bytes);
+        let refused = if owning {
+            decoder
+                .string(MAX_CONTENT_ID_BYTES, "content-id-bytes")
+                .map(|_| ())
+        } else {
+            decoder
+                .borrowed_string(MAX_CONTENT_ID_BYTES, "content-id-bytes")
+                .map(|_| ())
+        };
+        assert!(matches!(
+            refused,
+            Err(ContentEnvelopeError::DecodeAdmission(_))
+        ));
+        assert!(budget.check().is_err());
+        drop(scope);
+    }
+
+    let invalid = [0, 1, 0xff];
+    assert_eq!(
+        Decoder::new(&invalid).borrowed_string(0, "content-id-bytes"),
+        Err(limit("content-id-bytes"))
+    );
+    assert_eq!(
+        Decoder::new(&invalid).borrowed_string(1, "content-id-bytes"),
+        Err(ContentEnvelopeError::InvalidIdentifier)
+    );
+    for end in 0..bytes.len() {
+        assert_eq!(
+            Decoder::new(&bytes[..end]).borrowed_string(MAX_CONTENT_ID_BYTES, "content-id-bytes"),
+            Err(ContentEnvelopeError::Truncated)
+        );
+    }
+    Ok(())
+}

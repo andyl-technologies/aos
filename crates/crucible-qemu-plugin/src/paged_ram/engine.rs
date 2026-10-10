@@ -20,6 +20,7 @@ pub(crate) use failure::RetainedOperationalFailure;
 mod admission;
 use admission::{ServiceConfiguration, prepare_service, prepare_service_for_inventory};
 mod mutation;
+mod observation;
 mod scheduling;
 mod statistics;
 pub(crate) use statistics::PagingStatistics;

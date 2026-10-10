@@ -25,6 +25,7 @@ pub(crate) struct PreparedChildArenas {
     states: Option<Vec<PageState>>,
     reservation: Option<MetadataReservation>,
     arena_reservation: Option<MetadataReservation>,
+    capture_work: Option<service::capture_work::FaultWorkOwner>,
     mode: crucible_protocol::ram_control::RamControlMode,
     captured: bool,
 }
@@ -159,6 +160,7 @@ impl PausedPagingOwner {
         let mut arenas = Vec::new();
         arenas.try_reserve_exact(parent_service.arenas.len())?;
         arenas.extend_from_slice(&parent_service.arenas);
+        let capture_work = service::capture_work::FaultWorkOwner::prepare(&budget)?;
         // Negotiate host capability only. This descriptor is unregistered and
         // closed before the fork; its mm identity is never reused by the child.
         drop(Registration::open()?);
@@ -175,6 +177,7 @@ impl PausedPagingOwner {
             states: Some(states),
             reservation: Some(reservation),
             arena_reservation: Some(arena_reservation),
+            capture_work: Some(capture_work),
             captured: false,
             mode: policy.mode,
         })
@@ -306,6 +309,10 @@ impl PreparedChildArenas {
             ),
             placement_dependency: Mutex::new(None),
             worker: Mutex::new(None),
+            capture_work: self
+                .capture_work
+                .take()
+                .ok_or("child fault work custody absent")?,
             stop: AtomicBool::new(false),
             activated: AtomicBool::new(false),
             destructive: AtomicBool::new(true),

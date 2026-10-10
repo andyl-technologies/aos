@@ -4,7 +4,9 @@
 //! service account. The same process-contract event survives exec under its
 //! explicit descriptor role; no pager, later operation or replacement event
 //! supplies startup authority. Native Source and complete allocation-peak
-//! qualification remain separate from this host custody splice.
+//! qualification remain separate from this host custody splice. Registered
+//! startup currently refuses before Setup or descriptor effects because the
+//! installed native preconstructor profile and receiver are not yet issued.
 
 use std::fmt::{self, Write as _};
 use std::fs::File;
@@ -40,6 +42,8 @@ struct PluginStartupState {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PluginStartupCause {
+    #[error("the installed native preconstructor profile is unavailable")]
+    InstalledProfileUnavailable,
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     #[error("device workspace issuance refused: {0}")]
     Workspace(#[source] super::DeviceDigestWorkspaceIssueError),
@@ -77,6 +81,11 @@ impl OriginalPluginStartup {
             original_after: None,
             _control: None,
         };
+        // Installer acquisition occurs after native context allocation and
+        // module constructors. The current installed tuple has no prior issued
+        // namespace purpose, so refuse before this host creates Setup or aliases.
+        require_installed_native_profile().map_err(refuse_before)?;
+
         // These are actual hosted holder/scratch bodies, not a native W floor.
         // The existing supervisor/world must retain its own allocation custody;
         // this loan does not substitute for its transitive Source/control proof.
@@ -381,3 +390,13 @@ fn event_identity(descriptor: i32) -> io::Result<u64> {
     }
     event_id.ok_or_else(invalid_event)
 }
+
+// This closed refusal is temporary. A positive replacement must consume the
+// actual preissued installed-profile purpose from the same process owner;
+// native TOTAL, a file hash, or installer completion cannot substitute for it.
+fn require_installed_native_profile() -> Result<(), PluginStartupCause> {
+    Err(PluginStartupCause::InstalledProfileUnavailable)
+}
+
+#[cfg(test)]
+mod tests;

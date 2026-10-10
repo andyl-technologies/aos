@@ -6,6 +6,9 @@
 use super::super::source::{RootSourceFailure, SourceFetchError};
 use super::*;
 
+pub(in crate::paged_ram::engine) mod capture_work;
+use capture_work::FaultWorkOwner;
+
 mod actor_lifetime;
 pub(super) use actor_lifetime::ActorLifetime;
 
@@ -48,6 +51,7 @@ pub(super) struct FaultService {
     pub(super) states: Mutex<Vec<PageState>>,
     pub(super) placement_dependency: Mutex<Option<Arc<dyn SourceOperation>>>,
     pub(super) worker: Mutex<Option<JoinHandle<Result<(), RamError>>>>,
+    pub(super) capture_work: FaultWorkOwner,
     pub(super) stop: AtomicBool,
     pub(super) activated: AtomicBool,
     pub(super) destructive: AtomicBool,
@@ -241,7 +245,6 @@ impl FaultService {
     }
 
     fn run(&self) -> Result<(), RamError> {
-        let mut scratch = [0; PAGE_BYTES];
         while !self.stop.load(Ordering::Acquire) {
             self.lifetime
                 .lock()
@@ -251,8 +254,25 @@ impl FaultService {
             if !self.activated.load(Ordering::Acquire) {
                 continue;
             }
-            while let Some(fault) = self.registration.read_fault().map_err(RamError::from)? {
-                self.resolve(fault, &mut scratch)?;
+            loop {
+                // The body owns a consumed event before operation admission and
+                // retains its actual scratch/claim on every unresolved return.
+                let mut work = self.capture_work.try_lock()?;
+                let Some(fault) = self.registration.read_fault().map_err(RamError::from)? else {
+                    break;
+                };
+                work.claim(fault, self.operations.as_ref())?;
+                let result = {
+                    let (fault, operation, scratch) = work.request()?;
+                    self.resolve(fault, operation, scratch)
+                };
+                match result {
+                    Ok(()) => work.settled()?,
+                    Err(error) => {
+                        work.fail();
+                        return Err(error);
+                    }
+                }
             }
         }
         Ok(())
@@ -357,16 +377,17 @@ impl FaultService {
         Ok(valid)
     }
 
-    fn resolve(&self, fault: FaultEvent, scratch: &mut [u8; PAGE_BYTES]) -> Result<(), RamError> {
+    fn resolve(
+        &self,
+        fault: FaultEvent,
+        operation: &dyn SourceOperation,
+        scratch: &mut [u8; PAGE_BYTES],
+    ) -> Result<(), RamError> {
         self.lifetime
             .lock()
             .map_err(|_| "fault actor poll publication poisoned")?
             .poll()?;
         self.check_placement_dependency()?;
-        let operation = self
-            .operations
-            .begin(SourceOperationClass::PageIn)
-            .map_err(RamError::from)?;
         let address = fault.address & !(PAGE_BYTES as u64 - 1);
         let arena = self
             .arenas
@@ -436,7 +457,7 @@ impl FaultService {
                 // this page; no removal is admitted while this service is active.
                 self.check_placement_dependency()?;
                 self.registration.wake(address).map_err(RamError::from)?;
-                return operation.complete().map_err(RamError::from);
+                return Ok(());
             }
             let valid = self.read_cold(arena, page_index, coordinate, false, scratch)?;
             // A terminal request accepted while backing I/O was pending refuses
@@ -471,7 +492,7 @@ impl FaultService {
         operation.wait_slice().map_err(RamError::from)?;
         self.check_placement_dependency()?;
         self.registration.wake(address).map_err(RamError::from)?;
-        operation.complete().map_err(RamError::from)
+        Ok(())
     }
 
     fn check_placement_dependency(&self) -> Result<(), RamError> {

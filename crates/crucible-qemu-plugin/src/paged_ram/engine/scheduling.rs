@@ -11,7 +11,7 @@ type Cancel = extern "C" fn() -> c_int;
 
 pub(super) struct QueuedPlacement {
     operation: Arc<dyn SourceOperation>,
-    generation: u64,
+    pub(super) generation: u64,
     completed_work: Arc<AtomicU64>,
 }
 
@@ -78,11 +78,9 @@ impl PausedPagingOwner {
                 status,
             });
         }
-        let receipt = queued.take();
-        drop(queued);
-        if let Some(receipt) = receipt {
-            receipt.operation.complete()?;
-        }
+        // Native cancellation proves mailbox disposition, not original
+        // operation completion. A refused completion keeps this same receipt.
+        finish_queued_receipt(&mut queued, None, || Ok(()))?;
         Ok(())
     }
 
@@ -158,26 +156,36 @@ impl PausedPagingOwner {
         }
         operation.wait_slice()?;
 
-        let receipt = {
-            let mut queued = self
-                .queued_operation
-                .lock()
-                .map_err(|_| RamError::Invariant("placement queue unavailable"))?;
-            if queued
-                .as_ref()
-                .is_some_and(|queued| queued.generation == generation)
-            {
-                queued.take()
-            } else {
-                None
-            }
-        };
-        if let Some(receipt) = receipt {
-            receipt.operation.complete()?;
-            self.complete_placement_receipt(generation)?;
-        }
+        let mut queued = self
+            .queued_operation
+            .lock()
+            .map_err(|_| RamError::Invariant("placement queue unavailable"))?;
+        finish_queued_receipt(&mut queued, Some(generation), || {
+            self.complete_placement_receipt(generation)
+        })?;
         Ok(())
     }
+}
+
+// The caller owns the actual queue mutex. Original completion and evidence
+// publication both succeed before it removes the sole queued receipt. A later
+// failure can leave a terminal operation retained, which requires containment;
+// it never becomes an empty queue proving successful settlement.
+fn finish_queued_receipt(
+    queued: &mut Option<QueuedPlacement>,
+    generation: Option<u64>,
+    publish: impl FnOnce() -> Result<(), RamError>,
+) -> Result<(), RamError> {
+    let Some(receipt) = queued.as_ref() else {
+        return Ok(());
+    };
+    if generation.is_some_and(|expected| expected != receipt.generation) {
+        return Ok(());
+    }
+    receipt.operation.complete()?;
+    publish()?;
+    queued.take();
+    Ok(())
 }
 
 extern "C" fn queued_placement(opaque: *mut c_void) -> c_int {
@@ -201,3 +209,6 @@ extern "C" fn queued_placement(opaque: *mut c_void) -> c_int {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

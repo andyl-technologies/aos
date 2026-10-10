@@ -276,9 +276,9 @@ impl ContentEnvelope {
                 (16 * std::mem::size_of::<ContentChild>() + 512) as u64,
             )?;
             let role = decoder.string(MAX_CHILD_ROLE_BYTES, "child-role-bytes")?;
-            let encoded_id = decoder.string(MAX_CONTENT_ID_BYTES, "content-id-bytes")?;
-            let id = ContentId::parse(&encoded_id)
-                .map_err(|_| ContentEnvelopeError::InvalidContentId)?;
+            let encoded_id = decoder.borrowed_string(MAX_CONTENT_ID_BYTES, "content-id-bytes")?;
+            let id =
+                ContentId::parse(encoded_id).map_err(|_| ContentEnvelopeError::InvalidContentId)?;
             let child = ContentChild::new(role, id)?;
             if previous.as_ref().is_some_and(|prior| prior >= &child)
                 || !children.insert({
@@ -406,6 +406,16 @@ impl<'a> Decoder<'a> {
         maximum: usize,
         limit_name: &'static str,
     ) -> Result<String, ContentEnvelopeError> {
+        self.borrowed_string(maximum, limit_name).map(str::to_owned)
+    }
+
+    // Scalar child identities cannot retain the text. Borrow its exact input
+    // span while preserving the original pre-parse string admission.
+    fn borrowed_string(
+        &mut self,
+        maximum: usize,
+        limit_name: &'static str,
+    ) -> Result<&'a str, ContentEnvelopeError> {
         let length = u16::from_be_bytes(
             self.take(2)?
                 .try_into()
@@ -417,7 +427,7 @@ impl<'a> Decoder<'a> {
         let value = std::str::from_utf8(self.take(length)?)
             .map_err(|_| ContentEnvelopeError::InvalidIdentifier)?;
         crate::owned_decode::charge_array::<u8>(length)?;
-        Ok(value.to_owned())
+        Ok(value)
     }
 
     fn finish(self) -> Result<(), ContentEnvelopeError> {

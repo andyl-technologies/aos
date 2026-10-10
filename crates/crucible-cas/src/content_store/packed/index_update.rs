@@ -113,8 +113,7 @@ impl Update {
         let mut bytes = operation.buffer(wire::PAGE_BYTES)?;
 
         loop {
-            self.load(reference, root, false, lower, upper, &mut bytes, operation)?;
-            let node = Node::parse(&bytes.value, root)?;
+            let node = self.load(reference, root, false, lower, upper, &mut bytes, operation)?;
             if node.height == 0 {
                 return lookup(&node, key);
             }
@@ -276,8 +275,7 @@ impl Update {
         operation: &mut Operation<'_>,
     ) -> Result<Replacement, StoreError> {
         let mut bytes = operation.buffer(wire::PAGE_BYTES)?;
-        self.load(reference, root, false, lower, upper, &mut bytes, operation)?;
-        let node = Node::parse(&bytes.value, root)?;
+        let node = self.load(reference, root, false, lower, upper, &mut bytes, operation)?;
         if node.height == 0 {
             edit_leaf(&mut bytes.value, key, value)?;
             return self.emit_rows(backend, &bytes.value, 0, operation);
@@ -328,7 +326,7 @@ impl Update {
         }
         let changed = child_at(parent, changed_slot)?;
         let mut changed_bytes = operation.buffer(wire::PAGE_BYTES)?;
-        self.load(
+        let changed_node = self.load(
             changed.reference,
             false,
             true,
@@ -337,7 +335,7 @@ impl Update {
             &mut changed_bytes,
             operation,
         )?;
-        if Node::parse_pending(&changed_bytes.value)?.count >= wire::MIN_ROWS {
+        if changed_node.count >= wire::MIN_ROWS {
             return Ok(());
         }
 
@@ -502,8 +500,7 @@ impl Update {
                 Root::Inline(_) => return Ok(()),
             };
             let mut bytes = operation.buffer(wire::PAGE_BYTES)?;
-            self.load(reference, true, true, None, None, &mut bytes, operation)?;
-            let node = Node::parse_pending(&bytes.value)?;
+            let node = self.load(reference, true, true, None, None, &mut bytes, operation)?;
             if node.height == 0 {
                 self.root = Root::Inline(bytes);
                 return Ok(());
@@ -535,7 +532,7 @@ impl Update {
             let mut lower = None;
             let mut rows = 0;
             for child in children.into_iter().flatten() {
-                self.load(
+                let leaf = self.load(
                     child.reference,
                     false,
                     false,
@@ -544,7 +541,6 @@ impl Update {
                     &mut input,
                     operation,
                 )?;
-                let leaf = Node::parse(&input.value, false)?;
                 if leaf.height != 0 {
                     return Err(StoreError::Incompatible);
                 }
@@ -594,16 +590,18 @@ impl Update {
         clippy::too_many_arguments,
         reason = "The load validates one exact reference and its parent interval."
     )]
-    fn load(
+    // The validated view borrows only this freshly read buffer. Callers may
+    // use it until the next mutation without repeating same-byte validation.
+    fn load<'buffer>(
         &self,
         reference: PageReference,
         root: bool,
         pending: bool,
         lower: Option<Key>,
         upper: Option<Key>,
-        bytes: &mut Bytes,
+        bytes: &'buffer mut Bytes,
         operation: &mut Operation<'_>,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Node<'buffer>, StoreError> {
         reference.validate(self.arena.length())?;
         read_into(
             operation,
@@ -630,7 +628,7 @@ impl Update {
         {
             return Err(StoreError::Incompatible);
         }
-        Ok(())
+        Ok(node)
     }
 }
 

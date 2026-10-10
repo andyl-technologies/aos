@@ -313,7 +313,7 @@ impl Update {
         operation: &mut Operation<'_>,
     ) -> Result<Prepared, StoreError> {
         let bytes = page_buffer(&mut scratch.input, operation)?;
-        self.load(
+        let node = self.load(
             task.reference,
             task.root,
             false,
@@ -322,7 +322,6 @@ impl Update {
             bytes,
             operation,
         )?;
-        let node = Node::parse(&bytes.value, task.root)?;
         if node.height == 0 {
             return self
                 .insert_leaf(
@@ -389,7 +388,7 @@ impl Update {
     ) -> Result<Replacement, StoreError> {
         // Revalidate old parent bytes after all child work and before output.
         let bytes = page_buffer(&mut scratch.input, operation)?;
-        self.load(
+        let node = self.load(
             frame.task.reference,
             frame.task.root,
             false,
@@ -398,7 +397,6 @@ impl Update {
             bytes,
             operation,
         )?;
-        let node = Node::parse(&bytes.value, frame.task.root)?;
         if node.height != frame.height || node.count != frame.children.values.len() {
             return Err(StoreError::Incompatible);
         }

@@ -3,6 +3,7 @@
 use super::*;
 
 mod admission;
+mod observation;
 
 extern "C" fn unused_worker(_: u32, _: u64, _: u64, _: u32) -> c_int {
     -libc::ENOSYS

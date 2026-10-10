@@ -673,7 +673,7 @@ Fork lifecycle coordination must retain this service without relying on inherite
 AIO, RCU, or plugin worker threads that are parked or absent in the child.
 
 Strict placement completion has a bounded, revision-bound receipt on pager
-control schema version 4. Its enclosing authenticated frame identifies the
+control schema version 6. Its enclosing authenticated frame identifies the
 owner and arena incarnations. The receipt identifies the applied policy
 revision, immutable topology generation, and nonreused placement epoch. A
 pending transition advances the requested revision without advancing the

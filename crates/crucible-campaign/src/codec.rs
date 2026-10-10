@@ -148,11 +148,11 @@ impl Canonical for ContentId {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        ContentId::parse(&decoder.string_bounded(256, "content-id-text-bytes")?).map_err(|_| {
-            CampaignCodecError::InvalidValue {
+        ContentId::parse(decoder.borrowed_string_bounded(256, "content-id-text-bytes")?).map_err(
+            |_| CampaignCodecError::InvalidValue {
                 reason: "content reference is invalid or noncanonical",
-            }
-        })
+            },
+        )
     }
 }
 
@@ -567,12 +567,23 @@ impl<'a> Decoder<'a> {
         maximum: usize,
         limit: &'static str,
     ) -> Result<String, CampaignCodecError> {
+        self.borrowed_string_bounded(maximum, limit)
+            .map(str::to_owned)
+    }
+
+    // Scalar decoders borrow the still-owned input. Keep the owning string's
+    // validation and conservative admission cuts before semantic parsing.
+    fn borrowed_string_bounded(
+        &mut self,
+        maximum: usize,
+        limit: &'static str,
+    ) -> Result<&'a str, CampaignCodecError> {
         let length = self.bounded_length(maximum as u64, limit)?;
         let bytes = self.take(length)?;
         let value = str::from_utf8(bytes).map_err(|_| CampaignCodecError::InvalidUtf8)?;
         validate_nfc(value)?;
         crucible_cas::owned_decode::charge_array::<u8>(length)?;
-        Ok(value.to_owned())
+        Ok(value)
     }
 
     pub(crate) fn option_string_bounded(
@@ -931,6 +942,85 @@ mod tests {
             decode::<String>(&invalid[..8]),
             Err(CampaignCodecError::Truncated)
         );
+    }
+
+    #[test]
+    fn borrowed_content_id_preserves_owning_decode_and_original_charge()
+    -> Result<(), CampaignCodecError> {
+        // Exact predecessor sequence, including NFC and the admission before
+        // parsing. The reference owns its temporary text independently.
+        fn owning_reference(decoder: &mut Decoder<'_>) -> Result<ContentId, CampaignCodecError> {
+            let length = decoder.bounded_length(256, "content-id-text-bytes")?;
+            let bytes = decoder.take(length)?;
+            let value = str::from_utf8(bytes).map_err(|_| CampaignCodecError::InvalidUtf8)?;
+            validate_nfc(value)?;
+            crucible_cas::owned_decode::charge_array::<u8>(length)?;
+            let value = value.to_owned();
+            ContentId::parse(&value).map_err(|_| CampaignCodecError::InvalidValue {
+                reason: "content reference is invalid or noncanonical",
+            })
+        }
+
+        let id = ContentId::for_bytes(
+            crucible_cas::content_store::ObjectKind::MerkleNode,
+            u32::MAX,
+            b"child",
+        );
+        let mut bytes = Vec::new();
+        id.with_encoded_text(|text| {
+            bytes.extend_from_slice(&(text.len() as u64).to_be_bytes());
+            bytes.extend_from_slice(text);
+        });
+
+        let mut corpus = vec![bytes.clone()];
+        for end in 0..bytes.len() {
+            corpus.push(bytes[..end].to_vec());
+        }
+        for index in 0..bytes.len() {
+            let mut changed = bytes.clone();
+            changed[index] ^= 0x80;
+            corpus.push(changed);
+        }
+        for text in [
+            "",
+            "e\u{0301}",
+            "é",
+            "merkle-node.01.invalid",
+            "MERKLE-NODE.1.invalid",
+        ] {
+            corpus.push([&(text.len() as u64).to_be_bytes()[..], text.as_bytes()].concat());
+        }
+        for encoded in corpus {
+            assert_eq!(
+                ContentId::decode(&mut Decoder::new(&encoded)),
+                owning_reference(&mut Decoder::new(&encoded))
+            );
+        }
+
+        let mut charges = Vec::new();
+        for owning in [true, false] {
+            let authority = Arc::new(Authority(Arc::new(AtomicU64::new(0))));
+            let budget = DecodeBudget::new(authority.clone(), 4096)?;
+            let scope = budget.enter();
+            let before = authority.0.load(Ordering::SeqCst);
+            let decoded = if owning {
+                owning_reference(&mut Decoder::new(&bytes))?
+            } else {
+                ContentId::decode(&mut Decoder::new(&bytes))?
+            };
+            assert_eq!(decoded, id);
+            charges.push(authority.0.load(Ordering::SeqCst) - before);
+            drop(scope);
+            drop(budget);
+            assert_eq!(authority.0.load(Ordering::SeqCst), 0);
+        }
+        assert_eq!(charges[0], charges[1]);
+        assert_eq!(
+            charges[1],
+            (bytes.len() - 8) as u64
+                + 4 * std::mem::size_of::<crucible_cas::owned_decode::ResourceLoan>() as u64
+        );
+        Ok(())
     }
 
     #[test]

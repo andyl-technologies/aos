@@ -33,10 +33,14 @@ impl PausedPagingOwner {
             .and_then(|bytes| bytes.checked_add(PAGE_BYTES as u64))
             .ok_or("prepared write receipt bound overflow")?;
         let native_mutation_scratch = 56 * 65536 + 2 * PAGE_BYTES as u64;
+        let fault_work = service::capture_work::FaultWorkOwner::required_metadata_bytes()?
+            .checked_mul(2)
+            .ok_or("live and staged fault work metadata overflow")?;
         store
             .checked_add(page_states)
             .and_then(|bytes| bytes.checked_add(arenas))
             .and_then(|bytes| bytes.checked_mul(2))
+            .and_then(|bytes| bytes.checked_add(fault_work))
             .and_then(|bytes| bytes.checked_add(mutation_receipt))
             .and_then(|bytes| bytes.checked_add(native_mutation_scratch))
             .and_then(|bytes| bytes.checked_add(2 * (16 * u64::from(regions) + 256)))
@@ -214,6 +218,7 @@ pub(super) fn prepare_service_for_inventory(
             }
         }
     }
+    let capture_work = service::capture_work::FaultWorkOwner::prepare(budget)?;
     let registration = Registration::open().map_err(RamError::from)?;
     let generation = NEXT_WORKER_GENERATION
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
@@ -229,6 +234,7 @@ pub(super) fn prepare_service_for_inventory(
         states: Mutex::new(states),
         placement_dependency: Mutex::new(None),
         worker: Mutex::new(None),
+        capture_work,
         stop: AtomicBool::new(false),
         activated: AtomicBool::new(false),
         destructive: AtomicBool::new(false),

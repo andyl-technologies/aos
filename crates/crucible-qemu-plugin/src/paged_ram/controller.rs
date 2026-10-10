@@ -285,15 +285,22 @@ impl LivePagerController {
         if state.outer.is_some_and(|cap| outer_remaining(cap).is_err()) {
             state.outer_expired = true;
         }
-        let completed = state
+        let observation = state
             .owner
             .as_ref()
-            .and_then(|owner| owner.placement_receipt());
-        let authority = state
-            .owner
+            .map(|owner| owner.status_snapshot(state.policy, state.requested_revision));
+        let observation_unavailable = observation.as_ref().is_some_and(Result::is_err);
+        let observation = observation.and_then(Result::ok);
+        let completed = observation
             .as_ref()
-            .and_then(|owner| owner.authority_snapshot().ok());
-        let failed = state.failed || authority.as_ref().is_some_and(|snapshot| snapshot.failed);
+            .and_then(|snapshot| snapshot.placement_receipt);
+        let authority = observation.as_ref().map(|snapshot| &snapshot.authority);
+        let failed = state.failed
+            || authority.is_some_and(|snapshot| snapshot.failed)
+            || state
+                .owner
+                .as_ref()
+                .is_some_and(|owner| owner.operational_failure().is_some());
         if !failed
             && !state.policy_applying
             && !state.outer_expired
@@ -337,7 +344,7 @@ impl LivePagerController {
                 prefetched_pages: statistics.prefetched_pages,
             }
         });
-        RamControlReply {
+        let mut reply = RamControlReply {
             performance: state.owner.as_ref().and_then(|owner| {
                 owner
                     .performance(
@@ -358,7 +365,13 @@ impl LivePagerController {
                 .and_then(|owner| owner.fault_actor_report().ok().flatten()),
             kernel_probe: state.owner.as_ref().and_then(|owner| owner.kernel_probe()),
             activity,
-            disposition,
+            disposition: if observation_unavailable
+                && disposition == RamControlDisposition::Accepted
+            {
+                RamControlDisposition::Unavailable
+            } else {
+                disposition
+            },
             logical_ram_bytes: logical,
             inventory: report,
             inventory_region: None,
@@ -369,6 +382,8 @@ impl LivePagerController {
             effective_resident_target_bytes: effective_target,
             effective_floor_bytes: floor,
             limitation_reasons: limitations,
+            // Live lock coverage and completed activity are separate evidence.
+            // Neither supplies all five fresh physical page classifications.
             measurements_available: false,
             private_resident_bytes: 0,
             shared_resident_bytes_observed: 0,
@@ -377,12 +392,30 @@ impl LivePagerController {
             writeback_pending_bytes: 0,
             convergence: if failed || state.outer_expired {
                 RamControlConvergence::Failed
-            } else if state.requested_revision != state.applied_revision {
+            } else if observation_unavailable
+                || state.fork_preparing
+                || state.child_bootstrap
+                || self.canceled.load(Ordering::Acquire)
+            {
+                RamControlConvergence::Blocked
+            } else if state.policy_applying || state.requested_revision != state.applied_revision {
                 RamControlConvergence::Applying
             } else {
-                RamControlConvergence::Blocked
+                observation.map_or(RamControlConvergence::Blocked, |snapshot| {
+                    snapshot.convergence
+                })
             },
+        };
+        // The same retained outer original bounds this read-only snapshot too.
+        // Observation never starts or renews an operation to obtain status.
+        if state
+            .outer
+            .is_some_and(|cap| outer_remaining_for::<true>(cap).is_err())
+        {
+            state.outer_expired = true;
+            reply.convergence = RamControlConvergence::Failed;
         }
+        reply
     }
 
     fn unavailable(&self) -> RamControlReply {
