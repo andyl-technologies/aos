@@ -8,8 +8,10 @@
 
 #![forbid(unsafe_code)]
 
-pub mod executor;
 pub mod credentials;
+#[cfg(unix)]
+pub mod evidence;
+pub mod executor;
 pub mod remote;
 
 #[cfg(test)]

@@ -10,16 +10,18 @@ anyhow = { workspace = true }
 aos-assessment = { workspace = true }
 aos-assessment-runtime = { workspace = true }
 aos-assessment-providers = { workspace = true }
+aos-contract = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
+tokio = { workspace = true }
+libc = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
-aos-contract = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }
-tokio = { workspace = true }
 tokio-rustls = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
