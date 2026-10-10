@@ -1646,6 +1646,39 @@ mixed world. Additional node rosters, complete backend parity, Runtime7,
 conditional replay, generic CNP semantics and physical/KVM execution remain
 under their distinct implementation and qualification paths.
 
+## Authored independent clocks in mixed gem5 worlds
+
+The ordinary installed Clock/gem5 route accepts an ordered list of up to four
+additional independent, portless HostClock selections. It validates the complete
+authored roster and reserves model and node credits before the native child is
+created. Every original owner participates in the same graph admission and
+whole-world activation barrier. An empty list preserves the existing two-owner
+request and world; the list grants no new CPU, timing, capture or replay facet.
+
+Current qualification passes four clock-list and five capability data cases,
+all 37 source-quality checks, daemon/CLI all-target strict checks and formatting
+of the 11 functional source files. The same actual integration executable passes
+the three-owner native CLI/daemon case in 73.02 seconds and the existing empty-list
+two-owner case in 73.36 seconds. Both retain original ownership, admission and
+activation records, independently checked guest output, cached retries,
+unsupported-demand refusals and graceful native retirement. These are correctness
+durations, not Linux performance measurements.
+
+The unchanged before/after inventory contains 8,674 source files. The final
+receipt has SHA256
+`ae5c8f4679ec6233da75638f20aeef33d4a9491add9a864b41d08cbf7ba8bd46`.
+Local retention preserves 447 public original-body/source/log/command files and
+seven actual executables; raw evidence remains outside Git and release artifacts.
+Two runner failures remain recorded: the initial catalog guard counted ignored
+tests with ordinary tests, and the first reuse helper rejected an existing
+retention directory. Both occurred before native execution. The corrected runner
+reused completed builds without changing source or repeating either native case.
+
+The separately reviewed presentation change is excluded from this functional
+checkpoint. Arbitrary backend rosters, ARM execution, transformed clocks,
+preservation, complete CPU/device closure and vendor classes require their own
+implementation and qualification.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

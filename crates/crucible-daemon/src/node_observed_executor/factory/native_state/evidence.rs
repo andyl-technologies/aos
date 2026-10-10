@@ -98,6 +98,7 @@ pub(super) struct MixedEvidence {
     qualification: ContentRef,
     bindings: BTreeMap<Id, NodeBinding>,
     clock: Vec<u8>,
+    host_clocks: BTreeMap<Id, Vec<u8>>,
     receipt: ScenarioContent,
     native: NativeEnrollment,
     assets: BTreeMap<String, (ContentRef, PathBuf)>,
@@ -114,7 +115,18 @@ impl MixedEvidence {
         native: &Gem5NativeProcess,
         authority: &Gem5ExactAuthority,
     ) -> Result<ScenarioContent, NodeObservedError> {
+        Self::live_enrollment_receipt_selected(profile, clock, &[], native, authority)
+    }
+
+    pub(super) fn live_enrollment_receipt_selected(
+        profile: &MixedProfile,
+        clock: &HostModel,
+        extra: &[(Id, HostModel)],
+        native: &Gem5NativeProcess,
+        authority: &Gem5ExactAuthority,
+    ) -> Result<ScenarioContent, NodeObservedError> {
         let clock = clock_bytes(profile, clock)?;
+        let extra = host_clock_bytes(profile, extra)?;
         let peer = LivePeer::measure(profile, native, authority)?;
         if peer.boundary.tick != U64::new(0)
             || peer.boundary.logical_position
@@ -124,12 +136,24 @@ impl MixedEvidence {
                 "fresh native enrollment is not at the actual installed initialization cut",
             ));
         }
-        receipt(&serde_json::json!({
+        let mut body = serde_json::json!({
             "schema":"crucible.mixed-live-enrollment.v1",
             "world":profile.scenario.world.identity()?,"package":profile.installed.identity(),
             "clock":canonical::content_ref(&clock,"application/octet-stream")?,
             "native":peer.commitment(),
-        }))
+        });
+        if !extra.is_empty() {
+            body["schema"] = "crucible.mixed-host-clock-list-live-enrollment.v1".into();
+            body["host_clocks"] = serde_json::to_value(extra.iter().map(|(node, bytes)| {
+                let selected = profile.host_clocks.iter().find(|selected| &selected.node == node)
+                    .ok_or_else(|| refused("actual host Clock lost its source owner"))?;
+                Ok(serde_json::json!({
+                    "node":node, "owner":selected.owner,
+                    "initialization":canonical::content_ref(bytes,"application/octet-stream")?,
+                }))
+            }).collect::<Result<Vec<_>, NodeObservedError>>()?)?;
+        }
+        receipt(&body)
     }
 
     /// Commits to an actual inactive source-image lease, without claiming a child.
@@ -173,7 +197,27 @@ impl MixedEvidence {
         authority: &Gem5ExactAuthority,
         host_executable: &Path,
     ) -> Result<Self, NodeObservedError> {
-        let receipt = Self::live_enrollment_receipt(profile, clock, native, authority)?;
+        Self::enroll_live_selected(
+            profile,
+            bindings,
+            (clock, &[]),
+            native,
+            authority,
+            host_executable,
+        )
+    }
+
+    pub(super) fn enroll_live_selected(
+        profile: &MixedProfile,
+        bindings: &[NodeBinding],
+        clocks: (&HostModel, &[(Id, HostModel)]),
+        native: &Gem5NativeProcess,
+        authority: &Gem5ExactAuthority,
+        host_executable: &Path,
+    ) -> Result<Self, NodeObservedError> {
+        let (clock, extra) = clocks;
+        let receipt =
+            Self::live_enrollment_receipt_selected(profile, clock, extra, native, authority)?;
         let peer = LivePeer::measure(profile, native, authority)?;
         let result = Self::assemble(
             profile,
@@ -182,6 +226,7 @@ impl MixedEvidence {
             host_executable,
             receipt,
             NativeEnrollment::Live(Box::new(peer)),
+            extra,
         )?;
         result.check_native_binding(native)?;
         Ok(result)
@@ -220,6 +265,7 @@ impl MixedEvidence {
             host_executable,
             receipt,
             NativeEnrollment::Reserved(Box::new(reservation)),
+            &[],
         )
     }
 
@@ -230,6 +276,7 @@ impl MixedEvidence {
         host_executable: &Path,
         receipt: ScenarioContent,
         native: NativeEnrollment,
+        extra: &[(Id, HostModel)],
     ) -> Result<Self, NodeObservedError> {
         let host = measure_executable(host_executable)?;
         if std::fs::canonicalize(host_executable).map_err(io_error)?
@@ -250,7 +297,7 @@ impl MixedEvidence {
                 .canonical_bytes()
                 .map_err(|error| refused(&error.to_string()))?
             || profile.qualification != regenerated.qualification
-            || bindings.len() != 2
+            || bindings.len() != 2 + profile.host_clocks.len()
         {
             return Err(refused(
                 "mixed profile differs from actual installed semantics",
@@ -302,6 +349,7 @@ impl MixedEvidence {
             qualification: profile.qualification.clone(),
             bindings: selected,
             clock: clock_bytes(profile, clock)?,
+            host_clocks: host_clock_bytes(profile, extra)?,
             receipt,
             native,
             assets,
@@ -457,11 +505,23 @@ impl HostModelQualification for MixedEvidence {
         descriptor: &NodeDescriptor,
         binding: &NodeBinding,
     ) -> Result<(), OperationFailure> {
-        if descriptor.id.as_str() != "clock"
-            || self.descriptor("clock").map_err(operation_error)? != descriptor
-            || self.binding("clock").map_err(operation_error)? != binding
+        let original = if descriptor.id.as_str() == "clock" {
+            &self.clock
+        } else {
+            self.host_clocks
+                .get(&descriptor.id)
+                .ok_or_else(|| no_effect("additional Clock owner was not actually enrolled"))?
+        };
+        if self
+            .descriptor(descriptor.id.as_str())
+            .map_err(operation_error)?
+            != descriptor
+            || self
+                .binding(descriptor.id.as_str())
+                .map_err(operation_error)?
+                != binding
             || !matches!(model, HostModel::Clock(_))
-            || model.initialization_bytes(1024)? != self.clock
+            || model.initialization_bytes(1024)? != *original
         {
             return Err(no_effect(
                 "actual mixed clock differs from its enrolled original model",
@@ -640,6 +700,47 @@ fn clock_bytes(profile: &MixedProfile, clock: &HostModel) -> Result<Vec<u8>, Nod
         return Err(refused("actual mixed clock initialization differs"));
     }
     Ok(bytes)
+}
+
+fn host_clock_bytes(
+    profile: &MixedProfile,
+    models: &[(Id, HostModel)],
+) -> Result<BTreeMap<Id, Vec<u8>>, NodeObservedError> {
+    super::host_clocks::validate(&profile.host_clocks)?;
+    if models.len() != profile.host_clocks.len() {
+        return Err(refused(
+            "actual Host clocks and selected source roster differ",
+        ));
+    }
+    let mut retained = BTreeMap::new();
+    for (selected, (node, model)) in profile.host_clocks.iter().zip(models) {
+        if &selected.node != node || !matches!(model, HostModel::Clock(_)) {
+            return Err(refused(
+                "actual Host Clock has another selected node or codec",
+            ));
+        }
+        let bytes = model
+            .initialization_bytes(1024)
+            .map_err(operation_observed)?;
+        let descriptor = profile
+            .scenario
+            .descriptors
+            .iter()
+            .find(|descriptor| &descriptor.id == node)
+            .ok_or_else(|| refused("selected Host Clock descriptor missing"))?;
+        if profile
+            .scenario
+            .content_bytes(&descriptor.initialization_ref, 1024)
+            .map_err(|error| refused(&error.to_string()))?
+            != bytes
+            || retained.insert(node.clone(), bytes).is_some()
+        {
+            return Err(refused(
+                "actual Host Clock initialization differs or repeats",
+            ));
+        }
+    }
+    Ok(retained)
 }
 
 fn receipt(value: &serde_json::Value) -> Result<ScenarioContent, NodeObservedError> {

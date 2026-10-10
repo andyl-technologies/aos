@@ -544,3 +544,6 @@ mod original_claim;
 
 #[path = "node_capability_process/gem5.rs"]
 mod gem5;
+
+#[path = "node_capability_process/gem5_extra_clock.rs"]
+mod gem5_extra_clock;

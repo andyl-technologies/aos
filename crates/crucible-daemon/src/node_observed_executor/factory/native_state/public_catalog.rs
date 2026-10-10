@@ -87,7 +87,25 @@ pub(in super::super) fn prepare_native(
 pub(super) fn selected_isa(
     selections: &[InstalledNodeSelection],
 ) -> Result<InstalledGem5Isa, NodeObservedError> {
-    let [clock, cpu] = selections else {
+    let Some(base) = selections.get(..2) else {
+        return Err(refused(
+            "closed gem5 selection omitted original Clock/CPU owners",
+        ));
+    };
+    super::host_clocks::validate(&selections[2..])?;
+    if selections.len() > 2
+        && !matches!(
+            selections[1].kind,
+            InstalledNodeKind::Gem5Closed {
+                isa: InstalledGem5Isa::X86_64
+            }
+        )
+    {
+        return Err(refused(
+            "additional Host clocks require the selected live x86 source",
+        ));
+    }
+    let [clock, cpu] = base else {
         return Err(refused(
             "closed gem5 initial edition requires exactly its Clock and CPU owners",
         ));
@@ -128,7 +146,14 @@ pub(in super::super) fn scenario(
         InstalledNodeKind::Gem5ClosedPreserving { .. }
             | InstalledNodeKind::Gem5ClosedEpochPreserving { .. }
     );
-    let profile = if matches!(
+    let profile = if selections.len() > 2 {
+        MixedProfile::build_public_host_clocks(
+            installed,
+            &catalog.host_identity,
+            isa.name(),
+            &selections[2..],
+        )?
+    } else if matches!(
         selections[1].kind,
         InstalledNodeKind::Gem5ClosedEpochPreserving { .. }
     ) {
@@ -182,7 +207,16 @@ pub(in super::super) fn prepare_capability(
     let engine =
         InstalledMixedEngine::with_runtime(catalog.socket_parent.clone(), catalog.custody.clone())?;
     let activation = Id::new(format!("activation/{}", execution_text(execution)))?;
-    let live = engine.prepare_public_capability(isa.name(), activation, resolved)?;
+    let live = if selections.len() > 2 {
+        engine.prepare_public_host_clocks(
+            isa.name(),
+            activation,
+            &selections[2..],
+            Some(resolved),
+        )?
+    } else {
+        engine.prepare_public_capability(isa.name(), activation, resolved)?
+    };
     if live.profile.scenario.canonical_bytes()? != expected.canonical_bytes()? {
         return Err(refused(
             "actual native capability preparation changed its independently regenerated world",
@@ -219,7 +253,9 @@ pub(super) fn prepare_source(
     let engine =
         InstalledMixedEngine::with_runtime(catalog.socket_parent.clone(), catalog.custody.clone())?;
     let activation = Id::new(format!("activation/{}", execution_text(execution)))?;
-    let live = if matches!(
+    let live = if selections.len() > 2 {
+        engine.prepare_public_host_clocks(isa.name(), activation, &selections[2..], None)?
+    } else if matches!(
         selections[1].kind,
         InstalledNodeKind::Gem5ClosedEpochPreserving { .. }
     ) {

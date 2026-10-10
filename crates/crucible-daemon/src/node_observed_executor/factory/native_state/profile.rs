@@ -39,6 +39,7 @@ pub(super) struct MixedProfile {
     pub(super) public_preparation: bool,
     pub(super) public_continuation: bool,
     pub(super) scheduling_epochs: bool,
+    pub(super) host_clocks: Vec<InstalledNodeSelection>,
     pub(super) capabilities: Option<Rc<super::super::ResolvedCapabilityWorld>>,
 }
 
@@ -48,7 +49,14 @@ impl MixedProfile {
     /// # Errors
     /// Refuses unsupported installed assets, ISA, schema or policy identities.
     pub(super) fn regenerate(&self, host: &ContentRef) -> Result<Self, NodeObservedError> {
-        let baseline = if self.scheduling_epochs {
+        let baseline = if !self.host_clocks.is_empty() {
+            Self::build_public_host_clocks(
+                self.installed.clone(),
+                host,
+                &self.isa,
+                &self.host_clocks,
+            )
+        } else if self.scheduling_epochs {
             Self::build_public_epoch_preserving(self.installed.clone(), host, &self.isa)
         } else if self.public_continuation {
             Self::build_public_preserving(self.installed.clone(), host, &self.isa)
@@ -87,7 +95,7 @@ impl MixedProfile {
         host: &ContentRef,
         isa: &str,
     ) -> Result<Self, NodeObservedError> {
-        Self::build_selected(installed, host, isa, false, false, false)
+        Self::build_selected(installed, host, isa, false, false, false, &[])
     }
 
     pub(super) fn build_public(
@@ -95,7 +103,7 @@ impl MixedProfile {
         host: &ContentRef,
         isa: &str,
     ) -> Result<Self, NodeObservedError> {
-        Self::build_selected(installed, host, isa, true, false, false)
+        Self::build_selected(installed, host, isa, true, false, false, &[])
     }
 
     pub(super) fn build_public_preserving(
@@ -103,7 +111,7 @@ impl MixedProfile {
         host: &ContentRef,
         isa: &str,
     ) -> Result<Self, NodeObservedError> {
-        Self::build_selected(installed, host, isa, true, true, false)
+        Self::build_selected(installed, host, isa, true, true, false, &[])
     }
 
     /// Describes the fixed x86 public codec with explicit original scheduling epochs.
@@ -120,7 +128,27 @@ impl MixedProfile {
                 "scheduling epoch candidate qualifies only fixed x86_64",
             ));
         }
-        Self::build_selected(installed, host, isa, true, true, true)
+        Self::build_selected(installed, host, isa, true, true, true, &[])
+    }
+
+    /// Regenerates bounded independently owned portless integer clocks with the CPU.
+    ///
+    /// # Errors
+    /// Refuses unsupported Host kinds, duplicate owners, oversized rosters or a
+    /// non-x86 source. Empty additions preserve the original two-owner profile.
+    pub(super) fn build_public_host_clocks(
+        installed: Rc<InstalledGem5ClosedProfile>,
+        host: &ContentRef,
+        isa: &str,
+        host_clocks: &[InstalledNodeSelection],
+    ) -> Result<Self, NodeObservedError> {
+        super::host_clocks::validate(host_clocks)?;
+        if !host_clocks.is_empty() && isa != "x86_64" {
+            return Err(super::super::refused(
+                "additional mixed Host clocks qualify only x86_64",
+            ));
+        }
+        Self::build_selected(installed, host, isa, true, false, false, host_clocks)
     }
 
     fn build_selected(
@@ -130,7 +158,16 @@ impl MixedProfile {
         public_preparation: bool,
         public_continuation: bool,
         scheduling_epochs: bool,
+        host_clocks: &[InstalledNodeSelection],
     ) -> Result<Self, NodeObservedError> {
+        super::host_clocks::validate(host_clocks)?;
+        if !host_clocks.is_empty()
+            && (!public_preparation || public_continuation || scheduling_epochs)
+        {
+            return Err(super::super::refused(
+                "additional Host clocks support only live initial preparation",
+            ));
+        }
         let guest = installed.guest(isa)?;
         let mut contents = BTreeMap::new();
         let (document_ref, document_bytes) = installed.document();
@@ -180,6 +217,11 @@ impl MixedProfile {
                 "text/plain",
             )?;
         }
+        if !host_clocks.is_empty() {
+            qualification_body["schema"] =
+                "crucible.installed-public-host-clock-list-preparation.v1".into();
+            qualification_body["additional_clocks"] = serde_json::to_value(host_clocks)?;
+        }
         let qualification = put_json(&mut contents, &qualification_body)?;
         let clock = InstalledNodeSelection {
             node: Id::new("clock")?,
@@ -201,14 +243,25 @@ impl MixedProfile {
         let mut domains = Vec::new();
         let mut objects = Vec::new();
         let mut captures = Vec::new();
-        for (mut descriptor, mut binding, mut owner, _) in [clock_profile, cpu_profile] {
+        let mut profiles = vec![clock_profile, cpu_profile];
+        for selected in host_clocks {
+            profiles.push(super::super::profile::clock_profile(
+                selected,
+                host,
+                &qualification,
+                &mut contents,
+            )?);
+        }
+        for (mut descriptor, mut binding, mut owner, _) in profiles {
             if public_preparation {
-                select_public_preparation(
+                let additional_clock = host_clocks.iter().any(|node| node.node == descriptor.id);
+                select_public_preparation_selected(
                     &mut descriptor,
                     &mut binding,
                     &mut contents,
                     public_continuation,
                     scheduling_epochs,
+                    additional_clock,
                 )?;
             }
             let domain = owner
@@ -291,6 +344,13 @@ impl MixedProfile {
                 "crucible.installed-public-native-preservation-scenario.v2".into();
             scenario_body["scheduling_epochs"] = true.into();
         }
+        if !host_clocks.is_empty() {
+            scenario_body["schema"] =
+                "crucible.installed-public-host-clock-list-scenario.v1".into();
+            let mut nodes = vec![Id::new("clock")?, Id::new("cpu")?];
+            nodes.extend(host_clocks.iter().map(|node| node.node.clone()));
+            scenario_body["nodes"] = serde_json::to_value(nodes)?;
+        }
         let scenario_ref = put_json(&mut contents, &scenario_body)?;
         let initialization_ref = put_json(
             &mut contents,
@@ -337,7 +397,9 @@ impl MixedProfile {
                 exact_continuation: (!public_preparation || public_continuation),
                 durable_restart: (!public_preparation || public_continuation),
                 accepted_limited_state_nodes: if public_preparation && !public_continuation {
-                    vec![Id::new("clock")?, Id::new("cpu")?]
+                    let mut nodes = vec![Id::new("clock")?, Id::new("cpu")?];
+                    nodes.extend(host_clocks.iter().map(|node| node.node.clone()));
+                    nodes
                 } else {
                     Vec::new()
                 },
@@ -354,6 +416,7 @@ impl MixedProfile {
             public_preparation,
             public_continuation,
             scheduling_epochs,
+            host_clocks: host_clocks.to_vec(),
             capabilities: None,
         })
     }
@@ -367,12 +430,30 @@ pub(in crate::node_observed_executor::factory) fn select_public_preparation(
     preservation: bool,
     scheduling_epochs: bool,
 ) -> Result<(), NodeObservedError> {
+    select_public_preparation_selected(
+        descriptor,
+        binding,
+        contents,
+        preservation,
+        scheduling_epochs,
+        false,
+    )
+}
+
+fn select_public_preparation_selected(
+    descriptor: &mut NodeDescriptor,
+    binding: &mut BindingCompatibility,
+    contents: &mut BTreeMap<String, ScenarioContent>,
+    preservation: bool,
+    scheduling_epochs: bool,
+    additional_clock: bool,
+) -> Result<(), NodeObservedError> {
     use crucible::node_adapters::{
         HOST_PUBLIC_CLOCK_PREPARATION_SPECIFICATION,
         gem5::{GEM5_PUBLIC_PREPARATION_SPECIFICATION, gem5_public_preparation_schema},
         host_public_clock_preparation_schema,
     };
-    let (schema, specification) = if descriptor.id.as_str() == "clock" {
+    let (schema, specification) = if descriptor.id.as_str() == "clock" || additional_clock {
         (
             host_public_clock_preparation_schema(),
             HOST_PUBLIC_CLOCK_PREPARATION_SPECIFICATION,
@@ -406,7 +487,8 @@ pub(in crate::node_observed_executor::factory) fn select_public_preparation(
     binding.configuration_ref = descriptor.configuration_ref.clone();
     if preservation {
         let (continuation, specification, profile) = if scheduling_epochs {
-            let (schema, legacy, profile) = if descriptor.id.as_str() == "clock" {
+            let (schema, legacy, profile) = if descriptor.id.as_str() == "clock" || additional_clock
+            {
                 (
                     crucible::node_adapters::host_public_clock_epoch_continuation_schema(),
                     crucible::node_adapters::HOST_PUBLIC_CLOCK_CONTINUATION_SPECIFICATION,
@@ -428,7 +510,7 @@ pub(in crate::node_observed_executor::factory) fn select_public_preparation(
                 ),
                 profile,
             )
-        } else if descriptor.id.as_str() == "clock" {
+        } else if descriptor.id.as_str() == "clock" || additional_clock {
             (
                 crucible::node_adapters::host_public_clock_continuation_schema(),
                 crucible::node_adapters::HOST_PUBLIC_CLOCK_CONTINUATION_SPECIFICATION.to_owned(),

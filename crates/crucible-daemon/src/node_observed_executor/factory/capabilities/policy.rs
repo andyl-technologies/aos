@@ -208,7 +208,23 @@ pub(super) fn object<T: DeserializeOwned + crucible_node_contract::Validate>(
 // This live conjunction uses the independently qualified fixed native capsule.
 // Preserving and epoch editions retain their separate default refusals here.
 pub(super) fn gem5_ordinary(selections: &[InstalledNodeSelection]) -> bool {
-    matches!(selections, [clock, cpu]
+    if selections.len() < 2
+        || super::super::native_state::host_clocks::validate(&selections[2..]).is_err()
+    {
+        return false;
+    }
+    if selections.len() > 2
+        && !matches!(
+            selections[1].kind,
+            InstalledNodeKind::Gem5Closed {
+                isa: super::super::InstalledGem5Isa::X86_64
+            }
+        )
+    {
+        return false;
+    }
+    let selected = &selections[..2];
+    matches!(selected, [clock, cpu]
         if clock.node.as_str() == "clock"
             && clock.owner.as_str() == "owner/clock"
             && matches!(clock.kind, InstalledNodeKind::HostClock)

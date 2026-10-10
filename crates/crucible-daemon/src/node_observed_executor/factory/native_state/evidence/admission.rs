@@ -114,7 +114,12 @@ impl AdmissionEvidence for MixedEvidence {
                 && self
                     .bindings
                     .values()
-                    .filter(|binding| binding.compatibility.node_id.as_str() == "clock")
+                    .filter(|binding| {
+                        binding.compatibility.node_id.as_str() == "clock"
+                            || self
+                                .host_clocks
+                                .contains_key(&binding.compatibility.node_id)
+                    })
                     .any(|binding| {
                         binding
                             .compatibility
@@ -225,9 +230,9 @@ impl AdmissionEvidence for MixedEvidence {
                         .map_err(contract_evidence)?,
                 )
                 .map_err(|error| evidence(&error.to_string()))?;
-                if policy.objects.len() != 2
-                    || policy.domains.len() != 2
-                    || policy.capture_owners.len() != 2
+                if policy.objects.len() != self.bindings.len()
+                    || policy.domains.len() != self.bindings.len()
+                    || policy.capture_owners.len() != self.bindings.len()
                     || !policy.internal_dependencies.is_empty()
                     || policy.inventory_proof_ref != self.qualification
                 {

@@ -96,7 +96,7 @@ impl InstalledMixedEngine {
 
     /// Prepares an actual closed native peer and clock beneath reserved custody.
     pub(super) fn prepare_live(&self, isa: &str) -> Result<MixedLiveWorld, NodeObservedError> {
-        self.prepare_live_selected(isa, false, false, false, None, None)
+        self.prepare_live_selected(isa, false, false, false, None, (None, &[]))
     }
 
     pub(super) fn prepare_public_initial(
@@ -104,7 +104,7 @@ impl InstalledMixedEngine {
         isa: &str,
         activation_id: Id,
     ) -> Result<MixedLiveWorld, NodeObservedError> {
-        self.prepare_live_selected(isa, true, false, false, Some(activation_id), None)
+        self.prepare_live_selected(isa, true, false, false, Some(activation_id), (None, &[]))
     }
 
     pub(super) fn prepare_public_preserving(
@@ -112,7 +112,7 @@ impl InstalledMixedEngine {
         isa: &str,
         activation_id: Id,
     ) -> Result<MixedLiveWorld, NodeObservedError> {
-        self.prepare_live_selected(isa, true, true, false, Some(activation_id), None)
+        self.prepare_live_selected(isa, true, true, false, Some(activation_id), (None, &[]))
     }
 
     pub(super) fn prepare_public_epoch_preserving(
@@ -120,7 +120,7 @@ impl InstalledMixedEngine {
         isa: &str,
         activation_id: Id,
     ) -> Result<MixedLiveWorld, NodeObservedError> {
-        self.prepare_live_selected(isa, true, true, true, Some(activation_id), None)
+        self.prepare_live_selected(isa, true, true, true, Some(activation_id), (None, &[]))
     }
 
     pub(super) fn prepare_public_capability(
@@ -129,7 +129,32 @@ impl InstalledMixedEngine {
         activation_id: Id,
         resolved: &super::super::ResolvedCapabilityWorld,
     ) -> Result<MixedLiveWorld, NodeObservedError> {
-        self.prepare_live_selected(isa, true, false, false, Some(activation_id), Some(resolved))
+        self.prepare_live_selected(
+            isa,
+            true,
+            false,
+            false,
+            Some(activation_id),
+            (Some(resolved), &[]),
+        )
+    }
+
+    pub(super) fn prepare_public_host_clocks(
+        &self,
+        isa: &str,
+        activation_id: Id,
+        host_clocks: &[super::super::InstalledNodeSelection],
+        resolved: Option<&super::super::ResolvedCapabilityWorld>,
+    ) -> Result<MixedLiveWorld, NodeObservedError> {
+        super::host_clocks::validate(host_clocks)?;
+        self.prepare_live_selected(
+            isa,
+            true,
+            false,
+            false,
+            Some(activation_id),
+            (resolved, host_clocks),
+        )
     }
 
     fn prepare_live_selected(
@@ -139,9 +164,25 @@ impl InstalledMixedEngine {
         public_continuation: bool,
         scheduling_epochs: bool,
         activation_id: Option<Id>,
-        capabilities: Option<&super::super::ResolvedCapabilityWorld>,
+        selection: (
+            Option<&super::super::ResolvedCapabilityWorld>,
+            &[super::super::InstalledNodeSelection],
+        ),
     ) -> Result<MixedLiveWorld, NodeObservedError> {
-        let profile = if scheduling_epochs {
+        let (capabilities, host_clocks) = selection;
+        let profile = if !host_clocks.is_empty() {
+            if !public || public_continuation || scheduling_epochs {
+                return Err(refused(
+                    "third Clock owner supports only initial live preparation",
+                ));
+            }
+            MixedProfile::build_public_host_clocks(
+                self.installed.clone(),
+                &measure_executable(&self.host)?,
+                isa,
+                host_clocks,
+            )?
+        } else if scheduling_epochs {
             MixedProfile::build_public_epoch_preserving(
                 self.installed.clone(),
                 &measure_executable(&self.host)?,
@@ -170,14 +211,29 @@ impl InstalledMixedEngine {
             Some(resolved) => profile.with_capabilities(resolved)?,
             None => profile,
         });
+        let limits = if !host_clocks.is_empty() {
+            RuntimeLimits {
+                maximum_nodes: 2 + host_clocks.len(),
+                maximum_owners: 2 + host_clocks.len(),
+                ..runtime_limits()
+            }
+        } else {
+            runtime_limits()
+        };
+        // Source bounds and model slots precede native preparation. The actual
+        // instances remain owned until the single complete-world barrier adopts them.
+        let mut extra_models = Vec::new();
+        extra_models
+            .try_reserve_exact(host_clocks.len())
+            .map_err(|error| refused(&format!("additional Clock model reservation: {error}")))?;
+        for selected in host_clocks {
+            extra_models.push((selected.node.clone(), HostModel::Clock(VirtualClock::new())));
+        }
         let mut target = fresh_target(&profile, None)?;
         if let Some(activation_id) = activation_id {
             target.activation_id = activation_id;
         }
-        let runtime_slot = self
-            .runtime
-            .reserve_world(&target, runtime_limits())
-            .map_err(error)?;
+        let runtime_slot = self.runtime.reserve_world(&target, limits).map_err(error)?;
         let files = [
             "native_executable",
             "controller",
@@ -238,13 +294,34 @@ impl InstalledMixedEngine {
                 refused(&format!("initial native exact qualification: {failure}"))
             })?;
         let clock = HostModel::Clock(VirtualClock::new());
-        let receipt = MixedEvidence::live_enrollment_receipt(&profile, &clock, &native, &authority)
-            .map_err(|failure| refused(&format!("initial mixed enrollment receipt: {failure}")))?;
+        let receipt = if extra_models.is_empty() {
+            MixedEvidence::live_enrollment_receipt(&profile, &clock, &native, &authority)
+        } else {
+            MixedEvidence::live_enrollment_receipt_selected(
+                &profile,
+                &clock,
+                &extra_models,
+                &native,
+                &authority,
+            )
+        }
+        .map_err(|failure| refused(&format!("initial mixed enrollment receipt: {failure}")))?;
         let bindings = bindings(&profile, &target, &receipt.reference)?;
         let evidence = Rc::new(
-            MixedEvidence::enroll_live(
-                &profile, &bindings, &clock, &native, &authority, &self.host,
-            )
+            if extra_models.is_empty() {
+                MixedEvidence::enroll_live(
+                    &profile, &bindings, &clock, &native, &authority, &self.host,
+                )
+            } else {
+                MixedEvidence::enroll_live_selected(
+                    &profile,
+                    &bindings,
+                    (&clock, &extra_models),
+                    &native,
+                    &authority,
+                    &self.host,
+                )
+            }
             .map_err(|failure| refused(&format!("initial mixed enrollment: {failure}")))?,
         );
         let capability_admission = capabilities.map(|resolved| {
@@ -312,9 +389,17 @@ impl InstalledMixedEngine {
                 )
                 .map_err(|failure| refused(&failure.error.reason))?
         };
-        let nodes: Vec<Box<dyn SimulationNode>> = vec![Box::new(clock), Box::new(cpu)];
-        let realization =
-            PreparedRealization::new(nodes, target.clone(), runtime_limits(), runtime_slot);
+        let mut nodes: Vec<Box<dyn SimulationNode>> = vec![Box::new(clock), Box::new(cpu)];
+        for (node, model) in extra_models {
+            let mut extra =
+                HostModelNode::new(&graph, &node, model, evidence.as_ref(), host_resources())
+                    .map_err(|failure| refused(&failure.reason))?;
+            extra
+                .qualify_public_initial_clock(&graph, evidence.as_ref())
+                .map_err(|failure| refused(&failure.reason))?;
+            nodes.push(Box::new(extra));
+        }
+        let realization = PreparedRealization::new(nodes, target.clone(), limits, runtime_slot);
         Ok(MixedLiveWorld {
             profile,
             graph,
