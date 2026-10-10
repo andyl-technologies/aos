@@ -68,6 +68,16 @@ impl DatabaseAssessmentAuthority {
             );
         }
         fences.push(self.db.assessment_job_authority_guard(scan).await?);
+        fences.extend(
+            self.db
+                .assessment_publication_fences(
+                    scan.registry_id,
+                    &registry.scope_key,
+                    scan.request.inventory_digest,
+                    scan.request.policy_digest,
+                )
+                .await?,
+        );
         ensure!(
             fences.len() <= 32,
             "assessment job authority lock scope exceeds its ceiling"

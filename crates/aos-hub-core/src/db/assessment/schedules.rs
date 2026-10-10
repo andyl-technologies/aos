@@ -310,6 +310,19 @@ impl Database {
             )
             .await?,
         );
+        let resource = self
+            .assessment_resource(registry_id)
+            .await?
+            .context("scheduled assessment publication is unavailable")?;
+        fences.extend(
+            self.assessment_publication_fences(
+                registry_id,
+                &registry.scope_key,
+                resource.inventory_digest,
+                resource.policy_digest,
+            )
+            .await?,
+        );
         fences.push(self.schedule_revision_guard(registry_id, &record, true));
         ensure!(
             fences.len() <= 32,

@@ -262,25 +262,18 @@ impl Database {
             .await?;
         }
 
-        if let Some(previous) = &previous {
-            if previous.inventory_digest == inventory_digest
-                && previous.policy_digest == policy_digest
-            {
-                let retained = self.backend.query_opt(
-                    "SELECT provenance_digest, admission_digest, evaluation_base_digest, state
-                     FROM assessment_inventory_sets WHERE registry_id = ?1 AND inventory_digest = ?2",
-                    &vals![@slice admission.registry_id, inventory_digest.to_string()],
-                ).await?.context("active inventory admission is absent")?;
-                if retained.get::<String>(0)? != admission.provenance_digest.to_string()
-                    || retained.get::<String>(1)? != admission.admission_digest.to_string()
-                    || retained.get::<String>(2)? != data_digest.to_string()
-                    || retained.get::<String>(3)? != "ready"
-                {
-                    bail!("active inventory replay has different immutable admission content");
-                }
-                self.backend.checked_batch(authority_fences).await?;
-                return Ok(previous.clone());
-            }
+        if let Some(resource) = self
+            .reactivate_ready_assessment_inventory(
+                admission,
+                data,
+                data_digest,
+                previous.as_ref(),
+                authority_fences,
+                timestamp,
+            )
+            .await?
+        {
+            return Ok(resource);
         }
         let revision = previous
             .as_ref()
@@ -409,5 +402,130 @@ impl Database {
         self.assessment_resource(admission.registry_id)
             .await?
             .context("activated inventory is absent")
+    }
+
+    // Ready inventory sets keep their first admission forever. Reactivation
+    // changes only the active resource and its monotonic activation revision.
+    async fn reactivate_ready_assessment_inventory(
+        &self,
+        admission: &AssessmentInventoryAdmission,
+        data: &EvaluationData,
+        data_digest: Sha256Digest,
+        previous: Option<&AssessmentResource>,
+        authority_fences: &[CheckedStatement],
+        timestamp: i64,
+    ) -> Result<Option<AssessmentResource>> {
+        let inventory_digest = data.inventory.digest()?;
+        let Some(retained) = self
+            .backend
+            .query_opt(
+                "SELECT provenance_digest, admission_digest, evaluation_base_digest, state
+             FROM assessment_inventory_sets WHERE registry_id = ?1 AND inventory_digest = ?2",
+                &vals![@slice admission.registry_id, inventory_digest.to_string()],
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        if retained.get::<String>(3)? != "ready" {
+            return Ok(None);
+        }
+        let previous =
+            previous.context("ready inventory has no retained active resource revision")?;
+        let provenance: String = retained.get(0)?;
+        let original_admission: String = retained.get(1)?;
+        let original_base: String = retained.get(2)?;
+        if provenance != admission.provenance_digest.to_string() {
+            bail!("ready inventory reactivation changed immutable provenance");
+        }
+        if original_admission != admission.admission_digest.to_string()
+            || original_base != data_digest.to_string()
+        {
+            // A new policy is an independently authorized decision. Compare
+            // the complete normalized closure after replacing only that policy;
+            // definitions, source identities and publication custody cannot drift.
+            if authority_fences.is_empty() {
+                bail!("ready inventory policy reactivation requires current authority guards");
+            }
+            let bytes = self
+                .assessment_object(
+                    &admission.partition,
+                    AssessmentObjectKind::EvaluationData,
+                    Sha256Digest::parse(&original_base)?,
+                )
+                .await?
+                .context("ready inventory first-admission custody is absent")?;
+            let mut original = EvaluationData::from_slice(&bytes)?;
+            if original.policy.digest()? == data.policy.digest()? {
+                bail!("ready inventory replay changed its immutable admission content");
+            }
+            original.policy = data.policy.clone();
+            if Sha256Digest::separated(
+                AssessmentObjectKind::EvaluationData.domain(),
+                &super::objects::encode(&original)?,
+            ) != data_digest
+            {
+                bail!("ready inventory reactivation changed its immutable evaluation closure");
+            }
+        }
+        let policy_digest = data.policy.digest()?;
+        let changed = previous.inventory_digest != inventory_digest
+            || previous.policy_digest != policy_digest;
+        let revision =
+            previous.inventory_revision + u64::from(previous.inventory_digest != inventory_digest);
+        if revision > 9_007_199_254_740_991 {
+            bail!("ready inventory activation revision exhausted");
+        }
+        let mut checked = authority_fences.to_vec();
+        checked.push(
+            Statement::new(
+                "UPDATE assessment_inventory_sets SET state = state
+             WHERE registry_id = ?1 AND inventory_digest = ?2 AND state = 'ready'
+               AND provenance_digest = ?3 AND admission_digest = ?4 AND evaluation_base_digest = ?5
+               AND expected_subject_count = (SELECT count(*) FROM assessment_subjects
+                 WHERE registry_id = ?1 AND inventory_digest = ?2)
+               AND expected_identity_count = (SELECT count(*) FROM assessment_component_index
+                 WHERE registry_id = ?1 AND inventory_digest = ?2)",
+                vals![
+                    admission.registry_id,
+                    inventory_digest.to_string(),
+                    provenance,
+                    original_admission,
+                    original_base
+                ],
+            )
+            .expecting(1),
+        );
+        let update = if changed {
+            "UPDATE assessment_resources SET inventory_digest = ?4, policy_digest = ?5,
+               inventory_revision = ?6, resource_version = resource_version + 1, updated_at = ?7
+             WHERE registry_id = ?1 AND partition_key = ?2 AND resource_version = ?3"
+        } else {
+            "UPDATE assessment_resources SET updated_at = updated_at
+             WHERE registry_id = ?1 AND partition_key = ?2 AND resource_version = ?3
+               AND inventory_digest = ?4 AND policy_digest = ?5 AND inventory_revision = ?6
+               AND updated_at <= ?7"
+        };
+        checked.push(
+            Statement::new(
+                update,
+                vals![
+                    admission.registry_id,
+                    admission.partition,
+                    previous.resource_version,
+                    inventory_digest.to_string(),
+                    policy_digest.to_string(),
+                    revision,
+                    timestamp
+                ],
+            )
+            .expecting(1),
+        );
+        self.backend.checked_batch(&checked).await?;
+        Ok(Some(
+            self.assessment_resource(admission.registry_id)
+                .await?
+                .context("reactivated inventory resource is absent")?,
+        ))
     }
 }

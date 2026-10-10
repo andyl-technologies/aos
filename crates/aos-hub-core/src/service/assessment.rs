@@ -56,6 +56,31 @@ impl RpcService {
                 "assessment inventory or policy changed; restart pagination".into(),
             ));
         }
+        // Current status cannot borrow freshness from a superseded publication.
+        // Exact historical assessments remain available through their own read.
+        let publication_fences = self
+            .db
+            .assessment_publication_fences(
+                registry.id,
+                &registry.scope_key,
+                page.resource.inventory_digest,
+                page.resource.policy_digest,
+            )
+            .await
+            .map_err(|_| {
+                RpcError::FailedPrecondition(
+                    "current assessment publication is unavailable or changed".into(),
+                )
+            })?;
+        self.db
+            .backend
+            .checked_batch(&publication_fences)
+            .await
+            .map_err(|_| {
+                RpcError::FailedPrecondition(
+                    "assessment publication changed during status read".into(),
+                )
+            })?;
         let status = AssessmentStatusV1 {
             schema: "aos.assessment-status/v1".into(),
             resource_scope: registry.scope_key.clone(),

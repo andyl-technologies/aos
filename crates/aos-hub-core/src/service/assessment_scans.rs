@@ -53,9 +53,20 @@ impl RpcService {
                 &actor_ref(&claims)?,
             )
             .map_err(|error| RpcError::invalid(error.to_string()))?;
-        let fences = self
+        let mut fences = self
             .assessment_mutation_fences(&claims, &registry, "assessment.scan")
             .await?;
+        fences.extend(
+            self.db
+                .assessment_publication_fences(
+                    registry.id,
+                    &registry.scope_key,
+                    request.inventory_digest,
+                    request.policy_digest,
+                )
+                .await
+                .map_err(|error| RpcError::FailedPrecondition(error.to_string()))?,
+        );
         let scan = self
             .db
             .request_assessment_scan_fenced(registry.id, &request, &fences)
@@ -239,9 +250,20 @@ impl RpcService {
         .map_err(RpcError::internal)?
         .to_string();
         request.trigger = "manual".into();
-        let fences = self
+        let mut fences = self
             .assessment_mutation_fences(&claims, &registry, "assessment.scan")
             .await?;
+        fences.extend(
+            self.db
+                .assessment_publication_fences(
+                    registry.id,
+                    &registry.scope_key,
+                    request.inventory_digest,
+                    request.policy_digest,
+                )
+                .await
+                .map_err(|error| RpcError::FailedPrecondition(error.to_string()))?,
+        );
         let scan = self
             .db
             .request_assessment_scan_fenced(registry.id, &request, &fences)

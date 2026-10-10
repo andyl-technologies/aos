@@ -103,6 +103,15 @@ registry scope keys obtained from the Hub; display names cannot substitute for t
 }
 ```
 
+Scan admission and execution verify the newest authenticated release catalog,
+its complete artifact snapshot and the exact declared inventory. A newly
+published release without a complete catalog, or a catalog without scan
+declarations, cannot authorize work against the previous inventory. Current
+status refuses that superseded publication context. Exact retained assessments
+remain available for historical inspection. Reintroducing an identical artifact
+inventory preserves its first admission and increments the active inventory
+revision; old scan leases cannot become current again.
+
 Routes and quota domains must be sorted and unique. Every routed quota domain
 must have exactly one installed budget. Share a provider/account budget across
 its routes so fan-out cannot multiply its allowance. Restarting a controller
