@@ -882,21 +882,29 @@ in {
           set -eu
           export HOME=/tmp/consumer USER=consumer
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
-          {APM} docs show nginx | grep -q 'Module documentation: package / nginx'
-          {APM} docs serve --listen 127.0.0.1:18080 --once \
+          {APM} docs show nginx >/tmp/apm-offline-nginx-docs.txt
+          grep -q 'Module documentation: package / nginx' /tmp/apm-offline-nginx-docs.txt
+          {APM} docs serve --listen 127.0.0.1:18080 \
             >/tmp/apm-docs-serve.log 2>&1 &
           docs_pid=$!
+          trap 'kill "$docs_pid"; wait "$docs_pid" || true' EXIT
           served=0
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if {CURL} -fsS http://127.0.0.1:18080/packages/nginx \
-              | grep -q 'Scope: <strong>package / nginx</strong>'; then
+            if {CURL} -fsS http://127.0.0.1:18080/ >/tmp/apm-offline-docs-index.html; then
               served=1
               break
             fi
             sleep 1
           done
-          wait "$docs_pid"
           test "$served" = 1
+          document_path=$(sed -n 's|.*href="\\(/documents/[0-9]*\\)">nginx .*|\\1|p' \
+            /tmp/apm-offline-docs-index.html)
+          test -n "$document_path"
+          {CURL} -fsS "http://127.0.0.1:18080$document_path" >/tmp/apm-offline-nginx-docs.html
+          grep -q 'Scope: <strong>package / nginx</strong>' /tmp/apm-offline-nginx-docs.html
+          kill "$docs_pid"
+          wait "$docs_pid" || true
+          trap - EXIT
 
           payload='{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{}}}}'
           printf 'Content-Length: %s\\r\\n\\r\\n%s' "''${{#payload}}" "$payload" \
