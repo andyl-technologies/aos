@@ -213,9 +213,17 @@ actual test compilation and executable-bound inventory. All twenty-four exact
 overlay cases now pass in 0.163 seconds at the unchanged default deadlines
 (run `43c84b66-1e20-4608-9cd2-87e9c0a6cc1e`), including independent nested
 policy contexts and punctuation-range output. Source and executable seals
-remain unchanged. Strict all-target Clippy still fails only on the fixture's
-constant `chunks_exact` loop; the lint correction and fresh qualification
-remain in that workline. No owning gate or task is accepted by this result.
+remain unchanged. Strict all-target Clippy fails on the fixture's constant
+`chunks_exact` loop. Corrected candidate `f9d2f4953b` preserves the exact pair
+assertions and passes actual test compilation and executable-bound inventory;
+strict Clippy then reports eight existing test-only `unwrap`/`expect` findings
+in the active publication-policy and selected-property fixtures. The reviewed
+parent prerequisite replaces those calls with explicit diagnostic panics,
+preserving their populations and assertions without lint suppression or
+production changes. Its import waits for the frozen candidate's runtime
+commands to finish. The original exact overlay run is waiting on the shared
+Cargo lock held by an unrelated test invocation; it has no runtime result yet.
+No owning gate or task is accepted by these results.
 The same frozen retained-read candidate passes all twenty-nine mandatory
 native read cases in 46.960 seconds and the public SDK case in 0.009 seconds,
 with source and executable seals unchanged. Its unchanged backfill witness
