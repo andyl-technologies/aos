@@ -246,13 +246,18 @@ borrow the actual records; domain Idempotency checks remain between the extent
 and key-registration stages. The shared fold adds no admission, configuration
 gate, or persistence proof and does not change protected owner boundaries.
 
-The domain journal's private `protected_storage` group co-locates protected
-names, descriptor/lock loans, rooted opening and recovery, and complete retained
-opening/failure reservoirs. Their original fields, drop order, native causes,
-and name bookends remain unchanged; the actual native owner stays private to
-Journal. Semantic replay, protected admission, compaction guards, and authority
-factories remain domain-owned. This organization adds no constructor, descriptor
-escape, or callback and does not complete a protected role-crate migration.
+The opt-in `protected-unix` feature in `aos-sandbox-journal::protected_storage`
+owns the actual protected directory, basename, UID and passive native compaction
+denial marker, together with rooted traversal, no-follow opening, independent
+name observation and temporary replacement custody. Native Journal keeps this
+location at its original destruction position. Its private `protected_storage`
+group retains opening orchestration, original failure reservoirs, typed replay,
+the public lock-custody type and its private factory, and semantic compaction
+admission. Genuine Controller/Cache/Root/Source loans, currentness checks and
+final authority crossings stay with their native owners. Lower physical
+constructors and observations grant no domain authority. Standalone default
+Journal remains portable; this shared physical owner is a prerequisite and
+does not complete the protected role-crate migration or public lifecycle.
 
 The private `journal::semantic_append` group owns the complete ordinary and
 closed semantic append recipes, paired advisory preflights, Q04 adapters and

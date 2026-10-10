@@ -1,14 +1,14 @@
-//! Protected journal descriptors, physical names, and replacement custody.
+//! Native protected Journal orchestration, replay, and retained failure custody.
 //!
-//! The owner retains the actual protected directory, read-only name witnesses,
-//! and lock-description loan. Rooted traversal, no-follow file admission, name
-//! revalidation, and temporary-file cleanup stay with their concrete descriptors.
-//! The private opening children own ordinary recovery and complete retained
-//! failure reservoirs; they never grant namespace or transition authority.
+//! The shared Journal physical owner retains the actual protected location and
+//! name observations. This group keeps ordinary and retained opening recipes,
+//! semantic replay, original failure reservoirs, and the public lock-description
+//! loan with its private constructor. Replacement encoding and replay borrow the
+//! lower physical cleanup guard through the complete original compaction scope.
 //!
-//! Journal's native owner, semantic replay, protected claims, and compaction
-//! admission remain with their actual domain owner. This private source group
-//! does not establish a lower-crate authority boundary or add an FD factory.
+//! Native Journal, protected admission, compaction guards, genuine role loans,
+//! and final authority crossings remain domain-owned. The physical prerequisite
+//! does not complete the protected authority boundary or add a sealed FD factory.
 
 use std::collections::BTreeMap;
 use std::fs::File;
