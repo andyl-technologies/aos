@@ -352,8 +352,16 @@ actual all-target test compilation and genuine executable-bound inventory of
 `1135df38-0ed6-488b-b559-9ff32840da2b`). Both diagnostic trace variables are
 unset, and the default 120-second process and original writer/reader budgets
 are unchanged. All 6,209 tracked source entries and executable seals remain
-unchanged. The mandatory ninety-five-case read qualification now proceeds on
-that frozen source. Sixteen pack and four codec gates qualify separately on
+unchanged. The mandatory ninety-five-case read qualification finishes with
+ninety-four passes and one failure in 390.451 seconds on that frozen source.
+The existing-binding case returns `Advance(Expired)` after 72.213 seconds;
+its earlier focused pass does not qualify the failing aggregate. Source,
+executable and raw-log seals remain unchanged. The dependent twenty-nine
+native read cases, public SDK case and seven native key-limit/maintenance
+cases remain unrun. A single bounded, source-unchanged diagnostic is assigned
+to locate the expiry while preserving every deadline and authority check.
+Both mandatory formatter commands pass on clean `759c4c9e52` with no edits.
+Sixteen pack and four codec gates qualify separately on
 the same candidate with private hermetic Cargo targets; the twenty-six core
 and foundation gates and twenty-nine application target compilation retain
 their earlier frozen `4a1ff5d5fb` source. The complete aggregate remains pending.
