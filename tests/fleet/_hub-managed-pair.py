@@ -556,7 +556,7 @@ def prepare_managed_oci_candidate(worker, tools, prepared, observed, artifacts):
         "miniflareModule": module_root + "/index.js",
         "miniflareEntryWorker": module_root + "/workers/shared/object-entry.worker.js",
         "miniflareBucketWorker": module_root + "/workers/r2/bucket.worker.js",
-        "workerdExecutable": tools["workerd"], "nixExecutable": tools["nixBin"] + "/nix-store"}
+        "workerdExecutable": tools["workerd"], "nixExecutable": tools["nixBin"] + "/nix"}
     for name in ("sourceNar", "distributionNar"):
         require_managed_pair(re.fullmatch(r"[0-9a-f]{64}", artifacts["files"][name]["sha256"]),
                 "Managed reviewer requires actual same-source NAR captures")
