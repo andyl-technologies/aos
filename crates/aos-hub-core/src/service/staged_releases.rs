@@ -18,6 +18,9 @@ use crate::fetch::{SurfaceFetch, SurfaceProvider};
 
 use super::{RpcError, RpcService};
 
+const POINTER_UPLOAD_CONCURRENCY: usize = 8;
+const POINTER_PRECONDITION_CONCURRENCY: usize = 4;
+
 /// Reads only the exact verified draft inventory over the committed surface.
 struct CandidateFetch<'a> {
     provider: Arc<dyn SurfaceProvider>,
@@ -390,18 +393,44 @@ impl RpcService {
             .iter()
             .map(|object| (object.object_key.as_str(), object))
             .collect();
+        let mut pending = Vec::new();
         for pointer in pointers {
             let object = objects_by_path.get(pointer.path.as_str()).ok_or_else(|| {
                 RpcError::FailedPrecondition("prepared pointer is absent from publication".into())
             })?;
             if !object.verified {
-                self.upload_registry_publication_object(
-                    auth,
-                    publication_id,
-                    object.surface_object_id,
-                    axum::body::Body::from(pointer.bytes.clone()),
-                )
-                .await?;
+                pending.push((pointer, object.surface_object_id));
+            }
+        }
+
+        // Initialize the pointer phase alone. Independent metadata can then
+        // overlap, but discovery refs and HEAD wait for every earlier rank.
+        for group in pending.chunk_by(|left, right| {
+            aos_registry_surface::publication::pointer_upload_rank(&left.0.path)
+                == aos_registry_surface::publication::pointer_upload_rank(&right.0.path)
+        }) {
+            let Some((first, rest)) = group.split_first() else {
+                continue;
+            };
+            self.upload_registry_publication_object(
+                auth,
+                publication_id,
+                first.1,
+                axum::body::Body::from(first.0.bytes.clone()),
+            )
+            .await?;
+
+            for batch in rest.chunks(POINTER_UPLOAD_CONCURRENCY) {
+                let mut uploads = Vec::with_capacity(batch.len());
+                for (pointer, object_id) in batch {
+                    uploads.push(self.upload_registry_publication_object(
+                        auth,
+                        publication_id,
+                        *object_id,
+                        axum::body::Body::from(pointer.bytes.clone()),
+                    ));
+                }
+                futures_util::future::try_join_all(uploads).await?;
             }
         }
         drop(objects_by_path);
@@ -606,6 +635,7 @@ impl RpcService {
         publication_id: &str,
         resuming: bool,
     ) -> Result<(), RpcError> {
+        let read_limit = self.effective_complete_upload_bytes().await;
         // The read-only lookup leaves every placement watermark unchanged.
         for placement in self
             .registry_publication_required_placements(publication_id)
@@ -616,23 +646,36 @@ impl RpcService {
                 .placement_fetcher(&placement)
                 .await
                 .map_err(precondition)?;
-            for pointer in &revision.publication {
-                let current = fetch
-                    .fetch_bounded(&pointer.path, self.effective_complete_upload_bytes().await)
-                    .await
-                    .map_err(precondition)?;
-                let current_hash = current
-                    .as_ref()
-                    .map(|bytes| format!("sha256:{}", hex::encode(Sha256::digest(bytes))));
-                let intended = format!("sha256:{}", hex::encode(Sha256::digest(&pointer.bytes)));
-                if current_hash != pointer.expected_sha256
-                    && !(resuming && current_hash.as_deref() == Some(intended.as_str()))
-                {
-                    return Err(RpcError::FailedPrecondition(format!(
-                        "prepared pointer '{}' changed on placement {}",
-                        pointer.path, placement.id,
-                    )));
+            for batch in revision
+                .publication
+                .chunks(POINTER_PRECONDITION_CONCURRENCY)
+            {
+                let mut checks = Vec::with_capacity(batch.len());
+                for pointer in batch {
+                    let fetch = &fetch;
+                    let placement_id = placement.id;
+                    checks.push(async move {
+                        let current = fetch
+                            .fetch_bounded(&pointer.path, read_limit)
+                            .await
+                            .map_err(precondition)?;
+                        let current_hash = current
+                            .as_ref()
+                            .map(|bytes| format!("sha256:{}", hex::encode(Sha256::digest(bytes))));
+                        let intended =
+                            format!("sha256:{}", hex::encode(Sha256::digest(&pointer.bytes)));
+                        if current_hash != pointer.expected_sha256
+                            && !(resuming && current_hash.as_deref() == Some(intended.as_str()))
+                        {
+                            return Err(RpcError::FailedPrecondition(format!(
+                                "prepared pointer '{}' changed on placement {}",
+                                pointer.path, placement_id,
+                            )));
+                        }
+                        Ok::<_, RpcError>(())
+                    });
                 }
+                futures_util::future::try_join_all(checks).await?;
             }
         }
         Ok(())

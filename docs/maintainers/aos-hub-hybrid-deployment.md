@@ -108,6 +108,12 @@ deployment identity and all visible Hybrid writes using the guarded path.
    should be unused by clients and restricted to operators where the provider
    permits it.
 
+Allow at least 600 seconds for release finalization at the Native service and
+any intervening gateway. This operation checks the complete candidate and
+installs its retained metadata before advertising release refs. The CLI gives
+this operation a ten-minute deadline; ordinary API calls retain their shorter
+request deadline.
+
 Configure `aos.registry-hub` on the Native host with `hybrid.enable = true`,
 `externalUrl` set to the public Worker origin, `hybrid.originUrl` set to the
 private Native origin, and `hybrid.workerUrl` set to a dedicated HTTPS probe

@@ -53,6 +53,8 @@ pub use direct_upload::{
 const HUB_TIMEOUT_SECS: u64 = 30;
 /// Deadline for one bounded multipart publication part.
 const PUBLICATION_PART_TIMEOUT_SECS: u64 = 120;
+/// Deadline for checking and installing an entire staged release inventory.
+const STAGED_FINALIZATION_TIMEOUT_SECS: u64 = 600;
 
 /// A Connect-JSON client for an `aos-hub`'s services.
 ///
@@ -2315,8 +2317,15 @@ impl HubClient {
         Resp: DeserializeOwned,
     {
         let url = format!("{}{full_method}", self.base);
-        let response = self
-            .connect_json_request(&url, req)
+        let mut request = self.connect_json_request(&url, req);
+        if full_method == "aos.hub.v1.PublishService/FinalizeStagedRelease" {
+            // Finalization checks and installs the complete retained metadata
+            // inventory; its work grows with the release, unlike a unary read.
+            request = request.timeout(std::time::Duration::from_secs(
+                STAGED_FINALIZATION_TIMEOUT_SECS,
+            ));
+        }
+        let response = request
             .send()
             .await
             .with_context(|| format!("contacting the hub at {url}"))?;
