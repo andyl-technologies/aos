@@ -137,3 +137,71 @@ impl Q04TerminalDispositionV1 {
 fn resource_error(error: ResourceReservationErrorV1) -> CreateQ04ErrorV1 {
     CreateQ04ErrorV1::ResourceReservation(Box::new(error))
 }
+
+#[cfg(test)]
+mod terminal_layout_tests {
+    use std::mem::{align_of, offset_of, size_of};
+
+    use super::*;
+
+    #[test]
+    fn authentic_terminal_scratch_and_data_widths_fit_the_failure_allowance() {
+        type OriginPositions = [([u8; 16], [u8; 32], u64, u64); 8];
+        type TerminalParts = (
+            bool,
+            [u8; 16],
+            [u8; 32],
+            [u8; 16],
+            crate::journal::ProtectedJournalNamesV1,
+            u64,
+            u64,
+            [u8; 32],
+            OriginPositions,
+        );
+        let _: fn(TerminalParts) -> bank::TerminalBinding = bank::TerminalBinding::from_parts;
+        // Individual compiler widths do not establish simultaneous stack use.
+        let widths = [
+            (
+                "NativeOrigin",
+                size_of::<NativeOrigin>(),
+                align_of::<NativeOrigin>(),
+            ),
+            (
+                "NativeOrigins",
+                size_of::<[NativeOrigin; 8]>(),
+                align_of::<[NativeOrigin; 8]>(),
+            ),
+            (
+                "CommitResult",
+                size_of::<CommitResult>(),
+                align_of::<CommitResult>(),
+            ),
+            (
+                "TerminalBinding",
+                size_of::<bank::TerminalBinding>(),
+                align_of::<bank::TerminalBinding>(),
+            ),
+            (
+                "TerminalParts",
+                size_of::<TerminalParts>(),
+                align_of::<TerminalParts>(),
+            ),
+            (
+                "OriginPositions",
+                size_of::<OriginPositions>(),
+                align_of::<OriginPositions>(),
+            ),
+        ];
+
+        for (name, bytes, alignment) in widths {
+            println!("AOS_BANK_LAYOUT {name} bytes={bytes} align={alignment}");
+            assert!(u64::try_from(bytes).unwrap() < bank::FAILURE_MEMORY_BYTES, "{name}");
+        }
+        println!(
+            "AOS_BANK_OFFSETS NativeOrigin id={} members={} returned={}",
+            offset_of!(NativeOrigin, id),
+            offset_of!(NativeOrigin, members),
+            offset_of!(NativeOrigin, returned),
+        );
+    }
+}

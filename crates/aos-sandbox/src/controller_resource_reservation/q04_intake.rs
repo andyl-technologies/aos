@@ -407,4 +407,76 @@ mod layout_bridge_tests {
             ResourceReservationErrorV1::Conflict
         ));
     }
+
+    #[test]
+    fn passive_snapshots_and_borrowed_views_remain_bounded() {
+        use std::mem::{align_of, size_of};
+
+        let snapshots = [
+            (
+                "EnrollmentIdentityFields",
+                size_of::<bank::EnrollmentIdentityFields>(),
+                size_of::<bank::EnrollmentIdentity>(),
+            ),
+            (
+                "BootstrapProvisions",
+                size_of::<bank::BootstrapProvisions>(),
+                size_of::<bank::ImageBootstrapPolicy>(),
+            ),
+            (
+                "AccountHeadFields",
+                size_of::<bank::AccountHeadFields>(),
+                size_of::<bank::AccountHead>(),
+            ),
+            (
+                "ClaimFields",
+                size_of::<bank::ClaimFields>(),
+                size_of::<bank::Claim>(),
+            ),
+            (
+                "CoissuanceFields",
+                size_of::<bank::CoissuanceFields>(),
+                size_of::<bank::CoissuanceBinding>(),
+            ),
+            (
+                "TerminalFields",
+                size_of::<bank::TerminalFields>(),
+                size_of::<bank::TerminalBinding>(),
+            ),
+        ];
+
+        for (name, bytes, canonical_bytes) in snapshots {
+            println!("AOS_BANK_SNAPSHOT {name} bytes={bytes} canonical={canonical_bytes}");
+            assert!(bytes <= canonical_bytes, "{name}");
+            assert!(u64::try_from(bytes).unwrap() < FAILURE_MEMORY_BYTES, "{name}");
+        }
+
+        let views = [
+            (
+                "AccountMutation",
+                size_of::<bank::AccountMutation<'static>>(),
+                align_of::<bank::AccountMutation<'static>>(),
+                8_usize,
+            ),
+            (
+                "EnrollmentMutation",
+                size_of::<bank::EnrollmentMutation<'static>>(),
+                align_of::<bank::EnrollmentMutation<'static>>(),
+                8,
+            ),
+            (
+                "CoissuanceMutation",
+                size_of::<bank::CoissuanceMutation<'static>>(),
+                align_of::<bank::CoissuanceMutation<'static>>(),
+                5,
+            ),
+        ];
+
+        for (name, bytes, alignment, references) in views {
+            let expected_bytes = references.checked_mul(size_of::<&()>()).unwrap();
+            println!("AOS_BANK_VIEW {name} bytes={bytes} align={alignment} references={references}");
+            assert_eq!(bytes, expected_bytes, "{name}");
+            assert_eq!(alignment, align_of::<&()>(), "{name}");
+        }
+    }
 }
