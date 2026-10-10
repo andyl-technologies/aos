@@ -1103,9 +1103,12 @@ in {
           set -eu
           {NIX_STORE} --check-validity {UPGRADE_TOPLEVEL}
           grep -q 'VERSION_ID=0.1.0' /etc/os-release
-          {JQ} -e '.running == 1 and .default == 2 and .pending == 2' \\
+          {JQ} -e '.running == 1 and .pending == 2' \\
             /var/lib/profiles/image/state.json >/dev/null
       """), timeout=1200)
+      # The retained index owns running/pending state. The actual reboot below
+      # proves the provider selected the candidate, and rollback proves selection
+      # of its predecessor; there is no provider-neutral default field.
       print("Native image: booting the staged upgrade", flush=True)
       consumer.reboot(timeout=600)
       consumer.wait_until_succeeds(
@@ -1122,7 +1125,7 @@ in {
           grep -qx 'marker = 1' /etc/aos/upgrade-test/marker.conf
           systemctl is-active --quiet aos-upgrade-test-marker.service
           ! systemctl is-active --quiet aos-upgrade-removed.service
-          {JQ} -e '.running == 2 and .default == 2 and .pending == null' \\
+          {JQ} -e '.running == 2 and .pending == null' \\
             /var/lib/profiles/image/state.json >/dev/null
           {APM} image rollback --generation 1
       """), timeout=1200)
@@ -1136,7 +1139,7 @@ in {
           grep -q 'VERSION_ID=0.1.0' /etc/os-release
           test ! -e /etc/aos/upgrade-test/marker.conf
           systemctl is-active --quiet aos-upgrade-removed.service
-          {JQ} -e '.running == 1 and .default == 1 and .pending == null' \\
+          {JQ} -e '.running == 1 and .pending == null' \\
             /var/lib/profiles/image/state.json >/dev/null
           {APM} image rollback --generation 2
       """), timeout=1200)
@@ -1149,7 +1152,7 @@ in {
           set -eu
           grep -q 'VERSION_ID=test-2' /etc/os-release
           grep -qx 'marker = 1' /etc/aos/upgrade-test/marker.conf
-          {JQ} -e '.running == 2 and .default == 2 and .pending == null' \\
+          {JQ} -e '.running == 2 and .pending == null' \\
             /var/lib/profiles/image/state.json >/dev/null
       """), timeout=1200)
     '';
