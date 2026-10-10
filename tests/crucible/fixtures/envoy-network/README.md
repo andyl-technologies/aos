@@ -63,13 +63,14 @@ real packet on which to apply; `fault.transport.primary-probed` marks the
 completed attempt. The same sequence uses `fault.followup.primary-probed` for
 the second response.
 West announces convergence before emitting its marker; B, C, and east
-acknowledge the boundary to A before their markers, and A emits last. This
-ordering lets each VM park at its marker without interrupting the convergence
-check. West keeps sending requests while
+acknowledge the boundary to A before their markers, and A emits last. C also
+waits until A has recorded east's acknowledgement, because a parked C would
+stop the only relay for it. This ordering lets each VM park at its marker
+without interrupting the convergence check. West keeps sending requests while
 A receives and applies the first recovery group, then begins the 120-request
 measurement window. West commits the measurement and sends `followup-ready`
-before its marker; B, C, and east acknowledge A before their markers, and A
-emits last. All five VMs emit `fault.followup.ready` before A requests
+before its marker; B, C, and east acknowledge A before their markers, C again
+waits for east's relayed acknowledgement, and A emits last. All five VMs emit `fault.followup.ready` before A requests
 the second group. The guest monitor continues traffic after
 `campaign.complete` so a retained child still has an active workload.
 

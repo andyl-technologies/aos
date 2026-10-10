@@ -97,6 +97,15 @@ acknowledge_control_boundary() {
   done
 }
 
+# East reaches A's control listener only through C's /control/ route. C must
+# not park at its marker until A has recorded east's acknowledgement, or the
+# relay would stop with east's request still behind it.
+wait_for_relayed_east_ack() {
+  phase=$1
+  [ "$role" = router-c ] || return 0
+  wait_for_control_boundary "ready/$phase/traffic-east"
+}
+
 wait_for_peer_acks() {
   phase=$1
   for peer in router-b router-c traffic-east; do
@@ -212,9 +221,11 @@ run_router() {
     crucible-guest event boot.local-healthy
     wait_for_control_boundary converged
     acknowledge_control_boundary transport
+    wait_for_relayed_east_ack transport
     crucible-guest event fault.transport.ready
     wait_for_control_boundary followup-ready
     acknowledge_control_boundary followup
+    wait_for_relayed_east_ack followup
     crucible-guest event fault.followup.ready
     wait "$envoy_pid" || :
     crucible-guest unreachable control-plane-crash-or-deadlock \
