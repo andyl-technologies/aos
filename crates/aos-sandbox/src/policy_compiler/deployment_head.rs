@@ -23,16 +23,11 @@
 //! `destinations` and `endpoints` arrays in this bounded v1. Unsupported
 //! shapes never become policy authority.
 //!
-//! A second dedicated signer supplies one explicit parentless project layer
-//! as a 312-byte `AOSPPH01` packet plus canonical `AOSPPL01` JSON. The packet
-//! pins the project, source and publisher generations, current publisher
-//! policy descriptor digest, four prerequisite-head claims, and the JSON
-//! digest. The root owner commits packet and JSON atomically under the exact
-//! current deployment head. The protected source-domain project tree and
-//! publisher-owned cache-domain and revocation heads are checked while their
-//! writers remain held through the root commit. The exact public Create,
-//! physical cache state, and effect handoff still need independent proof
-//! before AOSPCB01.
+//! A separate signer supplies the explicit project source through
+//! `project_source_v2`. Its supported packet and canonical input bind both
+//! signer generations and explicit cache/revocation choices. Protected
+//! admission retains the original Source, Controller and Root writers;
+//! signed provenance alone grants no public Create or effect authority.
 
 use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
 
@@ -53,7 +48,6 @@ use crate::hierarchy::protected_journal::{
     HierarchyProtectedJournalErrorV1, HierarchyProtectedJournalOwnerV1,
 };
 use crate::journal::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use crate::publisher_policy::{
     PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore, project_revocation_digest,
 };
@@ -117,16 +111,10 @@ const PAYLOAD_BYTES: usize = 160;
 const PACKET_BYTES: usize = PAYLOAD_BYTES + 64;
 const MAXIMUM_INPUT_BYTES: usize = 64 * 1024;
 const INPUT_MAGICS: [&str; 4] = ["AOSPNI01", "AOSPSI01", "AOSPBI01", "AOSPCI01"];
-const PROJECT_MAGIC: &[u8; 8] = b"AOSPPH01";
-const PROJECT_SIGNING_DOMAIN: &[u8] = b"aos.sandbox.policy-project-head.v1\0";
-const PROJECT_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-project-head-transaction.v1\0";
 const PROJECT_REVOCATION_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.policy-project-revocation-binding-transaction.v1\0";
 pub(super) const PROJECT_HEAD_KEY: &[u8] = b"\0aos-policy-project-head-v1\0";
 pub(super) const PROJECT_INPUT_KEY: &[u8] = b"\0aos-policy-project-input-v1\0";
-const PROJECT_PAYLOAD_BYTES: usize = 248;
-const PROJECT_PACKET_BYTES: usize = PROJECT_PAYLOAD_BYTES + 64;
-const MAXIMUM_PROJECT_INPUT_BYTES: usize = 3 * 1024;
 pub(super) const SIGNER_PINS_KEY: &[u8] = b"\0aos-policy-signer-pins-v1\0";
 const SIGNER_PINS_MAGIC: &[u8; 8] = b"AOSPKP01";
 const SIGNER_PINS_DOMAIN: &[u8] = b"aos.sandbox.policy-signer-pins.v1\0";
@@ -353,11 +341,10 @@ pub struct PolicyDeploymentSourcesV1 {
     destinations: AuthenticatedNamespaceCatalogV1,
 }
 
-/// Identifies one externally signed, parentless project-layer source.
+/// Retains the common signed project-head commitments used by the V2 source.
 ///
-/// V1 signs one project at a time and requires all resource, grant, namespace,
-/// advisory, cache-domain, and revocation choices to be explicit in its
-/// canonical input. It does not authenticate a public Create admission.
+/// The fields remain part of the explicit V2 signed source's base. A decoded
+/// head identifies provenance and does not authenticate public Create admission.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SignedProjectPolicyHeadV1 {
     pub(super) project: ProjectId,
@@ -420,26 +407,6 @@ impl SignedProjectPolicyHeadV1 {
     #[must_use]
     pub const fn expires_at(self) -> i64 {
         self.expires_at
-    }
-}
-
-/// Retains exact project-layer choices typed after dedicated signature check.
-pub struct SignedProjectPolicySourceV1 {
-    head: SignedProjectPolicyHeadV1,
-    layer: PolicyLayerV1,
-}
-
-impl SignedProjectPolicySourceV1 {
-    /// Returns the signed source head.
-    #[must_use]
-    pub const fn head(&self) -> SignedProjectPolicyHeadV1 {
-        self.head
-    }
-
-    /// Returns the constructor-validated project layer.
-    #[must_use]
-    pub const fn layer(&self) -> &PolicyLayerV1 {
-        &self.layer
     }
 }
 
@@ -536,27 +503,6 @@ struct DeploymentBackendV1 {
 struct DeploymentCatalogsV1 {
     endpoints: Vec<Value>,
     destinations: Vec<Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProjectEnvelopeV1 {
-    generation: u64,
-    input: ProjectLayerV1,
-    magic: String,
-    project_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProjectLayerV1 {
-    accounting: Vec<DeploymentLimitV1>,
-    advisory_actions: Vec<Value>,
-    cache_domain: String,
-    grants: Vec<Value>,
-    namespace_rules: Vec<Value>,
-    portable: Vec<DeploymentLimitV1>,
-    revocation: String,
 }
 
 impl PolicyDeploymentHeadV1 {
@@ -797,147 +743,6 @@ pub(super) fn admit_deployment_head_in_journal(
     Ok(verified)
 }
 
-/// Verifies one externally signed, explicit project-layer source.
-///
-/// `AOSPPH01` is a 312-byte packet: magic[8], project[16], generation[8],
-/// issued/expires[8 each], publisher_generation[8], publisher_digest[32],
-/// canonical_project_input_sha256[32], ancestry/compiler/cache/revocation
-/// claims[32 each], and a 64-byte Ed25519 signature over the 248-byte
-/// payload prefixed by the project signing domain. Only one parentless project
-/// is supported by the fixed privileged service in this version.
-///
-/// # Errors
-///
-/// Returns an error for an invalid signature, noncanonical or unsupported
-/// layer, mismatched project/publisher head, or expired source.
-pub fn verify_signed_project_policy_source_v1(
-    packet: &[u8],
-    input: &[u8],
-    verifying_key: &VerifyingKey,
-    now_unix_seconds: i64,
-) -> Result<SignedProjectPolicySourceV1, PolicyDeploymentHeadErrorV1> {
-    if input.len() > MAXIMUM_PROJECT_INPUT_BYTES {
-        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-    }
-    verify_project_packet_signature(packet, verifying_key)?;
-    let project_bytes: [u8; 16] = packet[8..24]
-        .try_into()
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-    let project = ProjectId::from_bytes(project_bytes);
-    let generation = read_u64(packet, 24)?;
-    let issued_at = read_i64(packet, 32)?;
-    let expires_at = read_i64(packet, 40)?;
-    let publisher_generation = read_u64(packet, 48)?;
-    if project_bytes == [0; 16]
-        || generation == 0
-        || publisher_generation == 0
-        || issued_at >= expires_at
-        || issued_at > now_unix_seconds
-        || now_unix_seconds >= expires_at
-    {
-        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-    }
-    let publisher_digest = ObjectDigest::from_bytes(read_digest(packet, 56)?);
-    let input_digest = read_digest(packet, 88)?;
-    let prerequisites = [
-        ObjectDigest::from_bytes(read_digest(packet, 120)?),
-        ObjectDigest::from_bytes(read_digest(packet, 152)?),
-        ObjectDigest::from_bytes(read_digest(packet, 184)?),
-        ObjectDigest::from_bytes(read_digest(packet, 216)?),
-    ];
-    if publisher_digest.as_bytes() == &[0; 32]
-        || prerequisites
-            .iter()
-            .any(|claim| claim.as_bytes() == &[0; 32])
-        || Sha256::digest(input).as_slice() != input_digest
-    {
-        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-    }
-    validate_canonical_input(input, "AOSPPL01", generation)?;
-    let envelope: ProjectEnvelopeV1 =
-        serde_json::from_slice(input).map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-    if envelope.magic != "AOSPPL01"
-        || envelope.generation != generation
-        || envelope.project_id != project.to_string()
-        || !envelope.input.grants.is_empty()
-        || !envelope.input.namespace_rules.is_empty()
-        || !envelope.input.advisory_actions.is_empty()
-        || envelope.input.cache_domain != "inherit"
-        || envelope.input.revocation != "inherit"
-    {
-        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-    }
-    let layer = decode_layer(DeploymentLayerV1 {
-        portable: envelope.input.portable,
-        accounting: envelope.input.accounting,
-    })?;
-    Ok(SignedProjectPolicySourceV1 {
-        head: SignedProjectPolicyHeadV1 {
-            project,
-            generation,
-            packet_digest: ObjectDigest::from_bytes(Sha256::digest(packet).into()),
-            input_digest: ObjectDigest::from_bytes(input_digest),
-            publisher_generation,
-            publisher_digest,
-            prerequisites,
-            expires_at,
-        },
-        layer,
-    })
-}
-
-/// Commits one typed signed project head beneath the current deployment head.
-///
-/// The trusted controller supplies the project revocation scope independently
-/// of the signed packet and the time from its protected clock adapter. Neither
-/// value may come from the packet or public request. The caller holds the
-/// controller journal before the source-domain writer, and this function opens
-/// the root policy journal last. All three remain held while the protected
-/// hierarchy tree, publisher revision, cache-domain head, and revocation
-/// generation are checked, the immutable mapping is installed if absent, and
-/// the signed head is committed under the current AOSPDH01 packet.
-///
-/// The project tree head alone does not prove the exact Create or complete
-/// ancestry transition. Physical cache and effect handoff also remain outside
-/// this bounded barrier. This record cannot authorize AOSPCB01 publication.
-/// If the second journal commit fails, the trusted immutable mapping may
-/// remain; the caller receives no admitted project head.
-///
-/// # Errors
-///
-/// Returns an error for invalid source, absent or mismatched protected tree,
-/// publisher, cache-domain or revocation currentness, project substitution,
-/// noncontiguous generation, or failed protected commit.
-pub fn admit_fixed_signed_project_policy_source_v1(
-    controller_journal: &mut Journal,
-    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
-    trusted_revocation_scope: RevocationScopeId,
-    packet: &[u8],
-    input: &[u8],
-    verifying_key: &VerifyingKey,
-    deployment_packet: &[u8],
-    now_unix_seconds: i64,
-) -> Result<SignedProjectPolicySourceV1, PolicyDeploymentHeadErrorV1> {
-    controller_journal.ensure_protected_authority()?;
-    let hierarchy = HierarchyProtectedJournalOwnerV1::claim(source_domains)?;
-    let (mut authority_journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
-    admit_signed_project_policy_source_with_journals_v1(
-        controller_journal,
-        &hierarchy,
-        &mut authority_journal,
-        trusted_revocation_scope,
-        packet,
-        input,
-        verifying_key,
-        deployment_packet,
-        now_unix_seconds,
-    )
-}
-
 /// Reads an ancestry head while its owning Source writer remains held.
 ///
 /// Policy model tests use an explicit model-only reader so their policy checks
@@ -959,111 +764,6 @@ impl ProjectAncestryHeadReaderV1 for HierarchyProtectedJournalOwnerV1<'_> {
             .project_ancestry_head(project)?
             .map(|current| current.evidence().head()))
     }
-}
-
-fn admit_signed_project_policy_source_with_journals_v1(
-    controller_journal: &mut Journal,
-    hierarchy: &impl ProjectAncestryHeadReaderV1,
-    authority_journal: &mut Journal,
-    trusted_revocation_scope: RevocationScopeId,
-    packet: &[u8],
-    input: &[u8],
-    verifying_key: &VerifyingKey,
-    deployment_packet: &[u8],
-    now_unix_seconds: i64,
-) -> Result<SignedProjectPolicySourceV1, PolicyDeploymentHeadErrorV1> {
-    let verified =
-        verify_signed_project_policy_source_v1(packet, input, verifying_key, now_unix_seconds)?;
-    let ancestry = hierarchy
-        .project_ancestry_head_digest(verified.head.project)?
-        .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
-    if verified.head.prerequisites[0] != ancestry {
-        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-    }
-    let mut authority =
-        authority_journal.claim_protected_authority(RecordNamespace::DesiredState)?;
-    super::binding_v2::ensure_root_binding_unheld(&authority)
-        .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
-    if authority.get(HEAD_KEY)? != Some(deployment_packet)
-        || authority.get(HEAD_KEY_V2)?.is_some()
-        || authority.get(INPUT_KEY_V2)?.is_some()
-        || verified.head.prerequisites[1].as_bytes() != Sha256::digest(deployment_packet).as_slice()
-    {
-        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-    }
-
-    let existing = authority.get(PROJECT_HEAD_KEY)?;
-    let existing_input = authority.get(PROJECT_INPUT_KEY)?;
-    if existing.is_some() != existing_input.is_some() {
-        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-    }
-    let replay = existing == Some(packet) && existing_input == Some(input);
-    if !replay {
-        let predecessor = existing
-            .zip(existing_input)
-            .map(|(current, current_input)| {
-                let historical_time = read_i64(current, 32)?;
-                verify_signed_project_policy_source_v1(
-                    current,
-                    current_input,
-                    verifying_key,
-                    historical_time,
-                )?;
-                let project: [u8; 16] = current[8..24]
-                    .try_into()
-                    .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-                if project.as_slice() != verified.head.project.as_bytes() {
-                    return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-                }
-                read_u64(current, 24)
-            })
-            .transpose()?
-            .unwrap_or(0);
-        if predecessor.checked_add(1) != Some(verified.head.generation) {
-            return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-        }
-    }
-
-    bind_signed_project_to_controller_currentness(
-        controller_journal,
-        verified.head,
-        trusted_revocation_scope,
-        now_unix_seconds,
-    )?;
-    if replay {
-        return Ok(verified);
-    }
-
-    let transaction_digest = Sha256::new()
-        .chain_update(PROJECT_TRANSACTION_DOMAIN)
-        .chain_update(packet)
-        .finalize();
-    let transaction_id: [u8; 16] = transaction_digest[..16]
-        .try_into()
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-    let transaction = JournalTransaction::new(
-        transaction_id,
-        vec![
-            JournalRecord::put(
-                RecordNamespace::DesiredState,
-                PROJECT_HEAD_KEY.to_vec(),
-                packet.to_vec(),
-            ),
-            JournalRecord::put(
-                RecordNamespace::DesiredState,
-                PROJECT_INPUT_KEY.to_vec(),
-                input.to_vec(),
-            ),
-        ],
-    )?;
-    authority.commit(&transaction)?;
-    if authority.get(PROJECT_HEAD_KEY)? != Some(packet)
-        || authority.get(PROJECT_INPUT_KEY)? != Some(input)
-        || hierarchy.project_ancestry_head_digest(verified.head.project)? != Some(ancestry)
-    {
-        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-    }
-    Ok(verified)
 }
 
 pub(super) fn bind_signed_project_to_controller_currentness(
@@ -1126,24 +826,6 @@ pub(super) fn bind_signed_project_to_controller_currentness(
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
     Ok(())
-}
-
-fn verify_project_packet_signature(
-    packet: &[u8],
-    verifying_key: &VerifyingKey,
-) -> Result<(), PolicyDeploymentHeadErrorV1> {
-    if packet.len() != PROJECT_PACKET_BYTES || &packet[..8] != PROJECT_MAGIC {
-        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-    }
-    let signature_bytes: [u8; 64] = packet[PROJECT_PAYLOAD_BYTES..]
-        .try_into()
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-    let mut signed = Vec::with_capacity(PROJECT_SIGNING_DOMAIN.len() + PROJECT_PAYLOAD_BYTES);
-    signed.extend_from_slice(PROJECT_SIGNING_DOMAIN);
-    signed.extend_from_slice(&packet[..PROJECT_PAYLOAD_BYTES]);
-    verifying_key
-        .verify(&signed, &Signature::from_bytes(&signature_bytes))
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidSignature)
 }
 
 fn read_digest(packet: &[u8], offset: usize) -> Result<[u8; 32], PolicyDeploymentHeadErrorV1> {
@@ -1293,7 +975,7 @@ fn read_i64(bytes: &[u8], offset: usize) -> Result<i64, PolicyDeploymentHeadErro
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::fs;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
@@ -1306,6 +988,7 @@ mod tests {
     use ed25519_dalek::{Signer as _, SigningKey};
 
     use super::*;
+    use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
     use crate::JournalLimits;
     use crate::hierarchy::graph::SandboxTreeV1;
     use aos_sandbox_core::source_tree_model::TreeLimitsV1;
@@ -1353,7 +1036,8 @@ mod tests {
             .0
     }
 
-    fn project_input(project: ProjectId) -> Vec<u8> {
+    /// Builds canonical V1 input for retained-profile refusal tests.
+    pub(in crate::policy_compiler) fn retired_project_input(project: ProjectId) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "generation": 1,
             "input": {
@@ -1371,7 +1055,8 @@ mod tests {
         .expect("canonical project input")
     }
 
-    fn signed_project_packet(
+    /// Signs canonical V1 packet bytes as negative test data.
+    pub(in crate::policy_compiler) fn signed_retired_project_packet(
         project: ProjectId,
         publisher_digest: ObjectDigest,
         ancestry_digest: ObjectDigest,
@@ -1381,7 +1066,7 @@ mod tests {
         input: &[u8],
         key: &SigningKey,
     ) -> Vec<u8> {
-        let mut packet = PROJECT_MAGIC.to_vec();
+        let mut packet = b"AOSPPH01".to_vec();
         packet.extend_from_slice(project.as_bytes());
         packet.extend_from_slice(&1_u64.to_be_bytes());
         packet.extend_from_slice(&10_i64.to_be_bytes());
@@ -1394,7 +1079,7 @@ mod tests {
         packet.extend_from_slice(cache_domain_digest.as_bytes());
         packet.extend_from_slice(revocation_digest.as_bytes());
 
-        let mut signed = PROJECT_SIGNING_DOMAIN.to_vec();
+        let mut signed = b"aos.sandbox.policy-project-head.v1\0".to_vec();
         signed.extend_from_slice(&packet);
         packet.extend_from_slice(&key.sign(&signed).to_bytes());
         packet
@@ -1641,7 +1326,7 @@ mod tests {
         );
     }
 
-    fn admit_with_test_source(
+    fn admit_supported_project_with_test_source(
         controller: &mut Journal,
         source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
         authority: &mut Journal,
@@ -1651,14 +1336,23 @@ mod tests {
         key: &VerifyingKey,
         deployment_packet: &[u8],
         now: i64,
-    ) -> Result<SignedProjectPolicySourceV1, PolicyDeploymentHeadErrorV1> {
+    ) -> Result<super::super::AdmittedSignedProjectPolicySourceV2, PolicyDeploymentHeadErrorV1>
+    {
         let project = packet
             .get(8..24)
             .and_then(|bytes| bytes.try_into().ok())
             .map(ProjectId::from_bytes)
             .ok_or(PolicyDeploymentHeadErrorV1::InvalidHead)?;
         let hierarchy = model_ancestry_reader(source_domains, project);
-        admit_signed_project_policy_source_with_journals_v1(
+        let deployment_key = SigningKey::from_bytes(&[5; 32]);
+        let (_, input_bytes) = signed_deployment_fixture(&deployment_key);
+        let deployment_inputs = PolicyDeploymentInputsV1 {
+            node: &input_bytes[0],
+            site: &input_bytes[1],
+            backend: &input_bytes[2],
+            catalogs: &input_bytes[3],
+        };
+        admit_signed_project_policy_source_with_journals_v2(
             controller,
             &hierarchy,
             authority,
@@ -1666,9 +1360,45 @@ mod tests {
             packet,
             input,
             key,
+            3,
             deployment_packet,
+            &deployment_inputs,
+            &deployment_key.verifying_key(),
+            2,
             now,
         )
+    }
+
+    fn install_supported_deployment(authority: &mut Journal, project_key: &SigningKey) -> Vec<u8> {
+        let deployment_key = SigningKey::from_bytes(&[5; 32]);
+        let (packet, _) = signed_deployment_fixture(&deployment_key);
+        let pins = encode_policy_signer_pins_v1(
+            2,
+            &deployment_key.verifying_key(),
+            3,
+            &project_key.verifying_key(),
+        )
+        .expect("supported signer pins");
+        let transaction = JournalTransaction::new(
+            [41; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    HEAD_KEY.to_vec(),
+                    packet.clone(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    SIGNER_PINS_KEY.to_vec(),
+                    pins,
+                ),
+            ],
+        )
+        .expect("signed deployment and pin transaction");
+        authority
+            .commit(&transaction)
+            .expect("root deployment custody");
+        packet
     }
 
     fn current_cache_domain_digest(controller: &mut Journal, project: ProjectId) -> ObjectDigest {
@@ -1689,7 +1419,9 @@ mod tests {
         .expect("canonical deployment input")
     }
 
-    pub(super) fn signed_deployment_fixture(key: &SigningKey) -> (Vec<u8>, [Vec<u8>; 4]) {
+    pub(in crate::policy_compiler) fn signed_deployment_fixture(
+        key: &SigningKey,
+    ) -> (Vec<u8>, [Vec<u8>; 4]) {
         let portable = PORTABLE_LIMIT_DIMENSIONS
             .map(|dimension| {
                 let enforcement = match dimension {
@@ -1812,7 +1544,8 @@ mod tests {
         ));
     }
 
-    fn explicit_project_input(project: ProjectId) -> Vec<u8> {
+    /// Builds canonical input for supported V2 project tests.
+    pub(in crate::policy_compiler) fn explicit_project_input(project: ProjectId) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "generation": 1,
             "input": {
@@ -1830,8 +1563,9 @@ mod tests {
         .expect("canonical explicit project input")
     }
 
+    /// Signs supported V2 project packet bytes as test data.
     #[allow(clippy::too_many_arguments)]
-    fn signed_explicit_project_packet(
+    pub(in crate::policy_compiler) fn signed_explicit_project_packet(
         project: ProjectId,
         publisher_digest: ObjectDigest,
         ancestry_digest: ObjectDigest,
@@ -1841,18 +1575,19 @@ mod tests {
         input: &[u8],
         key: &SigningKey,
     ) -> Vec<u8> {
-        let mut packet = signed_project_packet(
-            project,
-            publisher_digest,
-            ancestry_digest,
-            cache_domain_digest,
-            revocation_digest,
-            deployment_packet,
-            input,
-            key,
-        );
-        packet.truncate(PROJECT_PAYLOAD_BYTES);
-        packet[..8].copy_from_slice(b"AOSPPH02");
+        let mut packet = Vec::with_capacity(328);
+        packet.extend_from_slice(b"AOSPPH02");
+        packet.extend_from_slice(project.as_bytes());
+        packet.extend_from_slice(&1_u64.to_be_bytes());
+        packet.extend_from_slice(&10_i64.to_be_bytes());
+        packet.extend_from_slice(&30_i64.to_be_bytes());
+        packet.extend_from_slice(&1_u64.to_be_bytes());
+        packet.extend_from_slice(publisher_digest.as_bytes());
+        packet.extend_from_slice(&Sha256::digest(input));
+        packet.extend_from_slice(ancestry_digest.as_bytes());
+        packet.extend_from_slice(&Sha256::digest(deployment_packet));
+        packet.extend_from_slice(cache_domain_digest.as_bytes());
+        packet.extend_from_slice(revocation_digest.as_bytes());
         packet.extend_from_slice(&2_u64.to_be_bytes());
         packet.extend_from_slice(&3_u64.to_be_bytes());
         let mut signed = b"aos.sandbox.policy-project-head.v2\0".to_vec();
@@ -1991,8 +1726,8 @@ mod tests {
         .expect("complete compiler input");
         PolicyCompilerV1::compile(compiler_input).expect("explicit project choices resolve");
 
-        let legacy_input = project_input(project);
-        let legacy_packet = signed_project_packet(
+        let legacy_input = retired_project_input(project);
+        let legacy_packet = signed_retired_project_packet(
             project,
             publisher_digest,
             ancestry,
@@ -2002,20 +1737,59 @@ mod tests {
             &legacy_input,
             &project_key,
         );
+        let mut legacy_authority = open_journal(directory.path(), "legacy-authority.journal");
+        let pins = encode_policy_signer_pins_v1(
+            2,
+            &deployment_key.verifying_key(),
+            3,
+            &project_key.verifying_key(),
+        )
+        .expect("exact pins");
+        legacy_authority
+            .commit(
+                &JournalTransaction::new(
+                    [42; 16],
+                    vec![
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            HEAD_KEY.to_vec(),
+                            deployment_packet.clone(),
+                        ),
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            SIGNER_PINS_KEY.to_vec(),
+                            pins,
+                        ),
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            PROJECT_HEAD_KEY.to_vec(),
+                            legacy_packet,
+                        ),
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            PROJECT_INPUT_KEY.to_vec(),
+                            legacy_input,
+                        ),
+                    ],
+                )
+                .expect("canonical outer legacy transaction"),
+            )
+            .expect("retained legacy rows");
+        let before = std::fs::read(directory.path().join("legacy-authority.journal")).unwrap();
         assert!(matches!(
-            admit_with_test_source(
+            admit(
                 &mut controller,
                 &mut source_domains,
-                &mut authority,
-                scope,
-                &legacy_packet,
-                &legacy_input,
-                &project_key.verifying_key(),
-                &deployment_packet,
-                20,
+                &mut legacy_authority,
+                2
             ),
             Err(PolicyDeploymentHeadErrorV1::StaleHead)
         ));
+        assert_eq!(
+            std::fs::read(directory.path().join("legacy-authority.journal")).unwrap(),
+            before
+        );
+        drop(legacy_authority);
         drop(authority);
 
         let mut reopened = open_journal(directory.path(), "authority.journal");
@@ -2097,21 +1871,21 @@ mod tests {
             publisher_digest,
         ) = fixture();
         let key = SigningKey::from_bytes(&[9; 32]);
-        let input = project_input(project);
-        let deployment_packet = b"current-deployment";
+        let input = explicit_project_input(project);
+        let deployment_packet = install_supported_deployment(&mut authority, &key);
         let revocation_digest = project_revocation_digest(project, scope, 1);
-        let packet = signed_project_packet(
+        let packet = signed_explicit_project_packet(
             project,
             publisher_digest,
             current_ancestry_head(&mut source_domains, project),
             current_cache_domain_digest(&mut controller, project),
             revocation_digest,
-            deployment_packet,
+            &deployment_packet,
             &input,
             &key,
         );
 
-        let admitted = admit_with_test_source(
+        let admitted = admit_supported_project_with_test_source(
             &mut controller,
             &mut source_domains,
             &mut authority,
@@ -2119,13 +1893,13 @@ mod tests {
             &packet,
             &input,
             &key.verifying_key(),
-            deployment_packet,
+            &deployment_packet,
             20,
         )
         .expect("signed project admission");
         assert_eq!(admitted.head().prerequisite_claims()[3], revocation_digest);
         assert_eq!(
-            authority.get(RecordNamespace::DesiredState, PROJECT_HEAD_KEY),
+            authority.get(RecordNamespace::DesiredState, HEAD_KEY_V2),
             Some(packet.as_slice())
         );
         let mut store =
@@ -2150,7 +1924,7 @@ mod tests {
         drop(store);
 
         assert!(matches!(
-            admit_with_test_source(
+            admit_supported_project_with_test_source(
                 &mut controller,
                 &mut source_domains,
                 &mut authority,
@@ -2158,7 +1932,7 @@ mod tests {
                 &packet,
                 &input,
                 &key.verifying_key(),
-                deployment_packet,
+                &deployment_packet,
                 20,
             ),
             Err(PolicyDeploymentHeadErrorV1::StaleHead)
@@ -2177,21 +1951,21 @@ mod tests {
             publisher_digest,
         ) = fixture();
         let key = SigningKey::from_bytes(&[9; 32]);
-        let input = project_input(project);
-        let deployment_packet = b"current-deployment";
-        let packet = signed_project_packet(
+        let input = explicit_project_input(project);
+        let deployment_packet = install_supported_deployment(&mut authority, &key);
+        let packet = signed_explicit_project_packet(
             project,
             publisher_digest,
             current_ancestry_head(&mut source_domains, project),
             current_cache_domain_digest(&mut controller, project),
             ObjectDigest::from_bytes([5; 32]),
-            deployment_packet,
+            &deployment_packet,
             &input,
             &key,
         );
 
         assert!(matches!(
-            admit_with_test_source(
+            admit_supported_project_with_test_source(
                 &mut controller,
                 &mut source_domains,
                 &mut authority,
@@ -2199,7 +1973,7 @@ mod tests {
                 &packet,
                 &input,
                 &key.verifying_key(),
-                deployment_packet,
+                &deployment_packet,
                 20,
             ),
             Err(PolicyDeploymentHeadErrorV1::StaleHead)
@@ -2213,7 +1987,7 @@ mod tests {
         );
         assert!(
             authority
-                .get(RecordNamespace::DesiredState, PROJECT_HEAD_KEY)
+                .get(RecordNamespace::DesiredState, HEAD_KEY_V2)
                 .is_none()
         );
     }
@@ -2230,24 +2004,24 @@ mod tests {
             publisher_digest,
         ) = fixture();
         let key = SigningKey::from_bytes(&[9; 32]);
-        let input = project_input(project);
-        let deployment_packet = b"current-deployment";
+        let input = explicit_project_input(project);
+        let deployment_packet = install_supported_deployment(&mut authority, &key);
         let current_cache_domain = current_cache_domain_digest(&mut controller, project);
         let wrong_cache_domain = ObjectDigest::from_bytes([4; 32]);
         assert_ne!(current_cache_domain, wrong_cache_domain);
-        let packet = signed_project_packet(
+        let packet = signed_explicit_project_packet(
             project,
             publisher_digest,
             current_ancestry_head(&mut source_domains, project),
             wrong_cache_domain,
             project_revocation_digest(project, scope, 1),
-            deployment_packet,
+            &deployment_packet,
             &input,
             &key,
         );
 
         assert!(matches!(
-            admit_with_test_source(
+            admit_supported_project_with_test_source(
                 &mut controller,
                 &mut source_domains,
                 &mut authority,
@@ -2255,7 +2029,7 @@ mod tests {
                 &packet,
                 &input,
                 &key.verifying_key(),
-                deployment_packet,
+                &deployment_packet,
                 20,
             ),
             Err(PolicyDeploymentHeadErrorV1::StaleHead)
@@ -2269,7 +2043,7 @@ mod tests {
         );
         assert!(
             authority
-                .get(RecordNamespace::DesiredState, PROJECT_HEAD_KEY)
+                .get(RecordNamespace::DesiredState, HEAD_KEY_V2)
                 .is_none()
         );
     }
@@ -2286,26 +2060,26 @@ mod tests {
             publisher_digest,
         ) = fixture();
         let key = SigningKey::from_bytes(&[9; 32]);
-        let input = project_input(project);
-        let deployment_packet = b"current-deployment";
+        let input = explicit_project_input(project);
+        let deployment_packet = install_supported_deployment(&mut authority, &key);
         let wrong_ancestry = ObjectDigest::from_bytes([3; 32]);
         assert_ne!(
             current_ancestry_head(&mut source_domains, project),
             wrong_ancestry
         );
-        let packet = signed_project_packet(
+        let packet = signed_explicit_project_packet(
             project,
             publisher_digest,
             wrong_ancestry,
             current_cache_domain_digest(&mut controller, project),
             project_revocation_digest(project, scope, 1),
-            deployment_packet,
+            &deployment_packet,
             &input,
             &key,
         );
 
         assert!(matches!(
-            admit_with_test_source(
+            admit_supported_project_with_test_source(
                 &mut controller,
                 &mut source_domains,
                 &mut authority,
@@ -2313,7 +2087,7 @@ mod tests {
                 &packet,
                 &input,
                 &key.verifying_key(),
-                deployment_packet,
+                &deployment_packet,
                 20,
             ),
             Err(PolicyDeploymentHeadErrorV1::StaleHead)
@@ -2327,7 +2101,7 @@ mod tests {
         );
         assert!(
             authority
-                .get(RecordNamespace::DesiredState, PROJECT_HEAD_KEY)
+                .get(RecordNamespace::DesiredState, HEAD_KEY_V2)
                 .is_none()
         );
     }
@@ -2350,21 +2124,21 @@ mod tests {
         );
         let mut authority = open_journal(directory.path(), "authority.journal");
         let key = SigningKey::from_bytes(&[9; 32]);
-        let input = project_input(project);
-        let deployment_packet = b"current-deployment";
-        let packet = signed_project_packet(
+        let input = explicit_project_input(project);
+        let deployment_packet = install_supported_deployment(&mut authority, &key);
+        let packet = signed_explicit_project_packet(
             project,
             publisher_digest,
             ObjectDigest::from_bytes([3; 32]),
             current_cache_domain_digest(&mut controller, project),
             project_revocation_digest(project, scope, 1),
-            deployment_packet,
+            &deployment_packet,
             &input,
             &key,
         );
 
         assert!(matches!(
-            admit_with_test_source(
+            admit_supported_project_with_test_source(
                 &mut controller,
                 &mut source_domains,
                 &mut authority,
@@ -2372,14 +2146,14 @@ mod tests {
                 &packet,
                 &input,
                 &key.verifying_key(),
-                deployment_packet,
+                &deployment_packet,
                 20,
             ),
             Err(PolicyDeploymentHeadErrorV1::StaleHead)
         ));
         assert!(
             authority
-                .get(RecordNamespace::DesiredState, PROJECT_HEAD_KEY)
+                .get(RecordNamespace::DesiredState, HEAD_KEY_V2)
                 .is_none()
         );
     }
@@ -2396,20 +2170,20 @@ mod tests {
             publisher_digest,
         ) = fixture();
         let key = SigningKey::from_bytes(&[9; 32]);
-        let input = project_input(project);
-        let deployment_packet = b"current-deployment";
+        let input = explicit_project_input(project);
+        let deployment_packet = install_supported_deployment(&mut authority, &key);
         let initial_ancestry = current_ancestry_head(&mut source_domains, project);
-        let packet = signed_project_packet(
+        let packet = signed_explicit_project_packet(
             project,
             publisher_digest,
             initial_ancestry,
             current_cache_domain_digest(&mut controller, project),
             project_revocation_digest(project, scope, 1),
-            deployment_packet,
+            &deployment_packet,
             &input,
             &key,
         );
-        admit_with_test_source(
+        admit_supported_project_with_test_source(
             &mut controller,
             &mut source_domains,
             &mut authority,
@@ -2417,7 +2191,7 @@ mod tests {
             &packet,
             &input,
             &key.verifying_key(),
-            deployment_packet,
+            &deployment_packet,
             20,
         )
         .expect("initial signed project admission");
@@ -2444,7 +2218,7 @@ mod tests {
             initial_ancestry
         );
         assert!(matches!(
-            admit_with_test_source(
+            admit_supported_project_with_test_source(
                 &mut controller,
                 &mut source_domains,
                 &mut authority,
@@ -2452,7 +2226,7 @@ mod tests {
                 &packet,
                 &input,
                 &key.verifying_key(),
-                deployment_packet,
+                &deployment_packet,
                 20,
             ),
             Err(PolicyDeploymentHeadErrorV1::StaleHead)
@@ -2490,21 +2264,21 @@ mod tests {
         drop(store);
 
         let key = SigningKey::from_bytes(&[9; 32]);
-        let input = project_input(project);
-        let deployment_packet = b"current-deployment";
-        let packet = signed_project_packet(
+        let input = explicit_project_input(project);
+        let deployment_packet = install_supported_deployment(&mut authority, &key);
+        let packet = signed_explicit_project_packet(
             project,
             publisher_digest,
             current_ancestry_head(&mut source_domains, project),
             current_cache_domain_digest(&mut controller, project),
             project_revocation_digest(project, other_scope, 1),
-            deployment_packet,
+            &deployment_packet,
             &input,
             &key,
         );
 
         assert!(matches!(
-            admit_with_test_source(
+            admit_supported_project_with_test_source(
                 &mut controller,
                 &mut source_domains,
                 &mut authority,
@@ -2512,7 +2286,7 @@ mod tests {
                 &packet,
                 &input,
                 &key.verifying_key(),
-                deployment_packet,
+                &deployment_packet,
                 20,
             ),
             Err(PolicyDeploymentHeadErrorV1::StaleHead)
@@ -2525,7 +2299,7 @@ mod tests {
         assert_eq!(bound.scope(), scope);
         assert!(
             authority
-                .get(RecordNamespace::DesiredState, PROJECT_HEAD_KEY)
+                .get(RecordNamespace::DesiredState, HEAD_KEY_V2)
                 .is_none()
         );
     }

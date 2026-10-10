@@ -42,7 +42,7 @@ const CONTROLLER_CURRENT_MAGIC: &[u8; 8] = b"AOSCTLH1";
 const REVOCATION_REVISION_MAGIC: &[u8; 8] = b"AOSREVR1";
 const REVOCATION_CURRENT_MAGIC: &[u8; 8] = b"AOSREVH1";
 const PROJECT_REVOCATION_MAGIC: &[u8; 8] = b"AOSREVP1";
-// The AOSPPH01 claim commits the protected mapping and exact scope generation:
+// The signed project claim commits the protected mapping and exact scope generation:
 // SHA-256(domain || project:16 || scope:16 || generation:u64-be).
 const PROJECT_REVOCATION_DOMAIN: &[u8] = b"aos.sandbox.publisher-project-revocation-head.v1\0";
 // The project cache claim follows the current publisher revision, even when

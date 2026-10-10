@@ -12,69 +12,13 @@ use super::{ClosedPolicyRootBindingV2, ClosedPolicyRootCasBaseV2};
 use crate::policy_compiler::{
     CurrentCreatePolicyBarrierHeadsV2, CurrentCreateProjectPolicySourceV1,
     PolicyCompilerJournalErrorV1, PolicyDeploymentHeadV1, PolicyDeploymentSourcesV1,
-    PolicyPublicationPrerequisitesV1, SignedProjectPolicySourceV1,
-    VerifiedSignedProjectPolicySourceV2, checked_parentless_create_policy_draft_v1,
+    PolicyPublicationPrerequisitesV1, VerifiedSignedProjectPolicySourceV2,
     checked_parentless_create_verified_policy_draft_v2, normalized_policy_input_digest_v1,
 };
 use aos_sandbox_policy::{PolicyCompilerInputV1, PolicyCompilerV1};
 
 const BARRIER_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.held-cut.v2\0";
 const EFFECT_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.closed-handoff.v2\0";
-
-/// Builds one exact closed proposal from a currently held owner cut.
-///
-/// The signed project claims must equal the independent ancestry, publisher,
-/// cache-domain, revocation, and deployment heads. The compiler candidate and
-/// normalized input are computed here, not accepted from a request. The root
-/// service must still compare the signer generations and root predecessor
-/// under its own writer. The returned bytes confer no publication authority.
-///
-/// # Errors
-///
-/// Rejects stale or mismatched signed sources, an unsupported compiler input,
-/// a failed deterministic compilation, or a malformed root CAS base.
-#[allow(clippy::too_many_arguments)]
-pub fn propose_closed_current_create_policy_binding_v2(
-    source: &CurrentCreateProjectPolicySourceV1,
-    heads: CurrentCreatePolicyBarrierHeadsV2,
-    signed_project: &SignedProjectPolicySourceV1,
-    deployment_head: PolicyDeploymentHeadV1,
-    deployment: &PolicyDeploymentSourcesV1,
-    input: &PolicyCompilerInputV1,
-    root_base: ClosedPolicyRootCasBaseV2,
-    now_unix_seconds: i64,
-) -> Result<Vec<u8>, PolicyCompilerJournalErrorV1> {
-    if now_unix_seconds >= deployment_head.expires_at() {
-        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-    }
-    let prerequisites = PolicyPublicationPrerequisitesV1::new(
-        heads.ancestry(),
-        deployment_head.packet_digest(),
-        source.cache_domain_head(),
-        source.revocation_head(),
-        root_base.next_generation(),
-    )?;
-    let checked_draft = checked_parentless_create_policy_draft_v1(
-        source,
-        signed_project,
-        deployment,
-        input,
-        &prerequisites,
-        now_unix_seconds,
-    )
-    .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-
-    encode_closed_proposal(
-        source,
-        heads,
-        signed_project.head().packet_digest(),
-        signed_project.head().input_digest(),
-        deployment_head,
-        input,
-        root_base,
-        checked_draft,
-    )
-}
 
 /// Builds one inert AOSPCB02 proposal from a verified explicit V2 source.
 ///

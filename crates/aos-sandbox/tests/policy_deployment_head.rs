@@ -2,7 +2,7 @@
 
 use aos_sandbox::policy_compiler::{
     PolicyDeploymentHeadErrorV1, PolicyDeploymentInputsV1, decode_policy_deployment_sources_v1,
-    verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
+    verify_policy_deployment_head_v1, verify_signed_project_policy_source_v2,
 };
 use aos_sandbox_core::ProjectId;
 use ed25519_dalek::{Signer as _, SigningKey};
@@ -129,12 +129,131 @@ fn signed_bounded_resource_sources_decode_without_fabricated_limits() {
             .contains(aos_sandbox_policy::HardEnforcementV1::ZfsQuota)
     );
 }
-
 #[test]
 fn dedicated_project_head_requires_exact_explicit_signed_layer() {
     let project = ProjectId::from_bytes([3; 16]);
     let inherit = serde_json::json!({"kind": "inherit"});
     let input = serde_json::to_vec(&serde_json::json!({
+        "generation": 1,
+        "input": {
+            "accounting": vec![inherit.clone(); 22],
+            "advisory_actions": [],
+            "cache_domain": "project",
+            "grants": [],
+            "namespace_rules": [],
+            "portable": vec![inherit; 16],
+            "revocation": {"grace_nanos": 0, "mode": "deny-new"},
+        },
+        "magic": "AOSPPL02",
+        "project_id": project.to_string(),
+    }))
+    .expect("canonical explicit project input");
+    let key = SigningKey::from_bytes(&[21; 32]);
+    let mut packet = Vec::with_capacity(328);
+    packet.extend_from_slice(b"AOSPPH02");
+    packet.extend_from_slice(project.as_bytes());
+    packet.extend_from_slice(&1_u64.to_be_bytes());
+    packet.extend_from_slice(&10_i64.to_be_bytes());
+    packet.extend_from_slice(&30_i64.to_be_bytes());
+    packet.extend_from_slice(&2_u64.to_be_bytes());
+    packet.extend_from_slice(&[4; 32]);
+    packet.extend_from_slice(&Sha256::digest(&input));
+    for claim in [5_u8, 6, 7, 8] {
+        packet.extend_from_slice(&[claim; 32]);
+    }
+    packet.extend_from_slice(&2_u64.to_be_bytes());
+    packet.extend_from_slice(&3_u64.to_be_bytes());
+    assert_eq!(packet.len(), 264);
+    let mut signed = b"aos.sandbox.policy-project-head.v2\0".to_vec();
+    signed.extend_from_slice(&packet);
+    packet.extend_from_slice(&key.sign(&signed).to_bytes());
+
+    let verified =
+        verify_signed_project_policy_source_v2(&packet, &input, &key.verifying_key(), 20)
+            .expect("signed explicit project layer");
+    assert_eq!(verified.head().project(), project);
+    assert_eq!(verified.head().publisher_generation(), 2);
+    assert_eq!(verified.head().deployment_signer_generation(), 2);
+    assert_eq!(verified.head().project_signer_generation(), 3);
+    assert_eq!(
+        verified.head().input_digest().as_bytes(),
+        &Sha256::digest(&input)[..]
+    );
+    assert_eq!(
+        verified.cache_domain().domain_id().as_bytes(),
+        project.as_bytes()
+    );
+    assert_eq!(verified.revocation().grace_nanos(), 0);
+    assert!(matches!(
+        verify_signed_project_policy_source_v2(&packet, &input, &key.verifying_key(), 30),
+        Err(PolicyDeploymentHeadErrorV1::InvalidHead)
+    ));
+
+    let mut changed = input.clone();
+    changed[0] ^= 1;
+    assert!(
+        verify_signed_project_policy_source_v2(&packet, &changed, &key.verifying_key(), 20)
+            .is_err()
+    );
+    let mut tampered = packet.clone();
+    tampered[264] ^= 1;
+    assert!(matches!(
+        verify_signed_project_policy_source_v2(&tampered, &input, &key.verifying_key(), 20),
+        Err(PolicyDeploymentHeadErrorV1::InvalidSignature)
+    ));
+
+    // Correctly signed noncanonical JSON must still fail the input validator.
+    let mut noncanonical = input.clone();
+    noncanonical.push(b' ');
+    let mut noncanonical_packet = packet[..264].to_vec();
+    noncanonical_packet[88..120].copy_from_slice(&Sha256::digest(&noncanonical));
+    let mut signed = b"aos.sandbox.policy-project-head.v2\0".to_vec();
+    signed.extend_from_slice(&noncanonical_packet);
+    noncanonical_packet.extend_from_slice(&key.sign(&signed).to_bytes());
+    assert!(matches!(
+        verify_signed_project_policy_source_v2(
+            &noncanonical_packet,
+            &noncanonical,
+            &key.verifying_key(),
+            20,
+        ),
+        Err(PolicyDeploymentHeadErrorV1::InvalidHead)
+    ));
+
+    // The accepted signature binds complete portable and accounting arrays.
+    let complete: serde_json::Value = serde_json::from_slice(&input).unwrap();
+    assert_eq!(complete["input"]["portable"].as_array().unwrap().len(), 16);
+    assert_eq!(
+        complete["input"]["accounting"].as_array().unwrap().len(),
+        22
+    );
+    for dimension in ["portable", "accounting"] {
+        let mut missing_limit = complete.clone();
+        missing_limit["input"][dimension]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        let missing_limit = serde_json::to_vec(&missing_limit).unwrap();
+        let mut missing_limit_packet = packet[..264].to_vec();
+        missing_limit_packet[88..120].copy_from_slice(&Sha256::digest(&missing_limit));
+        let mut signed = b"aos.sandbox.policy-project-head.v2\0".to_vec();
+        signed.extend_from_slice(&missing_limit_packet);
+        missing_limit_packet.extend_from_slice(&key.sign(&signed).to_bytes());
+
+        assert!(matches!(
+            verify_signed_project_policy_source_v2(
+                &missing_limit_packet,
+                &missing_limit,
+                &key.verifying_key(),
+                20,
+            ),
+            Err(PolicyDeploymentHeadErrorV1::InvalidHead)
+        ));
+    }
+
+    // Independently encode/sign the complete retired profile as negative DATA.
+    let inherit = serde_json::json!({"kind": "inherit"});
+    let old_input = serde_json::to_vec(&serde_json::json!({
         "generation": 1,
         "input": {
             "accounting": vec![inherit.clone(); 22],
@@ -148,46 +267,27 @@ fn dedicated_project_head_requires_exact_explicit_signed_layer() {
         "magic": "AOSPPL01",
         "project_id": project.to_string(),
     }))
-    .expect("canonical project input");
-    let key = SigningKey::from_bytes(&[21; 32]);
-    let mut packet = Vec::with_capacity(312);
-    packet.extend_from_slice(b"AOSPPH01");
-    packet.extend_from_slice(project.as_bytes());
-    packet.extend_from_slice(&1_u64.to_be_bytes());
-    packet.extend_from_slice(&10_i64.to_be_bytes());
-    packet.extend_from_slice(&30_i64.to_be_bytes());
-    packet.extend_from_slice(&2_u64.to_be_bytes());
-    packet.extend_from_slice(&[4; 32]);
-    packet.extend_from_slice(&Sha256::digest(&input));
+    .expect("canonical retired project input");
+    let mut old_packet = Vec::with_capacity(312);
+    old_packet.extend_from_slice(b"AOSPPH01");
+    old_packet.extend_from_slice(project.as_bytes());
+    old_packet.extend_from_slice(&1_u64.to_be_bytes());
+    old_packet.extend_from_slice(&10_i64.to_be_bytes());
+    old_packet.extend_from_slice(&30_i64.to_be_bytes());
+    old_packet.extend_from_slice(&2_u64.to_be_bytes());
+    old_packet.extend_from_slice(&[4; 32]);
+    old_packet.extend_from_slice(&Sha256::digest(&old_input));
     for claim in [5_u8, 6, 7, 8] {
-        packet.extend_from_slice(&[claim; 32]);
+        old_packet.extend_from_slice(&[claim; 32]);
     }
-    assert_eq!(packet.len(), 248);
+    assert_eq!(old_packet.len(), 248);
     let mut signed = b"aos.sandbox.policy-project-head.v1\0".to_vec();
-    signed.extend_from_slice(&packet);
-    packet.extend_from_slice(&key.sign(&signed).to_bytes());
-
-    let verified =
-        verify_signed_project_policy_source_v1(&packet, &input, &key.verifying_key(), 20)
-            .expect("signed typed project layer");
-    assert_eq!(verified.head().project(), project);
-    assert_eq!(verified.head().publisher_generation(), 2);
-    assert_eq!(
-        verified.head().input_digest().as_bytes(),
-        &Sha256::digest(&input)[..]
-    );
-    assert_eq!(verified.layer().resources().portable().len(), 16);
-
-    let mut changed = input;
-    changed[0] ^= 1;
-    assert!(
-        verify_signed_project_policy_source_v1(&packet, &changed, &key.verifying_key(), 20)
-            .is_err()
-    );
-    assert!(
-        verify_signed_project_policy_source_v1(&packet, &changed, &key.verifying_key(), 30)
-            .is_err()
-    );
+    signed.extend_from_slice(&old_packet);
+    old_packet.extend_from_slice(&key.sign(&signed).to_bytes());
+    assert!(matches!(
+        verify_signed_project_policy_source_v2(&old_packet, &old_input, &key.verifying_key(), 20),
+        Err(PolicyDeploymentHeadErrorV1::InvalidHead)
+    ));
 }
 
 #[test]

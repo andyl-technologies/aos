@@ -53,8 +53,8 @@ use crate::{Journal, JournalError};
 
 use super::{
     AdmittedSignedProjectPolicySourceV2, PolicyDeploymentSourcesV1,
-    PolicyPublicationPrerequisitesV1, RootV8ReleasedProofV1, SignedProjectPolicySourceV1,
-    VerifiedSignedProjectPolicySourceV2, normalized_policy_input_digest_v1,
+    PolicyPublicationPrerequisitesV1, RootV8ReleasedProofV1, VerifiedSignedProjectPolicySourceV2,
+    normalized_policy_input_digest_v1,
 };
 use aos_sandbox_policy::{
     CacheDomainInputV1, HardLimitValueV1, PolicyCompilerInputV1, RevocationInputV1,
@@ -114,7 +114,6 @@ pub(crate) use aos_sandbox_protocol::domain_ledger::project_source::{
     HistoricalCreateProjectSourceHeadsV1, create_project_source_commitment_v1,
 };
 
-const DRAFT_DOMAIN: &[u8] = b"aos.sandbox.public-create-policy-draft.v1\0";
 const EXPLICIT_DRAFT_DOMAIN: &[u8] = b"aos.sandbox.public-create-policy-draft.v2\0";
 
 #[cfg(target_os = "linux")]
@@ -379,70 +378,6 @@ impl CurrentCreateProjectPolicySourceV1 {
     pub const fn commitment(&self) -> ObjectDigest {
         self.commitment
     }
-}
-
-/// Checks one complete parentless Create compiler draft against selected sources.
-///
-/// The returned digest records consistency only. Its source observation and
-/// prerequisite heads can change immediately after this call. A publication
-/// issuer must independently hold every writer behind a cross-service fence
-/// through the binding CAS and effect handoff before treating it as authority.
-///
-/// # Errors
-///
-/// Returns [`CurrentCreatePolicySourceErrorV1::NotCurrent`] when the target,
-/// signed project layer, publisher revision, claimed heads, deployment inputs,
-/// or unsupported request/ancestor shape differs.
-pub fn checked_parentless_create_policy_draft_v1(
-    source: &CurrentCreateProjectPolicySourceV1,
-    signed_project: &SignedProjectPolicySourceV1,
-    deployment: &PolicyDeploymentSourcesV1,
-    input: &PolicyCompilerInputV1,
-    prerequisites: &PolicyPublicationPrerequisitesV1,
-    now_unix_seconds: i64,
-) -> Result<ObjectDigest, CurrentCreatePolicySourceErrorV1> {
-    let project_head = signed_project.head();
-    let claimed_heads = project_head.prerequisite_claims();
-    if project_head.project() != source.project
-        || project_head.publisher_generation() != source.policy_generation
-        || project_head.publisher_digest() != source.policy_digest
-        || now_unix_seconds >= project_head.expires_at()
-        || claimed_heads
-            != [
-                prerequisites.ancestry_head(),
-                prerequisites.compiler_authority_head(),
-                prerequisites.cache_domain_head(),
-                prerequisites.revocation_head(),
-            ]
-        || prerequisites.revocation_head() != source.revocation_head
-        || prerequisites.cache_domain_head() != source.cache_domain_head
-        || input.sandbox() != source.sandbox
-        || input.project().project() != source.project
-        || input.project().layer() != signed_project.layer()
-        || input.node() != deployment.node()
-        || input.site() != deployment.site()
-        || input.backend() != deployment.backend()
-        || !input.ancestors().is_empty()
-        || !input.endpoints().entries().is_empty()
-        || !input.destinations().entries().is_empty()
-        || !request_is_inherited(input)
-    {
-        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-    }
-
-    let normalized_input = normalized_policy_input_digest_v1(input)
-        .map_err(|_| CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    Ok(ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(DRAFT_DOMAIN)
-            .chain_update(source.commitment.as_bytes())
-            .chain_update(project_head.packet_digest().as_bytes())
-            .chain_update(project_head.input_digest().as_bytes())
-            .chain_update(prerequisites.digest().as_bytes())
-            .chain_update(normalized_input.as_bytes())
-            .finalize()
-            .into(),
-    ))
 }
 
 /// Checks a parentless Create draft against an admitted explicit V2 source.
@@ -1837,8 +1772,7 @@ mod tests {
     use crate::policy_compiler::{
         ClosedPolicyRootCasBaseV2, PolicyDeploymentInputsV1, decode_policy_deployment_sources_v1,
         propose_closed_current_create_explicit_policy_binding_v2,
-        propose_closed_current_create_policy_binding_v2, verify_policy_deployment_head_v1,
-        verify_signed_project_policy_source_v1, verify_signed_project_policy_source_v2,
+        verify_policy_deployment_head_v1, verify_signed_project_policy_source_v2,
     };
     use aos_sandbox_policy::{
         AuthenticatedCacheDomainV1, AuthenticatedEndpointCatalogV1, AuthenticatedNamespaceCatalogV1,
@@ -2205,21 +2139,6 @@ mod tests {
         let deployment = decode_policy_deployment_sources_v1(&deployment_inputs, deployment_head)
             .expect("typed deployment");
 
-        let project_input = serde_json::to_vec(&serde_json::json!({
-            "generation": 1,
-            "input": {
-                "accounting": vec![serde_json::json!({"kind": "inherit"}); 22],
-                "advisory_actions": [],
-                "cache_domain": "inherit",
-                "grants": [],
-                "namespace_rules": [],
-                "portable": vec![serde_json::json!({"kind": "inherit"}); 16],
-                "revocation": "inherit",
-            },
-            "magic": "AOSPPL01",
-            "project_id": project.to_string(),
-        }))
-        .expect("project bytes");
         let prerequisites = PolicyPublicationPrerequisitesV1::new(
             ObjectDigest::from_bytes([5; 32]),
             ObjectDigest::from_bytes(Sha256::digest(&deployment_packet).into()),
@@ -2229,35 +2148,6 @@ mod tests {
         )
         .expect("prerequisite tuple");
         let project_key = SigningKey::from_bytes(&[21; 32]);
-        let mut project_packet = b"AOSPPH01".to_vec();
-        project_packet.extend_from_slice(project.as_bytes());
-        project_packet.extend_from_slice(&1_u64.to_be_bytes());
-        project_packet.extend_from_slice(&10_i64.to_be_bytes());
-        project_packet.extend_from_slice(&30_i64.to_be_bytes());
-        project_packet.extend_from_slice(&2_u64.to_be_bytes());
-        project_packet.extend_from_slice(&[6; 32]);
-        project_packet.extend_from_slice(&Sha256::digest(&project_input));
-        for head in [
-            prerequisites.ancestry_head(),
-            prerequisites.compiler_authority_head(),
-            prerequisites.cache_domain_head(),
-            prerequisites.revocation_head(),
-        ] {
-            project_packet.extend_from_slice(head.as_bytes());
-        }
-        sign_packet(
-            &mut project_packet,
-            &project_key,
-            b"aos.sandbox.policy-project-head.v1\0",
-        );
-        let signed_project = verify_signed_project_policy_source_v1(
-            &project_packet,
-            &project_input,
-            &project_key.verifying_key(),
-            20,
-        )
-        .expect("signed project");
-
         let verifier = FixtureVerifier;
         let relation =
             AuthenticatedSandboxProjectRelationV1::authenticate(sandbox, project, &verifier)
@@ -2266,8 +2156,7 @@ mod tests {
             relation,
             deployment.node().clone(),
             deployment.site().clone(),
-            ProjectPolicyInputV1::new(project, signed_project.layer().clone())
-                .expect("project layer"),
+            ProjectPolicyInputV1::new(project, inherited_layer()).expect("project layer"),
             Vec::new(),
             RequestPolicyInputV1::new(inherited_layer()).expect("request layer"),
             AuthenticatedEndpointCatalogV1::authenticate(Vec::new(), &verifier)
@@ -2299,17 +2188,6 @@ mod tests {
             commitment: ObjectDigest::from_bytes([9; 32]),
         };
 
-        let draft = checked_parentless_create_policy_draft_v1(
-            &source,
-            &signed_project,
-            &deployment,
-            &input,
-            &prerequisites,
-            20,
-        )
-        .expect("matching draft");
-        assert_ne!(draft.as_bytes(), &[0; 32]);
-
         let heads = CurrentCreatePolicyBarrierHeadsV2 {
             ancestry: prerequisites.ancestry_head(),
             physical_partition: ObjectDigest::from_bytes([22; 32]),
@@ -2323,26 +2201,11 @@ mod tests {
             1,
         )
         .expect("canonical remote root base");
-        // Every currently admitted v1 signed layer inherits both cross-cutting
-        // choices. The closed producer must not invent either one from a
-        // publisher descriptor or an untrusted request.
+        // An inherited candidate still cannot invent a cache-domain choice.
         assert!(matches!(
             PolicyCompilerV1::compile(input.clone()),
             Err(PolicyCompilationError::UnresolvedCacheDomain)
         ));
-        assert!(
-            propose_closed_current_create_policy_binding_v2(
-                &source,
-                heads,
-                &signed_project,
-                deployment_head,
-                &deployment,
-                &input,
-                root_base,
-                20,
-            )
-            .is_err()
-        );
 
         let explicit_project_input = serde_json::to_vec(&serde_json::json!({
             "generation": 1,
@@ -2420,6 +2283,17 @@ mod tests {
             PolicyCompilerLimitsV1::DEFAULT,
         )
         .expect("explicit compiler input");
+        let draft = checked_parentless_create_verified_policy_draft_v2(
+            &source,
+            &explicit_project,
+            &deployment,
+            &explicit_input,
+            &prerequisites,
+            20,
+        )
+        .expect("matching supported draft");
+        assert_ne!(draft.as_bytes(), &[0; 32]);
+
         let explicit_binding = propose_closed_current_create_explicit_policy_binding_v2(
             &source,
             heads,
@@ -2451,13 +2325,13 @@ mod tests {
             ..heads
         };
         assert!(
-            propose_closed_current_create_policy_binding_v2(
+            propose_closed_current_create_explicit_policy_binding_v2(
                 &source,
                 stale_heads,
-                &signed_project,
+                &explicit_project,
                 deployment_head,
                 &deployment,
-                &input,
+                &explicit_input,
                 root_base,
                 20,
             )
@@ -2466,11 +2340,11 @@ mod tests {
 
         source.policy_generation += 1;
         assert!(
-            checked_parentless_create_policy_draft_v1(
+            checked_parentless_create_verified_policy_draft_v2(
                 &source,
-                &signed_project,
+                &explicit_project,
                 &deployment,
-                &input,
+                &explicit_input,
                 &prerequisites,
                 20,
             )
@@ -2480,11 +2354,11 @@ mod tests {
 
         source.revocation_head = ObjectDigest::from_bytes([11; 32]);
         assert!(
-            checked_parentless_create_policy_draft_v1(
+            checked_parentless_create_verified_policy_draft_v2(
                 &source,
-                &signed_project,
+                &explicit_project,
                 &deployment,
-                &input,
+                &explicit_input,
                 &prerequisites,
                 20,
             )
@@ -2494,11 +2368,11 @@ mod tests {
 
         source.cache_domain_head = ObjectDigest::from_bytes([11; 32]);
         assert!(
-            checked_parentless_create_policy_draft_v1(
+            checked_parentless_create_verified_policy_draft_v2(
                 &source,
-                &signed_project,
+                &explicit_project,
                 &deployment,
-                &input,
+                &explicit_input,
                 &prerequisites,
                 20,
             )
@@ -2515,26 +2389,26 @@ mod tests {
             1,
         )
         .expect("changed revocation head");
-        let mut stale_project_packet = project_packet[..248].to_vec();
+        let mut stale_project_packet = explicit_project_packet[..264].to_vec();
         stale_project_packet[216..248].copy_from_slice(stale_revocation_head.as_bytes());
         sign_packet(
             &mut stale_project_packet,
             &project_key,
-            b"aos.sandbox.policy-project-head.v1\0",
+            b"aos.sandbox.policy-project-head.v2\0",
         );
-        let stale_signed_project = verify_signed_project_policy_source_v1(
+        let stale_signed_project = verify_signed_project_policy_source_v2(
             &stale_project_packet,
-            &project_input,
+            &explicit_project_input,
             &project_key.verifying_key(),
             20,
         )
         .expect("signed project with changed revocation claim");
         assert!(
-            checked_parentless_create_policy_draft_v1(
+            checked_parentless_create_verified_policy_draft_v2(
                 &source,
                 &stale_signed_project,
                 &deployment,
-                &input,
+                &explicit_input,
                 &stale_revocation,
                 20,
             )
@@ -2550,22 +2424,22 @@ mod tests {
         )
         .expect("changed cache head");
         assert!(
-            checked_parentless_create_policy_draft_v1(
+            checked_parentless_create_verified_policy_draft_v2(
                 &source,
-                &signed_project,
+                &explicit_project,
                 &deployment,
-                &input,
+                &explicit_input,
                 &stale_cache,
                 20,
             )
             .is_err()
         );
         assert!(
-            checked_parentless_create_policy_draft_v1(
+            checked_parentless_create_verified_policy_draft_v2(
                 &source,
-                &signed_project,
+                &explicit_project,
                 &deployment,
-                &input,
+                &explicit_input,
                 &prerequisites,
                 30,
             )

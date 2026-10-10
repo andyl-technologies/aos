@@ -259,7 +259,6 @@ pub use binding_v2::{
     compare_closed_policy_binding_hold_claims_v2,
     compare_closed_policy_binding_released_cache_claims_v2,
     propose_closed_current_create_explicit_policy_binding_v2,
-    propose_closed_current_create_policy_binding_v2,
     read_fixed_inert_closed_policy_binding_hold_v1,
     recover_fixed_closed_policy_binding_decision_v2, recover_fixed_closed_root_effect_ack_v1,
     recover_fixed_closed_root_v8_effect_ack_v1,
@@ -272,8 +271,7 @@ pub use binding_v2::{
     release_fixed_inert_closed_policy_binding_hold_v1,
     require_no_fixed_closed_policy_binding_hold_v1, settle_fixed_closed_root_v8_predecessor_v1,
     sign_fixed_controller_v8_final_release_v1, staged_closed_policy_signer_challenge_v2,
-    verify_fixed_closed_root_v8_terminal_v1, with_fixed_closed_policy_binding_session_v2,
-    with_fixed_explicit_closed_policy_binding_session_v2,
+    verify_fixed_closed_root_v8_terminal_v1, with_fixed_explicit_closed_policy_binding_session_v2,
 };
 pub use cache_journal_readback::{
     ClosedCacheJoinedReadbackErrorV2, read_fixed_policy_cache_hold_v1,
@@ -329,11 +327,10 @@ pub use controller_v8_settlement_readback::{
 pub use deployment_head::{
     PolicyDeploymentCatalogDeclarationsV2, PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1,
     PolicyDeploymentInputProfileV2, PolicyDeploymentInputsV1, PolicyDeploymentSourcesV1,
-    SignedProjectPolicyHeadV1, SignedProjectPolicySourceV1, admit_fixed_policy_deployment_head_v1,
+    SignedProjectPolicyHeadV1, admit_fixed_policy_deployment_head_v1,
     admit_fixed_policy_deployment_profile_v2, admit_fixed_policy_signer_pins_v1,
-    admit_fixed_signed_project_policy_source_v1, decode_policy_deployment_sources_v1,
-    verify_current_policy_deployment_profile_v2, verify_policy_deployment_head_v1,
-    verify_signed_project_policy_source_v1,
+    decode_policy_deployment_sources_v1, verify_current_policy_deployment_profile_v2,
+    verify_policy_deployment_head_v1,
 };
 pub use project_admission_root::{
     RootProjectAdmissionIntentV1, RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeV1,
@@ -396,7 +393,7 @@ pub use public_create_source::{
 };
 pub use public_create_source::{
     CurrentCreatePolicyBarrierHeadsV2, CurrentCreatePolicySourceErrorV1,
-    CurrentCreateProjectPolicySourceV1, checked_parentless_create_policy_draft_v1,
+    CurrentCreateProjectPolicySourceV1,
     checked_parentless_create_policy_draft_v2, checked_parentless_create_verified_policy_draft_v2,
     current_parentless_create_project_source_for_operation_v1,
     current_parentless_create_project_source_v1, with_current_create_policy_source_barrier_v2,

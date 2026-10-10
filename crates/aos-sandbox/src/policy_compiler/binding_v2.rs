@@ -60,8 +60,7 @@ use super::source_hold_readback::{
 };
 use super::source_hold_readback_v2::verify_source_hold_readback_with_names_v2;
 use super::{
-    PolicyCompilerJournalErrorV1, SignedProjectPolicyHeadV1, SignedProjectPolicyHeadV2,
-    verify_signed_project_policy_source_v2,
+    PolicyCompilerJournalErrorV1, SignedProjectPolicyHeadV2, verify_signed_project_policy_source_v2,
 };
 
 mod ack;
@@ -94,10 +93,7 @@ pub use ack_v8::{
     sign_fixed_controller_v8_final_release_v1, verify_fixed_closed_root_v8_terminal_v1,
 };
 
-pub use producer::{
-    propose_closed_current_create_explicit_policy_binding_v2,
-    propose_closed_current_create_policy_binding_v2,
-};
+pub use producer::{propose_closed_current_create_explicit_policy_binding_v2};
 pub(super) use producer::{ClosedCreateProposalFieldViewV2, encode_closed_proposal_fields};
 pub use source_terminal::{
     CLOSED_SOURCE_TERMINAL_RECORD_BYTES_V1, ClosedSourceTerminalClaimV1,
@@ -909,19 +905,6 @@ struct RootProjectHeadFieldsV2 {
     packet_digest: ObjectDigest,
     input_digest: ObjectDigest,
     prerequisite_claims: [ObjectDigest; 4],
-}
-
-impl From<SignedProjectPolicyHeadV1> for RootProjectHeadFieldsV2 {
-    fn from(head: SignedProjectPolicyHeadV1) -> Self {
-        Self {
-            project: head.project(),
-            publisher_generation: head.publisher_generation(),
-            publisher_head: head.publisher_digest(),
-            packet_digest: head.packet_digest(),
-            input_digest: head.input_digest(),
-            prerequisite_claims: head.prerequisite_claims(),
-        }
-    }
 }
 
 impl From<SignedProjectPolicyHeadV2> for RootProjectHeadFieldsV2 {
@@ -1958,50 +1941,6 @@ fn compare_cache_hold(
     })
 }
 
-/// Opens one fixed root session and retains its lock through a closed exchange.
-///
-/// The role keys and generations must come from root-owned deployment
-/// credentials. The fixed journal independently retains their exact pins and
-/// deployment head. The controller UID/GID must come from protected service
-/// configuration; the root daemon must verify kernel peer credentials before
-/// invoking this function. The callback may perform one closed CAS and a
-/// nonce-bound transport ACK, but no policy publication or effect.
-///
-/// # Errors
-///
-/// Rejects unsafe root custody, missing/changed signer pins or deployment
-/// head, signed-project mismatch, absent CAS, or failed post-action snapshot.
-pub fn with_fixed_closed_policy_binding_session_v2<R>(
-    expected_deployment_packet: &[u8],
-    deployment_signer_generation: u64,
-    deployment_key: &VerifyingKey,
-    project_head: SignedProjectPolicyHeadV1,
-    project_signer_generation: u64,
-    project_key: &VerifyingKey,
-    controller_uid: u32,
-    controller_gid: u32,
-    exchange: impl FnOnce(&mut ClosedPolicyRootSessionV2<'_>) -> R,
-) -> Result<R, PolicyCompilerJournalErrorV1> {
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
-    with_closed_policy_binding_session_in_journal_v2(
-        &mut journal,
-        expected_deployment_packet,
-        deployment_signer_generation,
-        deployment_key,
-        project_head.into(),
-        None,
-        project_signer_generation,
-        project_key,
-        controller_uid,
-        controller_gid,
-        exchange,
-    )
-}
-
 /// Opens a root-held closed session only for the exact admitted V2 project source.
 ///
 /// The project packet and canonical input are reverified under the pinned
@@ -2052,7 +1991,7 @@ pub fn with_fixed_explicit_closed_policy_binding_session_v2<R>(
         deployment_signer_generation,
         deployment_key,
         head.into(),
-        Some((project_packet, project_input)),
+        (project_packet, project_input),
         project_signer_generation,
         project_key,
         controller_uid,
@@ -2068,7 +2007,7 @@ fn with_closed_policy_binding_session_in_journal_v2<R>(
     deployment_signer_generation: u64,
     deployment_key: &VerifyingKey,
     project_head: RootProjectHeadFieldsV2,
-    project_record: Option<(&[u8], &[u8])>,
+    project_record: (&[u8], &[u8]),
     project_signer_generation: u64,
     project_key: &VerifyingKey,
     controller_uid: u32,
@@ -2096,7 +2035,7 @@ fn with_closed_policy_binding_session_in_journal_v2<R>(
     Ok(result)
 }
 
-// Both the old effectful exchange and Q04's nonissuing preview use this same
+// The explicit closed exchange and Q04's nonissuing preview use this same
 // fixed-record/pin/identity admission. It does not open another Root writer.
 #[allow(clippy::too_many_arguments)]
 fn closed_policy_binding_session_in_journal_v2<'journal>(
@@ -2105,7 +2044,7 @@ fn closed_policy_binding_session_in_journal_v2<'journal>(
     deployment_signer_generation: u64,
     deployment_key: &VerifyingKey,
     project_head: RootProjectHeadFieldsV2,
-    project_record: Option<(&[u8], &[u8])>,
+    project_record: (&[u8], &[u8]),
     project_signer_generation: u64,
     project_key: &VerifyingKey,
     controller_uid: u32,
@@ -2129,24 +2068,11 @@ fn closed_policy_binding_session_in_journal_v2<'journal>(
     {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
-    let project_is_current = match project_record {
-        None => {
-            let legacy_source = authority
-                .get(PROJECT_HEAD_KEY)?
-                .zip(authority.get(PROJECT_INPUT_KEY)?);
-            legacy_source.is_some_and(|(packet, input)| {
-                project_head.packet_digest.as_bytes() == Sha256::digest(packet).as_slice()
-                    && project_head.input_digest.as_bytes() == Sha256::digest(input).as_slice()
-            }) && authority.get(HEAD_KEY_V2)?.is_none()
-                && authority.get(INPUT_KEY_V2)?.is_none()
-        }
-        Some((packet, input)) => {
-            authority.get(HEAD_KEY_V2)? == Some(packet)
-                && authority.get(INPUT_KEY_V2)? == Some(input)
-                && authority.get(PROJECT_HEAD_KEY)?.is_none()
-                && authority.get(PROJECT_INPUT_KEY)?.is_none()
-        }
-    };
+    let (packet, input) = project_record;
+    let project_is_current = authority.get(HEAD_KEY_V2)? == Some(packet)
+        && authority.get(INPUT_KEY_V2)? == Some(input)
+        && authority.get(PROJECT_HEAD_KEY)?.is_none()
+        && authority.get(PROJECT_INPUT_KEY)?.is_none();
     if !project_is_current {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
@@ -2216,7 +2142,7 @@ pub(super) fn q04_preview_stage_in_journal_v1(
         deployment_signer_generation,
         deployment_key,
         head.into(),
-        Some((project_packet, project_input)),
+        (project_packet, project_input),
         project_signer_generation,
         project_key,
         controller_uid,
@@ -2452,7 +2378,7 @@ fn recover_committed_source_held_binding_in_journal_v2(
         deployment_generation,
         &deployment_key,
         verified.head().into(),
-        Some((&project, &input)),
+        (&project, &input),
         project_generation,
         &project_key,
         controller_uid,
@@ -3343,84 +3269,282 @@ mod tests {
     }
 
     #[test]
-    fn legacy_root_session_rejects_an_admitted_explicit_project_source() {
-        let directory = tempfile::tempdir().expect("protected test directory");
-        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-            .expect("private directory");
-        let mut journal = open_test_root(directory.path());
-        let deployment_key = SigningKey::from_bytes(&[3; 32]).verifying_key();
-        let project_key = SigningKey::from_bytes(&[4; 32]).verifying_key();
-        let deployment_packet = b"current-deployment";
-        let legacy_packet = b"legacy-project-packet";
-        let legacy_input = b"legacy-project-input";
-        let pins = encode_policy_signer_pins_v1(2, &deployment_key, 3, &project_key)
-            .expect("root signer pins");
-        let transaction = JournalTransaction::new(
-            [31; 16],
-            vec![
+    fn explicit_sessions_refuse_retained_legacy_sources_live_and_after_reopen() {
+        use std::cell::Cell;
+        use super::super::deployment_head::tests::{
+            explicit_project_input, retired_project_input, signed_deployment_fixture,
+            signed_explicit_project_packet, signed_retired_project_packet,
+        };
+
+        for (retired, explicit) in [(false, true), (true, false), (true, true)] {
+            let directory = tempfile::tempdir().expect("protected test directory");
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+                .expect("private directory");
+            let mut journal = open_test_root(directory.path());
+            let deployment_key = SigningKey::from_bytes(&[5; 32]);
+            let project_key = SigningKey::from_bytes(&[6; 32]);
+            let (deployment_packet, _) = signed_deployment_fixture(&deployment_key);
+            let mut binding = cas_fixture();
+            let issuer = Sha256::new()
+                .chain_update(ISSUER_DOMAIN)
+                .chain_update(1000_u32.to_be_bytes())
+                .chain_update(1000_u32.to_be_bytes())
+                .finalize();
+            binding.issuer_owner.copy_from_slice(&issuer[..16]);
+            binding.publisher_generation = 1;
+            binding.deployment_signer_generation = 2;
+            binding.project_signer_generation = 3;
+            binding.compiler_head =
+                ObjectDigest::from_bytes(Sha256::digest(&deployment_packet).into());
+            let input = explicit_project_input(binding.project);
+            let packet = signed_explicit_project_packet(
+                binding.project,
+                binding.publisher_head,
+                binding.ancestry_head,
+                binding.cache_domain_head,
+                binding.revocation_head,
+                &deployment_packet,
+                &input,
+                &project_key,
+            );
+            let verified = verify_signed_project_policy_source_v2(
+                &packet,
+                &input,
+                &project_key.verifying_key(),
+                20,
+            )
+            .expect("complete signed V2 source");
+            let old_input = retired_project_input(binding.project);
+            let old_packet = signed_retired_project_packet(
+                binding.project,
+                binding.publisher_head,
+                binding.ancestry_head,
+                binding.cache_domain_head,
+                binding.revocation_head,
+                &deployment_packet,
+                &old_input,
+                &project_key,
+            );
+            binding.project_policy_head = ObjectDigest::from_bytes(
+                Sha256::digest(if explicit { &packet } else { &old_packet }).into(),
+            );
+            binding.project_policy_input = ObjectDigest::from_bytes(
+                Sha256::digest(if explicit { &input } else { &old_input }).into(),
+            );
+            let pins = encode_policy_signer_pins_v1(
+                2,
+                &deployment_key.verifying_key(),
+                3,
+                &project_key.verifying_key(),
+            )
+            .expect("exact provisioned pins");
+            let mut records = vec![
                 JournalRecord::put(
                     RecordNamespace::DesiredState,
                     HEAD_KEY.to_vec(),
-                    deployment_packet.to_vec(),
+                    deployment_packet.clone(),
                 ),
                 JournalRecord::put(
                     RecordNamespace::DesiredState,
                     SIGNER_PINS_KEY.to_vec(),
                     pins,
                 ),
-                JournalRecord::put(
+            ];
+            if explicit {
+                records.push(JournalRecord::put(
                     RecordNamespace::DesiredState,
                     HEAD_KEY_V2.to_vec(),
-                    b"explicit-source".to_vec(),
-                ),
-                JournalRecord::put(
+                    packet.clone(),
+                ));
+                records.push(JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    INPUT_KEY_V2.to_vec(),
+                    input.clone(),
+                ));
+            }
+            if retired {
+                records.push(JournalRecord::put(
                     RecordNamespace::DesiredState,
                     PROJECT_HEAD_KEY.to_vec(),
-                    legacy_packet.to_vec(),
-                ),
-                JournalRecord::put(
+                    old_packet.clone(),
+                ));
+                records.push(JournalRecord::put(
                     RecordNamespace::DesiredState,
                     PROJECT_INPUT_KEY.to_vec(),
-                    legacy_input.to_vec(),
-                ),
-            ],
-        )
-        .expect("root transaction");
-        journal
-            .commit(&transaction)
-            .expect("protected source record");
-        let project_head = SignedProjectPolicyHeadV1 {
-            project: ProjectId::from_bytes([1; 16]),
-            generation: 1,
-            packet_digest: ObjectDigest::from_bytes(Sha256::digest(legacy_packet).into()),
-            input_digest: ObjectDigest::from_bytes(Sha256::digest(legacy_input).into()),
-            publisher_generation: 1,
-            publisher_digest: ObjectDigest::from_bytes([7; 32]),
-            prerequisites: [
-                ObjectDigest::from_bytes([8; 32]),
-                ObjectDigest::from_bytes(Sha256::digest(deployment_packet).into()),
-                ObjectDigest::from_bytes([9; 32]),
-                ObjectDigest::from_bytes([10; 32]),
-            ],
-            expires_at: 30,
-        };
+                    old_input.clone(),
+                ));
+            }
+            journal
+                .commit(
+                    &JournalTransaction::new([31; 16], records)
+                        .expect("complete outer source transaction"),
+                )
+                .expect("protected source rows");
+            let encoded = binding.encode().expect("canonical historical binding");
+            let head = closed_policy_binding_digest_v2(&encoded).expect("binding digest");
+            let held = RootBindingHoldV1 {
+                issuer_owner: binding.issuer_owner,
+                binding: head,
+                epoch: 1,
+                held: true,
+            }
+            .encode()
+            .expect("canonical historical unresolved hold");
+            let calls = Cell::new(0);
 
-        assert!(matches!(
-            with_closed_policy_binding_session_in_journal_v2(
-                &mut journal,
-                deployment_packet,
-                2,
-                &deployment_key,
-                project_head.into(),
-                None,
-                3,
-                &project_key,
-                1000,
-                1000,
-                |_| (),
-            ),
-            Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
-        ));
+            if retired {
+                // Retained history is plain DATA; it does not mint a current grant.
+                journal
+                    .commit(
+                        &JournalTransaction::new(
+                            [32; 16],
+                            vec![
+                                JournalRecord::put(
+                                    RecordNamespace::DesiredState,
+                                    binding.key().unwrap(),
+                                    encoded.clone(),
+                                ),
+                                JournalRecord::put(
+                                    RecordNamespace::DesiredState,
+                                    ROOT_BINDING_HEAD_KEY.to_vec(),
+                                    head.as_bytes().to_vec(),
+                                ),
+                                JournalRecord::put(
+                                    RecordNamespace::DesiredState,
+                                    HOLD_KEY.to_vec(),
+                                    held.to_vec(),
+                                ),
+                            ],
+                        )
+                        .expect("complete historical binding transaction"),
+                    )
+                    .expect("retained unresolved custody");
+                let before = fs::read(directory.path().join("closed-binding.journal")).unwrap();
+                let sequence = journal.snapshot_sequence();
+
+                assert!(matches!(
+                    with_closed_policy_binding_session_in_journal_v2(
+                        &mut journal,
+                        &deployment_packet,
+                        2,
+                        &deployment_key.verifying_key(),
+                        verified.head().into(),
+                        (&packet, &input),
+                        3,
+                        &project_key.verifying_key(),
+                        1000,
+                        1000,
+                        |_| calls.set(calls.get() + 1),
+                    ),
+                    Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
+                ));
+                assert_eq!(calls.get(), 0);
+                assert_eq!(journal.snapshot_sequence(), sequence);
+                assert_eq!(
+                    fs::read(directory.path().join("closed-binding.journal")).unwrap(),
+                    before
+                );
+                assert_eq!(
+                    journal.get(RecordNamespace::DesiredState, PROJECT_HEAD_KEY),
+                    Some(old_packet.as_slice())
+                );
+                assert_eq!(
+                    journal.get(RecordNamespace::DesiredState, PROJECT_INPUT_KEY),
+                    Some(old_input.as_slice())
+                );
+                assert_eq!(
+                    journal.get(RecordNamespace::DesiredState, HOLD_KEY),
+                    Some(held.as_slice())
+                );
+                drop(journal);
+
+                let mut recovered = open_test_root(directory.path());
+                let authority = recovered
+                    .claim_protected_authority(RecordNamespace::DesiredState)
+                    .unwrap();
+                assert_eq!(
+                    current_root_binding_chain(&authority).unwrap(),
+                    (head, 2, 1)
+                );
+                assert!(ensure_root_binding_unheld(&authority).is_err());
+                drop(authority);
+                assert!(matches!(
+                    recover_committed_source_held_binding_in_journal_v2(
+                        &mut recovered,
+                        head,
+                        1,
+                        ObjectDigest::from_bytes([90; 32]),
+                        1000,
+                        1000,
+                    ),
+                    Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
+                ));
+                assert_eq!(recovered.snapshot_sequence(), sequence);
+                assert_eq!(
+                    fs::read(directory.path().join("closed-binding.journal")).unwrap(),
+                    before
+                );
+                assert_eq!(
+                    recovered.get(RecordNamespace::DesiredState, HOLD_KEY),
+                    Some(held.as_slice())
+                );
+                let authority = recovered
+                    .claim_protected_authority(RecordNamespace::DesiredState)
+                    .unwrap();
+                assert!(ensure_root_binding_unheld(&authority).is_err());
+            } else {
+                let committed = with_closed_policy_binding_session_in_journal_v2(
+                    &mut journal,
+                    &deployment_packet,
+                    2,
+                    &deployment_key.verifying_key(),
+                    verified.head().into(),
+                    (&packet, &input),
+                    3,
+                    &project_key.verifying_key(),
+                    1000,
+                    1000,
+                    |session| {
+                        calls.set(calls.get() + 1);
+                        session.commit_closed_binding(&encoded)
+                    },
+                )
+                .expect("supported explicit session")
+                .expect("inert closed CAS");
+                assert_eq!(calls.get(), 1);
+                assert_eq!(committed.binding(), head);
+                assert_eq!(
+                    journal.get(RecordNamespace::DesiredState, HOLD_KEY),
+                    Some(held.as_slice())
+                );
+                let before = fs::read(directory.path().join("closed-binding.journal")).unwrap();
+                let sequence = journal.snapshot_sequence();
+                drop(journal);
+
+                let mut recovered = open_test_root(directory.path());
+                let replayed = with_closed_policy_binding_session_in_journal_v2(
+                    &mut recovered,
+                    &deployment_packet,
+                    2,
+                    &deployment_key.verifying_key(),
+                    verified.head().into(),
+                    (&packet, &input),
+                    3,
+                    &project_key.verifying_key(),
+                    1000,
+                    1000,
+                    |session| session.commit_closed_binding(&encoded),
+                )
+                .expect("supported reopened session")
+                .expect("exact inert CAS replay");
+                assert_eq!(replayed, committed);
+                assert_eq!(recovered.snapshot_sequence(), sequence);
+                assert_eq!(
+                    fs::read(directory.path().join("closed-binding.journal")).unwrap(),
+                    before
+                );
+            }
+        }
     }
 
     #[test]
@@ -3564,7 +3688,7 @@ mod tests {
             2,
             &deployment_key,
             head,
-            Some((project_packet, project_input)),
+            (project_packet, project_input),
             3,
             &project_key,
             1000,
@@ -3581,7 +3705,7 @@ mod tests {
                 2,
                 &deployment_key,
                 head,
-                Some((project_packet, b"substituted-input")),
+                (project_packet, b"substituted-input"),
                 3,
                 &project_key,
                 1000,
@@ -3597,7 +3721,7 @@ mod tests {
                 4,
                 &deployment_key,
                 head,
-                Some((project_packet, project_input)),
+                (project_packet, project_input),
                 3,
                 &project_key,
                 1000,
