@@ -242,3 +242,58 @@ fn signing_usage_combines_exact_read_with_reviewed_mutation() {
         .collect::<Vec<_>>();
     assert_eq!(names, ["show", "plan", "apply"]);
 }
+
+#[test]
+fn hub_assessment_wait_is_optional_bounded_and_available_through_the_maintain_alias() {
+    for family in ["assessment", "maintain"] {
+        let base = [
+            "aos",
+            "hub",
+            family,
+            "scan",
+            "--registry",
+            "fixture",
+            "--request",
+            "submission.json",
+        ];
+        let cli::Commands::Hub {
+            command:
+                cli::HubCmd::Assessment {
+                    command:
+                        cli::HubAssessmentCmd::Scan {
+                            wait, wait_seconds, ..
+                        },
+                },
+        } = parse_cli(base).unwrap().command
+        else {
+            panic!("assessment scan command expected");
+        };
+        assert!(!wait);
+        assert_eq!(wait_seconds, 3600);
+        let argv = base.into_iter().chain(["--wait", "--wait-seconds", "600"]);
+        let cli::Commands::Hub {
+            command:
+                cli::HubCmd::Assessment {
+                    command:
+                        cli::HubAssessmentCmd::Scan {
+                            wait, wait_seconds, ..
+                        },
+                },
+        } = parse_cli(argv).unwrap().command
+        else {
+            panic!("assessment scan command expected");
+        };
+        assert!(wait);
+        assert_eq!(wait_seconds, 600);
+        assert!(parse_cli(base.into_iter().chain(["--wait-seconds", "600"])).is_err());
+        for seconds in ["0", "3601"] {
+            assert!(
+                parse_cli(
+                    base.into_iter()
+                        .chain(["--wait", "--wait-seconds", seconds])
+                )
+                .is_err()
+            );
+        }
+    }
+}
