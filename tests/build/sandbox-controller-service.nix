@@ -23,7 +23,7 @@
   runtimeSource = runtimeRootSource + activationSource + activationConfigurationSource + effectsSource + effectAdmissionSource + effectExecutionSource + effectLifecycleSource + effectSnapshotCoordinationSource + effectExecutionTestSource + effectLifecycleTestSource + workerSource + workerTestSource + commandsSource + publicRpcSource + publicRpcTestSource;
   diagnosticSource = builtins.readFile ../../crates/aos-sandbox-services/src/controller/diagnostic.rs;
   assemblySource = builtins.readFile ../../crates/aos-sandbox-services/src/controller.rs;
-  journalSource = builtins.readFile ../../crates/aos-sandbox/src/controller_service/journal.rs;
+  journalSource = builtins.readFile ../../crates/aos-sandbox/src/journal/controller.rs;
   catalogReconciliationSource =
     builtins.readFile ../../crates/aos-sandbox/src/host_catalog_reconciliation.rs;
   resourceInventorySource =
