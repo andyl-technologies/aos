@@ -249,6 +249,8 @@ test('owner-private socket keeps old variant and External verifier; new request 
     async () => {
       if (refuse) throw new Error('private namespace diagnostic canary');
       return { version: 1, observationScope: 'controlled-callback' };
+    }, async () => {
+      throw new Error('private anchor diagnostic canary');
     });
   try {
     await server.ready;
@@ -272,6 +274,12 @@ test('owner-private socket keeps old variant and External verifier; new request 
     assert.equal(refusal.status, 'refused');
     assert.equal(refusal.version, 1);
     assert.match(refusal.namespaceCheckLine, /^[0-9]+$/);
+    const anchorRefusal = await socketRequest(path.join(root, 'control.sock'),
+      { version: 1, kind: 'oci-sdk-anchor-create' });
+    assert.deepEqual(Object.keys(anchorRefusal).sort(), ['anchorCheckLine', 'status', 'version']);
+    assert.equal(anchorRefusal.status, 'refused');
+    assert.match(anchorRefusal.anchorCheckLine, /^[0-9]+$/);
+    assert.equal(sdkDispatches, 0);
   } finally {
     await server.close();
     rmSync(root, { recursive: true });

@@ -17,6 +17,7 @@ import re
 import socket
 import stat
 import struct
+import sys
 import time
 
 
@@ -157,6 +158,12 @@ def dispatch(original_directory, socket_file, node_file):
     if not int(original["issuedAt"]) <= int(time.time()) < int(original["expiresAt"]):
         raise ValueError("anchor reply arrived after expiry; retain captured response")
     result = namespace_reader.closed_json(response)
+    if (set(result) == {"version", "status", "anchorCheckLine"}
+            and result["version"] == 1 and result["status"] == "refused"
+            and isinstance(result["anchorCheckLine"], str)
+            and re.fullmatch(r"[0-9]{1,8}|unknown", result["anchorCheckLine"])):
+        print("local OCI anchor runner check refused at line " + result["anchorCheckLine"], file=sys.stderr)
+        raise ValueError("anchor runner refused; retain original")
     if (runner != namespace_reader.process_identity(runner["pid"], node_file)
             or result.get("originalSha256") != request["originalSha256"]
             or result.get("runId") != original["runId"]):

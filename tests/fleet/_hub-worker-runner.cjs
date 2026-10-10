@@ -110,7 +110,13 @@ function acceptanceRegistryServer(
           return;
         }
         if (request.version === 1 && request.kind === 'oci-sdk-anchor-create') {
-          socket.end(JSON.stringify(await ociAnchorCreation(request)) + '\n');
+          try {
+            socket.end(JSON.stringify(await ociAnchorCreation(request)) + '\n');
+          } catch (error) {
+            const frame = error.stack?.split('\n').find(line => line.includes(`${__filename}:`));
+            const line = frame?.split(`${__filename}:`)[1]?.match(/^[0-9]+/)?.[0] ?? 'unknown';
+            socket.end(JSON.stringify({ version: 1, status: 'refused', anchorCheckLine: line }) + '\n');
+          }
           return;
         }
         if (request.version === 1 && request.kind === 'oci-sdk-acceptance-install') {

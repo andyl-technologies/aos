@@ -146,7 +146,7 @@ class AnchorFixtureTests(unittest.TestCase):
             self.assertFalse(thread.is_alive())
 
     def test_unknown_or_substituted_reply_preserves_intent_and_never_creates_anchor(self):
-        for mode in ("unknown", "version", "body-digest", "scope", "expiry"):
+        for mode in ("unknown", "runner-check", "version", "body-digest", "scope", "expiry"):
             with self.subTest(mode=mode):
                 if self.original_directory.exists():
                     self.tearDown()
@@ -156,6 +156,8 @@ class AnchorFixtureTests(unittest.TestCase):
                 if mode == "unknown":
                     response = {"status": "unknown", "runId": original["runId"],
                         "originalSha256": response["originalSha256"]}
+                elif mode == "runner-check":
+                    response = {"version": 1, "status": "refused", "anchorCheckLine": "123"}
                 elif mode == "version":
                     response["anchor"]["object"]["provider_version"] = ""
                 elif mode == "body-digest":
