@@ -5,12 +5,14 @@
   containerPublicationInputs,
   databaseUrl,
   fixture,
+  managedFixtureModules,
   nativeOriginUrl,
   nextPublication,
   parityRouteKeys,
   pkgs,
   processSampler,
   publication,
+  qualificationDriver,
   qualificationKeys,
   releasePublicationKeys,
   releaseReceiptKey,
@@ -18,28 +20,33 @@
   serverCertificate,
   serverPrivateKey,
   storageKey,
+  workerDist,
   workerOptions,
   workerRunner,
 }:
 # python
 ''
-  worker.succeed(textwrap.dedent("""
-      umask 077
-      install -d -m 0700 /var/lib/hybrid-worker
-      cd /var/lib/hybrid-worker
-      # The pinned Miniflare copies NODE_EXTRA_CA_CERTS into workerd's
-      # outbound TLS policy; SSL_CERT_FILE alone does not install that root.
-      NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \\
-      SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \\
-        MINIFLARE_WORKERD_PATH=${pkgs.workerd-source}/bin/workerd \\
-        ${pkgs.nodejs}/bin/node ${workerRunner}/value \\
-        ${pkgs.miniflare} ${workerOptions}/value \\
-        > /var/lib/hybrid-worker/worker.log 2>&1 < /dev/null &
-      echo $! > /var/lib/hybrid-worker/worker.pid
-  """), timeout=30)
+  proxy_tools = {
+      "python": "${pkgs.python3}/bin/python3", "node": "${pkgs.nodejs}/bin/node",
+      "runner": "${workerRunner}/value", "miniflare": "${pkgs.miniflare}",
+      "workerd": "${pkgs.workerd-source}/bin/workerd", "curl": CURL,
+      "hub": "${pkgs.aos-hub}/bin/aos-hub", "reviewer": "${pkgs.aos-hub}/bin/aos-hub-direct-review",
+      "workerSourcePath": "${workerDist.src}", "workerDistribution": "${workerDist}",
+      "wasm": "${workerDist}/index.wasm", "shim": "${workerDist}/shim.mjs",
+      "nixBin": "${pkgs.nix}/bin", "qualificationDriver": "${qualificationDriver}/value",
+      "ociNamespaceObserver": "${managedFixtureModules}/_hub-oci-sdk-namespace.py",
+      "ociAnchor": "${managedFixtureModules}/_hub-oci-sdk-anchor.py",
+      "ociInstaller": "${managedFixtureModules}/_hub-oci-sdk-install.py",
+      "nativeObserverUser": "aos-hub", "runuser": "${pkgs.util-linux}/bin/runuser",
+      "chown": "${pkgs.coreutils}/bin/chown", "systemctl": "${pkgs.systemd}/bin/systemctl",
+  }
+  proxy_prepared = prepare_proxy_oci(worker, native, proxy_tools, "${workerOptions}/value")
+  proxy_worker_process = start_direct_worker(worker, proxy_tools,
+      proxy_prepared["configurationFile"], "worker")
   wait_worker_transport(
       worker, CURL, "${pkgs.python3}/bin/python3", EXTERNAL_DIRECT,
   )
+  proxy_oci_installation = qualify_proxy_oci(native, worker, proxy_tools, proxy_prepared, proxy_worker_process)
 
   def worker_runtime_status():
       return worker.succeed(textwrap.dedent("""

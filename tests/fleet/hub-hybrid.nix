@@ -47,10 +47,9 @@
     if externalDirect
     then import ./_hub-garage-refusal-drain.nix {inherit pkgs;}
     else pkgs.garage;
-  workerDist =
-    if externalDirect
-    then pkgs.aos-hub-direct-guard-e2e.passthru.workerDist
-    else pkgs.aos-hub-worker-dist;
+  # Both local fixtures need the explicit emulator-only OCI provider purpose.
+  # Its absent slot still refuses writes until actual observations are reviewed.
+  workerDist = pkgs.aos-hub-direct-guard-e2e.passthru.workerDist;
   alternateRevision = import ./_hub-direct-read-revision-fixture.nix {
     inherit lib pkgs;
     worker = workerDist;
@@ -784,6 +783,9 @@
         processSampler
         workerOptions
         parityRouteKeys
+        workerDist.src
+        qualificationDriver
+        managedFixtureModules
       ]
       ++ publication.nativeRoots
       ++ nextPublication.nativeRoots
@@ -904,6 +906,14 @@ in {
     builtins.readFile ./_hub-publication.py
     + builtins.readFile ./_hub-perf.py
     + builtins.readFile ./_hub-direct-transport.py
+    + lib.optionalString (!externalDirect) (
+      builtins.readFile ./_hub-managed-pair.py
+      + builtins.readFile ./_hub-direct-operator.py
+      + builtins.readFile ./_hub-direct-review.py
+      + builtins.readFile ./_hub-direct-worker-lifecycle.py
+      + builtins.readFile ./_hub-direct-flow.py
+      + builtins.readFile ./_hub-proxy-oci.py
+    )
     + lib.optionalString externalDirect (
       builtins.readFile ./_hub-direct-controls.py
       + builtins.readFile ./_hub-managed-pair.py
@@ -1445,7 +1455,7 @@ in {
         ''
       else
         import ./_hub-hybrid-legacy.nix {
-          inherit channelReceiptKey containerPublicationInputs databaseUrl fixture nativeOriginUrl nextPublication parityRouteKeys pkgs processSampler publication qualificationKeys releasePublicationKeys releaseReceiptKey secretVersionManifest serverCertificate serverPrivateKey storageKey workerOptions workerRunner;
+          inherit channelReceiptKey containerPublicationInputs databaseUrl fixture managedFixtureModules nativeOriginUrl nextPublication parityRouteKeys pkgs processSampler publication qualificationDriver qualificationKeys releasePublicationKeys releaseReceiptKey secretVersionManifest serverCertificate serverPrivateKey storageKey workerDist workerOptions workerRunner;
         }
     );
 }

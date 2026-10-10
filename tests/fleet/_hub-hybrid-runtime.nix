@@ -29,11 +29,7 @@ in {
     native = toString runtimePkgs.aos-hub;
     client = toString runtimePkgs.aos;
     console = toString runtimePkgs.aos-hub-console-dist;
-    worker = toString (
-      if externalDirect
-      then runtimePkgs.aos-hub-direct-guard-e2e.passthru.workerDist
-      else runtimePkgs.aos-hub-worker-dist
-    );
+    worker = toString runtimePkgs.aos-hub-direct-guard-e2e.passthru.workerDist;
     node = toString runtimePkgs.nodejs;
     workerd = toString runtimePkgs.workerd-source;
     driver = toString runtimePkgs.aos-test-driver;
