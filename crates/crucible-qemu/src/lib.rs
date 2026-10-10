@@ -191,8 +191,8 @@ pub use launch::{
 };
 #[cfg(target_os = "linux")]
 pub use linux_attempt_host::{
-    LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory, LinuxQemuAttemptHostOwner,
-    LinuxQemuNativeResourceController, LinuxQemuNativeResourceError,
+    AdmittedHostConfigurationError, LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory,
+    LinuxQemuAttemptHostOwner, LinuxQemuNativeResourceController, LinuxQemuNativeResourceError,
 };
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 #[doc(hidden)]

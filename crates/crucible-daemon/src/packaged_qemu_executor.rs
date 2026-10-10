@@ -27,6 +27,8 @@ use crucible_campaign::{
     FindingCandidateBundleId, ObservationId, ScenarioArtifactId, SubmitAttemptRequest,
 };
 use crucible_cas::content_store::ImmutableBlobBackend;
+#[cfg(feature = "private-measurement-domain")]
+use crucible_cas::content_store::StoreError;
 use crucible_qemu::{
     LinuxQemuAttemptHostConfig, LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverError,
     QemuAsyncDriverPolicy, QemuHotForkChildProcessOwner, QemuLaunchArtifactIdentity,
@@ -95,7 +97,7 @@ mod hot_fork;
 pub(crate) use hot_fork::retained_service::{
     RetainedTemplateService, RetainedTemplateServiceFactory,
 };
-mod ram_catalog;
+pub(crate) mod ram_catalog;
 pub use ram_catalog::{PackagedRamCatalogConfig, PackagedRamCatalogConfigError};
 
 pub(crate) mod guarded;
@@ -318,6 +320,9 @@ pub struct PackagedQemuExecutorConfig {
     assignment_resources: Option<crucible_api::host_operational::HostResourceVector>,
     assignment_limits: Option<AttemptResourceLimits>,
     ram_catalog: Option<PackagedRamCatalogConfig>,
+    #[cfg(feature = "private-measurement-domain")]
+    original_catalog:
+        Option<crate::private_measurement_runtime::catalog::OriginalRamCatalogBinding>,
     operational_registry_resources: Option<crucible_api::host_operational::HostResourceVector>,
     operational_registry_quota: Option<(u32, u64)>,
     host_operation_budgets: Option<crucible_api::host_operational::HostOperationBudgets>,
@@ -404,13 +409,86 @@ impl PackagedQemuExecutorConfig {
         host_architecture: impl Into<String>,
         qemu_profile: impl Into<String>,
         store_namespace: CampaignHash,
-        lifecycle: ProductionVmLifecycleConfig,
+        lifecycle: impl Into<Arc<ProductionVmLifecycleConfig>>,
         host: LinuxQemuAttemptHostConfig,
     ) -> Result<Self, PackagedQemuExecutorConfigError> {
-        if campaigns.is_empty() {
+        Self::validate_constructor_contract(
+            campaigns.len(),
+            worker_count,
+            maximum_checkpoint_bytes,
+            capacity,
+            host_operational_capacity,
+        )?;
+        Ok(Self {
+            campaigns,
+            endpoint,
+            server,
+            ledger_root: ledger_root.into(),
+            maximum_checkpoint_bytes,
+            daemon_epoch,
+            capacity,
+            host_operational_capacity,
+            worker_count,
+            host_architecture: host_architecture.into(),
+            qemu_profile: qemu_profile.into(),
+            store_namespace,
+            lifecycle: lifecycle.into(),
+            host,
+            hot_fork: None,
+            retained_template_resources: None,
+            assignment_resources: None,
+            assignment_limits: None,
+            ram_catalog: None,
+            #[cfg(feature = "private-measurement-domain")]
+            original_catalog: None,
+            operational_registry_resources: None,
+            operational_registry_quota: None,
+            host_operation_budgets: None,
+            guest_selectable_boundary_diagnostics: None,
+            verify_determinism_findings: false,
+            #[cfg(feature = "private-measurement-domain")]
+            original_preparation: None,
+        })
+    }
+
+    /// Retains the same original provider already attached before lifecycle sharing.
+    ///
+    /// # Errors
+    /// Refuses original quota/custody or a different lifecycle provider alias.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn with_original_catalog(
+        mut self,
+        binding: crate::private_measurement_runtime::catalog::OriginalRamCatalogBinding,
+    ) -> Result<Self, StoreError> {
+        binding.verify()?;
+        let provider = binding.provider();
+        let actual = self
+            .lifecycle
+            .ram_catalog_provider()
+            .ok_or(StoreError::Unavailable)?;
+        if !Arc::ptr_eq(actual, &provider) || self.ram_catalog.is_some() {
+            return Err(StoreError::Unauthorized);
+        }
+        self.original_catalog = Some(binding);
+        Ok(self)
+    }
+
+    /// Shares the allocation-free constructor checks with early preflight.
+    ///
+    /// # Errors
+    /// Refuses an empty or oversized campaign set, zero or excess workers,
+    /// zero checkpoint capacity, or incompatible executor and host capacities.
+    pub(crate) fn validate_constructor_contract(
+        campaign_count: usize,
+        worker_count: usize,
+        maximum_checkpoint_bytes: u64,
+        capacity: ExecutorCapacity,
+        host_operational_capacity: crate::HostOperationalCapacity,
+    ) -> Result<(), PackagedQemuExecutorConfigError> {
+        if campaign_count == 0 {
             return Err(PackagedQemuExecutorConfigError::NoCampaigns);
         }
-        if campaigns.len() > crate::MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES {
+        if campaign_count > crate::MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES {
             return Err(PackagedQemuExecutorConfigError::TooManyCampaigns);
         }
         if worker_count == 0 {
@@ -432,34 +510,7 @@ impl PackagedQemuExecutorConfig {
         {
             return Err(PackagedQemuExecutorConfigError::InvalidHostResourceCapacity);
         }
-        Ok(Self {
-            campaigns,
-            endpoint,
-            server,
-            ledger_root: ledger_root.into(),
-            maximum_checkpoint_bytes,
-            daemon_epoch,
-            capacity,
-            host_operational_capacity,
-            worker_count,
-            host_architecture: host_architecture.into(),
-            qemu_profile: qemu_profile.into(),
-            store_namespace,
-            lifecycle: Arc::new(lifecycle),
-            host,
-            hot_fork: None,
-            retained_template_resources: None,
-            assignment_resources: None,
-            assignment_limits: None,
-            ram_catalog: None,
-            operational_registry_resources: None,
-            operational_registry_quota: None,
-            host_operation_budgets: None,
-            guest_selectable_boundary_diagnostics: None,
-            verify_determinism_findings: false,
-            #[cfg(feature = "private-measurement-domain")]
-            original_preparation: None,
-        })
+        Ok(())
     }
 
     /// Enables source-world capture under explicit process-wide limits.
@@ -492,6 +543,15 @@ impl PackagedQemuExecutorConfig {
         &self,
         resources: crucible_api::host_operational::HostResourceVector,
     ) -> bool {
+        Self::resource_contract_fits(self.capacity, self.host_operational_capacity, resources)
+    }
+
+    /// Checks whether every resource dimension fits the deployed capacities.
+    pub(crate) fn resource_contract_fits(
+        capacity: ExecutorCapacity,
+        host_operational_capacity: crate::HostOperationalCapacity,
+        resources: crucible_api::host_operational::HostResourceVector,
+    ) -> bool {
         let subsets = resources
             .metadata_bytes
             .checked_add(resources.staging_bytes);
@@ -508,15 +568,14 @@ impl PackagedQemuExecutorConfig {
         .contains(&0)
             || subsets.is_none_or(|bytes| bytes > resources.resident_peak_bytes)
             || resources.staging_bytes > resources.backing_peak_bytes
-            || resources.cpu_slots > u64::from(self.capacity.maximum_vcpus())
-            || resources.resident_peak_bytes > self.capacity.maximum_resident_bytes()
-            || resources.backing_peak_bytes > self.capacity.maximum_disk_bytes()
-            || resources.paging_io_slots > self.host_operational_capacity.maximum_paging_io_slots()
-            || resources.task_slots > self.host_operational_capacity.maximum_task_slots()
-            || resources.file_descriptors
-                > self.host_operational_capacity.maximum_file_descriptors()
-            || resources.metadata_bytes > self.host_operational_capacity.maximum_metadata_bytes()
-            || resources.staging_bytes > self.host_operational_capacity.maximum_staging_bytes())
+            || resources.cpu_slots > u64::from(capacity.maximum_vcpus())
+            || resources.resident_peak_bytes > capacity.maximum_resident_bytes()
+            || resources.backing_peak_bytes > capacity.maximum_disk_bytes()
+            || resources.paging_io_slots > host_operational_capacity.maximum_paging_io_slots()
+            || resources.task_slots > host_operational_capacity.maximum_task_slots()
+            || resources.file_descriptors > host_operational_capacity.maximum_file_descriptors()
+            || resources.metadata_bytes > host_operational_capacity.maximum_metadata_bytes()
+            || resources.staging_bytes > host_operational_capacity.maximum_staging_bytes())
     }
 
     /// Retains a separately authored per-assignment host and modeled ceiling.
@@ -529,17 +588,37 @@ impl PackagedQemuExecutorConfig {
         resources: crucible_api::host_operational::HostResourceVector,
         limits: AttemptResourceLimits,
     ) -> Result<Self, PackagedQemuExecutorConfigError> {
-        if !self.host_owner_resources_fit(resources)
-            || u64::from(limits.maximum_vcpus()) > resources.cpu_slots
-            || limits.maximum_resident_bytes() > resources.resident_peak_bytes
-            || limits.maximum_disk_bytes() > resources.backing_peak_bytes
-            || limits.maximum_execution_quanta() > self.capacity.maximum_execution_quanta()
-        {
-            return Err(PackagedQemuExecutorConfigError::InvalidAssignmentResources);
-        }
+        Self::validate_assignment_contract(
+            self.capacity,
+            self.host_operational_capacity,
+            resources,
+            limits,
+        )?;
         self.assignment_resources = Some(resources);
         self.assignment_limits = Some(limits);
         Ok(self)
+    }
+
+    /// Checks the assignment vector and attempt limits against deployed capacity.
+    ///
+    /// # Errors
+    /// Refuses zero, overflowing, or excessive resource dimensions and attempt
+    /// limits above the assignment or executor capacity.
+    pub(crate) fn validate_assignment_contract(
+        capacity: ExecutorCapacity,
+        host_operational_capacity: crate::HostOperationalCapacity,
+        resources: crucible_api::host_operational::HostResourceVector,
+        limits: AttemptResourceLimits,
+    ) -> Result<(), PackagedQemuExecutorConfigError> {
+        if !Self::resource_contract_fits(capacity, host_operational_capacity, resources)
+            || u64::from(limits.maximum_vcpus()) > resources.cpu_slots
+            || limits.maximum_resident_bytes() > resources.resident_peak_bytes
+            || limits.maximum_disk_bytes() > resources.backing_peak_bytes
+            || limits.maximum_execution_quanta() > capacity.maximum_execution_quanta()
+        {
+            return Err(PackagedQemuExecutorConfigError::InvalidAssignmentResources);
+        }
+        Ok(())
     }
 
     /// Retains the independently contained catalog service deployment contract.
@@ -635,6 +714,20 @@ impl PackagedQemuExecutorConfig {
         let resources = self
             .operational_registry_resources
             .ok_or(PackagedQemuExecutorConfigError::InvalidOperationalRegistryQuota)?;
+        Self::validate_registry_quota(resources, project_id, maximum_inodes)?;
+        self.operational_registry_quota = Some((project_id, maximum_inodes));
+        Ok(self)
+    }
+
+    /// Checks the registry project and inode quota without opening its backend.
+    ///
+    /// # Errors
+    /// Refuses an invalid project identifier or unsupported backing/inode quota.
+    pub(crate) fn validate_registry_quota(
+        resources: crucible_api::host_operational::HostResourceVector,
+        project_id: u32,
+        maximum_inodes: u64,
+    ) -> Result<(), PackagedQemuExecutorConfigError> {
         if !(1..0x8000_0000).contains(&project_id)
             || crucible_linux_resource::LinuxProjectQuotaLimits::new(
                 resources.backing_peak_bytes,
@@ -644,8 +737,7 @@ impl PackagedQemuExecutorConfig {
         {
             return Err(PackagedQemuExecutorConfigError::InvalidOperationalRegistryQuota);
         }
-        self.operational_registry_quota = Some((project_id, maximum_inodes));
-        Ok(self)
+        Ok(())
     }
 
     /// Returns the exact persistent registry project and inode entitlement.
@@ -1196,6 +1288,11 @@ pub(crate) fn prepare_packaged_qemu_executor(
 }
 
 /// Binds the one admitted roster before exposing the genuine shared factory.
+///
+/// # Errors
+/// Returns the retained account refusal when preparation does not match the
+/// roster, or the shared factory error when campaign authentication, durable
+/// owners, native requirements, workers or the managed endpoint refuse.
 #[cfg(feature = "private-measurement-domain")]
 pub(crate) fn prepare_original_packaged_qemu_executor(
     repository: Arc<CampaignRepository>,

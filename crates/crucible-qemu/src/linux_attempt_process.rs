@@ -73,10 +73,32 @@ impl LinuxQemuAttemptProcessConfig {
         maximum_file_descriptors: u64,
         finish_timeout: Duration,
     ) -> Result<Self, QemuVmRealizationError> {
+        Self::new_typed(
+            cgroup_root,
+            attempt_namespace,
+            child_user_id,
+            child_group_id,
+            maximum_tasks,
+            maximum_file_descriptors,
+            finish_timeout,
+        )
+        .map_err(invalid_config)
+    }
+
+    // The admitted constructor retains this fixed cause before diagnostics.
+    pub(crate) fn new_typed(
+        cgroup_root: impl Into<PathBuf>,
+        attempt_namespace: impl Into<String>,
+        child_user_id: u32,
+        child_group_id: u32,
+        maximum_tasks: u32,
+        maximum_file_descriptors: u64,
+        finish_timeout: Duration,
+    ) -> Result<Self, &'static str> {
         let cgroup_root = cgroup_root.into();
         let attempt_namespace = attempt_namespace.into();
         if !cgroup_root.is_absolute() {
-            return Err(invalid_config("delegated cgroup root must be absolute"));
+            return Err("delegated cgroup root must be absolute");
         }
         if attempt_namespace.is_empty()
             || attempt_namespace.len() > MAX_ATTEMPT_NAMESPACE_BYTES
@@ -84,31 +106,23 @@ impl LinuxQemuAttemptProcessConfig {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
         {
-            return Err(invalid_config(
+            return Err(
                 "attempt namespace must be bounded ASCII alphanumeric, dash, or underscore",
-            ));
+            );
         }
         if child_user_id == 0 || child_group_id == 0 {
-            return Err(invalid_config(
-                "QEMU child user and group identifiers must be non-root",
-            ));
+            return Err("QEMU child user and group identifiers must be non-root");
         }
         if maximum_tasks == 0 || maximum_tasks > MAX_LINUX_QEMU_CGROUP_TASKS {
-            return Err(invalid_config(
-                "QEMU task ceiling is outside the supported bound",
-            ));
+            return Err("QEMU task ceiling is outside the supported bound");
         }
         if maximum_file_descriptors < 16 {
-            return Err(invalid_config(
-                "QEMU descriptor ceiling must accommodate fixed launch descriptors",
-            ));
+            return Err("QEMU descriptor ceiling must accommodate fixed launch descriptors");
         }
         if !(MIN_LINUX_QEMU_PROCESS_FINISH_TIMEOUT..=MAX_LINUX_QEMU_PROCESS_FINISH_TIMEOUT)
             .contains(&finish_timeout)
         {
-            return Err(invalid_config(
-                "QEMU process finish timeout is outside the reviewed bound",
-            ));
+            return Err("QEMU process finish timeout is outside the reviewed bound");
         }
         Ok(Self {
             cgroup_root,
@@ -166,13 +180,19 @@ impl LinuxQemuAttemptProcessConfig {
     /// # Errors
     /// Refuses the kernel infinity sentinel; an entitlement is always finite.
     pub fn with_maximum_locked_bytes(
-        mut self,
+        self,
         maximum_locked_bytes: u64,
     ) -> Result<Self, QemuVmRealizationError> {
+        self.with_maximum_locked_bytes_typed(maximum_locked_bytes)
+            .map_err(invalid_config)
+    }
+
+    pub(crate) fn with_maximum_locked_bytes_typed(
+        mut self,
+        maximum_locked_bytes: u64,
+    ) -> Result<Self, &'static str> {
         if maximum_locked_bytes == libc::RLIM_INFINITY {
-            return Err(invalid_config(
-                "child memory-lock entitlement must be finite",
-            ));
+            return Err("child memory-lock entitlement must be finite");
         }
         self.maximum_locked_bytes = maximum_locked_bytes;
         Ok(self)

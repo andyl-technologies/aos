@@ -139,6 +139,17 @@ impl OriginalPreparation {
         binding.verify_preparation(&self.original)
     }
 
+    /// Checks that the catalog borrows this exact published preparation.
+    ///
+    /// # Errors
+    /// Refuses a different original allocation or the retained original boundary.
+    pub(crate) fn verify_catalog_accounts(
+        &self,
+        accounts: &crucible_qemu::OriginalActorCatalogAccounts,
+    ) -> Result<(), crucible_qemu::OriginalActorAccountError> {
+        accounts.verify_preparation(&self.original)
+    }
+
     /// Requests a managed reset while borrowing the retained original guard.
     ///
     /// The driver retains the genuine node/factory owner and authenticates its

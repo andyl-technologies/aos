@@ -29,9 +29,13 @@ use accounts::CatalogAccounts;
 pub(crate) mod tests;
 
 mod physical;
+mod provider;
+
+pub(crate) use provider::{OriginalCatalogBinding, OriginalRamCatalogBinding};
 
 struct CatalogAuthority {
     physical: Mutex<Option<physical::CatalogPhysical>>,
+    descriptor_purposes: Mutex<u64>,
     accounts: CatalogAccounts,
     budget: DecodeBudget,
     failure: Mutex<Option<DecodeAdmissionError>>,
@@ -51,6 +55,12 @@ struct CatalogOperation {
 
 #[derive(Debug, thiserror::Error)]
 enum CatalogCause {
+    #[error("catalog cache allocation refused: {source}; original: {original_after:?}")]
+    Allocation {
+        #[source]
+        source: std::collections::TryReserveError,
+        original_after: Option<HostSupervisionError>,
+    },
     #[error("catalog quota refused: {source}; original: {original_after:?}")]
     Quota {
         #[source]
@@ -69,6 +79,8 @@ enum CatalogCause {
         source: HostSupervisionError,
         original_after: Option<HostSupervisionError>,
     },
+    #[error("catalog descriptor purpose exceeds its fixed shared extent")]
+    DescriptorPurpose,
     #[error("catalog operation abandoned before completion")]
     Abandoned,
     #[error("catalog refusal storage is poisoned")]
@@ -81,6 +93,8 @@ enum CatalogCause {
 /// does not certify a physical catalog, filesystem quota or service admission.
 #[must_use = "retain catalog custody through every backend and operation control"]
 pub struct OriginalActorCatalogOwner {
+    provider: Option<Arc<crate::packaged_qemu_executor::ram_catalog::provider::CatalogService>>,
+    provider_credit: Option<DecodeScratch>,
     supervisor: Option<Arc<CatalogSupervisor>>,
     authority: Option<Arc<CatalogAuthority>>,
     controls: Option<HostServiceLeasePair>,
@@ -104,6 +118,8 @@ impl OriginalActorCatalogOwner {
             .ok_or(HostServiceError::CapacityExhausted)?;
         let controls = accounts.reserve_controls(bytes)?;
         let mut owner = Self {
+            provider: None,
+            provider_credit: None,
             supervisor: None,
             authority: None,
             controls: Some(controls),
@@ -111,6 +127,7 @@ impl OriginalActorCatalogOwner {
         };
         owner.authority = Some(Arc::new(CatalogAuthority {
             physical: Mutex::new(None),
+            descriptor_purposes: Mutex::new(0),
             accounts: CatalogAccounts::Original(accounts),
             budget: budget.clone(),
             failure: Mutex::new(None),
@@ -144,6 +161,27 @@ impl OriginalActorCatalogOwner {
     pub fn try_close(mut self) -> Result<(), Self> {
         if self.close_failure.is_some() {
             return Err(self);
+        }
+        if let Some(provider) = self.provider.as_mut() {
+            if let Err(error) = provider.verify_original_binding() {
+                self.save_close_failure(error);
+                return Err(self);
+            }
+            let Some(service) = Arc::get_mut(provider) else {
+                return Err(self);
+            };
+            if !service.can_close() {
+                return Err(self);
+            }
+            drop(self.provider.take());
+            if let Some(authority) = self.authority.as_ref()
+                && let Err(error) = authority.check()
+            {
+                self.save_close_failure(error);
+                return Err(self);
+            }
+            // Physical deallocation and its original postcut both precede credit.
+            drop(self.provider_credit.take());
         }
         if let Some(supervisor) = self.supervisor.as_mut() {
             if let Err(error) = supervisor.0.check() {
@@ -186,7 +224,9 @@ impl OriginalActorCatalogOwner {
 
 impl Drop for OriginalActorCatalogOwner {
     fn drop(&mut self) {
-        if self.authority.is_some() || self.supervisor.is_some() {
+        if self.provider.is_some() || self.authority.is_some() || self.supervisor.is_some() {
+            std::mem::forget(self.provider.take());
+            std::mem::forget(self.provider_credit.take());
             // A body or caller facade dropping cannot refund the controls of
             // an outstanding backend, abandoned operation or opaque error.
             std::mem::forget(self.supervisor.take());

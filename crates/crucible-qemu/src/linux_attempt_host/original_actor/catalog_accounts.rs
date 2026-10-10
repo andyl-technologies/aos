@@ -74,6 +74,21 @@ impl OriginalActorCatalogAccounts {
         Ok(credit)
     }
 
+    /// Checks the existing preparation alias without exposing catalog accounts.
+    ///
+    /// # Errors
+    /// Refuses a different original allocation or the retained original boundary.
+    pub fn verify_preparation(
+        &self,
+        original: &Arc<HostOperationGuard>,
+    ) -> Result<(), OriginalActorAccountError> {
+        if !Arc::ptr_eq(&self.original, original) {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        self.check()?;
+        Ok(())
+    }
+
     /// Checks the same retained original without returning its guard.
     ///
     /// # Errors
@@ -96,6 +111,24 @@ impl OriginalActorCatalogAccounts {
     /// Refuses the existing roster or original boundary.
     pub fn begin_write(&self) -> Result<HostOperationGuard, HostSupervisionError> {
         self.supervisor.begin(HostOperationClass::Writeback)
+    }
+
+    /// Starts the fixed Preparation scope in the existing original roster.
+    ///
+    /// # Errors
+    /// Refuses the existing roster or retained original boundary.
+    pub fn begin_preparation(&self) -> Result<HostOperationGuard, HostSupervisionError> {
+        self.check()?;
+        self.supervisor.begin(HostOperationClass::Preparation)
+    }
+
+    /// Starts the fixed Cleanup scope in the existing original roster.
+    ///
+    /// # Errors
+    /// Refuses the existing roster or retained original boundary.
+    pub fn begin_cleanup(&self) -> Result<HostOperationGuard, HostSupervisionError> {
+        self.check()?;
+        self.supervisor.begin(HostOperationClass::Cleanup)
     }
 
     /// Moves the exact authenticated catalog purpose into its unstarted audit.

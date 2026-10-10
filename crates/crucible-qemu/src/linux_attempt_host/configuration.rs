@@ -5,6 +5,9 @@
 
 use super::*;
 
+mod admitted;
+pub use admitted::AdmittedHostConfigurationError;
+
 /// Validated configuration for one combined Linux QEMU attempt namespace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinuxQemuAttemptHostConfig {

@@ -175,6 +175,8 @@ enum PreparedCause {
     Admission(#[from] DecodeAdmissionError),
     #[error("original prepared service refused: {0}")]
     Service(#[from] CampaignLocalServiceError),
+    #[error("original packaged factory refused: {0}")]
+    Packaged(#[from] crate::private_measurement_runtime::OriginalPackagedPreparationError),
     #[error("original repository refused: {0}")]
     Repository(#[from] StoreError),
     #[error("campaign request authorization refused: {0}")]

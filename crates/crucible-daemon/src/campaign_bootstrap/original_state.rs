@@ -392,6 +392,32 @@ impl OriginalCampaignStateBootstrap {
         Ok(handle)
     }
 
+    /// Borrows the same validated namespace retained by this state owner.
+    ///
+    /// The enclosing artifact owner copies this path under its original account;
+    /// the state pins and lock remain external through runtime retirement.
+    ///
+    /// # Errors
+    /// Refuses a closed state owner, missing namespace pins or lock, or the
+    /// retained original account at either boundary.
+    pub(crate) fn run_state_root(&self) -> Result<&Path, OriginalCampaignStateError> {
+        let budget = self.budget.as_ref().ok_or_else(state_identity_error)?;
+        original(budget, StateBoundary::Prepare)?;
+        if self.physical_closed {
+            return Err(state_identity_error());
+        }
+        let (root, lock, paths) = match self.shared.as_ref() {
+            Some(pins) => (&pins.root, &pins.lock, &pins.paths),
+            None => (&self.root, &self.lock, &self.paths),
+        };
+        if root.is_none() || lock.is_none() {
+            return Err(state_identity_error());
+        }
+        let paths = paths.as_ref().ok_or_else(state_identity_error)?;
+        original(budget, StateBoundary::Prepare)?;
+        Ok(&paths.root)
+    }
+
     /// Closes only this genuine state stage after its users have gone.
     /// A refused original or uncertain unlock retains all still-live custody.
     pub(crate) fn try_close(mut self) -> Result<(), OriginalCampaignStateError> {

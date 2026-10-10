@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod configuration;
-pub use configuration::LinuxQemuAttemptHostConfig;
+pub use configuration::{AdmittedHostConfigurationError, LinuxQemuAttemptHostConfig};
 
 mod native_resources;
 #[cfg(feature = "private-measurement-domain")]

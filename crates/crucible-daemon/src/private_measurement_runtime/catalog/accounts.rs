@@ -1,7 +1,6 @@
 //! Adapts closed host capabilities without adding a production issuer.
 
 use super::*;
-#[cfg(test)]
 use crucible_linux_resource::host_supervision::HostOperationClass;
 use crucible_qemu::{OriginalActorCatalogPurpose, OriginalCatalogPhysicalAudit};
 
@@ -33,6 +32,24 @@ impl CatalogAccounts {
             Self::Original(accounts) => accounts.begin_write(),
             #[cfg(test)]
             Self::Fixture(accounts) => accounts.supervisor.begin(HostOperationClass::Writeback),
+        }
+    }
+
+    pub(super) fn begin_provider(
+        &self,
+        class: HostOperationClass,
+    ) -> Result<HostOperationGuard, HostSupervisionError> {
+        self.check()?;
+        match self {
+            Self::Original(accounts) => match class {
+                HostOperationClass::Preparation => accounts.begin_preparation(),
+                HostOperationClass::Cleanup => accounts.begin_cleanup(),
+                HostOperationClass::PageIn => accounts.begin_read(),
+                HostOperationClass::Writeback => accounts.begin_write(),
+                _ => Err(HostSupervisionError::Unavailable),
+            },
+            #[cfg(test)]
+            Self::Fixture(accounts) => accounts.supervisor.begin(class),
         }
     }
 

@@ -28,6 +28,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError, Weak};
 
 mod directory_storage;
+mod funding;
+use funding::{CatalogDescriptors, CatalogFunding, CatalogSupervision};
 #[cfg(test)]
 mod retirement_tests;
 #[cfg(test)]
@@ -50,7 +52,7 @@ pub(super) const fn minimum_file_descriptors() -> u64 {
 // This namespace contains no deferred provider, avoiding a policy/provider cycle.
 struct CatalogNamespace {
     root: PathBuf,
-    project_id: u32,
+    project_id: Option<u32>,
     maximum_inodes: u64,
     resources: crucible_api::host_operational::HostResourceVector,
     maximum_sqlite_heap_bytes: u64,
@@ -60,8 +62,8 @@ impl CatalogNamespace {
     fn root(&self) -> &Path {
         &self.root
     }
-    fn project_id(&self) -> u32 {
-        self.project_id
+    fn project_id(&self) -> Result<u32, StoreError> {
+        self.project_id.ok_or(StoreError::Unauthorized)
     }
     fn maximum_inodes(&self) -> u64 {
         self.maximum_inodes
@@ -183,21 +185,16 @@ impl CatalogCache {
 
 struct CatalogAuthority {
     policy: CatalogNamespace,
-    allocator: HostServiceAllocator,
-    metadata_allocator: HostServiceAllocator,
     binding: Mutex<Option<LinuxProjectQuotaBinding>>,
-    supervisor: HostOperationSupervisor,
+    supervisor: CatalogSupervision,
     diagnostic_occupied: AtomicBool,
-    _root_resources: HostServiceLease,
-    _sql_staging_resources: HostServiceLease,
     sqlite_heap: crucible_cas::content_store::SqliteProcessHeap,
-    _metadata_resources: crucible_cas::owned_decode::ResourceLoan,
-    // The original actor remains pinned through final constructor credit release.
-    _custody: Arc<dyn Send + Sync>,
+    // All owned namespace, supervisor and heap fields close before constructor credit.
+    funding: CatalogFunding,
 }
 
 /// Keeps actual actor and quota custody independently of transient readers.
-pub(super) struct CatalogService {
+pub(crate) struct CatalogService {
     // Cached material closes while its original authority credit is retained.
     catalogs: Arc<Mutex<CatalogCache>>,
     authority: Arc<CatalogAuthority>,
@@ -236,6 +233,10 @@ impl CatalogService {
         Self::new_with_heap(policy, custody, supervisor, None)
     }
 
+    /// Constructs the ordinary catalog with its explicit service entitlement.
+    ///
+    /// # Errors
+    /// Refuses original supervision, namespace geometry, funding or heap setup.
     pub(super) fn new_with_heap(
         policy: PackagedRamCatalogConfig,
         custody: Arc<dyn Send + Sync>,
@@ -317,7 +318,7 @@ impl CatalogService {
             .into_boxed_slice();
         let policy = CatalogNamespace {
             root: policy.root().to_owned(),
-            project_id: policy.project_id(),
+            project_id: Some(policy.project_id()),
             maximum_inodes: policy.maximum_inodes(),
             maximum_sqlite_heap_bytes: policy.maximum_sqlite_heap_bytes(),
             resources,
@@ -325,16 +326,18 @@ impl CatalogService {
         Ok(Self {
             authority: Arc::new(CatalogAuthority {
                 policy,
-                allocator,
-                metadata_allocator,
+                funding: CatalogFunding::Ordinary {
+                    allocator,
+                    metadata_allocator,
+                    _root_resources: root_resources,
+                    _sql_staging_resources: sql_staging_resources,
+                    _metadata_resources: metadata_resources,
+                    _custody: custody,
+                },
                 binding: Mutex::new(None),
-                supervisor,
+                supervisor: CatalogSupervision::Ordinary(supervisor),
                 diagnostic_occupied: AtomicBool::new(false),
-                _root_resources: root_resources,
-                _sql_staging_resources: sql_staging_resources,
                 sqlite_heap,
-                _custody: custody,
-                _metadata_resources: metadata_resources,
             }),
             catalogs: Arc::new(Mutex::new(CatalogCache { entries })),
         })
@@ -357,10 +360,10 @@ impl CatalogService {
         *binding = Some(
             LinuxProjectQuotaBinding::bind_existing_supervised(
                 policy.root(),
-                policy.project_id(),
+                policy.project_id()?,
                 policy.resources().backing_peak_bytes,
                 policy.maximum_inodes(),
-                authority.supervisor.clone(),
+                authority.supervisor.ordinary()?,
             )
             .map_err(quota_error)?,
         );
@@ -416,10 +419,11 @@ impl CatalogAuthority {
 
     fn prepare(&self, directory: &Path) -> Result<(), StoreError> {
         self.validate_path(directory)?;
-        let operation = self
-            .supervisor
-            .begin(HostOperationClass::Preparation)
-            .map_err(sqlite_supervision_error)?;
+        #[cfg(feature = "private-measurement-domain")]
+        if let CatalogFunding::Original { binding, .. } = &self.funding {
+            return binding.prepare(directory);
+        }
+        let operation = self.supervisor.begin(HostOperationClass::Preparation)?;
         // Verification and descriptor walks share one lock across all guards;
         // concurrent SQL callers cannot create an unbounded transient FD peak.
         let binding = supervised_lock(&self.binding, &operation)?;
@@ -435,10 +439,11 @@ impl CatalogAuthority {
     }
 
     fn verify(&self) -> Result<(), StoreError> {
-        let operation = self
-            .supervisor
-            .begin(HostOperationClass::Writeback)
-            .map_err(sqlite_supervision_error)?;
+        #[cfg(feature = "private-measurement-domain")]
+        if let CatalogFunding::Original { binding, .. } = &self.funding {
+            return binding.verify();
+        }
+        let operation = self.supervisor.begin(HostOperationClass::Writeback)?;
         let binding = supervised_lock(&self.binding, &operation)?;
         binding
             .as_ref()
@@ -455,7 +460,15 @@ impl CatalogAuthority {
         &self,
         permit: crucible_cas::content_store::ProviderDiagnosticPermit,
     ) -> Result<crucible_cas::content_store::ProviderDiagnosticPermit, StoreError> {
-        let operation = match self.supervisor.begin(HostOperationClass::Writeback) {
+        #[cfg(feature = "private-measurement-domain")]
+        if let CatalogFunding::Original { binding, .. } = &self.funding {
+            // The binding already retains its typed refusal in the same
+            // original catalog control; no second diagnostic owner is born.
+            binding.verify()?;
+            return Ok(permit);
+        }
+        let supervisor = self.supervisor.ordinary()?;
+        let operation = match supervisor.begin(HostOperationClass::Writeback) {
             Ok(operation) => operation,
             Err(source) => return Err(retain_provider_cause(permit, source.into())),
         };
@@ -502,14 +515,14 @@ fn catalog_metadata_bytes(directory: &Path) -> Result<u64, StoreError> {
 struct CatalogGuard {
     authority: Arc<CatalogAuthority>,
     closed: Arc<AtomicBool>,
-    _resources: HostServiceLease,
+    _resources: Option<CatalogDescriptors>,
     _metadata: crucible_cas::owned_decode::ResourceLoan,
 }
 
 impl StorePhysicalQuotaGuard for CatalogGuard {
     fn decoded_metadata_limit(&self) -> Result<u64, StoreError> {
         self.verify()?;
-        Ok(self.authority.metadata_allocator.maximum_resident_bytes())
+        self.authority.metadata_limit()
     }
 
     fn verify(&self) -> Result<(), StoreError> {
@@ -558,19 +571,14 @@ impl ProductionRamCatalogProvider for CatalogService {
         let operation = self
             .authority
             .supervisor
-            .begin(HostOperationClass::Preparation)
-            .map_err(sqlite_supervision_error)?;
+            .begin(HostOperationClass::Preparation)?;
         let mut catalogs = supervised_lock(&self.catalogs, &operation)?;
         if let Some(storage) = catalogs.cached_open(directory)? {
             operation.complete().map_err(sqlite_supervision_error)?;
             return Ok(storage);
         }
 
-        let resources = self
-            .authority
-            .allocator
-            .reserve_resources(0, CATALOG_DESCRIPTORS, 0)
-            .map_err(|_| StoreError::Quota)?;
+        let resources = self.authority.reserve_descriptors(CATALOG_DESCRIPTORS)?;
         let metadata_credit = CatalogSqliteSupervisor(self.authority.clone())
             .reserve_resident_bytes(catalog_metadata_bytes(directory)?)?;
         let closed = Arc::new(AtomicBool::new(false));
@@ -662,8 +670,7 @@ impl ProductionRamCatalogProvider for CatalogService {
         let operation = self
             .authority
             .supervisor
-            .begin(HostOperationClass::Cleanup)
-            .map_err(sqlite_supervision_error)?;
+            .begin(HostOperationClass::Cleanup)?;
         let mut catalogs = supervised_lock(&self.catalogs, &operation)?;
         if let Some(CatalogEntry::Retiring(receipt)) = catalogs.get(directory) {
             operation.complete().map_err(sqlite_supervision_error)?;
@@ -680,11 +687,7 @@ impl ProductionRamCatalogProvider for CatalogService {
                 // excludes a competing provider; the caller takes its exclusive
                 // retention fence before deleting any bytes.
                 self.authority.verify()?;
-                let resources = self
-                    .authority
-                    .allocator
-                    .reserve_resources(0, CATALOG_DESCRIPTORS, 0)
-                    .map_err(|_| StoreError::Quota)?;
+                let resources = self.authority.reserve_descriptors(CATALOG_DESCRIPTORS)?;
                 let metadata_credit = CatalogSqliteSupervisor(self.authority.clone())
                     .reserve_resident_bytes(catalog_metadata_bytes(directory)?)?;
                 Arc::new(CatalogGuard {
@@ -724,8 +727,7 @@ impl ProductionRamCatalogProvider for CatalogService {
         let operation = self
             .authority
             .supervisor
-            .begin(HostOperationClass::PageIn)
-            .map_err(sqlite_supervision_error)?;
+            .begin(HostOperationClass::PageIn)?;
         let catalogs = supervised_lock(&self.catalogs, &operation)?;
         if !matches!(catalogs.get(directory), Some(CatalogEntry::Open {closed, ..}) if !closed.load(Ordering::Acquire))
         {
@@ -747,7 +749,7 @@ struct CatalogMetadataCredit {
 }
 
 struct CatalogResourceCredit {
-    _descriptors: Option<HostServiceLease>,
+    _descriptors: Option<CatalogDescriptors>,
     _metadata: crucible_cas::owned_decode::ResourceLoan,
     _authority: Arc<CatalogAuthority>,
     _closed: Option<Arc<AtomicBool>>,
@@ -760,13 +762,12 @@ fn reserve_catalog_resources(
     bytes: u64,
 ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
     authority.verify()?;
-    let descriptors = reserve_catalog_descriptors(&authority.allocator, descriptors)?;
+    let descriptors = authority.reserve_descriptors(descriptors)?;
     let charged = bytes
         .checked_add(std::mem::size_of::<CatalogResourceCredit>() as u64)
         .and_then(|bytes| bytes.checked_add((2 * std::mem::size_of::<usize>()) as u64))
         .ok_or(StoreError::Quota)?;
-    let metadata =
-        reserve_metadata_credit(&authority.allocator, &authority.metadata_allocator, charged)?;
+    let metadata = authority.reserve_metadata(charged)?;
     authority.verify()?;
     Ok(crucible_cas::owned_decode::ResourceLoan::new(
         CatalogResourceCredit {
@@ -832,7 +833,7 @@ impl SqliteCatalogSupervisor for CatalogSqliteSupervisor {
         &self,
         bytes: u64,
     ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
-        reserve_metadata_credit(&self.0.allocator, &self.0.metadata_allocator, bytes)
+        self.0.reserve_metadata(bytes)
     }
 
     fn begin(
@@ -844,10 +845,7 @@ impl SqliteCatalogSupervisor for CatalogSqliteSupervisor {
             SqliteCatalogOperationKind::Write => HostOperationClass::Writeback,
         };
         Ok(Box::new(CatalogSqliteOperation(
-            self.0
-                .supervisor
-                .begin(class)
-                .map_err(sqlite_supervision_error)?,
+            self.0.supervisor.begin(class)?,
         )))
     }
 }
@@ -942,7 +940,7 @@ impl StorePhysicalQuotaGuard for NamespaceGuard {
 
     fn decoded_metadata_limit(&self) -> Result<u64, StoreError> {
         self.verify()?;
-        Ok(self.authority.metadata_allocator.maximum_resident_bytes())
+        self.authority.metadata_limit()
     }
 
     fn verify(&self) -> Result<(), StoreError> {
@@ -979,8 +977,7 @@ impl ProductionRamCatalogRetirement for CatalogRetirement {
         let operation = self
             .authority
             .supervisor
-            .begin(HostOperationClass::Cleanup)
-            .map_err(sqlite_supervision_error)?;
+            .begin(HostOperationClass::Cleanup)?;
         let mut catalogs = supervised_lock(&cache, &operation)?;
         self.authority.verify()?;
         for path in [&self.active, &self.retired] {
@@ -1121,9 +1118,13 @@ mod tests {
             ),
         )
         .expect("actual service diagnostic preadmission");
+        let (allocator, metadata_allocator) = service
+            .authority
+            .ordinary_allocators()
+            .expect("ordinary fixture retains the existing service allocators");
         let namespace_credit = reserve_metadata_credit_raw(
-            &service.authority.allocator,
-            &service.authority.metadata_allocator,
+            allocator,
+            metadata_allocator,
             (std::mem::size_of::<NamespaceGuard>()
                 + 2 * std::mem::size_of::<usize>()
                 + "/component/catalog/marks".len()) as u64,

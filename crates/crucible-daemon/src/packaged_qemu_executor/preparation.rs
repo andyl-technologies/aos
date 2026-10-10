@@ -34,6 +34,22 @@ pub(super) fn prepare_runtime(
     basis: &PackagedCampaignBasis,
     config: &PackagedQemuExecutorConfig,
 ) -> Result<PackagedPreparation, PackagedQemuExecutorError> {
+    #[cfg(feature = "private-measurement-domain")]
+    if let Some(original) = config.original_catalog.as_ref() {
+        original.verify()?;
+        let preparation = config
+            .original_preparation
+            .as_ref()
+            .ok_or(PackagedQemuExecutorError::MissingOriginalFactoryPreparation)?;
+        original.verify_preparation(preparation)?;
+        return prepare_runtime_with_catalog(repository, checkpoint_backend, basis, config, |_| {
+            original.verify()?;
+            let resources = original
+                .provider()
+                .prepare_directory(config.lifecycle.run_state_root())?;
+            Ok(Some(resources))
+        });
+    }
     prepare_runtime_with_catalog(repository, checkpoint_backend, basis, config, |registry| {
         ram_catalog::admit_catalog_service(config, registry)?;
         let resources = config

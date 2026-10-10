@@ -169,6 +169,7 @@ pub(crate) fn fixture() -> (
     let (first, second) = resident.reserve_paired_bytes(&metadata, bytes).unwrap();
     let authority = Arc::new(CatalogAuthority {
         physical: Mutex::new(None),
+        descriptor_purposes: Mutex::new(0),
         accounts: CatalogAccounts::Fixture(FixtureAccounts {
             original,
             supervisor: supervisor.clone(),
@@ -177,6 +178,8 @@ pub(crate) fn fixture() -> (
         failure: Mutex::new(None),
     });
     let owner = OriginalActorCatalogOwner {
+        provider: None,
+        provider_credit: None,
         supervisor: Some(Arc::new(CatalogSupervisor(Arc::clone(&authority)))),
         authority: Some(authority),
         controls: Some(HostServiceLeasePair::new(first, second)),
@@ -226,6 +229,7 @@ pub(crate) fn campaign_creation_fixture() -> (
     let (first, second) = resident.reserve_paired_bytes(&metadata, bytes).unwrap();
     let authority = Arc::new(CatalogAuthority {
         physical: Mutex::new(None),
+        descriptor_purposes: Mutex::new(0),
         accounts: CatalogAccounts::Fixture(FixtureAccounts {
             original,
             supervisor: supervisor.clone(),
@@ -234,6 +238,8 @@ pub(crate) fn campaign_creation_fixture() -> (
         failure: Mutex::new(None),
     });
     let owner = OriginalActorCatalogOwner {
+        provider: None,
+        provider_credit: None,
         supervisor: Some(Arc::new(CatalogSupervisor(Arc::clone(&authority)))),
         authority: Some(authority),
         controls: Some(HostServiceLeasePair::new(first, second)),

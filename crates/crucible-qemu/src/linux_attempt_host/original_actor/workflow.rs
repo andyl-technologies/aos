@@ -423,6 +423,8 @@ mod tests {
             execution_quanta: 32,
             service_profile: ServiceProfile {
                 operator: ServiceOperator {
+                    executor: serde_json::from_str(include_str!("workflow/executor_fixture.json"))
+                        .unwrap(),
                     campaign_server: ServiceServer {
                         connection_workers: 1,
                         pending_connections: 1,

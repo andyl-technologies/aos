@@ -141,6 +141,7 @@ impl OriginalResidentWorkflowOwner {
                 "retained workflow input",
             ))?;
         owner.policy = Some(actor.admit_workflow_service(decoder, input)?);
+        assets::executor::preflight(input, decoder)?;
         actor.require_original()?;
         Ok(owner)
     }
@@ -181,6 +182,23 @@ impl OriginalResidentWorkflowOwner {
                 ))?;
         self.catalog = Some(actor.prepare_catalog_owner(decoder)?);
         Ok(())
+    }
+
+    /// Prepares RAM catalog custody inside the existing original catalog.
+    ///
+    /// # Errors
+    /// Refuses missing original catalog, installed quota, heap or credit.
+    pub(super) fn prepare_ram_catalog_provider(
+        &mut self,
+        heap: &crucible_cas::content_store::SqliteProcessHeap,
+    ) -> Result<(), MeasurementRuntimeAdmissionError> {
+        self.catalog
+            .as_mut()
+            .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                "retained original catalog provider owner",
+            ))?
+            .prepare_ram_provider(heap)
+            .map_err(MeasurementRuntimeAdmissionError::CampaignGraph)
     }
 
     pub(super) fn close_catalog_owner(
@@ -477,7 +495,57 @@ impl OriginalResidentWorkflowOwner {
         self.artifacts = Some(assets::OriginalWorkflowArtifactsOwner::load_and_import(
             bytes, decoder, service,
         )?);
+        let state =
+            self.service_state
+                .as_ref()
+                .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                    "retained campaign state namespace",
+                ))?;
+        let catalog = self
+            .catalog
+            .as_ref()
+            .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                "retained original RAM catalog owner",
+            ))?
+            .ram_provider_binding()
+            .map_err(MeasurementRuntimeAdmissionError::CampaignGraph)?;
+        self.artifacts
+            .as_mut()
+            .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                "retained authenticated artifact owner",
+            ))?
+            .prepare_lifecycle(state, service, &catalog)?;
+        self.artifacts
+            .as_mut()
+            .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                "retained workflow artifacts",
+            ))?
+            .prepare_executor_config(bytes, state, service, &catalog)?;
         Ok(())
+    }
+
+    /// Moves the paid configuration into the genuine same-actor factory.
+    ///
+    /// # Errors
+    /// Refuses missing original service/artifacts or typed factory preparation.
+    pub(super) fn prepare_genuine_executor<'actor>(
+        &mut self,
+        issuer: &'actor mut OriginalActorRoleIssuer,
+    ) -> Result<super::OriginalPreparedPackagedExecutor<'actor>, MeasurementRuntimeAdmissionError>
+    {
+        let service = self.prepared_service.as_ref().ok_or(
+            MeasurementRuntimeAdmissionError::MissingPurpose(
+                "retained prepared service for original factory",
+            ),
+        )?;
+        let artifacts =
+            self.artifacts
+                .as_mut()
+                .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                    "retained original executor configuration",
+                ))?;
+        let config = artifacts.take_executor_config(service)?;
+        Ok(service.prepare_packaged_executor(issuer, config)?)
     }
 
     pub(super) fn close_artifacts(&mut self) -> Result<(), OriginalWorkflowArtifactsError> {

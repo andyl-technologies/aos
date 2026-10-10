@@ -15,8 +15,87 @@ use crucible_qemu::{
 
 const CATALOG_ROOT: &str = "/var/lib/crucible/measurement/catalog";
 
+// The workflow's fixed catalog descriptor purpose is a subset of the existing
+// actor bank. This inline census covers its audit, graph, refs and RAM caches;
+// every admitted purpose still takes real descriptor credit from that bank.
+const CATALOG_DESCRIPTOR_LIMIT: u64 = 128;
+
+struct CatalogDescriptorCredit {
+    loan: Option<DecodeDescriptorLoan>,
+    authority: Arc<CatalogAuthority>,
+    descriptors: u64,
+}
+
+impl CatalogAuthority {
+    // The audit loan lives inside this authority, so its permanent census has
+    // no self-owning Arc. External per-backend purposes retain their own Arc.
+    fn reserve_catalog_audit_descriptors(&self) -> Result<DecodeDescriptorLoan, StoreError> {
+        self.check()?;
+        let mut held = self
+            .descriptor_purposes
+            .try_lock()
+            .map_err(|_| StoreError::Unavailable)?;
+        if *held != 0 {
+            return Err(StoreError::Unauthorized);
+        }
+        let descriptors = LinuxProjectQuotaBinding::maximum_audit_file_descriptors();
+        if descriptors > CATALOG_DESCRIPTOR_LIMIT {
+            return Err(self.remember(CatalogCause::DescriptorPurpose));
+        }
+        let loan = self
+            .budget
+            .reserve_descriptors(descriptors)
+            .map_err(|source| self.decode_error(source))?;
+        *held = descriptors;
+        Ok(loan)
+    }
+
+    fn reserve_catalog_descriptors(
+        self: &Arc<Self>,
+        descriptors: u64,
+    ) -> Result<CatalogDescriptorCredit, StoreError> {
+        self.check()?;
+        let mut held = self
+            .descriptor_purposes
+            .try_lock()
+            .map_err(|_| StoreError::Unavailable)?;
+        let next = held
+            .checked_add(descriptors)
+            .filter(|value| *value <= CATALOG_DESCRIPTOR_LIMIT);
+        let Some(next) = next else {
+            return Err(self.remember(CatalogCause::DescriptorPurpose));
+        };
+        let loan = self
+            .budget
+            .reserve_descriptors(descriptors)
+            .map_err(|source| self.decode_error(source))?;
+        *held = next;
+        drop(held);
+        let credit = CatalogDescriptorCredit {
+            loan: Some(loan),
+            authority: Arc::clone(self),
+            descriptors,
+        };
+        self.check()?;
+        Ok(credit)
+    }
+}
+
+impl Drop for CatalogDescriptorCredit {
+    fn drop(&mut self) {
+        // The caller's descriptors precede this credit. The actual original
+        // descriptor loan closes before this subset becomes available again.
+        drop(self.loan.take());
+        // Contention or poison retains this conservative subset assignment
+        // until the whole authority retires; Drop never waits for another user.
+        if let Ok(mut held) = self.authority.descriptor_purposes.try_lock() {
+            *held -= self.descriptors;
+        }
+    }
+}
+
 pub(super) struct CatalogPhysical {
-    binding: Option<LinuxProjectQuotaBinding>,
+    pub(super) binding: Option<LinuxProjectQuotaBinding>,
     audit: OriginalCatalogPhysicalAudit,
     _descriptors: DecodeDescriptorLoan,
     _scratch: DecodeScratch,
@@ -46,10 +125,7 @@ impl OriginalActorCatalogOwner {
         if slot.is_some() {
             return Err(StoreError::Unavailable);
         }
-        let descriptors = authority
-            .budget
-            .reserve_descriptors(LinuxProjectQuotaBinding::maximum_audit_file_descriptors())
-            .map_err(|source| authority.decode_error(source))?;
+        let descriptors = authority.reserve_catalog_audit_descriptors()?;
         let scratch = authority
             .budget
             .reserve_scratch_bytes(LinuxProjectQuotaBinding::maximum_audit_scratch_bytes())
@@ -112,12 +188,7 @@ impl StorePhysicalQuotaGuard for CatalogSupervisor {
         let descriptors = if descriptors == 0 {
             None
         } else {
-            Some(
-                self.0
-                    .budget
-                    .reserve_descriptors(descriptors)
-                    .map_err(|source| self.0.decode_error(source))?,
-            )
+            Some(self.0.reserve_catalog_descriptors(descriptors)?)
         };
         let loan = ResourceLoan::new(PhysicalCredit {
             _descriptors: descriptors,
@@ -147,12 +218,12 @@ impl StorePhysicalQuotaGuard for CatalogSupervisor {
 }
 
 struct PhysicalCredit {
-    _descriptors: Option<DecodeDescriptorLoan>,
+    _descriptors: Option<CatalogDescriptorCredit>,
     _metadata: DecodeScratch,
     _authority: Arc<CatalogAuthority>,
 }
 
-fn reconcile_quota<T>(
+pub(super) fn reconcile_quota<T>(
     authority: &CatalogAuthority,
     primary: Result<T, crucible_linux_resource::LinuxProjectQuotaError>,
 ) -> Result<T, StoreError> {
@@ -167,5 +238,96 @@ fn reconcile_quota<T>(
             source,
             original_after: None,
         })),
+    }
+}
+
+#[cfg(test)]
+mod descriptor_tests {
+    //! Uses real same-budget loans to exercise the fixed catalog subset.
+
+    use super::*;
+
+    #[test]
+    fn audit_and_backend_loans_share_one_catalog_descriptor_extent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_, decoder, owner, controls) = super::super::tests::campaign_creation_fixture();
+        let authority = owner.authority.as_ref().ok_or("authority missing")?;
+        let audit = authority.reserve_catalog_audit_descriptors()?;
+        let remaining =
+            CATALOG_DESCRIPTOR_LIMIT - LinuxProjectQuotaBinding::maximum_audit_file_descriptors();
+        let backend = authority.reserve_catalog_descriptors(remaining)?;
+        assert_eq!(
+            *authority
+                .descriptor_purposes
+                .lock()
+                .map_err(|_| "census poisoned")?,
+            CATALOG_DESCRIPTOR_LIMIT
+        );
+
+        let refusal = authority
+            .reserve_catalog_descriptors(1)
+            .err()
+            .ok_or("catalog subset overflow accepted")?;
+
+        assert!(matches!(refusal, StoreError::DecodeAdmission { .. }));
+        assert_eq!(
+            *authority
+                .descriptor_purposes
+                .lock()
+                .map_err(|_| "census poisoned")?,
+            CATALOG_DESCRIPTOR_LIMIT
+        );
+        drop(refusal);
+        drop(backend);
+        drop(audit);
+        // The original is terminal; releasing physical loans does not retry it.
+        drop(owner);
+        drop(decoder);
+        std::mem::forget(controls);
+        Ok(())
+    }
+
+    #[test]
+    fn descriptor_credit_retains_original_until_real_loan_closure()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_, decoder, owner, controls) = super::super::tests::campaign_creation_fixture();
+        let loan = owner
+            .authority
+            .as_ref()
+            .ok_or("authority missing")?
+            .reserve_catalog_descriptors(CATALOG_DESCRIPTOR_LIMIT)?;
+
+        let owner = owner
+            .try_close()
+            .err()
+            .ok_or("live descriptor purpose permitted close")?;
+        assert_eq!(
+            *owner
+                .authority
+                .as_ref()
+                .ok_or("authority missing")?
+                .descriptor_purposes
+                .lock()
+                .map_err(|_| "census poisoned")?,
+            CATALOG_DESCRIPTOR_LIMIT
+        );
+        drop(loan);
+        assert_eq!(
+            *owner
+                .authority
+                .as_ref()
+                .ok_or("authority missing")?
+                .descriptor_purposes
+                .lock()
+                .map_err(|_| "census poisoned")?,
+            0
+        );
+
+        owner
+            .try_close()
+            .map_err(|_| "original close refused after actual loan free")?;
+        decoder.try_close().map_err(|_| "decoder close refused")?;
+        drop(controls);
+        Ok(())
     }
 }

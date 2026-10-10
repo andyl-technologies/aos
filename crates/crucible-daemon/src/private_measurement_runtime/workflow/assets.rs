@@ -3,8 +3,9 @@
 //! All inputs come from the same authenticated workflow and original decoder.
 //! Successful files and models are published in this owner before postcuts.
 //! The prepared service imports through its existing repository; this module
-//! does not mint a native role or bind a listener. Lifecycle construction,
-//! complete source/prebirth purposes and native execution remain later stages.
+//! copies authenticated lifecycle paths under the same account and retains
+//! their file pins. Complete Source/prebirth purposes, native execution and
+//! listener admission remain later stages.
 
 use crucible::owned_decode::{
     ClosedJsonError, DecodeBudget, DecodeCustody, from_json_slice_closed,
@@ -14,8 +15,10 @@ use crucible::{ScenarioDefForm, Schedule};
 use crate::campaign_bootstrap::OriginalPreparedCampaignServiceOwner;
 
 mod creation;
+pub(super) mod executor;
 mod failure;
 mod files;
+mod lifecycle;
 mod projection;
 
 #[cfg(test)]
@@ -30,6 +33,8 @@ use projection::{Artifact, Projection, ProjectionValidation};
 const COMPACT_ROOT: &str = "/etc/crucible/measurement-inputs";
 
 pub(super) struct OriginalWorkflowArtifactsOwner {
+    executor_config: Option<Box<crate::PackagedQemuExecutorConfig>>,
+    lifecycle: Option<std::sync::Arc<crucible_api::ProductionVmLifecycleConfig>>,
     projection: Option<Projection>,
     files: Vec<PinnedInput>,
     models: Vec<LoadedAttempt>,
@@ -49,6 +54,22 @@ struct LoadedAttempt {
 
 #[derive(Debug, thiserror::Error)]
 enum ArtifactCause {
+    #[error("original catalog provider refused: {0}")]
+    Catalog(#[from] crucible_cas::content_store::StoreError),
+    #[error("executor configuration refused: {0}")]
+    Executor(#[from] crate::PackagedQemuExecutorConfigError),
+    #[error("executor endpoint refused: {0}")]
+    Endpoint(#[from] crate::LocalComponentEndpointError),
+    #[error("executor server refused: {0}")]
+    Server(#[from] crate::ExecutorLoopbackServerConfigError),
+    #[error("executor exchange timeout refused: {0}")]
+    Timeout(#[from] crate::LoopbackExecutorProtocolError),
+    #[error("executor capacity refused: {0}")]
+    Capacity(#[from] crate::ExecutorCapacityError),
+    #[error("executor operational capacity refused: {0}")]
+    OperationalCapacity(#[from] crate::HostOperationalCapacityError),
+    #[error("executor host configuration refused: {0}")]
+    Host(#[from] crucible_qemu::AdmittedHostConfigurationError),
     #[error("original artifact interval refused: {0}")]
     OriginalBoundary(#[from] crucible_linux_resource::host_supervision::HostSupervisionError),
     #[error("original artifact allocation refused: {0}")]
@@ -65,6 +86,12 @@ enum ArtifactCause {
     Campaign(#[from] crucible_campaign::CampaignCodecError),
     #[error("prepared campaign import refused: {0}")]
     Import(#[from] crate::campaign_bootstrap::OriginalPreparedServiceError),
+    #[error("authenticated lifecycle construction refused: {0}")]
+    Lifecycle(#[from] crucible_api::vm_lifecycle::ProductionVmGuestAssetAdmissionError),
+    #[error("retained campaign state refused: {0}")]
+    State(#[from] crate::campaign_bootstrap::OriginalCampaignStateError),
+    #[error("a runtime still retains the authenticated lifecycle configuration")]
+    LifecycleAliases,
     #[error("authenticated artifact identity differs from the actual input")]
     Identity,
 }
@@ -87,6 +114,8 @@ impl OriginalWorkflowArtifactsOwner {
             let check = failure.work(&original);
             (|| {
                 let mut owner = Self {
+                    executor_config: None,
+                    lifecycle: None,
                     projection: None,
                     files: Vec::new(),
                     models: Vec::new(),
@@ -289,6 +318,8 @@ impl OriginalWorkflowArtifactsOwner {
             (|| {
                 checked(&check, self.budget.check().map_err(Into::into))?;
                 checked(&check, self.budget.verify_live().map_err(Into::into))?;
+                drop(self.executor_config.take());
+                lifecycle::close_configuration(self, &check)?;
                 // Models and input vectors close before any descriptor or buffer loan.
                 self.models.clear();
                 for file in &mut self.files {
@@ -310,6 +341,8 @@ impl Drop for OriginalWorkflowArtifactsOwner {
         if !self.closed {
             // An error/unwind retains actual successful file/model owners and
             // the same external original account, without a cleanup worker.
+            std::mem::forget(self.executor_config.take());
+            std::mem::forget(self.lifecycle.take());
             std::mem::forget(std::mem::take(&mut self.models));
             std::mem::forget(std::mem::take(&mut self.files));
             std::mem::forget(self.projection.take());

@@ -10,7 +10,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 /// Retains bounded evidence bytes through writing and subsequent comparison.
 pub(crate) struct CatalogEvidenceSpool {
     file: Option<File>,
-    _descriptors: HostServiceLease,
+    _descriptors: Option<CatalogDescriptors>,
     _metadata: crucible_cas::owned_decode::ResourceLoan,
     operation: HostOperationGuard,
     authority: Arc<CatalogAuthority>,
@@ -43,11 +43,7 @@ impl CatalogService {
             .checked_add(std::mem::size_of::<CatalogEvidenceCredit>() as u64)
             .and_then(|bytes| bytes.checked_add((2 * std::mem::size_of::<usize>()) as u64))
             .ok_or(StoreError::Quota)?;
-        let metadata = reserve_metadata_credit(
-            &self.authority.allocator,
-            &self.authority.metadata_allocator,
-            charged,
-        )?;
+        let metadata = self.authority.reserve_metadata(charged)?;
         operation.complete().map_err(sqlite_supervision_error)?;
 
         Ok(crucible_cas::owned_decode::ResourceLoan::new(
@@ -75,20 +71,14 @@ impl CatalogService {
             .map_err(sqlite_supervision_error)?;
         operation.wait_slice().map_err(sqlite_supervision_error)?;
         self.authority.prepare(directory)?;
-        let descriptors = self
-            .authority
-            .allocator
-            .reserve_resources(0, 1, 0)
-            .map_err(|_| StoreError::Quota)?;
+        let descriptors = self.authority.reserve_descriptors(1)?;
         let metadata_bytes = std::mem::size_of::<CatalogEvidenceSpool>()
             .checked_add(directory.as_os_str().len())
             .and_then(|bytes| bytes.checked_add(self.authority.policy.root().as_os_str().len()))
             .ok_or(StoreError::Quota)?;
-        let metadata = reserve_metadata_credit(
-            &self.authority.allocator,
-            &self.authority.metadata_allocator,
-            u64::try_from(metadata_bytes).map_err(|_| StoreError::Quota)?,
-        )?;
+        let metadata = self
+            .authority
+            .reserve_metadata(u64::try_from(metadata_bytes).map_err(|_| StoreError::Quota)?)?;
         self.authority.verify()?;
         operation.wait_slice().map_err(sqlite_supervision_error)?;
 

@@ -13,8 +13,10 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use super::*;
 use crate::private_measurement_runtime::catalog::tests::{fixture, fixture_original};
 
-fn empty_owner(budget: &DecodeBudget) -> OriginalWorkflowArtifactsOwner {
+pub(super) fn empty_owner(budget: &DecodeBudget) -> OriginalWorkflowArtifactsOwner {
     OriginalWorkflowArtifactsOwner {
+        executor_config: None,
+        lifecycle: None,
         projection: None,
         files: Vec::new(),
         models: Vec::new(),
@@ -24,11 +26,108 @@ fn empty_owner(budget: &DecodeBudget) -> OriginalWorkflowArtifactsOwner {
     }
 }
 
-fn input(directory: &std::path::Path) -> std::path::PathBuf {
+pub(super) fn input(directory: &std::path::Path) -> std::path::PathBuf {
     let path = directory.join("compact.bin");
     std::fs::write(&path, b"actual compact bytes").unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
     path
+}
+
+pub(super) fn install_configuration_fixture(
+    owner: &mut OriginalWorkflowArtifactsOwner,
+    path: &std::path::Path,
+    run_state_root: &std::path::Path,
+) {
+    let configuration =
+        crucible_api::ProductionVmLifecycleConfig::try_from_guest_asset_paths_admitted(
+            crucible_api::vm_lifecycle::ProductionVmGuestAssetPaths {
+                executable: path,
+                plugin: path,
+                architecture: crucible::model::VmArchitecture::X86_64,
+                kernel: path,
+                root_image: path,
+                initrd: None,
+                root_image_format: crucible_qemu::QemuRootImageFormat::Raw,
+                run_state_root,
+            },
+            &owner.budget,
+        )
+        .unwrap();
+    owner.lifecycle = Some(std::sync::Arc::new(configuration));
+}
+
+#[test]
+fn configuration_alias_refuses_close_and_keeps_the_same_body() {
+    let (_, decoder, catalog) = fixture();
+    let budget = decoder.budget().unwrap();
+    let original = fixture_original(&catalog);
+    let check = || original.wait_slice().map(|_| ());
+    let directory = tempfile::TempDir::new().unwrap();
+    let path = input(directory.path());
+    let mut owner = empty_owner(budget);
+    install_configuration_fixture(&mut owner, &path, directory.path());
+    let alias = std::sync::Arc::clone(owner.lifecycle.as_ref().unwrap());
+    let mut failure = ArtifactFailurePurpose::prepare(budget, &check).unwrap();
+
+    let refusal = lifecycle::close_configuration(&mut owner, &failure.work(&check)).unwrap_err();
+    let error = failure.finish::<()>(Err(refusal)).unwrap_err();
+
+    assert!(matches!(
+        error.cause(),
+        Some(ArtifactCause::LifecycleAliases)
+    ));
+    assert!(std::sync::Arc::ptr_eq(
+        &alias,
+        owner.lifecycle.as_ref().unwrap()
+    ));
+    drop(error);
+    drop(alias);
+    let mut failure = ArtifactFailurePurpose::prepare(budget, &check).unwrap();
+    lifecycle::close_configuration(&mut owner, &failure.work(&check)).unwrap();
+    failure.finish(Ok(())).unwrap();
+    owner.closed = true;
+    drop(owner);
+    catalog.try_close().unwrap();
+    assert!(decoder.try_close().is_ok());
+}
+
+#[test]
+fn configuration_closes_while_actual_input_pin_and_credit_remain_owned() {
+    let (_, decoder, catalog) = fixture();
+    let budget = decoder.budget().unwrap();
+    let original = fixture_original(&catalog);
+    let check = || original.wait_slice().map(|_| ());
+    let directory = tempfile::TempDir::new().unwrap();
+    let path = input(directory.path());
+    let mut owner = empty_owner(budget);
+    let mut failure = ArtifactFailurePurpose::prepare(budget, &check).unwrap();
+    owner.files.push(PinnedInput::reserved(budget).unwrap());
+    let metadata = owner.files[0]
+        .open_fixture(&path, &failure.work(&check))
+        .unwrap();
+    let digest = blake3::hash(b"actual compact bytes").to_hex().to_string();
+    owner.files[0]
+        .authenticate_stream(metadata.len(), &digest, &failure.work(&check))
+        .unwrap();
+    let descriptor = owner.files[0].file.as_ref().unwrap().as_raw_fd();
+    install_configuration_fixture(&mut owner, &path, directory.path());
+
+    lifecycle::close_configuration(&mut owner, &failure.work(&check)).unwrap();
+
+    assert!(owner.lifecycle.is_none());
+    let retained = std::fs::metadata(format!("/proc/self/fd/{descriptor}")).unwrap();
+    assert_eq!(
+        (retained.dev(), retained.ino()),
+        (metadata.dev(), metadata.ino())
+    );
+    budget.verify_live().unwrap();
+    owner.files[0].close();
+    owner.files.clear();
+    failure.finish(Ok(())).unwrap();
+    owner.closed = true;
+    drop(owner);
+    catalog.try_close().unwrap();
+    assert!(decoder.try_close().is_ok());
 }
 
 #[test]

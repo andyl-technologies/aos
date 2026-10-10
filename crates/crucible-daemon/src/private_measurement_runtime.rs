@@ -16,7 +16,9 @@ pub(crate) mod catalog;
 mod sqlite;
 mod workflow;
 
-pub use actor_roles::OriginalActorRoleIssuer;
+pub use actor_roles::{
+    OriginalActorRoleIssuer, OriginalPackagedPreparationError, OriginalPreparedPackagedExecutor,
+};
 pub use catalog::OriginalActorCatalogOwner;
 pub use workflow::{
     OriginalWorkflowArtifactsError, OriginalWorkflowInputError, OriginalWorkflowReadError,
@@ -187,7 +189,7 @@ pub enum MeasurementRuntimeAdmissionError {
 /// refuses factory effects rather than substituting actor arguments.
 pub fn run_original_actor() -> Result<(), MeasurementRuntimeAdmissionError> {
     let invocation = AuthenticatedParentInvocation::receive_original()?;
-    let issuer = OriginalActorRoleIssuer::admit_parent(invocation)?;
+    let mut issuer = OriginalActorRoleIssuer::admit_parent(invocation)?;
     issuer.require_original()?;
     let mut workflow = workflow::OriginalResidentWorkflowOwner::load(&issuer)?;
     let mut policy = workflow.take_service_policy()?;
@@ -203,6 +205,7 @@ pub fn run_original_actor() -> Result<(), MeasurementRuntimeAdmissionError> {
     workflow.prepare_campaign_state(&heap)?;
     workflow.prepare_catalog_owner(&issuer)?;
     workflow.prepare_campaign_graph(catalog_purpose, &heap)?;
+    workflow.prepare_ram_catalog_provider(&heap)?;
     workflow.prepare_campaign_refs()?;
     workflow.prepare_campaign_repository()?;
     workflow.prepare_campaign_support()?;
@@ -213,7 +216,8 @@ pub fn run_original_actor() -> Result<(), MeasurementRuntimeAdmissionError> {
     std::mem::forget(heap);
     workflow.import_fixed_campaign_inputs()?;
 
-    let purpose = "original-paid genuine packaged executor and authenticated resolved assets";
+    let _executor = workflow.prepare_genuine_executor(&mut issuer)?;
+    let purpose = "original-paid packaged execution and physical retirement";
     let stage = OriginalServiceStage::PackagedExecutor;
     workflow.close_artifacts().map_err(|source| {
         MeasurementRuntimeAdmissionError::MissingContinuationCleanup {

@@ -11,7 +11,7 @@ use std::sync::{Arc, OnceLock};
 
 use crucible_api::host_operational::HostResourceVector;
 
-mod provider;
+pub(crate) mod provider;
 
 #[cfg(test)]
 pub(crate) use provider::CatalogEvidenceSpool;

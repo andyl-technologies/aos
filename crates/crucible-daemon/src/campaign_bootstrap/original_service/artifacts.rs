@@ -31,6 +31,27 @@ impl OriginalPreparedCampaignServiceOwner {
         self.original.verify()
     }
 
+    /// Prepares the genuine factory from this retained service and external issuer.
+    ///
+    /// # Errors
+    /// Preserves typed factory preparation failure before independent original
+    /// posts. A late refusal drops the facade, whose Drop retains actual factory
+    /// and external native custody rather than claiming physical cleanup.
+    pub(crate) fn prepare_packaged_executor<'actor>(
+        &self,
+        issuer: &'actor mut crate::private_measurement_runtime::OriginalActorRoleIssuer,
+        config: crate::PackagedQemuExecutorConfig,
+    ) -> Result<
+        crate::private_measurement_runtime::OriginalPreparedPackagedExecutor<'actor>,
+        OriginalPreparedServiceError,
+    > {
+        self.artifact_operation(|service| {
+            issuer
+                .prepare_genuine_packaged_executor(service, config)
+                .map_err(Into::into)
+        })
+    }
+
     pub(crate) fn import_configuration(
         &self,
         scenario: &crucible::ScenarioDefForm,

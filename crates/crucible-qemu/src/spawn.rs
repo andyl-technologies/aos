@@ -129,7 +129,19 @@ pub(crate) struct QemuChildCredentials {
 struct SupervisorCredentials {
     user_ids: [libc::uid_t; 3],
     group_ids: [libc::gid_t; 3],
-    supplementary_group_ids: Vec<libc::gid_t>,
+    supplementary_group_ids: SupervisorGroups,
+}
+
+// The physical group array always drops before its same-budget temporary loan.
+struct SupervisorGroups {
+    values: Vec<libc::gid_t>,
+    _credit: Option<crucible::owned_decode::DecodeScratch>,
+}
+
+impl SupervisorGroups {
+    fn contains(&self, group: &libc::gid_t) -> bool {
+        self.values.contains(group)
+    }
 }
 
 impl QemuChildCredentials {
@@ -141,8 +153,8 @@ impl QemuChildCredentials {
     /// root, the user ID equals any real, effective, or saved daemon user, or
     /// the group ID equals any real, effective, saved, or supplementary daemon
     /// group. Returns
-    /// [`QemuSpawnError::Io`] when the daemon group set cannot be inspected
-    /// within its explicit bound.
+    /// [`QemuSpawnError::Io`] when credential inspection fails, or a typed
+    /// group-bound, group-change or decode-admission refusal before use.
     pub(crate) fn new(user_id: libc::uid_t, group_id: libc::gid_t) -> Result<Self, QemuSpawnError> {
         let supervisor = current_supervisor_credentials()?;
         if user_id == 0
@@ -193,7 +205,7 @@ fn current_supervisor_credentials() -> Result<SupervisorCredentials, QemuSpawnEr
     })
 }
 
-fn current_supplementary_groups() -> Result<Vec<libc::gid_t>, QemuSpawnError> {
+fn current_supplementary_groups() -> Result<SupervisorGroups, QemuSpawnError> {
     let count = unsafe {
         // SAFETY: a zero count permits a null list and returns its required size.
         libc::getgroups(0, std::ptr::null_mut())
@@ -201,38 +213,30 @@ fn current_supplementary_groups() -> Result<Vec<libc::gid_t>, QemuSpawnError> {
     if count < 0 {
         return Err(last_io_error("inspect supervisor supplementary groups"));
     }
-    let count = usize::try_from(count).map_err(|source| QemuSpawnError::Io {
-        operation: "bound supervisor supplementary groups",
-        source: io::Error::new(io::ErrorKind::InvalidData, source),
-    })?;
+    let count = count as usize;
     if count > MAX_SUPERVISOR_GROUPS {
-        return Err(QemuSpawnError::Io {
-            operation: "bound supervisor supplementary groups",
-            source: io::Error::new(
-                io::ErrorKind::InvalidData,
-                "supervisor supplementary groups exceed the supported bound",
-            ),
-        });
+        return Err(QemuSpawnError::SupervisorGroupLimit);
     }
-    let mut groups = vec![0; count];
+    let credit = crucible::owned_decode::current_budget()
+        .map(|budget| budget.reserve_scratch_array::<libc::gid_t>(count))
+        .transpose()
+        .map_err(QemuSpawnError::ConfigurationAdmission)?;
+    let mut groups = SupervisorGroups {
+        values: vec![0; count],
+        _credit: credit,
+    };
     if count == 0 {
         return Ok(groups);
     }
     let returned = unsafe {
         // SAFETY: `groups` contains exactly `count` writable gid_t elements.
-        libc::getgroups(count as libc::c_int, groups.as_mut_ptr())
+        libc::getgroups(count as libc::c_int, groups.values.as_mut_ptr())
     };
     if returned < 0 {
         return Err(last_io_error("read supervisor supplementary groups"));
     }
-    if usize::try_from(returned).ok() != Some(count) {
-        return Err(QemuSpawnError::Io {
-            operation: "read supervisor supplementary groups",
-            source: io::Error::new(
-                io::ErrorKind::InvalidData,
-                "supervisor supplementary groups changed while inspected",
-            ),
-        });
+    if returned as usize != count {
+        return Err(QemuSpawnError::SupervisorGroupsChanged);
     }
     Ok(groups)
 }
@@ -818,6 +822,15 @@ impl QemuSpawnedChild {
 /// Errors returned while preparing or spawning a QEMU child.
 #[derive(Debug, Error)]
 pub enum QemuSpawnError {
+    /// The active original configuration account refused before allocation.
+    #[error("QEMU configuration admission refused: {0}")]
+    ConfigurationAdmission(#[source] crucible::owned_decode::DecodeAdmissionError),
+    /// The actual supervisor group inventory exceeded its source bound.
+    #[error("supervisor supplementary groups exceed the supported bound")]
+    SupervisorGroupLimit,
+    /// The actual supervisor group inventory changed during inspection.
+    #[error("supervisor supplementary groups changed while inspected")]
+    SupervisorGroupsChanged,
     /// The guarded environment does not preserve the matched worker request.
     #[error("guarded QEMU worker stack profile is unsupported")]
     UnsupportedWorkerStackProfile,

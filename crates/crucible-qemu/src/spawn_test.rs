@@ -1173,7 +1173,7 @@ fn exact_checkpoint_root_is_immutable_across_contract_generations() -> Result<()
 fn guarded_credentials_reject_root_and_supervisor_identity() -> Result<(), Box<dyn Error>> {
     let supervisor = current_supervisor_credentials()?;
     let distinct_user_id = distinct_nonzero_id(&supervisor.user_ids);
-    let mut supervisor_groups = supervisor.supplementary_group_ids.clone();
+    let mut supervisor_groups = supervisor.supplementary_group_ids.values.clone();
     supervisor_groups.extend(supervisor.group_ids);
     let distinct_group_id = distinct_nonzero_id(&supervisor_groups);
 
@@ -1191,7 +1191,7 @@ fn guarded_credentials_reject_root_and_supervisor_identity() -> Result<(), Box<d
 
 fn valid_distinct_credentials() -> Result<QemuChildCredentials, QemuSpawnError> {
     let supervisor = current_supervisor_credentials()?;
-    let mut supervisor_groups = supervisor.supplementary_group_ids;
+    let mut supervisor_groups = supervisor.supplementary_group_ids.values;
     supervisor_groups.extend(supervisor.group_ids);
     QemuChildCredentials::new(
         distinct_nonzero_id(&supervisor.user_ids),
