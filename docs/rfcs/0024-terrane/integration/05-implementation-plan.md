@@ -562,6 +562,11 @@ in the paired-preparation tests. Independent review verifies all twenty-five
 packet payloads and 6,224 tracked source entries. Test compilation, fresh
 inventory, features and all runtime cases remain unrun for this source. A
 test-only follow-up addresses these diagnostics before another qualification.
+Reviewed follow-up `50494a5a6c` replaces the cloned comparisons with borrowed
+slices and exercises the shared pointer helper through a genuine ordinary-file
+structural-role refusal. It preserves exact Schema diagnostics and revision-1
+standalone inert behavior without lint suppression. Compiler and runtime
+qualification of the follow-up remain pending.
 A bounded T-CDC-1/T-GC-1 gate workline now extends the existing source-bound
 native test image to fifty-two matching native selectors across six gate
 wrappers. The ordered selector sets and independent execution remain fixed;
@@ -595,6 +600,16 @@ gates remain unrun. Read-only comparison identifies a current-source test
 filesystem wrapper that lacks the mandatory ordinary-record forwarding method.
 An isolated fixture-binding workline addresses that gap without changing
 production interfaces, deadlines, authority or the original failed evidence.
+Reviewed fixture follow-up `b755fa68d3` adds thirteen lines forwarding ordinary
+read requests to the real native executor. Leaf requests retain the existing
+forbidden-DATA read trap; physical closing projections retain their original
+native exclusions, errors and cancellation behavior. Independent review
+verifies all four packet payloads and all 6,224 tracked source seals. The old
+failure proves no execution of this follow-up or the N+1 observation change.
+Source-only preflight on `1a12676434` verifies the 89-gate floor plus three
+workflows, all 203 future explicit failures, shared image bindings and all 298
+generated root scripts' AOS shell syntax. Independent review verifies all 329
+packet payloads. This static evidence qualifies no runtime or later source.
 The owning `algebra-merge` gate passes separately on frozen `ea64a04697`,
 executing thirty-two core and six native cases with zero failures or ignored
 tests. Independent review verifies all twenty packet files and the actual
