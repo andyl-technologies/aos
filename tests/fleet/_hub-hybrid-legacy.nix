@@ -1437,7 +1437,7 @@
   # The agent mirrors stdout to the serial console. Query the asserted fields
   # instead of sending the full retained stage through that slow transport.
   registry_stage = json.loads(client.succeed(
-      f"{JQ} -c '{{state, registry: .revision.registry, revision: .revision.revision, "
+      "${pkgs.jq}/bin/jq -c '{state, registry: .revision.registry, revision: .revision.revision, "
       "release_id: .revision.release_id, source_branch: .revision.source_branch, "
       "index_digest: .revision.container.release.oci.index.digest}' "
       "/var/lib/hybrid-container-registry-stage.json"
