@@ -23,6 +23,7 @@ pub mod attention;
 pub mod events;
 pub mod ports;
 pub mod provider;
+pub mod routes;
 pub mod scan;
 pub mod status;
 mod validation;

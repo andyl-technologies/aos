@@ -167,14 +167,39 @@ impl SourceCredentialSetV1 {
             .credential_ref
             .as_ref()
             .context("source credential reference is absent")?;
+        self.resolve_operation(
+            reference,
+            &plan.authorization_partition,
+            &plan.operation,
+            now,
+        )
+    }
+
+    /// Checks installed project authority before a coordinator issues physical work.
+    ///
+    /// The physical executor repeats this check against its own current grant
+    /// before reading a secret. Coordinator admission is not secret authority.
+    ///
+    /// # Errors
+    /// Returns an error for invalid operations/configuration, absent grants,
+    /// mismatched scopes or expired installed authority.
+    pub fn resolve_operation<'a>(
+        &'a self,
+        reference: &str,
+        partition: &str,
+        operation: &ProviderOperation,
+        now: &Timestamp,
+    ) -> Result<&'a SourceCredentialGrant> {
+        self.validate()?;
+        operation.validate()?;
         let grant = self
             .grants
             .iter()
-            .find(|grant| &grant.reference == reference)
+            .find(|grant| grant.reference == reference)
             .context("installed source credential grant is absent")?;
-        if grant.partition != plan.authorization_partition
-            || grant.provider != plan.operation.provider()
-            || !grant.scope.permits(&plan.operation)
+        if grant.partition != partition
+            || grant.provider != operation.provider()
+            || !grant.scope.permits(operation)
             || now >= &grant.expires_at
         {
             bail!("source credential scope or current authority differs");

@@ -18,6 +18,10 @@ use aos_assessment_runtime::scan::TaskClaim;
 
 use crate::db::{AssessmentProviderWork, AssessmentScanRecord, Database};
 
+mod routes;
+
+pub use routes::InstalledAssessmentRoutes;
+
 /// Rechecks a durable operation's current actor and authorization generation.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
