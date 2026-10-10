@@ -1379,6 +1379,46 @@ impl LiveVcpuTimeCallbackState {
         fingerprint.worker.wait_registered(wait_slice)
     }
 
+    /// Borrows the parked fingerprint owner through nonblocking transfer cuts.
+    ///
+    /// # Safety
+    ///
+    /// The caller must retain complete callback/ring/worker exclusion in this
+    /// same parent process. Restoration also requires native producer/execution
+    /// exclusion through the final release cut.
+    ///
+    /// # Errors
+    ///
+    /// Returns a fixed signed refusal for control/workspace contention, poison,
+    /// wrong process, absent owner, pending work, failure or inconsistent custody.
+    pub(super) unsafe fn hold_fingerprint_workspace_for_parent_park(&self) -> Result<(), i32> {
+        if let Some(fingerprint) = &self.fingerprint {
+            // SAFETY: the caller owns complete callback/ring/worker exclusion.
+            unsafe { fingerprint.worker.hold_workspace_for_parent_park() }?;
+        }
+        Ok(())
+    }
+
+    /// Restores the same owner while native still excludes parent producers.
+    ///
+    /// # Safety
+    ///
+    /// The caller must retain complete callback/ring/worker exclusion in this
+    /// same parent process. Restoration also requires native producer/execution
+    /// exclusion through the final release cut.
+    ///
+    /// # Errors
+    ///
+    /// Returns a fixed signed refusal for control/workspace contention, poison,
+    /// wrong process, absent owner, pending work, failure or inconsistent custody.
+    pub(super) unsafe fn restore_fingerprint_workspace_for_parent_park(&self) -> Result<(), i32> {
+        if let Some(fingerprint) = &self.fingerprint {
+            // SAFETY: the caller retains complete exclusion until final release.
+            unsafe { fingerprint.worker.restore_workspace_for_parent_park() }?;
+        }
+        Ok(())
+    }
+
     /// Moves the workspace only after the complete native barrier is parked.
     ///
     /// # Safety

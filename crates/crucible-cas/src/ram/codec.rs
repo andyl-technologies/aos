@@ -32,7 +32,7 @@ pub(super) const PAGE_SCHEMA: &str = "crucible.ram.page";
 pub(super) const TREE_SCHEMA: &str = "crucible.ram.tree";
 pub(super) const ROOT_SCHEMA: &str = "crucible.ram.root";
 pub(super) const SCHEMA_VERSION: u32 = 1;
-const MAX_PUBLICATION_BATCH_OBJECTS: usize = 64;
+pub(super) const MAX_PUBLICATION_BATCH_OBJECTS: usize = 64;
 const MAX_PUBLICATION_BATCH_BYTES: u64 = 4 * 1024 * 1024;
 
 pub(super) fn object_limits(id: ContentId) -> Result<(u64, usize), RamStoreError> {
@@ -201,23 +201,9 @@ impl RamStore {
             drop(pending);
             let receipts = receipts
                 .check(|receipts| {
-                    let result = (|| {
-                        let count = expected.iter().flatten().count();
-                        if receipts.len() != count {
-                            return Err(RamStoreError::Invalid(
-                                "RAM publication batch receipt count",
-                            ));
-                        }
-                        for ((id, length), receipt) in
-                            expected.iter().flatten().zip(receipts.iter())
-                        {
-                            self.validate_receipt(receipt, *id, *length)?;
-                            // This authenticates the exact committed input and
-                            // still applies the canonical schema/child limits.
-                            self.read_envelope(*id, work)?;
-                        }
-                        Ok(())
-                    })();
+                    let result = super::bounded_read::publication::read_publication(
+                        self, &expected, receipts, work,
+                    );
                     result.map_err(|error| work.validation_error(error))
                 })
                 .map_err(RamStoreError::from)?;
@@ -255,7 +241,7 @@ impl RamStore {
         Ok(())
     }
 
-    fn validate_receipt(
+    pub(super) fn validate_receipt(
         &self,
         receipt: &crate::content_store::PutReceipt,
         id: ContentId,
@@ -854,6 +840,22 @@ pub(super) fn read_envelope_using(
         &crate::owned_decode::DecodeBudget,
     ) -> Result<(), crate::content_store::StoreError>,
 ) -> Result<OwnedEnvelope, RamStoreError> {
+    let prepared = prepare_envelope_read(id, work)?;
+    read_prepared_envelope_using(prepared, work, prepaid, source, verify)
+}
+
+/// Retains the exact first decoder account before opening a pinned read view.
+pub(super) struct PreparedEnvelopeRead {
+    id: ContentId,
+    account: DecodeBudget,
+    maximum_bytes: u64,
+    maximum_children: usize,
+}
+
+pub(super) fn prepare_envelope_read(
+    id: ContentId,
+    work: &mut Work<'_>,
+) -> Result<PreparedEnvelopeRead, RamStoreError> {
     if id.schema_version() == SCHEMA_VERSION
         && matches!(
             id.kind(),
@@ -863,7 +865,7 @@ pub(super) fn read_envelope_using(
         work.reject_exhausted_nonempty_visit()?;
     }
     let account = work.original().child().map_err(admission)?;
-    let _scope = account.enter();
+    let scope = account.enter();
     if id.schema_version() != SCHEMA_VERSION {
         return Err(RamStoreError::Invalid("RAM storage schema"));
     }
@@ -871,6 +873,34 @@ pub(super) fn read_envelope_using(
     // malformed small-object identity must not borrow the root decoder's
     // larger catalog allocation merely by declaring a large body/table.
     let (maximum_bytes, maximum_children) = object_limits(id)?;
+    drop(scope);
+    Ok(PreparedEnvelopeRead {
+        id,
+        account,
+        maximum_bytes,
+        maximum_children,
+    })
+}
+
+/// Continues one prepared read without creating a second decoder account.
+pub(super) fn read_prepared_envelope_using(
+    prepared: PreparedEnvelopeRead,
+    work: &mut Work<'_>,
+    prepaid: bool,
+    source: &mut impl FnMut(
+        &DecodeBudget,
+        ContentId,
+        &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<crate::content_store::BlobHandle, StoreError>,
+    verify: &mut impl FnMut(&DecodeBudget) -> Result<(), StoreError>,
+) -> Result<OwnedEnvelope, RamStoreError> {
+    let PreparedEnvelopeRead {
+        id,
+        account,
+        maximum_bytes,
+        maximum_children,
+    } = prepared;
+    let _scope = account.enter();
     (work.boundary)()?;
     let source = work.checked(|original, boundary| {
         let mut checked = || {

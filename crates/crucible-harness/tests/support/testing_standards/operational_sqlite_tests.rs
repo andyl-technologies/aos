@@ -392,3 +392,67 @@ fn checked_row_eof_contract_rejects_stale_lengths_and_missing_current_row_reads(
     }
     Ok(())
 }
+
+#[test]
+fn retained_statement_owner_rejects_foreign_credit_missing_cleanup_and_caller_substitution()
+-> Result<(), Box<dyn std::error::Error>> {
+    let contract = CONTRACTS
+        .iter()
+        .find(|contract| contract.target == "src/content_store/sqlite/batch/write_statements")
+        .ok_or("retained statement contract is absent")?;
+    let source = local_source(contract)?;
+    let companions = read_companions(contract)?;
+    assert!(!has_escape(&mask_with_companions(
+        contract,
+        &source,
+        &companions
+    )));
+
+    for (before, after) in [
+        (
+            "original.reserve_scratch_bytes(bytes)",
+            "foreign.reserve_scratch_bytes(bytes)",
+        ),
+        (
+            "presence: Statement<'connection>,",
+            "presence: Option<Statement<'connection>>,",
+        ),
+        ("self.presence.clear_bindings();", ""),
+        ("statement.clear_bindings();", ""),
+        ("Some(original),", "None,"),
+        ("drop(statements);", "std::mem::forget(statements);"),
+        ("checked_mul(2)", "checked_mul(1)"),
+    ] {
+        let changed = replace_pattern(&source, &pattern(before), after);
+        assert!(
+            has_escape(&mask_with_companions(contract, &changed, &companions)),
+            "{before}"
+        );
+    }
+
+    let caller = contract
+        .companions
+        .iter()
+        .position(|binding| binding.path == "crates/crucible-cas/src/content_store/sqlite/batch.rs")
+        .ok_or("statement caller contract is absent")?;
+    for (before, after) in [
+        (
+            "&transaction, &staged, account, &self.quarantined, check,",
+            "&transaction, &staged, foreign, &self.quarantined, check,",
+        ),
+        ("account.verify_live()", "foreign.verify_live()"),
+        (
+            "check_original(boundary, account, operation.as_deref())",
+            "check_original(boundary, foreign, operation.as_deref())",
+        ),
+    ] {
+        let mut changed = companions.clone();
+        changed[caller] = replace_all_patterns(&changed[caller], &pattern(before), after);
+        assert_ne!(changed[caller], companions[caller]);
+        assert!(
+            has_escape(&mask_with_companions(contract, &source, &changed)),
+            "{before}"
+        );
+    }
+    Ok(())
+}

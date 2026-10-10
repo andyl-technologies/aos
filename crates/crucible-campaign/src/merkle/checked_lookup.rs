@@ -50,7 +50,7 @@ impl MerkleMap {
         Ok(value)
     }
 
-    fn read_checked_node(
+    pub(super) fn read_checked_node(
         &self,
         id: ContentId,
         depth: u8,

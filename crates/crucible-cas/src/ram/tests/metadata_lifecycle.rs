@@ -360,9 +360,14 @@ fn committed_batch_readback_detects_corruption_after_original_inputs_close() {
     let RamStoreError::Store(StoreError::DirectoryScope { source }) = &error else {
         panic!("committed readback corruption retains its outcome: {error:?}")
     };
-    assert!(
-        matches!(source.work_failure(), Some(StoreError::Corrupt { id: corrupted }) if *corrupted == id)
-    );
+    let Some(StoreError::RamValidation { source: validation }) = source.work_failure() else {
+        panic!("bounded readback retains its shared validation cause: {error:?}")
+    };
+    assert!(validation.first_boundary().is_none());
+    assert!(matches!(
+        validation.storage_failure(),
+        RamStoreError::Store(StoreError::Corrupt { id: corrupted }) if *corrupted == id
+    ));
     assert_eq!(source.outcome().published_objects, 2);
     assert_eq!(source.outcome().durable_objects, 2);
     assert!(!source.outcome().durability_uncertain);

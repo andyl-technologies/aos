@@ -472,3 +472,42 @@ fn source_control_geometry_reports_objects_without_claiming_native_frames_or_pay
         std::mem::size_of::<super::super::super::OwnedCallbackRuntimeState>()
     );
 }
+
+#[test]
+fn parent_park_workspace_refuses_actual_recursive_control_and_mapping_borrows() {
+    let control = control();
+    let worker = worker(Arc::clone(&control));
+    let state = control
+        .state
+        .lock()
+        .unwrap_or_else(|error| panic!("control borrow: {error}"));
+    assert_eq!(
+        // SAFETY: this fixture has no digest thread, capture or live mapping. The
+        // actual nonblocking borrow must refuse before touching its empty owner.
+        unsafe { worker.hold_workspace_for_parent_park() },
+        Err(-libc::EBUSY)
+    );
+    assert_eq!(
+        // SAFETY: the same fixture has no concurrent owner or worker access.
+        unsafe { worker.restore_workspace_for_parent_park() },
+        Err(-libc::EBUSY)
+    );
+    drop(state);
+
+    let mapping = control
+        .workspace
+        .lock()
+        .unwrap_or_else(|error| panic!("mapping borrow: {error}"));
+    assert_eq!(
+        // SAFETY: the actual held mapping mutex must refuse without owner mutation.
+        unsafe { worker.hold_workspace_for_parent_park() },
+        Err(-libc::EBUSY)
+    );
+    assert_eq!(
+        // SAFETY: this is the same exclusive, threadless fixture owner.
+        unsafe { worker.restore_workspace_for_parent_park() },
+        Err(-libc::EBUSY)
+    );
+    drop(mapping);
+    drop(worker);
+}

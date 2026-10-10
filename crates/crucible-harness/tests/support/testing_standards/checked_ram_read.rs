@@ -226,9 +226,9 @@ const INPUTS: &[Input] = &[
     Input {
         path: "crates/crucible-cas/src/content_store/sqlite/batch/busy/single_record.rs",
         required: &[
-            "consume_inner::<true>(original, connection, quarantined, boundary, record, admit, validate,)",
-            "if id.kind() != crate::content_store::ObjectKind::MerkleNode { return Err(StoreError::Corrupt { id }); } consume_inner::<false>(original, connection, quarantined, boundary, Record { id, maximum: crate::content_store::MAX_MERKLE_NODE_ENVELOPE_BYTES as u64, }, admit, |_| Ok(true),)",
-            "fn consume_inner<const AUTHENTICATE: bool>(",
+            "consume_inner::<true, false, _, _, _>(original, connection, quarantined, boundary, record, RecordConsumer { admit, validate, after_close: retain_closed_result, },)",
+            "if id.kind() != crate::content_store::ObjectKind::MerkleNode { return Err(StoreError::Corrupt { id }); } consume_inner::<false, true, _, _, _>(original, connection, quarantined, boundary, Record { id, maximum: crate::content_store::MAX_MERKLE_NODE_ENVELOPE_BYTES as u64, }, RecordConsumer { admit, validate: defer_merkle_digest, after_close, },)",
+            "fn consume_inner<const AUTHENTICATE: bool, const AFTER_CLOSE: bool, A, V, C>(",
             "let attempt = read_attempt::<AUTHENTICATE>(",
             "fn read_attempt<const AUTHENTICATE: bool>(",
             "let credit = snapshot::SnapshotScope::prepare(original)?;",
@@ -247,13 +247,16 @@ const INPUTS: &[Input] = &[
             "cleanup[1] = match rows.next()",
             "drop(rows); result",
             "cleanup[2] = statement.finalize().err();",
+            "C: FnOnce(Option<&[u8]>, &mut dyn FnMut() -> Result<(), StoreError>) -> Result<(), StoreError>",
+            "let repeat = !attempt.admitted && attempt.cleanup.iter().all(Option::is_none) && attempt.result.as_ref().err().is_some_and(is_busy) && connection.is_autocommit(); if !repeat { break Ok(attempt); } if let Err(error) = check() { break Ok(Attempt { result: Err(error), cleanup: [None, None, None], admitted: false, }); } std::thread::yield_now();",
+            "if AFTER_CLOSE && cleanup.iter().all(Option::is_none) && connection.is_autocommit() { result = result.and_then(|value| { check()?; after_close(value.as_deref(), &mut check)?; Ok(value) }); } let restoration = connection.busy_timeout(Duration::from_millis(saved)).err();",
             "let restoration = connection.busy_timeout(Duration::from_millis(saved)).err();",
             "cleanup.iter().all(Option::is_none) && restoration.is_none() && connection.is_autocommit()",
             "read_scope_error(result.err(), None, restoration, cleanup, SqliteCommitOutcome::NotCommitted, credit, None,)",
         ],
         counts: &[
-            ("consume_inner::<true>(", 1),
-            ("consume_inner::<false>(", 1),
+            ("consume_inner::<true, false, _, _, _>(", 1),
+            ("consume_inner::<false, true, _, _, _>(", 1),
             ("read_attempt::<AUTHENTICATE>(", 1),
             ("snapshot::SnapshotScope::prepare(original)?", 1),
             ("connection.prepare(METADATA)", 1),
@@ -263,6 +266,8 @@ const INPUTS: &[Input] = &[
             ("blob.read_exact(chunk)", 1),
             ("validate.take()", 1),
             ("if AUTHENTICATE && !id.authenticates(&bytes)", 1),
+            ("after_close(value.as_deref(), &mut check)?", 1),
+            ("connection.busy_timeout(Duration::ZERO)", 1),
             ("blob.close().err()", 1),
             ("cleanup[1] = match rows.next()", 1),
             ("statement.finalize().err()", 1),
@@ -279,16 +284,16 @@ const INPUTS: &[Input] = &[
             "if length > MAX_MERKLE_NODE_ENVELOPE_BYTES as u64 { return Err(StoreError::Quota); }",
             "checked_add(std::mem::size_of::<OwnedBlobBytes>() as u64)",
             "let credit = original.reserve_scratch_bytes(extent).map_err(|error| { crate::content_store::batch::admission_under(original, error) })?; let mut bytes = Vec::new(); bytes.try_reserve_exact(capacity)",
-            ")?.finish(|bytes| bytes.ok_or(StoreError::NotFound { id }))?; let length = bytes.len() as u64; let accepted = busy::with_zero(",
-            "batch::reader::current_chunk(connection, &self.quarantined, check, id, 1, 0, length,)",
-            "accepted.finish(|eof| { check()?; if eof.as_ref().is_none_or(|bytes| !bytes.is_empty()) { return Err(StoreError::Corrupt { id }); } Ok(()) })?; if !id.authenticates(&bytes) { return Err(StoreError::Corrupt { id }); } drop(connection); drop(staging); check()?;",
+            "|bytes, check| { let Some(bytes) = bytes else { return Ok(()); }; let eof = batch::reader::current_chunk(",
+            "batch::reader::current_chunk(&connection, &self.quarantined, check, id, 1, 0, bytes.len() as u64,)",
+            "check()?; if eof.as_ref().is_none_or(|bytes| !bytes.is_empty()) || !id.authenticates(bytes) { return Err(StoreError::Corrupt { id }); } Ok(()) }, )?.finish(|bytes| bytes.ok_or(StoreError::NotFound { id }))?; drop(connection); drop(staging); check()?;",
             "Ok(OwnedBlobBytes::prepared(bytes, credit))",
         ],
         counts: &[
             ("busy::single_record::consume_merkle(", 1),
-            ("busy::with_zero(", 1),
+            ("busy::with_zero(", 0),
             ("batch::reader::current_chunk(", 1),
-            ("if !id.authenticates(&bytes)", 1),
+            ("!id.authenticates(bytes)", 1),
             ("original.reserve_scratch_bytes(extent)", 1),
         ],
     },
@@ -404,8 +409,20 @@ mod tests {
         assert!(input_failures(native, &source).is_empty());
 
         for (before, after) in [
-            ("consume_inner::<true>(", "consume_inner::<false>("),
-            ("consume_inner::<false>(", "consume_inner::<true>("),
+            (
+                "consume_inner::<true, false, _, _, _>(",
+                "consume_inner::<false, false, _, _, _>(",
+            ),
+            (
+                "consume_inner::<false, true, _, _, _>(",
+                "consume_inner::<false, false, _, _, _>(",
+            ),
+            ("!attempt.admitted", "true"),
+            (
+                "AFTER_CLOSE && cleanup.iter().all(Option::is_none)",
+                "AFTER_CLOSE",
+            ),
+            ("check()?;\n            after_close", "after_close"),
             (
                 "AUTHENTICATE && !id.authenticates(&bytes)",
                 "!id.authenticates(&bytes)",
@@ -424,10 +441,8 @@ mod tests {
         assert!(input_failures(merkle, &source).is_empty());
         for (before, after) in [
             ("batch::reader::current_chunk(", "snapshot_only_eof("),
-            (
-                "1,\n                        0,\n                        length,",
-                "1,\n                        0,\n                        0,",
-            ),
+            ("|| !id.authenticates(bytes)", "|| false"),
+            ("bytes.len() as u64,", "0,"),
             ("drop(staging);\n            check()?;", "drop(staging);"),
         ] {
             let changed = source.replacen(before, after, 1);

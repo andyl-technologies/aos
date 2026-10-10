@@ -9,6 +9,7 @@ pub(super) mod busy;
 pub(super) mod diagnostic;
 pub(super) mod metadata;
 pub(super) mod reader;
+mod write_statements;
 
 impl SqliteBlobBackend {
     pub(super) fn put_batch_with_boundary(
@@ -104,47 +105,16 @@ impl SqliteBlobBackend {
                     transaction.set_drop_behavior(rusqlite::DropBehavior::Ignore);
                     progress.began();
                     check()?;
-                    let mut inserted = false;
-                    for (id, bytes) in &staged {
-                        check()?;
-                        let exists: bool =
-                            busy::retry(&transaction, true, &self.quarantined, check, |_| {
-                                with_id_text(*id, |encoded| {
-                                    transaction
-                                        .query_row(diagnostic::PRESENCE_SQL, [encoded], |row| {
-                                            row.get(0)
-                                        })
-                                        .map_err(|source| {
-                                            database_error("test-sqlite-batch-presence", source)
-                                        })
-                                })
-                            })?;
-                        check()?;
-                        if exists {
-                            authenticate_stored_with_boundary(
-                                &transaction,
-                                *id,
-                                check,
-                                Some(account),
-                                Some(&self.quarantined),
-                            )?;
-                        } else {
-                            busy::retry(&transaction, true, &self.quarantined, check, |_| {
-                                with_id_text(*id, |encoded| {
-                                    transaction
-                                        .execute(
-                                            diagnostic::INSERT_SQL,
-                                            params![encoded, &bytes[..]],
-                                        )
-                                        .map_err(|source| {
-                                            database_error("stage-sqlite-batch-object", source)
-                                        })
-                                })
-                            })?;
-                            inserted = true;
-                        }
-                        check()?;
-                    }
+                    // Statement owners close before generation and COMMIT. Their
+                    // fixed control loan and native allocations stay in the same
+                    // original account and managed SQLite process heap.
+                    let inserted = write_statements::stage(
+                        &transaction,
+                        &staged,
+                        account,
+                        &self.quarantined,
+                        check,
+                    )?;
                     if inserted {
                         check()?;
                         metadata::advance_with_boundary(&transaction, check, &self.quarantined)?;

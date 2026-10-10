@@ -26,7 +26,7 @@ impl SqliteBlobBackend {
                 busy::healthy(&self.quarantined)
             };
             let staging = catalog::read_gate_with_boundary(&mut check)?;
-            let mut connection = loop {
+            let connection = loop {
                 check()?;
                 match self
                     .read_connection
@@ -61,40 +61,33 @@ impl SqliteBlobBackend {
                     output_credit = Some(credit);
                     Ok(bytes)
                 },
-            )?
-            .finish(|bytes| bytes.ok_or(StoreError::NotFound { id }))?;
-
-            // No metadata snapshot remains active here. A separate exact row
-            // projection observes growth, deletion and type changes after body
-            // consumption, including an originally empty object.
-            let length = bytes.len() as u64;
-            let accepted = busy::with_zero(
-                original,
-                &mut connection,
-                &self.quarantined,
-                &mut check,
-                |connection, _, check| {
-                    batch::reader::current_chunk(
-                        connection,
+                |bytes, check| {
+                    let Some(bytes) = bytes else {
+                        return Ok(());
+                    };
+                    // BLOB, metadata cursor and statement have actually closed.
+                    // This new autocommit projection observes growth, deletion
+                    // and type changes, including an originally empty body.
+                    let eof = batch::reader::current_chunk(
+                        &connection,
                         &self.quarantined,
                         check,
                         id,
                         1,
                         0,
-                        length,
-                    )
+                        bytes.len() as u64,
+                    )?;
+                    check()?;
+                    if eof.as_ref().is_none_or(|bytes| !bytes.is_empty())
+                        || !id.authenticates(bytes)
+                    {
+                        return Err(StoreError::Corrupt { id });
+                    }
+                    Ok(())
                 },
-            )?;
-            accepted.finish(|eof| {
-                check()?;
-                if eof.as_ref().is_none_or(|bytes| !bytes.is_empty()) {
-                    return Err(StoreError::Corrupt { id });
-                }
-                Ok(())
-            })?;
-            if !id.authenticates(&bytes) {
-                return Err(StoreError::Corrupt { id });
-            }
+            )?
+            .finish(|bytes| bytes.ok_or(StoreError::NotFound { id }))?;
+
             drop(connection);
             drop(staging);
             check()?;

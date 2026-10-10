@@ -16,13 +16,13 @@ def read_symbols(path):
     symbols = {}
     for line in pathlib.Path(path).read_text().splitlines():
         fields = line.split()
-        if len(fields) != 3 or fields[2] not in ("long_mode", "aligned_target"):
+        if len(fields) != 3 or fields[2] not in ("long_mode", "aligned_target", "aligned_result"):
             continue
         name = fields[2]
         if name in symbols:
             raise ValueError(f"duplicate benchmark symbol: {name}")
         symbols[name] = int(fields[0], 16)
-    if set(symbols) != {"long_mode", "aligned_target"}:
+    if set(symbols) != {"long_mode", "aligned_target", "aligned_result"}:
         raise ValueError("benchmark entry or target symbol is absent")
     return symbols
 
@@ -42,10 +42,8 @@ def read_instructions(path):
     return instructions
 
 
-def main():
-    """Publish checked instruction geometry as decimal shell environment values."""
-    symbols = read_symbols(sys.argv[1])
-    instructions = read_instructions(sys.argv[2])
+def derive_coordinates(symbols, instructions):
+    """Validate the unchanged load/result-store pair and return its coordinates."""
     pairs = []
     for previous, current in zip(instructions, instructions[1:]):
         address, encoded, mnemonic, operand = current
@@ -67,12 +65,29 @@ def main():
     if int.from_bytes(following[1][3:], "little") != symbols["aligned_target"]:
         raise ValueError("benchmark byte load does not name the assembled target")
 
-    for name, value in (
+    store_pc = end + len(following[1])
+    store = next((instruction for instruction in instructions if instruction[0] == store_pc), None)
+    if store is None or store[2] != "mov" or store[1][:3] != b"\x88\x04\x25" or len(store[1]) != 7:
+        raise ValueError("byte load is not immediately followed by the supported result store")
+    if int.from_bytes(store[1][3:], "little") != symbols["aligned_result"]:
+        raise ValueError("benchmark byte store does not name the assembled result")
+    if not 0x100000 <= symbols["aligned_result"] < 0x200000 - 16:
+        raise ValueError("benchmark result is outside the supported low identity mapping")
+
+    return (
         ("CRUCIBLE_BYTE_ENTRY", symbols["long_mode"]),
         ("CRUCIBLE_BYTE_DELAY_START", start),
         ("CRUCIBLE_BYTE_DELAY_END", end),
         ("CRUCIBLE_BYTE_TARGET", symbols["aligned_target"]),
-    ):
+        ("CRUCIBLE_BYTE_STORE_PC", store_pc),
+        ("CRUCIBLE_BYTE_RESULT", symbols["aligned_result"]),
+    )
+
+
+def main():
+    """Publish checked instruction geometry as decimal shell environment values."""
+    coordinates = derive_coordinates(read_symbols(sys.argv[1]), read_instructions(sys.argv[2]))
+    for name, value in coordinates:
         print(f"export {name}={value}")
 
 

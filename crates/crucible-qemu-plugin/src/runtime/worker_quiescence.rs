@@ -49,9 +49,28 @@ pub(super) enum WorkerForkChildResetError {
     },
 }
 
+/// Nonblocking refusal of the retained parent's actual worker-state borrow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ParentWorkerHoldError {
+    Busy,
+    Poisoned,
+    Failed,
+}
+
+impl ParentWorkerHoldError {
+    pub(super) const fn status(self) -> i32 {
+        match self {
+            Self::Busy => -libc::EBUSY,
+            Self::Poisoned => -libc::EOWNERDEAD,
+            Self::Failed => -libc::EPROTO,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct WorkerQuiescenceState {
     held: bool,
+    parent_hold_owned: bool,
     parked_mask: u64,
     pending_mask: u64,
     active_mask: u64,
@@ -77,6 +96,7 @@ impl LiveWorkerQuiescence {
             worker_mask,
             state: Mutex::new(WorkerQuiescenceState {
                 held: false,
+                parent_hold_owned: false,
                 parked_mask: 0,
                 pending_mask: 0,
                 active_mask: 0,
@@ -120,10 +140,40 @@ impl LiveWorkerQuiescence {
 
     pub(super) fn release(&self) -> WorkerQuiescenceSnapshot {
         let mut state = self.lock_state();
+        if state.parent_hold_owned {
+            return self.snapshot_locked(&state);
+        }
         state.held = false;
         let snapshot = self.snapshot_locked(&state);
         self.released.notify_all();
         snapshot
+    }
+
+    /// Reserves the actual worker admission state for one parent park owner.
+    pub(super) fn reserve_parent_hold(
+        self: &Arc<Self>,
+    ) -> Result<ParentWorkerHold, ParentWorkerHoldError> {
+        let mut state = self.try_parent_state()?;
+        if state.parent_hold_owned {
+            return Err(ParentWorkerHoldError::Busy);
+        }
+        if state.failure.is_some() {
+            return Err(ParentWorkerHoldError::Failed);
+        }
+        state.parent_hold_owned = true;
+        state.held = true;
+        Ok(ParentWorkerHold {
+            workers: Arc::clone(self),
+        })
+    }
+
+    fn try_parent_state(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, WorkerQuiescenceState>, ParentWorkerHoldError> {
+        self.state.try_lock().map_err(|error| match error {
+            std::sync::TryLockError::WouldBlock => ParentWorkerHoldError::Busy,
+            std::sync::TryLockError::Poisoned(_) => ParentWorkerHoldError::Poisoned,
+        })
     }
 
     /// Replaces the inherited parked-worker accounting with an empty child set.
@@ -136,7 +186,8 @@ impl LiveWorkerQuiescence {
     ) -> Result<WorkerQuiescenceSnapshot, WorkerForkChildResetError> {
         let mut state = self.lock_state();
         let snapshot = self.snapshot_locked(&state);
-        if !snapshot.held
+        if state.parent_hold_owned
+            || !snapshot.held
             || snapshot.parked_mask != snapshot.worker_mask
             || snapshot.pending_mask != 0
             || snapshot.operations_in_flight != 0
@@ -200,6 +251,56 @@ impl LiveWorkerQuiescence {
             thread_ids: state.thread_ids,
             identity_failed: state.failure.is_some(),
         }
+    }
+}
+
+/// Noncopying worker hold whose loss leaves admission permanently held.
+pub(super) struct ParentWorkerHold {
+    workers: Arc<LiveWorkerQuiescence>,
+}
+
+impl ParentWorkerHold {
+    pub(super) fn snapshot(&self) -> Result<WorkerQuiescenceSnapshot, ParentWorkerHoldError> {
+        let state = self.workers.try_parent_state()?;
+        Ok(self.workers.snapshot_locked(&state))
+    }
+
+    /// Reserves the actual state through the complete local disposition cut.
+    pub(super) fn prepare_relinquish(
+        &self,
+    ) -> Result<ParentWorkerRelease<'_>, ParentWorkerHoldError> {
+        let state = self.workers.try_parent_state()?;
+        if !state.parent_hold_owned {
+            return Err(ParentWorkerHoldError::Failed);
+        }
+        Ok(ParentWorkerRelease {
+            workers: &self.workers,
+            state,
+        })
+    }
+
+    #[cfg(test)]
+    fn relinquish(&self) -> Result<(), ParentWorkerHoldError> {
+        self.prepare_relinquish()?.commit();
+        Ok(())
+    }
+}
+
+/// Nonallocating borrow held before any workspace or ring release effect.
+pub(super) struct ParentWorkerRelease<'owner> {
+    workers: &'owner LiveWorkerQuiescence,
+    state: std::sync::MutexGuard<'owner, WorkerQuiescenceState>,
+}
+
+impl ParentWorkerRelease<'_> {
+    pub(super) fn snapshot(&self) -> WorkerQuiescenceSnapshot {
+        self.workers.snapshot_locked(&self.state)
+    }
+
+    pub(super) fn commit(mut self) {
+        self.state.parent_hold_owned = false;
+        self.state.held = false;
+        self.workers.released.notify_all();
     }
 }
 
@@ -308,6 +409,129 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn parent_hold_owns_release_and_refuses_worker_birth_or_reset() {
+        let workers = LiveWorkerQuiescence::new(WORKER_REQUIRED);
+        let _control = workers.idle(WORKER_RUN_CONTROL);
+        let _teardown = workers.idle(WORKER_TEARDOWN);
+        let hold = workers
+            .reserve_parent_hold()
+            .unwrap_or_else(|error| panic!("exclusive hold: {error:?}"));
+
+        assert!(workers.release().held);
+        assert!(matches!(
+            workers.reserve_parent_hold(),
+            Err(ParentWorkerHoldError::Busy)
+        ));
+        assert!(workers.register_current(WORKER_RUN_CONTROL).is_err());
+        assert!(matches!(
+            workers.reset_fork_child_workers(),
+            Err(WorkerForkChildResetError::NotQuiescent { .. })
+        ));
+        assert_eq!(
+            hold.snapshot()
+                .unwrap_or_else(|error| panic!("actual snapshot: {error:?}"))
+                .pending_mask,
+            0
+        );
+
+        assert_eq!(hold.relinquish(), Ok(()));
+        assert!(!workers.snapshot().held);
+    }
+
+    #[test]
+    fn lost_parent_hold_keeps_worker_pending_item_excluded() {
+        let workers = LiveWorkerQuiescence::new(WORKER_REQUIRED);
+        let pending = workers.idle(WORKER_RUN_CONTROL).received();
+        let hold = workers
+            .reserve_parent_hold()
+            .unwrap_or_else(|error| panic!("exclusive hold: {error:?}"));
+        assert_eq!(
+            hold.snapshot()
+                .unwrap_or_else(|error| panic!("actual snapshot: {error:?}"))
+                .pending_mask,
+            WORKER_RUN_CONTROL
+        );
+
+        drop(hold);
+        drop(pending);
+
+        assert!(workers.release().held);
+        assert_eq!(workers.snapshot().pending_mask, 0);
+        assert!(workers.register_current(WORKER_TEARDOWN).is_err());
+    }
+
+    #[test]
+    fn parent_hold_refuses_recursive_and_foreign_worker_state_contention() {
+        let deadline = crate::paged_ram::TransportDeadline::new(Duration::from_secs(5))
+            .unwrap_or_else(|error| panic!("fixed original end: {error}"));
+        let workers = LiveWorkerQuiescence::new(WORKER_REQUIRED);
+        let held = workers
+            .state
+            .lock()
+            .unwrap_or_else(|error| panic!("state lock: {error}"));
+        assert!(matches!(
+            workers.reserve_parent_hold(),
+            Err(ParentWorkerHoldError::Busy)
+        ));
+        let foreign = Arc::clone(&workers);
+        let (sender, receiver) = mpsc::channel();
+        let joined = thread::spawn(move || {
+            let busy = matches!(
+                foreign.reserve_parent_hold(),
+                Err(ParentWorkerHoldError::Busy)
+            );
+            let _sent = sender.send(busy);
+        });
+        assert!(
+            receiver
+                .recv_timeout(
+                    deadline
+                        .remaining()
+                        .unwrap_or_else(|error| panic!("original end: {error}"))
+                )
+                .unwrap_or_else(|error| panic!("foreign nonblocking result: {error}"))
+        );
+        joined
+            .join()
+            .unwrap_or_else(|_| panic!("foreign query panicked"));
+        drop(held);
+
+        let hold = workers
+            .reserve_parent_hold()
+            .unwrap_or_else(|error| panic!("reserve: {error:?}"));
+        let held = workers
+            .state
+            .lock()
+            .unwrap_or_else(|error| panic!("state lock: {error}"));
+        assert!(matches!(hold.snapshot(), Err(ParentWorkerHoldError::Busy)));
+        assert_eq!(hold.relinquish(), Err(ParentWorkerHoldError::Busy));
+        drop(held);
+        assert!(workers.release().held);
+        assert_eq!(hold.relinquish(), Ok(()));
+    }
+
+    #[test]
+    fn parent_hold_poison_refuses_without_reopening_actual_owner() {
+        let workers = LiveWorkerQuiescence::new(WORKER_REQUIRED);
+        let hold = workers
+            .reserve_parent_hold()
+            .unwrap_or_else(|error| panic!("reserve: {error:?}"));
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = workers
+                .state
+                .lock()
+                .unwrap_or_else(|error| panic!("state lock: {error}"));
+            panic!("deliberate fixture poison");
+        }));
+        assert!(poisoned.is_err());
+        assert_eq!(hold.snapshot(), Err(ParentWorkerHoldError::Poisoned));
+        assert_eq!(hold.relinquish(), Err(ParentWorkerHoldError::Poisoned));
+        assert!(workers.release().held);
+        drop(hold);
+        assert!(workers.release().held);
+    }
 
     #[test]
     fn hold_reports_idle_workers_parked() {

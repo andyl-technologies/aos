@@ -24,6 +24,11 @@ impl LiveWorkerQuiescence {
         thread_id: u64,
     ) -> Result<WorkerIdentityGuard, RamError> {
         let mut state = self.lock_state();
+        if state.parent_hold_owned {
+            return Err(RamError::Invariant(
+                "worker birth refused under parent park custody",
+            ));
+        }
         if let Some(source) = &state.failure {
             return Err(source.clone());
         }

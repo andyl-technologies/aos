@@ -3,7 +3,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crucible_cas::content_store::{
-    BlobHandle, ByteRange, ObjectKind, PutBatchReceipt, PutReceipt, StorePhysicalQuotaGuard,
+    BlobHandle, ByteRange, ObjectKind, OwnedBlobBytes, PutBatchReceipt, PutReceipt,
+    StorePhysicalQuotaGuard,
 };
 
 use super::*;
@@ -11,6 +12,9 @@ use super::*;
 struct CountedBackend {
     inner: Arc<dyn ImmutableBlobBackend>,
     reads: AtomicU64,
+    checked_generic_reads: AtomicU64,
+    checked_native_reads: AtomicU64,
+    refuse_native_read: AtomicBool,
     publications: AtomicU64,
     objects: AtomicU64,
     refuse_after_publication: AtomicBool,
@@ -46,7 +50,25 @@ impl ImmutableBlobBackend for CountedBackend {
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<BlobHandle, StoreError> {
         self.reads.fetch_add(1, Ordering::Relaxed);
+        self.checked_generic_reads.fetch_add(1, Ordering::Relaxed);
         self.inner.read_with_boundary(original, id, range, boundary)
+    }
+
+    fn read_merkle_node_with_boundary(
+        &self,
+        original: &DecodeBudget,
+        id: ContentId,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<OwnedBlobBytes, StoreError> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.checked_native_reads.fetch_add(1, Ordering::Relaxed);
+        if self.refuse_native_read.load(Ordering::Relaxed) {
+            return Err(StoreError::Unsupported {
+                capability: "actual-native-mark-read-refusal",
+            });
+        }
+        self.inner
+            .read_merkle_node_with_boundary(original, id, boundary)
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
@@ -88,6 +110,9 @@ fn counted(inner: Arc<dyn ImmutableBlobBackend>) -> Arc<CountedBackend> {
     Arc::new(CountedBackend {
         inner,
         reads: AtomicU64::new(0),
+        checked_generic_reads: AtomicU64::new(0),
+        checked_native_reads: AtomicU64::new(0),
+        refuse_native_read: AtomicBool::new(false),
         publications: AtomicU64::new(0),
         objects: AtomicU64::new(0),
         refuse_after_publication: AtomicBool::new(false),
@@ -720,4 +745,100 @@ fn mixed_prefix_group_keeps_duplicate_positions_until_final_acceptance() {
     for id in [first, neighbor, outside] {
         assert!(marks.contains(&id).unwrap());
     }
+}
+
+#[test]
+fn checked_mark_updates_forward_actual_native_reads_without_deferred_sources() {
+    let mut fixture = super::super::tests::operation::ComponentGcOperation::new();
+    let operation = fixture.context();
+    let backend = counted(operation.marks());
+    let marks = Reachability::with_backend(backend.clone(), operation.original()).unwrap();
+    let account = mark_account(operation.original()).unwrap();
+    let _scope = account.enter();
+    let _credit = operation.reserve_array::<MarkEntry>(MARK_PAGE).unwrap();
+    let mut entries = Vec::with_capacity(MARK_PAGE);
+    let mut root = marks.root;
+
+    for start in [0, MARK_PAGE as u64] {
+        entries.clear();
+        entries.extend((start..start + MARK_PAGE as u64).map(|index| {
+            let id = page(index);
+            (mark_key(id), id)
+        }));
+        entries.sort_unstable_by_key(|entry| entry.0);
+        root = marks
+            .map
+            .insert_batch_with_boundary(root.content_id(), &entries, &account, &mut || {
+                operation.check()
+            })
+            .unwrap();
+    }
+
+    let reads = backend.checked_native_reads.load(Ordering::Relaxed);
+    assert!(
+        reads > 1,
+        "authenticates existing children, not only the empty root"
+    );
+    assert_eq!(backend.checked_generic_reads.load(Ordering::Relaxed), 0);
+    assert_eq!(backend.reads.load(Ordering::Relaxed), reads);
+    assert_eq!(root.entry_count(), 2 * MARK_PAGE as u64);
+    eprintln!(
+        "actual native mark work: reads={reads} publications={} nodes={}",
+        backend.publications.load(Ordering::Relaxed),
+        backend.objects.load(Ordering::Relaxed)
+    );
+    for index in [
+        0,
+        MARK_PAGE as u64 - 1,
+        MARK_PAGE as u64,
+        2 * MARK_PAGE as u64 - 1,
+    ] {
+        assert_eq!(
+            marks
+                .map
+                .get_with_boundary(
+                    root.content_id(),
+                    mark_key(page(index)),
+                    &account,
+                    &mut || operation.check(),
+                )
+                .unwrap(),
+            Some(page(index))
+        );
+    }
+    operation.check().unwrap();
+}
+
+#[test]
+fn checked_mark_native_read_refusal_precedes_replacement_publication() {
+    let mut fixture = super::super::tests::operation::ComponentGcOperation::new();
+    let operation = fixture.context();
+    let backend = counted(operation.marks());
+    let marks = Reachability::with_backend(backend.clone(), operation.original()).unwrap();
+    let account = mark_account(operation.original()).unwrap();
+    let prior = marks.root;
+    let publications = backend.publications.load(Ordering::Relaxed);
+    backend.refuse_native_read.store(true, Ordering::Relaxed);
+
+    let error = marks
+        .map
+        .insert_batch_with_boundary(
+            prior.content_id(),
+            &[(mark_key(page(1)), page(1))],
+            &account,
+            &mut || operation.check(),
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crucible_campaign::CampaignStoreError::Store(StoreError::Unsupported {
+            capability: "actual-native-mark-read-refusal"
+        })
+    ));
+    assert_eq!(marks.root, prior);
+    assert_eq!(backend.publications.load(Ordering::Relaxed), publications);
+    assert_eq!(backend.checked_native_reads.load(Ordering::Relaxed), 1);
+    assert_eq!(backend.checked_generic_reads.load(Ordering::Relaxed), 0);
+    operation.check().unwrap();
 }

@@ -1,10 +1,11 @@
-//! Seeded byte-load service latency on an unchanged ordinary multiboot guest.
+//! Seeded byte-access service latency on an unchanged ordinary multiboot guest.
 //!
-//! The discovery machine finds the real stopped execution cut inside the ELF's
-//! delay loop. Every accepted lane replays that unchanged prefix before
-//! activating a rule. This profile qualifies one x86 byte load; generalized
-//! multi-byte, MMU and atomic
-//! service continuation remains outside this fixture's evidence.
+//! The discovery machine finds the real stopped cut in the ELF delay loop.
+//! Each lane replays that prefix, then selects either the guest's byte load or
+//! its following result store. The STORE fixture verifies the authenticated
+//! captured result vector under the fixed low-RAM launch profile. It does not
+//! establish held PageIn, intermediate rollback, dirty tracking, or generalized
+//! multi-byte, MMU and atomic continuation behavior.
 
 use super::super::hot_fork_native::{fork_resources, native_repository};
 use super::accepted_promotion::{extend_native_operations, promote_accepted_checkpoint_with_model};
@@ -21,6 +22,35 @@ use crucible_qemu::QemuMemoryServiceOccurrence;
 
 const SEEDS: [u64; 3] = [7, 42, 991];
 const SERVICE_QUANTA: usize = 32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ByteAccess {
+    Load,
+    Store,
+}
+
+impl ByteAccess {
+    fn phase(self) -> FaultPhase {
+        match self {
+            Self::Load => FaultPhase::Load,
+            Self::Store => FaultPhase::Store,
+        }
+    }
+
+    fn binding(self) -> &'static str {
+        match self {
+            Self::Load => "byte-load-latency",
+            Self::Store => "byte-store-latency",
+        }
+    }
+
+    fn target(self) -> u64 {
+        asset_number(match self {
+            Self::Load => "CRUCIBLE_BYTE_TARGET",
+            Self::Store => "CRUCIBLE_BYTE_RESULT",
+        })
+    }
+}
 
 #[derive(Clone, Copy)]
 struct ByteCut {
@@ -43,11 +73,22 @@ struct ServiceLane {
     ram_record: Vec<u8>,
     activity: HostRamActivity,
     latency: u64,
+    stored_result: Option<u8>,
 }
 
 #[test]
 #[ignore = "requires the isolated AOS paging VM and actual byte-service guest asset"]
 fn production_byte_service_latency_is_placement_independent() {
+    qualify_byte_service(ByteAccess::Load);
+}
+
+#[test]
+#[ignore = "requires the isolated AOS paging VM and actual unchanged byte-service guest"]
+fn production_byte_store_service_is_placement_independent() {
+    qualify_byte_service(ByteAccess::Store);
+}
+
+fn qualify_byte_service(access: ByteAccess) {
     let mut latencies = std::collections::BTreeSet::new();
     let mut missing = 0;
     let mut discards = 0;
@@ -55,18 +96,24 @@ fn production_byte_service_latency_is_placement_independent() {
         for (ordinal, seed) in SEEDS.into_iter().enumerate() {
             let source = ScenarioDefForm::from_components(
                 world,
-                &service_plan(asset_number("CRUCIBLE_BYTE_TARGET"), cut.ticks),
+                &service_plan_for_access(access.target(), cut.ticks, access),
                 &Properties::empty(),
                 Seed::from_u64(seed),
             )
             .expect("authenticated byte-service scenario");
-            let project = 36_000 + u32::try_from(ordinal).expect("bounded seed") * 200;
+            let base = if access == ByteAccess::Load {
+                36_000
+            } else {
+                37_000
+            };
+            let project = base + u32::try_from(ordinal).expect("bounded seed") * 200;
             let resident = run_service_lane(
                 &source,
                 &format!("byte-resident-{seed}"),
                 project,
                 false,
                 cut,
+                access,
             );
             let cold = run_service_lane(
                 &source,
@@ -74,6 +121,7 @@ fn production_byte_service_latency_is_placement_independent() {
                 project + 100,
                 true,
                 cut,
+                access,
             );
             assert_eq!(
                 resident.boundaries, cold.boundaries,
@@ -81,6 +129,10 @@ fn production_byte_service_latency_is_placement_independent() {
             );
             assert_eq!(resident.ram_record, cold.ram_record);
             assert_eq!(resident.latency, cold.latency);
+            assert_eq!(resident.stored_result, cold.stored_result);
+            if access == ByteAccess::Store {
+                assert_eq!(cold.stored_result, Some(0x5a));
+            }
             assert!(cold.activity.successful_missing_installs > 0);
             assert!(cold.activity.physical_discards > 0);
             latencies.insert(cold.latency);
@@ -102,7 +154,17 @@ fn production_byte_service_latency_is_placement_independent() {
     println!("byte_service_native_service_ledger_identity=true");
     println!("byte_service_missing_installs={missing}");
     println!("byte_service_cold_discards={discards}");
-    println!("BYTE_SERVICE_NATIVE_PASS");
+    if access == ByteAccess::Store {
+        println!(
+            "byte_service_store_pc={}",
+            asset_number("CRUCIBLE_BYTE_STORE_PC")
+        );
+        println!("byte_service_store_result=90");
+        println!("byte_service_store_target={}", access.target());
+        println!("BYTE_STORE_SERVICE_NATIVE_PASS");
+    } else {
+        println!("BYTE_SERVICE_NATIVE_PASS");
+    }
 }
 
 fn asset_number(name: &str) -> u64 {
@@ -243,6 +305,10 @@ fn discover_byte_world(run: impl FnOnce(&World, ByteCut)) {
 }
 
 fn service_plan(target_address: u64, active_ticks: u64) -> Plan {
+    service_plan_for_access(target_address, active_ticks, ByteAccess::Load)
+}
+
+fn service_plan_for_access(target_address: u64, active_ticks: u64, access: ByteAccess) -> Plan {
     let random = SignalId::parse("latency-key").expect("signal ID");
     let duration = SignalId::parse("latency-duration").expect("signal ID");
     let gate = SignalId::parse("actual-byte-ready").expect("signal ID");
@@ -327,14 +393,14 @@ fn service_plan(target_address: u64, active_ticks: u64) -> Plan {
         .expect("one byte target"),
     );
     let binding = FaultBinding::new(
-        FaultObjectId::parse("byte-load-latency").expect("binding"),
+        FaultObjectId::parse(access.binding()).expect("binding"),
         vec![duration],
         BindingSampling::AtBoundary,
         BindingMapping::MapParameter {
             parameter: MappedEffectParameter::DurationNanos,
         },
         target,
-        [FaultPhase::Load].into_iter().collect(),
+        [access.phase()].into_iter().collect(),
         EffectRequest::new(
             EFFECT_SEMANTIC_VERSION,
             EffectLifetime::Persistent,
@@ -370,6 +436,7 @@ fn run_service_lane(
     project: u32,
     cold: bool,
     cut: ByteCut,
+    access: ByteAccess,
 ) -> ServiceLane {
     environment::with_native_repository_environment(
         lane,
@@ -388,6 +455,7 @@ fn run_service_lane(
                     prepared,
                     cold,
                     cut,
+                    access,
                     lane: None,
                 },
             );
@@ -406,6 +474,7 @@ struct ServiceModel<'a> {
     prepared: &'a PackagedPreparation,
     cold: bool,
     cut: ByteCut,
+    access: ByteAccess,
     lane: Option<ServiceLane>,
 }
 
@@ -526,7 +595,7 @@ impl AttemptExecutionModel for ServiceModel<'_> {
         assert_eq!(
             actual_accesses.len(),
             1,
-            "unchanged guest performs exactly one admitted target load"
+            "unchanged guest has one observed admitted target access identity"
         );
         assert_service_occurrence(&trace, &occurrence);
         let latency = occurrence.configured_latency_ticks;
@@ -534,7 +603,21 @@ impl AttemptExecutionModel for ServiceModel<'_> {
             .capture_attempt_checkpoint(context)
             .expect("real coherent paged RAM checkpoint");
         let capture = capture.into_closure();
-        let ram_record = capture.ram_sources()[0].root().record().encode();
+        let backing = &capture.ram_sources()[0];
+        let stored_result = if self.access == ByteAccess::Store {
+            assert_eq!(world_node.arch, crucible::VmArchitecture::X86_64);
+            assert_eq!(world_node.memory_mib, 64);
+            assert_eq!(world_node.smp_vcpus, 1);
+            assert_eq!(backing.node(), &world_node.id);
+            Some(assert_captured_store_result(
+                backing,
+                context,
+                self.access.target(),
+            ))
+        } else {
+            None
+        };
+        let ram_record = backing.root().record().encode();
         let staged = context
             .prepare_and_stage_checkpoint(
                 crate::CapturedAttemptCheckpoint::from_production_closure(capture),
@@ -551,9 +634,68 @@ impl AttemptExecutionModel for ServiceModel<'_> {
             ram_record,
             activity,
             latency,
+            stored_result,
         });
         Ok(AttemptExecutionProduct::exact_checkpoint(staged))
     }
+}
+
+// This fixture's unchanged pc-q35 launch maps low guest physical RAM to offset
+// zero of pc.ram, and the guest's first 2 MiB are identity mapped. This is a
+// source-bound profile assertion, not a mapping inferred from portable topology.
+fn assert_captured_store_result(
+    backing: &crucible_api::vm_lifecycle::ProductionPagedRamSource,
+    context: &AttemptExecutionContext,
+    address: u64,
+) -> u8 {
+    use crucible_linux_resource::host_supervision::{HostOperationState, HostSupervisionError};
+    use crucible_qemu::ram_source::{QemuRamBacking, QemuRamReadBoundaryError};
+
+    assert!((0x100000..0x200000 - 16).contains(&address));
+    let record = backing.root().record();
+    assert_eq!(record.scope(), crucible_ram::Scope::Exact);
+    let region = record
+        .topology()
+        .region("pc.ram")
+        .expect("fixed realized low RAM owner");
+    assert_eq!(region.class(), crucible_ram::RegionClass::MutableMain);
+    assert_eq!(region.logical_length(), 64 << 20);
+    let page_size = u64::from(crucible_ram::LOGICAL_PAGE_SIZE);
+    let page = address / page_size;
+    let offset = usize::try_from(address % page_size).expect("one page offset");
+    assert!(offset + 16 <= page_size as usize);
+
+    let supervisor = context
+        .host_operation_supervisor()
+        .expect("same original outer cap");
+    let mut boundary = || {
+        let cap = supervisor.outer_cap_status()?;
+        if cap.state != HostOperationState::Running {
+            return Err(QemuRamReadBoundaryError::Supervision(
+                HostSupervisionError::Terminal { state: cap.state },
+            ));
+        }
+        Ok(())
+    };
+    let mut result = None;
+    backing
+        .with_page_response("pc.ram", page, &mut boundary, &mut |response, boundary| {
+            boundary().expect("original cap before result consumption");
+            assert!(result.is_none(), "one authenticated page completion");
+            assert_eq!(response.proof().region_id(), "pc.ram");
+            assert_eq!(response.proof().page_index(), page);
+            response
+                .proof()
+                .verify(response.bytes(), record, record.digest())
+                .expect("actual bytes under retained captured root");
+            assert_eq!(response.bytes()[offset], 0x5a);
+            assert_eq!(&response.bytes()[offset + 1..offset + 16], &[0; 15]);
+            result = Some(response.bytes()[offset]);
+            boundary().expect("original cap after result consumption");
+        })
+        .expect("saved original pays and retains page/proof until callback returns");
+    boundary().expect("original cap after captured result read");
+    result.expect("one actual result completion")
 }
 
 fn assert_service_occurrence(trace: &ResolvedEffectTrace, observed: &QemuMemoryServiceOccurrence) {
@@ -654,4 +796,32 @@ fn byte_service_duration_is_inactive_before_the_discovered_cut() {
         panic!("duration must become active at the actual cut");
     };
     assert!((1..=256).contains(&duration));
+}
+
+#[test]
+fn byte_store_service_plan_selects_result_store_without_load_rule() {
+    let plan = service_plan_for_access(0x102100, 100_000, ByteAccess::Store);
+    let bindings = plan.fault_signals().bindings();
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(
+        bindings[0].id(),
+        &FaultObjectId::parse("byte-store-latency").expect("static Store binding")
+    );
+    assert_eq!(
+        bindings[0].phases(),
+        &[FaultPhase::Store].into_iter().collect()
+    );
+    let TargetSelector::Exact(targets) = bindings[0].selector() else {
+        panic!("one exact STORE target");
+    };
+    assert_eq!(
+        targets.targets(),
+        &[ResolvedFaultTarget::MemoryRange {
+            node: FaultObjectId::parse("memory").expect("static node"),
+            address_space: FaultObjectId::parse("gva").expect("static address space"),
+            guest_address: 0x102100,
+            vcpu: Some(0),
+            length_bytes: 1,
+        }]
+    );
 }

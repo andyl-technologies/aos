@@ -43,19 +43,23 @@ pub(in crate::content_store::sqlite) fn consume(
     admit: impl FnOnce(u64) -> Result<Vec<u8>, StoreError>,
     validate: impl FnOnce(&[u8]) -> Result<bool, StoreError>,
 ) -> Result<Accepted<Option<Vec<u8>>>, StoreError> {
-    consume_inner::<true>(
+    consume_inner::<true, false, _, _, _>(
         original,
         connection,
         quarantined,
         boundary,
         record,
-        admit,
-        validate,
+        RecordConsumer {
+            admit,
+            validate,
+            after_close: retain_closed_result,
+        },
     )
 }
 
-// Only the fixed Merkle entry may defer digest authentication until a fresh
-// post-native-close row query. The intermediate bytes remain crate-private.
+// This callback runs only after BLOB/cursor/statement close and autocommit is
+// verified. It observes a new row without reopening a busy-timeout scope; no
+// metadata snapshot or accepted output escapes across the callback.
 pub(in crate::content_store::sqlite) fn consume_merkle(
     original: &crate::owned_decode::DecodeBudget,
     connection: &Connection,
@@ -63,11 +67,15 @@ pub(in crate::content_store::sqlite) fn consume_merkle(
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     id: ContentId,
     admit: impl FnOnce(u64) -> Result<Vec<u8>, StoreError>,
+    after_close: impl FnOnce(
+        Option<&[u8]>,
+        &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<(), StoreError>,
 ) -> Result<Accepted<Option<Vec<u8>>>, StoreError> {
     if id.kind() != crate::content_store::ObjectKind::MerkleNode {
         return Err(StoreError::Corrupt { id });
     }
-    consume_inner::<false>(
+    consume_inner::<false, true, _, _, _>(
         original,
         connection,
         quarantined,
@@ -76,20 +84,50 @@ pub(in crate::content_store::sqlite) fn consume_merkle(
             id,
             maximum: crate::content_store::MAX_MERKLE_NODE_ENVELOPE_BYTES as u64,
         },
-        admit,
-        |_| Ok(true),
+        RecordConsumer {
+            admit,
+            validate: defer_merkle_digest,
+            after_close,
+        },
     )
 }
 
-fn consume_inner<const AUTHENTICATE: bool>(
+fn retain_closed_result(
+    _: Option<&[u8]>,
+    _: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    Ok(())
+}
+
+fn defer_merkle_digest(_: &[u8]) -> Result<bool, StoreError> {
+    Ok(true)
+}
+
+// These callbacks share one native read/closure lifetime and add no heap owner.
+struct RecordConsumer<A, V, C> {
+    admit: A,
+    validate: V,
+    after_close: C,
+}
+
+fn consume_inner<const AUTHENTICATE: bool, const AFTER_CLOSE: bool, A, V, C>(
     original: &crate::owned_decode::DecodeBudget,
     connection: &Connection,
     quarantined: &AtomicBool,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     record: Record,
-    admit: impl FnOnce(u64) -> Result<Vec<u8>, StoreError>,
-    validate: impl FnOnce(&[u8]) -> Result<bool, StoreError>,
-) -> Result<Accepted<Option<Vec<u8>>>, StoreError> {
+    consumer: RecordConsumer<A, V, C>,
+) -> Result<Accepted<Option<Vec<u8>>>, StoreError>
+where
+    A: FnOnce(u64) -> Result<Vec<u8>, StoreError>,
+    V: FnOnce(&[u8]) -> Result<bool, StoreError>,
+    C: FnOnce(Option<&[u8]>, &mut dyn FnMut() -> Result<(), StoreError>) -> Result<(), StoreError>,
+{
+    let RecordConsumer {
+        admit,
+        validate,
+        after_close,
+    } = consumer;
     let mut check = || {
         crate::content_store::checked_reader::check(original, boundary)?;
         healthy(quarantined)
@@ -165,6 +203,13 @@ fn consume_inner<const AUTHENTICATE: bool>(
         cleanup,
         ..
     } = attempt;
+    if AFTER_CLOSE && cleanup.iter().all(Option::is_none) && connection.is_autocommit() {
+        result = result.and_then(|value| {
+            check()?;
+            after_close(value.as_deref(), &mut check)?;
+            Ok(value)
+        });
+    }
     let restoration = connection.busy_timeout(Duration::from_millis(saved)).err();
     let closed =
         cleanup.iter().all(Option::is_none) && restoration.is_none() && connection.is_autocommit();

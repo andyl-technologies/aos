@@ -1,8 +1,10 @@
 //! Original-callback SQLite busy retries, explicit cleanup and connection quarantine.
 //!
 //! Checked operations temporarily disable the private connection's native busy
-//! wait. Statements close before each retry; cleanup and exact timeout restoration
-//! finish before a result escapes. An unwind quarantines without running SQL in Drop.
+//! wait. Each retry closes or resets its cursor and clears copied bindings. A
+//! bounded batch may retain its fixed prepared programs across retries; all
+//! handles close before transaction cleanup and exact timeout restoration finish.
+//! An unwind quarantines without running SQL in Drop.
 
 use crate::content_store::batch::admission_under;
 

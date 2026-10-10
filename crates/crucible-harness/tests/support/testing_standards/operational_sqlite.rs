@@ -7,6 +7,9 @@
 
 use super::{Companion, Contract};
 
+#[path = "operational_sqlite_statements.rs"]
+mod operational_sqlite_statements;
+
 const BUSY_OBLIGATIONS: &[&str] = &[
     r#"fn retry<T>(
     connection: &Connection,
@@ -186,6 +189,7 @@ const CHECKED_READER_COMPANIONS: &[Companion] = &[
 ];
 
 pub(super) const CONTRACTS: &[Contract] = &[
+    operational_sqlite_statements::CONTRACT,
     Contract {
         package: "crucible-cas",
         target: "src/content_store/sqlite/admin_batch",
@@ -805,6 +809,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
                     .verify_live()
                     .map_err(|error| admission_under(account, error))?;
                 busy::healthy(&self.quarantined)?;"#,
+            "let inserted = write_statements::stage( &transaction, &staged, account, &self.quarantined, check, )?; if inserted { check()?; metadata::advance_with_boundary(&transaction, check, &self.quarantined)?; }",
         ],
         expressions: &[
             (
@@ -819,35 +824,6 @@ pub(super) const CONTRACTS: &[Contract] = &[
             ),
             (
                 r#"busy::retry(&transaction, true, &self.quarantined, check, |_| {
-                                with_id_text(*id, |encoded| {
-                                    transaction
-                                        .query_row(diagnostic::PRESENCE_SQL, [encoded], |row| {
-                                            row.get(0)
-                                        })
-                                        .map_err(|source| {
-                                            database_error("test-sqlite-batch-presence", source)
-                                        })
-                                })
-                            })"#,
-                1,
-            ),
-            (
-                r#"busy::retry(&transaction, true, &self.quarantined, check, |_| {
-                                with_id_text(*id, |encoded| {
-                                    transaction
-                                        .execute(
-                                            diagnostic::INSERT_SQL,
-                                            params![encoded, &bytes[..]],
-                                        )
-                                        .map_err(|source| {
-                                            database_error("stage-sqlite-batch-object", source)
-                                        })
-                                })
-                            })"#,
-                1,
-            ),
-            (
-                r#"busy::retry(&transaction, true, &self.quarantined, check, |_| {
                         transaction
                             .execute_batch("COMMIT")
                             .map_err(|source| database_error("commit-sqlite-blob-batch", source))
@@ -855,7 +831,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
                 1,
             ),
         ],
-        companions: BUSY_COMPANIONS,
+        companions: operational_sqlite_statements::BATCH_STATEMENT_COMPANIONS,
     },
     Contract {
         package: "crucible-cas",

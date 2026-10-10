@@ -110,7 +110,7 @@ fn complete_and_empty_native_outputs_keep_the_exact_original_until_bytes_close()
 
 // Count the actual native primitive's callbacks. In this isolated, uncontended
 // fixture four preceding checks admit the original, staging gate and lock. Its
-// final native callback therefore supplies the actual closed-cursor mutation
+// post-close callback therefore supplies the actual closed-cursor mutation
 // cut, without a production hook or replacing any I/O operation.
 fn closed_native_cut(backend: &SqliteBlobBackend, original: &DecodeBudget, id: ContentId) -> usize {
     let connection = backend.read_connection.lock().unwrap();
@@ -120,14 +120,15 @@ fn closed_native_cut(backend: &SqliteBlobBackend, original: &DecodeBudget, id: C
         busy::single_record::METADATA.len(),
     )
     .unwrap();
-    let mut calls = 0;
+    let calls = std::cell::Cell::new(0);
+    let closed = std::cell::Cell::new(0);
     let mut output_credit = None;
     let accepted = busy::single_record::consume_merkle(
         original,
         &connection,
         &backend.quarantined,
         &mut || {
-            calls += 1;
+            calls.set(calls.get() + 1);
             Ok(())
         },
         id,
@@ -139,15 +140,21 @@ fn closed_native_cut(backend: &SqliteBlobBackend, original: &DecodeBudget, id: C
             );
             Ok(Vec::with_capacity(length as usize))
         },
+        |_, _| {
+            // The actual primitive has closed its BLOB, cursor and statement;
+            // the caller's independent current-row query has not begun yet.
+            closed.set(calls.get());
+            Ok(())
+        },
     )
     .unwrap();
     let bytes = accepted.finish(Ok).unwrap().unwrap();
     assert!(id.authenticates(&bytes));
     assert!(connection.is_autocommit());
-    assert!(calls > 4);
+    assert!(closed.get() > 4);
     drop(bytes);
     drop(output_credit);
-    calls + 4
+    closed.get() + 4
 }
 
 #[test]
@@ -420,4 +427,185 @@ fn retained_native_errors_keep_the_actual_diagnostic_bank_until_their_last_owner
         drop(first);
         assert_eq!(quota.0.used.load(Ordering::SeqCst), baseline);
     }
+}
+
+#[test]
+fn closed_native_validation_uses_zero_timeout_and_restores_the_saved_value() {
+    if isolated("closed_native_validation_uses_zero_timeout_and_restores_the_saved_value") {
+        return;
+    }
+    for refuse in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let quota = component_quota();
+        let backend = bounded_leaf("merkle-one-scope", root.path(), &quota);
+        let id = seed(&backend, b"same native scope");
+        let original = DecodeBudget::for_store(quota.clone()).unwrap();
+        let baseline = quota.0.used.load(Ordering::SeqCst);
+        let connection = backend.read_connection.lock().unwrap();
+        connection
+            .busy_timeout(Duration::from_millis(1234))
+            .unwrap();
+        let mut output_credit = None;
+        let validations = std::cell::Cell::new(0);
+
+        let result = busy::single_record::consume_merkle(
+            &original,
+            &connection,
+            &backend.quarantined,
+            &mut || Ok(()),
+            id,
+            |length| {
+                output_credit = Some(original.reserve_scratch_bytes(length).unwrap());
+                Ok(Vec::with_capacity(length as usize))
+            },
+            |bytes, check| {
+                validations.set(validations.get() + 1);
+                assert!(connection.is_autocommit());
+                let timeout: i64 = connection
+                    .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(timeout, 0, "fresh validation stays in the original scope");
+                assert_eq!(bytes, Some(b"same native scope".as_slice()));
+                check()?;
+                if refuse {
+                    Err(StoreError::Unauthorized)
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert_eq!(validations.get(), 1);
+        if refuse {
+            let error = result.err().unwrap();
+            let StoreError::SqliteScope { source } = &error else {
+                panic!("lost actual post-close scope cause: {error:?}");
+            };
+            assert!(matches!(
+                source.work_failure(),
+                Some(StoreError::Unauthorized)
+            ));
+            assert!(source.restoration_failure().is_none());
+            assert!(source.blob_close_failure().is_none());
+            assert!(source.metadata_completion_failure().is_none());
+            assert!(source.metadata_finalization_failure().is_none());
+            assert_eq!(source.outcome(), SqliteCommitOutcome::NotCommitted);
+            drop(error);
+        } else {
+            let bytes = result.unwrap().finish(Ok).unwrap().unwrap();
+            assert!(id.authenticates(&bytes));
+            drop(bytes);
+        }
+        let timeout: i64 = connection
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(timeout, 1234);
+        assert!(connection.is_autocommit());
+        assert!(!backend.quarantined.load(Ordering::SeqCst));
+        drop(output_credit);
+        assert_eq!(quota.0.used.load(Ordering::SeqCst), baseline);
+    }
+}
+
+#[test]
+fn native_body_refusal_skips_closed_validation_and_keeps_the_first_cause() {
+    if isolated("native_body_refusal_skips_closed_validation_and_keeps_the_first_cause") {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let quota = component_quota();
+    let backend = bounded_leaf("merkle-refused-body", root.path(), &quota);
+    let id = seed(&backend, b"refused native body");
+    let original = DecodeBudget::for_store(quota.clone()).unwrap();
+    let baseline = quota.0.used.load(Ordering::SeqCst);
+    let connection = backend.read_connection.lock().unwrap();
+    connection.busy_timeout(Duration::from_millis(876)).unwrap();
+
+    let error = busy::single_record::consume_merkle(
+        &original,
+        &connection,
+        &backend.quarantined,
+        &mut || Ok(()),
+        id,
+        |_| Err(StoreError::Unauthorized),
+        |_, _| panic!("a refused body cannot enter the closed validation"),
+    )
+    .err()
+    .unwrap();
+    let StoreError::SqliteScope { source } = &error else {
+        panic!("lost actual body scope cause: {error:?}");
+    };
+    assert!(matches!(
+        source.work_failure(),
+        Some(StoreError::Unauthorized)
+    ));
+    assert!(source.restoration_failure().is_none());
+    assert!(source.blob_close_failure().is_none());
+    assert!(source.metadata_completion_failure().is_none());
+    assert!(source.metadata_finalization_failure().is_none());
+    let timeout: i64 = connection
+        .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(timeout, 876);
+    assert!(connection.is_autocommit());
+    assert!(!backend.quarantined.load(Ordering::SeqCst));
+    drop(error);
+    assert_eq!(quota.0.used.load(Ordering::SeqCst), baseline);
+}
+
+#[test]
+fn full_digest_refusal_retains_the_owned_scope_and_projects_the_same_original_cause() {
+    if isolated("full_digest_refusal_retains_the_owned_scope_and_projects_the_same_original_cause")
+    {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let quota = component_quota();
+    let backend = bounded_leaf("merkle-digest-carrier", root.path(), &quota);
+    let id = seed(&backend, b"good");
+    backend
+        .lock_connection()
+        .unwrap()
+        .execute(
+            "UPDATE objects SET body=?1 WHERE id=?2",
+            params![b"evil".as_slice(), id.encode()],
+        )
+        .unwrap();
+    let original = DecodeBudget::for_store(quota.clone()).unwrap();
+    let baseline = quota.0.used.load(Ordering::SeqCst);
+
+    let error = backend
+        .read_merkle_node_with_boundary(&original, id, &mut || Ok(()))
+        .unwrap_err();
+    let legacy_direct = StoreError::Corrupt { id };
+    let StoreError::SqliteDiagnostic { source } = &error else {
+        panic!("lost actual diagnostic custody: {error:?}");
+    };
+    let StoreError::SqliteScope { source: scope } = source.failure() else {
+        panic!("the new closed validation owns its scope: {error:?}");
+    };
+    assert!(
+        matches!(legacy_direct.original_failure(), StoreError::Corrupt { id: actual } if *actual == id)
+    );
+    assert!(
+        matches!(error.original_failure(), StoreError::Corrupt { id: actual } if *actual == id)
+    );
+    assert!(std::ptr::eq(
+        error.original_failure(),
+        scope.work_failure().unwrap()
+    ));
+    assert_eq!(scope.outcome(), SqliteCommitOutcome::NotCommitted);
+    assert!(scope.blob_close_failure().is_none());
+    assert!(scope.metadata_completion_failure().is_none());
+    assert!(scope.metadata_finalization_failure().is_none());
+    assert!(scope.restoration_failure().is_none());
+    assert!(!error.confirmed_absence(id));
+    assert!(!legacy_direct.confirmed_absence(id));
+    // The retained carrier is deliberately different; callers must project the
+    // original cause rather than assume the prior outer Display/wire text.
+    assert_ne!(source.failure().to_string(), legacy_direct.to_string());
+    assert!(quota.0.used.load(Ordering::SeqCst) > baseline);
+    assert!(backend.read_connection.lock().unwrap().is_autocommit());
+    assert!(!backend.quarantined.load(Ordering::SeqCst));
+    drop(error);
+    assert_eq!(quota.0.used.load(Ordering::SeqCst), baseline);
 }

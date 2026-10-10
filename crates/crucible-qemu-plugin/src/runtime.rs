@@ -12,6 +12,7 @@ pub(crate) mod callback_quiescence;
 mod device_workspace;
 pub(crate) mod live_callbacks;
 mod live_whitebox;
+mod parent_park;
 mod worker_quiescence;
 
 use callback_quiescence::LiveCallbackQuiescence;
@@ -416,6 +417,10 @@ pub(crate) struct OwnedCallbackRuntimeState {
     workspace_disarmed: bool,
     claimed_workspace_fd: i32,
     refused_child_workspace: Option<crate::device_digest_workspace::DeviceDigestWorkspace>,
+    parent_park_api: Option<parent_park::NativeApi>,
+    parent_park: Mutex<parent_park::Slot>,
+    parent_park_retained: AtomicBool,
+    parent_park_registration_retained: AtomicBool,
     #[cfg(test)]
     allow_missing_fault_command_state: bool,
     _pin: PhantomPinned,
@@ -463,6 +468,10 @@ impl OwnedCallbackRuntimeState {
             workspace_disarmed: false,
             claimed_workspace_fd: -1,
             refused_child_workspace: None,
+            parent_park_api: None,
+            parent_park: Mutex::new(parent_park::Slot::new()),
+            parent_park_retained: AtomicBool::new(false),
+            parent_park_registration_retained: AtomicBool::new(false),
             #[cfg(test)]
             allow_missing_fault_command_state: false,
             _pin: PhantomPinned,
@@ -1081,10 +1090,26 @@ impl OwnedCallbackRuntimeState {
 /// a logical milestone. It can be constructed only after the exact callback
 /// mask for the selected launch mode is complete.
 pub struct RequiredOwnedCallbacksRegistered {
-    state: Pin<Box<OwnedCallbackRuntimeState>>,
+    state: std::mem::ManuallyDrop<Pin<Box<OwnedCallbackRuntimeState>>>,
     registration_mask: OwnedCallbackRegistrationMask,
     #[cfg(test)]
     _teardown_receiver: Option<mpsc::Receiver<LiveRuntimeTeardownTrigger>>,
+}
+
+impl Drop for RequiredOwnedCallbacksRegistered {
+    fn drop(&mut self) {
+        let state = self.state.as_ref().get_ref();
+        if !state.parent_park_retained.load(Ordering::Acquire)
+            && !state
+                .parent_park_registration_retained
+                .load(Ordering::Acquire)
+        {
+            // SAFETY: this is the sole owning Box; neither a companion borrow nor
+            // a registrar's retained userdata remains. ManuallyDrop prevents a
+            // second automatic destruction.
+            unsafe { std::mem::ManuallyDrop::drop(&mut self.state) };
+        }
+    }
 }
 
 impl std::fmt::Debug for RequiredOwnedCallbacksRegistered {
@@ -1149,7 +1174,7 @@ impl RequiredOwnedCallbacksRegistered {
         registration_mask: OwnedCallbackRegistrationMask,
     ) -> Self {
         Self {
-            state,
+            state: std::mem::ManuallyDrop::new(state),
             registration_mask,
             #[cfg(test)]
             _teardown_receiver: None,
@@ -1716,6 +1741,17 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
     // SAFETY: registration passes the stable pinned runtime-owner address, and
     // production retains that allocation for the QEMU process lifetime.
     let state = unsafe { &*userdata.cast::<OwnedCallbackRuntimeState>() };
+    // Arbitrate the entire legacy operation against companion acquisition and
+    // disposition. An entry snapshot alone cannot exclude a later workspace or
+    // ring release racing the new owner.
+    let Ok(_parent_park_arbitration) = state.parent_park.try_lock() else {
+        return -libc::EBUSY;
+    };
+    if state.parent_park_retained.load(Ordering::Acquire) || state.quiescence.parent_hold_owned() {
+        // Legacy QUERY also transfers workspace custody on its ordinary path.
+        // A retained companion is observed only through its own CHECK operation.
+        return -libc::EBUSY;
+    }
     if action != crate::QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE
         && state.workers.identity_snapshot().is_err()
     {
@@ -1866,6 +1902,17 @@ extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
     // SAFETY: registration passes the stable pinned runtime-owner address.
     // QEMU invokes initialization/release only while the complete plugin
     // barrier excludes every callback and inherited worker operation.
+    let retained = unsafe { &*userdata.cast::<OwnedCallbackRuntimeState>() };
+    if retained.parent_park_retained.load(Ordering::Acquire)
+        || retained.quiescence.parent_hold_owned()
+    {
+        // The genuine staged-child companion has not lent this parent borrow.
+        // Refuse before forming a mutable runtime projection or touching a
+        // copied worker mutex/mapping owner.
+        return -libc::EBUSY;
+    }
+    // SAFETY: the existing native child barrier excludes all borrowed runtime
+    // access, and no retained parent companion borrow remains.
     let state = unsafe { &mut *userdata.cast::<OwnedCallbackRuntimeState>() };
     if action == crate::QEMU_PLUGIN_HOT_FORK_CHILD_DISARM {
         if plan.is_null() {
@@ -2748,6 +2795,16 @@ where
             ));
         }
 
+        if let Err(status) =
+            parent_park::register(plugin_id, retained.registered_mut()?.state.as_mut())
+        {
+            return Err(fail_post_registration_before_ready_ack_lifecycle(
+                &mut control_stream,
+                PluginRuntimeInstallError::ParentParkDrainRejected { status },
+                &mut acknowledgement_state,
+            ));
+        }
+
         post_registration_stage = PostRegistrationStage::RegisterHotForkChildRuntime;
         maybe_inject_post_registration_panic(post_registration_stage);
         let child_runtime_status = (capabilities.register_hot_fork_child_runtime)(
@@ -3186,6 +3243,12 @@ pub enum PluginRuntimeInstallError {
     #[error("QEMU rejected the hot-fork callback barrier with status {status}")]
     HotForkBarrierRejected {
         /// Negative errno-style QEMU status.
+        status: i32,
+    },
+    /// Native refused registration of the actual parent drain companion.
+    #[error("parent park/drain companion registration refused ({status})")]
+    ParentParkDrainRejected {
+        /// Exact signed native registrar status.
         status: i32,
     },
     /// QEMU rejected fork-child runtime reconstruction registration.

@@ -6,6 +6,8 @@ use super::codec::{TreeNode, TreeRef, read_envelope_from, validate_tree};
 use super::{LeasedRamRoot, RamStoreError, Work};
 use std::cell::Cell;
 
+pub(super) mod publication;
+
 #[derive(Clone, Copy)]
 enum ReadPhase {
     Ready,
@@ -16,6 +18,7 @@ enum ReadPhase {
 }
 
 enum ReadTask<'read> {
+    Publication(publication::Readback<'read>),
     Tree(TreeRef),
     Inventory {
         store: &'read super::RamStore,
@@ -39,6 +42,7 @@ enum ReadTask<'read> {
 impl ReadTask<'_> {
     fn reborrow(&mut self) -> ReadTask<'_> {
         match self {
+            Self::Publication(readback) => ReadTask::Publication(*readback),
             Self::Tree(expected) => ReadTask::Tree(*expected),
             Self::Inventory {
                 store,
@@ -76,6 +80,7 @@ impl ReadTask<'_> {
 }
 
 enum ReadValue {
+    Publication,
     Tree(TreeNode),
     Inventory,
     Canonical(Option<Vec<u8>>),
@@ -164,15 +169,18 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
         forward(&mut request)
     }
 
-    // Only a complete inventory can borrow a leaf view. Other task dispatch
-    // keeps the graph's existing checked lookup and admission order.
+    // Only complete inventories and bounded publication readback can borrow a
+    // pinned leaf view. Other tasks retain their existing checked lookup.
     pub(crate) fn execute_graph_inventory(
         &mut self,
         facade: &dyn ImmutableBlobBackend,
         child: &dyn ImmutableBlobBackend,
         admit: &dyn Fn(crate::content_store::ContentId) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
-        if !matches!(self.task, ReadTask::Inventory { .. }) {
+        if !matches!(
+            self.task,
+            ReadTask::Inventory { .. } | ReadTask::Publication(_)
+        ) {
             return self.execute_existing_checked(facade);
         }
         let previous = self.inventory_admission;
@@ -221,6 +229,7 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
         }
         self.state.phase = ReadPhase::Active;
         let result = match &mut self.task {
+            ReadTask::Publication(readback) => readback.execute_existing(self.work),
             ReadTask::Tree(expected) => read_envelope_from(backend, expected.id, self.work, true)
                 .and_then(|envelope| validate_tree(&envelope, *expected))
                 .map(ReadValue::Tree),
@@ -284,6 +293,9 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
         &mut self,
         backend: &crate::content_store::PackedBlobBackend,
     ) -> Result<(), StoreError> {
+        if matches!(self.task, ReadTask::Publication(_)) {
+            return self.execute_packed_publication(backend);
+        }
         if !matches!(self.task, ReadTask::Inventory { .. }) {
             return self.execute_existing_checked(backend);
         }
@@ -394,7 +406,9 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
             ReadTask::Tree(expected) => *expected,
             ReadTask::Canonical { .. } => return self.execute_sqlite_canonical(backend),
             ReadTask::Difference { .. } => return self.execute_sqlite_difference(backend),
-            ReadTask::Inventory { .. } => return self.execute_existing_checked(backend),
+            ReadTask::Inventory { .. } | ReadTask::Publication(_) => {
+                return self.execute_existing_checked(backend);
+            }
         };
         if expected.id.schema_version() != 1 {
             self.state.phase = ReadPhase::Failed;
@@ -803,7 +817,10 @@ pub(super) fn read_tree(
     let provider = backend.read_bounded_with_boundary(&mut request);
     match request.finish(provider).map_err(RamStoreError::from)? {
         ReadValue::Tree(node) => Ok(node),
-        ReadValue::Difference(_) | ReadValue::Canonical(_) | ReadValue::Inventory => {
+        ReadValue::Difference(_)
+        | ReadValue::Canonical(_)
+        | ReadValue::Inventory
+        | ReadValue::Publication => {
             unreachable!("a tree request retains its tree result")
         }
     }
@@ -841,7 +858,10 @@ pub(super) fn read_difference(
     let provider = backend.read_bounded_with_boundary(&mut request);
     match request.finish(provider).map_err(RamStoreError::from)? {
         ReadValue::Difference(value) => Ok(value),
-        ReadValue::Tree(_) | ReadValue::Canonical(_) | ReadValue::Inventory => {
+        ReadValue::Tree(_)
+        | ReadValue::Canonical(_)
+        | ReadValue::Inventory
+        | ReadValue::Publication => {
             unreachable!("a comparison retains its changed-page count")
         }
     }

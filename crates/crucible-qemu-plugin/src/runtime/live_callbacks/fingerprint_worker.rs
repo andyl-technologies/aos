@@ -420,6 +420,84 @@ impl LiveFingerprintDigestWorker {
             })
     }
 
+    /// Transfers the same mapping without waiting on a worker-owned mutex.
+    ///
+    /// The caller must retain actual complete callback/ring/worker exclusion.
+    ///
+    /// # Safety
+    ///
+    /// The caller must retain complete callback/ring/worker exclusion in this
+    /// same parent process. Restoration also requires native producer/execution
+    /// exclusion through the final release cut.
+    ///
+    /// # Errors
+    ///
+    /// Returns a fixed signed refusal for control/workspace contention, poison,
+    /// wrong process, absent owner, pending work, failure or inconsistent custody.
+    pub(super) unsafe fn hold_workspace_for_parent_park(&self) -> Result<(), i32> {
+        if self.owner_process != std::process::id() {
+            return Err(-libc::EPERM);
+        }
+        let control = self.control.as_ref().ok_or(-libc::EPROTO)?;
+        let state = control.state.try_lock().map_err(park_lock_status)?;
+        let mut workspace = control.workspace.try_lock().map_err(park_lock_status)?;
+        if state.failure.is_some() || state.pending.is_some() || state.closed {
+            return Err(-libc::EPROTO);
+        }
+        // SAFETY: the caller retains complete actual admission exclusion; both
+        // worker mutexes are borrowed without waiting before the transfer cut.
+        let held = unsafe { &mut *self.fork_workspace.get() };
+        if held.is_some() {
+            return if workspace.is_none() {
+                Ok(())
+            } else {
+                Err(-libc::EPROTO)
+            };
+        }
+        *held = workspace.take();
+        if held.is_none() {
+            return Err(-libc::EPROTO);
+        }
+        Ok(())
+    }
+
+    /// Restores the same mapping without releasing custody on mutex refusal.
+    ///
+    /// # Safety
+    ///
+    /// The caller must retain complete callback/ring/worker exclusion in this
+    /// same parent process. Restoration also requires native producer/execution
+    /// exclusion through the final release cut.
+    ///
+    /// # Errors
+    ///
+    /// Returns a fixed signed refusal for control/workspace contention, poison,
+    /// wrong process, absent owner, pending work, failure or inconsistent custody.
+    pub(super) unsafe fn restore_workspace_for_parent_park(&self) -> Result<(), i32> {
+        if self.owner_process != std::process::id() {
+            return Err(-libc::EPERM);
+        }
+        let control = self.control.as_ref().ok_or(-libc::EPROTO)?;
+        let state = control.state.try_lock().map_err(park_lock_status)?;
+        let mut workspace = control.workspace.try_lock().map_err(park_lock_status)?;
+        if state.failure.is_some() || state.pending.is_some() || state.closed {
+            return Err(-libc::EPROTO);
+        }
+        // SAFETY: the caller retains complete actual admission exclusion and
+        // native producer exclusion through the final disposition cut.
+        let held = unsafe { &mut *self.fork_workspace.get() };
+        if workspace.is_some() && held.is_some() {
+            return Err(-libc::EPROTO);
+        }
+        if workspace.is_none() {
+            *workspace = held.take();
+        }
+        if workspace.is_none() {
+            return Err(-libc::EPROTO);
+        }
+        Ok(())
+    }
+
     /// Transfers the mapping to the directly held callback slot before fork.
     ///
     /// The caller must have observed the complete existing worker parked set,
@@ -594,6 +672,13 @@ impl Drop for LiveFingerprintDigestWorker {
                 std::mem::forget(join);
             }
         }
+    }
+}
+
+fn park_lock_status<T>(error: std::sync::TryLockError<T>) -> i32 {
+    match error {
+        std::sync::TryLockError::WouldBlock => -libc::EBUSY,
+        std::sync::TryLockError::Poisoned(_) => -libc::EOWNERDEAD,
     }
 }
 

@@ -11,6 +11,7 @@ mod checked_readers;
 mod composition;
 mod merkle_reads;
 mod publication_acceptance;
+mod statement_reuse;
 mod whole_reads;
 
 struct OriginalResources {
@@ -35,6 +36,9 @@ struct Loan {
 impl Drop for Loan {
     fn drop(&mut self) {
         if self.bytes == self.owner.watched_loan_bytes.load(Ordering::SeqCst) {
+            if self.bytes == write_statements::control_bytes().expect("fixed statement control") {
+                write_statements::assert_handles_closed_before_credit();
+            }
             self.owner.watched_loan_closed.store(true, Ordering::SeqCst);
         }
         self.owner

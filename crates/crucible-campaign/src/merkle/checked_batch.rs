@@ -144,22 +144,8 @@ struct BatchWriter<'a> {
 
 impl BatchWriter<'_> {
     fn read_node(&mut self, id: ContentId, depth: u8) -> Result<MerkleNode, CampaignStoreError> {
-        check(self.original, self.boundary)?;
-        if id.kind() != ObjectKind::MerkleNode {
-            return Err(invalid("root-or-child-kind"));
-        }
-        let source = self
-            .map
-            .backend
-            .read_with_boundary(self.original, id, None, self.boundary)?;
-        let bytes = source.read_all_with_boundary(
-            self.original,
-            MAX_MERKLE_NODE_ENVELOPE_BYTES as u64,
-            self.boundary,
-        )?;
-        let node = decode_node_bytes(id, depth, &bytes)?;
-        check(self.original, self.boundary)?;
-        Ok(node)
+        self.map
+            .read_checked_node(id, depth, self.original, self.boundary)
     }
 
     fn update(

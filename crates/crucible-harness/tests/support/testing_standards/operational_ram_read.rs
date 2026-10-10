@@ -87,6 +87,54 @@ const SNAPSHOT_COMPANIONS: &[Companion] = &[
 ];
 
 pub(super) const CONTRACTS: &[Contract] = &[
+    // These are one-shot observations of the same failed Work, not fixture reruns.
+    Contract {
+        package: "crucible-cas",
+        target: "src/ram/bounded_read/publication/tests",
+        required: &[
+            "fn physical_refusal_after_pack_descriptor_reservation_is_sticky_and_closes_view_pins()",
+            "fn corrupted_second_body_preserves_real_content_id_cause_and_sticky_failure()",
+            r#"let mut work = Work::new(crate::ram::RamStoreLimits::default(), &fixture.original, &mut boundary,).expect("same Work");"#,
+            r#".expect_err("physical refusal after actual pack descriptor reservation"); let requested = fixture.requests(); let retry = read_publication("#,
+            r#".expect_err("full ContentId authentication"); assert!(matches!(storage_cause(&error), StoreError::Corrupt { id } if *id == fixture.expected[1].expect("second ID").0), "{error:?}"); let requests = fixture.requests(); let retry = read_publication("#,
+            "let requested = fixture.requests();",
+            "let mut bad_expected = fixture.expected; bad_expected[0] = bad_expected[1];",
+            "assert_eq!(requested, 4); assert_eq!(fixture.requests(), requested);",
+            "let requests = fixture.requests();",
+            "assert_eq!(fixture.requests(), requests);",
+            "assert_eq!(fixture.index(), committed);",
+        ],
+        expressions: &[
+            (
+                r#"let retry = read_publication(&fixture.store, &fixture.expected, fixture.receipt.as_ref().expect("receipt"), &mut work,).expect_err("same Work remains failed");"#,
+                2,
+            ),
+            (
+                r#"let malformed_retry = read_publication(&fixture.store, &bad_expected, fixture.receipt.as_ref().expect("receipt"), &mut work,).expect_err("new malformed input cannot replace the retained refusal");"#,
+                1,
+            ),
+            (
+                "matches!(storage_cause(&retry), StoreError::Unauthorized)",
+                1,
+            ),
+            (
+                "matches!(storage_cause(&malformed_retry), StoreError::Unauthorized)",
+                1,
+            ),
+            ("drop(malformed_retry);", 1),
+            ("drop(retry);", 2),
+        ],
+        companions: &[Companion {
+            path: "crates/crucible-cas/src/ram/bounded_read/publication.rs",
+            required: &[
+                "if let Some(first) = work.account.read_failure() { return Err(first.into()); } if receipts.len() != expected.iter().flatten().count()",
+                "let _credit = work.original().reserve_scratch_bytes(bytes).map_err(crate::ram::codec_ownership::admission)?;",
+                "self.state.phase = ReadPhase::Failed; Err(self.work.account.fail_read(error))",
+                "let result = result.and_then(|()| { self.work.checked(|original, boundary| { crate::content_store::checked_reader::check(original, boundary)?; verify_physical(original, physical) }) });",
+            ],
+            counts: &[("pub(in crate::ram) fn read_publication(", 1)],
+        }],
+    },
     Contract {
         package: "crucible-cas",
         target: "src/content_store/sqlite/batch/busy/snapshot",
@@ -394,7 +442,13 @@ mod tests {
     fn sqlite_read_contracts_reject_foreign_accounts_late_checks_and_changed_busy_roles()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = super::super::super::super::super::workspace_root();
-        for contract in &CONTRACTS[..2] {
+        for contract in CONTRACTS.iter().filter(|contract| {
+            matches!(
+                contract.target,
+                "src/content_store/sqlite/batch/busy/snapshot"
+                    | "src/content_store/sqlite/bounded_read"
+            )
+        }) {
             let source = std::fs::read_to_string(
                 root.join("crates")
                     .join(contract.package)

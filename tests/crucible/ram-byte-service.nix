@@ -5,6 +5,7 @@
   attrPath,
   nativeQemu ? pkgs.qemu-crucible,
   nativePlugin ? pkgs.crucible-qemu-plugin,
+  store ? false,
 }: let
   guest = pkgs.mkDerivation {
     pname = "crucible-byte-service-benchmark";
@@ -33,10 +34,23 @@
 in
   import ./ram-native-flight.nix {
     inherit pkgs lib attrPath nativeQemu nativePlugin;
-    pname = "crucible-managed-byte-service-flight";
-    gateId = "gate:ram-native-byte-service";
-    testName = "packaged_qemu_executor::tests::paging_native::byte_service::production_byte_service_latency_is_placement_independent";
-    successMarker = "BYTE_SERVICE_NATIVE_PASS";
+    pname =
+      if store
+      then "crucible-managed-byte-store-service-flight"
+      else "crucible-managed-byte-service-flight";
+    gateId =
+      if store
+      then "gate:ram-native-byte-store-service"
+      else "gate:ram-native-byte-service";
+    testName = "packaged_qemu_executor::tests::paging_native::byte_service::${
+      if store
+      then "production_byte_store_service_is_placement_independent"
+      else "production_byte_service_latency_is_placement_independent"
+    }";
+    successMarker =
+      if store
+      then "BYTE_STORE_SERVICE_NATIVE_PASS"
+      else "BYTE_SERVICE_NATIVE_PASS";
     lanes = [
       "byte-discovery"
       "byte-resident-7"
@@ -58,24 +72,31 @@ in
       export CRUCIBLE_BYTE_KERNEL=${guest}/benchmark.elf
       . ${guest}/coordinates.env
     '';
-    innerEvidence = _: ''
-      for evidence in \
-        byte_service_seed_count=3 \
-        byte_service_state_identity=true \
-        byte_service_ram_root_identity=true \
-        byte_service_modeled_time_identity=true \
-        byte_service_actual_guest_entry=true \
-        byte_service_one_byte_access=true \
-        byte_service_native_latency_variation=true \
-        byte_service_native_service_ledger_identity=true; do
-        test "$(${pkgs.grep}/bin/grep -Fxc "$evidence" "$log")" -eq 1
-      done
-      for counter in \
-        byte_service_missing_installs \
-        byte_service_cold_discards; do
-        test "$(${pkgs.grep}/bin/grep -Ec "^$counter=[1-9][0-9]*$" "$log")" -eq 1
-      done
-    '';
+    innerEvidence = _:
+      lib.optionalString store ''
+        test "$(${pkgs.grep}/bin/grep -Fxc 'byte_service_store_result=90' "$log")" -eq 1
+        for coordinate in byte_service_store_pc byte_service_store_target; do
+          test "$(${pkgs.grep}/bin/grep -Ec "^$coordinate=[1-9][0-9]*$" "$log")" -eq 1
+        done
+      ''
+      + ''
+        for evidence in \
+          byte_service_seed_count=3 \
+          byte_service_state_identity=true \
+          byte_service_ram_root_identity=true \
+          byte_service_modeled_time_identity=true \
+          byte_service_actual_guest_entry=true \
+          byte_service_one_byte_access=true \
+          byte_service_native_latency_variation=true \
+          byte_service_native_service_ledger_identity=true; do
+          test "$(${pkgs.grep}/bin/grep -Fxc "$evidence" "$log")" -eq 1
+        done
+        for counter in \
+          byte_service_missing_installs \
+          byte_service_cold_discards; do
+          test "$(${pkgs.grep}/bin/grep -Ec "^$counter=[1-9][0-9]*$" "$log")" -eq 1
+        done
+      '';
     outerEvidence = _: ''
       ${pkgs.grep}/bin/grep '^byte_service_' "$out/serial.log" \
         > "$out/byte-service-evidence.txt"
