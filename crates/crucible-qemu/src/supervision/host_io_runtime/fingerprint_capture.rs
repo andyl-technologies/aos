@@ -11,7 +11,8 @@ impl QemuLiveHostIoRuntime {
     ) -> Result<PendingControlBoundary, QemuAsyncDriverRuntimeError> {
         #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
         if let OperationPollBudget::BorrowedPair(_, _) = _deadline {
-            let pending = self.publish_paired_fingerprint_control(_deadline, fingerprint_request)?;
+            let pending =
+                self.publish_paired_fingerprint_control(_deadline, fingerprint_request)?;
             return self.wake_paired_fingerprint_control(_deadline, pending);
         }
         self.signal_wake(Some(fingerprint_request))
