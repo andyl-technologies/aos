@@ -50,3 +50,16 @@ DMTCP remains an independently packaged LGPL-3.0-or-later component. Its pinned
 domain; the implementation/library is not public domain. The MIT resource
 custody helper does not change DMTCP's license. Preloading DMTCP into a
 GPL-2.0-only QEMU process is not authorized by this inventory.
+
+The source-owned closed device foundations additionally preserve the following
+original notices. They add no upstream native files and retain matching ordered
+patches, source witnesses and recipes. Their diagnostic coverage remains partial;
+public admission and processor timing require separate qualification.
+
+| Patch | Modified native files | License |
+| --- | --- | --- |
+| causal-device-inventory.patch | src/python/pybind11/event.cc; src/python/m5/simulate.py | Existing BSD-3-Clause notices retained |
+| device-original-fifo-inventory.patch | src/dev/virtio/net.cc; src/dev/virtio/net.hh; src/dev/virtio/VirtIONet.py; src/dev/virtio/host_request.cc; src/dev/virtio/host_request.hh; src/dev/virtio/VirtIOHostRequest.py | Existing MIT notices retained |
+| closed-block-native-boundary.patch | src/sim/crucible_output.hh; src/sim/crucible_output.cc; src/sim/simulate.cc; src/python/pybind11/event.cc; src/python/m5/simulate.py | Existing BSD-3-Clause notices retained |
+| closed-block-native-boundary.patch | src/dev/virtio/host_request.hh; src/dev/virtio/host_request.cc; src/dev/virtio/VirtIOHostRequest.py | Existing MIT notices retained |
+| `closed-network-native-boundary.patch` | `src/dev/virtio/net.hh`; `src/dev/virtio/net.cc`; `src/dev/virtio/VirtIONet.py` | Existing MIT source notices retained. Source-owned closed-network mechanism only; no new native files or ordinary node/device/timing authority. |

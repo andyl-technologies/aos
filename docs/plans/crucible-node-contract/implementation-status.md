@@ -999,6 +999,32 @@ QEMU build identity when supplying the AOS patch placeholder. Production QEMU
 source, recipe and dependencies remain unchanged; complete gate success still
 requires a new corrected run.
 
+## Canonical gem5 closed Linux network continuation
+
+The repository-relative closed-loopback source binds its own matching Linux
+proof and installed profile, rather than inheriting the private predecessor's
+qualification. The actual guest publishes its original 64-byte frame before
+the sealed future receive reaction. After the entire original namespace is
+removed, two concurrent fresh owners each pass a new image audit, original
+retry/ACK and incoming guest readback; receipts, UART, disk, network, native
+tick/ordinal and complete group reclamation agree.
+
+The installed profile is `8nayi2xhjwdnd6991l20vbzy9cg0vbk9`, with manifest SHA256
+`914e8d744f81446718500fef350bdb5a8c049e23c87a3ce03205bf983952b44e`.
+Independent review remeasures all 42 artifact roles and 168 configuration files
+(1,319,943 bytes). The 45-source enrollment includes seven required shared Block
+leaves; four unrelated Block registrations remain excluded and their pending
+qualification is not borrowed. Five native license rows are appended.
+
+Candidate ACK ledgers are validated before native administration and installed
+only after acceptance. Central checks pass 124 backend, wiring, profile,
+archive-custody and diagnostic data cases, plus 37 current-source hygiene cases;
+all owned Python sources parse and five Nix recipes pass formatting. These
+results qualify the measured closed-loopback mechanism. Common Ready,
+NativeArchive, external networking/serial, CPU timing and full device parity
+remain unqualified. Combined callback publication bounds and post-effect
+uncertainty custody remain required for broader execution admission.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

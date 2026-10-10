@@ -1,0 +1,135 @@
+--- a/src/python/pybind11/event.cc
++++ b/src/python/pybind11/event.cc
+@@ -48,6 +48,7 @@
+ #include "sim/async.hh"
+ #include "sim/sim_object.hh"
+ #include "sim/crucible_state.hh"
++#include <algorithm>
+ #include <stdexcept>
+ #include "sim/eventq.hh"
+ #include "sim/sim_events.hh"
+@@ -201,6 +202,104 @@
+         result["reference_ledger"] = references;
+         return result;
+     });
++    m.def("crucibleDeviceStateInventory", [](const std::vector<std::string> &names) {
++        if (numMainEventQueues != 1 || inParallelMode || async_event ||
++            crucibleModelIsExecuting()) {
++            throw std::runtime_error("model is not at an admitted parked boundary");
++        }
++
++        if (names.empty() || names.size() > 16)
++            throw std::runtime_error("selected device census exceeds finite names");
++        std::vector<SimObject *> selected;
++        for (const auto &name : names) {
++            if (name.empty() || name.size() > 256)
++                throw std::runtime_error("selected device name exceeds source scope");
++            auto object = SimObject::find(name.c_str());
++            if (!object || std::find(selected.begin(), selected.end(), object) != selected.end())
++                throw std::runtime_error("selected device is absent or duplicated");
++            selected.push_back(object);
++        }
++        CrucibleStateIdentityScope identities;
++        py::dict result;
++        result["schema"] = "crucible.gem5.causal-device-state.v1";
++        result["complete"] = false;
++        result["diagnostic_scope"] = "native-events-rng-selected-device-fields-v1";
++        result["selected_names"] = names;
++        result["native_tick"] = std::to_string(getEventQueue(0)->getCurTick());
++        py::list unsupported;
++        for (const char *domain : {"polymorphic-callback-payloads", "unselected-simobject-modeled-fields",
++                                  "cpu-pipeline-and-registers",
++                                  "cache-tags-data-and-transients",
++                                  "memory-controller-and-dram",
++                                  "device-dma-and-transport",
++                                  "complete-owner-and-delivery-custody"})
++            unsupported.append(domain);
++        result["unsupported_domains"] = unsupported;
++
++        py::list events;
++        uint64_t ordinal = 0;
++        for (const auto &event : getEventQueue(0)->crucibleEventInventory()) {
++            py::dict item;
++            item["event_identity"] = event.identity;
++            item["event_alias"] = event.alias;
++            item["queue_ordinal"] = std::to_string(ordinal++);
++            item["tick"] = std::to_string(event.when);
++            item["priority"] = std::to_string(event.priority);
++            item["flags"] = std::to_string(event.flags);
++            item["native_type"] = event.type;
++            item["description"] = event.description;
++            item["payload_complete"] = false;
++            item["modeled_fields"] = event.fields;
++            events.append(item);
++        }
++        result["events"] = events;
++
++        py::list objects;
++        for (const auto &object : SimObject::crucibleObjectInventory()) {
++            py::dict item;
++            item["name"] = object.first;
++            item["native_type"] = object.second;
++            item["state_complete"] = false;
++            auto native = SimObject::find(object.first.c_str());
++            if (!native)
++                throw std::runtime_error("modeled object disappeared");
++            item["object_alias"] = identities.reference(
++                static_cast<const SimObject *>(native), "sim-object");
++            if (std::find(selected.begin(), selected.end(), native) == selected.end())
++                continue;
++            const auto fields = native->crucibleModeledFields();
++            if (fields.size() > 32768)
++                throw std::runtime_error("selected device field census exceeds source bound");
++            item["modeled_fields"] = fields;
++            objects.append(item);
++        }
++        result["objects"] = objects;
++
++        py::dict random;
++        random["global_seed"] = std::to_string(Random::globalSeed);
++        py::list engines;
++        ordinal = 0;
++        for (const auto &engine : Random::crucibleEngineInventory()) {
++            py::dict item;
++            item["registry_ordinal"] = std::to_string(ordinal++);
++            item["expired"] = engine.empty();
++            item["engine_state"] = engine;
++            engines.append(item);
++        }
++        random["engines"] = engines;
++        result["rng"] = random;
++        py::list references;
++        ordinal = 0;
++        for (const auto &reference : identities.records) {
++            py::dict item;
++            item["reference_identity"] = std::to_string(ordinal++);
++            item["kind"] = reference.kind;
++            item["payload_complete"] = false;
++            references.append(item);
++        }
++        result["reference_ledger"] = references;
++        return result;
++    }, py::arg("selected_names"));
+     m.def("setMaxTick", &set_max_tick, py::arg("tick"));
+     m.def("getMaxTick", &get_max_tick, py::return_value_policy::copy);
+     m.def("terminateEventQueueThreads", &terminateEventQueueThreads);
+--- a/src/python/m5/simulate.py
++++ b/src/python/m5/simulate.py
+@@ -314,6 +314,17 @@
+     return _m5_event.crucibleStateInventory()
+ 
+ 
++def crucibleDeviceStateInventory(selected_names):
++    """Returns explicitly selected partial native device diagnostics at a parked cut.
++
++    Unselected CPU/RAM/object bodies are omitted, never declared complete. Exact
++    preservation separately requires the actual whole opaque native capture audit.
++    """
++    if not isinstance(selected_names, list) or not 0 < len(selected_names) <= 16:
++        raise ValueError("device diagnostic names exceed finite source scope")
++    return _m5_event.crucibleDeviceStateInventory(selected_names)
++
++
+ def setMaxTick(tick: int) -> None:
+     """Sets the maximum tick the simulation may run to. When when using the
+     stdlib simulator module, reaching this max tick triggers a
