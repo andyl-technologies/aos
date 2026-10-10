@@ -96,6 +96,9 @@ mod tests {
                     reference: "github-read-v1".into(),
                     partition: plan.authorization_partition.clone(),
                     provider: "github-tags".into(),
+                    scope: aos_assessment_runtime::credentials::SourceCredentialScope::GithubRepositories {
+                        repositories: vec!["example/fixture".into()],
+                    },
                     secret_binding: "ASSESSMENT_GITHUB_V1".into(),
                     expires_at: plan.expires_at.clone(),
                 }],
@@ -105,6 +108,14 @@ mod tests {
 
         let mut denied = plan.clone();
         denied.authorization_partition = "different-partition".into();
+        assert!(resolver.resolve(&denied).await.is_err());
+        assert_eq!(custody.reads.load(Ordering::SeqCst), 0);
+        denied = plan.clone();
+        denied.operation = aos_assessment_runtime::provider::ProviderOperation::ObserveTags {
+            repository: "another/private-project".into(),
+            tag_prefix: "v".into(),
+            page: 1,
+        };
         assert!(resolver.resolve(&denied).await.is_err());
         assert_eq!(custody.reads.load(Ordering::SeqCst), 0);
         assert!(matches!(

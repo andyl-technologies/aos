@@ -21,7 +21,9 @@ fn now() -> Result<Timestamp> {
 #[test]
 fn installed_credentials_require_exact_partition_provider_version_and_current_authority()
 -> Result<()> {
-    use aos_assessment_runtime::credentials::{SourceCredentialGrant, SourceCredentialSetV1};
+    use aos_assessment_runtime::credentials::{
+        SourceCredentialGrant, SourceCredentialScope, SourceCredentialSetV1,
+    };
     let mut work = plan()?;
     work.operation = ProviderOperation::ObserveTags {
         repository: "example/fixture".into(),
@@ -36,6 +38,9 @@ fn installed_credentials_require_exact_partition_provider_version_and_current_au
             reference: "github-read-v1".into(),
             partition: work.authorization_partition.clone(),
             provider: "github-tags".into(),
+            scope: SourceCredentialScope::GithubRepositories {
+                repositories: vec!["example/fixture".into()],
+            },
             secret_binding: "ASSESSMENT_GITHUB_V1".into(),
             expires_at: Timestamp::from_unix_seconds(now()?.unix_seconds() + 60)?,
         }],
@@ -46,6 +51,13 @@ fn installed_credentials_require_exact_partition_provider_version_and_current_au
     );
     let mut changed = work.clone();
     changed.authorization_partition = "other-partition".into();
+    assert!(grants.resolve(&changed, &now()?).is_err());
+    changed = work.clone();
+    changed.operation = ProviderOperation::ObserveTags {
+        repository: "another/private-project".into(),
+        tag_prefix: "v".into(),
+        page: 1,
+    };
     assert!(grants.resolve(&changed, &now()?).is_err());
     changed = work.clone();
     changed.credential_ref = Some("github-read-v2".into());
@@ -68,6 +80,13 @@ fn installed_credentials_require_exact_partition_provider_version_and_current_au
         assert!(SourceCredentialSetV1::from_slice(&ambiguous).is_err());
     }
     let mut unsafe_binding = grants;
+    let mut wildcard = unsafe_binding.clone();
+    wildcard.grants[0].scope = SourceCredentialScope::GithubRepositories {
+        repositories: vec!["example/*".into()],
+    };
+    assert!(wildcard.validate().is_err());
+    wildcard.grants[0].scope = SourceCredentialScope::PublicNvdCatalogue;
+    assert!(wildcard.validate().is_err());
     unsafe_binding.grants[0].secret_binding = "https://unrelated.invalid/secret".into();
     assert!(unsafe_binding.validate().is_err());
     Ok(())
@@ -132,6 +151,47 @@ fn conditional_revalidation_preserves_the_admitted_original_source_time_and_exac
         .validators
         .etag = Some("different-etag".into());
     assert!(changed.validate_at(&now()?).is_err());
+    Ok(())
+}
+
+#[test]
+fn nvd_credentials_require_an_explicit_public_catalogue_scope() -> Result<()> {
+    use aos_assessment_runtime::credentials::{
+        SourceCredentialGrant, SourceCredentialScope, SourceCredentialSetV1,
+    };
+    let mut work = plan()?;
+    work.operation = ProviderOperation::QueryNvd {
+        project: "reviewed-cpe-question".into(),
+        identity: serde_json::from_value(
+            serde_json::json!({"kind":"cpe", "part":"a", "vendor":"fixture", "product":"example"}),
+        )?,
+        version: "1.2.0".into(),
+        start_index: 0,
+    };
+    work.adapter_version = work.operation.adapter_version().into();
+    work.credential_ref = Some("nvd-read-v1".into());
+    let mut grants = SourceCredentialSetV1 {
+        schema: "aos.assessment-source-credentials/v1".into(),
+        grants: vec![SourceCredentialGrant {
+            reference: "nvd-read-v1".into(),
+            partition: work.authorization_partition.clone(),
+            provider: "nvd".into(),
+            scope: SourceCredentialScope::PublicNvdCatalogue,
+            secret_binding: "ASSESSMENT_NVD_V1".into(),
+            expires_at: work.expires_at.clone(),
+        }],
+    };
+    grants.resolve(&work, &now()?)?;
+    work.operation = ProviderOperation::RefreshNvd {
+        modified_start: Timestamp::from_unix_seconds(now()?.unix_seconds() - 3600)?,
+        modified_end: now()?,
+        start_index: 0,
+    };
+    grants.resolve(&work, &now()?)?;
+    grants.grants[0].scope = SourceCredentialScope::GithubRepositories {
+        repositories: vec!["example/fixture".into()],
+    };
+    assert!(grants.resolve(&work, &now()?).is_err());
     Ok(())
 }
 

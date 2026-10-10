@@ -1,7 +1,7 @@
 //! Installed source credential grants shared by Native and Worker effects.
 //!
 //! This secret-free configuration is supplied by the deployment, never package
-//! metadata. A reference selects one exact partition, provider and immutable
+//! metadata. A reference selects one exact partition, provider, project scope and immutable
 //! secret binding. Missing or expired grants never fall back to ambient keys.
 //!
 //! ```json
@@ -12,7 +12,7 @@ use anyhow::{Context as _, Result, bail};
 use aos_assessment::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::provider::ProviderWorkPlanV1;
+use crate::provider::{ProviderOperation, ProviderWorkPlanV1};
 use crate::validation::{decode, encoded, sorted, text};
 
 /// Binds one installed immutable credential to an exact provider and partition.
@@ -25,10 +25,64 @@ pub struct SourceCredentialGrant {
     pub partition: String,
     /// Exact installed provider profile allowed to receive this credential.
     pub provider: String,
+    /// Exact repositories or an explicit public-catalog operation scope.
+    pub scope: SourceCredentialScope,
     /// Installed secret binding name; secret bytes and paths are absent.
     pub secret_binding: String,
     /// Exclusive grant expiry, checked again before each physical request.
     pub expires_at: Timestamp,
+}
+
+/// Restricts credential use to installed source projects, independent of labels.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum SourceCredentialScope {
+    /// Allows only exact owner/repository identities used in GitHub API URLs.
+    GithubRepositories {
+        /// Sorted unique literal repositories; wildcard and URL forms are refused.
+        repositories: Vec<String>,
+    },
+    /// Allows typed queries and feed reads from the fixed public NVD catalog.
+    PublicNvdCatalogue,
+}
+
+impl SourceCredentialScope {
+    fn validate_for(&self, provider: &str) -> Result<()> {
+        match (self, provider) {
+            (Self::GithubRepositories { repositories }, "github-tags" | "github-releases") => {
+                if repositories.is_empty() || repositories.len() > 128 {
+                    bail!("source credential requires a finite nonempty repository scope");
+                }
+                sorted(repositories, "source credential repositories")?;
+                for repository in repositories {
+                    ProviderOperation::ObserveTags {
+                        repository: repository.clone(),
+                        tag_prefix: String::new(),
+                        page: 1,
+                    }
+                    .validate()?;
+                }
+                Ok(())
+            }
+            (Self::PublicNvdCatalogue, "nvd") => Ok(()),
+            _ => bail!("source credential project scope differs from its installed provider"),
+        }
+    }
+
+    fn permits(&self, operation: &ProviderOperation) -> bool {
+        match (self, operation) {
+            (
+                Self::GithubRepositories { repositories },
+                ProviderOperation::ObserveTags { repository, .. }
+                | ProviderOperation::ObserveReleases { repository, .. },
+            ) => repositories.binary_search(repository).is_ok(),
+            (
+                Self::PublicNvdCatalogue,
+                ProviderOperation::QueryNvd { .. } | ProviderOperation::RefreshNvd { .. },
+            ) => true,
+            _ => false,
+        }
+    }
 }
 
 /// Describes the closed, bounded deployment credential configuration.
@@ -72,6 +126,7 @@ impl SourceCredentialSetV1 {
             .collect::<Vec<_>>();
         sorted(&references, "installed credential references")?;
         for grant in &self.grants {
+            grant.scope.validate_for(&grant.provider)?;
             text(
                 &grant.reference,
                 128,
@@ -119,6 +174,7 @@ impl SourceCredentialSetV1 {
             .context("installed source credential grant is absent")?;
         if grant.partition != plan.authorization_partition
             || grant.provider != plan.operation.provider()
+            || !grant.scope.permits(&plan.operation)
             || now >= &grant.expires_at
         {
             bail!("source credential scope or current authority differs");
