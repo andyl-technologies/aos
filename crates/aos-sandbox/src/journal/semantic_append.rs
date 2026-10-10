@@ -207,6 +207,42 @@ fn require_no_nix_native_mutation(
     Ok(())
 }
 
+// Append and forecast share these refusals in the same order. The scope is
+// Copy selector DATA; Native custody and final crossings stay with each caller.
+fn require_common_mutation_boundaries(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transaction: &JournalTransaction,
+    scope: AppendScope,
+) -> Result<(), JournalError> {
+    controller_source_genesis::require_no_mutation(
+        state, transaction, scope.controller_genesis_transition,
+    )?;
+    controller_source_successor_issuance::require_no_mutation(
+        state,
+        transaction,
+        scope.first_successor.map(|phase| phase.controller_transition_for(transaction))
+            .transpose()?.flatten().or(scope.successor_issuance_transition),
+    )?;
+    source_tree_genesis::require_no_mutation(
+        state,
+        transaction,
+        scope.first_successor.map_or(scope.source_genesis_transition, |phase| phase.source_genesis_transition()),
+    )?;
+    source_project_admission_challenge::require_no_mutation(
+        state, transaction, scope.project_admission_transition,
+    )?;
+    host_settlement_admission_gate::require_no_mutation(
+        state, transaction, scope.allow_host_settlement_admission_append,
+    )?;
+    host_currentness_fence::require_no_mutation(
+        state, transaction, scope.allow_host_currentness_fence_acquisition,
+    )?;
+    host_execution_fence::require_no_mutation(
+        state, transaction, scope.allow_host_fence_acquisition,
+    )?;
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn require_q04_journal_transition(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
@@ -971,41 +1007,7 @@ impl Journal {
             allow_capacity_records,
             settling_reservation,
         )?;
-        controller_source_genesis::require_no_mutation(
-            self.native.state(),
-            transaction,
-            controller_genesis_transition,
-        )?;
-        controller_source_successor_issuance::require_no_mutation(
-            self.native.state(),
-            transaction,
-            first_successor.map(|phase| phase.controller_transition_for(transaction)).transpose()?.flatten().or(successor_issuance_transition),
-        )?;
-        source_tree_genesis::require_no_mutation(
-            self.native.state(),
-            transaction,
-            first_successor.map_or(source_genesis_transition, |phase| phase.source_genesis_transition()),
-        )?;
-        source_project_admission_challenge::require_no_mutation(
-            self.native.state(),
-            transaction,
-            project_admission_transition,
-        )?;
-        host_settlement_admission_gate::require_no_mutation(
-            self.native.state(),
-            transaction,
-            allow_host_settlement_admission_append,
-        )?;
-        host_currentness_fence::require_no_mutation(
-            self.native.state(),
-            transaction,
-            allow_host_currentness_fence_acquisition,
-        )?;
-        host_execution_fence::require_no_mutation(
-            self.native.state(),
-            transaction,
-            allow_host_fence_acquisition,
-        )?;
+        require_common_mutation_boundaries(self.native.state(), transaction, scope)?;
         #[cfg(target_os = "linux")]
         if q04_transition.is_some() {
             if matches!(q04_transition, Some(Q04JournalTransitionV1::RootCapacity(_)))
@@ -1448,36 +1450,25 @@ impl Journal {
                     &state, transaction, next_sequence,
                 )?;
             }
-            controller_source_genesis::require_no_mutation(
+            require_common_mutation_boundaries(
                 &state,
                 transaction,
-                controller_genesis_transitions
-                    .map(|transitions| transitions[index])
-                    .unwrap_or(controller_source_genesis::ControllerSourceGenesisTransition::None),
+                AppendScope {
+                    controller_genesis_transition: controller_genesis_transitions
+                        .map(|transitions| transitions[index])
+                        .unwrap_or(controller_source_genesis::ControllerSourceGenesisTransition::None),
+                    successor_issuance_transition: successor_issuance_transitions
+                        .map(|transitions| transitions[index]),
+                    source_genesis_transition: genesis_transitions
+                        .map(|transitions| transitions[index])
+                        .unwrap_or(source_tree_genesis::SourceGenesisTransitionV1::None),
+                    project_admission_transition: project_transitions
+                        .map(|transitions| transitions[index])
+                        .unwrap_or(SourceProjectAdmissionTransition::None),
+                    first_successor,
+                    ..AppendScope::default()
+                },
             )?;
-            controller_source_successor_issuance::require_no_mutation(
-                &state,
-                transaction,
-                first_successor.map(|phase| phase.controller_transition_for(transaction)).transpose()?.flatten()
-                    .or_else(|| successor_issuance_transitions.map(|transitions| transitions[index])),
-            )?;
-            source_tree_genesis::require_no_mutation(
-                &state,
-                transaction,
-                first_successor.map(|phase| phase.source_genesis_transition()).or_else(|| genesis_transitions
-                    .map(|transitions| transitions[index])
-                ).unwrap_or(source_tree_genesis::SourceGenesisTransitionV1::None),
-            )?;
-            source_project_admission_challenge::require_no_mutation(
-                &state,
-                transaction,
-                project_transitions
-                    .map(|transitions| transitions[index])
-                    .unwrap_or(SourceProjectAdmissionTransition::None),
-            )?;
-            host_settlement_admission_gate::require_no_mutation(&state, transaction, false)?;
-            host_currentness_fence::require_no_mutation(&state, transaction, false)?;
-            host_execution_fence::require_no_mutation(&state, transaction, false)?;
             #[cfg(target_os = "linux")]
             let q04_transition = transactions.q04_transition(index);
             #[cfg(target_os = "linux")]
