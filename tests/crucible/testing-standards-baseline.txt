@@ -484,3 +484,8 @@ crucible-qemu-plugin	src/runtime/teardown_channel_tests	std::thread::sleep	1
 # Native fixture socket readiness and original complete-world reclamation use fixed finite watchdogs; elapsed waits never become model coordinates or rerun a failed original attempt.
 crucible-daemon	src/node_observed_executor/factory/reference_lineage_reader/tests	thread::sleep	1
 crucible-daemon	src/node_observed_executor/factory/reference_lineage_reader/tests	std::thread::sleep	1
+
+# The router model returns Retryable once from the SAME pending publication reconciliation, then verifies original route retention and complete reconciliation. No native effects, elapsed wait, failed test rerun, or deadline extension occur.
+# Source: crates/crucible-daemon/src/attempt_execution_router/tests.rs
+# SHA-256: dfdbac5419bd07ff26e28bd7d6c5e15c0bb1eca3c02b9ba23a35fbdb1b7ec5d0
+crucible-daemon	src/attempt_execution_router/tests	retry	1

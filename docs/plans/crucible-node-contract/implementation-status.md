@@ -1764,6 +1764,32 @@ logs. Independent review checks 8,842 source and artifact bindings with no error
 Earlier private compiler, strict-check and cached-scanner failures remain
 recorded separately. Raw evidence stays outside Git and release artifacts.
 
+## Common attempt routing with opaque source proofs
+
+The backend-neutral attempt router owns fresh/resume dispatch and original
+post-publication reconciliation. Adapters supply opaque selected-boundary,
+selected-proof and inherited-prefix proof types. Construction requires equal
+source-owned replay contracts; missing or mismatched contracts refuse while
+retaining both complete original adapters. Later contract drift refuses before
+execution. Routing metadata supplies no native or restoration authority.
+
+The existing QEMU compatibility adapter delegates to the common router and
+preserves its public constructor, accessors, trait contracts, nominal errors,
+opaque QEMU proofs and original branch/reconciliation behavior. Wire formats,
+snapshot formats and legacy serialized QEMU implementation identities remain
+unchanged. Backend-specific native authentication stays with each adapter.
+
+The current six-path functional join passes nine common data controls and both
+unchanged legacy QEMU routing controls. All 37 source-quality checks, daemon
+all-target strict checks and formatting of four Rust files also pass. All 8,681
+source files match before and after qualification. The final receipt has SHA256
+`9fa867dca515faf0518c577699c41162b8c8b7a01968eb4edaa06f14129f2497`.
+Local retention preserves 33 source, log and command files and five actual test
+and source-quality executables. These results qualify the source/API migration
+and data routing controls; they supply no new backend, native class, readiness,
+capture, mixed restoration or serialization authority. Earlier private tool and
+source-quality refusals remain separately recorded. Raw evidence stays local.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
@@ -1785,6 +1811,16 @@ independent x86 and ARM witnesses preserve exact native birth/checksum context
 through source removal, two fresh restores and complete fresh resource audits.
 This isolated lookup result does not measure Linux boot, device parity, CPU
 fidelity or complete typed diagnostics.
+
+A separate source-built gem5 thread-list microbenchmark preserves the original
+thread pointer across suspend/resume by splicing its persistent list node.
+Five fresh matched 500,000-transition rounds reduce median time from 4,545,799
+to 1,780,505 ns (2.55x) and remove all 500,000 temporary allocations per round.
+The complete 100,000-transition pointer/refusal controls also pass. Independent
+review verifies the retained source, executables, CSV and current compiler/run
+commands; historical compiler arguments were not retained. The fresh run is
+unpinned. This measures list mechanics only, without CPU/statistics/IRQ timing,
+complete callback closure, common readiness or Linux boot performance credit.
 
 A provisional QEMU/plugin component comparison uses revision `2fc6fabd90` and
 native source `0729c9712e`, with the identical frozen controller on both sides.

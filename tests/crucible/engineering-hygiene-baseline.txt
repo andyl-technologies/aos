@@ -377,7 +377,6 @@ shape-line|crates/crucible-daemon/src/campaign_bootstrap/runtime_registry.rs|700
 shape-line|crates/crucible-daemon/src/campaign_endpoint.rs|761
 shape-line|crates/crucible-daemon/src/campaign_gc.rs|608
 shape-line|crates/crucible-daemon/src/campaign_server.rs|696
-shape-line|crates/crucible-daemon/src/crucible_qemu_runner.rs|1170
 shape-line|crates/crucible-daemon/src/exact_checkpoint_restore.rs|937
 shape-line|crates/crucible-daemon/src/exact_pin_retention.rs|1191
 shape-line|crates/crucible-daemon/src/executor_loopback.rs|787

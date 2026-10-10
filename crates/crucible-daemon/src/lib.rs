@@ -59,7 +59,8 @@
 //! [`prepared_result_journal`] retains a complete semantic result across
 //! crash-safe publication retries;
 //! [`crucible_execution`] supplies the typed runner boundary used by the local
-//! QEMU/session adapter; [`crucible_qemu_runner`] connects that boundary to the
+//! adapters; [`attempt_execution_router`] owns backend-neutral original-proof
+//! routing; [`crucible_qemu_runner`] retains the QEMU compatibility adapter to the
 //! exact-restore/thin-replay QEMU realization path; [`crucible_qemu_session`]
 //! composes its attempt-scoped live backend, resource guard, and modeled driver;
 //! [`qemu_lifecycle_launcher`] streams lifecycle checkpoint artifacts into one
@@ -101,6 +102,7 @@ pub mod modeled_campaign_driver;
 pub(crate) use qemu_campaign_lifecycle::{
     GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignRunError,
 };
+pub mod attempt_execution_router;
 pub mod automatic_finding_runner;
 pub mod campaign_attachment;
 pub mod campaign_bootstrap;
@@ -199,6 +201,11 @@ pub use assignment_ledger::{
     AttemptRuntimeState, AttemptStateCas, CheckpointPromotionExecutionBasis,
     CompletedFindingCandidate, DirectoryAssignmentLedger, ExactCheckpointResumeBasis,
     MemoryAssignmentLedger, visit_directory_attempt_states_bounded,
+};
+pub use attempt_execution_router::{
+    AttemptExecutionRouter, AttemptExecutionRouterConstructionError,
+    AttemptExecutionRouterConstructionFailure, AttemptExecutionRouterError,
+    AttemptOriginResumeRunner, AttemptOriginVerifier, AttemptReplayContract,
 };
 pub use automatic_finding_runner::{
     AutomaticFindingDeterminismProbe, AutomaticFindingDeterminismProbeDisposition,
@@ -343,6 +350,7 @@ pub use crucible_measurement::{
     verify_crucible_measurement_publication,
 };
 pub use crucible_qemu::LinuxQemuAttemptHostConfig;
+
 pub use crucible_qemu_runner::{
     QemuAttemptExecutionRouter, QemuAttemptExecutionRouterError, QemuAttemptStartVerifier,
     QemuOrdinaryResumeRunner, QemuSelectedOriginResumeRunner, QemuSelectedOriginVerifier,
