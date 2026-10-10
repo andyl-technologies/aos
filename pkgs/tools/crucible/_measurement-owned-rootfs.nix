@@ -22,6 +22,7 @@
   projectInodes = catalogInodes + registryInodes;
   sqliteBootstrapProof = workflowFacts.sqliteBootstrapProof;
   campaignPolicy = workflowFacts.campaignPolicy;
+  componentAuthorities = workflowFacts.componentAuthorities;
   swapBytes =
     if operatorMode == "kernelMeasurement"
     then 4294967296
@@ -88,7 +89,7 @@
       exec ${initExecutable}
     '';
   };
-  dependencies = [installedImages operatorPolicy imageInventory sourceManifest workflow sqliteBootstrapProof campaignPolicy birth init pkgs.bash pkgs.coreutils pkgs.util-linux];
+  dependencies = [installedImages operatorPolicy imageInventory sourceManifest workflow sqliteBootstrapProof campaignPolicy componentAuthorities birth init pkgs.bash pkgs.coreutils pkgs.util-linux];
   closure = import ../../../lib/build/closure-info.nix {inherit pkgs lib;} {
     rootPaths = dependencies;
     pname = "crucible-private-parent-rootfs-closure";
@@ -126,10 +127,13 @@ in
             ln -s ${imageInventory} rootfs/etc/crucible/measurement-images.json
             ln -s ${sourceManifest} rootfs/etc/crucible/measurement-source.json
             ln -s ${workflow}/share/crucible/resident-workflow/workflow.json rootfs/etc/crucible/measurement-workflow.json
+            ln -s ${workflow}/share/crucible/resident-workflow rootfs/etc/crucible/measurement-inputs
             # Ordinary policy loading rejects a final symlink. Copy exact bytes
             # with an immutable mode; the workflow carries their actual hashes.
             cp ${sqliteBootstrapProof}/share/crucible/sqlite-bootstrap/target.json rootfs/etc/crucible/sqlite-bootstrap-target.json
             cp ${campaignPolicy} rootfs/etc/crucible/measurement-service-policy.toml
+            cp ${componentAuthorities} rootfs/etc/crucible/measurement-components.v1
+            chmod 0600 rootfs/etc/crucible/measurement-components.v1
             cp ${workflow}/share/crucible/resident-workflow/campaign-policy.json rootfs/etc/crucible/measurement-service-policy.json
             chmod 0444 rootfs/etc/crucible/sqlite-bootstrap-target.json rootfs/etc/crucible/measurement-service-policy.toml rootfs/etc/crucible/measurement-service-policy.json
             ln -s ${birth}/bin/actor-birth rootfs/etc/crucible/measurement-actor-birth

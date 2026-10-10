@@ -704,8 +704,8 @@ impl BlockFaultState {
                         reason: "restored retained completion exceeds the block transport frame",
                     });
                 }
-                let decoded =
-                    BlockResponse::decode(&response.payload).map_err(DeviceError::Codec)?;
+                let decoded = BlockResponse::decode_borrowed(&response.payload)
+                    .map_err(DeviceError::Codec)?;
                 if decoded.identity() != *identity
                     || (decoded.status == BlockStatus::Ok)
                         != (response.status == ResponseStatus::Ok)

@@ -9,6 +9,7 @@ publish = false
 workspace = true
 
 [features]
+private-measurement-domain = []
 destructive-recovery-faults = []
 test-support = []
 

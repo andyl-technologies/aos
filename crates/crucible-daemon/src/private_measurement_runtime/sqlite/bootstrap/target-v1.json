@@ -1,0 +1,59 @@
+{
+  "caseRequirements": [
+    "same installed Source/configuration/DSO",
+    "first entry on the actor main thread before service workers",
+    "default allocator and no foreign SQLite configuration",
+    "authenticated empty malloc-tuning environment",
+    "actual guest page/huge-page policy and main-thread stack",
+    "externally retained prebirth Source and local original loans"
+  ],
+  "conditionalMainArenaBacking": {
+    "additionalBackingUpperBytes": 2097152,
+    "case": "glibc-2.39-x86_64-mainarena-default-4k.v1",
+    "requests": [
+      {
+        "additionalBackingUpperBytes": 1048576,
+        "chunkBytes": 48,
+        "ordinaryGrowthUpperBytes": 139436,
+        "requestBytes": 40
+      },
+      {
+        "additionalBackingUpperBytes": 1048576,
+        "chunkBytes": 32,
+        "ordinaryGrowthUpperBytes": 139404,
+        "requestBytes": 16
+      }
+    ],
+    "requiredCase": [
+      "same installed Source/configuration/DSO",
+      "first entry on the actor main thread before service workers",
+      "default allocator and no foreign SQLite configuration",
+      "authenticated empty malloc-tuning environment",
+      "actual guest page/huge-page policy and main-thread stack",
+      "externally retained prebirth Source and local original loans",
+      "default glibc main arena; no foreign mallopt/sbrk/custom allocator",
+      "same-main-thread prior Rust allocation owns settled tcache initialization",
+      "base pages4096; default glibc hugetlb tuning0",
+      "full enforced original main stack remains separately paid"
+    ]
+  },
+  "geometryRecordSha256": "0c8dd32b50304e38da6061cd429fb4c251876b5f499531e11f4a31d4a683c938",
+  "glibcBuildRecordSha256": "607f6f67f8e26a95ec2c086fc4388a7496140ff2f9abfb9e53f644c087c7de64",
+  "libc": {
+    "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+    "sha256": "9757a9fffbe6a76f71bbc5ba6153fba36d516fd4d16c6cef11b4122957eaa4a7"
+  },
+  "linkedRecordSha256": "ecd43b143aa9da0c3740b8757a57023f681d25bef371ca53a7157a4e8da2084c",
+  "schema": "crucible.sqlite-bootstrap-target.v1",
+  "sourceRecordSha256": "c624344bd2f5c017c4942755154a8676af24319496b293448e1226fe8e2a22e8",
+  "sqlite": {
+    "path": "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib/libsqlite3.so",
+    "sha256": "355f069f759621753606d4704c2ff5d71d21f8eccb5586480556fbf8d7d53ab0"
+  },
+  "stackRecords": [
+    {
+      "name": "sqlite3.su",
+      "sha256": "a4e262f3e1d5a4f8d5963913af35e0a71ebdc80bef4169f8b7eba33ded5066af"
+    }
+  ]
+}

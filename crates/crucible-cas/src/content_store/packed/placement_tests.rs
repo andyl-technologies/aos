@@ -44,7 +44,7 @@ impl StorePhysicalQuotaGuard for Quota {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum FixtureError {
+pub(super) enum FixtureError {
     #[error(transparent)]
     Io(#[from] io::Error),
     #[error(transparent)]
@@ -53,15 +53,23 @@ enum FixtureError {
     Decode(#[from] DecodeAdmissionError),
 }
 
-struct Fixture {
+pub(super) struct Fixture {
     _directory: TempDir,
-    backend: PackedBlobBackend,
+    pub(super) backend: PackedBlobBackend,
     quota: Arc<Quota>,
-    original: DecodeBudget,
+    pub(super) original: DecodeBudget,
 }
 
 impl Fixture {
-    fn new() -> Result<Self, FixtureError> {
+    pub(super) fn usage(&self) -> Result<(u64, u64), StoreError> {
+        self.quota.resources.usage()
+    }
+
+    pub(super) fn close_original(&self) {
+        self.quota.closed.store(true, Ordering::SeqCst);
+    }
+
+    pub(super) fn new() -> Result<Self, FixtureError> {
         let directory = TempDir::new()?;
         let backend = PackedBlobBackend::open(
             "placement-component",
@@ -82,7 +90,7 @@ impl Fixture {
     }
 }
 
-fn object(ordinal: u64) -> ContentId {
+pub(super) fn object(ordinal: u64) -> ContentId {
     let mut digest = [0; 32];
     digest[24..].copy_from_slice(&ordinal.to_be_bytes());
     ContentId {
@@ -92,7 +100,7 @@ fn object(ordinal: u64) -> ContentId {
     }
 }
 
-fn value(ordinal: u64) -> Value {
+pub(super) fn value(ordinal: u64) -> Value {
     Value::object(IndexEntry {
         pack: PackId([7; 32]),
         offset: ordinal,
@@ -100,7 +108,7 @@ fn value(ordinal: u64) -> Value {
     })
 }
 
-fn published_two_leaf_index(fixture: &Fixture) -> Result<IndexSnapshot, FixtureError> {
+pub(super) fn published_two_leaf_index(fixture: &Fixture) -> Result<IndexSnapshot, FixtureError> {
     let mut boundary = || Ok(());
     let mut operation = Operation {
         original: Some(&fixture.original),

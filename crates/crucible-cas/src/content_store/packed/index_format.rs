@@ -339,7 +339,40 @@ pub(super) struct Node<'a> {
     pub(super) records: u64,
 }
 
+/// Retains validation of one leaf over its exact unchanged byte allocation.
+///
+/// Only a successfully parsed node creates this layout. Its owner must retire
+/// it before mutating the bytes; pointer and length checks prevent rebinding it
+/// to another buffer or a differently sized read.
+pub(super) struct LeafLayout {
+    address: usize,
+    length: usize,
+    count: usize,
+}
+
+impl LeafLayout {
+    pub(super) fn view<'a>(&self, bytes: &'a [u8]) -> Result<Node<'a>, StoreError> {
+        if bytes.as_ptr() as usize != self.address || bytes.len() != self.length {
+            return Err(StoreError::Incompatible);
+        }
+        Ok(Node {
+            bytes,
+            height: 0,
+            count: self.count,
+            records: self.count as u64,
+        })
+    }
+}
+
 impl<'a> Node<'a> {
+    pub(super) fn leaf_layout(&self) -> Option<LeafLayout> {
+        (self.height == 0).then_some(LeafLayout {
+            address: self.bytes.as_ptr() as usize,
+            length: self.bytes.len(),
+            count: self.count,
+        })
+    }
+
     pub(super) fn parse(bytes: &'a [u8], root: bool) -> Result<Self, StoreError> {
         Self::parse_inner(bytes, root, false)
     }

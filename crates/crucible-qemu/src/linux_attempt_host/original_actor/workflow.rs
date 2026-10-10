@@ -25,10 +25,52 @@ use super::{OriginalActorAccountCustody, OriginalActorAccountError, OriginalActo
 /// Its declarations do not prove native initialization's pre-limit peak or
 /// filesystem capacity. Those physical purposes remain separately qualified.
 pub struct OriginalActorServicePolicy {
+    pub(super) catalog: Option<OriginalActorCatalogPurpose>,
     pub(super) original: Arc<HostOperationGuard>,
     pub(super) bootstrap_bytes: u64,
     pub(super) heap_bytes: u64,
     pub(super) connections: usize,
+    pub(super) main_stack_bytes: u64,
+    pub(super) bootstrap_digest: [u8; 32],
+    pub(super) campaign_digest: [u8; 32],
+    pub(super) campaign_projection_digest: [u8; 32],
+}
+
+/// Carries the one catalog entitlement authenticated by the same workflow.
+///
+/// This move-only value contains no account, quota readback or launch permit.
+/// The catalog owner must still admit its actual audit and bind the installed
+/// kernel project under this exact original preparation.
+pub struct OriginalActorCatalogPurpose {
+    pub(super) original: Arc<HostOperationGuard>,
+    pub(super) project_id: u32,
+}
+
+impl OriginalActorServicePolicy {
+    /// Moves the one authenticated catalog purpose into its physical owner.
+    ///
+    /// # Errors
+    /// Refuses repeated transfer or this original's expiry or cancellation.
+    pub fn take_catalog_purpose(
+        &mut self,
+    ) -> Result<OriginalActorCatalogPurpose, OriginalActorAccountError> {
+        self.original.wait_slice()?;
+        self.catalog
+            .take()
+            .ok_or(OriginalActorAccountError::Unavailable)
+    }
+
+    /// Borrows the exact service policy identity bound by this same workflow.
+    #[must_use]
+    pub fn campaign_policy_digest(&self) -> &[u8; 32] {
+        &self.campaign_digest
+    }
+
+    /// Borrows the source-built policy projection identity bound by this workflow.
+    #[must_use]
+    pub fn campaign_policy_projection_digest(&self) -> &[u8; 32] {
+        &self.campaign_projection_digest
+    }
 }
 
 #[derive(Deserialize)]
@@ -42,7 +84,8 @@ struct WorkflowProjection<'input> {
     hot_fork: Option<IgnoredAny>,
     world_memory_mib: u64,
     execution_quanta: u64,
-    service_profile: ServiceProfile,
+    #[serde(borrow)]
+    service_profile: ServiceProfile<'input>,
     qemu: IgnoredAny,
     plugin: IgnoredAny,
     rows: IgnoredAny,
@@ -50,8 +93,9 @@ struct WorkflowProjection<'input> {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ServiceProfile {
-    operator: ServiceOperator,
+struct ServiceProfile<'input> {
+    #[serde(borrow)]
+    operator: ServiceOperator<'input>,
     catalog: ResourceVector,
     catalog_maximum_inodes: u64,
     native: ResourceVector,
@@ -62,13 +106,51 @@ struct ServiceProfile {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ServiceOperator {
+struct ServiceOperator<'input> {
     sqlite_bootstrap_bytes: u64,
     sqlite_heap_bytes: u64,
     sqlite_connections: usize,
+    actor_main_stack_bytes: u64,
+    #[serde(borrow)]
+    sqlite_bootstrap_proof: InstalledInput<'input>,
+    #[serde(borrow)]
+    campaign_policy: InstalledInput<'input>,
+    #[serde(borrow)]
+    campaign_policy_projection: InstalledInput<'input>,
     registry: ResourceVector,
     registry_project_id: u32,
+    catalog_project_id: u32,
     registry_maximum_inodes: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstalledInput<'input> {
+    #[serde(borrow)]
+    path: &'input str,
+    #[serde(borrow)]
+    blake3: &'input str,
+}
+
+impl InstalledInput<'_> {
+    fn digest(&self, expected_path: &str) -> Result<[u8; 32], MeasurementOriginError> {
+        if self.path != expected_path
+            || self.blake3.len() != 64
+            || !self
+                .blake3
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(MeasurementOriginError::Authentication(
+                "original installed service input",
+            ));
+        }
+        blake3::Hash::from_hex(self.blake3)
+            .map(|hash| *hash.as_bytes())
+            .map_err(|_| {
+                MeasurementOriginError::Authentication("original installed service digest")
+            })
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -164,7 +246,12 @@ impl WorkflowProjection<'_> {
             || operator.sqlite_heap_bytes == 0
             || operator.sqlite_heap_bytes > i64::MAX as u64
             || operator.sqlite_connections == 0
+            || operator.actor_main_stack_bytes < 16_384
+            || !operator.actor_main_stack_bytes.is_multiple_of(4096)
+            || operator.actor_main_stack_bytes > AGGREGATE.resident_bytes
             || operator.registry_project_id == 0
+            || operator.catalog_project_id == 0
+            || operator.catalog_project_id == operator.registry_project_id
             || operator.registry_maximum_inodes == 0
             || [
                 registry.resident_peak_bytes,
@@ -191,6 +278,15 @@ impl WorkflowProjection<'_> {
                 "original resident service profile",
             ));
         }
+        operator
+            .sqlite_bootstrap_proof
+            .digest("/etc/crucible/sqlite-bootstrap-target.json")?;
+        operator
+            .campaign_policy
+            .digest("/etc/crucible/measurement-service-policy.toml")?;
+        operator
+            .campaign_policy_projection
+            .digest("/etc/crucible/measurement-service-policy.json")?;
         // These fields remain in the authenticated input for the genuine
         // packaged decoder. Ignoring their shape here supplies no artifact,
         // scenario, schedule or completed-row authentication.
@@ -252,10 +348,30 @@ impl OriginalActorAccountCustody {
         budget.check().map_err(OriginalActorAccountError::Decode)?;
         held.preparation.wait_slice()?;
         Ok(OriginalActorServicePolicy {
+            catalog: Some(OriginalActorCatalogPurpose {
+                original: Arc::clone(&held.preparation),
+                project_id: decoded.service_profile.operator.catalog_project_id,
+            }),
             original: Arc::clone(&held.preparation),
             bootstrap_bytes: decoded.service_profile.operator.sqlite_bootstrap_bytes,
             heap_bytes: decoded.service_profile.operator.sqlite_heap_bytes,
             connections: decoded.service_profile.operator.sqlite_connections,
+            main_stack_bytes: decoded.service_profile.operator.actor_main_stack_bytes,
+            bootstrap_digest: decoded
+                .service_profile
+                .operator
+                .sqlite_bootstrap_proof
+                .digest("/etc/crucible/sqlite-bootstrap-target.json")?,
+            campaign_digest: decoded
+                .service_profile
+                .operator
+                .campaign_policy
+                .digest("/etc/crucible/measurement-service-policy.toml")?,
+            campaign_projection_digest: decoded
+                .service_profile
+                .operator
+                .campaign_policy_projection
+                .digest("/etc/crucible/measurement-service-policy.json")?,
         })
     }
 }
@@ -277,6 +393,19 @@ mod tests {
                     sqlite_bootstrap_bytes: 4096,
                     sqlite_heap_bytes: 8192,
                     sqlite_connections: 1,
+                    actor_main_stack_bytes: 8 << 20,
+                    sqlite_bootstrap_proof: InstalledInput {
+                        path: "/etc/crucible/sqlite-bootstrap-target.json",
+                        blake3: "0000000000000000000000000000000000000000000000000000000000000000",
+                    },
+                    campaign_policy: InstalledInput {
+                        path: "/etc/crucible/measurement-service-policy.toml",
+                        blake3: "0000000000000000000000000000000000000000000000000000000000000000",
+                    },
+                    campaign_policy_projection: InstalledInput {
+                        path: "/etc/crucible/measurement-service-policy.json",
+                        blake3: "0000000000000000000000000000000000000000000000000000000000000000",
+                    },
                     registry: ResourceVector {
                         resident_peak_bytes: 256 << 20,
                         backing_peak_bytes: 1 << 30,
@@ -288,6 +417,7 @@ mod tests {
                         file_descriptors: 64,
                     },
                     registry_project_id: 42,
+                    catalog_project_id: 43,
                     registry_maximum_inodes: 1024,
                 },
                 catalog: CATALOG,
@@ -326,6 +456,17 @@ mod tests {
         input.service_profile.operator.registry.cpu_slots = 1;
         input.service_profile.operator.registry.resident_peak_bytes = 1 << 20;
         assert!(input.validate(4).is_err());
+    }
+
+    #[test]
+    fn catalog_project_identity_is_required_and_distinct_from_registry() {
+        let mut input = projection(1);
+        input.service_profile.operator.catalog_project_id = 0;
+        assert!(input.validate(1).is_err());
+        input.service_profile.operator.catalog_project_id = 42;
+        assert!(input.validate(1).is_err());
+        input.service_profile.operator.catalog_project_id = 43;
+        assert!(input.validate(1).is_ok());
     }
 
     #[test]

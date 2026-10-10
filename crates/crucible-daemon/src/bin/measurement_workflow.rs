@@ -35,6 +35,7 @@ struct Descriptor {
     service_profile: ServiceProfile,
     qemu: Artifact,
     plugin: Artifact,
+    guest_assets: GuestAssets,
     rows: Vec<Row>,
 }
 
@@ -50,6 +51,27 @@ struct ServicePolicy {
     registry_project_id: u32,
     catalog_project_id: u32,
     registry_maximum_inodes: u64,
+    campaign_server: CampaignServer,
+    campaign_mode: CampaignMode,
+}
+
+/// Authored listener bounds validated by the ordinary service constructor.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CampaignServer {
+    connection_workers: usize,
+    pending_connections: usize,
+    maximum_requests_per_connection: usize,
+    accept_poll_millis: u64,
+    read_timeout_millis: u64,
+    write_timeout_millis: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum CampaignMode {
+    ReadWrite,
+    ReadOnly,
 }
 
 #[derive(Serialize)]
@@ -60,6 +82,7 @@ struct PublishedServicePolicy {
     sqlite_bootstrap_proof: InstalledObject,
     campaign_policy: InstalledObject,
     campaign_policy_projection: InstalledObject,
+    component_authorities: InstalledObject,
 }
 
 #[derive(Serialize)]
@@ -124,6 +147,43 @@ struct Artifact {
     blake3: String,
 }
 
+/// Required resolved assets; absent scenario overrides never choose firmware boot.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuestAssetInputs {
+    kernel: PathBuf,
+    root_image: PathBuf,
+    initrd: InitrdInput,
+    root_image_format: RootImageFormat,
+    kernel_cmdline: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+enum InitrdInput {
+    Absent,
+    Present { path: PathBuf },
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum RootImageFormat {
+    Raw,
+    Qcow2,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GuestAssets {
+    architecture: &'static str,
+    boot_mode: &'static str,
+    kernel: Artifact,
+    root_image: Artifact,
+    initrd: Option<Artifact>,
+    root_image_format: RootImageFormat,
+    kernel_cmdline: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Row {
@@ -169,8 +229,15 @@ fn generate() -> Result<(), Box<dyn Error>> {
     let policy_path = PathBuf::from(arguments.next().ok_or("missing authored service policy")?);
     let proof_path = PathBuf::from(arguments.next().ok_or("missing installed SQLite proof")?);
     let campaign_path = PathBuf::from(arguments.next().ok_or("missing authored campaign policy")?);
+    let components_path = PathBuf::from(
+        arguments
+            .next()
+            .ok_or("missing authored component authorities")?,
+    );
     let (service_profile, campaign_projection) =
-        service_profile(policy_path, proof_path, campaign_path)?;
+        service_profile(policy_path, proof_path, campaign_path, components_path)?;
+    let guest_input_path = PathBuf::from(arguments.next().ok_or("missing resolved guest assets")?);
+    let guest_assets = resolve_guest_assets(&guest_input_path)?;
     if arguments.next().is_some() {
         return Err("unexpected authoring argument".into());
     }
@@ -182,7 +249,7 @@ fn generate() -> Result<(), Box<dyn Error>> {
         .create_new(true)
         .open(output.join("campaign-policy.json"))?;
     std::io::Write::write_all(&mut policy_file, &campaign_projection)?;
-    let rows = generate_rows(&output, width)?;
+    let rows = generate_rows(&output, width, &guest_assets)?;
     let descriptor = Descriptor {
         schema: "crucible.measurement-resident-workflow.v2",
         family: "residentThroughput",
@@ -193,6 +260,7 @@ fn generate() -> Result<(), Box<dyn Error>> {
         service_profile,
         qemu,
         plugin,
+        guest_assets,
         rows,
     };
     let file = File::options()
@@ -207,6 +275,7 @@ fn service_profile(
     path: PathBuf,
     proof_path: PathBuf,
     campaign_path: PathBuf,
+    components_path: PathBuf,
 ) -> Result<(ServiceProfile, Vec<u8>), Box<dyn Error>> {
     // This parser runs in the immutable builder. It authors required ceilings;
     // the runtime must still prepay its actual controls and enforce the vector.
@@ -243,6 +312,11 @@ fn service_profile(
         installed_object("/etc/crucible/sqlite-bootstrap-target.json", &proof);
     let campaign_policy =
         installed_object("/etc/crucible/measurement-service-policy.toml", &campaign);
+    validate_campaign_server(&operator.campaign_server)?;
+    let components = read_installed_input(&components_path, 72)?;
+    validate_component_authorities(&components)?;
+    let component_authorities =
+        installed_object("/etc/crucible/measurement-components.v1", &components);
     let registry = &operator.registry;
     if operator.sqlite_bootstrap_bytes == 0
         || operator.sqlite_heap_bytes == 0
@@ -284,6 +358,7 @@ fn service_profile(
             sqlite_bootstrap_proof,
             campaign_policy,
             campaign_policy_projection,
+            component_authorities,
         },
         catalog: ResourceVector {
             resident_peak_bytes: 512 << 20,
@@ -322,6 +397,35 @@ fn service_profile(
         invocation_seconds: 3900,
     };
     Ok((profile, campaign_projection))
+}
+
+fn validate_campaign_server(server: &CampaignServer) -> Result<(), Box<dyn Error>> {
+    let timeouts = crucible_daemon::LoopbackCampaignTimeouts::new(
+        std::time::Duration::from_millis(server.read_timeout_millis),
+        std::time::Duration::from_millis(server.write_timeout_millis),
+    )?;
+    crucible_daemon::CampaignLoopbackServerConfig::new(
+        server.connection_workers,
+        server.pending_connections,
+        server.maximum_requests_per_connection,
+        std::time::Duration::from_millis(server.accept_poll_millis),
+        timeouts,
+    )?;
+    Ok(())
+}
+
+fn validate_component_authorities(bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+    if bytes.len() != 72 || &bytes[..8] != b"CRUCCA01" {
+        return Err("unsupported component authority record".into());
+    }
+    let planner: [u8; 32] = bytes[8..40].try_into()?;
+    let debugger: [u8; 32] = bytes[40..72].try_into()?;
+    crucible_campaign::PlannerAuthorityKey::from_bytes(planner)?;
+    crucible_campaign::DebuggerAuthorityKey::from_bytes(debugger)?;
+    if planner == debugger {
+        return Err("planner and debugger authorities must be distinct".into());
+    }
+    Ok(())
 }
 
 fn compile_campaign_policy(bytes: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -388,22 +492,61 @@ fn installed_artifact(path: PathBuf) -> Result<Artifact, Box<dyn Error>> {
     })
 }
 
-fn generate_rows(output: &Path, width: usize) -> Result<Vec<Row>, Box<dyn Error>> {
+fn resolve_guest_assets(path: &Path) -> Result<GuestAssets, Box<dyn Error>> {
+    let bytes = read_installed_input(path, 65_536)?;
+    let inputs: GuestAssetInputs = serde_json::from_slice(&bytes)?;
+    if inputs.kernel_cmdline.len() > 4095 || inputs.kernel_cmdline.as_bytes().contains(&0) {
+        return Err("guest kernel command line exceeds its finite contract".into());
+    }
+    let initrd = match inputs.initrd {
+        InitrdInput::Absent => None,
+        InitrdInput::Present { path } => Some(installed_artifact(path)?),
+    };
+    Ok(GuestAssets {
+        architecture: "x86_64",
+        boot_mode: "directKernel",
+        kernel: installed_artifact(inputs.kernel)?,
+        root_image: installed_artifact(inputs.root_image)?,
+        initrd,
+        root_image_format: inputs.root_image_format,
+        kernel_cmdline: inputs.kernel_cmdline,
+    })
+}
+
+fn artifact_reference(
+    artifact: &Artifact,
+) -> Result<crucible::ContentAddressedBlobRef, Box<dyn Error>> {
+    Ok(crucible::ContentAddressedBlobRef::from_hash(
+        crucible::ContentHash {
+            bytes: *blake3::Hash::from_hex(&artifact.blake3)?.as_bytes(),
+        },
+    ))
+}
+
+fn generate_rows(
+    output: &Path,
+    width: usize,
+    guest_assets: &GuestAssets,
+) -> Result<Vec<Row>, Box<dyn Error>> {
     let world = World::from_nodes(vec![WorldNode {
         id: NodeId {
             name: "memory".into(),
         },
         arch: VmArchitecture::X86_64,
         memory_mib: 512,
-        cmdline: String::new(),
+        cmdline: guest_assets.kernel_cmdline.clone(),
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 1 },
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: 1,
-        kernel: None,
-        root_image: None,
-        initrd: None,
+        kernel: Some(artifact_reference(&guest_assets.kernel)?),
+        root_image: Some(artifact_reference(&guest_assets.root_image)?),
+        initrd: guest_assets
+            .initrd
+            .as_ref()
+            .map(artifact_reference)
+            .transpose()?,
     }])?;
     let preceding = WIDTHS
         .iter()
@@ -533,6 +676,47 @@ grants = []
         );
         assert_eq!(value["document"]["bindings"], serde_json::json!([]));
         assert!(compile_campaign_policy(b"schema = 'foreign'\nversion = 1").is_err());
+    }
+
+    #[test]
+    fn guest_assets_require_resolved_paths_and_explicit_initrd_selection() {
+        let incomplete = serde_json::json!({
+            "kernel": "/nix/store/explicit-kernel",
+            "rootImage": "/nix/store/explicit-root",
+            "rootImageFormat": "raw",
+            "kernelCmdline": "console=ttyS0"
+        });
+        assert!(serde_json::from_value::<GuestAssetInputs>(incomplete.clone()).is_err());
+
+        let mut complete = incomplete;
+        complete["initrd"] = serde_json::json!({"kind": "absent"});
+        let decoded: GuestAssetInputs = serde_json::from_value(complete)
+            .expect("explicit absence belongs to the authored contract");
+        assert!(matches!(decoded.initrd, InitrdInput::Absent));
+    }
+
+    #[test]
+    fn service_bounds_use_real_constructor_and_component_record() {
+        let mut server = CampaignServer {
+            connection_workers: 1,
+            pending_connections: 1,
+            maximum_requests_per_connection: 1,
+            accept_poll_millis: 1,
+            read_timeout_millis: 1,
+            write_timeout_millis: 1,
+        };
+        assert!(validate_campaign_server(&server).is_ok());
+        server.connection_workers = 0;
+        assert!(validate_campaign_server(&server).is_err());
+
+        let mut record = [0_u8; 72];
+        record[..8].copy_from_slice(b"CRUCCA01");
+        record[8..40].fill(1);
+        record[40..72].fill(2);
+        assert!(validate_component_authorities(&record).is_ok());
+        record[40..72].fill(1);
+        assert!(validate_component_authorities(&record).is_err());
+        assert!(validate_component_authorities(&record[..71]).is_err());
     }
 
     #[test]

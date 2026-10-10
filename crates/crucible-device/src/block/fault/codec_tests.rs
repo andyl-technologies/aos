@@ -1,6 +1,7 @@
 //! Canonical block-fault continuation codec tests.
 
 use super::*;
+use crate::block::codec::{BLOCK_ABI_VERSION, BlockCodecError};
 
 fn state() -> BlockFaultState {
     BlockFaultState::new(BlockDurabilityConfig {
@@ -290,4 +291,68 @@ fn admitted_restore_reaches_optional_execution_media_set() {
         })
     ));
     assert_eq!(contributor_requests, 1);
+}
+
+#[test]
+fn retained_completion_borrowed_validation_preserves_codec_before_envelope_errors() {
+    let identity = BlockRequestIdentity::new(7, 13);
+    let payload = BlockResponse::ok_for(identity, vec![1, 2, 3])
+        .encode()
+        .unwrap();
+    let completion = BlockRetainedCompletion {
+        identity,
+        recovery_response: Response::new(identity.request_id, ResponseStatus::Ok, payload.clone()),
+        timeout_response: Response::new(identity.request_id, ResponseStatus::Ok, payload),
+        request_icount: 0,
+        additional_latency_ticks: 0,
+        timeout_ticks: 0,
+        recovery_event: None,
+        recovery_after_ticks: None,
+        recovery_after_sequence: None,
+        persist_through_on_recovery: None,
+    };
+    let mut healthy = state();
+    healthy.retained_completions.insert(identity, completion);
+    assert_eq!(healthy.validate_restore(32), Ok(()));
+    let encoded = healthy.to_canonical_bytes().unwrap();
+    assert_eq!(
+        BlockFaultState::from_canonical_bytes(&encoded, 32).unwrap(),
+        healthy
+    );
+
+    for recovery in [true, false] {
+        let mut invalid = healthy.clone();
+        {
+            let completion = invalid.retained_completions.get_mut(&identity).unwrap();
+            let response = if recovery {
+                &mut completion.recovery_response
+            } else {
+                &mut completion.timeout_response
+            };
+            response.status = ResponseStatus::Error;
+            response.payload[1] = 255;
+        }
+        assert_eq!(
+            invalid.validate_restore(32),
+            Err(DeviceError::Codec(BlockCodecError::VersionMismatch {
+                expected: BLOCK_ABI_VERSION,
+                found: 255
+            },))
+        );
+        {
+            let completion = invalid.retained_completions.get_mut(&identity).unwrap();
+            let response = if recovery {
+                &mut completion.recovery_response
+            } else {
+                &mut completion.timeout_response
+            };
+            response.payload[1] = BLOCK_ABI_VERSION;
+        }
+        assert!(matches!(
+            invalid.validate_restore(32),
+            Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "restored retained completion payload differs from its envelope",
+            })
+        ));
+    }
 }

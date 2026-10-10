@@ -197,9 +197,10 @@ pub use linux_attempt_host::{
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 #[doc(hidden)]
 pub use linux_attempt_host::{
-    OriginalActorAccountCustody, OriginalActorAccountError, OriginalActorDecodeOwner,
-    OriginalActorServicePolicy, OriginalActorSqliteInstallError, OriginalActorSqliteOwner,
-    OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
+    OriginalActorAccountCustody, OriginalActorAccountError, OriginalActorCatalogAccounts,
+    OriginalActorCatalogPurpose, OriginalActorDecodeOwner, OriginalActorServicePolicy,
+    OriginalCatalogAuditError, OriginalCatalogPhysicalAudit, OriginalGuestServiceHandle,
+    OriginalGuestServiceOwner, OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
     OriginalNativeControlRetirement, OriginalNativePhysicalRetirement,
 };
 #[cfg(target_os = "linux")]

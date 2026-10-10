@@ -9,7 +9,7 @@ publish = false
 default = []
 kernel-swap-measurement = []
 test-support = ["crucible/test-double", "crucible-ram/test-support"]
-private-measurement-domain = ["crucible-linux-resource/private-measurement-domain"]
+private-measurement-domain = ["crucible-linux-resource/private-measurement-domain", "crucible-cas/private-measurement-domain", "rustix/thread"]
 
 [lints]
 workspace = true

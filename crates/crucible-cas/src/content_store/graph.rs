@@ -46,7 +46,12 @@ use super::*;
 mod checked_packed_admin;
 mod format;
 mod gc_marks;
+mod original_sqlite;
 mod verification;
+
+pub use original_sqlite::{
+    OriginalSqliteGraphCloseError, OriginalSqliteGraphConfig, OriginalSqliteGraphOwner,
+};
 
 #[cfg(test)]
 mod verification_tests;

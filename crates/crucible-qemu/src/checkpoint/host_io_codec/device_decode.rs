@@ -1,9 +1,11 @@
-//! Saved-original parser and table admission for nested device continuations.
+//! Saved-original parsing and allocation admission for device continuations.
 //!
-//! The host codec captures its account once before parsing. Custom device
-//! tables receive that same borrowed account through their seed and callback;
-//! an authority callback changing the thread's scope cannot replace it. Maps,
-//! nested fault validation and canonical output remain separate payment work.
+//! The host codec captures its account once before parsing. Tables, retained
+//! collections, nested fault validation scratch and counted canonical output
+//! receive that same borrowed account through explicit seeds and callbacks.
+//! Changing the ambient scope cannot replace these supplied purposes. This
+//! component does not certify all parser internals, diagnostics, control tails
+//! or an enclosing decoded-owner lifetime.
 
 use serde::de::DeserializeSeed;
 use serde::{Deserialize, Deserializer};

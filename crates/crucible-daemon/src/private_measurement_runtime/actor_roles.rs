@@ -67,17 +67,39 @@ impl OriginalActorRoleIssuer {
         Ok(held.accounts.admit_workflow_service(decoder, bytes)?)
     }
 
-    pub(super) fn prepare_workflow_sqlite(
+    pub(super) fn prepare_catalog_owner(
         &self,
-        policy: crucible_qemu::OriginalActorServicePolicy,
-    ) -> Result<crucible_qemu::OriginalActorSqliteOwner, MeasurementRuntimeAdmissionError> {
+        decoder: &crucible_qemu::OriginalActorDecodeOwner,
+    ) -> Result<
+        crate::private_measurement_runtime::catalog::OriginalActorCatalogOwner,
+        MeasurementRuntimeAdmissionError,
+    > {
         let held = self
             .held
             .as_ref()
             .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
                 "retained original actor custody",
             ))?;
-        Ok(held.accounts.prepare_sqlite_owner(policy)?)
+        Ok(super::catalog::OriginalActorCatalogOwner::prepare(
+            &held.accounts,
+            decoder,
+        )?)
+    }
+
+    pub(super) fn prepare_workflow_sqlite(
+        &self,
+        policy: crucible_qemu::OriginalActorServicePolicy,
+    ) -> Result<super::sqlite::OriginalActorSqliteOwner, MeasurementRuntimeAdmissionError> {
+        let held = self
+            .held
+            .as_ref()
+            .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                "retained original actor custody",
+            ))?;
+        Ok(super::sqlite::OriginalActorSqliteOwner::prepare(
+            &held.accounts,
+            policy,
+        )?)
     }
 
     /// Consumes the same authenticated parent invocation before publication.

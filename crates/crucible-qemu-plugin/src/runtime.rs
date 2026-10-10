@@ -746,7 +746,7 @@ impl OwnedCallbackRuntimeState {
         // SAFETY: `header` points into the same setup-owned mapping as the
         // validated pair and remains live while callback state is retained.
         let header = unsafe { header.as_ref() };
-        let callback_state = live_callbacks::LiveVcpuTimeCallbackState::new(
+        let mut callback_state = live_callbacks::LiveVcpuTimeCallbackState::new_boxed(
             icount_raw,
             force_vcpu_exit,
             idle_wake_wait,
@@ -762,9 +762,13 @@ impl OwnedCallbackRuntimeState {
             mapped.node_slot,
             Arc::clone(&state.quiescence),
             Arc::clone(&state.teardown_router),
-        )?
-        .attach_stop_caller_identity(stop_backing_identity, slot_index, process_generation)
-        .attach_network(
+        )?;
+        callback_state.rebind_stop_caller_identity(
+            stop_backing_identity,
+            slot_index,
+            process_generation,
+        );
+        callback_state.attach_network_in_place(
             slot_index,
             mapped.first,
             mapped.second,
@@ -793,7 +797,7 @@ impl OwnedCallbackRuntimeState {
         // SAFETY: the pinned runtime retains this unique plugin role and its
         // owning mapping for every QEMU callback.
         let accelerator_rings = unsafe { accelerator_rings.detach_for_mapping_lifetime() };
-        let callback_state = callback_state.attach_devices_with_history_limits(
+        callback_state.attach_devices_with_history_limits_in_place(
             slot_index,
             block_rings,
             ninep_rings,
@@ -801,25 +805,24 @@ impl OwnedCallbackRuntimeState {
             process_generation,
             accelerator_rings,
         )?;
-        let callback_state = match fingerprint {
-            Some(sampling) => {
-                let slot = state
-                    .setup
-                    .mapped_region()
-                    .fingerprint_sample(slot_index)
-                    .map_err(|source| LiveVcpuTimeCallbackError::MappedFingerprintSlot {
-                        source,
-                    })?;
-                callback_state.attach_fingerprint(sampling, slot, Arc::clone(&state.workers))?
-            }
-            None => callback_state,
-        };
-        let callback_state = callback_state.attach_control_stage_identity(
+        if let Some(sampling) = fingerprint {
+            let slot = state
+                .setup
+                .mapped_region()
+                .fingerprint_sample(slot_index)
+                .map_err(|source| LiveVcpuTimeCallbackError::MappedFingerprintSlot { source })?;
+            callback_state.attach_fingerprint_in_place(
+                sampling,
+                slot,
+                Arc::clone(&state.workers),
+            )?;
+        }
+        callback_state.rebind_control_stage_identity(
             state.setup.mapped_region().backing_identity(),
             slot_index,
             process_generation,
         );
-        let callback_state = Box::pin(callback_state);
+        let callback_state = Pin::from(callback_state);
         let callback_pointer = std::ptr::from_ref(callback_state.as_ref().get_ref()).cast_mut();
         state.live_vcpu_time = Some(callback_state);
         Ok(callback_pointer)

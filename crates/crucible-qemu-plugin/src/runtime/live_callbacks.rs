@@ -61,6 +61,7 @@ pub(super) use control_callback_witness::ControlCallbackWitness;
 mod devices;
 mod error;
 mod fingerprint_worker;
+mod initialization;
 mod logical_restore;
 mod network_inbound;
 mod network_output_stop;
@@ -1212,6 +1213,7 @@ impl LiveVcpuTimeCallbackState {
         clippy::too_many_arguments,
         reason = "the constructor binds one fixed QEMU clock, mapping header, and node slot"
     )]
+    #[cfg(test)]
     pub(super) fn new(
         icount_raw: QemuIcountRawFn,
         force_vcpu_exit: QemuForceVcpuExitFn,
@@ -1229,92 +1231,24 @@ impl LiveVcpuTimeCallbackState {
         quiescence: Arc<LiveCallbackQuiescence>,
         teardown_router: Arc<LiveRuntimeTeardownRouter>,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
-        let snapshot = slot.snapshot();
-        AdvanceStopCondition::decode(snapshot.advance_stop_condition).map_err(|source| {
-            LiveVcpuTimeCallbackError::IdleHotLoop {
-                source: IdleHotLoopError::AdvanceStopCondition { source },
-            }
-        })?;
-        if snapshot.current_icount > snapshot.max_advance_icount {
-            return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
-                current_icount: snapshot.current_icount,
-                ceiling_icount: snapshot.max_advance_icount,
-            });
-        }
-        let logical_icount_offset = snapshot
-            .current_icount
-            .checked_sub(
-                initial_raw_icount
-                    .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
-                    .ok_or(LiveVcpuTimeCallbackError::InitialRawIcountBeyondLogical {
-                        raw_icount: initial_raw_icount,
-                        logical_icount: snapshot.current_icount,
-                    })?,
-            )
-            .ok_or(LiveVcpuTimeCallbackError::InitialRawIcountBeyondLogical {
-                raw_icount: initial_raw_icount,
-                logical_icount: snapshot.current_icount,
-            })?;
-        let initialized_vcpus = (0..vcpu_count)
-            .map(|_vcpu| AtomicBool::new(false))
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        #[cfg(not(test))]
-        let sim_tick_observed = Some(crate::abi::resolve_qemu_sim_tick_observed_symbol().ok_or(
-            LiveVcpuTimeCallbackError::CapabilityUnavailable {
-                symbol: crate::abi::QEMU_PLUGIN_SIM_TICK_OBSERVED_SYMBOL,
-            },
-        )?);
-        #[cfg(test)]
-        let sim_tick_observed = None;
-        let control_callback_witness = Arc::new(ControlCallbackWitness::from_env());
-        let stop_caller_witness =
-            checkpoint_stop_witness::StopCallerWitness::new(control_callback_witness.is_enabled());
-        Ok(Self {
-            quiescence,
-            teardown_router,
-            shared_shutdown_signaled: AtomicBool::new(false),
+        Self::new_boxed(
             icount_raw,
-            sim_tick_observed,
             force_vcpu_exit,
             idle_wake_wait,
             request_vmstop,
-            selectable_vmstop: Arc::new(SelectableVmstopHandoff::new()),
             preemption_injector,
             vcpu_count,
-            header: StableRegionHeaderHandle::new(header),
-            slot: StableNodeSlotHandle::new(slot),
+            initial_raw_icount,
             exact_deadline,
             queued_idle_advance,
             virtual_timer_witness,
-            initialized_vcpus,
-            halted_vcpus: Mutex::new(
-                VcpuHaltTracker::new(vcpu_count)
-                    .map_err(|source| LiveVcpuTimeCallbackError::VcpuHaltTracking { source })?,
-            ),
-            all_halted_idle_handled: AtomicBool::new(false),
-            last_raw_icount: AtomicU64::new(initial_raw_icount),
-            logical_icount_offset: Arc::new(AtomicU64::new(logical_icount_offset)),
-            preemption_enqueue_active: AtomicBool::new(false),
-            fault_command_pump_active: AtomicBool::new(false),
-            control_boundary_dispatch_generation: AtomicU32::new(u32::MAX),
-            control_boundary_defer_diagnostic_generation: AtomicU64::new(u64::MAX),
-            control_callback_witness,
-            stop_caller_witness,
-            control_stage_identity: None,
-            idle_advance_completion_active: AtomicBool::new(false),
-            last_icount: AtomicU64::new(snapshot.current_icount),
-            logical_restore_continuation_generation: AtomicU32::new(0),
-            pending_idle_advance_active: AtomicBool::new(false),
-            pending_idle_advance_raw_icount: AtomicU64::new(0),
-            pending_idle_advance_target_icount: AtomicU64::new(0),
-            idle_advance_generation: AtomicU64::new(0),
-            pending_idle_advance: Mutex::new(None),
-            network: None,
-            devices: None,
-            fingerprint: None,
-            fault_commands: Mutex::new(fault_commands),
-        })
+            fault_commands,
+            header,
+            slot,
+            quiescence,
+            teardown_router,
+        )
+        .map(|state| *state)
     }
 
     fn callback_guard(&self) -> Option<LiveCallbackInFlight<'_>> {
@@ -1358,6 +1292,7 @@ impl LiveVcpuTimeCallbackState {
             .map_err(|()| LiveVcpuTimeCallbackError::TeardownWorkerUnavailable)
     }
 
+    #[cfg(test)]
     pub(super) fn attach_network(
         mut self,
         vm_slot: u32,
@@ -1366,6 +1301,18 @@ impl LiveVcpuTimeCallbackState {
         rx_queue: QemuCanonicalNetworkRx,
         next_tx_sequence: u32,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
+        self.attach_network_in_place(vm_slot, outbound, inbound, rx_queue, next_tx_sequence)?;
+        Ok(self)
+    }
+
+    pub(super) fn attach_network_in_place(
+        &mut self,
+        vm_slot: u32,
+        outbound: MappedDirectedRingMut<'_>,
+        inbound: MappedDirectedRingMut<'_>,
+        rx_queue: QemuCanonicalNetworkRx,
+        next_tx_sequence: u32,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
         self.network = Some(LiveNetworkCallbackState::new(
             vm_slot,
             outbound,
@@ -1373,7 +1320,7 @@ impl LiveVcpuTimeCallbackState {
             rx_queue,
             next_tx_sequence,
         )?);
-        Ok(self)
+        Ok(())
     }
 
     /// Binds the resolved fingerprint sampler and this VM's shared-memory slot.
@@ -1383,12 +1330,23 @@ impl LiveVcpuTimeCallbackState {
     /// fingerprint sample and queues its detached preimages to a dedicated
     /// digest worker. `slot` is the per-node [`FingerprintSampleSlot`] retained by
     /// the same setup mapping owner as the node slot and directed rings.
+    #[cfg(test)]
     pub(super) fn attach_fingerprint(
         mut self,
         sampling: PluginFingerprintSampling,
         slot: &FingerprintSampleSlot,
         worker_quiescence: Arc<LiveWorkerQuiescence>,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
+        self.attach_fingerprint_in_place(sampling, slot, worker_quiescence)?;
+        Ok(self)
+    }
+
+    pub(super) fn attach_fingerprint_in_place(
+        &mut self,
+        sampling: PluginFingerprintSampling,
+        slot: &FingerprintSampleSlot,
+        worker_quiescence: Arc<LiveWorkerQuiescence>,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
         let slot = StableFingerprintSlotHandle::new(slot);
         let worker = LiveFingerprintDigestWorker::spawn(slot, worker_quiescence)?;
         self.fingerprint = Some(LiveFingerprintCallbackState {
@@ -1396,7 +1354,7 @@ impl LiveVcpuTimeCallbackState {
             slot,
             worker,
         });
-        Ok(self)
+        Ok(())
     }
 
     /// Replaces the vanished template fingerprint worker in a fork child.

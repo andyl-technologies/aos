@@ -2,6 +2,12 @@
 
 use super::*;
 
+#[cfg(feature = "private-measurement-domain")]
+mod original;
+
+#[cfg(feature = "private-measurement-domain")]
+pub use original::OriginalDirectoryRefOwner;
+
 /// Mutable and namespace-inventory capabilities sharing one original quota.
 pub type DirectoryRefAuthorities = (Arc<dyn MutableRefBackend>, Arc<dyn RefStoreAdmin>);
 

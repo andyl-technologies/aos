@@ -5,7 +5,7 @@
 //! readers never depend on a live placement cursor.
 
 use super::*;
-use crate::owned_decode::DecodeBudget;
+use crate::owned_decode::{DecodeBudget, DecodeScratch};
 use std::os::unix::fs::FileExt;
 
 use super::index_format::{self as wire, Header, Key, Node, PageReference, Value};
@@ -241,6 +241,9 @@ impl<'s> Reader<'s> {
         &'a self,
         operation: &mut Operation<'_>,
     ) -> Result<Cursor<'a, 's>, StoreError> {
+        // The full cursor purpose includes its retained credit holder. Admit
+        // it before either inline control or the arena buffer is constructed.
+        let control = operation.reserve_array::<Cursor<'_, '_>>(1)?;
         let buffer = if self.arena.is_some() {
             Some(operation.buffer(wire::PAGE_BYTES)?)
         } else {
@@ -248,12 +251,13 @@ impl<'s> Reader<'s> {
         };
         Ok(Cursor {
             reader: self,
-            buffer,
+            page: CursorPage::new(buffer),
             frames: [None; wire::MAX_HEIGHT],
             depth: 0,
             slot: 0,
             started: false,
             ended: false,
+            _control: control,
         })
     }
 
@@ -312,14 +316,64 @@ struct Frame {
     upper: Option<Key>,
 }
 
+/// Owns both a cursor page and its validation until the next actual read.
+struct CursorPage {
+    bytes: Option<Bytes>,
+    leaf: Option<wire::LeafLayout>,
+}
+
+impl CursorPage {
+    fn new(bytes: Option<Bytes>) -> Self {
+        Self { bytes, leaf: None }
+    }
+
+    fn load<'buffer>(
+        &'buffer mut self,
+        reader: &Reader<'_>,
+        reference: PageReference,
+        root: bool,
+        lower: Option<Key>,
+        upper: Option<Key>,
+        operation: &mut Operation<'_>,
+    ) -> Result<Node<'buffer>, StoreError> {
+        // Even a refused or partial read must not retain the prior page's
+        // validation. No caller obtains mutable access to these bytes.
+        self.leaf = None;
+        let bytes = self.bytes.as_mut().ok_or(StoreError::Incompatible)?;
+        let node = reader.load(reference, root, lower, upper, bytes, operation)?;
+        self.leaf = node.leaf_layout();
+        Ok(node)
+    }
+
+    fn inline<'a>(&mut self, bytes: &'a [u8]) -> Result<Node<'a>, StoreError> {
+        if self.leaf.is_none() {
+            self.leaf = Node::parse(bytes, true)?.leaf_layout();
+        }
+        self.leaf
+            .as_ref()
+            .ok_or(StoreError::Incompatible)?
+            .view(bytes)
+    }
+
+    fn leaf(&self) -> Result<Node<'_>, StoreError> {
+        self.leaf
+            .as_ref()
+            .ok_or(StoreError::Incompatible)?
+            .view(&self.bytes.as_ref().ok_or(StoreError::Incompatible)?.value)
+    }
+}
+
 pub(super) struct Cursor<'a, 's> {
     reader: &'a Reader<'s>,
-    buffer: Option<Bytes>,
+    page: CursorPage,
     frames: [Option<Frame>; wire::MAX_HEIGHT],
     depth: usize,
     slot: usize,
     started: bool,
     ended: bool,
+    // Page bytes and all layout/traversal fields close before this same-account
+    // control receipt. The issuer's existing receipt bookkeeping is unchanged.
+    _control: Option<DecodeScratch>,
 }
 
 impl Cursor<'_, '_> {
@@ -332,7 +386,7 @@ impl Cursor<'_, '_> {
         }
         operation.check()?;
         if self.reader.arena.is_none() {
-            let node = Node::parse(self.reader.snapshot.body(), true)?;
+            let node = self.page.inline(self.reader.snapshot.body())?;
             if self.slot == node.count {
                 self.ended = true;
                 return Ok(None);
@@ -351,8 +405,7 @@ impl Cursor<'_, '_> {
             self.started = true;
         }
         loop {
-            let buffer = self.buffer.as_mut().ok_or(StoreError::Incompatible)?;
-            let node = Node::parse(&buffer.value, self.depth == 0)?;
+            let node = self.page.leaf()?;
             if self.slot < node.count {
                 let result = (node.key(self.slot)?, node.value(self.slot)?);
                 self.slot += 1;
@@ -364,12 +417,12 @@ impl Cursor<'_, '_> {
                 let frame = self.frames[self.depth]
                     .take()
                     .ok_or(StoreError::Incompatible)?;
-                let parent = self.reader.load(
+                let parent = self.page.load(
+                    self.reader,
                     frame.reference,
                     self.depth == 0,
                     frame.lower,
                     frame.upper,
-                    buffer,
                     operation,
                 )?;
                 if frame.slot + 1 < parent.count {
@@ -403,10 +456,14 @@ impl Cursor<'_, '_> {
         operation: &mut Operation<'_>,
     ) -> Result<(), StoreError> {
         loop {
-            let buffer = self.buffer.as_mut().ok_or(StoreError::Incompatible)?;
-            let node =
-                self.reader
-                    .load(reference, self.depth == 0, lower, upper, buffer, operation)?;
+            let node = self.page.load(
+                self.reader,
+                reference,
+                self.depth == 0,
+                lower,
+                upper,
+                operation,
+            )?;
             if node.height == 0 {
                 self.slot = 0;
                 return Ok(());
@@ -470,3 +527,6 @@ pub(super) fn read_into(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod cursor_tests;

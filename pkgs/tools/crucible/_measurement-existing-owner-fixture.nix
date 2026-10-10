@@ -10,6 +10,8 @@
   servicePolicy,
   sqliteBootstrapProof,
   campaignPolicy,
+  componentAuthorities,
+  guestAssets,
   imageBytes,
   operatorMode,
   kernel,
@@ -19,7 +21,7 @@
   process,
 }: let
   workflow = import ./_measurement-workflow.nix {
-    inherit pkgs lib nativeCount servicePolicy sqliteBootstrapProof campaignPolicy;
+    inherit pkgs lib nativeCount servicePolicy sqliteBootstrapProof campaignPolicy componentAuthorities guestAssets;
   };
   ownedRootfs = import ./_measurement-owned-rootfs.nix {
     inherit pkgs lib installedImages operatorPolicy imageInventory sourceManifest workflow imageBytes operatorMode;

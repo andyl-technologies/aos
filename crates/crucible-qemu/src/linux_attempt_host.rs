@@ -32,8 +32,10 @@ pub use native_resources::OriginalNativeControlRetirement;
 pub use native_resources::{LinuxQemuNativeResourceController, LinuxQemuNativeResourceError};
 #[cfg(feature = "private-measurement-domain")]
 pub use original_actor::{
-    OriginalActorAccountCustody, OriginalActorAccountError, OriginalActorDecodeOwner,
-    OriginalActorServicePolicy, OriginalActorSqliteInstallError, OriginalActorSqliteOwner,
+    OriginalActorAccountCustody, OriginalActorAccountError, OriginalActorCatalogAccounts,
+    OriginalActorCatalogPurpose, OriginalActorDecodeOwner, OriginalActorServicePolicy,
+    OriginalCatalogAuditError, OriginalCatalogPhysicalAudit, OriginalGuestServiceHandle,
+    OriginalGuestServiceOwner,
 };
 #[cfg(feature = "private-measurement-domain")]
 pub use original_host::OriginalNativePhysicalRetirement;

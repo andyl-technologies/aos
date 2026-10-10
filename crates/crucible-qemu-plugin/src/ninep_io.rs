@@ -104,6 +104,17 @@ impl NinePInboundHead {
     }
 }
 
+// Preparation transfers only decoded response and scalar identity back to poll.
+// The original full frame remains in the already-owned pending delivery slot.
+enum PreparedNinePPoll {
+    Finished(NinePPoll),
+    Ready {
+        token: NinePRequestToken,
+        response: NinePResponse,
+        expected: FrameDeliveryKey,
+    },
+}
+
 impl PluginNinePIo {
     /// Observes the registered physical head for an original pending request.
     ///
@@ -376,147 +387,15 @@ impl PluginNinePIo {
     where
         D: NinePGuestCompletion + ?Sized,
     {
-        self.check_inbound_ring(inbound_ring)?;
-        if let Some(source) = self
-            .pending_delivery
-            .borrow()
-            .as_ref()
-            .and_then(|pending| pending.quarantine.clone())
-        {
-            return Ok(NinePPoll::Quarantined { token, source });
-        }
-        let head = match peek_head_frame(inbound_ring) {
-            Ok(head) => head,
-            Err(source) => {
-                let delivered = self
-                    .pending_delivery
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|pending| pending.delivered);
-                if delivered {
-                    return Ok(self.quarantine(token, source));
-                }
-                return Err(source);
-            }
-        };
-        let Some(head) = head else {
-            let missing_delivered_head = self
-                .pending_delivery
-                .borrow()
-                .as_ref()
-                .filter(|pending| pending.delivered)
-                .map(|pending| pending.frame.delivery_key());
-            if let Some(expected) = missing_delivered_head {
-                return Ok(self.quarantine(
+        let (token, response, expected) =
+            match self.prepare_response(freeze, slot, inbound_ring, current_icount, token)? {
+                PreparedNinePPoll::Finished(result) => return Ok(result),
+                PreparedNinePPoll::Ready {
                     token,
-                    NinePIoError::DequeuedUnexpectedFrame {
-                        ring_index: self.inbound_ring_index,
-                        expected,
-                        actual: None,
-                    },
-                ));
-            }
-            return Ok(NinePPoll::NotReady { token });
-        };
-        let staged_head = {
-            let pending = self.pending_delivery.borrow();
-            pending.as_ref().map(|staged| {
-                (
-                    staged.response.request_id(),
-                    staged.frame.delivery_key(),
-                    same_response_frame(&staged.frame, &head),
-                    staged.delivered,
-                )
-            })
-        };
-        if let Some((request_id, expected, same_head, delivered)) = staged_head {
-            if request_id != token.request_id {
-                return Ok(NinePPoll::NotReady { token });
-            }
-            if !same_head {
-                let source = NinePIoError::DequeuedUnexpectedFrame {
-                    ring_index: self.inbound_ring_index,
+                    response,
                     expected,
-                    actual: Some(head.delivery_key()),
-                };
-                return Ok(if delivered {
-                    self.quarantine(token, source)
-                } else {
-                    NinePPoll::Retry { token, source }
-                });
-            }
-        }
-        if head.delivery_icount > current_icount {
-            return Ok(NinePPoll::NotReady { token });
-        }
-
-        if head.src_node != self.ninep_slot {
-            let release = self.fail_polled_request(freeze, slot, token)?;
-            return Err(NinePIoError::UnexpectedSource {
-                expected_src_node: self.ninep_slot,
-                actual_src_node: head.src_node,
-                frame: head.delivery_key(),
-                release,
-            });
-        }
-        if head.seq != token.request_id {
-            if self.pending_request_ids.contains(head.seq) {
-                return Ok(NinePPoll::NotReady { token });
-            }
-            let expected_request_id = token.request_id;
-            let release = self.fail_polled_request(freeze, slot, token)?;
-            return Err(NinePIoError::UnexpectedResponse {
-                expected_request_id,
-                actual_request_id: head.seq,
-                frame: head.delivery_key(),
-                release,
-            });
-        }
-
-        if !self.pending_request_ids.contains(token.request_id) {
-            return Err(NinePIoError::PendingRequestMissing {
-                request_id: token.request_id,
-            });
-        }
-        if let Err(source) =
-            freeze.completion_current(&token.device_token, DeviceIoRequestOutcome::Completed)
-        {
-            return Ok(NinePPoll::Retry {
-                token,
-                source: NinePIoError::DeviceIoFreeze { source },
-            });
-        }
-        if !freeze.burst_active() || !token.device_token.burst_member() {
-            return Ok(NinePPoll::Retry {
-                token,
-                source: NinePIoError::BurstCustodyMissing {
-                    request_id: head.seq,
-                },
-            });
-        }
-
-        let payload = match head.payload() {
-            Ok(payload) => payload.to_vec(),
-            Err(source) => {
-                let release = self.fail_polled_request(freeze, slot, token)?;
-                return Err(NinePIoError::MalformedResponse {
-                    ring_index: self.inbound_ring_index,
-                    frame: head.delivery_key(),
-                    source,
-                    release,
-                });
-            }
-        };
-        let response = NinePResponse::new(head.seq, payload);
-        if self.pending_delivery.borrow().is_none() {
-            self.pending_delivery.replace(Some(PendingNinePDelivery {
-                frame: head.clone(),
-                response: response.clone(),
-                delivered: false,
-                quarantine: None,
-            }));
-        }
-
+                } => (token, response, expected),
+            };
         let delivered = self
             .pending_delivery
             .borrow()
@@ -549,15 +428,20 @@ impl PluginNinePIo {
         }) else {
             let source = NinePIoError::DequeuedUnexpectedFrame {
                 ring_index: self.inbound_ring_index,
-                expected: head.delivery_key(),
+                expected,
                 actual: None,
             };
             return Ok(self.quarantine(token, source));
         };
-        if !same_response_frame(&dequeued, &head) {
+        let same_head = self
+            .pending_delivery
+            .borrow()
+            .as_ref()
+            .is_some_and(|pending| same_response_frame(&pending.frame, &dequeued));
+        if !same_head {
             let source = NinePIoError::DequeuedUnexpectedFrame {
                 ring_index: self.inbound_ring_index,
-                expected: head.delivery_key(),
+                expected,
                 actual: Some(dequeued.delivery_key()),
             };
             return Ok(self.quarantine(token, source));
@@ -574,6 +458,168 @@ impl PluginNinePIo {
         self.pending_request_ids.remove(request_id)?;
         self.pending_delivery.replace(None);
         Ok(NinePPoll::Completed { response, release })
+    }
+
+    // A copied ring head enters the existing pending owner before guest delivery.
+    // Returning first also closes every RefCell borrow before external callbacks.
+    fn prepare_response(
+        &self,
+        freeze: &mut PluginDeviceIoFreeze,
+        slot: &NodeSlot,
+        inbound_ring: &NinePInboundRing<'_>,
+        current_icount: u64,
+        token: NinePRequestToken,
+    ) -> Result<PreparedNinePPoll, NinePIoError> {
+        self.check_inbound_ring(inbound_ring)?;
+        if let Some(source) = self
+            .pending_delivery
+            .borrow()
+            .as_ref()
+            .and_then(|pending| pending.quarantine.clone())
+        {
+            return Ok(PreparedNinePPoll::Finished(NinePPoll::Quarantined {
+                token,
+                source,
+            }));
+        }
+        let head = match peek_head_frame(inbound_ring) {
+            Ok(head) => head,
+            Err(source) => {
+                let delivered = self
+                    .pending_delivery
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|pending| pending.delivered);
+                if delivered {
+                    return Ok(PreparedNinePPoll::Finished(self.quarantine(token, source)));
+                }
+                return Err(source);
+            }
+        };
+        let Some(head) = head else {
+            let missing_delivered_head = self
+                .pending_delivery
+                .borrow()
+                .as_ref()
+                .filter(|pending| pending.delivered)
+                .map(|pending| pending.frame.delivery_key());
+            if let Some(expected) = missing_delivered_head {
+                return Ok(PreparedNinePPoll::Finished(self.quarantine(
+                    token,
+                    NinePIoError::DequeuedUnexpectedFrame {
+                        ring_index: self.inbound_ring_index,
+                        expected,
+                        actual: None,
+                    },
+                )));
+            }
+            return Ok(PreparedNinePPoll::Finished(NinePPoll::NotReady { token }));
+        };
+        let staged_head = {
+            let pending = self.pending_delivery.borrow();
+            pending.as_ref().map(|staged| {
+                (
+                    staged.response.request_id(),
+                    staged.frame.delivery_key(),
+                    same_response_frame(&staged.frame, &head),
+                    staged.delivered,
+                )
+            })
+        };
+        if let Some((request_id, expected, same_head, delivered)) = staged_head {
+            if request_id != token.request_id {
+                return Ok(PreparedNinePPoll::Finished(NinePPoll::NotReady { token }));
+            }
+            if !same_head {
+                let source = NinePIoError::DequeuedUnexpectedFrame {
+                    ring_index: self.inbound_ring_index,
+                    expected,
+                    actual: Some(head.delivery_key()),
+                };
+                return Ok(PreparedNinePPoll::Finished(if delivered {
+                    self.quarantine(token, source)
+                } else {
+                    NinePPoll::Retry { token, source }
+                }));
+            }
+        }
+        if head.delivery_icount > current_icount {
+            return Ok(PreparedNinePPoll::Finished(NinePPoll::NotReady { token }));
+        }
+
+        if head.src_node != self.ninep_slot {
+            let release = self.fail_polled_request(freeze, slot, token)?;
+            return Err(NinePIoError::UnexpectedSource {
+                expected_src_node: self.ninep_slot,
+                actual_src_node: head.src_node,
+                frame: head.delivery_key(),
+                release,
+            });
+        }
+        if head.seq != token.request_id {
+            if self.pending_request_ids.contains(head.seq) {
+                return Ok(PreparedNinePPoll::Finished(NinePPoll::NotReady { token }));
+            }
+            let expected_request_id = token.request_id;
+            let release = self.fail_polled_request(freeze, slot, token)?;
+            return Err(NinePIoError::UnexpectedResponse {
+                expected_request_id,
+                actual_request_id: head.seq,
+                frame: head.delivery_key(),
+                release,
+            });
+        }
+
+        if !self.pending_request_ids.contains(token.request_id) {
+            return Err(NinePIoError::PendingRequestMissing {
+                request_id: token.request_id,
+            });
+        }
+        if let Err(source) =
+            freeze.completion_current(&token.device_token, DeviceIoRequestOutcome::Completed)
+        {
+            return Ok(PreparedNinePPoll::Finished(NinePPoll::Retry {
+                token,
+                source: NinePIoError::DeviceIoFreeze { source },
+            }));
+        }
+        if !freeze.burst_active() || !token.device_token.burst_member() {
+            return Ok(PreparedNinePPoll::Finished(NinePPoll::Retry {
+                token,
+                source: NinePIoError::BurstCustodyMissing {
+                    request_id: head.seq,
+                },
+            }));
+        }
+
+        let payload = match head.payload() {
+            Ok(payload) => payload.to_vec(),
+            Err(source) => {
+                let release = self.fail_polled_request(freeze, slot, token)?;
+                return Err(NinePIoError::MalformedResponse {
+                    ring_index: self.inbound_ring_index,
+                    frame: head.delivery_key(),
+                    source,
+                    release,
+                });
+            }
+        };
+        let response = NinePResponse::new(head.seq, payload);
+        let expected = head.delivery_key();
+        if self.pending_delivery.borrow().is_none() {
+            self.pending_delivery.replace(Some(PendingNinePDelivery {
+                frame: head,
+                response: response.clone(),
+                delivered: false,
+                quarantine: None,
+            }));
+        }
+
+        Ok(PreparedNinePPoll::Ready {
+            token,
+            response,
+            expected,
+        })
     }
 
     fn quarantine(&self, token: NinePRequestToken, source: NinePIoError) -> NinePPoll {
@@ -2297,6 +2343,96 @@ mod tests {
         assert_eq!(freeze.pending_requests(), 1);
         assert!(freeze.burst_active());
         assert_eq!(slot.snapshot().device_io_active, 1);
+    }
+
+    #[test]
+    fn staged_response_custody_closes_borrows_before_guest_callback_and_retry() {
+        struct InspectPending<'a> {
+            owner: &'a PluginNinePIo,
+            calls: usize,
+        }
+
+        impl NinePGuestCompletion for InspectPending<'_> {
+            fn complete_9p_response(
+                &mut self,
+                response: &NinePResponse,
+            ) -> Result<(), NinePGuestCompletionError> {
+                let pending =
+                    self.owner
+                        .pending_delivery
+                        .try_borrow_mut()
+                        .unwrap_or_else(|error| {
+                            panic!("guest callback must run without a pending borrow: {error}")
+                        });
+                let staged = pending.as_ref().unwrap_or_else(|| {
+                    panic!("original response must already have pending custody")
+                });
+                assert!(!staged.delivered);
+                assert_eq!(&staged.response, response);
+                assert_eq!(
+                    staged
+                        .frame
+                        .payload()
+                        .unwrap_or_else(|error| panic!("staged frame payload: {error}")),
+                    response.payload()
+                );
+                drop(pending);
+
+                self.calls += 1;
+                if self.calls == 1 {
+                    return Err(NinePGuestCompletionError::new("first guest refusal"));
+                }
+                Ok(())
+            }
+        }
+
+        let slot = NodeSlot::new(KIND_VM);
+        let mut freeze = PluginDeviceIoFreeze::new();
+        let owner = PluginNinePIo::new(2, 10, 11);
+        start_burst(&owner, &mut freeze, &slot);
+        let outbound_header = RingHeader::new();
+        let mut outbound_entries = empty_entries(4);
+        let mut outbound = outbound_ring(10, 2, &outbound_header, &mut outbound_entries);
+        let token = submit_raw(&owner, &mut freeze, &slot, &mut outbound, 77).into_token();
+        let inbound_header = RingHeader::new();
+        let mut inbound_entries = empty_entries(4);
+        enqueue(
+            &inbound_header,
+            &mut inbound_entries,
+            response_frame(90, 0, b"original"),
+        );
+        let inbound = inbound_ring(11, 2, &inbound_header, &inbound_entries);
+        let mut completion = InspectPending {
+            owner: &owner,
+            calls: 0,
+        };
+
+        let token =
+            match owner.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token) {
+                Ok(NinePPoll::Retry {
+                    token,
+                    source: NinePIoError::GuestCompletion { source, .. },
+                }) => {
+                    assert_eq!(
+                        source,
+                        NinePGuestCompletionError::new("first guest refusal")
+                    );
+                    token
+                }
+                other => panic!("guest refusal must retain original request: {other:?}"),
+            };
+        assert_eq!(inbound_header.read_index(), 0);
+        assert_eq!(freeze.pending_requests(), 1);
+        assert!(owner.pending_delivery.borrow().is_some());
+
+        assert!(matches!(
+            owner.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token),
+            Ok(NinePPoll::Completed { .. })
+        ));
+        assert_eq!(completion.calls, 2);
+        assert_eq!(inbound_header.read_index(), 1);
+        assert_eq!(freeze.pending_requests(), 0);
+        assert!(owner.pending_delivery.borrow().is_none());
     }
 
     #[derive(Default)]

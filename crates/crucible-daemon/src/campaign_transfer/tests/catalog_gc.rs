@@ -1,4 +1,4 @@
-//! Durable partial Catalog transfer, real namespace exclusion and GC restart.
+//! Partial Catalog batch publication, real namespace exclusion and GC restart.
 
 mod fixture;
 
@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
 use crucible_cas::content_store::{
-    BackendCapabilities, BlobHandle, ByteRange, ObjectKind, PutReceipt, StoreError,
-    StorePhysicalQuotaGuard,
+    BackendCapabilities, BlobHandle, ByteRange, ObjectKind, PutBatchReceipt, PutReceipt,
+    StoreError, StorePhysicalQuotaGuard,
 };
 use crucible_cas::owned_decode::DecodeBudget;
 use crucible_cas::ram::{RamStore, RamStoreError, RamStoreLimits};
@@ -49,12 +49,12 @@ struct Observation {
     reached: AtomicBool,
 }
 
-struct ObservedSource {
+struct ObservedDestination {
     child: Arc<dyn ImmutableBlobBackend>,
     observation: Arc<Observation>,
 }
 
-impl ImmutableBlobBackend for ObservedSource {
+impl ImmutableBlobBackend for ObservedDestination {
     fn name(&self) -> &str {
         self.child.name()
     }
@@ -74,6 +74,10 @@ impl ImmutableBlobBackend for ObservedSource {
         self.child.checked_publication_metadata(kind)
     }
 
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.child.admit_object_graph(objects)
+    }
+
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         self.child.contains(id)
     }
@@ -89,38 +93,60 @@ impl ImmutableBlobBackend for ObservedSource {
         range: Option<ByteRange>,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<BlobHandle, StoreError> {
-        let observation = &self.observation;
-        let expected = match observation.stage {
-            PartialStage::CorruptChild => observation.right,
-            PartialStage::MissingChild | PartialStage::SurvivingCatalog => observation.left,
-        };
-        if observation.armed.load(Ordering::Acquire) && id == expected {
-            let _paths = observation
-                .original
-                .reserve_scratch_bytes(
-                    12 * (observation.destination.as_os_str().len() as u64 + 256),
-                )
-                .expect("original finite observation paths");
-            // Source validation can read the same coordinate before copying.
-            // Only a child lookup with its destination parent already stored
-            // establishes the receiver's completed parent publication seam.
-            if object_path(&observation.destination, observation.parent).exists() {
-                assert!(!object_path(&observation.destination, observation.right).exists());
-                assert!(!object_path(&observation.destination, observation.root).exists());
-                if matches!(observation.stage, PartialStage::CorruptChild) {
-                    assert!(object_path(&observation.destination, observation.left).exists());
-                    assert!(object_path(&observation.destination, observation.page).exists());
-                }
-                observation.reached.store(true, Ordering::Release);
-            }
-        }
-        // The default bounded method executes this checked method once. Direct
-        // forwarding of an opaque bounded request would bypass the observation.
         self.child.read_with_boundary(original, id, range, boundary)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        // Preserve the real batch and its original callback. The Directory
+        // publisher exposes each conditional link before the batch receipt.
+        self.child
+            .put_many_if_absent_with_boundary(original, objects, &mut || {
+                self.observation.observe_publication();
+                boundary()
+            })
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
         self.child.put_if_absent(id, source)
+    }
+}
+
+impl Observation {
+    fn observe_publication(&self) {
+        if !self.armed.load(Ordering::Acquire) {
+            return;
+        }
+
+        let _paths = self
+            .original
+            .reserve_scratch_bytes(12 * (self.destination.as_os_str().len() as u64 + 256))
+            .expect("original finite observation paths");
+        if !object_path(&self.destination, self.parent).exists() {
+            return;
+        }
+
+        if matches!(self.stage, PartialStage::CorruptChild) {
+            if !object_path(&self.destination, self.left).exists()
+                || !object_path(&self.destination, self.page).exists()
+            {
+                return;
+            }
+        } else {
+            assert!(!object_path(&self.destination, self.left).exists());
+            assert!(!object_path(&self.destination, self.page).exists());
+        }
+        assert!(!object_path(&self.destination, self.right).exists());
+        assert!(!object_path(&self.destination, self.root).exists());
+
+        // This is a visible batch prefix, not a completed durability receipt.
+        // The unchanged transfer callback now cancels while both journals and
+        // the destination publication fence still own the real operation.
+        self.reached.store(true, Ordering::Release);
     }
 }
 
@@ -242,7 +268,7 @@ fn run_partial_transfer(stage: PartialStage) {
             .original
             .reserve_scratch_bytes(
                 2 * (std::mem::size_of::<Observation>()
-                    + std::mem::size_of::<ObservedSource>()
+                    + std::mem::size_of::<ObservedDestination>()
                     + 4 * std::mem::size_of::<usize>()) as u64
                     + 8 * temporary.path().as_os_str().len() as u64
                     + 65_536,
@@ -332,16 +358,17 @@ fn run_partial_transfer(stage: PartialStage) {
             armed: AtomicBool::new(false),
             reached: AtomicBool::new(false),
         });
-        let observed = Arc::new(ObservedSource {
-            child: source.graph.clone(),
+        let observed = Arc::new(ObservedDestination {
+            child: destination.graph.clone(),
             observation: observation.clone(),
         });
-        let repository = CampaignRepository::new(
+        let observed_repository = CampaignRepository::new(
             observed,
-            source.refs.clone(),
-            crucible_campaign::CampaignRamAdmission::Available(source.original.clone()),
+            destination.refs.clone(),
+            crucible_campaign::CampaignRamAdmission::Available(destination.original.clone()),
         );
-        let plan = repository
+        let plan = source
+            .repository
             .plan_campaign_archive(
                 metadata.manifest().source_snapshot(),
                 CampaignArchivePolicy::Mirror,
@@ -387,13 +414,13 @@ fn run_partial_transfer(stage: PartialStage) {
         let mut stopped = false;
         let result = transfer_campaign_archive_durably_with_boundary(
             &mut CampaignArchiveTransferEndpoint::new(
-                &repository,
+                &source.repository,
                 &mut source_journal,
                 "source",
                 true,
             ),
             &mut CampaignArchiveTransferEndpoint::new(
-                &destination.repository,
+                &observed_repository,
                 &mut destination_journal,
                 "destination",
                 true,
@@ -437,7 +464,7 @@ fn run_partial_transfer(stage: PartialStage) {
         );
         assert!(
             stopped && observation.reached.load(Ordering::Acquire),
-            "exact child stage reached"
+            "exact physical batch prefix reached; transfer result: {result:?}"
         );
         assert!(has_cancellation(
             &result.expect_err("no closure/durability receipt on cancellation")
@@ -466,7 +493,7 @@ fn run_partial_transfer(stage: PartialStage) {
             stage,
             temporary: &temporary,
             destination_owner: &destination_owner,
-            source: &repository,
+            source: &source.repository,
             destination,
             plan: &plan,
             operation,

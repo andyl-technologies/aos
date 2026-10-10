@@ -9,14 +9,19 @@ use std::sync::Arc;
 
 use super::original_roster::{OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster};
 
+mod catalog_accounts;
+pub use catalog_accounts::{
+    OriginalActorCatalogAccounts, OriginalCatalogAuditError, OriginalCatalogPhysicalAudit,
+};
+
 mod decode;
 pub use decode::OriginalActorDecodeOwner;
 
-mod sqlite;
-pub use sqlite::{OriginalActorSqliteInstallError, OriginalActorSqliteOwner};
+mod service_accounts;
+pub use service_accounts::{OriginalGuestServiceHandle, OriginalGuestServiceOwner};
 
 mod workflow;
-pub use workflow::OriginalActorServicePolicy;
+pub use workflow::{OriginalActorCatalogPurpose, OriginalActorServicePolicy};
 
 use crucible_linux_resource::host_services::{
     HostServiceAllocator, HostServiceBootstrap, HostServiceError, HostServiceLeasePair,
@@ -75,6 +80,15 @@ pub enum OriginalActorAccountError {
         source: super::native_resources::LinuxQemuNativeResourceError,
         /// The same retained Cleanup's independent boundary refusal.
         original: Option<HostSupervisionError>,
+    },
+    /// Retains decode admission before the same original postcut.
+    #[error("original actor decode refused: {source}; original: {original:?}")]
+    DecodeBoundary {
+        /// First actual sticky decoder refusal.
+        #[source]
+        source: crucible::owned_decode::DecodeAdmissionError,
+        /// Separate same-original postcheck.
+        original: Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
     },
     /// The same original decoder account refused constructor admission.
     #[error("original actor decode refused: {0}")]

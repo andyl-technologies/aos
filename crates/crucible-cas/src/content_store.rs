@@ -37,6 +37,9 @@ mod encoded_directory_admin;
 mod encrypted_directory;
 mod graph;
 mod identity_render;
+
+#[cfg(feature = "private-measurement-domain")]
+pub use directory::OriginalDirectoryRefOwner;
 mod memory;
 mod namespace;
 mod packed;
@@ -76,7 +79,8 @@ pub use encrypted_directory::{
     EncryptedDirectoryBlobBackend, StoreEncryptionKey, StoreEncryptionKeyId, StoreGraphKeyring,
 };
 pub use graph::{
-    MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS, StoreGraph,
+    MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS,
+    OriginalSqliteGraphCloseError, OriginalSqliteGraphConfig, OriginalSqliteGraphOwner, StoreGraph,
     StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId, StoreGraphOriginalResources,
     StoreGraphPackedRepackAdmin, StoreGraphPhysicalAdmin, StoreGraphPhysicalRepairDisposition,
     StoreGraphPhysicalRetention, StoreGraphPhysicalVerification, StoreGraphS3MultipartCleanupAdmin,

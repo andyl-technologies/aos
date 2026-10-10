@@ -1099,5 +1099,8 @@ fn invalid_object_data() -> io::Error {
 mod refs;
 
 pub use refs::{DirectoryRefAuthorities, DirectoryRefBackend};
+
+#[cfg(feature = "private-measurement-domain")]
+pub use refs::OriginalDirectoryRefOwner;
 pub(super) use refs::{create_dir_all_durable, directory_receipt, sync_directory};
 use refs::{encode_digest, open_pinned_object};

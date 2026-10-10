@@ -78,13 +78,30 @@ const COMPONENT_AUTHORITY_FILE_BYTES: usize = 8 + 32 + 32;
 type CampaignComponentAuthorities = Option<(PlannerAuthorityKey, DebuggerAuthorityKey)>;
 type AuthenticatedCampaignDeployment = (Arc<UnixPeerCampaignPolicy>, CampaignComponentAuthorities);
 
+#[cfg(feature = "private-measurement-domain")]
+mod original_state;
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use original_state::PreparedCampaignStateOwner;
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use original_state::{OriginalCampaignStateBootstrap, OriginalCampaignStateError};
+#[cfg(not(feature = "private-measurement-domain"))]
+type PreparedCampaignStateOwner = CampaignStateOwner;
+
 mod deployment_files;
 mod maintenance;
 mod runtime_registry;
 mod service;
 
 use maintenance::CampaignStoreMaintenanceOwner;
+#[cfg(feature = "private-measurement-domain")]
+mod original_graph;
+#[cfg(feature = "private-measurement-domain")]
+mod original_repository;
 pub use maintenance::{CampaignStoreMaintenanceConfig, CampaignStoreMaintenanceConfigError};
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use original_graph::{prepare_original_directory_refs, prepare_original_sqlite_graph};
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use original_repository::OriginalCampaignRepositoryBootstrap;
 pub use runtime_registry::CampaignRuntimeAttachmentHandle;
 use runtime_registry::{CampaignRuntimeRegistryOwner, CanonicalCampaignRuntimeController};
 
@@ -534,6 +551,9 @@ impl CampaignLocalServiceConfig {
             planner_authority,
             policy,
             mode: self.mode,
+            #[cfg(feature = "private-measurement-domain")]
+            state: state.into(),
+            #[cfg(not(feature = "private-measurement-domain"))]
             state,
             maintenance,
             maintenance_config: None,
@@ -575,7 +595,7 @@ pub struct PreparedCampaignLocalService {
     planner_authority: Option<PlannerAuthorityKey>,
     policy: Arc<UnixPeerCampaignPolicy>,
     mode: CampaignLocalServiceMode,
-    state: CampaignStateOwner,
+    state: PreparedCampaignStateOwner,
     maintenance: Option<CampaignLocalRepositoryMaintenance>,
     maintenance_config: Option<CampaignStoreMaintenanceConfig>,
     runtime_control_planner: Option<CanonicalPlannerProcessConfig>,
@@ -1501,8 +1521,12 @@ impl PreparedCampaignLocalService {
         {
             server = server.with_operational_status(operational_status);
         }
+        #[cfg(feature = "private-measurement-domain")]
+        let debug_path = state.debug_session_inventory_path()?;
+        #[cfg(not(feature = "private-measurement-domain"))]
+        let debug_path = state.debug_session_inventory_path();
         let debug_inventory = Arc::new(
-            crate::CampaignDebugSessionInventory::open(state.debug_session_inventory_path())
+            crate::CampaignDebugSessionInventory::open(debug_path)
                 .map_err(CampaignLocalServiceError::DebugSessionInventory)?,
         );
         if let (Some(lifecycle), Some(executor)) = (campaign_debug_lifecycle, executor.as_ref()) {
@@ -1722,6 +1746,10 @@ impl CampaignPrincipalAuthorizer for CampaignLocalAuthorizer {
 /// Failure to authenticate, acquire, or serve one local campaign deployment.
 #[derive(Debug, thiserror::Error)]
 pub enum CampaignLocalServiceError {
+    /// The original state handle refused before service or registry ownership.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error(transparent)]
+    OriginalState(#[from] OriginalCampaignStateError),
     /// The durable state path was relative, noncanonical, unbounded, or empty.
     #[error("campaign service state path is invalid")]
     InvalidStatePath,
