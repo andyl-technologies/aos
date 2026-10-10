@@ -227,6 +227,10 @@ sixteen active captures per resource, each containing at most ten thousand scan
 summaries; an exhausted bound fails explicitly. These limits do not truncate a
 list silently. Listing acquires no provider evidence.
 
+The console holds paginated scan summaries at their displayed observation time
+until you refresh or change the page. Inspecting a scan continues to read its
+current receipt. Submitting, cancelling or retrying a scan starts a new listing.
+
 Use `scan --profile … --idempotency-key KEY` to name one exact request. Repeating
 that key returns its retained receipt; changing its pinned selection, inventory,
 policy or freshness intent conflicts. JSON scan output includes the committed
@@ -305,6 +309,10 @@ Each resource admits sixteen active alert captures, bounded to 128 complete
 records and eight MiB per capture. Captures expire after fifteen minutes;
 oversized listings return an explicit capacity error. Every continuation checks
 current read access. A historical page confers no acknowledgement authority.
+
+The console preserves paginated alert revisions while continuing to replay new
+events. Refreshing alerts or acknowledging an episode starts a new listing.
+The displayed observation time identifies the captured alert state.
 
 ## Native controller
 
@@ -520,6 +528,8 @@ expired custody require restarting the list. Each resource retains at most
 sixteen active subscription captures, with at most sixty-four public reviews and
 8 MiB per capture. Reads do not renew review authority or dispatch callbacks;
 an old enabled review in a retained page does not authorize current delivery.
+The console holds paginated subscription reviews until refresh; applying a
+review starts a new listing. Single-page listings continue to poll.
 
 A subscription chooses explicit event kinds, issue families, all attention or
 confirmed attention, and immediate delivery or a UTC digest window of 60 through

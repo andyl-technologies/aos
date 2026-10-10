@@ -90,6 +90,7 @@ pub(super) fn RegistryAssessmentAttention(client: ApiClient, slug: String) -> im
     let polling = RwSignal::new(true);
     let active_reads = RwSignal::new(0_u32);
     let position = RwSignal::new(None);
+    let retained_page = RwSignal::new(None::<(Option<String>, AlertPageV1)>);
     let resource_scope = RwSignal::new(None::<String>);
     let after_sequence = RwSignal::new(0_u64);
     let recent_events =
@@ -104,6 +105,12 @@ pub(super) fn RegistryAssessmentAttention(client: ApiClient, slug: String) -> im
         let _ = epoch.get();
         let after_issue = position.get();
         let scope = resource_scope.get_untracked();
+        let retained = retained_page.get_untracked().filter(|(cursor, page)| {
+            cursor == &after_issue
+                && scope
+                    .as_ref()
+                    .is_none_or(|scope| scope == &page.resource_scope)
+        });
         let sequence = after_sequence.get_untracked();
         let (client, registry_slug) = context.get_value();
         let read = AssessmentReadGuard::new(active_reads);
@@ -116,19 +123,29 @@ pub(super) fn RegistryAssessmentAttention(client: ApiClient, slug: String) -> im
                     after_issue,
                     resource_scope: scope.clone(),
                 };
-                let response = client
-                    .call::<_, aos_proto_types::AssessmentDocumentResponse>(
-                        aos_proto_types::ASSESSMENT_SERVICE_LIST_ALERTS_PATH,
-                        &aos_proto_types::AssessmentControlRequest {
-                            registry_slug: registry_slug.clone(),
-                            document_json: serde_json::to_vec(&query)
-                                .map_err(|error| error.to_string())?,
-                        },
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let alerts = AlertPageV1::from_slice(&response.document_json)
-                    .map_err(|error| error.to_string())?;
+                // Event replay stays live while paginated alert revisions keep
+                // their original capture and observation time.
+                let alerts = if let Some((_, page)) = retained {
+                    page
+                } else {
+                    let response = client
+                        .call::<_, aos_proto_types::AssessmentDocumentResponse>(
+                            aos_proto_types::ASSESSMENT_SERVICE_LIST_ALERTS_PATH,
+                            &aos_proto_types::AssessmentControlRequest {
+                                registry_slug: registry_slug.clone(),
+                                document_json: serde_json::to_vec(&query)
+                                    .map_err(|error| error.to_string())?,
+                            },
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let alerts = AlertPageV1::from_slice(&response.document_json)
+                        .map_err(|error| error.to_string())?;
+                    if alerts.next_issue.is_some() || query.after_issue.is_some() {
+                        retained_page.set(Some((query.after_issue.clone(), alerts.clone())));
+                    }
+                    alerts
+                };
                 if scope
                     .as_ref()
                     .is_some_and(|scope| scope != &alerts.resource_scope)
@@ -243,6 +260,8 @@ pub(super) fn RegistryAssessmentAttention(client: ApiClient, slug: String) -> im
                     );
                 }
                 selected.set(page.alerts.pop());
+                retained_page.set(None);
+                position.set(None);
                 request_key.set(idempotency_key("assessment-acknowledgement"));
                 epoch.update(|value| *value = value.wrapping_add(1));
                 Ok::<_, String>(())
@@ -260,7 +279,7 @@ pub(super) fn RegistryAssessmentAttention(client: ApiClient, slug: String) -> im
             <h3>"Package alerts"</h3>
             <p>"Acknowledgement records attention to one episode. Resolution follows verified package evidence."</p>
             <button class="secondary-button" disabled=move || busy.get() on:click=move |_| {
-                polling.set(true); position.set(None);
+                polling.set(true); retained_page.set(None); position.set(None);
                 epoch.update(|value| *value = value.wrapping_add(1));
             }>"Refresh alerts"</button>
             <Suspense fallback=move || view! { <p>"Loading package alerts…"</p> }>

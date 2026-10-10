@@ -26,6 +26,7 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
     let tasks = scoped_workflow_tasks();
     let epoch = RwSignal::new(0_u64);
     let polling = RwSignal::new(true);
+    let live_poll = RwSignal::new(true);
     let active = RwSignal::new(0_u32);
     let scope = RwSignal::new(None::<String>);
     let after = RwSignal::new(None::<String>);
@@ -84,16 +85,20 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                     );
                 }
                 scope.set(Some(page.resource_scope.clone()));
+                if page.next_subscription.is_some() || query.after_subscription.is_some() {
+                    live_poll.set(false);
+                }
                 Ok::<_, String>(page)
             }
             .await;
             if outcome.is_err() {
                 polling.set(false);
+                live_poll.set(false);
             }
             outcome
         }
     });
-    start_status_poll(epoch, polling, active);
+    start_status_poll(epoch, live_poll, active);
 
     let save = move |_| {
         if !can_review || busy.get_untracked() || !polling.get_untracked() {
@@ -308,6 +313,8 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                     if scope.get_untracked().as_ref() == Some(&request.resource_scope) {
                         selected.set(Some(admitted));
                         pending.set(None);
+                        after.set(None);
+                        live_poll.set(true);
                         epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
                     }
                 }
@@ -326,6 +333,7 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                     scope.set(None);
                     after.set(None);
                     polling.set(true);
+                    live_poll.set(true);
                     epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
                 }>
                     "Refresh notifications"
@@ -336,6 +344,7 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                     match page.await.as_ref() {
                         Err(error) => view! { <InlineError detail=error.clone()/> }.into_any(),
                         Ok(page) => {
+                            let observed_at = page.as_of.to_string();
                             let now = page.as_of.clone();
                             let rows = page.subscriptions.iter().cloned().map(move |subscription| {
                                 let label = subscription.subscription_id.clone();
@@ -392,6 +401,7 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                             }).collect_view();
                             let next = page.next_subscription.clone();
                             view! {
+                                <p>"Observed at "{observed_at}</p>
                                 <table>
                                     <thead><tr>
                                         <th>"Subscription"</th>

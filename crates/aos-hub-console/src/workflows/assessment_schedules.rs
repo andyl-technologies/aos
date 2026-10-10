@@ -247,6 +247,8 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
                     if scope.get_untracked().as_ref() == Some(&request.resource_scope) {
                         selected.set(Some(admitted));
                         pending.set(None);
+                        after.set(None);
+                        live_poll.set(true);
                         epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
                     }
                 }

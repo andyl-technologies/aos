@@ -28,6 +28,7 @@ pub(super) fn AssessmentScanControls(
     let polling = RwSignal::new(true);
     let active_reads = RwSignal::new(0_u32);
     let position = RwSignal::new(None::<String>);
+    let retained_page = RwSignal::new(None::<(Option<String>, ScanListV1)>);
     let busy = RwSignal::new(false);
     let failure = RwSignal::new(None::<String>);
     let selected = RwSignal::new(None::<ScanReceiptV1>);
@@ -38,6 +39,9 @@ pub(super) fn AssessmentScanControls(
         let _ = epoch.get();
         let (client, registry_slug) = context.get_value();
         let after_scan = position.get();
+        let retained = retained_page
+            .get_untracked()
+            .filter(|(cursor, _)| cursor == &after_scan);
         let inspected = selected.get_untracked();
         let read = AssessmentReadGuard::new(active_reads);
         async move {
@@ -48,20 +52,30 @@ pub(super) fn AssessmentScanControls(
                     limit: 50,
                     after_scan,
                 };
-                let document_json =
-                    serde_json::to_vec(&query).map_err(|error| error.to_string())?;
-                let response = client
-                    .call::<_, aos_proto_types::AssessmentDocumentResponse>(
-                        aos_proto_types::SCAN_SERVICE_LIST_SCANS_PATH,
-                        &aos_proto_types::AssessmentControlRequest {
-                            registry_slug: registry_slug.clone(),
-                            document_json,
-                        },
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let page = ScanListV1::from_slice(&response.document_json)
-                    .map_err(|error| error.to_string())?;
+                // Keep the original list while continuing to poll an inspected
+                // operation. Periodic reads must not allocate fresh captures.
+                let page = if let Some((_, page)) = retained {
+                    page
+                } else {
+                    let document_json =
+                        serde_json::to_vec(&query).map_err(|error| error.to_string())?;
+                    let response = client
+                        .call::<_, aos_proto_types::AssessmentDocumentResponse>(
+                            aos_proto_types::SCAN_SERVICE_LIST_SCANS_PATH,
+                            &aos_proto_types::AssessmentControlRequest {
+                                registry_slug: registry_slug.clone(),
+                                document_json,
+                            },
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let page = ScanListV1::from_slice(&response.document_json)
+                        .map_err(|error| error.to_string())?;
+                    if page.next_scan.is_some() || query.after_scan.is_some() {
+                        retained_page.set(Some((query.after_scan.clone(), page.clone())));
+                    }
+                    page
+                };
                 if let Some(inspected) = inspected {
                     let query = ScanLookupV1 {
                         schema: "aos.assessment-scan-lookup/v1".into(),
@@ -151,6 +165,8 @@ pub(super) fn AssessmentScanControls(
                 Ok(response) => match ScanReceiptV1::from_slice(&response.document_json) {
                     Ok(receipt) => {
                         selected.set(Some(receipt));
+                        retained_page.set(None);
+                        position.set(None);
                         request_key.set(idempotency_key("assessment-scan"));
                         epoch.update(|value| *value = value.wrapping_add(1));
                     }
@@ -251,6 +267,8 @@ pub(super) fn AssessmentScanControls(
                 Ok(response) => match ScanReceiptV1::from_slice(&response.document_json) {
                     Ok(receipt) => {
                         selected.set(Some(receipt));
+                        retained_page.set(None);
+                        position.set(None);
                         if retry {
                             request_key.set(idempotency_key("assessment-scan"));
                         }
@@ -286,6 +304,7 @@ pub(super) fn AssessmentScanControls(
             })}
             <button class="secondary-button" on:click=move |_| {
                 polling.set(true);
+                retained_page.set(None); position.set(None);
                 epoch.update(|value| *value = value.wrapping_add(1));
             }>"Refresh scans"</button>
             {move || failure.get().map(|detail| view! { <InlineError detail/> })}
@@ -294,12 +313,13 @@ pub(super) fn AssessmentScanControls(
                     match history.await.as_ref() {
                         Err(error) => view! { <InlineError detail=error.clone()/> }.into_any(),
                         Ok(page) => {
+                            let observed_at = page.as_of.to_string();
                             let rows = page.scans.iter().map(|scan| {
                                 let scan_id = scan.scan_id.clone();
                                 view! { <tr><td>{scan.scan_id.clone()}</td><td>{format!("{:?}", scan.state)}</td><td>{scan.created_at.to_string()}</td><td><button disabled=move || busy.get() on:click=move |_| inspect(scan_id.clone())>"Inspect"</button></td></tr> }
                             }).collect_view();
                             let next = page.next_scan.clone();
-                            view! { <table><thead><tr><th>"Scan"</th><th>"State"</th><th>"Requested at"</th><th>"Details"</th></tr></thead><tbody>{rows}</tbody></table>
+                            view! { <p>"Observed at "{observed_at}</p><table><thead><tr><th>"Scan"</th><th>"State"</th><th>"Requested at"</th><th>"Details"</th></tr></thead><tbody>{rows}</tbody></table>
                                 {next.map(|next| view! { <button on:click=move |_| position.set(Some(next.clone()))>"Next scans"</button> })}
                             }.into_any()
                         }
