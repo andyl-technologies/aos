@@ -22,6 +22,7 @@ pub mod credentials;
 pub mod attention;
 pub mod attention_control;
 pub mod events;
+pub mod installation;
 pub mod ports;
 pub mod provider;
 pub mod routes;

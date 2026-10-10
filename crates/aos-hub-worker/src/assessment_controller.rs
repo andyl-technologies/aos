@@ -6,17 +6,14 @@
 use std::sync::Arc;
 
 use anyhow::{ensure, Context as _, Result};
-use aos_assessment::input::AssessmentPolicyV1;
 use aos_assessment::time::Timestamp;
 use aos_assessment_runtime::credentials::SourceCredentialSetV1;
+use aos_assessment_runtime::installation::WorkerAssessmentInstallationV1 as Installation;
 use aos_assessment_runtime::ports::ProviderTransport;
 use aos_assessment_runtime::provider::{
     CapabilityChallenge, ProviderCapabilitiesV1, ProviderWorkAuth, ProviderWorkPlanV1,
     ProviderWorkResultV1, PROVIDER_CAPABILITIES_PATH, PROVIDER_SIGNATURE_HEADER,
     PROVIDER_WORK_PATH,
-};
-use aos_assessment_runtime::routes::{
-    validate_source_budgets, InstalledSourceBudget, InstalledSourceRoutesV1,
 };
 use aos_contract::limits::JsonLimits;
 use aos_hub_core::assessment_execution::{
@@ -25,18 +22,7 @@ use aos_hub_core::assessment_execution::{
 };
 use aos_hub_core::db::Database;
 use aos_hub_core::jobs::{Job, JobEnvelope};
-use serde::Deserialize;
 use worker::{Env, Headers, Method, Request, RequestInit};
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct Installation {
-    schema: String,
-    routes: InstalledSourceRoutesV1,
-    budgets: Vec<InstalledSourceBudget>,
-    credentials: SourceCredentialSetV1,
-    policy: AssessmentPolicyV1,
-}
 
 fn installation(env: &Env) -> Result<Option<Installation>> {
     let Ok(configuration) = env.var("HUB_ASSESSMENT_CONFIG") else {
@@ -52,17 +38,7 @@ fn installation(env: &Env) -> Result<Option<Installation>> {
         configuration.to_string().as_bytes(),
         "Worker assessment installation",
     )?;
-    ensure!(
-        installation.schema == "aos.assessment-worker-installation/v1",
-        "unsupported Worker assessment installation"
-    );
-    installation.routes.validate()?;
-    validate_source_budgets(&installation.routes, &installation.budgets)?;
-    installation.credentials.validate()?;
-    installation
-        .routes
-        .validate_credentials(&installation.credentials)?;
-    installation.policy.validate()?;
+    installation.validate()?;
     ensure!(
         installation.routes.deployment_id == env.var("HUB_DEPLOYMENT_ID")?.to_string()
             && installation.routes.coordinator_id

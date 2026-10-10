@@ -117,6 +117,16 @@ async fn authenticated(
     // Authentication and exact plan bounds precede R2 or credential lookup.
     let plan = auth.verify_plan(&body, &signature, &now)?;
     plan.limits.require_within(&limits)?;
+    let source_ttl = env
+        .var("HUB_ASSESSMENT_SOURCE_TTL_SECONDS")
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| "3600".into())
+        .parse::<u32>()
+        .context("invalid assessment source freshness policy")?;
+    anyhow::ensure!(
+        (1..=86400).contains(&source_ttl),
+        "assessment source freshness exceeds its bounds"
+    );
     let namespace = env.durable_object("ASSESSMENT_PROVIDER_TASKS")?;
     let name = Sha256Digest::of_canonical(
         "aos.assessment-provider-attempt/v1",
@@ -169,7 +179,8 @@ async fn authenticated(
         bucket: env.bucket("ASSESSMENT_EVIDENCE")?,
     };
     let source = WorkerSourceTransport { env: env.clone() };
-    let result = execute_source(&source, &evidence, &WorkerClock, &plan, &build, 3600).await?;
+    let result =
+        execute_source(&source, &evidence, &WorkerClock, &plan, &build, source_ttl).await?;
     let receipt = auth.sign_result(&result, &plan, &WorkerClock.now()?)?;
     store_receipt(state, digest, &receipt.0, &receipt.1).await?;
     Ok(receipt)

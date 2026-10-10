@@ -289,6 +289,7 @@ pub(super) mod tests {
 
     pub(in crate::cloudflare) fn config() -> HybridDeployConfig {
         HybridDeployConfig {
+            assessment: None,
             name: "aos-hybrid".into(),
             bucket: "aos-hybrid-surfaces".into(),
             deployment_id: "deployment-1".into(),
