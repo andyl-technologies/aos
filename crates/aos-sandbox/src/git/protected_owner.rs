@@ -4,9 +4,10 @@ use aos_sandbox_core::{ObjectDigest, ResourceId};
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::Journal;
-use crate::lifecycle::protected_journal_adapter::{
-    ProtectedDomainJournalErrorV1, decode_reducer_payload_with_validator,
-    protected_current_record_candidates_v1,
+use aos_sandbox_protocol::domain_ledger::records::decode_reducer_payload_with_validator;
+
+use crate::protected_domain_journal::{
+    ProtectedDomainJournalErrorV1, protected_current_record_candidates_v1,
 };
 
 use super::physical_effect::{
@@ -2000,7 +2001,7 @@ pub(crate) fn recover_git_journal_verifier_v1(
 }
 
 fn protected_git_authority(
-    candidates: &[crate::lifecycle::protected_journal_adapter::ProtectedCurrentRecordCandidateV1<
+    candidates: &[aos_sandbox_protocol::domain_ledger::records::ProtectedCurrentRecordCandidateV1<
         GitProtectedJournalSchemaV1,
     >],
 ) -> ObjectDigest {

@@ -27,15 +27,18 @@ use aos_sandbox_core::{
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::{CacheMutationGateV1, Journal, JournalError, RecordNamespace};
-use crate::lifecycle::protected_journal_adapter::{
+use aos_sandbox_protocol::domain_ledger::records::{
+    ProtectedDomainEnvelopeV1, ProtectedDomainKeyV1, ProtectedDomainProjectionV1,
+    ProtectedDomainSchemaV1, ProtectedRecordRoleV1, ProtectedReducerPhaseV1,
+    decode_reducer_payload_with_validator, encode_reducer_payload_with_validator,
+};
+
+use crate::protected_domain_journal::{
     AppliedDomainTransactionV1, DomainCommitOutcomeV1, DomainOutcomeUnknownV1,
     DomainPostcommitCapabilityV1, DomainRecoveryV1, DomainRetainedCommitFailureV1,
-    PreparedDomainTransactionV1, RetainedCommitFailureV1,
-    ProtectedDomainEnvelopeV1, ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1,
-    ProtectedDomainKeyV1, ProtectedDomainProjectionV1, ProtectedDomainSchemaV1,
-    ProtectedDomainSnapshotV1, ProtectedRecordRoleV1, ProtectedReducerPhaseV1,
-    ReplayedDomainPostcommitV1, ValidatedDomainPostcommitV1, decode_reducer_payload_with_validator,
-    encode_reducer_payload_with_validator,
+    PreparedDomainTransactionV1, ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1,
+    ProtectedDomainSnapshotV1, ReplayedDomainPostcommitV1, RetainedCommitFailureV1,
+    ValidatedDomainPostcommitV1,
 };
 
 use aos_sandbox_policy::compiled_policy_candidate_digest_v1;
@@ -2660,7 +2663,7 @@ fn decode_candidate_header(
 
 /// Checks domain bodies for a nonauthorizing protected-state readback.
 pub(super) fn validate_state_candidate_body(
-    record: &crate::lifecycle::protected_journal_adapter::ProtectedCurrentRecordCandidateV1<
+    record: &aos_sandbox_protocol::domain_ledger::records::ProtectedCurrentRecordCandidateV1<
         PolicyCompilerJournalSchemaV1,
     >,
 ) -> Result<(), PolicyCompilerJournalErrorV1> {

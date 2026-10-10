@@ -8,14 +8,17 @@ use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, ResourceId};
 
 use crate::journal::{Journal, RecordNamespace};
 
-use super::protected_journal_adapter::{
+use aos_sandbox_protocol::domain_ledger::records::{
+    ProtectedDomainEnvelopeV1, ProtectedDomainKeyV1, ProtectedDomainProjectionV1,
+    ProtectedDomainReplayPhaseV1, ProtectedDomainReplayTransactionV1, ProtectedDomainSchemaV1,
+    ProtectedRecordRoleV1, ProtectedReducerPhaseV1, encode_reducer_payload_with_validator,
+};
+
+use crate::protected_domain_journal::{
     AppliedDomainTransactionV1, DomainCommitOutcomeV1, DomainOutcomeUnknownV1,
     DomainPostcommitCapabilityV1, DomainRecoveryV1, PreparedDomainTransactionV1,
-    ProtectedDomainEnvelopeV1, ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1,
-    ProtectedDomainKeyV1, ProtectedDomainProjectionV1, ProtectedDomainReplayPhaseV1,
-    ProtectedDomainReplayTransactionV1, ProtectedDomainSchemaV1, ProtectedDomainSnapshotV1,
-    ProtectedRecordRoleV1, ProtectedReducerPhaseV1, ReplayedDomainPostcommitV1,
-    ValidatedDomainPostcommitV1, encode_reducer_payload_with_validator,
+    ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1, ProtectedDomainSnapshotV1,
+    ReplayedDomainPostcommitV1, ValidatedDomainPostcommitV1,
 };
 
 use super::{

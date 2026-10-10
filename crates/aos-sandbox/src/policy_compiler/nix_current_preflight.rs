@@ -530,7 +530,7 @@ impl<'source> CurrentNixPreflightAttemptV1<'source> {
             HierarchyJournalReplayTransactionV1, HierarchyProtectedJournalEnvelopeV1,
             HierarchyProtectedJournalSchemaV1,
         };
-        use crate::lifecycle::protected_journal_adapter::ProtectedCurrentRecordCandidateV1;
+        use aos_sandbox_protocol::domain_ledger::records::ProtectedCurrentRecordCandidateV1;
 
         let refused = || crate::ResourceReservationErrorV1::Conflict;
         let owner_bytes = std::mem::size_of::<Self>()

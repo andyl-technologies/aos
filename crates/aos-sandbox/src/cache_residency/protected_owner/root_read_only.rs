@@ -21,7 +21,7 @@ use crate::journal::{
     CACHE_POLICY_HOLD_JOURNAL, CachePolicyHoldV1, Journal, JournalError, JournalLimits,
     ReadOnlyJournalNameWitness, ReadOnlyProtectedJournal, RecordNamespace, RecoveryReport,
 };
-use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
+use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 use aos_sandbox_core::ObjectDigest;
 
 use super::super::{

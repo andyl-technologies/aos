@@ -38,12 +38,13 @@ use super::LifecycleJournalVerifierV1;
 use super::protected_journal::{
     LifecycleProtectedJournalEnvelopeV1, LifecycleProtectedJournalSchemaV1,
 };
-use super::protected_journal_adapter::{
-    DurableDomainMemberV1, ProtectedDomainJournalErrorV1, ProtectedDomainKeyV1,
-    ProtectedDomainSchemaV1, ProtectedRecordRoleV1, ProtectedReducerPhaseV1, decode_durable_member,
-    decode_reducer_payload_with_validator, encode_durable_member, replay_projection,
-    validate_successor,
+use aos_sandbox_protocol::domain_ledger::records::{
+    DurableDomainMemberV1, ProtectedDomainKeyV1, ProtectedDomainSchemaV1, ProtectedRecordRoleV1,
+    ProtectedReducerPhaseV1, decode_durable_member, decode_reducer_payload_with_validator,
+    encode_durable_member, validate_successor,
 };
+
+use crate::protected_domain_journal::{ProtectedDomainJournalErrorV1, replay_projection};
 use super::protected_owner::recover_lifecycle_journal_verifier_v1;
 
 const MAXIMUM_CROSS_DOMAIN_REPLAY_MEMBERS: usize = 262_144;
@@ -1786,7 +1787,7 @@ fn cross_member<S: ProtectedDomainSchemaV1>(
     namespace: RecordNamespace,
     member: DurableDomainMemberV1<S>,
     wrap: impl FnOnce(
-        super::protected_journal_adapter::ProtectedDomainEnvelopeV1<S>,
+        aos_sandbox_protocol::domain_ledger::records::ProtectedDomainEnvelopeV1<S>,
     ) -> CrossDomainJournalSuccessorV1,
 ) -> CrossDomainDurableMemberV1 {
     let (transaction_id, member_index, member_count, set_digest, envelope, encoded) =

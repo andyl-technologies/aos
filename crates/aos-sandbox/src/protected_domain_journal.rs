@@ -1,10 +1,10 @@
-//! Shared machinery for dormant, domain-typed protected-journal adapters.
+//! Shared native transaction custody for protected domain journals.
 //!
-//! This module is crate-private infrastructure. Domain modules supply closed
-//! record-kind schemas and expose typed aliases, so callers never select an
-//! arbitrary journal namespace or manufacture a postcommit capability.
+//! This crate-private owner retains the original Journal borrow across planning,
+//! append, exact readback, recovery and postcommit consumption. Domain modules
+//! supply closed schemas and trusted validators; decoded DATA grants no authority.
 //!
-//! Reducer payloads use one canonical wrapper:
+//! Protocol's reducer payloads use one canonical wrapper:
 //!
 //! ```text
 //! AOSRDP01 | version:u16 | family:u8 | kind:u8 | phase:u8 | reserved:u8 | companions:u16 |
@@ -34,40 +34,22 @@ use crate::journal::{
     ProtectedJournalPreflight, RecordNamespace, capacity_reservation_identity_is_exact_v1,
 };
 
-pub use aos_sandbox_protocol::domain_ledger::records::{
-    ProtectedRecordRoleV1,
-    ProtectedReducerPhaseV1,
-    ProtectedCapacitySettlementMemberV1,
-    ProtectedDomainSchemaV1,
-    ProtectedDomainKeyV1,
-    ProtectedDomainEnvelopeV1,
-    ProtectedDomainProjectionV1,
-    ProtectedDomainReplayPhaseV1,
-    ProtectedDomainReplayTransactionV1,
-};
-pub(crate) use aos_sandbox_protocol::domain_ledger::records::{
-    DurableDomainMemberV1,
-    ProtectedCurrentRecordCandidateV1,
-    DecodedReducerPayloadV1,
-    ENVELOPE_FIXED_BYTES,
-    DURABLE_MEMBER_FIXED_BYTES,
-    MAXIMUM_COLD_REPLAY_MEMBERS,
-    transaction_digest,
+#[cfg(test)]
+use aos_sandbox_protocol::domain_ledger::records::encode_reducer_payload_with_validator;
+use aos_sandbox_protocol::domain_ledger::records::{
+    DURABLE_MEMBER_FIXED_BYTES, ENVELOPE_FIXED_BYTES, MAXIMUM_COLD_REPLAY_MEMBERS,
+    ProtectedCurrentRecordCandidateV1, aggregate_semantic_phases, capacity_request_binds_schema,
+    decode_durable_member, decode_reducer_payload_with_validator, domain_transaction_set_digest,
+    encode_checkpoint_payload, encode_durable_member, reconstruct_transactions, reducer_phase,
+    replay_projection_records, transaction_digest, validate_domain_capacity_lineage_v1,
     validate_successor,
-    replay_projection_records,
-    reconstruct_transactions,
-    reducer_phase,
-    aggregate_semantic_phases,
-    domain_transaction_set_digest,
-    encode_checkpoint_payload,
-    capacity_request_binds_schema,
-    validate_domain_capacity_lineage_v1,
-    decode_reducer_payload_with_validator,
-    encode_durable_member,
-    decode_durable_member,
-    encode_reducer_payload_with_validator,
-    bind_domain_capacity_request_v1,
 };
+use aos_sandbox_protocol::domain_ledger::records::{
+    ProtectedCapacitySettlementMemberV1, ProtectedDomainEnvelopeV1, ProtectedDomainKeyV1,
+    ProtectedDomainProjectionV1, ProtectedDomainReplayPhaseV1, ProtectedDomainSchemaV1,
+    ProtectedRecordRoleV1, ProtectedReducerPhaseV1,
+};
+
 use aos_sandbox_protocol::domain_ledger::records::current_record_candidates_from_rows;
 use aos_sandbox_protocol::domain_ledger::{DomainLedgerDataError, JournalTransactionDataError};
 

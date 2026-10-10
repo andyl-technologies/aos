@@ -154,7 +154,7 @@ fn legacy_candidate_records(
     journal: &Journal,
     publication: &fixture::FixturePublicationV1,
 ) -> Vec<crate::JournalRecord> {
-    use crate::lifecycle::protected_journal_adapter::ProtectedDomainSchemaV1;
+    use aos_sandbox_protocol::domain_ledger::records::ProtectedDomainSchemaV1;
     use sha2::{Digest as _, Sha256};
 
     let key = policy_key(
@@ -282,7 +282,7 @@ fn legacy_candidate_records(
 
 #[test]
 fn retired_candidate_v2_refuses_live_and_cold_claims_without_rewriting_bytes() {
-    use crate::lifecycle::protected_journal_adapter::{
+    use crate::protected_domain_journal::{
         ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1,
         protected_current_record_candidates_v1,
     };

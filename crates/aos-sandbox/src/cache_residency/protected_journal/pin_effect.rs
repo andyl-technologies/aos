@@ -4,7 +4,7 @@ use aos_sandbox_core::OperationId;
 
 use crate::cache_residency::pin::valid_logical_renewal;
 use crate::cache_residency::{CachePinV1, CacheRecordKindV1, decode_atomic_object_record};
-use crate::lifecycle::protected_journal_adapter::decode_reducer_payload_with_validator;
+use aos_sandbox_protocol::domain_ledger::records::decode_reducer_payload_with_validator;
 
 use super::{
     CacheResidencyProtectedJournalEnvelopeV1, CacheResidencyProtectedJournalErrorV1,

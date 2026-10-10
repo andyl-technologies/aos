@@ -15,7 +15,7 @@ use aos_sandbox_core::{ObjectDigest, ProjectId, SandboxId};
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::{Journal, JournalError, JournalLimits, RecordNamespace, RecoveryReport};
-use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
+use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 
 use super::binding_v2::{BINDING_V2_KEY_PREFIX, decode_closed_policy_binding_v2};
 use super::protected_journal::{

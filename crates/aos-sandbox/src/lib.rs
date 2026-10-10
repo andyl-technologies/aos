@@ -126,6 +126,7 @@ pub mod ownership_authority;
 pub mod ownership_resume;
 pub mod ownership_service;
 pub mod policy_compiler;
+pub(crate) mod protected_domain_journal;
 #[cfg(target_os = "linux")]
 pub mod production_operation_compiler;
 #[cfg(target_os = "linux")]

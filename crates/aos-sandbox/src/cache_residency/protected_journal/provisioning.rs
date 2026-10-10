@@ -14,7 +14,7 @@ use crate::journal::{
     CacheMutationGateV1, CommitResult, JournalError, JournalRecord, JournalTransaction,
     ProtectedJournalAuthority, ProtectedJournalPreflight, RecordNamespace,
 };
-use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
+use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 use aos_sandbox_core::ObjectDigest;
 
 use super::{

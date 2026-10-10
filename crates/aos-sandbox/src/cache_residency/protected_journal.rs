@@ -17,17 +17,21 @@ use std::{
 use crate::journal::{
     CacheMutationGateV1, HeldCacheMutationGateV1, Journal, JournalError, RecordNamespace,
 };
-use crate::lifecycle::protected_journal_adapter::{
-    AppliedDomainTransactionV1, DomainCommitOutcomeV1, DomainOutcomeUnknownV1,
-    DomainPostcommitCapabilityV1, DomainRecoveryV1, DomainRetainedRecoveryV1,
-    PreparedDomainTransactionV1, ProtectedDomainEnvelopeV1, ProtectedDomainJournalErrorV1,
-    ProtectedDomainJournalV1, ProtectedDomainKeyV1, ProtectedDomainProjectionV1,
-    ProtectedDomainReplayPhaseV1, ProtectedDomainSchemaV1, ProtectedDomainSnapshotV1,
-    ProtectedRecordRoleV1, ProtectedReducerPhaseV1, ReplayedDomainPostcommitV1,
-    RetainedCommitFailureV1, ValidatedDomainPostcommitV1, decode_reducer_payload_with_validator,
+use aos_sandbox_protocol::domain_ledger::records::{
+    ProtectedDomainEnvelopeV1, ProtectedDomainKeyV1, ProtectedDomainProjectionV1,
+    ProtectedDomainReplayPhaseV1, ProtectedDomainSchemaV1, ProtectedRecordRoleV1,
+    ProtectedReducerPhaseV1, decode_reducer_payload_with_validator,
     encode_reducer_payload_with_validator,
 };
-pub(in crate::cache_residency) use crate::lifecycle::protected_journal_adapter::{
+
+use crate::protected_domain_journal::{
+    AppliedDomainTransactionV1, DomainCommitOutcomeV1, DomainOutcomeUnknownV1,
+    DomainPostcommitCapabilityV1, DomainRecoveryV1, DomainRetainedRecoveryV1,
+    PreparedDomainTransactionV1, ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1,
+    ProtectedDomainSnapshotV1, ReplayedDomainPostcommitV1, RetainedCommitFailureV1,
+    ValidatedDomainPostcommitV1,
+};
+pub(in crate::cache_residency) use crate::protected_domain_journal::{
     ResidentDomainCommitFailureV1, ResidentDomainPayloadBudgetV1,
 };
 

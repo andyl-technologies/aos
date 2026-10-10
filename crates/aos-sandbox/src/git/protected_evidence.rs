@@ -44,7 +44,7 @@ use crate::environment::{
     validate_bracketed_samples_v1,
 };
 use crate::journal::{Journal, JournalError, JournalLimits, RecordNamespace, RecoveryReport};
-use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
+use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 
 use super::{GitBoottimeV1, GitProtectedJournalOwnerV1};

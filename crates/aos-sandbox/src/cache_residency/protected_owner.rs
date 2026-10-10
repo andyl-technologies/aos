@@ -23,7 +23,7 @@ use crate::journal::{
     CACHE_POLICY_HOLD_JOURNAL, CachePolicyHoldV1, Journal, JournalLimits, JournalRecord,
     JournalTransaction, ProtectedWriterNameWitness, RecordNamespace, RecoveryReport,
 };
-use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
+use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 
 use super::protected_journal::{
     CacheResidencyCurrentTimeAuthorityV1, CacheResidencyReplayPartitionEvidenceV1,

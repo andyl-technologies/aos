@@ -29,9 +29,9 @@ use super::{
     PolicyCompilerJournalErrorV1, PolicyCompilerJournalRecordKindV1, PolicyCompilerJournalSchemaV1,
     PolicyPublicationPrerequisitesV1,
 };
-use crate::lifecycle::protected_journal_adapter::{
-    ProtectedCurrentRecordCandidateV1, protected_current_record_candidates_v1,
-};
+use aos_sandbox_protocol::domain_ledger::records::ProtectedCurrentRecordCandidateV1;
+
+use crate::protected_domain_journal::protected_current_record_candidates_v1;
 use crate::{Journal, RecoveryReport};
 
 #[cfg(test)]

@@ -20,10 +20,11 @@ use super::protected_journal::{
     LifecycleReducerRecordV1, PreparedLifecycleJournalTransactionV1,
     claim_lifecycle_protected_journal_v1, lifecycle_reducer_envelope_v1,
 };
-use super::protected_journal_adapter::{
+use aos_sandbox_protocol::domain_ledger::records::{
     ProtectedCurrentRecordCandidateV1, decode_reducer_payload_with_validator,
-    protected_current_record_candidates_v1,
 };
+
+use crate::protected_domain_journal::protected_current_record_candidates_v1;
 use super::{
     CurrentLifecycleBootDomainInventoriesV1, CurrentLifecycleBootInventoryV1,
     CurrentLifecycleCoordinationV1, CurrentLifecycleOperationV1, CurrentLifecycleRetentionLedgerV1,

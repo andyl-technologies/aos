@@ -22,7 +22,7 @@ use aos_sandbox_core::{ObjectDigest, ProjectId, Revision};
 #[cfg(test)]
 use crate::journal::JournalLimits;
 use crate::journal::{Journal, JournalError, JournalRecord, RecordNamespace};
-use crate::lifecycle::protected_journal_adapter::decode_reducer_payload_with_validator;
+use aos_sandbox_protocol::domain_ledger::records::decode_reducer_payload_with_validator;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use crate::lifecycle::protected_journal_join::{
     PROTECTED_SOURCE_DOMAIN_JOURNAL, PROTECTED_SOURCE_DOMAIN_ROOT, source_domain_journal_limits,
@@ -344,7 +344,7 @@ fn replay_closed_tree_lineage_records_v2<'records>(
     records: impl Iterator<Item = (RecordNamespace, &'records [u8], &'records [u8])>,
 ) -> Result<BTreeMap<ProjectId, ClosedTreeLineageHeadV1>, HierarchyProtectedJournalErrorV1> {
     let validator = HierarchyProtectedReplayValidatorV1::from_protected_current_heads(&[], &[], &[])?;
-    let projection = crate::lifecycle::protected_journal_adapter::replay_projection_records::<
+    let projection = aos_sandbox_protocol::domain_ledger::records::replay_projection_records::<
         HierarchyProtectedJournalSchemaV1,
     >(
         records,
@@ -363,7 +363,7 @@ pub(super) fn reconstructed_genesis_members_v2(
     project: ProjectId,
     seed_packet: &[u8; CONTROLLER_SOURCE_TREE_SEED_BYTES_V1],
 ) -> Result<(ObjectDigest, ObjectDigest, Vec<u8>, Vec<u8>), HierarchyProtectedJournalErrorV1> {
-    use crate::lifecycle::protected_journal_adapter::{
+    use aos_sandbox_protocol::domain_ledger::records::{
         decode_durable_member, encode_durable_member, replay_projection_records,
     };
 
@@ -552,7 +552,7 @@ fn validate_source_successor_members(
             .map_err(|_| invalid())?;
         for (index, record) in pair.iter().enumerate() {
             let key = HierarchyProtectedJournalKeyV1::decode(record.key()).map_err(|_| invalid())?;
-            let member = crate::lifecycle::protected_journal_adapter::decode_durable_member::<
+            let member = aos_sandbox_protocol::domain_ledger::records::decode_durable_member::<
                 HierarchyProtectedJournalSchemaV1,
             >(key, record.value().ok_or_else(invalid)?, &validator).map_err(|_| invalid())?;
             let expected_kind = if index == 0 {
@@ -1039,7 +1039,7 @@ mod tests {
     use crate::JournalLimits;
     use crate::hierarchy::source_seed::sign_controller_source_tree_seed_v1;
     use crate::journal::{Journal, JournalError};
-    use crate::lifecycle::protected_journal_adapter::DomainCommitOutcomeV1;
+    use crate::protected_domain_journal::DomainCommitOutcomeV1;
 
     fn open_source(directory: &Path) -> ProtectedSourceDomainJournalOwnerV1 {
         let uid = fs::metadata(directory).expect("metadata").uid();

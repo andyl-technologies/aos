@@ -6,9 +6,10 @@ use aos_sandbox_core::{
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::Journal;
-use crate::lifecycle::protected_journal_adapter::{
-    ProtectedDomainJournalErrorV1, decode_reducer_payload_with_validator,
-    protected_current_record_candidates_v1,
+use aos_sandbox_protocol::domain_ledger::records::decode_reducer_payload_with_validator;
+
+use crate::protected_domain_journal::{
+    ProtectedDomainJournalErrorV1, protected_current_record_candidates_v1,
 };
 
 use super::EnvironmentProtectedEvidenceOwnerV1;

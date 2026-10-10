@@ -17,7 +17,7 @@ use crate::journal::{
 };
 #[cfg(test)]
 use crate::journal::{JournalError, JournalLimits, RecordNamespace, RecoveryReport};
-use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
+use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 #[cfg(target_os = "linux")]
 use crate::policy_compiler::RootV8SettledGrantV1;
 

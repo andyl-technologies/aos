@@ -15,20 +15,23 @@ use crate::journal::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
     GlobalCapacityReservationRequestV1, Journal, JournalError, RecordNamespace,
 };
-use crate::lifecycle::protected_journal_adapter::{
+use aos_sandbox_protocol::domain_ledger::records::{
+    ProtectedCapacitySettlementMemberV1, ProtectedDomainEnvelopeV1, ProtectedDomainKeyV1,
+    ProtectedDomainProjectionV1, ProtectedDomainSchemaV1, ProtectedRecordRoleV1,
+    ProtectedReducerPhaseV1, bind_domain_capacity_request_v1,
+    decode_reducer_payload_with_validator, encode_reducer_payload_with_validator,
+    validate_domain_capacity_lineage_v1,
+};
+
+use crate::protected_domain_journal::{
     AppliedDomainTransactionV1, DomainCapacityAdmissionCommitOutcomeV1,
     DomainCapacityAdmissionRecoveryV1, DomainCapacityAdmissionUnknownV1,
     DomainCapacityReservationV1, DomainCapacitySettlementCommitOutcomeV1,
     DomainCapacitySettlementRecoveryV1, DomainCapacitySettlementUnknownV1, DomainCommitOutcomeV1,
     DomainOutcomeUnknownV1, DomainPostcommitCapabilityV1, DomainRecoveryV1,
     PreparedCapacityReservedDomainTransactionV1, PreparedCapacitySettlementDomainTransactionV1,
-    PreparedDomainTransactionV1, ProtectedCapacitySettlementMemberV1, ProtectedDomainEnvelopeV1,
-    ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1, ProtectedDomainKeyV1,
-    ProtectedDomainProjectionV1, ProtectedDomainSchemaV1, ProtectedDomainSnapshotV1,
-    ProtectedRecordRoleV1, ProtectedReducerPhaseV1, ReplayedDomainPostcommitV1,
-    ValidatedDomainPostcommitV1, bind_domain_capacity_request_v1,
-    decode_reducer_payload_with_validator, encode_reducer_payload_with_validator,
-    validate_domain_capacity_lineage_v1,
+    PreparedDomainTransactionV1, ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1,
+    ProtectedDomainSnapshotV1, ReplayedDomainPostcommitV1, ValidatedDomainPostcommitV1,
 };
 
 use super::{

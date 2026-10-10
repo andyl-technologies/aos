@@ -8,15 +8,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceId, Revision, SandboxId};
 
 use crate::journal::{Journal, RecordNamespace};
-use crate::lifecycle::protected_journal_adapter::{
+use aos_sandbox_protocol::domain_ledger::records::{
+    ProtectedDomainEnvelopeV1, ProtectedDomainKeyV1, ProtectedDomainProjectionV1,
+    ProtectedDomainReplayPhaseV1, ProtectedDomainReplayTransactionV1, ProtectedDomainSchemaV1,
+    ProtectedRecordRoleV1, ProtectedReducerPhaseV1, decode_reducer_payload_with_validator,
+    encode_reducer_payload_with_validator,
+};
+
+use crate::protected_domain_journal::{
     AppliedDomainTransactionV1, DomainCommitOutcomeV1, DomainOutcomeUnknownV1,
     DomainPostcommitCapabilityV1, DomainRecoveryV1, PreparedDomainTransactionV1,
-    ProtectedDomainEnvelopeV1, ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1,
-    ProtectedDomainKeyV1, ProtectedDomainProjectionV1, ProtectedDomainReplayPhaseV1,
-    ProtectedDomainReplayTransactionV1, ProtectedDomainSchemaV1, ProtectedDomainSnapshotV1,
-    ProtectedRecordRoleV1, ProtectedReducerPhaseV1, ReplayedDomainPostcommitV1,
-    ValidatedDomainPostcommitV1, decode_reducer_payload_with_validator,
-    encode_reducer_payload_with_validator, protected_current_record_candidates_v1,
+    ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1, ProtectedDomainSnapshotV1,
+    ReplayedDomainPostcommitV1, ValidatedDomainPostcommitV1,
+    protected_current_record_candidates_v1,
 };
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 

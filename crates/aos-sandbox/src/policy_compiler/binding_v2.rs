@@ -38,7 +38,7 @@ use crate::journal::{
     ProtectedJournalAuthority, ProtectedJournalNamesV1, ProtectedJournalSnapshot, RecordNamespace,
     SourceDomainPolicyHoldV1,
 };
-use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
+use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 
 use super::cache_journal_readback::read_fixed_policy_cache_hold_v1;

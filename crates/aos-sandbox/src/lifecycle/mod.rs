@@ -1,9 +1,9 @@
 //! Dormant lifecycle transaction records and recovery classification.
 //!
 //! This module models controller intent without granting broker authority or
-//! dispatching effects. Its protected-journal adapter owns exact CAS, replay,
-//! recovery, and postcommit capabilities, but remains disconnected from the
-//! controller, public protocol, and readiness advertisement.
+//! dispatching effects. Protected transactions use the shared native domain owner;
+//! lifecycle schemas and recovery policy stay here. That source organization does
+//! not activate the controller, public protocol or readiness advertisement.
 
 mod atomic_snapshot_source;
 mod attempt;
@@ -29,7 +29,6 @@ mod operation;
 mod phase6;
 mod projection;
 pub mod protected_journal;
-pub(crate) mod protected_journal_adapter;
 pub mod protected_journal_join;
 mod protected_owner;
 mod public_admission;

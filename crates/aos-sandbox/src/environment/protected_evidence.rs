@@ -20,7 +20,7 @@ use aos_sandbox_core::bounded_codec::BoundedReader;
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::{Journal, JournalError, JournalLimits, RecordNamespace, RecoveryReport};
-use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
+use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 
 use super::authority_clock::validate_bracketed_samples_v1;
