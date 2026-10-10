@@ -10,19 +10,19 @@ use std::io::{Read as _, Write as _};
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_assessment::bundle::{AssessmentBundleV1, BundleProfile};
-use aos_assessment::input::{AssessmentPolicyV1, EvaluationData, Profile, ASSESSMENT_POLICY_V1};
+use aos_assessment::input::{ASSESSMENT_POLICY_V1, AssessmentPolicyV1, EvaluationData, Profile};
 use aos_assessment::metadata::{PackageAssessmentInventoryV1, SourcePackageBindingV1};
 use aos_assessment::time::Timestamp;
 use aos_assessment_http::{
     NativeSourceTransport, PhysicalClock, SourceCredential, SourceCredentials,
 };
-use aos_assessment_runtime::acquisition::{acquire, AcquisitionPort};
+use aos_assessment_runtime::acquisition::{AcquisitionPort, acquire};
 use aos_assessment_runtime::ports::{Clock, EvidenceStore};
 use aos_assessment_runtime::provider::{
-    execute_source, BudgetReservation, ProviderLimits, ProviderOperation, ProviderPageV1,
-    ProviderWorkPlanV1, ProviderWorkResultV1, PROVIDER_WORK_PLAN_V1,
+    BudgetReservation, PROVIDER_WORK_PLAN_V1, ProviderLimits, ProviderOperation, ProviderPageV1,
+    ProviderWorkPlanV1, ProviderWorkResultV1, execute_source,
 };
 use aos_assessment_runtime::scan::{ScanLimits, ScanUsage, TaskClaim};
 use aos_contract::Sha256Digest;
@@ -215,34 +215,12 @@ pub async fn run_assessment(
                 .iter()
                 .find(|package| package.subject_ref == subject.subject_ref)
                 .context("assessment result contains an unknown subject")?;
-            printer.info(&format!(
+            let label = format!(
                 "{} {} ({})",
-                escape(&package.package_coordinate),
-                escape(&package.version),
-                escape(&package.platform)
-            ));
-            for coverage in &subject.coverage {
-                printer.info(&format!(
-                    "  {:?}: {:?}; {} of {} components evaluated",
-                    coverage.profile,
-                    coverage.state,
-                    coverage.counts.evaluated,
-                    coverage.counts.declared
-                ));
-            }
-            for finding in &subject.findings {
-                printer.info(&format!(
-                    "  {}: {:?}",
-                    escape(&finding.advisory_ids.join(", ")),
-                    finding.applicability
-                ));
-            }
-            for version in &subject.versions {
-                printer.info(&format!(
-                    "  {}: {:?}",
-                    escape(&version.current.comparison_version),
-                    version.decision
-                ));
+                package.package_coordinate, package.version, package.platform
+            );
+            for line in aos_maintain::presentation::assessment_subject_lines(subject, &label) {
+                printer.info(&line);
             }
         }
         for diagnostic in diagnostics {
@@ -250,10 +228,6 @@ pub async fn run_assessment(
         }
     }
     Ok(())
-}
-
-fn escape(text: &str) -> String {
-    aos_maintain::presentation::escape_terminal(text, 4096)
 }
 
 fn read_secret(name: &str) -> Result<Option<Zeroizing<String>>> {

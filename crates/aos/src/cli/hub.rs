@@ -300,6 +300,12 @@ pub enum HubAssessmentCmd {
         /// Read a closed aos.assessment-scan-submission/v1 document
         #[arg(long)]
         request: PathBuf,
+        /// Wait for the admitted operation to reach a terminal state
+        #[arg(long)]
+        wait: bool,
+        /// Bound waiting without cancelling the durable Hub operation
+        #[arg(long, requires = "wait", default_value_t = 3600, value_parser = clap::value_parser!(u32).range(1..=3600))]
+        wait_seconds: u32,
     },
     /// Manage durable Hub scan operations
     Scans {

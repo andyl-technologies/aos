@@ -34,6 +34,8 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
             access,
             registry,
             request,
+            wait,
+            wait_seconds,
         } => {
             let bytes = read_bounded_file(request, 262_144, "assessment scan submission")?;
             let submission = ScanSubmissionV1::from_slice(&bytes)?;
@@ -47,7 +49,13 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
                     },
                 )
                 .await?;
-            print_receipt(printer, ScanReceiptV1::from_slice(&response.document_json)?)
+            let receipt = ScanReceiptV1::from_slice(&response.document_json)?;
+            let receipt = if *wait {
+                wait_for_scan(&client, registry, receipt, *wait_seconds).await?
+            } else {
+                receipt
+            };
+            print_receipt(printer, receipt)
         }
         HubAssessmentCmd::Scans { command } => run_scans(printer, command).await,
         HubAssessmentCmd::Status {
@@ -154,35 +162,64 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
                 printer.json(&serde_json::json!({"schema_version":"aos.hub.cli/v1", "kind":"package-assessment", "data":assessment}));
             } else {
                 for subject in &assessment.subject_results {
-                    printer.info(&escape_terminal(&subject.subject_ref));
-                    for coverage in &subject.coverage {
-                        printer.info(&format!(
-                            "  {:?}: {:?}; {} of {} components evaluated",
-                            coverage.profile,
-                            coverage.state,
-                            coverage.counts.evaluated,
-                            coverage.counts.declared
-                        ));
-                    }
-                    for finding in &subject.findings {
-                        printer.info(&format!(
-                            "  {}: {:?}",
-                            escape_terminal(&finding.advisory_ids.join(", ")),
-                            finding.applicability
-                        ));
-                    }
-                    for version in &subject.versions {
-                        printer.info(&format!(
-                            "  {}: {:?}",
-                            escape_terminal(&version.current.comparison_version),
-                            version.decision
-                        ));
+                    for line in aos_maintain::presentation::assessment_subject_lines(
+                        subject,
+                        &subject.subject_ref,
+                    ) {
+                        printer.info(&line);
                     }
                 }
             }
             Ok(())
         }
     }
+}
+
+async fn wait_for_scan(
+    client: &aos_remote::HubClient,
+    registry: &str,
+    mut receipt: ScanReceiptV1,
+    seconds: u32,
+) -> Result<ScanReceiptV1> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(u64::from(seconds));
+    let scan_id = receipt.scan_id.clone();
+    let mut delay = 1;
+    while !receipt.state.is_terminal() {
+        let next = tokio::time::timeout_at(deadline, async {
+            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            let response = client
+                .call_topology(
+                    hub_rpc::GetPackageScan,
+                    &hub_types::AssessmentControlRequest {
+                        registry_slug: registry.into(),
+                        document_json: serde_json::to_vec(&ScanLookupV1 {
+                            schema: "aos.assessment-scan-lookup/v1".into(),
+                            scan_id: scan_id.clone(),
+                        })?,
+                    },
+                )
+                .await?;
+            ScanReceiptV1::from_slice(&response.document_json)
+        })
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "waiting for scan {} timed out; the durable Hub operation continues",
+                escape_terminal(&scan_id)
+            )
+        })??;
+        anyhow::ensure!(
+            next.scan_id == receipt.scan_id
+                && next.request_digest == receipt.request_digest
+                && next.generation == receipt.generation
+                && next.request.resource_scope == receipt.request.resource_scope
+                && next.resource_version >= receipt.resource_version,
+            "Hub scan polling returned a conflicting identity or older revision"
+        );
+        receipt = next;
+        delay = (delay * 2).min(5);
+    }
+    Ok(receipt)
 }
 
 async fn run_scans(printer: &Printer, command: &HubAssessmentScansCmd) -> Result<()> {
