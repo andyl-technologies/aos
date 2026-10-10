@@ -3,7 +3,7 @@
 // of Wrangler's live development proxy and external Request.cf discovery.
 const { createHash } = require('node:crypto');
 const { chmodSync, closeSync, constants, fstatSync, lstatSync, openSync, readFileSync,
-  readlinkSync, readSync, realpathSync, writeFileSync, writeSync, fsyncSync, mkdirSync, existsSync } = require('node:fs');
+  readlinkSync, readSync, readdirSync, realpathSync, writeFileSync, writeSync, fsyncSync, mkdirSync, existsSync } = require('node:fs');
 const { createRequire } = require('node:module');
 const { createServer } = require('node:net');
 const path = require('node:path');
@@ -279,9 +279,37 @@ function ociSameProcess(before, after) {
     .every(field => before[field] === after[field]);
 }
 
+function ociChildProcessIds(parentPid, procRoot = '/proc') {
+  // PROC_CHILDREN is optional. Preserve the same actual parent relationship
+  // on minimal kernels through bounded reads of owned process stat files.
+  const entries = readdirSync(procRoot).filter(pid => /^[1-9][0-9]{0,9}$/.test(pid));
+  if (entries.length > 4096) throw new Error('OCI process scan exceeds its bound');
+  const children = [];
+  for (const pid of entries) {
+    try {
+      const directory = path.join(procRoot, pid);
+      if (lstatSync(directory).uid !== process.getuid()) continue;
+      const fields = ociProcText(path.join(directory, 'stat')).split(') ').at(-1).trim().split(/\s+/);
+      if (fields.length < 20) throw new Error('OCI process stat is incomplete');
+      if (fields[0] !== 'Z' && fields[1] === String(parentPid)) children.push(pid);
+    } catch (error) {
+      // Unrelated processes can exit during enumeration. The selected runtime
+      // must still survive both exact identity checks around the SDK readback.
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  return children;
+}
+
 function ociWorkerdIdentity(expectedExecutable) {
-  const children = ociProcText(`/proc/${process.pid}/task/${process.pid}/children`)
-    .trim().split(/\s+/).filter(Boolean);
+  let children;
+  try {
+    children = ociProcText(`/proc/${process.pid}/task/${process.pid}/children`)
+      .trim().split(/\s+/).filter(Boolean);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    children = ociChildProcessIds(process.pid);
+  }
   if (children.length > 32 || children.some(pid => !/^[1-9][0-9]{0,9}$/.test(pid))) {
     throw new Error('OCI runtime child set exceeds its bound');
   }
@@ -1135,7 +1163,7 @@ if (require.main === module) {
   });
 }
 
-module.exports = { acceptanceRegistryServer, observeOciSdkNamespace, ociLocalR2Selection,
+module.exports = { acceptanceRegistryServer, observeOciSdkNamespace, ociLocalR2Selection, ociChildProcessIds,
   ociHashFile, ociProcessIdentity, ociWorkerdIdentity, ociMiniflareImplementation,
   ociNamespaceObjectId, createOciSdkAnchor, ociAnchorOriginal, storeOciSdkAcceptance,
   createQueueFaultJobReader, OCI_MINIFLARE_PIN };

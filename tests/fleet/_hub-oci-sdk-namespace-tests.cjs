@@ -218,6 +218,27 @@ test('streamed file hashing refuses bounds and symlink substitution', () => {
   }
 });
 
+test('child discovery without PROC_CHILDREN preserves parent and live-state selection', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'oci-process-scan-'));
+  function processStat(pid, parent, state = 'S') {
+    mkdirSync(path.join(root, pid));
+    const fields = [state, parent, ...Array(18).fill('0')];
+    writeFileSync(path.join(root, pid, 'stat'), `${pid} (controlled process) ${fields.join(' ')}`);
+  }
+  try {
+    processStat('43', '42');
+    processStat('44', '1');
+    processStat('45', '42', 'Z');
+    mkdirSync(path.join(root, '46')); // Exited between listing and stat read.
+    assert.deepEqual(observer.ociChildProcessIds(42, root), ['43']);
+    assert.deepEqual(observer.ociChildProcessIds(99, root), []);
+    writeFileSync(path.join(root, '44', 'stat'), '44 (incomplete) S 42');
+    assert.throws(() => observer.ociChildProcessIds(42, root), /stat is incomplete/);
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+});
+
 test('owner-private socket keeps old variant and External verifier; new request is closed', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'oci-source-socket-'));
   chmodSync(root, 0o700);
