@@ -66,6 +66,34 @@ Local shared-profile scans retain the same frozen request and scan receipt
 contracts used by the Hub. Inspect and manage them in the repository's protected
 state namespace:
 
+`--profile all` expands to the explicit sorted set `license-signals`, `updates`,
+and `vulnerabilities`. Repeated profiles are deduplicated. Unsupported source
+questions and unavailable license evidence remain visible coverage gaps.
+
+Local scans accept `--freshness cached|refresh-stale|refresh|offline`. Cached and
+offline scans contact no providers and read no source credentials. Refresh-stale
+uses the shared policy and acquisition planner to refresh only missing, incomplete
+or expired exact questions. Refresh revalidates selected questions within existing
+budgets. The existing `--offline` flag selects offline intent; local scans otherwise
+keep their refresh default. The chosen intent is retained in the scan request.
+
+Hub scans support the same explicit options:
+
+```text
+aos hub maintain scan --registry REGISTRY --profile all \
+    --package publisher/package --freshness refresh-stale --idempotency-key KEY
+```
+
+The client resolves exact coordinates against the admitted inventory before
+requesting work. All versions, platforms and outputs of a selected coordinate
+are pinned. Omitting `--package` selects the complete admitted inventory. Unknown
+or unassessable coordinates, changed inventory/policy/resource revisions and
+incomplete pagination fail before scan admission. Interactive enumeration is
+limited to 4,096 subjects and 64 pages; larger selections use the existing exact
+`--request FILE` submission contract. That file and interactive selectors are
+mutually exclusive. Hub selectors default to refresh-stale and require an explicit
+idempotency key. Returned receipts must match the exact submitted selection.
+
 ```text
 aos maintain scans list --limit 20
 aos maintain scans inspect SCAN_ID

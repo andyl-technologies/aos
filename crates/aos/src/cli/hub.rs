@@ -15,6 +15,7 @@ use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
 use super::{
+    AssessmentProfileArg,
     HubAccessTokenCmd, HubContainerCmd, HubIdentityProviderCmd, HubInstanceSettingsSectionCmd,
     HubInvitationCmd, HubOrgMemberCmd, HubOrganizationDomainCmd, HubServiceAccountCmd,
     HubSigningKeyCmd,
@@ -268,26 +269,6 @@ pub enum HubCmd {
     },
 }
 
-#[derive(clap::ValueEnum, Clone, Copy, Debug)]
-pub enum AssessmentProfileArg {
-    /// Check eligible upstream package updates
-    Updates,
-    /// Check supported advisory sources and CVE mappings
-    Vulnerabilities,
-    /// Check non-authoritative license signals
-    LicenseSignals,
-}
-
-impl From<AssessmentProfileArg> for aos_assessment::input::Profile {
-    fn from(profile: AssessmentProfileArg) -> Self {
-        match profile {
-            AssessmentProfileArg::Updates => Self::Updates,
-            AssessmentProfileArg::Vulnerabilities => Self::Vulnerabilities,
-            AssessmentProfileArg::LicenseSignals => Self::LicenseSignals,
-        }
-    }
-}
-
 #[derive(Subcommand)]
 pub enum HubAssessmentCmd {
     /// Read publication availability and exact outputs lacking scan declarations
@@ -534,8 +515,10 @@ pub enum HubAssessmentCmd {
         #[arg(long)]
         registry: String,
         /// Read a closed aos.assessment-scan-submission/v1 document
-        #[arg(long)]
-        request: PathBuf,
+        #[arg(long, conflicts_with_all = ["profiles", "packages", "freshness", "idempotency_key"])]
+        request: Option<PathBuf>,
+        #[command(flatten)]
+        selection: super::HubAssessmentScanSelectionArgs,
         /// Wait for the admitted operation to reach a terminal state
         #[arg(long)]
         wait: bool,

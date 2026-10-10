@@ -241,12 +241,17 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
             access,
             registry,
             request,
+            selection,
             wait,
             wait_seconds,
         } => {
-            let bytes = read_bounded_file(request, 262_144, "assessment scan submission")?;
-            let submission = ScanSubmissionV1::from_slice(&bytes)?;
             let client = hub_client(&access.hub, access.token.as_deref()).await?;
+            let submission = if let Some(request) = request {
+                let bytes = read_bounded_file(request, 262_144, "assessment scan submission")?;
+                ScanSubmissionV1::from_slice(&bytes)?
+            } else {
+                super::assessment_selection::resolve(&client, registry, selection).await?
+            };
             let response = client
                 .call_topology(
                     hub_rpc::RequestPackageScan,
@@ -257,6 +262,15 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
                 )
                 .await?;
             let receipt = ScanReceiptV1::from_slice(&response.document_json)?;
+            anyhow::ensure!(
+                receipt.admission_complete
+                    && receipt.request == submission.bind(
+                        &receipt.request.resource_scope,
+                        &receipt.request.authorization_partition,
+                        &receipt.request.actor_ref,
+                    )?,
+                "Hub scan receipt differs from the exact submitted selection"
+            );
             let receipt = if *wait {
                 wait_for_scan(&client, registry, receipt, *wait_seconds).await?
             } else {
@@ -274,9 +288,7 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
             inventory_digest,
             policy_digest,
         } => {
-            let mut profiles = profiles.iter().copied().map(Into::into).collect::<Vec<_>>();
-            profiles.sort();
-            profiles.dedup();
+            let profiles = crate::cli::assessment_profiles(profiles);
             let query = StatusQueryV1 {
                 schema: "aos.assessment-status-query/v1".into(),
                 profiles,

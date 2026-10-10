@@ -34,6 +34,75 @@ fn cli_command() -> Command {
         .expect("CLI contract command thread must complete")
 }
 
+#[test]
+fn local_and_hub_scans_expand_all_and_accept_the_same_freshness_modes() {
+    use aos_assessment::input::{FreshnessMode, Profile};
+
+    for (flag, expected) in [
+        ("cached", FreshnessMode::Cached),
+        ("refresh-stale", FreshnessMode::RefreshStale),
+        ("refresh", FreshnessMode::Refresh),
+        ("offline", FreshnessMode::Offline),
+    ] {
+        let local = [
+            "aos",
+            "maintain",
+            "scan",
+            "--profile",
+            "all,updates",
+            "--freshness",
+            flag,
+        ];
+        let cli::Commands::Maintain(args) = parse_cli(local).unwrap().command else {
+            panic!("local maintenance command expected");
+        };
+        let Some(cli::MaintainCommand::Scan(scan)) = args.command else {
+            panic!("local scan expected");
+        };
+        assert_eq!(FreshnessMode::from(scan.freshness.unwrap()), expected);
+        assert_eq!(
+            cli::assessment_profiles(&scan.profiles),
+            [
+                Profile::LicenseSignals,
+                Profile::Updates,
+                Profile::Vulnerabilities
+            ]
+        );
+        assert!(parse_cli(local.into_iter().chain(["--offline"])).is_err());
+
+        let hub = [
+            "aos",
+            "hub",
+            "maintain",
+            "scan",
+            "--registry",
+            "fixture",
+            "--profile",
+            "all,updates",
+            "--freshness",
+            flag,
+            "--package",
+            "fixture/example",
+            "--idempotency-key",
+            "fixture-request",
+        ];
+        assert!(parse_cli(hub).is_ok());
+        assert!(parse_cli(hub.into_iter().chain(["--request", "submission.json"])).is_err());
+    }
+    assert!(parse_cli(["aos", "maintain", "scan", "--freshness", "cached"]).is_err());
+    assert!(parse_cli([
+        "aos",
+        "hub",
+        "maintain",
+        "scan",
+        "--registry",
+        "fixture",
+        "--profile",
+        "all"
+    ])
+    .is_err());
+}
+
 const REVIEWED_ACTION_PATHS: &[&[&str]] = &[
     &["hub", "instance", "identity", "update"],
     &["hub", "instance", "resource-defaults", "update"],

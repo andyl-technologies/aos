@@ -129,6 +129,10 @@ pub struct MaintainScanArgs {
     #[arg(long = "profile", value_delimiter = ',', conflicts_with_all = ["repology_fallback", "repology_limit"])]
     pub profiles: Vec<super::AssessmentProfileArg>,
 
+    /// Select source acquisition intent for the admitted scan
+    #[arg(long, value_enum, requires = "profiles", conflicts_with = "offline")]
+    pub freshness: Option<super::AssessmentFreshnessArg>,
+
     /// Read a portable assessment closure instead of evaluating this checkout
     #[arg(
         long,

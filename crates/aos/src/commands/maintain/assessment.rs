@@ -20,7 +20,7 @@ use aos_assessment::time::Timestamp;
 use aos_assessment_http::{
     NativeSourceTransport, PhysicalClock, SourceCredential, SourceCredentials,
 };
-use aos_assessment_runtime::acquisition::{AcquisitionPort, acquire};
+use aos_assessment_runtime::acquisition::{AcquisitionPort, acquire, acquire_stale};
 use aos_assessment_runtime::ports::{Clock, EvidenceStore};
 use aos_assessment_runtime::provider::{
     BudgetReservation, PROVIDER_WORK_PLAN_V1, ProviderLimits, ProviderOperation, ProviderPageV1,
@@ -47,14 +47,19 @@ pub async fn run_assessment(
     command: &MaintainScanArgs,
     printer: &Printer,
 ) -> Result<()> {
-    let mut profiles = command
-        .profiles
-        .iter()
-        .copied()
-        .map(Into::into)
-        .collect::<Vec<Profile>>();
-    profiles.sort();
-    profiles.dedup();
+    let profiles = crate::cli::assessment_profiles(&command.profiles);
+    let freshness = if command.offline {
+        FreshnessMode::Offline
+    } else {
+        command
+            .freshness
+            .map(Into::into)
+            .unwrap_or(FreshnessMode::Refresh)
+    };
+    let acquire_sources = matches!(
+        freshness,
+        FreshnessMode::Refresh | FreshnessMode::RefreshStale
+    );
     let nix = NixRunner::new(cli.verbose, cli.quiet)?;
     let (mut data, store) = if let Some(input) = &command.assessment_input {
         let file = OpenOptions::new()
@@ -137,12 +142,12 @@ pub async fn run_assessment(
         Sha256Digest::of_bytes(store.root().as_os_str().as_encoded_bytes())
     );
     let credentials = Arc::new(LocalCredentials {
-        github: if command.offline {
+        github: if !acquire_sources {
             None
         } else {
             read_secret(&command.token_env)?
         },
-        nvd: if command.offline {
+        nvd: if !acquire_sources {
             None
         } else {
             read_secret(&command.nvd_key_env)?
@@ -157,11 +162,7 @@ pub async fn run_assessment(
         &data,
         subjects.clone(),
         profiles.clone(),
-        if command.offline {
-            FreshnessMode::Offline
-        } else {
-            FreshnessMode::Refresh
-        },
+        freshness,
         command.idempotency_key.as_deref().unwrap_or(&scan_id),
         issued_at.clone(),
     )?;
@@ -192,7 +193,7 @@ pub async fn run_assessment(
         limits: started.request.limits.clone(),
     };
     let executed = tokio::select! {
-        result = execute_assessment(cli, args, command, printer, &store, &port, data, profiles, subjects, &partition) => result,
+        result = execute_assessment(cli, args, command, printer, &store, &port, data, profiles, subjects, &partition, freshness) => result,
         signal = tokio::signal::ctrl_c() => {
             signal?;
             Err(anyhow::anyhow!("assessment interrupted; admitted evidence remains available"))
@@ -216,8 +217,9 @@ async fn execute_assessment(
     profiles: Vec<Profile>,
     subjects: Vec<String>,
     partition: &str,
+    freshness: FreshnessMode,
 ) -> Result<()> {
-    let diagnostics = if command.offline {
+    let diagnostics = if matches!(freshness, FreshnessMode::Offline | FreshnessMode::Cached) {
         if profiles.contains(&Profile::Vulnerabilities) && data.advisory_snapshot.is_none() {
             data.advisory_snapshot = Some(aos_assessment::advisory::AdvisorySnapshotV1 {
                 schema: aos_assessment::advisory::ADVISORY_SNAPSHOT_V1.into(),
@@ -226,6 +228,17 @@ async fn execute_assessment(
             });
         }
         vec![]
+    } else if freshness == FreshnessMode::RefreshStale {
+        acquire_stale(
+            port,
+            &port.evidence,
+            partition,
+            &mut data,
+            &subjects,
+            &profiles,
+            &PhysicalClock.now()?,
+        )
+        .await?
     } else {
         acquire(
             port,

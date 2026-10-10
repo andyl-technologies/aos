@@ -116,6 +116,14 @@ in {
       head = json.loads(maintainer.succeed("cat " + state_repository + "/assessments/journal.json"))["head"]
       assert head["scanId"] == second["execution"]["scan_id"], head
 
+      # Cached acquisition neither reads source credentials nor consumes a
+      # physical request. Its frozen request preserves the explicit intent.
+      cached_command = command.replace("--offline ", "--freshness cached ")
+      cached = json.loads(maintainer.succeed(cached_command + "--token-env invalid/name --nvd-key-env invalid/name"))
+      assert cached["execution"]["scan"]["request"]["freshness"] == "cached", cached
+      assert cached["execution"]["scan"]["usage"]["providerRequests"] == 0, cached
+      assert cached["data"]["subjectResults"][0]["findings"] == findings, cached
+
       # An interrupted queued process loses its lease. Only explicit recovery
       # finalizes that operation; reads and repeated recovery create no work.
       maintainer.succeed("systemd-run --unit=assessment-orphan-lane-fixture aos-release-fleet-fixture assessment-lane-lock " + lock + " /var/lib/assessment/orphan-ready /var/lib/assessment/orphan-release")
