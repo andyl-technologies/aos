@@ -134,14 +134,19 @@ review remains separate. One coordinated compiler serves build and Nix requests.
 T2 and branch worklines remain deferred.
 
 Additional isolated worklines inspect growing-index completion, indexed replay
-and permanent recovery, while a separate worker executes the five public SDK
-checkout cases against the retained `d116ffe6239a` archive. The first two source
+and permanent recovery, while a separate worker qualifies the five public SDK
+checkout cases against the retained `d116ffe6239a` archive. All five exact cases
+pass, with unchanged source, compiler inputs and executable seals; these are
+source-bound host results, not current owning Nix acceptance. The first two source
 reviews find no justified correction before the newly registered phase markers
 execute; their file ownership is released. Permanent recovery review identifies
 an interrupted-unlink durability gap: a fresh absence observation can discharge
 a Planned duty before synchronizing the affected family directory. An isolated
-correction and genuine recovery-fault witness are in progress under GC-15,
-GC-24 and GC-29, preserving the original bounds and current physical checks.
+correction and genuine recovery-fault witness are committed privately and pass
+independent full-diff review under GC-15, GC-24 and GC-29, preserving the original
+bounds and current physical checks. Their compilation and runtime qualification
+remain pending. A separate immutable checkout retains this correction for the
+next qualification without changing the active compiler's source.
 
 Frozen private tree `17feb7b5b1c8` passes the exact formatter pair in 23.364
 seconds, with unchanged 6,246 tracked entries and 3,237 compiler inputs.
