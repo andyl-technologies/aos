@@ -55,6 +55,7 @@ pub(in crate::node_observed_executor::service) struct Worker {
     pub(super) published: bool,
     request: NodePreservingDebugRequest,
     graph: Option<Rc<AdmittedGraph>>,
+    capabilities: Option<crate::node_observed_executor::ResolvedCapabilityWorld>,
     runtime: Option<NodeRuntime>,
     restored: Option<Box<RestoredWorld>>,
     activation: Option<WorldActivation>,
@@ -90,6 +91,7 @@ impl Worker {
             published: false,
             request,
             graph: None,
+            capabilities: None,
             runtime: None,
             restored: None,
             activation: None,
@@ -165,20 +167,24 @@ impl Worker {
             super::super::conditional_preparation::execution_id(&self.request.execution)?;
         match &self.request.action {
             NodePreservingDebugAction::Capture {} => {
-                if catalog
-                    .scenario(&self.request.selections)
-                    .map_err(refused)?
-                    .canonical_bytes()
-                    .map_err(refused)?
-                    != self.request.scenario.as_slice()
+                self.capabilities = super::capabilities::resolve(catalog, &self.request, None)?;
+                if self.capabilities.is_none()
+                    && catalog
+                        .scenario(&self.request.selections)
+                        .map_err(refused)?
+                        .canonical_bytes()
+                        .map_err(refused)?
+                        != self.request.scenario.as_slice()
                 {
                     return Err(refused(
                         "preserving source scenario differs from current installation",
                     ));
                 }
-                let prepared = catalog
-                    .prepare_world(&self.request.selections, scenario, execution)
-                    .map_err(refused)?;
+                let prepared = match &self.capabilities {
+                    Some(resolved) => catalog.prepare_capability_world(resolved, execution),
+                    None => catalog.prepare_world(&self.request.selections, scenario, execution),
+                }
+                .map_err(refused)?;
                 self.graph = Some(Rc::new(prepared.graph));
                 let graph = self
                     .graph
@@ -233,18 +239,27 @@ impl Worker {
                         "signed capture differs from its original operator record",
                     ));
                 }
-                let factory = catalog
-                    .host_state_factory_from_archive(&self.request.selections, &scenario, &record)
-                    .map_err(refused)?;
+                self.capabilities =
+                    super::capabilities::resolve(catalog, &self.request, Some(&record))?;
+                let factory = super::capabilities::factory(
+                    catalog,
+                    &self.request,
+                    self.capabilities.as_ref(),
+                    Some(&record),
+                )?;
                 self.original_record = Some(record.clone());
-                let (graph, target) = catalog
-                    .prepare_host_restore_graph(
+                let (graph, target) = match &self.capabilities {
+                    Some(resolved) => {
+                        catalog.prepare_capability_condition_restore(resolved, execution, &record)
+                    }
+                    None => catalog.prepare_host_restore_graph(
                         &self.request.selections,
                         &scenario,
                         &record,
                         execution,
-                    )
-                    .map_err(refused)?;
+                    ),
+                }
+                .map_err(refused)?;
                 self.graph = Some(Rc::new(graph));
                 let graph = self
                     .graph
@@ -335,11 +350,8 @@ impl Worker {
         let cut = saved.record.cut;
         let barrier = saved.reference.clone();
         require_source_activation(&saved.record.source.activation_id, &self.request.execution)?;
-        let scenario =
-            NodeScenario::from_json(self.request.scenario.as_slice()).map_err(refused)?;
-        let factory = catalog
-            .host_state_factory(&self.request.selections, &scenario)
-            .map_err(refused)?;
+        let factory =
+            super::capabilities::factory(catalog, &self.request, self.capabilities.as_ref(), None)?;
         let graph = self
             .graph
             .as_ref()

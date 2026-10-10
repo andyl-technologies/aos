@@ -39,6 +39,7 @@ pub(super) struct MixedProfile {
     pub(super) public_preparation: bool,
     pub(super) public_continuation: bool,
     pub(super) scheduling_epochs: bool,
+    pub(super) capabilities: Option<Rc<super::super::ResolvedCapabilityWorld>>,
 }
 
 impl MixedProfile {
@@ -47,7 +48,7 @@ impl MixedProfile {
     /// # Errors
     /// Refuses unsupported installed assets, ISA, schema or policy identities.
     pub(super) fn regenerate(&self, host: &ContentRef) -> Result<Self, NodeObservedError> {
-        if self.scheduling_epochs {
+        let baseline = if self.scheduling_epochs {
             Self::build_public_epoch_preserving(self.installed.clone(), host, &self.isa)
         } else if self.public_continuation {
             Self::build_public_preserving(self.installed.clone(), host, &self.isa)
@@ -55,7 +56,25 @@ impl MixedProfile {
             Self::build_public(self.installed.clone(), host, &self.isa)
         } else {
             Self::build(self.installed.clone(), host, &self.isa)
+        }?;
+        match &self.capabilities {
+            Some(resolved) => baseline.with_capabilities(resolved),
+            None => Ok(baseline),
         }
+    }
+
+    pub(super) fn with_capabilities(
+        mut self,
+        resolved: &super::super::ResolvedCapabilityWorld,
+    ) -> Result<Self, NodeObservedError> {
+        if !self.public_preparation || self.public_continuation || self.scheduling_epochs {
+            return Err(super::super::refused(
+                "gem5 capability selection requires live initial preparation",
+            ));
+        }
+        self.scenario = resolved.gem5_scenario(&self.scenario)?;
+        self.capabilities = Some(Rc::new(resolved.clone()));
+        Ok(self)
     }
 
     /// Regenerates the complete fixed no-ingress Clock and gem5 model selection.
@@ -335,6 +354,7 @@ impl MixedProfile {
             public_preparation,
             public_continuation,
             scheduling_epochs,
+            capabilities: None,
         })
     }
 }

@@ -96,7 +96,7 @@ impl InstalledMixedEngine {
 
     /// Prepares an actual closed native peer and clock beneath reserved custody.
     pub(super) fn prepare_live(&self, isa: &str) -> Result<MixedLiveWorld, NodeObservedError> {
-        self.prepare_live_selected(isa, false, false, false, None)
+        self.prepare_live_selected(isa, false, false, false, None, None)
     }
 
     pub(super) fn prepare_public_initial(
@@ -104,7 +104,7 @@ impl InstalledMixedEngine {
         isa: &str,
         activation_id: Id,
     ) -> Result<MixedLiveWorld, NodeObservedError> {
-        self.prepare_live_selected(isa, true, false, false, Some(activation_id))
+        self.prepare_live_selected(isa, true, false, false, Some(activation_id), None)
     }
 
     pub(super) fn prepare_public_preserving(
@@ -112,7 +112,7 @@ impl InstalledMixedEngine {
         isa: &str,
         activation_id: Id,
     ) -> Result<MixedLiveWorld, NodeObservedError> {
-        self.prepare_live_selected(isa, true, true, false, Some(activation_id))
+        self.prepare_live_selected(isa, true, true, false, Some(activation_id), None)
     }
 
     pub(super) fn prepare_public_epoch_preserving(
@@ -120,7 +120,16 @@ impl InstalledMixedEngine {
         isa: &str,
         activation_id: Id,
     ) -> Result<MixedLiveWorld, NodeObservedError> {
-        self.prepare_live_selected(isa, true, true, true, Some(activation_id))
+        self.prepare_live_selected(isa, true, true, true, Some(activation_id), None)
+    }
+
+    pub(super) fn prepare_public_capability(
+        &self,
+        isa: &str,
+        activation_id: Id,
+        resolved: &super::super::ResolvedCapabilityWorld,
+    ) -> Result<MixedLiveWorld, NodeObservedError> {
+        self.prepare_live_selected(isa, true, false, false, Some(activation_id), Some(resolved))
     }
 
     fn prepare_live_selected(
@@ -130,8 +139,9 @@ impl InstalledMixedEngine {
         public_continuation: bool,
         scheduling_epochs: bool,
         activation_id: Option<Id>,
+        capabilities: Option<&super::super::ResolvedCapabilityWorld>,
     ) -> Result<MixedLiveWorld, NodeObservedError> {
-        let profile = Rc::new(if scheduling_epochs {
+        let profile = if scheduling_epochs {
             MixedProfile::build_public_epoch_preserving(
                 self.installed.clone(),
                 &measure_executable(&self.host)?,
@@ -155,6 +165,10 @@ impl InstalledMixedEngine {
                 &measure_executable(&self.host)?,
                 isa,
             )?
+        };
+        let profile = Rc::new(match capabilities {
+            Some(resolved) => profile.with_capabilities(resolved)?,
+            None => profile,
         });
         let mut target = fresh_target(&profile, None)?;
         if let Some(activation_id) = activation_id {
@@ -233,10 +247,21 @@ impl InstalledMixedEngine {
             )
             .map_err(|failure| refused(&format!("initial mixed enrollment: {failure}")))?,
         );
+        let capability_admission = capabilities.map(|resolved| {
+            super::super::capabilities::admission::CapabilityAdmission {
+                original: evidence.as_ref(),
+                resolved,
+            }
+        });
+        let admission: &dyn crucible::node_admission::AdmissionEvidence =
+            match &capability_admission {
+                Some(admission) => admission,
+                None => evidence.as_ref(),
+            };
         let graph = Rc::new(
             profile
                 .scenario
-                .admit(&bindings, evidence.as_ref(), admission_limits())
+                .admit(&bindings, admission, admission_limits())
                 .map_err(|failure| refused(&format!("initial mixed graph admission: {failure}")))?,
         );
         let mut clock = HostModelNode::new(

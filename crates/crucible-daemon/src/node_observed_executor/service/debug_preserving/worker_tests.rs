@@ -20,6 +20,7 @@ fn durable_stop_before_local_reconciliation_retains_incoming_resume() {
     let request = NodePreservingDebugRequest {
         format: "crucible.preserving-debug-request".into(),
         version: 1,
+        requirements: None,
         execution: "abababababababababababababababab".into(),
         selections,
         scenario: Bytes::new(Vec::new()),
@@ -74,6 +75,7 @@ fn durable_stop_before_local_reconciliation_retains_incoming_resume() {
         published: false,
         request,
         graph: None,
+        capabilities: None,
         runtime: None,
         restored: None,
         activation: None,
@@ -120,6 +122,7 @@ fn failed_suffix_seal_or_unwind_keeps_original_owner_and_blocks_containment() {
     let request = NodePreservingDebugRequest {
         format: "crucible.preserving-debug-request".into(),
         version: 1,
+        requirements: None,
         execution: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd".into(),
         selections,
         scenario: Bytes::new(Vec::new()),
@@ -146,6 +149,7 @@ fn failed_suffix_seal_or_unwind_keeps_original_owner_and_blocks_containment() {
         published: false,
         request,
         graph: None,
+        capabilities: None,
         runtime: None,
         restored: None,
         activation: None,

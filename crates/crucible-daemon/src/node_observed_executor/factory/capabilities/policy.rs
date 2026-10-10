@@ -39,7 +39,13 @@ pub(in crate::node_observed_executor::factory) fn matches(
         demand
             .match_contract(descriptor, binding, &capabilities, &guarantees)
             .map_err(|error| refused(&error.to_string()))?;
-        qualify_kind(&selected.kind, demand, standalone_clock(selections))?;
+        qualify_kind(
+            &selected.kind,
+            demand,
+            standalone_clock(selections),
+            condition_preservation(selections),
+            gem5_ordinary(selections),
+        )?;
     }
     Ok(())
 }
@@ -48,6 +54,8 @@ pub(super) fn qualify_kind(
     kind: &InstalledNodeKind,
     demand: &NodeCapabilityRequirement,
     clock_preservation: bool,
+    condition_preservation: bool,
+    gem5_ordinary: bool,
 ) -> Result<(), NodeObservedError> {
     // Each table belongs to the actual adapters used by this catalog. A new
     // operation needs a source policy and native witness, not an advertised ID.
@@ -56,18 +64,28 @@ pub(super) fn qualify_kind(
             "no enrolled architecture or semantic extension policy for this catalog candidate",
         ));
     }
-    // The native codecs remain unchanged, but the current installed archive
-    // factories remain legacy except the source-qualified standalone Clock
-    // factory. Its complete-world scope excludes ingress and other owners.
+    // Preservation is qualified for a complete source-installed candidate.
+    // A condition selection captures only its original ACKed, unresumed Stop;
+    // its operations do not imply replay, fork or physical-device capture.
     if demand.guarantees.isolated_fork
         || demand.guarantees.conditional_replay
-        || (demand.guarantees.durable_restart && !clock_preservation)
+        || (demand.guarantees.durable_restart && !clock_preservation && !condition_preservation)
     {
         return Err(refused(
             "no enrolled capability-bearing preservation or replay factory",
         ));
     }
     for operation in &demand.operations {
+        if gem5_ordinary
+            && !matches!(
+                operation.operation.as_str(),
+                "exact_run" | "boundary_settle"
+            )
+        {
+            return Err(refused(
+                "closed mixed capability selection qualifies only ordinary exact execution and boundary settlement",
+            ));
+        }
         let supported = match kind {
             InstalledNodeKind::HostClock => match operation.operation.as_str() {
                 "exact_run" | "boundary_settle" => operation.facet.id.as_str() == "host/exact-v1",
@@ -84,10 +102,45 @@ pub(super) fn qualify_kind(
                 // These source-installed models use the same exact operation
                 // facade. Full configuration, schema and facet bodies were
                 // matched above; richer control and archive policies stay separate.
-                matches!(
-                    operation.operation.as_str(),
-                    "exact_run" | "boundary_settle"
-                ) && operation.facet.id.as_str() == "host/exact-v1"
+                match operation.operation.as_str() {
+                    "exact_run" | "boundary_settle" => {
+                        operation.facet.id.as_str() == "host/exact-v1"
+                    }
+                    "capture" | "durable_restart" => {
+                        condition_preservation
+                            && matches!(
+                                kind,
+                                InstalledNodeKind::HostIo { .. }
+                                    | InstalledNodeKind::HostScripted { .. }
+                            )
+                            && operation.facet.id.as_str() == "host/condition-preservation-v1"
+                    }
+                    _ => false,
+                }
+            }
+            InstalledNodeKind::HostConditionDebugPreserving { .. } => {
+                condition_preservation
+                    && match operation.operation.as_str() {
+                        "condition_stop" | "condition_resume" => {
+                            operation.facet.id.as_str() == "host/condition-debug-v1"
+                        }
+                        "capture" | "durable_restart" => {
+                            operation.facet.id.as_str() == "host/condition-preservation-v1"
+                        }
+                        "exact_run" | "boundary_settle" => {
+                            operation.facet.id.as_str() == "host/exact-v1"
+                        }
+                        _ => false,
+                    }
+            }
+            InstalledNodeKind::Gem5Closed { .. } => {
+                gem5_ordinary
+                    && matches!(
+                        operation.operation.as_str(),
+                        "exact_run" | "boundary_settle"
+                    )
+                    && operation.facet.id.as_str()
+                        == crucible::node_adapters::gem5::GEM5_CLOSED_EXACT_PROFILE
             }
             InstalledNodeKind::ReferenceDevice { .. }
             | InstalledNodeKind::ReferenceNativeLinked { .. } => {
@@ -111,6 +164,30 @@ pub(super) fn standalone_clock(selections: &[InstalledNodeSelection]) -> bool {
     matches!(selections, [selection] if matches!(selection.kind, InstalledNodeKind::HostClock))
 }
 
+// This is the independently qualified operator topology. Larger condition
+// rosters and other native models require a separately measured conjunction.
+pub(super) fn condition_preservation(selections: &[InstalledNodeSelection]) -> bool {
+    if selections.len() != 3 {
+        return false;
+    }
+    let mut observer = 0;
+    let mut source_consumer = None;
+    let mut block = None;
+    for selected in selections {
+        match &selected.kind {
+            InstalledNodeKind::HostConditionDebugPreserving { .. } => observer += 1,
+            InstalledNodeKind::HostScripted { profile } if source_consumer.is_none() => {
+                source_consumer = Some(&profile.consumer)
+            }
+            InstalledNodeKind::HostIo {
+                profile: super::super::InstalledHostIoProfile::Block { .. },
+            } if block.is_none() => block = Some(&selected.node),
+            _ => return false,
+        }
+    }
+    observer == 1 && block.is_some() && source_consumer == block
+}
+
 pub(super) fn object<T: DeserializeOwned + crucible_node_contract::Validate>(
     scenario: &NodeScenario,
     reference: &crucible_node_contract::ContentRef,
@@ -126,4 +203,16 @@ pub(super) fn object<T: DeserializeOwned + crucible_node_contract::Validate>(
         ));
     }
     Ok(canonical::decode(&object.bytes, 4 * 1024 * 1024)?)
+}
+
+// This live conjunction uses the independently qualified fixed native capsule.
+// Preserving and epoch editions retain their separate default refusals here.
+pub(super) fn gem5_ordinary(selections: &[InstalledNodeSelection]) -> bool {
+    matches!(selections, [clock, cpu]
+        if clock.node.as_str() == "clock"
+            && clock.owner.as_str() == "owner/clock"
+            && matches!(clock.kind, InstalledNodeKind::HostClock)
+            && cpu.node.as_str() == "cpu"
+            && cpu.owner.as_str() == "owner/cpu"
+            && matches!(cpu.kind, InstalledNodeKind::Gem5Closed { .. }))
 }

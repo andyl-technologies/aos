@@ -1595,6 +1595,57 @@ measured providers continue to refuse the new opt-in. A separately measured
 source/bootstrap/profile, ordinary graph consumer and source-owned semantic
 policy are required before a native provider may use it.
 
+## Authored capabilities in preserving and mixed native worlds
+
+The installed preserving Source/Block/condition route now accepts complete
+original capability requirements in request edition 2. It regenerates the same
+whole-world demands, selected source policy and signed archive binding before
+native reservation, and retains the exact wrapper through Stop capture and fresh
+restoration. Legacy requests omit the field unchanged; explicit null and
+inconsistent editions refuse. Independently installed policies still determine
+which native operations may run.
+
+The ordinary capability route also prepares the existing closed Clock/gem5
+world using its genuine mixed owner, original graph admission and one complete
+activation barrier. The authored requirements are authenticated beneath the
+same native profile; they cannot install another CPU, widen its facets or grant
+capture, fork or replay support.
+
+The current-worktree join contains exactly 18 source paths above `6aac344340`.
+Its only overlapping factory hunk retains the complete rational-clock support
+and adds the condition wrapper without replacing the earlier implementation.
+Both original private-stage prerequisites and the complete joined inventory
+include the three new preserving-condition modules.
+
+Current qualification passes five capability and seven preserving data cases,
+two native cases, all 37 source-quality checks, daemon/CLI all-target strict
+checks and formatting of all 18 files. The actual preserving CLI/daemon case
+passes in 74.62 seconds: capture the original ACKed, unresumed Stop, remove all original
+source files, restore two fresh worlds and compare unchanged suffixes and
+once-only Resume. The actual mixed CLI case passes in 71.34 seconds with two
+owners, original preparation/activation, independently computed guest checksum,
+cached retries, six unsupported-demand refusals and graceful native retirement.
+These durations are correctness-test results, not Linux performance evidence.
+
+The final current receipt has SHA256
+`2e995b316ef4656d1d7086a3a1821c87b76a30a603bbd7c4fdab411b0b2dc38c`;
+its unchanged before/after source inventory contains 8,671 files. Local retention
+preserves 1,181 public original-body/source/log/command files and seven actual
+current executables. Private archive keys remain in their original namespaces
+and are never read, hashed, copied or published by retention or review.
+
+One runner failure is preserved: Cargo's integration-test feature unification
+rebuilt the CLI after the standalone binary had been retained, so the hash guard
+refused before any model or native assertion ran. The corrected runner reused
+the completed unchanged-source builds, retained the actual integration-built
+CLI and checked its original compile-time path before and after both native
+cases. This supplies no extra native pass or source-change credit.
+
+This checkpoint covers the selected preserving condition and fixed two-owner
+mixed world. Additional node rosters, complete backend parity, Runtime7,
+conditional replay, generic CNP semantics and physical/KVM execution remain
+under their distinct implementation and qualification paths.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

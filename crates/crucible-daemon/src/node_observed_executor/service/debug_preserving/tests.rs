@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod adverse;
+mod capabilities;
 
 use super::*;
 use crate::node_control::{
@@ -315,6 +316,7 @@ fn original_capture_claim_survives_source_gone_twins_and_native_suffix_once() {
     let request = NodePreservingDebugRequest {
         format: "crucible.preserving-debug-request".into(),
         version: 1,
+        requirements: None,
         execution: "10101010101010101010101010101010".into(),
         selections,
         scenario,
@@ -488,6 +490,7 @@ fn direct_profile_preflight_refuses_oversized_metadata_before_canonical_encoding
     let request = NodePreservingDebugRequest {
         format: "crucible.preserving-debug-request".into(),
         version: 1,
+        requirements: None,
         execution: "40404040404040404040404040404040".into(),
         selections,
         scenario: Bytes::new(Vec::new()),

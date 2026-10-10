@@ -5,6 +5,8 @@
 //! Ambiguity refuses; the resolver never unions support across candidates.
 
 pub(super) mod admission;
+mod condition;
+mod gem5;
 mod native;
 pub(super) mod policy;
 mod staging;
@@ -203,6 +205,19 @@ impl InstalledNodeCatalog {
         let identity = resolved.scenario.world.identity()?;
         if source.is_some_and(|value| value.manifest().world_binding_hash != identity) {
             return Err(refused("original capability source world differs"));
+        }
+        if policy::gem5_ordinary(&resolved.candidate.selections) {
+            if source.is_some() {
+                return Err(refused(
+                    "authored gem5 capability continuation is not qualified",
+                ));
+            }
+            return super::native_state::public_catalog::prepare_capability(
+                self,
+                &resolved.candidate.selections,
+                resolved,
+                execution,
+            );
         }
         let artifacts = self.artifacts.clone();
         self.prepare_world_with_selected_label(

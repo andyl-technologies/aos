@@ -9,6 +9,7 @@
 //! one common original claim before an owning actor can allocate native state.
 
 pub(super) mod actor;
+mod capabilities;
 use super::debug::budget;
 mod ledger;
 mod worker;
@@ -43,7 +44,7 @@ pub enum NodePreservingDebugAction {
 pub struct NodePreservingDebugRequest {
     /// Names the closed operator request format.
     pub format: String,
-    /// Selects the first explicit preserving operator grammar.
+    /// Selects legacy edition one or authored-demand edition two.
     pub version: u32,
     /// Names a fresh original common-route execution claim.
     pub execution: String,
@@ -51,6 +52,16 @@ pub struct NodePreservingDebugRequest {
     pub selections: Vec<InstalledNodeSelection>,
     /// Retains the exact authored scenario, independently regenerated before work.
     pub scenario: Bytes,
+    /// Retains raw authored demands in explicit request edition two.
+    ///
+    /// Edition one omits this field and keeps its original bytes. These demands
+    /// select one complete installed candidate; they grant no native permission.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_requirements",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub requirements: Option<Bytes>,
     /// Names the sole installed preserving condition observer.
     pub observer: Id,
     /// Bounds original native work without declaring EOF.
@@ -59,6 +70,15 @@ pub struct NodePreservingDebugRequest {
     pub maximum_record_bytes: U64,
     /// Selects original capture or an independently authenticated fresh target.
     pub action: NodePreservingDebugAction,
+}
+
+// Explicit null is not an absent legacy field. A present edition-two field
+// must retain an actual byte string, including through direct control decoding.
+fn deserialize_requirements<'de, D>(deserializer: D) -> Result<Option<Bytes>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Bytes::deserialize(deserializer).map(Some)
 }
 
 impl NodePreservingDebugRequest {
@@ -71,7 +91,7 @@ impl NodePreservingDebugRequest {
         super::conditional_preparation::validate_execution(&self.execution)?;
         self.observer.validate().map_err(refused)?;
         if self.format != "crucible.preserving-debug-request"
-            || self.version != 1
+            || !matches!(self.version, 1 | 2)
             || self.selections.len() != 3
             || self
                 .selections
@@ -84,6 +104,22 @@ impl NodePreservingDebugRequest {
             return Err(refused(
                 "preserving Debug edition or finite geometry differs",
             ));
+        }
+        match (self.version, &self.requirements) {
+            (1, None) => {}
+            (2, Some(bytes)) if bytes.as_slice().len() <= 1024 * 1024 => {
+                let demands: crucible::node_admission::CapabilityRequirements =
+                    serde_json::from_value(
+                        canonical::parse_json(bytes.as_slice(), 1024 * 1024).map_err(refused)?,
+                    )
+                    .map_err(refused)?;
+                demands.validate().map_err(refused)?;
+            }
+            _ => {
+                return Err(refused(
+                    "preserving capability demands require explicit edition two",
+                ));
+            }
         }
         let mut observer = 0;
         let mut source = 0;

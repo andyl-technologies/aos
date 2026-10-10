@@ -157,6 +157,49 @@ pub(in super::super) fn prepare(
     })
 }
 
+/// Retains actual inactive owners beneath the regenerated authored capability world.
+pub(in super::super) fn prepare_capability(
+    catalog: &InstalledNodeCatalog,
+    selections: &[InstalledNodeSelection],
+    resolved: &super::super::ResolvedCapabilityWorld,
+    execution: ExecutionId,
+) -> Result<
+    (
+        InstalledPreparedWorld,
+        crucible::node_contract::ActivationRecord,
+    ),
+    NodeObservedError,
+> {
+    let isa = selected_isa(selections)?;
+    let expected = resolved.gem5_scenario(&scenario(catalog, selections)?)?;
+    if !matches!(selections[1].kind, InstalledNodeKind::Gem5Closed { .. })
+        || measure_executable(&catalog.device_executable)? != catalog.device_identity
+    {
+        return Err(refused(
+            "capability preparation requires the unchanged live closed native selection",
+        ));
+    }
+    let engine =
+        InstalledMixedEngine::with_runtime(catalog.socket_parent.clone(), catalog.custody.clone())?;
+    let activation = Id::new(format!("activation/{}", execution_text(execution)))?;
+    let live = engine.prepare_public_capability(isa.name(), activation, resolved)?;
+    if live.profile.scenario.canonical_bytes()? != expected.canonical_bytes()? {
+        return Err(refused(
+            "actual native capability preparation changed its independently regenerated world",
+        ));
+    }
+    let graph = Rc::try_unwrap(live.graph)
+        .map_err(|_| refused("capability native graph retained unexpected preparation aliases"))?;
+    Ok((
+        InstalledPreparedWorld {
+            scenario: live.profile.scenario.clone(),
+            graph,
+            realization: live.realization,
+        },
+        live.target,
+    ))
+}
+
 /// Keeps the source-owned sealed evidence available for native archive custody.
 pub(super) fn prepare_source(
     catalog: &InstalledNodeCatalog,

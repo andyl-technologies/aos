@@ -54,6 +54,7 @@ pub struct InstalledHostStateFactory {
     host_executable: std::path::PathBuf,
     objects: BTreeMap<String, (ContentRef, Vec<u8>)>,
     selections: BTreeMap<Id, InstalledNodeSelection>,
+    capability_resolution: Option<Rc<super::capabilities::ResolvedCapabilityWorld>>,
 }
 
 impl InstalledNodeCatalog {
@@ -175,6 +176,7 @@ impl InstalledNodeCatalog {
             .collect();
         Ok(Rc::new(InstalledHostStateFactory {
             scenario: expected,
+            capability_resolution: None,
             host_identity: self.host_identity.clone(),
             host_executable: self.host_executable.clone(),
             objects,
@@ -197,6 +199,22 @@ mod recorded;
 mod native;
 
 impl InstalledHostStateFactory {
+    pub(in crate::node_observed_executor::factory) fn with_condition_capabilities(
+        mut self,
+        resolved: &super::capabilities::ResolvedCapabilityWorld,
+    ) -> Result<Self, NodeObservedError> {
+        resolved.condition_baseline(&self.scenario)?;
+        self.scenario = resolved.scenario().clone();
+        for object in &self.scenario.content {
+            self.objects.insert(
+                object.reference.hash.digest.clone(),
+                (object.reference.clone(), object.bytes.clone()),
+            );
+        }
+        self.capability_resolution = Some(Rc::new(resolved.clone()));
+        Ok(self)
+    }
+
     fn recorded_world(&self) -> bool {
         self.selections.len() == 1
             && self.selections.values().all(|selection| {
@@ -676,6 +694,12 @@ impl CaptureEvidence for InstalledHostStateFactory {
         bytes: &[u8],
         maximum: usize,
     ) -> Result<Vec<ContentRef>, StateError> {
+        if let Some(resolved) = &self.capability_resolution
+            && let Some(dependencies) =
+                resolved.condition_dependencies(reference, bytes, maximum)?
+        {
+            return Ok(dependencies);
+        }
         if reference == &self.host_identity {
             reference.verify(bytes).map_err(state_error)?;
             return Ok(vec![]);

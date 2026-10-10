@@ -153,6 +153,8 @@ impl Ledger {
             || link.source_execution != *source_execution
             || link.source_request != record.request
             || link.artifact != *capture
+            || source.version != request.version
+            || source.requirements != request.requirements
             || source.scenario != request.scenario
             || source.observer != request.observer
             || source.maximum_physical_cut != request.maximum_physical_cut
@@ -379,10 +381,9 @@ impl Ledger {
             publications,
             runtime,
         };
-        // The original Runtime6 snapshot was already completely byte-counted
-        // under the authored ceiling. Its bounded byte encodings may allocate
-        // again here; whole-envelope counting still precedes canonical body
-        // allocation, and native custody stays held until exact durability.
+        // The complete original operation/input/ACK ledger is data only. Its
+        // byte-owning serializer is precredited before canonical allocation,
+        // and no native owner is discharged until this exact body is durable.
         super::budget::bounded_json(&original, maximum_bytes)?;
         let bytes = encode(&original)?;
         if bytes.len() > maximum_bytes {

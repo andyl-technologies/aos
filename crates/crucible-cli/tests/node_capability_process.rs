@@ -541,3 +541,6 @@ fn actual_cli_capabilities_queue_clock_worker_and_preserve_two_source_gone_branc
 
 #[path = "node_capability_process/original_claim.rs"]
 mod original_claim;
+
+#[path = "node_capability_process/gem5.rs"]
+mod gem5;
