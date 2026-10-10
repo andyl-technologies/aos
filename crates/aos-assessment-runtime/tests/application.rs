@@ -49,6 +49,34 @@ fn status_round_trip_preserves_unassessed_members_without_inventing_freshness() 
 }
 
 #[test]
+fn source_status_is_optional_closed_and_sorted_independently_of_findings() -> Result<()> {
+    let mut value = status();
+    let original = AssessmentStatusV1::from_slice(&serde_json::to_vec(&value)?)?;
+    assert!(original.source_status.is_empty());
+    value["sourceStatus"] = json!([
+        {"provider":"nvd", "availability":{"state":"unconfigured"}},
+        {"provider":"osv", "availability":{"state":"waiting", "retryAt":"2026-10-09T12:01:00Z", "cause":"spacing-or-cooldown"}}
+    ]);
+    let projected = AssessmentStatusV1::from_slice(&serde_json::to_vec(&value)?)?;
+    assert_eq!(projected.subjects, original.subjects);
+    assert_eq!(projected.inventory_digest, original.inventory_digest);
+    assert_eq!(AssessmentStatusV1::from_slice(&projected.to_bytes()?)?, projected);
+    value["sourceStatus"][0]["availability"]["account"] = json!("private-account");
+    assert!(AssessmentStatusV1::from_slice(&serde_json::to_vec(&value)?).is_err());
+    value["sourceStatus"] = json!([
+        {"provider":"osv", "availability":{"state":"eligible"}},
+        {"provider":"nvd", "availability":{"state":"eligible"}}
+    ]);
+    assert!(AssessmentStatusV1::from_slice(&serde_json::to_vec(&value)?).is_err());
+    value["sourceStatus"] = json!([
+        {"provider":"osv", "availability":{"state":"eligible"}},
+        {"provider":"osv", "availability":{"state":"eligible"}}
+    ]);
+    assert!(AssessmentStatusV1::from_slice(&serde_json::to_vec(&value)?).is_err());
+    Ok(())
+}
+
+#[test]
 fn status_deadlines_are_exclusive_and_terminal_generations_can_be_uncommitted() -> Result<()> {
     let mut value = status();
     let profile = &mut value["subjects"][0]["profiles"][0];

@@ -69,6 +69,11 @@ impl RpcService {
         }
         // Current status cannot borrow freshness from a superseded publication.
         // Exact historical assessments remain available through their own read.
+        let source_status = self
+            .db
+            .assessment_source_status(&registry.scope_key, &page.as_of)
+            .await
+            .map_err(RpcError::internal)?;
         let publication_fences = self
             .db
             .assessment_publication_fences(
@@ -98,6 +103,7 @@ impl RpcService {
             inventory_digest: page.resource.inventory_digest,
             inventory_revision: page.resource.inventory_revision,
             policy_digest: page.resource.policy_digest,
+            source_status,
             as_of: page.as_of,
             next_subject: page.next_subject,
             subjects: page

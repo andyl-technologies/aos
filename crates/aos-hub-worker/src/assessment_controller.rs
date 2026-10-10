@@ -93,6 +93,17 @@ pub(crate) fn installed_partitions(env: &Env) -> Result<Vec<String>> {
     Ok(scopes.into_iter().collect())
 }
 
+/// Registers the current installed source catalog for scoped API status reads.
+///
+/// # Errors
+/// Returns an error for invalid deployment configuration or conflicting routes.
+pub(crate) fn register_source_status(env: &Env, db: &Database) -> Result<()> {
+    if let Some(installation) = installation(env)? {
+        db.register_assessment_source_status(installation.routes, installation.credentials)?;
+    }
+    Ok(())
+}
+
 struct WorkerNotificationExecutor {
     env: Env,
     auth: NotificationWorkAuth,

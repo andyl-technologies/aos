@@ -51,6 +51,16 @@ def status(position):
         page["subjects"][0]["subjectRef"] = "a"
     elif scenario == "missing-profile":
         page["subjects"][0]["profiles"].pop()
+    if scenario.startswith("source-"):
+        availability = {
+            "state": "waiting", "retryAt": "2026-10-10T00:03:20Z",
+            "cause": "spacing-or-cooldown",
+        }
+        if scenario == "source-extra-field":
+            availability = {"state": "eligible", "account": "private-account"}
+        elif scenario == "source-expired-retry":
+            availability["retryAt"] = page["asOf"]
+        page["sourceStatus"] = [{"provider": "osv", "availability": availability}]
     return page
 
 
@@ -142,7 +152,29 @@ try:
         calls.clear()
         run(okay=False)
         assert len(calls) == 3
+
+        def run_status(as_json=True, okay=True):
+            result = subprocess.run([
+                str(binary), *(["--json"] if as_json else []),
+                "hub", "maintain", "status", "--registry", "fixture", "--profile", "all",
+                "--hub", f"http://127.0.0.1:{server.server_port}", "--token", "public-fixture-token",
+            ], cwd=root, env=environment, capture_output=True, text=True, timeout=30)
+            assert (result.returncode == 0) == okay, (result.stdout, result.stderr)
+            if okay and as_json:
+                assert json.loads(result.stdout)["data"]["sourceStatus"][0]["availability"]["cause"] == "spacing-or-cooldown"
+            elif okay:
+                human = result.stdout + result.stderr
+                assert "osv: Waiting until" in human and "provider spacing or cooldown" in human, (result.stdout, result.stderr)
+
+        scenario = "source-status"
+        run_status()
+        run_status(as_json=False)
+        for scenario in ["source-extra-field", "source-expired-retry"]:
+            calls.clear()
+            run_status(okay=False)
+            assert len(calls) == 1 and calls[0][0].endswith("/GetStatus")
         print("PASS: actual CLI pinned selection, bounded pages and changed receipt refusal")
+        print("PASS: actual CLI scoped source status and malformed availability refusal")
 finally:
     server.shutdown()
     server.server_close()

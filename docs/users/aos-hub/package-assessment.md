@@ -11,6 +11,18 @@ installing a controller does not grant authenticated callers assessment permissi
 Packages without explicit authenticated scan declarations remain unassessed.
 Missing source mappings and incomplete source responses remain coverage gaps.
 
+Status responses also expose scoped `sourceStatus` entries from the current
+installed route catalog. CLI and web views show whether another source reservation
+is eligible, delayed by a quota window, spacing, cooldown or outage circuit, or
+lacks live route authority. These reads do not consume quota, reset windows,
+contact providers or read secret material. They omit account identifiers,
+credential references and shared quota consumption. An installation that does
+not supply source status leaves that projection unreported.
+
+Availability describes reservation eligibility at the response's explicit time.
+Atomic reservation checks still decide each physical call. Package evidence
+coverage and findings retain their own freshness and completeness rules.
+
 ## Publication availability
 
 `aos hub maintain publication --registry REGISTRY` reads the newest authenticated

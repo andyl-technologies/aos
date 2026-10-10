@@ -3325,6 +3325,9 @@ pub const MAX_WEBHOOKS_PER_ORG: usize = 100;
 /// The hub database handle.
 pub struct Database {
     pub(super) backend: Box<dyn Backend>,
+    // Installed routing metadata is a read projection, never work authority.
+    // Keeping it on this handle avoids reading obsolete task budget identities.
+    assessment_source_catalog: std::sync::OnceLock<assessment::source_status::SourceStatusCatalog>,
 }
 
 impl Database {
@@ -3576,7 +3579,7 @@ impl Database {
     }
 
     pub async fn with_backend(backend: Box<dyn Backend>) -> Result<Self> {
-        let db = Self { backend };
+        let db = Self::attach(backend);
         db.migrate().await?;
         Ok(db)
     }
@@ -3592,7 +3595,10 @@ impl Database {
     /// should migrate it.
     #[must_use]
     pub fn attach(backend: Box<dyn Backend>) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            assessment_source_catalog: Default::default(),
+        }
     }
 
     /// The SQL dialect of the underlying backend.

@@ -328,6 +328,7 @@ pub async fn install_controller(
     }
     let authority = DatabaseAssessmentAuthority::new(Arc::clone(&db));
     let evidence = CoordinatorEvidenceStore::new(Arc::clone(&db));
+    db.register_assessment_source_status(installation.routes.clone(), installation.credentials.clone())?;
     let routes = InstalledAssessmentRoutes::new(
         Arc::clone(&db),
         installation.routes.clone(),

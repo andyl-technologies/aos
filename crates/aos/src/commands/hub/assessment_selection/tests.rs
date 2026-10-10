@@ -23,6 +23,7 @@ fn page(subject: &str, coordinate: &str, more: bool) -> Result<AssessmentStatusV
         inventory_revision: 7,
         policy_digest: Sha256Digest::of_bytes("policy"),
         as_of: Timestamp::from_unix_seconds(1_800_000_000)?,
+        source_status: vec![],
         subjects: vec![SubjectStatus {
             subject_ref: subject.into(),
             package_coordinate: coordinate.into(),

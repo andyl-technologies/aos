@@ -130,6 +130,9 @@ pub struct AssessmentStatusV1 {
     pub policy_digest: Sha256Digest,
     /// Database time used for all freshness decisions in this page.
     pub as_of: Timestamp,
+    /// Installed source reservation availability; absent when not reported.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_status: Vec<crate::source_status::SourceStatus>,
     /// Bounded subject status, including unassessed admitted members.
     pub subjects: Vec<SubjectStatus>,
     /// Exclusive next position, always bound to inventory/policy on replay.
@@ -159,6 +162,17 @@ impl AssessmentStatusV1 {
     }
 
     fn validate(&self) -> Result<()> {
+        if self.source_status.len() > crate::source_status::SOURCE_PROFILES.len()
+            || self
+                .source_status
+                .windows(2)
+                .any(|pair| pair[0].provider >= pair[1].provider)
+        {
+            bail!("assessment source status is not a bounded canonical profile set");
+        }
+        for source in &self.source_status {
+            source.validate(&self.as_of)?;
+        }
         if self.schema != "aos.assessment-status/v1"
             || self.subjects.len() > 100
             || self.inventory_revision == 0

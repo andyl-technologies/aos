@@ -1313,6 +1313,9 @@ mod entry {
                 crate::workerqueue::WorkerQueue::from_env(env)?,
             )));
 
+        crate::assessment_controller::register_source_status(env, &db).map_err(|_| {
+            worker::Error::RustError("invalid installed assessment source status configuration".into())
+        })?;
         let mut service = RpcService::new(
             Arc::clone(&db),
             jwt_keys.clone(),

@@ -133,8 +133,19 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
                             let next = status.next_subject.clone();
                             let inventory_digest = status.inventory_digest;
                             let policy_digest = status.policy_digest;
+                            let sources = status.source_status.iter().map(|source| {
+                                let description = format!("{}: {}", source.provider, source.availability.description());
+                                view! { <li>{description}</li> }
+                            }).collect_view();
+                            let sources_reported = !status.source_status.is_empty();
                             view! {
                                 <p class="field-note">{format!("Observed at {}", status.as_of)}</p>
+                                <h3>"Source reservation availability"</h3>
+                                {if sources_reported {
+                                    view! { <ul>{sources}</ul> }.into_any()
+                                } else {
+                                    view! { <p class="field-note">"Source availability is not reported by this installation."</p> }.into_any()
+                                }}
                                 <table><thead><tr><th>"Package"</th><th>"Version"</th><th>"Platform"</th><th>"Check"</th><th>"Evidence"</th><th>"Result"</th></tr></thead><tbody>{rows}</tbody></table>
                                 {next.map(|position| view! { <button class="secondary-button" on:click=move |_| query.update(|query| {
                                     query.after_subject = Some(position.clone()); query.inventory_digest = Some(inventory_digest); query.policy_digest = Some(policy_digest);

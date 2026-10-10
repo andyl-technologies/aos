@@ -345,6 +345,13 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
                     }
                 }
                 printer.info(&format!("Observed at {}", status.as_of));
+                for source in &status.source_status {
+                    printer.info(&format!(
+                        "{}: {}",
+                        escape_terminal(&source.provider),
+                        source.availability.description(),
+                    ));
+                }
                 if let Some(next) = status.next_subject {
                     printer.info(&format!(
                         "Next page: --after-subject {} --inventory-digest {} --policy-digest {}",
