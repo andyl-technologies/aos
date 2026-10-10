@@ -105,7 +105,7 @@ in {
   gc-mark-reachability = sourceGate "gc-mark-reachability" ''
     cd crates
     ${focusedTests "tokio,surface-sdk" markTests}
-    printf 'PASS: contextual metadata marking, independent producers, certified edges and native replay (14 exact cases)\n' \
+    printf 'PASS: contextual metadata marking, independent producers, certified edges and native replay (${toString (builtins.length markTests)} exact cases)\n' \
       > "$out/result"
   '';
 
