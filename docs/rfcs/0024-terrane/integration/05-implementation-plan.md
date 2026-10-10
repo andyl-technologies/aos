@@ -269,6 +269,20 @@ executable seals remain unchanged. Nine executable suites contain the 752
 nonignored tests; the two additional all-target examples are explicitly
 non-test targets and remain sealed separately. Corrected native qualification
 proceeds independently; the complete core run and owning gates remain required.
+Reviewed correction `09f75e0635` retains the exact 88-byte refusal-fixture
+checkpoint and independently checks the accepted layer's additional 87-byte
+binding, its work counter and unchanged source bytes. Correction `0284c205a9`
+checks actual layer file populations and repeated grafts against the exhaustive
+oracle, whiteout/file transitions and separate discovery accounting; ordinary
+whiteout contexts still return the exact tree error. Its public documentation
+correction changes no production behavior. Fresh corrected native candidate
+`59a18efc11` passes the library build, then fails actual all-target checking on
+three disclosure-fixture compiler errors. Correction `56e3ce3e77` checks exact
+protected Original identities and reopens the independent private source through
+the existing production metadata factory. Both frozen source packets remain
+unchanged. The reviewed corrections are composed as `9eb308e352`; fresh native
+qualification and the hermetic `core-fuzz` gate run independently, using separate
+Cargo targets. Full current core execution remains pending.
 No owning gate or task is accepted by these results.
 The same frozen retained-read candidate passes all twenty-nine mandatory
 native read cases in 46.960 seconds and the public SDK case in 0.009 seconds,
