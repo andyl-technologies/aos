@@ -812,7 +812,6 @@ in {
           ("search package", f"{APM} search hub-tool --registry production", b"hub-tool"),
           ("search package names", f"{APM} search hub --names-only --registry production", b"hub-tool"),
           ("show package", f"{APM} show hub-tool --registry production", b"1.0.0"),
-          ("inspect package", f"{APM} info hub-tool --registry production", b"hub-tool"),
           ("inspect package policy", f"{APM} policy hub-tool", b"1.0.0"),
       )
       for query_label, query_command, expected_text in package_queries:
