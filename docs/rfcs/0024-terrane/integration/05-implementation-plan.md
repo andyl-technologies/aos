@@ -3869,6 +3869,22 @@ native fixture opening before observation in a different process namespace;
 that refusal supplies no timeout cause or replacement qualification. No task
 checkbox, milestone status or freeze advances.
 
+The twelve auxiliary harnesses are now composed privately in `9528811e05`.
+Independent pure instantiation verifies their common source-bound image,
+all 75 original selectors and the unchanged 89-gate current floor. Runtime
+qualification remains pending. Allocation-only candidate `d0721103b7` passes
+build, strict all-target Clippy, fresh compilation and ten existing physical
+scratch regressions. Its original 4,100-cycle GC case still times out at
+120.004 seconds; all downstream checks remain unrun. The 69-payload preserved
+manifest has SHA-256
+`81ec7e51885f1b5db4367d661b9e8103aac2cabdc6c3807f04c5a719d421a99b`.
+Three disjoint implementation worklines now address bounded pure publication
+decoding, internal directory traversal comparisons, and readonly parent/leaf
+capture comparisons. Complete current qualification remains at every request,
+effect, progress selection and acknowledgement; all actual physical checks
+remain required. These changes require combined adversarial runtime and owning
+gate qualification before any task or milestone can advance.
+
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
 out to a directory through the `sdk` surface.
