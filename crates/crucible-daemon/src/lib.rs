@@ -59,7 +59,8 @@
 //! [`prepared_result_journal`] retains a complete semantic result across
 //! crash-safe publication retries;
 //! [`crucible_execution`] supplies the typed runner boundary used by the local
-//! adapters; [`attempt_execution_router`] owns backend-neutral original-proof
+//! adapters; [`attempt_execution_limits`] accounts admitted execution quanta;
+//! [`attempt_execution_router`] owns backend-neutral original-proof
 //! routing; [`crucible_qemu_runner`] retains the QEMU compatibility adapter to the
 //! exact-restore/thin-replay QEMU realization path; [`crucible_qemu_session`]
 //! composes its attempt-scoped live backend, resource guard, and modeled driver;
@@ -102,6 +103,7 @@ pub mod modeled_campaign_driver;
 pub(crate) use qemu_campaign_lifecycle::{
     GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignRunError,
 };
+pub mod attempt_execution_limits;
 pub mod attempt_execution_router;
 pub mod automatic_finding_runner;
 pub mod campaign_attachment;
@@ -202,6 +204,7 @@ pub use assignment_ledger::{
     CompletedFindingCandidate, DirectoryAssignmentLedger, ExactCheckpointResumeBasis,
     MemoryAssignmentLedger, visit_directory_attempt_states_bounded,
 };
+pub use attempt_execution_limits::{AttemptExecutionQuantumCounter, ExecutionQuantumExhausted};
 pub use attempt_execution_router::{
     AttemptExecutionRouter, AttemptExecutionRouterConstructionError,
     AttemptExecutionRouterConstructionFailure, AttemptExecutionRouterError,

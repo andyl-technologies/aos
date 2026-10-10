@@ -1826,6 +1826,28 @@ the engineering baseline from this join. Completion and test execution are not
 claimed. Earlier application compilation receipts remain bound to their original
 selected source images. Raw evidence stays local.
 
+## Common execution-quantum accounting
+
+Attempt execution budgets use a backend-neutral counter and exhaustion error.
+Charging preserves the exact admitted unsigned ceiling, refuses without changing
+the spent count, and cannot overflow at `u64::MAX`. The QEMU compatibility counter
+delegates while retaining its nominal type, constant constructor/accessors,
+copy/equality behavior, Debug fields and exact realization-error operation and
+message. The original resource guard and its tests remain byte-identical;
+cancellation and host-resource checks retain their original order before charging.
+
+The current four-path migration passes four accounting controls and all 23
+unchanged QEMU resource/workspace guard controls, 37 source-quality checks,
+daemon all-target strict checks and formatting of four Rust files. All 8,713
+source files match before and after qualification. The final receipt has SHA256
+`b0174515938449af0f4ef866d4e08118ef9f8ec600b30d9449de658f009e215b`.
+The initial harness selected only the 21 direct guard cases while expecting
+the complete 23-case group; the corrected selector includes the two workspace
+cases. The original four passing accounting controls were retained without
+reexecution. Exact sources, commands, logs and five test/scanner executables stay
+local. This changes API ownership and supplies no wire, native, capability,
+readiness or capture qualification. Raw evidence is excluded from Git.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
