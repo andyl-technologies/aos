@@ -12,13 +12,8 @@ use aos_sandbox_core::{
 };
 
 use crate::Journal;
-use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionError,
-    PublicProjectionKindV1,
-};
-use crate::controller_service::public_projection::{
-    PublicProjectionStoreV1,
-};
+use aos_sandbox_protocol::public_api::projection::{PublicProjectionError, PublicProjectionKindV1};
+use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 use crate::lifecycle::{
     LifecycleRuntimeAdmissionErrorV1, lifecycle_runtime_admission_fence_from_journal_v1,
 };

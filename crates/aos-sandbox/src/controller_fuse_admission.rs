@@ -20,13 +20,8 @@ use aos_proto::aos::sandbox::v1::{Attachment, AttachmentPhase, ViewPhase};
 use aos_sandbox_core::{ObjectDigest, OperationId};
 
 use crate::Journal;
-use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionKindV1,
-    PublicProjectionResourceV1,
-};
-use crate::controller_service::public_projection::{
-    PublicProjectionStoreV1,
-};
+use aos_sandbox_protocol::public_api::projection::{PublicProjectionKindV1, PublicProjectionResourceV1};
+use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 
 mod authority;
 mod carrier;

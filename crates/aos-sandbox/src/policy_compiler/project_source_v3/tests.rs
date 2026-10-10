@@ -22,9 +22,7 @@ use super::*;
 use crate::IdempotencyKey;
 use crate::cli_model::{PublicApiAuditMethodV1, PublicMutationRequestV1};
 use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
-use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionPlanV1, PublicProjectionResourceV1,
-};
+use aos_sandbox_protocol::public_api::projection::{PublicProjectionPlanV1, PublicProjectionResourceV1};
 use crate::policy_compiler::deployment_head::{
     admit_policy_signer_pins_in_journal_v1, admit_test_held_deployment_profile_v2,
     signed_test_deployment_input_fixture_v1, verify_test_held_deployment_profile_v2,

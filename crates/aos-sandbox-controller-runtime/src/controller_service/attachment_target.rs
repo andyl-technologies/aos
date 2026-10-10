@@ -12,12 +12,8 @@ use aos_sandbox::Journal;
 use aos_sandbox::attachment_effect_owner::{
     ProtectedAttachmentEffectOwnerV1, ProtectedAttachmentTargetErrorV1,
 };
-use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionResourceV1,
-};
-use aos_sandbox::controller_service::public_projection::{
-    PublicProjectionStoreV1,
-};
+use aos_sandbox_protocol::public_api::projection::{PublicProjectionResourceV1};
+use aos_sandbox::controller_service::public_projection::{PublicProjectionStoreV1};
 use aos_sandbox::mount_preparation::MountServiceIdentity;
 use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_authority::{

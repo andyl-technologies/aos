@@ -9,9 +9,7 @@ use aos_sandbox_core::{OperationId, ProjectId};
 
 use crate::OperationCompilationError;
 use aos_sandbox_protocol::public_api::{CheckedSandboxResourceV1, PublicOperationMethodV1};
-use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionPlanV1, PublicProjectionResourceV1,
-};
+use aos_sandbox_protocol::public_api::projection::{PublicProjectionPlanV1, PublicProjectionResourceV1};
 
 /// Prepares the only public Sandbox fields a Storage Repair may advance.
 ///

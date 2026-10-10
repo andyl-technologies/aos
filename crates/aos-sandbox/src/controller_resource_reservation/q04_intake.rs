@@ -5,12 +5,12 @@
 //! that same Q once. The actual Project preparation retains this owner through
 //! terminal posts and LAST; closed or abandoned rows never become free credit.
 
-use crate::journal::JournalShape;
 use std::sync::{Arc, Mutex};
 
 use aos_sandbox_core::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
 use aos_sandbox_linux::cgroup::FirstGlobalCpuReadbackV1;
 
+use crate::journal::JournalShape;
 use super::service_interval::{
     ObserverAdmission, ObserverLifetime, OriginalReceiver, capacity_for, multiply,
 };

@@ -12,12 +12,12 @@
 //! Pure prearm precedes observations; the original FirstGlobal CPU association
 //! is historical, and fresh I CPU readback precedes replay and archive growth.
 
-use crate::journal::JournalShape;
 use std::sync::{Arc, Mutex};
 
 use aos_sandbox_core::{OperationId, RawPairedClockSample, ResourceDimension as D, ResourceVector};
 use aos_sandbox_linux::cgroup::FirstGlobalCpuReadbackV1;
 
+use crate::journal::JournalShape;
 use super::service_interval::{
     ControllerFirstGlobalPrefixAttemptV1, ObserverAdmission, ObserverLifetime,
     OriginalControllerCpuContainment, OriginalReceiver, capacity_for, multiply,

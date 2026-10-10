@@ -47,13 +47,8 @@ use crate::cli_model::{
 };
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use aos_sandbox_protocol::public_api::CheckedSandboxResourceV1;
-use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionKindV1,
-    PublicProjectionResourceV1,
-};
-use crate::controller_service::public_projection::{
-    PublicProjectionStoreV1,
-};
+use aos_sandbox_protocol::public_api::projection::{PublicProjectionKindV1, PublicProjectionResourceV1};
+use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 use crate::lifecycle::{
     LifecycleAuthenticatedStorageInventoryV1, LifecycleResourceV1, LifecycleStorageInventoryKindV1,
 };

@@ -7750,12 +7750,9 @@ mod tests {
         use sha2::{Digest as _, Sha256};
 
         use aos_sandbox_protocol::public_api::projection::{
-            PublicProjectionKindV1,
-            PublicProjectionResourceV1,
+            PublicProjectionKindV1, PublicProjectionResourceV1,
         };
-        use crate::controller_service::public_projection::{
-            PublicProjectionStoreV1,
-        };
+        use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 
         let directory = TestDirectory::new();
         let (plan, marker) = failed_create_fixture();

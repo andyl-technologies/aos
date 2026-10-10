@@ -25,13 +25,9 @@ use aos_sandbox::controller_execution_spec_attempt::{
     ControllerExecutionSpecAttemptV1, load_controller_execution_spec_attempt_v1,
 };
 use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionKindV1,
-    PublicProjectionPlanV1,
-    PublicProjectionResourceV1,
+    PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
 };
-use aos_sandbox::controller_service::public_projection::{
-    PublicProjectionStoreV1,
-};
+use aos_sandbox::controller_service::public_projection::{PublicProjectionStoreV1};
 use aos_sandbox::execution_guest_identity::read_execution_guest_identity_v1;
 use aos_sandbox::production_operation_compiler::{
     PublicExecutionControlDispatchV1, lower_public_execution_control_v1,

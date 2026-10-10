@@ -30,13 +30,9 @@ use sha2::{Digest as _, Sha256};
 
 use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionKindV1,
-    PublicProjectionPlanV1,
-    PublicProjectionResourceV1,
+    PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
 };
-use crate::controller_service::public_projection::{
-    PublicProjectionStoreV1,
-};
+use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 use crate::journal::{Journal, JournalRecord, RecordNamespace};
 use crate::runtime_execution::no_apply_settlement::HostSettlementRecordV1;
 

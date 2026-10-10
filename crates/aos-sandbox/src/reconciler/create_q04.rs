@@ -8,13 +8,9 @@ use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use sha2::{Digest as _, Sha256};
 
 use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionKindV1,
-    PublicProjectionRecordV1,
-    PublicProjectionResourceV1,
+    PublicProjectionKindV1, PublicProjectionRecordV1, PublicProjectionResourceV1,
 };
-use crate::controller_service::public_projection::{
-    PublicProjectionStoreV1,
-};
+use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 use crate::journal::{Journal, JournalRecord, RecordNamespace};
 use crate::policy_compiler::create_q04::{
     CONTROLLER_IDENTITY_KEY, CONTROLLER_PHASE_PREFIX, CreateQ04ErrorV1, Q04CutIdentityV1,

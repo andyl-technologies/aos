@@ -24,14 +24,10 @@ use sha2::{Digest as _, Sha256};
 
 use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionKindV1,
-    PublicProjectionPlanV1,
-    PublicProjectionResourceV1,
+    PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
     public_projection_deletion_record_v1,
 };
-use crate::controller_service::public_projection::{
-    PublicProjectionStoreV1,
-};
+use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 use crate::public_mutation_compiler::{
     AuthorizedPublicMutationRequestV1, PublicMutationAuthorizationErrorV1,
     ResolvedPublicMutationRequestV1,

@@ -10,13 +10,9 @@ use aos_sandbox_core::{NodeId, ProjectId, Revision, SandboxId};
 
 use crate::Journal;
 use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionError,
-    PublicProjectionKindV1,
-    PublicProjectionResourceV1,
+    PublicProjectionError, PublicProjectionKindV1, PublicProjectionResourceV1,
 };
-use crate::controller_service::public_projection::{
-    PublicProjectionStoreV1,
-};
+use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 use crate::runtime_authority::{
     RuntimeAuthorityError, RuntimeAuthorityLimits, RuntimeAuthorityStateV1, RuntimeAuthorityStore,
 };

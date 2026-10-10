@@ -10,13 +10,8 @@ use aos_filesystem_view_core::load_exact;
 use aos_proto::aos::sandbox::v1::{
     CreateViewRequest, ObjectDescriptor as ProtoObjectDescriptor, ReleaseViewRequest, ViewPhase,
 };
-use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionKindV1,
-    PublicProjectionResourceV1,
-};
-use aos_sandbox::controller_service::public_projection::{
-    PublicProjectionStoreV1,
-};
+use aos_sandbox_protocol::public_api::projection::{PublicProjectionKindV1, PublicProjectionResourceV1};
+use aos_sandbox::controller_service::public_projection::{PublicProjectionStoreV1};
 use aos_sandbox::filesystem_view_state::{
     FilesystemViewRevisionMutationV1, FilesystemViewRevisionPresenceV1,
     FilesystemViewRevisionStateError, commit_protected_filesystem_view_revision_v1,

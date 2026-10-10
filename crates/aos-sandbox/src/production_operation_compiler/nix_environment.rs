@@ -44,13 +44,8 @@ use aos_sandbox_protocol::nix_build::{
 use sha2::{Digest as _, Sha256};
 
 use crate::Journal;
-use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionKindV1,
-    PublicProjectionResourceV1,
-};
-use crate::controller_service::public_projection::{
-    PublicProjectionStoreV1,
-};
+use aos_sandbox_protocol::public_api::projection::{PublicProjectionKindV1, PublicProjectionResourceV1};
+use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 use crate::normal_root::{ProductionControllerNixStartupCaptureV1, ProductionControllerNixStartupV1};
 use crate::public_api_session::{
     ControllerNixPublicCredentialCustodyV1, PinnedSystemdCredential,

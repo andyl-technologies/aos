@@ -23,13 +23,9 @@ use sha2::{Digest as _, Sha256};
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1 as Request;
 use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionKindV1,
-    PublicProjectionPlanV1,
-    PublicProjectionResourceV1,
+    PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
 };
-use crate::controller_service::public_projection::{
-    PublicProjectionStoreV1,
-};
+use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 #[cfg(target_os = "linux")]
 use crate::public_attach_pending::{
     PublicAttachHostQueryDraftV1, prepare_public_attach_host_query_v1,

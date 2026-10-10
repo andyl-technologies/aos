@@ -14,13 +14,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::Journal;
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1 as Request;
-use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionKindV1,
-    PublicProjectionResourceV1,
-};
-use crate::controller_service::public_projection::{
-    PublicProjectionStoreV1,
-};
+use aos_sandbox_protocol::public_api::projection::{PublicProjectionKindV1, PublicProjectionResourceV1};
+use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 use crate::public_policy_planner::{
     AuthorizedPublicPolicyPlanRequestV1, PublicPolicyPlanningErrorV1,
 };

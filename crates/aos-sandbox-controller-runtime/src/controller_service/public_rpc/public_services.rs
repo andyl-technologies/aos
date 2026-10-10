@@ -41,13 +41,9 @@ use aos_sandbox_protocol::public_api::{
     QueryVisibilityDigestV1,
 };
 use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionKindV1,
-    PublicProjectionRecordV1,
-    PublicProjectionResourceV1,
+    PublicProjectionKindV1, PublicProjectionRecordV1, PublicProjectionResourceV1,
 };
-use aos_sandbox::controller_service::public_projection::{
-    PublicProjectionQueryV1,
-};
+use aos_sandbox::controller_service::public_projection::{PublicProjectionQueryV1};
 use aos_sandbox_core::{ObjectDigest, Operation, ProjectId, ResourceId, ResourceKind, Selector};
 use connectrpc::{
     ConnectError, Encodable, ErrorCode, RequestContext, Response, ServiceRequest, ServiceResult,

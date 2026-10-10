@@ -240,8 +240,8 @@ fn require_projection(
     row: &[u8],
 ) -> Result<(), JournalError> {
     use aos_sandbox_protocol::public_api::projection::{
-        PublicProjectionKindV1 as Kind, PublicProjectionRecordV1, PublicProjectionResourceV1 as Resource,
-        projection_key,
+        PublicProjectionKindV1 as Kind, PublicProjectionRecordV1,
+        PublicProjectionResourceV1 as Resource, projection_key,
     };
     let kind = match row[0] {
         1 => Kind::Sandbox,

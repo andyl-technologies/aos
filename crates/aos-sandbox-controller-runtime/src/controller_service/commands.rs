@@ -14,13 +14,9 @@ use aos_proto::aos::sandbox::v1::{
 use aos_sandbox::cli_model::{
     AuditAuthorizationV1, PublicApiAuditMethodV1, PublicMutationRequestV1,
 };
-use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionKindV1,
-    PublicProjectionRecordV1,
-};
+use aos_sandbox_protocol::public_api::projection::{PublicProjectionKindV1, PublicProjectionRecordV1};
 use aos_sandbox::controller_service::public_projection::{
-    AuthorizedPublicProjectionReadV1,
-    PublicProjectionQueryV1,
+    AuthorizedPublicProjectionReadV1, PublicProjectionQueryV1,
 };
 use aos_sandbox::public_policy_planner::PublicPolicyPlanningErrorV1;
 use aos_sandbox::{

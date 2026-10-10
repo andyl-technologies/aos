@@ -27,13 +27,9 @@ use sha2::{Digest as _, Sha256};
 
 use crate::controller::ControllerRequestScopeV1;
 use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionKindV1,
-    PublicProjectionRecordV1,
-    PublicProjectionResourceV1,
+    PublicProjectionKindV1, PublicProjectionRecordV1, PublicProjectionResourceV1,
 };
-use crate::controller_service::public_projection::{
-    PublicProjectionStoreV1,
-};
+use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 use crate::journal::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1, Journal, JournalError,
     JournalRecord, JournalTransaction, RecordNamespace, SourceProjectAdmissionChallengeV1,
