@@ -527,6 +527,12 @@ comparison. This removes the duplicate recovery byte engine without changing
 protected Cache admission, custody, or recovery authority, and establishes no
 new runtime qualification or protected Cache crate boundary.
 
+LocalInventory retained Journal, store history, bootstrap and clock formats use
+the same Core reader with their original bounds and error classifications.
+Canonical domain checks and exact authenticated-prefix capture remain local;
+the private read adapters are removed. Protected factories and the
+public Node carrier decoder retain their existing contracts.
+
 Do not introduce a universal owner/context containing every role, a field for
 every hypothetical backend, forwarding layers without a contract, or a new
 record family per refactor. Implementation and co-located tests are reviewed
