@@ -6,8 +6,7 @@
 
 use aos_assessment_runtime::application::ScanReceiptV1;
 use aos_assessment_runtime::control::{
-    ScanCancellationV1, ScanListQueryV1, ScanListV1, ScanLookupV1, ScanRetryV1, ScanSubmissionV1,
-    ScanSummary,
+    ScanCancellationV1, ScanListQueryV1, ScanLookupV1, ScanRetryV1, ScanSubmissionV1,
 };
 use aos_contract::Sha256Digest;
 
@@ -126,47 +125,16 @@ impl RpcService {
         let claims = self
             .authorize_assessment(auth, &registry, "assessment.read")
             .await?;
-        let page = self
+        let list = self
             .db
-            .assessment_scan_summaries(
+            .assessment_retained_scan_page(
                 registry.id,
-                query.after_scan.as_deref().unwrap_or(""),
+                &registry.scope_key,
                 query.limit,
+                query.after_scan.as_deref(),
             )
             .await
-            .map_err(RpcError::internal)?;
-        let next_scan = if let Some(last) = page.last() {
-            let next = self
-                .db
-                .assessment_scan_summaries(registry.id, &last.scan_id, 1)
-                .await
-                .map_err(RpcError::internal)?;
-            (!next.is_empty()).then(|| last.scan_id.clone())
-        } else {
-            None
-        };
-        let list = ScanListV1 {
-            schema: "aos.assessment-scan-list/v1".into(),
-            resource_scope: registry.scope_key.clone(),
-            as_of: self
-                .db
-                .assessment_database_time()
-                .await
-                .map_err(RpcError::internal)?,
-            scans: page
-                .into_iter()
-                .map(|scan| ScanSummary {
-                    scan_id: scan.scan_id,
-                    request_digest: scan.request_digest,
-                    state: scan.state,
-                    generation: scan.generation,
-                    resource_version: scan.resource_version,
-                    created_at: scan.created_at,
-                    assessment_digest: scan.assessment_digest,
-                })
-                .collect(),
-            next_scan,
-        };
+            .map_err(scan_page_error)?;
         let document_json = list.to_bytes().map_err(RpcError::internal)?;
         self.recheck_assessment(&claims, &registry, "assessment.read")
             .await?;
@@ -306,4 +274,19 @@ fn receipt(scan: AssessmentScanRecord) -> Result<pb::AssessmentDocumentResponse,
     Ok(pb::AssessmentDocumentResponse {
         document_json: receipt.to_bytes().map_err(RpcError::internal)?,
     })
+}
+
+fn scan_page_error(error: anyhow::Error) -> RpcError {
+    use aos_assessment_runtime::read_snapshot::ScanPageError;
+
+    match error.downcast_ref::<ScanPageError>() {
+        Some(ScanPageError::InvalidCursor) => {
+            RpcError::invalid(ScanPageError::InvalidCursor.to_string())
+        }
+        Some(ScanPageError::CapacityExceeded) => {
+            RpcError::ResourceExhausted(ScanPageError::CapacityExceeded.to_string())
+        }
+        Some(reason) => RpcError::FailedPrecondition(reason.to_string()),
+        None => RpcError::internal(error),
+    }
 }

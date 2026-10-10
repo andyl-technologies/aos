@@ -23,6 +23,7 @@ mod provider_index;
 mod provider_state;
 mod publication;
 mod reconcile;
+mod read_snapshot;
 mod reviews;
 mod scans;
 mod schedules;
@@ -73,6 +74,9 @@ mod conditional_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod status_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod read_snapshot_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod alerts_tests;

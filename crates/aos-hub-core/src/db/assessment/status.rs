@@ -242,6 +242,16 @@ impl Database {
         limit: u32,
     ) -> Result<Vec<AssessmentScanSummary>> {
         validate_page(after_scan, limit)?;
+        self.assessment_scan_summary_rows(registry_id, after_scan, limit)
+            .await
+    }
+
+    pub(super) async fn assessment_scan_summary_rows(
+        &self,
+        registry_id: i64,
+        after_scan: &str,
+        limit: u32,
+    ) -> Result<Vec<AssessmentScanSummary>> {
         let rows = self.backend.query(
             "SELECT scan_id, request_digest, state, generation, resource_version, created_at, assessment_digest
              FROM assessment_scans WHERE registry_id = ?1 AND scan_id > ?2 AND admission_complete = 1

@@ -172,7 +172,7 @@ pub struct ScanListQueryV1 {
     pub schema: String,
     /// Maximum summaries, between one and one hundred.
     pub limit: u32,
-    /// Exclusive position in the independently authorized resource.
+    /// Opaque hosted page token or exclusive local operation position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_scan: Option<String>,
 }
@@ -228,7 +228,7 @@ pub struct ScanListV1 {
     pub as_of: Timestamp,
     /// Summaries strictly ordered by operation identity.
     pub scans: Vec<ScanSummary>,
-    /// Exclusive continuation position; retained only when another page exists.
+    /// Hosted snapshot token or local position, present only when more rows exist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_scan: Option<String>,
 }
@@ -280,7 +280,10 @@ impl ScanListV1 {
         if let Some(next) = &self.next_scan
             && self.scans.last().is_none_or(|scan| &scan.scan_id != next)
         {
-            bail!("assessment scan cursor differs from its last summary");
+            crate::read_snapshot::parse_scan_cursor(next)?;
+            if self.scans.is_empty() {
+                bail!("empty scan page cannot have a continuation");
+            }
         }
         Ok(())
     }

@@ -1,0 +1,31 @@
+# Real CLI pagination through an isolated transport and persistent Native SQL.
+{
+  mkSystem,
+  pkgs,
+  ...
+}: let
+  fixture = import ./_assessment-retained-pages-native.nix {inherit pkgs;};
+  system = mkSystem [
+    ../../systems/server-test.nix
+    {environment.systemPackages = [pkgs.aos fixture];}
+  ];
+in {
+  name = "package-assessment-retained-pages";
+  timeout = 900;
+  bootTimeout = 300;
+  machines.hub = {
+    inherit system;
+    memoryMiB = 4096;
+    varSizeMiB = 2048;
+  };
+  testScript = ''
+    hub.wait_for_unit("multi-user.target", timeout=240)
+    output = hub.succeed(
+        "AOS_ASSESSMENT_CLI=${pkgs.aos}/bin/aos TOKIO_WORKER_THREADS=2 "
+        "${fixture}/bin/aos-assessment-retained-pages-fixture "
+        "--ignored --exact ${fixture.passthru.testSelector} --nocapture --test-threads=1",
+        timeout=240,
+    )
+    assert "PASS: actual CLI retained scan pages survive scan mutation and database reopen" in output, output
+  '';
+}

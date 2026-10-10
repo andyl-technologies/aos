@@ -69,6 +69,8 @@ pub enum AssessmentObjectKind {
     NotificationWork,
     /// Compact callback outcome, without response bytes or credentials.
     NotificationReceipt,
+    /// Immutable, expiring scan-list state and opaque continuation handles.
+    ScanReadSnapshot,
 }
 
 impl AssessmentObjectKind {
@@ -97,11 +99,16 @@ impl AssessmentObjectKind {
             Self::NotificationBody => "aos.assessment-notification-body/v1",
             Self::NotificationWork => "aos.assessment-notification-work/v1",
             Self::NotificationReceipt => "aos.assessment-notification-receipt/v1",
+            Self::ScanReadSnapshot => aos_assessment_runtime::read_snapshot::SCAN_READ_SNAPSHOT_V1,
         }
     }
 
     fn normalize(self, bytes: &[u8]) -> Result<Vec<u8>> {
         match self {
+            Self::ScanReadSnapshot => {
+                aos_assessment_runtime::read_snapshot::ScanReadSnapshotV1::from_slice(bytes)?
+                    .to_bytes()
+            }
             Self::NotificationWork => {
                 let plan: aos_assessment_runtime::notifications::NotificationWorkPlanV1 =
                     decode(bytes)?;
@@ -222,20 +229,43 @@ impl Database {
             return Ok(());
         }
         let digest = expected_digest.to_string();
-        let mut statements = vec![Statement::new(
+        let insert = if kind == AssessmentObjectKind::ScanReadSnapshot {
+            // The quota assertion shares the insertion transaction. Concurrent
+            // first-page reads cannot both consume the last retained slot.
             "INSERT INTO assessment_objects
                 (partition_key, object_digest, object_kind, byte_length, shard_count, admitted_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            vals![
-                partition,
-                digest,
-                kind.domain(),
-                canonical.len() as u64,
-                canonical.len().div_ceil(SHARD_BYTES) as u64,
-                now
-            ],
-        )
-        .expecting(1)];
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE
+                (SELECT COUNT(*) FROM assessment_objects WHERE partition_key = ?1 AND object_kind = ?3) < 16"
+        } else {
+            "INSERT INTO assessment_objects
+                (partition_key, object_digest, object_kind, byte_length, shard_count, admitted_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+        };
+        let mut statements = Vec::new();
+        if kind == AssessmentObjectKind::ScanReadSnapshot {
+            statements.push(Statement::new(
+                "UPDATE assessment_resources SET updated_at = updated_at WHERE partition_key = ?1",
+                vals![partition],
+            ).expecting(1));
+            statements.push(Statement::new(
+                "DELETE FROM assessment_objects WHERE partition_key = ?1 AND object_kind = ?2 AND admitted_at <= ?3",
+                vals![partition, kind.domain(), now.saturating_sub(900)],
+            ).unchecked());
+        }
+        statements.push(
+            Statement::new(
+                insert,
+                vals![
+                    partition,
+                    digest,
+                    kind.domain(),
+                    canonical.len() as u64,
+                    canonical.len().div_ceil(SHARD_BYTES) as u64,
+                    now
+                ],
+            )
+            .expecting(1),
+        );
         for (ordinal, chunk) in canonical.chunks(SHARD_BYTES).enumerate() {
             statements.push(
                 Statement::new(

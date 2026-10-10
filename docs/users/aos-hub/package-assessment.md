@@ -142,6 +142,22 @@ aos maintain scans recover --limit 100
 aos maintain status --profiles all --limit 100
 ```
 
+Hub scan listings use retained pages:
+
+```text
+aos hub maintain scans list --registry REGISTRY --limit 20
+aos hub maintain scans list --registry REGISTRY --limit 20 --after-scan NEXT_SCAN
+```
+
+Copy `nextScan` from the preceding response and keep the same page limit. Hub
+pages retain the original scan states and observation time for fifteen minutes,
+including when scans finish, new scans arrive or the service restarts. A changed
+resource, invalid page handle or expired snapshot requires starting a new list.
+Each continuation still requires current read access. The Hub retains at most
+sixteen active captures per resource, each containing at most ten thousand scan
+summaries; an exhausted bound fails explicitly. These limits do not truncate a
+list silently. Listing acquires no provider evidence.
+
 Use `scan --profile … --idempotency-key KEY` to name one exact request. Repeating
 that key returns its retained receipt; changing its pinned selection, inventory,
 policy or freshness intent conflicts. JSON scan output includes the committed
