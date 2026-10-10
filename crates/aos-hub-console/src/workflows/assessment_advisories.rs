@@ -1,6 +1,6 @@
 //! Explicit cached advisory lookup with exact optional historical assessment context.
 
-use aos_assessment_runtime::advisories::{AdvisoryPageV1, AdvisoryQueryV1};
+use aos_assessment_runtime::advisories::retained::{AdvisoryPageV2, AdvisoryQueryV2};
 use aos_contract::Sha256Digest;
 use leptos::prelude::*;
 
@@ -14,7 +14,7 @@ pub(super) fn RegistryAssessmentAdvisories(client: ApiClient, slug: String) -> i
     let identifier = RwSignal::new(String::new());
     let assessment = RwSignal::new(String::new());
     let subject = RwSignal::new(String::new());
-    let selected = RwSignal::new(None::<Result<AdvisoryQueryV1, String>>);
+    let selected = RwSignal::new(None::<Result<AdvisoryQueryV2, String>>);
     let page = LocalResource::new(move || {
         let selected = selected.get();
         let (client, registry_slug) = context.get_value();
@@ -34,7 +34,7 @@ pub(super) fn RegistryAssessmentAdvisories(client: ApiClient, slug: String) -> i
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-            let page = AdvisoryPageV1::from_slice(&response.document_json)
+            let page = AdvisoryPageV2::from_slice(&response.document_json)
                 .map_err(|error| error.to_string())?;
             page.validate_for(&query)
                 .map_err(|error| error.to_string())?;
@@ -53,13 +53,13 @@ pub(super) fn RegistryAssessmentAdvisories(client: ApiClient, slug: String) -> i
                 let query = (|| {
                     let digest = assessment.get_untracked().trim().to_owned();
                     let subject = subject.get_untracked().trim().to_owned();
-                    let query = AdvisoryQueryV1 {
-                        schema: "aos.assessment-advisory-query/v1".into(),
+                    let query = AdvisoryQueryV2 {
+                        schema: "aos.assessment-advisory-query/v2".into(),
                         advisory_id: identifier.get_untracked().trim().to_owned(),
                         resource_scope: None,
                         assessment_digest: if digest.is_empty() { None } else { Some(Sha256Digest::parse(&digest).map_err(|error| error.to_string())?) },
                         subject_ref: (!subject.is_empty()).then_some(subject),
-                        after_record: None,
+                        cursor: None,
                         limit: 5,
                     };
                     query.validate().map_err(|error| error.to_string())?;
@@ -71,7 +71,8 @@ pub(super) fn RegistryAssessmentAdvisories(client: ApiClient, slug: String) -> i
                 {move || Suspend::new(async move { match page.await.as_ref() {
                     Err(detail) => view! { <InlineError detail=detail.clone()/> }.into_any(),
                     Ok(None) => ().into_any(),
-                    Ok(Some(page)) => {
+                    Ok(Some(captured)) => {
+                        let page = &captured.page;
                         let resource = page.resource_scope.clone();
                         let rows = page.revisions.iter().cloned().map(|revision| {
                             let record = revision.record;
@@ -93,15 +94,15 @@ pub(super) fn RegistryAssessmentAdvisories(client: ApiClient, slug: String) -> i
                             </article> }
                         }).collect_view();
                         view! {
-                            <p>{format!("Retained evidence read at {}", page.as_of)}</p>
+                            <p>{format!("Retained evidence read at {} · capture expires {}", page.as_of, captured.expires_at)}</p>
                             {page.assessment_context.as_ref().map(|context| view! {
                                 <p>{format!("Historical assessment {} · evaluated {} · snapshot {}", context.assessment_digest, context.evaluated_at, context.snapshot_digest)}</p>
                             })}
                             {page.revisions.is_empty().then(|| view! { <p>"No matching retained revisions in this selection."</p> })}
                             {rows}
-                            {page.next_record.map(|next| view! {
+                            {captured.next_cursor.clone().map(|next| view! {
                                 <button class="secondary-button" on:click=move |_| selected.update(|selected| {
-                                    if let Some(Ok(query)) = selected { query.resource_scope = Some(resource.clone()); query.after_record = Some(next); }
+                                    if let Some(Ok(query)) = selected { query.resource_scope = Some(resource.clone()); query.cursor = Some(next.clone()); }
                                 })>"Next retained revisions"</button>
                             })}
                         }.into_any()

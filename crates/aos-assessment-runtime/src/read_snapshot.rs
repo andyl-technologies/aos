@@ -220,7 +220,7 @@ pub fn parse_scan_cursor(token: &str) -> Result<(Sha256Digest, &str)> {
     parse_cursor(token, "s1")
 }
 
-fn parse_cursor<'a>(token: &'a str, prefix: &str) -> Result<(Sha256Digest, &'a str)> {
+pub(crate) fn parse_cursor<'a>(token: &'a str, prefix: &str) -> Result<(Sha256Digest, &'a str)> {
     if token.len() != 100 {
         return Err(ScanPageError::InvalidCursor.into());
     }
@@ -242,7 +242,7 @@ fn parse_cursor<'a>(token: &'a str, prefix: &str) -> Result<(Sha256Digest, &'a s
     Ok((Sha256Digest::parse(&format!("sha256:{digest}"))?, handle))
 }
 
-fn validate_handle(handle: &str) -> Result<()> {
+pub(crate) fn validate_handle(handle: &str) -> Result<()> {
     validate_hex(handle, 32)
 }
 

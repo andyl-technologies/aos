@@ -10,6 +10,19 @@ use crate::db::Database;
 
 #[tokio::test]
 #[ignore = "Requires AOS_ASSESSMENT_PG_URL_FILE pointing to a disposable PostgreSQL database"]
+async fn retained_advisory_revisions_are_exact_on_postgresql() -> Result<()> {
+    let path = std::env::var_os("AOS_ASSESSMENT_PG_URL_FILE")
+        .context("disposable PostgreSQL URL file required")?;
+    let url = std::fs::read_to_string(path)?;
+    let backend = SqlxBackend::connect_postgres(url.trim()).await?;
+    let db = Database::with_backend(Box::new(backend)).await?;
+    super::advisory_snapshot::tests::qualify_capture(db)
+        .await
+        .map(|_| ())
+}
+
+#[tokio::test]
+#[ignore = "Requires AOS_ASSESSMENT_PG_URL_FILE pointing to a disposable PostgreSQL database"]
 async fn continuous_inventory_and_policy_wakeups_are_exact_on_postgresql() -> Result<()> {
     let path = std::env::var_os("AOS_ASSESSMENT_PG_URL_FILE")
         .context("disposable PostgreSQL URL file required")?;

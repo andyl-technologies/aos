@@ -19,6 +19,8 @@ use crate::validation::{decode, encoded, text};
 
 mod assessment;
 
+pub mod retained;
+
 pub use assessment::lookup_assessment;
 
 /// Identifies a finite projection limit without treating omitted evidence as clean.

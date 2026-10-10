@@ -6,6 +6,7 @@
 
 mod acquisition_progress;
 mod advisories;
+mod advisory_snapshot;
 mod alerts;
 mod alert_snapshot;
 mod authority;

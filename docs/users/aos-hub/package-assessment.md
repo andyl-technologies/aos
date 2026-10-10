@@ -44,6 +44,26 @@ any package is unaffected. Current assessment status waits for an active invento
 
 ## Cached CVE and advisory lookup
 
+Use `aos hub maintain cve CVE-2026-12345 --registry REGISTRY --retained`
+to capture immutable advisory pages. Continue with `--cursor TOKEN` and the
+original `--resource-scope`, advisory, assessment/subject selection and limit.
+The web lookup uses the same retained contract. Every page preserves original
+revision/withdrawal facts, finding links and observation time across new source
+admissions and database restart. Captures expire after fifteen minutes; refresh
+the lookup to start a new selection. These are historical evidence reads and
+make no provider requests.
+
+The API accepts `aos.assessment-advisory-query/v2` and returns
+`aos.assessment-advisory-page/v2`. Its `page` contains the existing v1 semantic
+payload, while `expiresAt` and `nextCursor` describe the retained capture.
+The complete capture is bounded to 128 revisions and eight MiB; at most sixteen
+captures per registry can be retained. Oversized histories fail explicitly
+before record bodies are read; use an exact assessment selection to narrow
+history. Install Native/Worker v2 readers before upgrading the web client or
+using `--retained`. Legacy API/CLI v1 record positions preserve their behavior
+and cannot be combined with opaque cursors.
+
+
 `aos hub maintain advisory CVE-2026-12345 --registry REGISTRY` reads admitted
 normalized advisory revisions. `cve` is an alias for `advisory`; exact source
 identifiers such as OSV IDs also work. Reads retain source severity, equivalent

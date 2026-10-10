@@ -79,6 +79,8 @@ pub enum AssessmentObjectKind {
     ScheduleReadSnapshot,
     /// Immutable scoped delivery states, attempt counters and batch commitments.
     DeliveryReadSnapshot,
+    /// Immutable advisory revisions, historical finding links and opaque handles.
+    AdvisoryReadSnapshot,
 }
 
 impl AssessmentObjectKind {
@@ -89,6 +91,9 @@ impl AssessmentObjectKind {
     #[must_use]
     pub fn domain(self) -> &'static str {
         match self {
+            Self::AdvisoryReadSnapshot => {
+                aos_assessment_runtime::advisories::retained::ADVISORY_READ_SNAPSHOT_V1
+            }
             Self::DeliveryReadSnapshot => {
                 aos_assessment_runtime::read_snapshot::deliveries::DELIVERY_READ_SNAPSHOT_V1
             }
@@ -125,6 +130,7 @@ impl AssessmentObjectKind {
 
     fn normalize(self, bytes: &[u8]) -> Result<Vec<u8>> {
         match self {
+            Self::AdvisoryReadSnapshot => aos_assessment_runtime::advisories::retained::AdvisoryReadSnapshotV1::from_slice(bytes)?.to_bytes(),
             Self::DeliveryReadSnapshot => {
                 use aos_assessment_runtime::read_snapshot::deliveries::DeliveryReadSnapshotV1;
 
@@ -231,6 +237,7 @@ impl AssessmentObjectKind {
                 | Self::AlertReadSnapshot
                 | Self::ScheduleReadSnapshot
                 | Self::DeliveryReadSnapshot
+                | Self::AdvisoryReadSnapshot
         )
     }
 }

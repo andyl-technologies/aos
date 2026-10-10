@@ -86,5 +86,11 @@ in {
         timeout=240,
     )
     assert "1 passed; 0 failed" in output, output
+    output = hub.succeed(
+        "TOKIO_WORKER_THREADS=2 ${fixture}/bin/aos-assessment-retained-pages-fixture "
+        "--exact ${fixture.passthru.advisoryTestSelector} --nocapture --test-threads=1",
+        timeout=240,
+    )
+    assert "1 passed; 0 failed" in output, output
   '';
 }

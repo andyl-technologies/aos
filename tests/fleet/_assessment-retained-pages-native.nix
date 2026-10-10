@@ -15,6 +15,7 @@
   notificationServiceSelector = "db::assessment::notifications::service_tests::service_delivery_survives_reviewer_revocation_and_refuses_revoked_service_receipts";
   scheduleQueueSelector = "db::assessment::schedules::queue_tests::revoked_reviews_rotate_without_advancing_due_slots_or_granting_authority";
   continuousSelector = "db::assessment::schedules::trigger_tests::input_changes_coalesce_without_scan_feedback_or_same_second_slot_collisions";
+  advisorySelector = "db::assessment::advisory_snapshot::tests::retained_advisory_pages_survive_new_revisions_and_database_reopen";
 in
   assert builtins.pathExists (source + "/crates/aos-hub-worker/src/oci_manifest_ingress.rs");
     pkgs.mkCargoPackage {
@@ -69,6 +70,8 @@ in
         grep -Fx '${scheduleQueueSelector}: test' "$out/nix-support/schedule-queue-test-registration.txt"
         "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${continuousSelector}' > "$out/nix-support/continuous-test-registration.txt"
         grep -Fx '${continuousSelector}: test' "$out/nix-support/continuous-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${advisorySelector}' > "$out/nix-support/advisory-test-registration.txt"
+        grep -Fx '${advisorySelector}: test' "$out/nix-support/advisory-test-registration.txt"
       '';
       passthru.testSelector = selector;
       passthru.subscriptionTestSelector = subscriptionSelector;
@@ -80,5 +83,6 @@ in
       passthru.notificationServiceTestSelector = notificationServiceSelector;
       passthru.scheduleQueueTestSelector = scheduleQueueSelector;
       passthru.continuousTestSelector = continuousSelector;
+      passthru.advisoryTestSelector = advisorySelector;
       meta.description = "Retained assessment list database and CLI acceptance fixture";
     }

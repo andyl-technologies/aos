@@ -307,9 +307,15 @@ pub enum HubAssessmentCmd {
         /// Limit finding links to this subject in the selected assessment
         #[arg(long, requires = "assessment_digest")]
         subject_ref: Option<String>,
-        /// Continue after the exact last record from the preceding page
-        #[arg(long, requires = "resource_scope")]
+        /// Continue after the exact last record from the preceding legacy page
+        #[arg(long, requires = "resource_scope", conflicts_with_all = ["retained", "cursor"])]
         after_record: Option<String>,
+        /// Capture immutable advisory pages with opaque continuations
+        #[arg(long)]
+        retained: bool,
+        /// Continue the original retained advisory capture
+        #[arg(long, requires = "resource_scope")]
+        cursor: Option<String>,
         /// Pin the registry incarnation from the preceding page
         #[arg(long)]
         resource_scope: Option<String>,
