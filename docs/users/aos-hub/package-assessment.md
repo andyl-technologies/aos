@@ -504,6 +504,12 @@ permission.
 The original authenticated credential expiry caps the schedule review. Scheduling
 does not silently turn a short-lived credential into permanent execution authority.
 
+The coordinator examines at most ten due reviews per pass. Expired, revoked or
+conflicting reviews rotate behind unexamined reviews; they cannot permanently
+block later reviews. Rotation records a maintenance attempt, preserving the
+original due slot, scan retry key, configuration revision and authority deadline.
+It neither creates a scan under revoked authority nor enables a disabled review.
+
 To review recurring execution independently of that session, put the exact
 existing service-account credential UUID in `serviceCredentialId` at the top
 level of the schedule write document. This is the credential identity exposed by

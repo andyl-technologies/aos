@@ -331,7 +331,9 @@ impl Database {
     ///
     /// # Errors
     /// Returns an error for invalid bounds or unavailable enumeration. Individual
-    /// expired, revoked or conflicting reviews remain unexecuted.
+    /// expired, revoked or conflicting reviews remain unexecuted. Failed
+    /// attempts rotate behind unexamined reviews without changing their due
+    /// slot, configuration revision or execution authority.
     pub async fn admit_due_assessment_schedules(
         &self,
         registry_id: i64,
@@ -342,12 +344,37 @@ impl Database {
             "due schedule page exceeds its bound"
         );
         let clock = self.backend.dialect().unix_time_expression();
-        let rows = self.backend.query(&format!("SELECT schedule_id FROM assessment_schedules WHERE registry_id = ?1 AND enabled = 1 AND next_due_at <= {clock} ORDER BY next_due_at, schedule_id LIMIT ?2"), &vals![@slice registry_id, limit]).await?;
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT schedule_id, resource_version, next_due_at, updated_at
+             FROM assessment_schedules
+             WHERE registry_id = ?1 AND enabled = 1 AND next_due_at <= {clock}
+             ORDER BY updated_at, next_due_at, schedule_id LIMIT ?2"
+                ),
+                &vals![@slice registry_id, limit],
+            )
+            .await?;
         let mut admitted = 0;
         for row in rows {
             let key: String = row.get(0)?;
             if self.admit_due_schedule(registry_id, &key).await.is_ok() {
                 admitted += 1;
+            } else {
+                // Preserve the retry key's original due slot. A monotone
+                // attempt clock also makes progress when several pages run
+                // in the same database second. The CAS cannot mark a replaced
+                // review or another coordinator's advanced slot as examined.
+                self.backend.execute(&format!(
+                    "UPDATE assessment_schedules
+                     SET updated_at = CASE WHEN updated_at >= {clock}
+                         THEN updated_at + 1 ELSE {clock} END
+                     WHERE registry_id = ?1 AND schedule_id = ?2
+                         AND resource_version = ?3 AND next_due_at = ?4
+                         AND updated_at = ?5 AND enabled = 1
+                         AND next_due_at <= {clock}"
+                ), &vals![@slice registry_id, key, row.get::<u64>(1)?, row.get::<u64>(2)?, row.get::<u64>(3)?]).await?;
             }
         }
         Ok(admitted)
@@ -701,20 +728,36 @@ fn project(scope: &str, record: Record) -> Result<ScheduleV1> {
 pub(super) mod service_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "schedule_queue_tests.rs"]
+pub(super) mod queue_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::db::assessment::{authority_tests, scans_tests};
     use aos_assessment::input::{FreshnessMode, Profile};
     use aos_assessment_runtime::scan::ScanLimits;
 
-    async fn setup() -> Result<(
+    pub(super) async fn setup() -> Result<(
         Database,
         i64,
         Claims,
         Vec<CheckedStatement>,
         ScheduleWriteV1,
     )> {
-        let (db, registry, request) = scans_tests::setup().await?;
+        setup_database(Database::open_in_memory().await?).await
+    }
+
+    pub(super) async fn setup_database(
+        db: Database,
+    ) -> Result<(
+        Database,
+        i64,
+        Claims,
+        Vec<CheckedStatement>,
+        ScheduleWriteV1,
+    )> {
+        let (db, registry, request) = scans_tests::setup_database(db).await?;
         let claims = authority_tests::claims(&db).await?;
         let fences = db
             .assessment_iam_statements(&claims, &request.resource_scope, Permission::Read)

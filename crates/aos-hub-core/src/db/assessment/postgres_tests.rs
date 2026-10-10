@@ -10,6 +10,17 @@ use crate::db::Database;
 
 #[tokio::test]
 #[ignore = "Requires AOS_ASSESSMENT_PG_URL_FILE pointing to a disposable PostgreSQL database"]
+async fn rejected_schedule_pages_rotate_fairly_on_postgresql() -> Result<()> {
+    let path = std::env::var_os("AOS_ASSESSMENT_PG_URL_FILE")
+        .context("disposable PostgreSQL URL file required")?;
+    let url = std::fs::read_to_string(path)?;
+    let backend = SqlxBackend::connect_postgres(url.trim()).await?;
+    let db = Database::with_backend(Box::new(backend)).await?;
+    super::schedules::queue_tests::qualify_queue(db).await
+}
+
+#[tokio::test]
+#[ignore = "Requires AOS_ASSESSMENT_PG_URL_FILE pointing to a disposable PostgreSQL database"]
 async fn service_delivery_rechecks_current_credentials_on_postgresql() -> Result<()> {
     let path = std::env::var_os("AOS_ASSESSMENT_PG_URL_FILE")
         .context("disposable PostgreSQL URL file required")?;
