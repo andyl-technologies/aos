@@ -290,6 +290,27 @@ impl From<AssessmentProfileArg> for aos_assessment::input::Profile {
 
 #[derive(Subcommand)]
 pub enum HubAssessmentCmd {
+    /// Read publication availability and exact outputs lacking scan declarations
+    Publication {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the registry whose publication is inspected
+        #[arg(long)]
+        registry: String,
+        /// Bound the number of complete unsupported outputs in this page
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+        /// Continue after an exact output commitment from the preceding page
+        #[arg(long, requires_all = ["publication_digest", "resource_scope"])]
+        after_output: Option<String>,
+        /// Pin the publication commitment from the preceding page
+        #[arg(long)]
+        publication_digest: Option<String>,
+        /// Pin the resource incarnation from the preceding page
+        #[arg(long)]
+        resource_scope: Option<String>,
+    },
+
     /// Read retained advisory revisions and optional historical finding links
     #[command(visible_alias = "cve")]
     Advisory {

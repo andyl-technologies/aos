@@ -1317,6 +1317,7 @@
         "registry-assessments"
       ],
       "methods": [
+        "GetPublicationStatus",
         "GetStatus",
         "GetAssessment",
         "GetAdvisory",

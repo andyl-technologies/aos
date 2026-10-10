@@ -3,6 +3,8 @@
 //! This module consumes exact catalogs already verified by the release indexer.
 //! It reads no Git object, registry URL, source archive or physical storage key.
 
+mod availability;
+
 use anyhow::{ensure, Context as _, Result};
 use aos_assessment::definition::PackageScanDefinitionV1;
 use aos_assessment::input::{AssessmentPolicyV1, EvaluationData};
@@ -274,17 +276,23 @@ impl Database {
             let mut bindings = Vec::new();
             let mut unsupported = 0u32;
             let mut outputs = 0u32;
+            let mut catalog_outputs = BTreeSet::new();
             for package in packages {
                 for version in package.versions {
                     for (platform, artifact) in version.platforms {
+                        let coordinate = (
+                            package.package.name.clone(),
+                            version.version.clone(),
+                            platform.clone(),
+                            artifact.store_path.clone(),
+                        );
                         ensure!(
-                            published.contains(&(
-                                package.package.name.clone(),
-                                version.version.clone(),
-                                platform.clone(),
-                                artifact.store_path.clone(),
-                            )),
+                            published.contains(&coordinate),
                             "assessment output is absent from its exact complete artifact snapshot"
+                        );
+                        ensure!(
+                            catalog_outputs.insert(coordinate),
+                            "assessment publication contains a duplicate primary output"
                         );
                         outputs = outputs
                             .checked_add(1)
@@ -313,6 +321,11 @@ impl Database {
                     }
                 }
             }
+            ensure!(
+                catalog_outputs == published,
+                "assessment catalog omits primary outputs from its complete artifact snapshot"
+            );
+
             // Index publication takes the same registry lock. The next statement
             // observes its committed release selection after that lock is acquired.
             let guards = vec![Statement::new(
@@ -382,11 +395,13 @@ mod tests {
     use aos_assessment::identity::MemberId;
     use aos_assessment::metadata::{PackageScanPublicationV1, PACKAGE_SCAN_PUBLICATION_V1};
 
-    async fn publication_fixture(declared: bool) -> Result<(Database, i64, AssessmentPolicyV1)> {
+    pub(super) async fn publication_fixture(
+        declared: bool,
+    ) -> Result<(Database, i64, AssessmentPolicyV1)> {
         publication_fixture_database(Database::open_in_memory().await?, declared).await
     }
 
-    async fn publication_fixture_database(
+    pub(super) async fn publication_fixture_database(
         db: Database,
         declared: bool,
     ) -> Result<(Database, i64, AssessmentPolicyV1)> {

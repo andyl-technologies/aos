@@ -30,6 +30,7 @@
 
 mod authentication;
 mod assessment;
+mod assessment_publication;
 mod assessment_scans;
 mod assessment_schedules;
 mod assessment_notifications;

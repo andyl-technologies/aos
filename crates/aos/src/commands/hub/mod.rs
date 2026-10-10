@@ -44,6 +44,7 @@ pub(crate) use publication::{prepare_registry_publication, upload_registry_publi
 mod access_policy;
 mod access_token;
 mod assessment;
+mod assessment_publication;
 mod assessment_notifications;
 mod assessment_advisories;
 mod assessment_reviews;

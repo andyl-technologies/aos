@@ -3210,6 +3210,13 @@
          "service" : "DirectUploadService"
       },
       {
+         "method" : "GetPublicationStatus",
+         "path" : "aos.hub.v1.AssessmentService/GetPublicationStatus",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
          "method" : "GetStatus",
          "path" : "aos.hub.v1.AssessmentService/GetStatus",
          "request" : "AssessmentStatusRequest",

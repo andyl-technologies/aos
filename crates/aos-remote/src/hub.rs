@@ -81,6 +81,8 @@ pub struct HubClient {
 enum HubTopologyMethod {
     /// Reads current inventory-bound package assessment status.
     GetAssessmentStatus,
+    /// Reads authenticated publication availability and exact unsupported outputs.
+    GetAssessmentPublicationStatus,
     /// Reads one canonical successfully admitted package assessment.
     GetPackageAssessment,
     RequestPackageScan,
@@ -1228,6 +1230,7 @@ impl HubTopologyMethod {
             CreateRegistry => "aos.hub.v1.RegistryService/CreateRegistry",
             GetRegistryMetadata => "aos.hub.v1.RegistryService/GetRegistryMetadata",
             GetAssessmentStatus => "aos.hub.v1.AssessmentService/GetStatus",
+            GetAssessmentPublicationStatus => "aos.hub.v1.AssessmentService/GetPublicationStatus",
             GetPackageAssessment => "aos.hub.v1.AssessmentService/GetAssessment",
             GetAssessmentAdvisory => "aos.hub.v1.AssessmentService/GetAdvisory",
             RequestPackageScan => "aos.hub.v1.ScanService/RequestScan",
@@ -1807,6 +1810,7 @@ pub mod hub_rpc {
         CreateRegistry: ApplyRegistryMutationRequest => RegistryResponse;
         GetRegistryMetadata: GetRegistryRequest => RegistryMetadataResponse;
         GetAssessmentStatus: AssessmentStatusRequest => AssessmentDocumentResponse;
+        GetAssessmentPublicationStatus: AssessmentControlRequest => AssessmentDocumentResponse;
         GetPackageAssessment: AssessmentObjectRequest => AssessmentDocumentResponse;
         RequestPackageScan: AssessmentControlRequest => AssessmentDocumentResponse;
         GetPackageScan: AssessmentControlRequest => AssessmentDocumentResponse;

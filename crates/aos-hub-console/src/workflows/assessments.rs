@@ -1,5 +1,8 @@
 //! Package assessment status and canonical result inspection in the registry UI.
 
+mod publication;
+
+use publication::RegistryAssessmentPublication;
 use aos_assessment::input::Profile;
 use aos_assessment::result::PackageAssessmentV1;
 use aos_assessment_runtime::application::{AssessmentStatusV1, StatusQueryV1};
@@ -11,7 +14,7 @@ use super::assessment_notifications::RegistryAssessmentNotifications;
 use super::assessment_attention::RegistryAssessmentAttention;
 use super::assessment_advisories::RegistryAssessmentAdvisories;
 use crate::components::InlineError;
-use crate::transport::ApiClient;
+use crate::transport::{ApiClient, TransportError};
 
 /// Renders authorized current status and retained result details for a registry.
 #[component]
@@ -53,6 +56,9 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
                     },
                 )
                 .await;
+            let awaiting_publication = query.after_subject.is_none()
+                && query.inventory_digest.is_none() && query.policy_digest.is_none()
+                && matches!(&response, Err(TransportError::Http { status: 400, .. }));
             let status = response
                 .map_err(|error| error.to_string())
                 .and_then(|response| {
@@ -62,7 +68,9 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
             match &status {
                 Ok(status) => displayed.set(Some(status.clone())),
                 Err(_) => {
-                    polling.set(false);
+                    if !awaiting_publication {
+                        polling.set(false);
+                    }
                     displayed.set(None);
                 }
             }
@@ -105,6 +113,8 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
                 query.update(|query| { query.after_subject = None; query.inventory_digest = None; query.policy_digest = None; });
                 epoch.update(|value| *value = value.wrapping_add(1));
             }>"Refresh"</button></div>
+            <RegistryAssessmentPublication client=controls.get_value().0 slug=controls.get_value().1
+                epoch=epoch polling=polling active_reads=active_reads/>
             <Suspense fallback=move || view! { <p>"Loading package checks…"</p> }>
                 {move || Suspend::new(async move {
                     match resource.await.as_ref() {

@@ -4318,6 +4318,16 @@
   },
   {
     "service": "AssessmentService",
+    "method": "GetPublicationStatus",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
     "method": "GetStatus",
     "exposure": "public",
     "durability": "read_only",

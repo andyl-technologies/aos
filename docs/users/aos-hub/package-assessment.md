@@ -11,6 +11,25 @@ installing a controller does not grant authenticated callers assessment permissi
 Packages without explicit authenticated scan declarations remain unassessed.
 Missing source mappings and incomplete source responses remain coverage gaps.
 
+## Publication availability
+
+`aos hub maintain publication --registry REGISTRY` reads the newest authenticated
+publication without acquiring source evidence or activating an inventory. It
+reports missing publications, incomplete or invalid projections, catalogs
+without declarations, and declared inventories awaiting activation. The registry
+console displays the same states alongside package checks.
+
+Outputs without scan metadata retain their exact published package name, version,
+platform and artifact coordinate. They remain unassessed; package names do not
+become inferred security identities. A catalog must describe every primary output
+in its complete artifact snapshot, with no duplicate or omitted coordinates.
+
+`--limit 1..100` bounds complete output records. Continue with the returned
+`--after-output`, `--publication-digest` and `--resource-scope`. A changed
+publication or incarnation rejects continuation so pages cannot mix releases.
+Availability of scan declarations does not assert that checks have run or that
+any package is unaffected. Current assessment status waits for an active inventory.
+
 ## Cached CVE and advisory lookup
 
 `aos hub maintain advisory CVE-2026-12345 --registry REGISTRY` reads admitted

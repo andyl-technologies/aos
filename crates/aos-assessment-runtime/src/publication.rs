@@ -19,6 +19,30 @@ const LIMITS: JsonLimits = JsonLimits {
     max_string_bytes: 4096,
 };
 
+/// Reports a continuation whose publication or resource incarnation changed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublicationContextChanged;
+
+impl std::fmt::Display for PublicationContextChanged {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("assessment publication context changed; restart pagination")
+    }
+}
+
+impl std::error::Error for PublicationContextChanged {}
+
+/// Reports that a complete publication response exceeds its finite wire envelope.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublicationResponseLimit;
+
+impl std::fmt::Display for PublicationResponseLimit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("complete publication response exceeds its envelope limits")
+    }
+}
+
+impl std::error::Error for PublicationResponseLimit {}
+
 /// Selects a bounded page of primary outputs lacking scan declarations.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -233,12 +257,13 @@ impl PublicationStatusV1 {
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         self.validate()?;
         let value = serde_json::to_value(self)?;
-        LIMITS.check_value(&value, "assessment publication status")?;
+        LIMITS
+            .check_value(&value, "assessment publication status")
+            .map_err(|error| error.context(PublicationResponseLimit))?;
         let bytes = canonical::to_vec(&value)?;
-        ensure!(
-            bytes.len() <= LIMITS.max_bytes,
-            "publication status exceeds its response bound"
-        );
+        if bytes.len() > LIMITS.max_bytes {
+            return Err(anyhow::anyhow!(PublicationResponseLimit));
+        }
         Ok(bytes)
     }
 
@@ -250,6 +275,34 @@ impl PublicationStatusV1 {
         let value: Self = decode(bytes, "assessment publication status")?;
         value.validate()?;
         Ok(value)
+    }
+
+    /// Verifies that a decoded response preserves its exact selected page.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid query, changed resource/publication,
+    /// excessive records or output positions preceding the requested cursor.
+    pub fn validate_for(&self, query: &PublicationQueryV1) -> Result<()> {
+        PublicationQueryV1::from_slice(&serde_json::to_vec(query)?)?;
+        self.validate()?;
+        if query
+            .resource_scope
+            .as_ref()
+            .is_some_and(|scope| scope != &self.resource_scope)
+            || (query.publication_digest.is_some()
+                && query.publication_digest != self.publication_digest)
+        {
+            return Err(anyhow::anyhow!(PublicationContextChanged));
+        }
+        ensure!(
+            self.unsupported_outputs.len() <= query.limit as usize
+                && query.after_output.is_none_or(|after| self
+                    .unsupported_outputs
+                    .iter()
+                    .all(|output| output.output_ref > after)),
+            "publication response differs from its selected page"
+        );
+        Ok(())
     }
 
     fn validate(&self) -> Result<()> {
@@ -458,7 +511,10 @@ mod tests {
         {
             *unsupported_count = 100;
         }
-        assert!(value.to_bytes().is_err());
+        let error = value
+            .to_bytes()
+            .expect_err("complete response exceeds the wire bound");
+        assert!(error.downcast_ref::<PublicationResponseLimit>().is_some());
         assert_eq!(value.unsupported_outputs.len(), 100);
         Ok(())
     }

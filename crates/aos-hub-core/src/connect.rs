@@ -2944,6 +2944,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         delete_placement_equivalence
     );
     // AssessmentService
+    r = rpc_route!(r, "/aos.hub.v1.AssessmentService/GetPublicationStatus", get_assessment_publication_status);
     r = rpc_route!(
         r,
         "/aos.hub.v1.AssessmentService/GetStatus",

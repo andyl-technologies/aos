@@ -377,6 +377,7 @@ service PackageService {
 // Package assessment reads consume admitted database evidence. They never
 // acquire provider data implicitly; ScanService owns explicit acquisition.
 service AssessmentService {
+  rpc GetPublicationStatus(AssessmentControlRequest) returns (AssessmentDocumentResponse);
   rpc GetStatus(AssessmentStatusRequest) returns (AssessmentDocumentResponse);
   rpc GetAssessment(AssessmentObjectRequest) returns (AssessmentDocumentResponse);
   rpc ListAlerts(AssessmentControlRequest) returns (AssessmentDocumentResponse);

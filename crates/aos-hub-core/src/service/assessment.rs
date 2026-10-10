@@ -30,6 +30,17 @@ impl RpcService {
         let claims = self
             .authorize_assessment(auth, &registry, "assessment.read")
             .await?;
+        if self
+            .db
+            .assessment_resource(registry.id)
+            .await
+            .map_err(RpcError::internal)?
+            .is_none()
+        {
+            return Err(RpcError::FailedPrecondition(
+                "No declared assessment inventory is active for this publication".into(),
+            ));
+        }
         let page = self
             .db
             .assessment_status_page(
