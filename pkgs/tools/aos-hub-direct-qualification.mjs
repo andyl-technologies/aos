@@ -400,18 +400,41 @@ async function enqueueMixedWithAdmission(bulkObjects, metadataObjects) {
     throw new Error("Mixed Begin closed job changed after arming.");
   }
   await waitForMixedRelease(pending);
+  const concurrentBulk = bulkObjects[1];
+  if (concurrentBulk) {
+    // Fill the second bulk slot before measuring the reserved metadata slot.
+    // The metadata completion receipt must independently confirm both are active.
+    await control({ kind: "enqueue", objectIds: [concurrentBulk.objectId] });
+    let started = false;
+    while (Date.now() < deadline) {
+      if (cancelled) throw new Error("Cancelled before concurrent bulk Begin.");
+      const capture = await control({ kind: "inspect", objectId: concurrentBulk.objectId, afterAttempt: 0 });
+      const page = capture.result;
+      if (page.objectId !== concurrentBulk.objectId || canonicalHash(page.original) !== canonicalHash(original)
+          || !page.closed?.job || page.attempts.length > 1 || page.nextAttempt !== null) {
+        throw new Error("Concurrent bulk inspection differs from its original.");
+      }
+      const record = page.attempts[0];
+      if (record?.receipt) throw new Error("Concurrent bulk finished before metadata admission.");
+      if (record) {
+        started = true;
+        break;
+      }
+      await new Promise(done => setTimeout(done, 25));
+    }
+    if (!started) throw new Error("Concurrent bulk Begin was not observed before the mixed cutoff.");
+  }
   const metadata = metadataObjects[0];
-  // Preserve an actual object slot for this admission while the first bulk
-  // is held. Remaining originals still run once after the real metadata proof.
+  // Remaining originals still run once after the real metadata proof.
   await control({ kind: "enqueue", objectIds: [metadata.objectId] });
   await waitForObjects([metadata.objectId]);
   const verified = await inspectOriginalObjects([metadata.objectId], { deadline: Date.now() + 30000, maximumPages: 128 });
   const positive = verified.filter(item => item.receipt.verificationReplayed === false
-    && Number(item.receipt.objects.bulkActive) > 0
+    && Number(item.receipt.objects.bulkActive) === (concurrentBulk ? 2 : 1)
     && item.receipt.providerAfter.metadataAdmissionsDuringBulk > item.receipt.attempt.providerBefore.metadataAdmissionsDuringBulk);
   if (positive.length !== 1) throw new Error("Metadata lacks actual fresh admission under bulk.");
-  if (bulkObjects.length > 1) {
-    await control({ kind: "enqueue", objectIds: bulkObjects.slice(1).map(item => item.objectId) });
+  if (bulkObjects.length > 2) {
+    await control({ kind: "enqueue", objectIds: bulkObjects.slice(2).map(item => item.objectId) });
   }
   await save("mixed-admission-metadata-finish.json", { version: 1, runId,
     readySha256: canonicalHash(pending), record: positive[0] });
