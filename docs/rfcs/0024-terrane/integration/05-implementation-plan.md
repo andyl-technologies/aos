@@ -221,16 +221,48 @@ in the active publication-policy and selected-property fixtures. The reviewed
 parent prerequisite replaces those calls with explicit diagnostic panics,
 preserving their populations and assertions without lint suppression or
 production changes. Its import waits for the frozen candidate's runtime
-commands to finish. The original exact overlay run is waiting on the shared
-Cargo lock held by an unrelated test invocation; it has no runtime result yet.
+commands to finish. After its shared Cargo lock wait, the original exact
+overlay run passes all twenty-four cases in 0.149 seconds with no skipped
+tests (run `225dce5b-cab4-4707-9ac8-d2bf5fc01ba0`). All tracked source and
+six bound executable seals remain unchanged before and after execution.
+The complete 534-case core run on that same frozen candidate finishes with
+532 passes, two failures and no skipped tests in 6.583 seconds (run
+`5fa17a00-ae2c-4f51-8bd2-0a1b8ac533da`). Source and all executable seals
+remain unchanged. The failures are the older global-registry witness, which
+calls registered property revision three unsupported without its required
+35-name vocabulary, and the selected-property witness, which expects a schema
+error where canonical CBOR validation returns its precise unsupported-value
+error. The composed recorded-semantics implementation already distinguishes
+the registered vocabulary mismatch from an unknown revision; an additional
+isolated witness independently frames the complete revision-three registry.
+The selected-property correction retains exact errors for all three inputs.
+The older candidate's full suite remains red. The materializer imports
+only the reviewed lint prerequisite after every frozen process finishes;
+candidate `e1cf7ac1a3` passes strict all-target Clippy, actual test compilation,
+genuine Cargo and binary metadata generation, and executable-bound inventory.
+Its exact twenty-four overlay cases pass in 0.127 seconds using the official
+reused-build metadata at unchanged limits; the other 510 cases are outside
+that selector, with no selected case skipped. Its full 534-case run again
+has 532 passes and the same two failures, with no skips, in 6.622 seconds
+(run `c533c3d8-ac28-4143-a7db-9b97a3518e56`). All source, executable and
+metadata seals remain unchanged. No older partial result qualifies the newer
+composed recorded-semantics candidate.
 No owning gate or task is accepted by these results.
 The same frozen retained-read candidate passes all twenty-nine mandatory
 native read cases in 46.960 seconds and the public SDK case in 0.009 seconds,
 with source and executable seals unchanged. Its unchanged backfill witness
 fails after 82.167 seconds with a read authorization denial, rather than timing
 out; no measured cause is established. The full ninety-three-case read run
-therefore remains unrun. A separate existing phase diagnostic is queued to
-identify the failing publication step without weakening current checks.
+therefore remains unrun. A separate direct-harness diagnostic uses the original
+sealed native binary and AOS-built timeout at the unchanged 120-second bound.
+It exits 101 after 50.020 seconds with `Advance(Expired)` during actual backfill
+publication after durable staging: the retained writer elapsed 30.882 seconds
+against its unchanged thirty-second limit. Original lock acquisition takes
+54 microseconds; the longer reported scopes are retained lifetimes, not lock
+waits. All 6,200 source entries, native executable and timeout seals remain
+unchanged. The existing trace emits roughly 205 MB and adds overhead, so this
+diagnostic neither establishes the original untraced denial's cause nor replaces
+its failed Nextest qualification. Current assembled runtime remains required.
 Parallel review also corrects a nested-overlay fixture's expected
 projected property order without changing independent output identities or
 weakening callback assertions. A complete decoder-call audit also identifies

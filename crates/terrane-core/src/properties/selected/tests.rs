@@ -92,10 +92,14 @@ fn selected_active_namespace_rejects_gap_and_inherited_or_malformed_pointer() {
         .last_mut()
         .unwrap_or_else(|| panic!("canonical fixture binding contains its inherit flag"));
     *inherit_flag = 0xf5;
-    for (name, value) in [
-        ("index-gaps", value.as_slice()),
-        ("index-roots", inherited.as_slice()),
-        ("index-roots", &[0xff]),
+    for (name, value, expected) in [
+        ("index-gaps", value.as_slice(), Error::InvalidValue),
+        ("index-roots", inherited.as_slice(), Error::InvalidValue),
+        (
+            "index-roots",
+            &[0xff],
+            Error::Cbor(crate::cbor::Error::Unsupported),
+        ),
     ] {
         let properties = vec![Property { name, value }];
         let result = Selection::Active.resolve(
@@ -105,6 +109,6 @@ fn selected_active_namespace_rejects_gap_and_inherited_or_malformed_pointer() {
             }],
             defaults(),
         );
-        assert_eq!(result, Err(Error::InvalidValue));
+        assert_eq!(result, Err(expected));
     }
 }
