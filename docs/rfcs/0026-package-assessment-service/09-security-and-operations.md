@@ -21,6 +21,28 @@ complete security assurance based on an empty provider response.
 
 ## 9.2. SSRF and credential protection
 
+Recurring execution MAY use a separately reviewed existing service-account
+credential. The reviewer MUST explicitly select the credential generation in
+the exact configuration plan. The coordinator MUST verify the reviewer's current
+management, scan and read authority and the service account's current scan and
+read authority when applying that plan. The service account MUST belong to the
+registry's organization. This review MUST NOT mint an access token, modify role
+grants, extend the reviewer's authenticated claims, or infer delegation from an
+imported public receipt. Reviews MUST expire within thirty days and no later than
+the selected credential's own expiry.
+
+The configuration revision is the delegation's replacement and revocation
+handle. Every due admission and subsequent effect MUST recheck the existing
+credential generation, stable service principal incarnation, current granting
+membership, organization and registry incarnation, finite review deadline and
+enabled configuration revision. Rotation MUST NOT silently adopt another
+credential generation. Session-backed configurations retain their original
+credential expiry and current management-permission checks. A service-backed
+review survives expiry or revocation of the reviewing session; administrators
+revoke the review through configuration replacement/disable or service authority
+revocation. Public receipts expose commitments and the finite deadline without
+raw credential identities or private claims; they confer no execution authority.
+
 Provider profiles map typed identities to installed HTTPS origins and request
 templates. Metadata cannot specify arbitrary request URLs, DNS resolvers,
 headers, credentials, or executable adapters. Enterprise/private providers

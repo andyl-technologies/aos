@@ -496,11 +496,33 @@ same separate plan and confirmation steps; a pending review freezes its form.
 A schedule pins an exact registry scope, explicit nonempty package selectors,
 profiles, freshness, limits, cadence and review expiry. Creation and replacement
 use optimistic revisions. Disabling or replacing a review fences already queued
-work. Each physical effect rechecks the original principal, current scan and
-schedule permissions, credential state, registry incarnation and review revision.
+work. Each physical effect rechecks the execution principal, current scan
+permission, credential state, registry incarnation and review revision.
+Session-backed schedules additionally recheck the original schedule-management
+permission.
 
 The original authenticated credential expiry caps the schedule review. Scheduling
 does not silently turn a short-lived credential into permanent execution authority.
+
+To review recurring execution independently of that session, put the exact
+existing service-account credential UUID in `serviceCredentialId` at the top
+level of the schedule write document. This is the credential identity exposed by
+token management, not its secret. The account must belong to the registry's
+organization and already possess current scan and read access. Applying the
+exact plan checks both the reviewer and service account; it creates no token,
+changes no role grant, and mints no bearer token. The requested review deadline
+must be within thirty days and is capped by the credential's expiry.
+
+The public `serviceAuthority` receipt contains commitments to the service
+principal, credential generation and reviewer, plus the finite expiry. Imported
+receipts confer no authority. After review, the service account executes the
+exact selection independently of the reviewing session. Disabling or replacing
+the schedule revokes that revision, including already admitted work; revoking
+the service credential or its granting membership fences later effects.
+Credential rotation does not silently adopt the replacement generation.
+Replacing a service-backed review requires explicitly selecting the existing
+or replacement credential again. The web form exposes the same review choice.
+
 Missed slots coalesce into one scan; deterministic jitter spreads subsequent slots.
 Manual and recurring requests share the durable scan journal and result contracts.
 Acknowledgements remain attention state and cannot suppress vulnerability evidence.

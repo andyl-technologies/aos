@@ -58,7 +58,9 @@ impl DatabaseAssessmentAuthority {
             .db
             .assessment_iam_statements(&claims, &registry.scope_key, permission)
             .await?;
-        if scan.request.trigger == "schedule" {
+        if let Some(service_guards) = self.db.assessment_scan_service_guards(scan).await? {
+            fences.extend(service_guards);
+        } else if scan.request.trigger == "schedule" {
             let permission = Permission::parse("assessment.schedule.manage")
                 .context("assessment schedule permission policy is unavailable")?;
             fences.extend(

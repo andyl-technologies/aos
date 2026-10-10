@@ -12,6 +12,7 @@ use aos_contract::{canonical, limits::JsonLimits, Sha256Digest};
 use serde::{Deserialize, Serialize};
 
 use super::job_authority::ScheduleGrant;
+use super::service_authority::{distinct_authority_fences, ReviewedServiceAuthority};
 use super::{assessment_actor_ref, AssessmentScanRecord};
 use crate::auth::jwt::{Claims, AUTHORIZATION_CLAIMS_VERSION};
 use crate::backend::{CheckedStatement, Statement};
@@ -31,6 +32,8 @@ struct PrivateReview {
     schedule_id: String,
     configuration: ScheduleConfigurationV1,
     claims: Claims,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    service_authority: Option<ReviewedServiceAuthority>,
     authority_expires_at: Timestamp,
 }
 
@@ -46,8 +49,9 @@ struct Record {
 impl Database {
     /// Creates or replaces an explicit review while holding current IAM guards.
     ///
-    /// Every enabled review expires by its original authenticated credential.
-    /// A replacement is another review; retries cannot silently extend authority.
+    /// An explicit service review uses an existing service credential. Other
+    /// reviews expire by the original authenticated credential. A replacement
+    /// is another review; retries cannot silently extend either authority.
     ///
     /// # Errors
     /// Returns an error for stale revisions, invalid review, missing guards,
@@ -76,6 +80,61 @@ impl Database {
         completion: Option<&super::reviews::AssessmentReviewCompletion>,
     ) -> Result<ScheduleV1> {
         request.validate()?;
+        let (service_authority, fences) = if let Some(credential) = &request.service_credential_id {
+            let permissions = [
+                Permission::parse("assessment.scan")
+                    .context("assessment scan permission policy is unavailable")?,
+                Permission::parse("assessment.read")
+                    .context("assessment read permission policy is unavailable")?,
+            ];
+            let (authority, mut execution_fences) = self
+                .prepare_assessment_service_authority(
+                    registry_id,
+                    credential,
+                    &request.configuration.review_expires_at,
+                    claims,
+                    &permissions,
+                )
+                .await?;
+            execution_fences.extend_from_slice(fences);
+            (
+                Some(authority),
+                distinct_authority_fences(execution_fences)?,
+            )
+        } else {
+            (None, fences.to_vec())
+        };
+        self.write_prepared_assessment_schedule(
+            registry_id,
+            request,
+            claims,
+            &fences,
+            completion,
+            service_authority,
+        )
+        .await
+    }
+
+    async fn write_prepared_assessment_schedule(
+        &self,
+        registry_id: i64,
+        request: &ScheduleWriteV1,
+        claims: &Claims,
+        fences: &[CheckedStatement],
+        completion: Option<&super::reviews::AssessmentReviewCompletion>,
+        service_authority: Option<ReviewedServiceAuthority>,
+    ) -> Result<ScheduleV1> {
+        request.validate()?;
+        ensure!(
+            request.service_credential_id.as_deref()
+                == service_authority
+                    .as_ref()
+                    .map(|authority| authority.principal.sub.as_str()),
+            "service review differs from the exact requested credential"
+        );
+        if let Some(authority) = &service_authority {
+            authority.validate(claims)?;
+        }
         if let Some(completion) = completion {
             completion.require_kind("assessment_schedule_review")?;
         }
@@ -96,10 +155,14 @@ impl Database {
             "schedule review resource incarnation changed"
         );
         let key = schedule_key(&registry.scope_key, &request.schedule_id)?;
-        let actor = assessment_actor_ref(claims)?;
+        let execution_principal = service_authority
+            .as_ref()
+            .map_or(claims, |authority| &authority.principal);
+        let actor = assessment_actor_ref(execution_principal)?;
         let now = self.assessment_database_time().await?;
-        let authority_expires_at = Timestamp::from_unix_seconds(u64::try_from(claims.exp)?)?
-            .min(request.configuration.review_expires_at.clone());
+        let authority_expires_at =
+            Timestamp::from_unix_seconds(u64::try_from(execution_principal.exp)?)?
+                .min(request.configuration.review_expires_at.clone());
         ensure!(
             !request.enabled || authority_expires_at > now,
             "enabled schedule review is expired"
@@ -107,8 +170,15 @@ impl Database {
         if let Some(existing) = self.schedule_record(registry_id, &key).await? {
             if request.expected_revision == 0
                 && existing.actor == actor
+                && assessment_actor_ref(&existing.review.claims)? == assessment_actor_ref(claims)?
                 && existing.enabled == request.enabled
                 && existing.review.configuration == request.configuration
+                && existing
+                    .review
+                    .service_authority
+                    .as_ref()
+                    .map(|authority| authority.principal.sub.as_str())
+                    == request.service_credential_id.as_deref()
             {
                 let mut checked = fences.to_vec();
                 checked.push(self.schedule_revision_guard(registry_id, &existing, false));
@@ -137,7 +207,8 @@ impl Database {
             schedule_id: request.schedule_id.clone(),
             configuration: request.configuration.clone(),
             claims: claims.clone(),
-            authority_expires_at,
+            service_authority: service_authority.clone(),
+            authority_expires_at: authority_expires_at.clone(),
         })?;
         LIMITS.decode::<PrivateReview>(&bytes, "private schedule review")?;
         let clock = self.backend.dialect().unix_time_expression();
@@ -185,10 +256,10 @@ impl Database {
                 .checked_add(1)
                 .context("schedule revision exhausted")?,
             enabled: request.enabled,
-            authority_expires_at: Timestamp::from_unix_seconds(u64::try_from(claims.exp)?)?
-                .min(request.configuration.review_expires_at.clone()),
+            authority_expires_at,
             next_due_at: next_due,
             configuration: request.configuration.clone(),
+            service_authority: service_authority.map(|authority| authority.receipt),
         };
         receipt.to_bytes()?;
         if let Some(completion) = completion {
@@ -297,19 +368,24 @@ impl Database {
             .context("schedule registry is absent")?;
         let scan_permission = Permission::parse("assessment.scan")
             .context("assessment permission policy is unavailable")?;
-        let schedule_permission = Permission::parse("assessment.schedule.manage")
-            .context("assessment permission policy is unavailable")?;
+        let execution_principal = record.review.execution_principal();
         let mut fences = self
-            .assessment_iam_statements(&record.review.claims, &registry.scope_key, scan_permission)
+            .assessment_iam_statements(execution_principal, &registry.scope_key, scan_permission)
             .await?;
-        fences.extend(
-            self.assessment_iam_statements(
-                &record.review.claims,
-                &registry.scope_key,
-                schedule_permission,
-            )
-            .await?,
-        );
+        if let Some(authority) = &record.review.service_authority {
+            fences.push(self.assessment_service_owner_guard(registry_id, authority));
+        } else {
+            let schedule_permission = Permission::parse("assessment.schedule.manage")
+                .context("assessment permission policy is unavailable")?;
+            fences.extend(
+                self.assessment_iam_statements(
+                    execution_principal,
+                    &registry.scope_key,
+                    schedule_permission,
+                )
+                .await?,
+            );
+        }
         let resource = self
             .assessment_resource(registry_id)
             .await?
@@ -407,7 +483,7 @@ impl Database {
         let scan = self
             .request_assessment_scan_fenced(registry_id, &request, fences)
             .await?;
-        let mut claims = record.review.claims.clone();
+        let mut claims = record.review.execution_principal().clone();
         claims.exp = claims.exp.min(i64::try_from(
             record.review.authority_expires_at.unix_seconds(),
         )?);
@@ -467,6 +543,21 @@ impl Database {
             "scan schedule review is no longer current"
         );
         Ok(self.schedule_revision_guard(registry_id, &record, true))
+    }
+
+    pub(super) async fn assessment_schedule_service_authority(
+        &self,
+        registry_id: i64,
+        grant: &ScheduleGrant,
+    ) -> Result<Option<ReviewedServiceAuthority>> {
+        self.assessment_schedule_live_guard(registry_id, grant)
+            .await?;
+        Ok(self
+            .schedule_record(registry_id, &grant.schedule_id)
+            .await?
+            .context("scan schedule review is absent")?
+            .review
+            .service_authority)
     }
 
     fn schedule_revision_guard(
@@ -542,10 +633,14 @@ fn decode_record(row: &crate::value::Row) -> Result<Record> {
     canonical::require_canonical(&bytes, "private schedule review")?;
     let review: PrivateReview = LIMITS.decode(&bytes, "private schedule review")?;
     review.configuration.validate()?;
+    if let Some(authority) = &review.service_authority {
+        authority.validate(&review.claims)?;
+    }
     let actor: String = row.get(1)?;
     ensure!(
-        assessment_actor_ref(&review.claims)? == actor
-            && review.authority_expires_at.unix_seconds() <= u64::try_from(review.claims.exp)?
+        assessment_actor_ref(review.execution_principal())? == actor
+            && review.authority_expires_at.unix_seconds()
+                <= u64::try_from(review.execution_principal().exp)?
             && review.authority_expires_at <= review.configuration.review_expires_at,
         "private schedule authority differs from its review"
     );
@@ -557,6 +652,14 @@ fn decode_record(row: &crate::value::Row) -> Result<Record> {
         next_due: Timestamp::from_unix_seconds(row.get(4)?)?,
         review,
     })
+}
+
+impl PrivateReview {
+    fn execution_principal(&self) -> &Claims {
+        self.service_authority
+            .as_ref()
+            .map_or(&self.claims, |authority| &authority.principal)
+    }
 }
 
 fn schedule_key(scope: &str, identity: &str) -> Result<String> {
@@ -584,10 +687,18 @@ fn project(scope: &str, record: Record) -> Result<ScheduleV1> {
         authority_expires_at: record.review.authority_expires_at,
         next_due_at: record.next_due,
         configuration: record.review.configuration,
+        service_authority: record
+            .review
+            .service_authority
+            .map(|authority| authority.receipt),
     };
     value.to_bytes()?;
     Ok(value)
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "service_schedule_tests.rs"]
+pub(super) mod service_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
@@ -609,6 +720,7 @@ mod tests {
             .assessment_iam_statements(&claims, &request.resource_scope, Permission::Read)
             .await?;
         let write = ScheduleWriteV1 {
+            service_credential_id: None,
             schema: "aos.assessment-schedule-write/v1".into(),
             resource_scope: request.resource_scope,
             schedule_id: "daily-fixture".into(),

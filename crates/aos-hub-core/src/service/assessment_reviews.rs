@@ -207,7 +207,7 @@ impl RpcService {
         let response = self.create_control_plan(
             &claims, kind.plan_kind(), self.registry_scope(&registry).await?.as_str(),
             &input, &req.idempotency_key, effects,
-            vec!["Apply changes only the reviewed configuration. Background execution remains bounded by the applying credential and rechecks current permissions before effects.".into()],
+            vec!["Apply changes only the exact reviewed configuration. Background execution uses the applying credential unless an existing service credential is explicitly selected; it remains expiry-bounded and rechecks current permissions before effects.".into()],
             Some(confirmation),
         ).await?;
         self.recheck_assessment(&claims, &registry, kind.permission())
@@ -349,6 +349,7 @@ mod tests {
     fn confirmation_commits_every_configuration_field_and_registry_identity() -> anyhow::Result<()>
     {
         let request = ScheduleWriteV1 {
+            service_credential_id: None,
             schema: "aos.assessment-schedule-write/v1".into(),
             resource_scope: "registry-instance-1".into(),
             schedule_id: "security-updates".into(),
@@ -378,6 +379,9 @@ mod tests {
         value.registry_slug = "other-packages".into();
         variants.push(value);
         let mut requests = Vec::new();
+        let mut value = request.clone();
+        value.service_credential_id = Some("af738afb-8b2f-4b58-a835-c20b7f6b2d51".into());
+        requests.push(value);
         let mut value = request.clone();
         value.resource_scope = "registry-instance-2".into();
         requests.push(value);

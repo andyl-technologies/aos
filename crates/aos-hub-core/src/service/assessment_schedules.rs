@@ -7,8 +7,9 @@ use super::{pb, RpcError, RpcService};
 impl RpcService {
     /// Creates, replaces or disables an explicitly reviewed recurring scan.
     ///
-    /// Both scheduling and scan permissions are held through admission. Original
-    /// credential expiry limits review lifetime; public output excludes claims.
+    /// Scheduling and scan permissions are held through admission. An explicit
+    /// service review additionally locks its existing execution credential;
+    /// public output excludes private principal and credential metadata.
     ///
     /// # Errors
     /// Returns an error for invalid review, stale revision, revoked authority,

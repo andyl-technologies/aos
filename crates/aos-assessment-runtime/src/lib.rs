@@ -34,6 +34,7 @@ pub mod read_snapshot;
 pub mod routes;
 pub mod scan;
 pub mod schedules;
+pub mod service_authority;
 pub mod source_chain;
 pub mod source_status;
 pub mod status;

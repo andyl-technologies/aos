@@ -23,6 +23,7 @@ fn configuration() -> Result<ScheduleConfigurationV1> {
 #[test]
 fn recurring_review_rejects_implicit_all_duplicates_and_authority_injection() -> Result<()> {
     let write = ScheduleWriteV1 {
+        service_credential_id: None,
         schema: "aos.assessment-schedule-write/v1".into(),
         resource_scope: "registry-incarnation".into(),
         schedule_id: "daily".into(),
@@ -61,6 +62,7 @@ fn public_schedule_pages_bind_scope_and_continuation() -> Result<()> {
         resource_scope: "registry-incarnation".into(),
         as_of: now.clone(),
         schedules: vec![ScheduleV1 {
+            service_authority: None,
             schema: "aos.assessment-schedule/v1".into(),
             resource_scope: "registry-incarnation".into(),
             schedule_id: "daily".into(),

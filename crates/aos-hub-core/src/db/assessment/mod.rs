@@ -30,6 +30,7 @@ mod subscription_snapshot;
 mod reviews;
 mod scans;
 mod schedules;
+mod service_authority;
 mod schedule_snapshot;
 mod source_health;
 pub(super) mod source_status;

@@ -24,6 +24,7 @@ async fn fixture(
         .assessment_iam_statements(&claims, &selection.resource_scope, Permission::Read)
         .await?;
     let mut write = ScheduleWriteV1 {
+        service_credential_id: None,
         schema: "aos.assessment-schedule-write/v1".into(),
         resource_scope: selection.resource_scope,
         schedule_id: "a".into(),

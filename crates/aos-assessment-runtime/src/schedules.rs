@@ -26,7 +26,7 @@ pub struct ScheduleConfigurationV1 {
     pub freshness: FreshnessMode,
     /// Requested interval, from one minute through thirty days.
     pub cadence_seconds: u32,
-    /// Exclusive review deadline, additionally limited by the original credential.
+    /// Exclusive review deadline, bounded by the selected execution credential.
     pub review_expires_at: Timestamp,
     /// Per-execution limits, independent of the recurring interval.
     pub limits: ScanLimits,
@@ -72,6 +72,9 @@ pub struct ScheduleWriteV1 {
     pub expected_revision: u64,
     /// Enables due execution; disabling retains the review and audit state.
     pub enabled: bool,
+    /// Explicit existing service credential; absence retains session-bounded execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_credential_id: Option<String>,
     /// Exact reviewed configuration.
     pub configuration: ScheduleConfigurationV1,
 }
@@ -99,6 +102,9 @@ impl ScheduleWriteV1 {
         }
         text(&self.resource_scope, 128, "schedule review resource")?;
         text(&self.schedule_id, 128, "schedule identity")?;
+        if let Some(credential) = &self.service_credential_id {
+            crate::service_authority::validate_service_credential_id(credential)?;
+        }
         self.configuration.validate()
     }
 }
@@ -117,12 +123,15 @@ pub struct ScheduleV1 {
     pub revision: u64,
     /// Current due-execution setting.
     pub enabled: bool,
-    /// Original credential-bounded review deadline.
+    /// Execution credential-bounded review deadline.
     pub authority_expires_at: Timestamp,
     /// Durable next due time, including bounded deterministic jitter.
     pub next_due_at: Timestamp,
     /// Exact public reviewed selection.
     pub configuration: ScheduleConfigurationV1,
+    /// Descriptive service review receipt; never an authentication credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_authority: Option<crate::service_authority::ServiceAuthorityV1>,
 }
 
 impl ScheduleV1 {
@@ -140,6 +149,12 @@ impl ScheduleV1 {
         text(&self.resource_scope, 128, "schedule resource")?;
         text(&self.schedule_id, 128, "schedule identity")?;
         self.configuration.validate()?;
+        if let Some(authority) = &self.service_authority {
+            authority.to_bytes()?;
+            if authority.expires_at != self.authority_expires_at {
+                bail!("schedule service authority deadline differs from its review");
+            }
+        }
         if self.authority_expires_at > self.configuration.review_expires_at {
             bail!("schedule projection exceeds the reviewed authority deadline");
         }

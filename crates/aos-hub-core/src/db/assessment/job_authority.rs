@@ -214,6 +214,35 @@ impl Database {
         if let Some(grant) = &provenance.schedule {
             self.assessment_schedule_live_guard(scan.registry_id, grant)
                 .await?;
+            if let Some(service) = self
+                .assessment_schedule_service_authority(scan.registry_id, grant)
+                .await?
+            {
+                let retained = &provenance.claims;
+                let reviewed = &service.principal;
+                ensure!(
+                    retained.sub == reviewed.sub
+                        && retained.owner_kind == reviewed.owner_kind
+                        && retained.owner_id == reviewed.owner_id
+                        && retained.owner_incarnation == reviewed.owner_incarnation
+                        && retained.scope == reviewed.scope
+                        && retained.perms == reviewed.perms
+                        && retained.browser_session_id_hash.is_none()
+                        && retained.exp <= reviewed.exp,
+                    "job principal differs from the reviewed service delegation"
+                );
+                let current = self
+                    .current_token_authority(&retained.sub)
+                    .await?
+                    .context("reviewed service credential is no longer current")?;
+                ensure!(
+                    current.owner.id == retained.owner_id
+                        && current.owner.kind == crate::domain::PrincipalKind::ServiceAccount
+                        && current.owner_incarnation == retained.owner_incarnation
+                        && current.scope.as_str() == retained.scope,
+                    "reviewed service credential incarnation changed"
+                );
+            }
         }
         let claims = provenance.claims;
         ensure!(
@@ -222,6 +251,39 @@ impl Database {
             "assessment job principal differs from admitted provenance"
         );
         Ok(claims)
+    }
+
+    /// Returns current organization guards for an explicitly service-backed schedule.
+    ///
+    /// Absence preserves the original credential-bounded authority path. The
+    /// returned guards supplement current scan IAM; they never grant permissions.
+    ///
+    /// # Errors
+    /// Returns an error for expired provenance or a replaced/disabled review.
+    pub async fn assessment_scan_service_guards(
+        &self,
+        scan: &AssessmentScanRecord,
+    ) -> Result<Option<Vec<CheckedStatement>>> {
+        self.assessment_scan_authority(scan).await?;
+        let row = self.backend.query_opt(
+            "SELECT authority_json FROM assessment_scan_authorities WHERE scan_id = ?1 AND registry_id = ?2",
+            &vals![@slice scan.scan_id, scan.registry_id],
+        ).await?.context("assessment job provenance is absent")?;
+        let provenance: PrivateJobAuthority =
+            LIMITS.decode(&row.get::<Vec<u8>>(0)?, "assessment job provenance")?;
+        let Some(grant) = provenance.schedule else {
+            return Ok(None);
+        };
+        let Some(service) = self
+            .assessment_schedule_service_authority(scan.registry_id, &grant)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(vec![self.assessment_service_owner_guard(
+            scan.registry_id,
+            &service,
+        )]))
     }
 
     /// Reads the immutable private job deadline before issuing physical work.

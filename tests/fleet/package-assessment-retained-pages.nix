@@ -55,5 +55,18 @@ in {
         timeout=240,
     )
     assert "PASS: actual CLI retained delivery attempts survive review replacement and database reopen" in output, output
+    output = hub.succeed(
+        "AOS_ASSESSMENT_CLI=${pkgs.aos}/bin/aos TOKIO_WORKER_THREADS=2 "
+        "${fixture}/bin/aos-assessment-retained-pages-fixture "
+        "--ignored --exact ${fixture.passthru.serviceTestSelector} --nocapture --test-threads=1",
+        timeout=240,
+    )
+    assert "PASS: actual CLI service review survives reviewing credential revocation and database reopen" in output, output
+    output = hub.succeed(
+        "TOKIO_WORKER_THREADS=2 ${fixture}/bin/aos-assessment-retained-pages-fixture "
+        "--exact ${fixture.passthru.serviceRevocationTestSelector} --nocapture --test-threads=1",
+        timeout=240,
+    )
+    assert "1 passed; 0 failed" in output, output
   '';
 }

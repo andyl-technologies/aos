@@ -32,6 +32,8 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
     let packages = RwSignal::new(String::new());
     let cadence = RwSignal::new("3600".to_owned());
     let expiry = RwSignal::new(String::new());
+    let use_service = RwSignal::new(false);
+    let service_credential = RwSignal::new(String::new());
     let updates = RwSignal::new(true);
     let vulnerabilities = RwSignal::new(true);
     let licenses = RwSignal::new(false);
@@ -123,6 +125,19 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
             profiles.sort();
             let existing = selected.get_untracked();
             let request = ScheduleWriteV1 {
+                service_credential_id: if use_service.get_untracked() && enabled.get_untracked() {
+                    let credential = service_credential.get_untracked().trim().to_owned();
+                    aos_assessment_runtime::service_authority::validate_service_credential_id(
+                        &credential,
+                    )
+                    .map_err(|_| {
+                        "Enter the existing service credential identity for this exact review"
+                            .to_owned()
+                    })?;
+                    Some(credential)
+                } else {
+                    None
+                },
                 schema: "aos.assessment-schedule-write/v1".into(),
                 resource_scope,
                 schedule_id: identity.get_untracked().trim().to_owned(),
@@ -218,29 +233,34 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
         busy.set(true);
         failure.set(None);
         tasks.spawn(async move {
-            let outcome = async {
-                let response = client
-                    .call::<_, aos_proto_types::AssessmentDocumentResponse>(
-                        aos_proto_types::ASSESSMENT_SERVICE_WRITE_SCHEDULE_PATH,
-                        &plan.registry_apply(),
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let admitted = ScheduleV1::from_slice(&response.document_json)
-                    .map_err(|error| error.to_string())?;
-                if admitted.resource_scope != request.resource_scope
+            let outcome =
+                async {
+                    let response = client
+                        .call::<_, aos_proto_types::AssessmentDocumentResponse>(
+                            aos_proto_types::ASSESSMENT_SERVICE_WRITE_SCHEDULE_PATH,
+                            &plan.registry_apply(),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let admitted = ScheduleV1::from_slice(&response.document_json)
+                        .map_err(|error| error.to_string())?;
+                    if admitted.resource_scope != request.resource_scope
                     || admitted.schedule_id != request.schedule_id
                     || admitted.enabled != request.enabled
                     || admitted.configuration != request.configuration
+                    || admitted.service_authority.as_ref().map(|authority| authority.credential_ref)
+                        != request.service_credential_id.as_deref()
+                            .map(aos_assessment_runtime::service_authority::service_credential_ref)
+                            .transpose().map_err(|error| error.to_string())?
                     || request.expected_revision.checked_add(1) != Some(admitted.revision)
                 {
                     return Err(
                         "The receipt differs from the exact reviewed configuration".to_owned()
                     );
                 }
-                Ok::<_, String>(admitted)
-            }
-            .await;
+                    Ok::<_, String>(admitted)
+                }
+                .await;
             busy.set(false);
             match outcome {
                 Ok(admitted) => {
@@ -279,6 +299,7 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
                                     {can_review.then(|| view! { <button class="secondary-button" disabled=move || (busy.get() || pending.get().is_some()) on:click=move |_| {
                                         identity.set(schedule.schedule_id.clone()); packages.set(schedule.configuration.packages.join("\n"));
                                         cadence.set(schedule.configuration.cadence_seconds.to_string()); expiry.set(schedule.configuration.review_expires_at.to_string());
+                                        use_service.set(schedule.service_authority.is_some()); service_credential.set(String::new());
                                         updates.set(schedule.configuration.profiles.contains(&Profile::Updates)); vulnerabilities.set(schedule.configuration.profiles.contains(&Profile::Vulnerabilities));
                                         licenses.set(schedule.configuration.profiles.contains(&Profile::LicenseSignals));
                                         enabled.set(schedule.enabled); selected.set(Some(schedule.clone())); failure.set(None);
@@ -304,8 +325,13 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
                     <label><input type="checkbox" prop:checked=move || vulnerabilities.get() disabled=move || (busy.get() || pending.get().is_some()) on:change=move |event| vulnerabilities.set(event_target_checked(&event))/>"Vulnerabilities"</label>
                     <label><input type="checkbox" prop:checked=move || licenses.get() disabled=move || (busy.get() || pending.get().is_some()) on:change=move |event| licenses.set(event_target_checked(&event))/>"License signals"</label>
                     <label><input type="checkbox" prop:checked=move || enabled.get() disabled=move || (busy.get() || pending.get().is_some()) on:change=move |event| enabled.set(event_target_checked(&event))/>"Enable due scans"</label>
+                    <label><input type="checkbox" prop:checked=move || use_service.get() disabled=move || (busy.get() || pending.get().is_some()) on:change=move |event| use_service.set(event_target_checked(&event))/>"Review an existing service credential for recurring execution"</label>
+                    {move || use_service.get().then(|| view! {
+                        <label>"Service credential identity"<input prop:value=move || service_credential.get() disabled=move || (busy.get() || pending.get().is_some()) on:input=move |event| service_credential.set(event_target_value(&event))/></label>
+                        <p>"Use the credential identity from the registry organization, not its secret. Service reviews expire within thirty days; replacement requires selecting the credential again."</p>
+                    })}
                     <button class="primary-button" disabled=move || (busy.get() || pending.get().is_some()) || !polling.get() || scope.get().is_none() on:click=review>"Plan schedule review"</button>
-                    <button class="secondary-button" disabled=move || (busy.get() || pending.get().is_some()) on:click=move |_| { selected.set(None); identity.set(String::new()); failure.set(None); }>"New schedule"</button>
+                    <button class="secondary-button" disabled=move || (busy.get() || pending.get().is_some()) on:click=move |_| { selected.set(None); identity.set(String::new()); use_service.set(false); service_credential.set(String::new()); failure.set(None); }>"New schedule"</button>
 
                     {move || pending.get().map(|(review, _)| {
                         let effects = review.plan.effects.join("\n");

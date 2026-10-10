@@ -454,6 +454,12 @@ fn render_schedule(printer: &Printer, schedule: &ScheduleV1) {
         schedule.next_due_at,
         schedule.authority_expires_at
     ));
+    if let Some(authority) = &schedule.service_authority {
+        printer.info(&format!(
+            "Service principal {}; credential {}; reviewed by {}",
+            authority.actor_ref, authority.credential_ref, authority.reviewer_ref
+        ));
+    }
 }
 
 fn render_alerts(printer: &Printer, page: &AlertPageV1) {

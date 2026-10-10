@@ -10,6 +10,8 @@
   alertSelector = "db::assessment::alert_snapshot::tests::actual_cli_retains_alert_revisions_across_database_reopen";
   scheduleSelector = "db::assessment::schedule_snapshot::tests::actual_cli_retains_schedule_reviews_across_database_reopen";
   deliverySelector = "db::assessment::delivery_snapshot::tests::actual_cli_retains_delivery_attempts_across_database_reopen";
+  serviceSelector = "db::assessment::schedules::service_tests::actual_cli_reads_service_review_after_database_reopen";
+  serviceRevocationSelector = "db::assessment::schedules::service_tests::service_scan_rechecks_exact_credential_after_reviewing_session_ends";
 in
   assert builtins.pathExists (source + "/crates/aos-hub-worker/src/oci_manifest_ingress.rs");
     pkgs.mkCargoPackage {
@@ -54,11 +56,17 @@ in
         grep -Fx '${scheduleSelector}: test' "$out/nix-support/schedule-test-registration.txt"
         "$out/bin/aos-assessment-retained-pages-fixture" --list --ignored --exact '${deliverySelector}' > "$out/nix-support/delivery-test-registration.txt"
         grep -Fx '${deliverySelector}: test' "$out/nix-support/delivery-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --ignored --exact '${serviceSelector}' > "$out/nix-support/service-test-registration.txt"
+        grep -Fx '${serviceSelector}: test' "$out/nix-support/service-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${serviceRevocationSelector}' > "$out/nix-support/service-revocation-test-registration.txt"
+        grep -Fx '${serviceRevocationSelector}: test' "$out/nix-support/service-revocation-test-registration.txt"
       '';
       passthru.testSelector = selector;
       passthru.subscriptionTestSelector = subscriptionSelector;
       passthru.alertTestSelector = alertSelector;
       passthru.scheduleTestSelector = scheduleSelector;
       passthru.deliveryTestSelector = deliverySelector;
+      passthru.serviceTestSelector = serviceSelector;
+      passthru.serviceRevocationTestSelector = serviceRevocationSelector;
       meta.description = "Retained assessment list database and CLI acceptance fixture";
     }

@@ -274,6 +274,7 @@ mod tests {
         let (db, registry, subscription, claims, fences) =
             super::super::notifications_tests::fixture().await?;
         let request = ScheduleWriteV1 {
+            service_credential_id: None,
             schema: "aos.assessment-schedule-write/v1".into(),
             resource_scope: subscription.resource_scope,
             schedule_id: "reviewed-updates".into(),

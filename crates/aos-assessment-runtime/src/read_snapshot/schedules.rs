@@ -205,6 +205,7 @@ mod tests {
         let mut schedules = ["a", "b", "c"]
             .into_iter()
             .map(|id| ScheduleV1 {
+                service_authority: None,
                 schema: "aos.assessment-schedule/v1".into(),
                 resource_scope: scope.into(),
                 schedule_id: id.into(),
