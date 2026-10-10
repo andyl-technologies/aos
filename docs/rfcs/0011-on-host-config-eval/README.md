@@ -25,7 +25,7 @@
 - **Audience:** anyone working on `lib/modules.nix`, `lib/types.nix`,
   `lib/modules/systemd/`, `modules/base/{build,apm,apm-registries,networking}.nix`,
   `modules/base/activate.sh.in`, `modules/services/aos-metadata.nix`,
-  `modules/base/secure-boot.nix`, `crates/aos-package/`, `pkgs/tools/nix.nix`,
+  `modules/base/secure-boot.nix`, `crates/aos/packages/aos-package-manager/`, `pkgs/tools/nix.nix`,
   `pkgs/build-support/_expose-renderer.nix`, or release/key operations.
 
 This is a directory RFC. The README carries the status header, the core model,
@@ -143,7 +143,7 @@ The discipline that makes "deferred eval on-host" and "nothing is built on
 host" coexist: Stage-2 modules hold store-path **strings**, not derivations.
 Interpolating a store-path string adds string context (metadata) but triggers
 **no instantiation and no realization** — confirmed and documented in
-`crates/aos-doc/src/data/language.rs`. Every path the modules reference already
+`crates/aos/cli/aos-nix-docs/src/data/language.rs`. Every path the modules reference already
 exists locally as a downloaded NAR. Eval is pure value computation; it never
 builds.
 

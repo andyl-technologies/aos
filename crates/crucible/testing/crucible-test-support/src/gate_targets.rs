@@ -1,0 +1,367 @@
+//! Mapping from canonical gate names to isolable Cargo component tests.
+//!
+//! RFC-0010 file 27 requires each per-layer determinism gate to have an
+//! addressable test target in the crate that owns it. A mapped target proves
+//! its crate-level contribution; it does not by itself discharge an aggregate
+//! gate that also requires packaged processes, VM execution, or host variation.
+
+/// A named Cargo test target for a determinism gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GateTargetSpec {
+    /// Canonical RFC gate name.
+    pub gate: &'static str,
+    /// Cargo package that owns the test target.
+    pub package: &'static str,
+    /// Cargo integration-test target name, without `.rs`.
+    pub test_target: &'static str,
+    /// Features required when running this target.
+    pub required_features: &'static [&'static str],
+}
+
+/// Cargo test targets for the RFC-0010 crate-structure gate map.
+pub const GATE_TARGETS: &[GateTargetSpec] = &[
+    GateTargetSpec {
+        gate: "gate:harness-lint",
+        package: "crucible-test-support",
+        test_target: "harness_lint",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:license-boundary",
+        package: "crucible-test-support",
+        test_target: "gate_license_boundary",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:layer0-determinism",
+        package: "crucible-qemu-host",
+        test_target: "deterministic_launch",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:single-vm-fingerprint",
+        package: "crucible-qemu-host",
+        test_target: "deterministic_launch",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:single-vm-fingerprint",
+        package: "crucible-qemu-plugin",
+        test_target: "gate_patch_microtests",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:single-vm-fingerprint",
+        package: "crucible-guest",
+        test_target: "gate_single_vm_fingerprint",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:layer1-injection",
+        package: "crucible-device",
+        test_target: "gate_layer1_injection",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:layer1-injection",
+        package: "crucible-qemu-protocol",
+        test_target: "gate_layer1_injection",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:layer1-injection",
+        package: "crucible-qemu-shmem",
+        test_target: "gate_layer1_injection",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:abi-conformance",
+        package: "crucible-test-support",
+        test_target: "gate_abi_conformance",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:abi-conformance",
+        package: "crucible-qemu-shmem",
+        test_target: "gate_abi_conformance",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:abi-conformance",
+        package: "crucible-qemu-protocol",
+        test_target: "gate_abi_conformance",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:abi-conformance",
+        package: "crucible-control-api",
+        test_target: "gate_abi_conformance",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:abi-conformance",
+        package: "crucible-qemu-plugin",
+        test_target: "gate_abi_conformance",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:abi-conformance",
+        package: "crucible-guest",
+        test_target: "gate_abi_conformance",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:abi-conformance",
+        package: "crucible-engine",
+        test_target: "gate_abi_conformance",
+        required_features: &["test-double"],
+    },
+    GateTargetSpec {
+        gate: "gate:typed-choice",
+        package: "crucible-campaign",
+        test_target: "gate_typed_choice",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:replay-oracle",
+        package: "crucible-engine",
+        test_target: "gate_replay_oracle",
+        required_features: &["test-double"],
+    },
+    GateTargetSpec {
+        gate: "gate:content-address",
+        package: "crucible-engine",
+        test_target: "gate_content_address",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:content-address",
+        package: "crucible-determinism",
+        test_target: "gate_content_address",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:campaign-model",
+        package: "crucible-campaign",
+        test_target: "gate_campaign_model",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:campaign-replay",
+        package: "crucible-campaign",
+        test_target: "gate_campaign_replay",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:campaign-replay",
+        package: "crucible-engine",
+        test_target: "gate_campaign_replay",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:campaign-statistics",
+        package: "crucible-campaign",
+        test_target: "gate_campaign_statistics",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:branch-point-model",
+        package: "crucible-campaign",
+        test_target: "gate_branch_point_model",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:lazy-frontier",
+        package: "crucible-campaign",
+        test_target: "gate_lazy_frontier",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:attempt-idempotence",
+        package: "crucible-campaign",
+        test_target: "gate_attempt_idempotence",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:campaign-mutation-scaling",
+        package: "crucible-campaign",
+        test_target: "gate_campaign_mutation_scaling",
+        required_features: &["test-support"],
+    },
+    GateTargetSpec {
+        gate: "gate:campaign-store-equivalence",
+        package: "crucible-store",
+        test_target: "gate_campaign_store_equivalence",
+        required_features: &["test-support"],
+    },
+    GateTargetSpec {
+        gate: "gate:campaign-store-composition",
+        package: "crucible-store",
+        test_target: "gate_campaign_store_composition",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:campaign-store-composition",
+        package: "crucible-cli",
+        test_target: "gate_campaign_store_composition",
+        required_features: &["test-double"],
+    },
+    GateTargetSpec {
+        gate: "gate:campaign-component-contract",
+        package: "crucible-daemon",
+        test_target: "gate_campaign_component_contract",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:campaign-cold-continuity",
+        package: "crucible-campaign",
+        test_target: "gate_campaign_cold_continuity",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:scheduler-liveness",
+        package: "crucible-qemu-host",
+        test_target: "deterministic_launch",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:control-responsive",
+        package: "crucible-session",
+        test_target: "gate_control_responsive",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:control-responsive",
+        package: "crucible-control-server",
+        test_target: "gate_control_responsive",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:control-responsive",
+        package: "crucible-daemon",
+        test_target: "gate_control_responsive",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:any-guest",
+        package: "crucible-qemu-host",
+        test_target: "deterministic_launch",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:qemu-inert",
+        package: "crucible-qemu-host",
+        test_target: "gate_qemu_inert",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:qemu-inert",
+        package: "crucible-qemu-plugin",
+        test_target: "gate_qemu_inert",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:patch-microtests",
+        package: "crucible-qemu-plugin",
+        test_target: "gate_patch_microtests",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:divergence-bisect",
+        package: "crucible-test-support",
+        test_target: "gate_divergence_bisect",
+        required_features: &[],
+    },
+    // The canonical adversarial-determinism gate is the crucible-side
+    // real-simulator test that drives the real `SingleScheduler` through the
+    // host-adversary matrix, not the harness-side mock corpus.
+    GateTargetSpec {
+        gate: "gate:adversarial-determinism",
+        package: "crucible-engine",
+        test_target: "gate_adversarial_determinism",
+        required_features: &[],
+    },
+    // These targets cover the scheduler and artifact-format components. The
+    // aggregate acceptance gate additionally requires packaged-QEMU execution
+    // and artifact replay on a different machine profile.
+    GateTargetSpec {
+        gate: "gate:e2e-determinism",
+        package: "crucible-engine",
+        test_target: "gate_e2e_determinism_concurrency",
+        required_features: &["test-double"],
+    },
+    GateTargetSpec {
+        gate: "gate:e2e-determinism",
+        package: "crucible-cli",
+        test_target: "gate_e2e_determinism",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:basic-block-coverage",
+        package: "crucible-engine",
+        test_target: "gate_basic_block_coverage",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:basic-block-coverage",
+        package: "crucible-qemu-host",
+        test_target: "gate_basic_block_coverage",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:checkpoint-materialization",
+        package: "crucible-engine",
+        test_target: "gate_checkpoint_materialization",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:state-space-search",
+        package: "crucible-engine",
+        test_target: "gate_state_space_search",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:fleet-equivalence",
+        package: "crucible-engine",
+        test_target: "gate_fleet_equivalence",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:campaign-continuity",
+        package: "crucible-store",
+        test_target: "gate_campaign_continuity",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:campaign-gate-matrix",
+        package: "crucible-test-support",
+        test_target: "campaign_gate_matrix_inventory",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:campaign-release-acceptance",
+        package: "crucible-test-support",
+        test_target: "campaign_release_acceptance",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:signal-fault-system",
+        package: "crucible-engine",
+        test_target: "gate_signal_fault_system",
+        required_features: &[],
+    },
+    // The perf-bench regression gate runs the harness-owned cost-model
+    // assertion pass (SS25.7.1 metrics) with no QEMU present.
+    GateTargetSpec {
+        gate: "gate:perf-bench",
+        package: "crucible-test-support",
+        test_target: "gate_perf_bench",
+        required_features: &[],
+    },
+];
+
+/// Returns every mapped gate target in RFC table order.
+#[must_use]
+pub fn gate_targets() -> &'static [GateTargetSpec] {
+    GATE_TARGETS
+}

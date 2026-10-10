@@ -10,13 +10,22 @@
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
-  apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
-  streaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
-  streamingTest = builtins.readFile ../../crates/crucible-api/tests/gate_streaming_equivalence.rs;
+  apiLib = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "exports";
+  };
+  apiClient = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "client";
+  };
+  streaming = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "streaming";
+  };
+  streamingTest = builtins.readFile ../../crates/crucible/control/crucible-control-server/tests/gate_streaming_equivalence.rs;
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+    entry = ../../crates/crucible/control/crucible-control-client/tests/gate_control_client.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -41,7 +50,7 @@
         needle = "`T-API-4` is green through `checks.crucible.phase5.apiStreamingEquivalence`";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "streaming module exported";
         needle = "pub mod streaming";
@@ -55,7 +64,7 @@
         needle = "validate_control_watch_send_equivalence";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/client.rs" apiClient [
+    ++ failuresFor "crates/crucible/control/crucible-control-client/src/client.rs" apiClient [
       {
         label = "Control attach client method";
         needle = "fn control_attach(";
@@ -89,7 +98,7 @@
         needle = ''"/crucible.rpc/send"'';
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/streaming.rs" streaming [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/streaming.rs" streaming [
       {
         label = "streaming session facade";
         needle = "pub struct InProcessStreamingSession";
@@ -147,7 +156,7 @@
         needle = "event_log.subscribe";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_streaming_equivalence.rs" streamingTest [
+    ++ failuresFor "crates/crucible/control/crucible-control-server/tests/gate_streaming_equivalence.rs" streamingTest [
       {
         label = "capability equivalence test";
         needle = "control_and_watch_send_advertise_identical_command_capabilities";
@@ -173,7 +182,7 @@
         needle = "SendRequest::new";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
+    ++ failuresFor "crates/crucible/control/crucible-control-client/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "RPC Control attach coverage";
         needle = "RPC Control attach should decode";
@@ -280,14 +289,14 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-api-streaming-equivalence-target" \
-            -p crucible-api \
+            -p crucible-control-server \
             --test gate_streaming_equivalence \
             -- --test-threads=1
           cargo test \
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-api-streaming-equivalence-target" \
-            -p crucible-api \
+            -p crucible-control-client \
             --test gate_control_client \
             -- --test-threads=1
         '';

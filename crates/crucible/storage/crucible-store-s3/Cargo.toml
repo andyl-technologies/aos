@@ -1,0 +1,19 @@
+[package]
+name = "crucible-store-s3"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+aws-sdk-s3 = { workspace = true }
+crucible-store = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+aws-config = { workspace = true }
+crucible-store = { workspace = true, features = ["test-support"] }

@@ -7,18 +7,18 @@
 }: let
   dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
   casSource =
-    builtins.readFile ../../crates/crucible-cas/src/lib.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_codec.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_model.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_store.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/invalidation.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/tests.rs;
-  fleetStoreProbe = builtins.readFile ../../crates/crucible-cas/src/bin/crucible-fleet-store.rs;
+    builtins.readFile ../../crates/crucible/storage/crucible-store/src/lib.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_codec.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_model.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_store.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/invalidation.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/tests.rs;
+  fleetStoreProbe = builtins.readFile ../../crates/crucible/storage/crucible-store/src/bin/crucible-fleet-store.rs;
   fleetStorePackage = builtins.readFile ../../pkgs/tools/crucible-fleet-store.nix;
   crucibleModel = import ./_crucible-model-source.nix {inherit lib;};
   crucibleLib =
-    builtins.readFile ../../crates/crucible/src/lib.rs
-    + builtins.readFile ../../crates/crucible/src/tests/model_core.rs;
+    builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs
+    + builtins.readFile ../../crates/crucible/engine/crucible-engine/src/tests/model_core.rs;
   rootDefault = builtins.readFile ../../default.nix;
   defaultChecks = builtins.readFile ./default.nix;
   gateCiWiring = builtins.readFile ./phase7-crucible-gate-ci-wiring.nix;
@@ -46,7 +46,7 @@
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
     ]
-    ++ failuresFor "crates/crucible-cas/src/lib.rs" casSource [
+    ++ failuresFor "crates/crucible/storage/crucible-store/src/lib.rs" casSource [
       {
         label = "campaign GC root type";
         needle = "pub struct CampaignGcRoots";
@@ -144,7 +144,7 @@
         needle = "campaign_retention_merge_attempts_do_not_expand_over_cap";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" crucibleModel [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" crucibleModel [
       {
         label = "temporal graph GC roots";
         needle = "pub struct TemporalGraphGcRoots";
@@ -166,7 +166,7 @@
         needle = "pub fn collect_cached_snapshot";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crucibleLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crucibleLib [
       {
         label = "temporal graph fat-to-thin value proof";
         needle = "temporal_graph_evicts_fat_checkpoint_back_to_thin_without_state_change";
@@ -176,7 +176,7 @@
         needle = "temporal_graph_gc_cache_collection_preserves_replay_oracle_path";
       }
     ]
-    ++ failuresFor "crates/crucible-cas/src/bin/crucible-fleet-store.rs" fleetStoreProbe [
+    ++ failuresFor "crates/crucible/storage/crucible-store/src/bin/crucible-fleet-store.rs" fleetStoreProbe [
       {
         label = "campaign storage probe function";
         needle = "prove_campaign_storage_bounding";

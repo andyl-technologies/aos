@@ -1,0 +1,407 @@
+{
+  "description": "Initial mechanical workspace migration; merged crates remain here until their owning refactors remove them. Wire formats, executable names, and digest domains are preserved.",
+  "crates": [
+    {
+      "old": "aos-contract",
+      "new": "aos-contract",
+      "source": "crates/aos-contract",
+      "target": "crates/shared/aos-contract"
+    },
+    {
+      "old": "aos-core",
+      "new": "aos-core",
+      "source": "crates/aos-core",
+      "target": "crates/shared/aos-core"
+    },
+    {
+      "old": "aos-net",
+      "new": "aos-transfer",
+      "source": "crates/aos-net",
+      "target": "crates/shared/aos-transfer"
+    },
+    {
+      "old": "aos-systemd",
+      "new": "aos-systemd-client",
+      "source": "crates/aos-systemd",
+      "target": "crates/shared/aos-systemd-client"
+    },
+    {
+      "old": "aos-oci",
+      "new": "aos-oci",
+      "source": "crates/aos-oci",
+      "target": "crates/shared/aos-oci"
+    },
+    {
+      "old": "aos-oci-types",
+      "new": "aos-oci-types",
+      "source": "crates/aos-oci-types",
+      "target": "crates/shared/aos-oci-types"
+    },
+    {
+      "old": "crucible-linux-resource",
+      "new": "aos-linux-project-quota",
+      "source": "crates/crucible-linux-resource",
+      "target": "crates/shared/aos-linux-project-quota"
+    },
+    {
+      "old": "aos",
+      "new": "aos-cli",
+      "source": "crates/aos",
+      "target": "crates/aos/cli/aos-cli"
+    },
+    {
+      "old": "aos-profile",
+      "new": "aos-closure-analysis",
+      "source": "crates/aos-profile",
+      "target": "crates/aos/cli/aos-closure-analysis"
+    },
+    {
+      "old": "aos-doc",
+      "new": "aos-nix-docs",
+      "source": "crates/aos-doc",
+      "target": "crates/aos/cli/aos-nix-docs"
+    },
+    {
+      "old": "aos-ability-model",
+      "new": "aos-module-format",
+      "source": "crates/aos-ability-model",
+      "target": "crates/aos/modules/aos-module-format"
+    },
+    {
+      "old": "aos-ability-plan",
+      "new": "aos-ability-plan",
+      "source": "crates/aos-ability-plan",
+      "target": "crates/aos/modules/aos-ability-plan"
+    },
+    {
+      "old": "aos-doc-model",
+      "new": "aos-module-docs",
+      "source": "crates/aos-doc-model",
+      "target": "crates/aos/modules/aos-module-docs"
+    },
+    {
+      "old": "aos-ability-runtime",
+      "new": "aos-activation",
+      "source": "crates/aos-ability-runtime",
+      "target": "crates/aos/activation/aos-activation"
+    },
+    {
+      "old": "aos-ability-crucible",
+      "new": "aos-activation-crucible",
+      "source": "crates/aos-ability-crucible",
+      "target": "crates/aos/activation/aos-activation-crucible"
+    },
+    {
+      "old": "aos-configuration-provider",
+      "new": "aos-activation-config-files",
+      "source": "crates/aos-configuration-provider",
+      "target": "crates/aos/activation/aos-activation-config-files"
+    },
+    {
+      "old": "aos-filesystem-provider",
+      "new": "aos-activation-filesystem",
+      "source": "crates/aos-filesystem-provider",
+      "target": "crates/aos/activation/aos-activation-filesystem"
+    },
+    {
+      "old": "aos-kubernetes-provider",
+      "new": "aos-activation-kubernetes",
+      "source": "crates/aos-kubernetes-provider",
+      "target": "crates/aos/activation/aos-activation-kubernetes"
+    },
+    {
+      "old": "aos-kernel-tunable-provider",
+      "new": "aos-activation-sysctl",
+      "source": "crates/aos-kernel-tunable-provider",
+      "target": "crates/aos/activation/aos-activation-sysctl"
+    },
+    {
+      "old": "aos-network-ruleset-provider",
+      "new": "aos-activation-nftables",
+      "source": "crates/aos-network-ruleset-provider",
+      "target": "crates/aos/activation/aos-activation-nftables"
+    },
+    {
+      "old": "aos-ebpf-lsm-provider",
+      "new": "aos-activation-bpf-lsm",
+      "source": "crates/aos-ebpf-lsm-provider",
+      "target": "crates/aos/activation/aos-activation-bpf-lsm"
+    },
+    {
+      "old": "aos-ebpf-net-policy-provider",
+      "new": "aos-activation-bpf-network",
+      "source": "crates/aos-ebpf-net-policy-provider",
+      "target": "crates/aos/activation/aos-activation-bpf-network"
+    },
+    {
+      "old": "aos-nix-store-provider",
+      "new": "aos-activation-nix-store",
+      "source": "crates/aos-nix-store-provider",
+      "target": "crates/aos/activation/aos-activation-nix-store"
+    },
+    {
+      "old": "aos-block-storage-provider",
+      "new": "aos-activation-storage",
+      "source": "crates/aos-block-storage-provider",
+      "target": "crates/aos/activation/aos-activation-storage"
+    },
+    {
+      "old": "aos-systemd-provider",
+      "new": "aos-activation-systemd",
+      "source": "crates/aos-systemd-provider",
+      "target": "crates/aos/activation/aos-activation-systemd"
+    },
+    {
+      "old": "aos-package",
+      "new": "aos-package-manager",
+      "source": "crates/aos-package",
+      "target": "crates/aos/packages/aos-package-manager"
+    },
+    {
+      "old": "aos-cache",
+      "new": "aos-nix-cache",
+      "source": "crates/aos-cache",
+      "target": "crates/aos/packages/aos-nix-cache"
+    },
+    {
+      "old": "aos-server",
+      "new": "aos-build-server",
+      "source": "crates/aos-server",
+      "target": "crates/aos/packages/aos-build-server"
+    },
+    {
+      "old": "aos-proto",
+      "new": "aos-build-api",
+      "source": "crates/aos-proto",
+      "target": "crates/aos/packages/aos-build-api"
+    },
+    {
+      "old": "aos-remote",
+      "new": "aos-build-client",
+      "source": "crates/aos-remote",
+      "target": "crates/aos/packages/aos-build-client"
+    },
+    {
+      "old": "aos-registry-surface",
+      "new": "aos-registry-format",
+      "source": "crates/aos-registry-surface",
+      "target": "crates/aos/registry/aos-registry-format"
+    },
+    {
+      "old": "aos-registry-spa",
+      "new": "aos-registry-web",
+      "source": "crates/aos-registry-spa",
+      "target": "crates/aos/registry/aos-registry-web"
+    },
+    {
+      "old": "aos-boot-preparation-provider",
+      "new": "aos-boot-preparation-provider",
+      "source": "crates/aos-boot-preparation-provider",
+      "target": "crates/aos/boot/aos-boot-preparation-provider"
+    },
+    {
+      "old": "aos-metadata",
+      "new": "aos-platform-metadata",
+      "source": "crates/aos-metadata",
+      "target": "crates/aos/boot/aos-platform-metadata"
+    },
+    {
+      "old": "aos-metadata-provider",
+      "new": "aos-metadata-provider",
+      "source": "crates/aos-metadata-provider",
+      "target": "crates/aos/boot/aos-metadata-provider"
+    },
+    {
+      "old": "aos-storage-provisioning",
+      "new": "aos-storage-layout",
+      "source": "crates/aos-storage-provisioning",
+      "target": "crates/aos/boot/aos-storage-layout"
+    },
+    {
+      "old": "aos-configuration-lower",
+      "new": "aos-configuration-image",
+      "source": "crates/aos-configuration-lower",
+      "target": "crates/aos/boot/aos-configuration-image"
+    },
+    {
+      "old": "aos-boot-identity",
+      "new": "aos-boot-identity",
+      "source": "crates/aos-boot-identity",
+      "target": "crates/aos/boot/aos-boot-identity"
+    },
+    {
+      "old": "aos-recovery",
+      "new": "aos-recovery",
+      "source": "crates/aos-recovery",
+      "target": "crates/aos/boot/aos-recovery"
+    },
+    {
+      "old": "aos-maintain",
+      "new": "aos-package-maintenance",
+      "source": "crates/aos-maintain",
+      "target": "crates/aos/release/aos-package-maintenance"
+    },
+    {
+      "old": "aos-release",
+      "new": "aos-release-format",
+      "source": "crates/aos-release",
+      "target": "crates/aos/release/aos-release-format"
+    },
+    {
+      "old": "aos-release-signer",
+      "new": "aos-release-signer",
+      "source": "crates/aos-release-signer",
+      "target": "crates/aos/release/aos-release-signer"
+    },
+    {
+      "old": "aos-image-finalizer",
+      "new": "aos-image-finalizer",
+      "source": "crates/aos-image-finalizer",
+      "target": "crates/aos/release/aos-image-finalizer"
+    },
+    {
+      "old": "aos-hub",
+      "new": "aos-hub-native",
+      "source": "crates/aos-hub",
+      "target": "crates/hub/aos-hub-native"
+    },
+    {
+      "old": "aos-hub-core",
+      "new": "aos-hub-service",
+      "source": "crates/aos-hub-core",
+      "target": "crates/hub/aos-hub-service"
+    },
+    {
+      "old": "aos-hub-worker",
+      "new": "aos-hub-worker",
+      "source": "crates/aos-hub-worker",
+      "target": "crates/hub/aos-hub-worker"
+    },
+    {
+      "old": "aos-hub-console",
+      "new": "aos-hub-console",
+      "source": "crates/aos-hub-console",
+      "target": "crates/hub/aos-hub-console"
+    },
+    {
+      "old": "aos-hub-console-contract",
+      "new": "aos-hub-ui",
+      "source": "crates/aos-hub-console-contract",
+      "target": "crates/hub/aos-hub-ui"
+    },
+    {
+      "old": "aos-proto-types",
+      "new": "aos-hub-api",
+      "source": "crates/aos-proto-types",
+      "target": "crates/hub/aos-hub-api"
+    },
+    {
+      "old": "crucible",
+      "new": "crucible-engine",
+      "source": "crates/crucible",
+      "target": "crates/crucible/engine/crucible-engine"
+    },
+    {
+      "old": "crucible-sim",
+      "new": "crucible-determinism",
+      "source": "crates/crucible-sim",
+      "target": "crates/crucible/engine/crucible-determinism"
+    },
+    {
+      "old": "crucible-device",
+      "new": "crucible-device",
+      "source": "crates/crucible-device",
+      "target": "crates/crucible/engine/crucible-device"
+    },
+    {
+      "old": "crucible-campaign",
+      "new": "crucible-campaign",
+      "source": "crates/crucible-campaign",
+      "target": "crates/crucible/engine/crucible-campaign"
+    },
+    {
+      "old": "crucible-api",
+      "new": "crucible-control-api",
+      "source": "crates/crucible-api",
+      "target": "crates/crucible/control/crucible-control-api"
+    },
+    {
+      "old": "crucible-session",
+      "new": "crucible-session",
+      "source": "crates/crucible-session",
+      "target": "crates/crucible/control/crucible-session"
+    },
+    {
+      "old": "crucible-daemon",
+      "new": "crucible-daemon",
+      "source": "crates/crucible-daemon",
+      "target": "crates/crucible/control/crucible-daemon"
+    },
+    {
+      "old": "crucible-cli",
+      "new": "crucible-cli",
+      "source": "crates/crucible-cli",
+      "target": "crates/crucible/control/crucible-cli"
+    },
+    {
+      "old": "crucible-protocol",
+      "new": "crucible-qemu-protocol",
+      "source": "crates/crucible-protocol",
+      "target": "crates/crucible/protocol/crucible-qemu-protocol"
+    },
+    {
+      "old": "crucible-shmem",
+      "new": "crucible-qemu-shmem",
+      "source": "crates/crucible-shmem",
+      "target": "crates/crucible/protocol/crucible-qemu-shmem"
+    },
+    {
+      "old": "crucible-qemu",
+      "new": "crucible-qemu-host",
+      "source": "crates/crucible-qemu",
+      "target": "crates/crucible/qemu/crucible-qemu-host"
+    },
+    {
+      "old": "crucible-qemu-plugin",
+      "new": "crucible-qemu-plugin",
+      "source": "crates/crucible-qemu-plugin",
+      "target": "crates/crucible/qemu/crucible-qemu-plugin"
+    },
+    {
+      "old": "crucible-debug-gateway",
+      "new": "crucible-qemu-debug-gateway",
+      "source": "crates/crucible-debug-gateway",
+      "target": "crates/crucible/qemu/crucible-qemu-debug-gateway"
+    },
+    {
+      "old": "crucible-guest",
+      "new": "crucible-guest",
+      "source": "crates/crucible-guest",
+      "target": "crates/crucible/guest/crucible-guest"
+    },
+    {
+      "old": "crucible-cas",
+      "new": "crucible-store",
+      "source": "crates/crucible-cas",
+      "target": "crates/crucible/storage/crucible-store"
+    },
+    {
+      "old": "crucible-s3-store",
+      "new": "crucible-store-s3",
+      "source": "crates/crucible-s3-store",
+      "target": "crates/crucible/storage/crucible-store-s3"
+    },
+    {
+      "old": "crucible-harness",
+      "new": "crucible-test-support",
+      "source": "crates/crucible-harness",
+      "target": "crates/crucible/testing/crucible-test-support"
+    },
+    {
+      "old": "crucible-assert",
+      "new": "crucible-assert",
+      "source": "crates/crucible-assert",
+      "target": "crates/crucible/testing/crucible-assert"
+    }
+  ]
+}

@@ -8,11 +8,11 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
-  pluginWhiteboxTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
-  protocolDoorbellFrame = builtins.readFile ../../crates/crucible-protocol/src/doorbell_frame.rs;
-  protocolDoorbellMarker = builtins.readFile ../../crates/crucible-protocol/src/doorbell_marker.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
+  pluginWhitebox = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  pluginWhiteboxTests = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
+  protocolDoorbellFrame = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_frame.rs;
+  protocolDoorbellMarker = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_marker.rs;
   determinismSpec = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   ghcSpec = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
@@ -46,7 +46,7 @@
     lib.concatMap (
       api:
         lib.optionals (hasInfix api pluginWhitebox) [
-          "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs: forbidden host-time, entropy, or lock API in app-random doorbell path: `${api}`"
+          "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs: forbidden host-time, entropy, or lock API in app-random doorbell path: `${api}`"
         ]
     )
     forbiddenCallbackApis;
@@ -104,7 +104,7 @@
         needle = "BackendRngEvidence { node, stream, request_id, width, value }";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "app-random handler exported";
         needle = "handle_whitebox_app_random_callback";
@@ -130,7 +130,7 @@
         needle = "WHITEBOX_APP_RANDOM_MAX_WIDTH_BYTES";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "random request kind constant";
         needle = "WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST";
@@ -192,7 +192,7 @@
         needle = "DecisionRequestIdMismatch";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs" pluginWhiteboxTests [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs" pluginWhiteboxTests [
       {
         label = "happy path exact test";
         needle = "whitebox_app_random_serves_random_request_records_decision_and_replies_at_trap_icount";
@@ -218,7 +218,7 @@
         needle = "whitebox_app_random_zero_requests_leave_no_decisions_or_replies";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/doorbell_frame.rs" protocolDoorbellFrame [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_frame.rs" protocolDoorbellFrame [
       {
         label = "shared frame decoder";
         needle = "pub fn decode(bytes: &[u8])";
@@ -228,7 +228,7 @@
         needle = "pub const WHITEBOX_DOORBELL_PROTOCOL_VERSION: u16 = 3;";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/doorbell_marker.rs" protocolDoorbellMarker [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_marker.rs" protocolDoorbellMarker [
       {
         label = "protocol random request width bound";
         needle = "WHITEBOX_DOORBELL_RANDOM_REQUEST_MAX_WIDTH_BYTES";
@@ -266,7 +266,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.rust
         pkgs.sed
       ];

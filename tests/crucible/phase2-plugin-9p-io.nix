@@ -8,8 +8,8 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginNinePIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/ninep_io.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
+  pluginNinePIo = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   shmemSources = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
@@ -41,7 +41,7 @@
     lib.concatMap (
       api:
         lib.optionals (hasInfix api pluginNinePIo) [
-          "crates/crucible-qemu-plugin/src/ninep_io.rs: forbidden host-time, entropy, or lock API in 9p callback path: `${api}`"
+          "crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs: forbidden host-time, entropy, or lock API in 9p callback path: `${api}`"
         ]
     )
     forbiddenCallbackApis;
@@ -57,7 +57,7 @@
         needle = "holding the freeze for the whole burst";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "9p module exported";
         needle = "pub mod ninep_io;";
@@ -99,7 +99,7 @@
         needle = "handle_9p_burst_done_callback";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/ninep_io.rs" pluginNinePIo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs" pluginNinePIo [
       {
         label = "9p state";
         needle = "pub struct PluginNinePIo";
@@ -289,7 +289,7 @@
         needle = "ninep_burst_done_rejects_pending_requests_and_keeps_hold_active";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src source tree" shmemSources [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src source tree" shmemSources [
       {
         label = "9p slot constant";
         needle = "pub const SLOT_9P_IO";
@@ -331,7 +331,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.rust
         pkgs.sed
       ];

@@ -49,15 +49,15 @@ Three conclusions fall out, each of which overturns a plausible first guess:
 
 The residual ~120 ms is the cost of opening/using the per-request D1
 read-replication **session** (`open_session` → `with_session` in
-`crates/aos-hub-worker/src/d1backend.rs`, one per request). This is D1's
+`crates/hub/aos-hub-worker/src/d1backend.rs`, one per request). This is D1's
 documented property — *"application code and SQL database queries are not
 colocated"* — surfacing as a real, unavoidable network hop per request that
 replication narrows but does not remove.
 
 A secondary correctness smell the investigation surfaced: the rate limiter is a
 D1 **write** (`INSERT … ON CONFLICT … RETURNING` in
-`crates/aos-hub-worker/src/workerlimit.rs`) that runs *first* on every
-browse/home request (`browse_rate_limited`, `crates/aos-hub-core/src/web/browse.rs`),
+`crates/hub/aos-hub-worker/src/workerlimit.rs`) that runs *first* on every
+browse/home request (`browse_rate_limited`, `crates/hub/aos-hub-service/src/web/browse.rs`),
 sharing the request's single D1 session. A write in a read path forces every
 later read in that session onto the read-your-writes path. **No writes belong on
 read paths.**
@@ -115,7 +115,7 @@ through one relational database that is not colocated with the request.
 
 | table | access | note |
 | --- | --- | --- |
-| `sessions` | `WHERE id_hash = ?` | read per authed request; the `SESSIONS` KV is **already bound but unused** (`crates/aos-hub-worker/src/handlers.rs`), wrangler even comments "KV holds sessions" |
+| `sessions` | `WHERE id_hash = ?` | read per authed request; the `SESSIONS` KV is **already bound but unused** (`crates/hub/aos-hub-worker/src/handlers.rs`), wrangler even comments "KV holds sessions" |
 | `tokens` | `WHERE hash = ?` | API-key auth read path; D1 as source-on-miss |
 | `instance_config` (+ site chrome) | singleton | already isolate-cached; belongs in KV |
 | `frontends` (by `domain`) | host→registry routing | "service routing metadata" — the `rewrite_for_frontend` lookup |
@@ -139,7 +139,7 @@ audit_log, webhooks, config_changesets/revisions, etc.
 ## Workers ↔ Native realization (the single-source ports)
 
 The RFC-0004 "can't drift" invariant holds by making each capability a **port**
-with two leaf impls; the shared `aos-hub-core` stays the single source of truth.
+with two leaf impls; the shared `aos-hub-service` stays the single source of truth.
 
 | Capability | Worker impl | Native impl |
 | --- | --- | --- |
@@ -183,7 +183,7 @@ green.
 
 - [x] `Server-Timing` span per `Backend::query`/`execute` (feature-gated) so
       per-statement ms is visible in `wrangler tail` / preview, not inferred.
-      *Done:* `aos_hub_core::backend::TimingBackend` + `QueryTimings`
+      *Done:* `aos_hub_service::backend::TimingBackend` + `QueryTimings`
       (`backend/timing.rs`, `query-timing` feature) decorate the read-path
       backend; the Worker emits `Server-Timing` from `fetch` (`lib.rs`). Native
       tests green; compiles on native + wasm32 with/without the feature.
@@ -206,7 +206,7 @@ green.
       remains the per-statement vehicle on a `query-timing` build.)
 - [x] Split the per-request D1 session: read-only requests use
       `first-unconstrained` and **never** share a session with a write; assert no
-      write precedes reads on a read path (`crates/aos-hub-worker/src/lib.rs`
+      write precedes reads on a read path (`crates/hub/aos-hub-worker/src/lib.rs`
       `router_from`/`fetch`).
       *Done by B+C:* the rate-limit upsert (B3) and the publish lease (B4) no
       longer write D1, and session resolution (C1) is served from KV — so the
@@ -216,16 +216,16 @@ green.
 
 ### Phase B — Get writes off the read path (KV + DO ports)
 
-- [x] Define a `KvStore` port in `aos-hub-core` (`get`/`put`/`delete`/TTL) with a
+- [x] Define a `KvStore` port in `aos-hub-service` (`get`/`put`/`delete`/TTL) with a
       Workers KV impl (Worker) and an LMDB impl (native).
-      *Done:* `aos_hub_core::kv::{KvStore, InMemoryKv}` (`kv.rs`, tested) +
+      *Done:* `aos_hub_service::kv::{KvStore, InMemoryKv}` (`kv.rs`, tested) +
       `WorkerKv` over Workers KV (`workerkv.rs`, compiles wasm). Native impl is
       in-process (`InMemoryKv`) — the LMDB **persistent** variant is a drop-in
       behind the same port (deferred, mirrors how `InMemoryLease` is the native
       lease today); a no-new-C-dep sqlite-backed variant is also available.
 - [x] Define a `Coordinator` port (atomic counter, lease, monotonic floor) with a
       Durable Object impl (Worker) and an in-process/LMDB-txn impl (native).
-      *Done:* `aos_hub_core::coordinator::{Coordinator, InMemoryCoordinator}`
+      *Done:* `aos_hub_service::coordinator::{Coordinator, InMemoryCoordinator}`
       (`coordinator.rs`, tested) + the `CoordinatorObject` Durable Object and
       `WorkerCoordinator` client (`coordinatorobj.rs`, compiles wasm). DO runtime
       behavior is verified on deploy (needs the `[[durable_objects.bindings]]`
@@ -322,14 +322,14 @@ green.
 
 - [x] Define a `Queue` port (Cloudflare Queues / native job runner) for async
       fan-out.
-      *Done:* `aos_hub_core::jobs::{Queue, Job, InMemoryQueue}` (`jobs.rs`,
+      *Done:* `aos_hub_service::jobs::{Queue, Job, InMemoryQueue}` (`jobs.rs`,
       tested — `Job` is a JSON-serializable enum: regenerate-surface,
       rebuild-directory, reindex, invalidate-read-model, deliver-webhook) +
       `WorkerQueue` over Cloudflare Queues (`workerqueue.rs`, `queue` feature,
       compiles wasm; `JOBS` binding).
 - [x] Materialize the global registry/cache **directory** as a cached projection
       (KV) updated on publish; the instance home reads it (kills the home N+1
-      fan-out in `crates/aos-hub-core/src/web/browse.rs`).
+      fan-out in `crates/hub/aos-hub-service/src/web/browse.rs`).
       *Done:* `directory::{rebuild, read, DirectoryEntry}` (tested) materializes
       the public listing in one KV value (slug/source/index-state/name/desc),
       built off-request by the `RebuildDirectory` queue job. `DirectoryEntry::to_row`
@@ -461,7 +461,7 @@ green.
       `Coordinator`, `Queue`) has **both** a worker impl (`WorkerKv`,
       `CoordinatorObject`/`WorkerCoordinator`, `WorkerQueue`) and a native impl
       (`InMemoryKv`, `InMemoryCoordinator`, `InMemoryQueue`), and the shared
-      logic (limiter/lease/cache/directory) is single-sourced in `aos-hub-core`.
+      logic (limiter/lease/cache/directory) is single-sourced in `aos-hub-service`.
       Native suite green (371 lib tests); worker compiles wasm with/without features.
       The **workerd+miniflare e2e** is deploy-gated (runs the real wasm under a
       local runtime) and runs at deploy time.

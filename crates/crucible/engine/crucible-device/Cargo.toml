@@ -1,0 +1,20 @@
+[package]
+name = "crucible-device"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[features]
+default = []
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+blake3 = { workspace = true }
+crucible-determinism = { path = "../crucible-determinism" }
+crucible-qemu-shmem = { path = "../../protocol/crucible-qemu-shmem" }
+serde = { workspace = true }
+ciborium = { workspace = true }

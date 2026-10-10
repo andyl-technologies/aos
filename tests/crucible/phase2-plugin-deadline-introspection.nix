@@ -10,24 +10,24 @@
 
   pluginLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   };
   pluginAbi = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/abi.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs;
   };
   pluginAbiTests = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/abi/tests.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi/tests.rs;
   };
   pluginDeadline = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/deadline.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/deadline.rs;
   };
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginIdleLoop = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs;
   };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -54,7 +54,7 @@
     lib.concatMap (
       api:
         lib.optionals (hasInfix api pluginDeadline) [
-          "crates/crucible-qemu-plugin/src/deadline.rs: forbidden host-time, timeout, or entropy API in exact-deadline path: `${api}`"
+          "crates/crucible/qemu/crucible-qemu-plugin/src/deadline.rs: forbidden host-time, timeout, or entropy API in exact-deadline path: `${api}`"
         ]
     )
     deadlinePathForbiddenApis;
@@ -74,7 +74,7 @@
         needle = "fail loudly during callback";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "deadline reader exported";
         needle = "ExactDeadlineReader";
@@ -92,7 +92,7 @@
         needle = "resolve_qemu_clock_deadline_symbol";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/abi.rs" pluginAbi [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs" pluginAbi [
       {
         label = "deadline dlsym symbol bytes";
         needle = "QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL_C";
@@ -132,13 +132,13 @@
         needle = "let _exact_deadline_reader = ExactDeadlineReader::require(symbols.clock_deadline_ps)";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
       {
         label = "runtime admission rejects missing capability families";
         needle = "runtime_install_rejects_each_missing_capability_family";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/deadline.rs" pluginDeadline [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/deadline.rs" pluginDeadline [
       {
         label = "deadline symbol constant";
         needle = "qemu_plugin_clock_deadline_ps";
@@ -188,7 +188,7 @@
         needle = "aggregate_multi_vcpu_deadline";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
       {
         label = "registration helper requires deadline";
         needle = "pub fn register_callbacks_with_exact_deadline";
@@ -226,7 +226,7 @@
         needle = "registration_order_rejects_callback_registration_without_exact_deadline_capability";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
       {
         label = "idle path takes required deadline reader";
         needle = "exact_deadline_reader: &ExactDeadlineReader";
@@ -260,7 +260,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.rust
         pkgs.sed
       ];

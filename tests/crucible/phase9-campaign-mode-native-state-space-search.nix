@@ -13,19 +13,19 @@ in
       name = "native-state-space-search";
       sqliteRequired = true;
       cargoBuildCommands = [
-        "test --frozen --offline --no-run -p crucible --lib --test gate_state_space_search"
+        "test --frozen --offline --no-run -p crucible-engine --lib --test gate_state_space_search"
       ];
       installedTests = [
         {
           targetName = "gate_state_space_search";
           targetKind = "test";
-          crateDir = "crucible";
+          crateDir = "crucible-engine";
           destination = "gate-state-space-search";
         }
         {
-          targetName = "crucible";
+          targetName = "crucible_engine";
           targetKind = "lib";
-          crateDir = "crucible";
+          crateDir = "crucible-engine";
           destination = "crucible-lib";
         }
       ];

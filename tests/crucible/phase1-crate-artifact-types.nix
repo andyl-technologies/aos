@@ -2,27 +2,24 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
 
   specs = [
     {
-      package = "crucible-sim";
+      package = "crucible-determinism";
       expected = "library";
     }
     {
-      package = "crucible-assert";
-      expected = "library";
-    }
-    {
-      package = "crucible-cas";
+      package = "crucible-store";
       expected = "fleet-store-binary";
     }
     {
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       expected = "library";
     }
     {
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       expected = "library";
     }
     {
@@ -30,7 +27,7 @@
       expected = "library";
     }
     {
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       expected = "library";
     }
     {
@@ -42,7 +39,7 @@
       expected = "guest-emitter";
     }
     {
-      package = "crucible";
+      package = "crucible-engine";
       expected = "library";
     }
     {
@@ -50,7 +47,15 @@
       expected = "library";
     }
     {
-      package = "crucible-api";
+      package = "crucible-control-client";
+      expected = "library";
+    }
+    {
+      package = "crucible-control-server";
+      expected = "library";
+    }
+    {
+      package = "crucible-control-api";
       expected = "library";
     }
     {
@@ -58,7 +63,7 @@
       expected = "library";
     }
     {
-      package = "crucible-debug-gateway";
+      package = "crucible-qemu-debug-gateway";
       expected = "debug-gateway";
     }
     {
@@ -66,7 +71,7 @@
       expected = "cli-binary";
     }
     {
-      package = "crucible-harness";
+      package = "crucible-test-support";
       expected = "library";
     }
     {
@@ -74,23 +79,13 @@
       expected = "library";
     }
     {
-      package = "crucible-linux-resource";
-      expected = "library";
-    }
-    {
-      package = "crucible-s3-store";
+      package = "crucible-store-s3";
       expected = "library";
     }
   ];
 
   expectedPackages = lib.sort builtins.lessThan (map (spec: spec.package) specs);
-  foundPackages = lib.sort builtins.lessThan (
-    builtins.filter (
-      name:
-        lib.hasPrefix "crucible" name
-        && builtins.pathExists (cratesDir + "/${name}/Cargo.toml")
-    ) (builtins.attrNames (builtins.readDir cratesDir))
-  );
+  foundPackages = lib.sort builtins.lessThan cruciblePackages;
 
   packageSetFailures =
     if foundPackages == expectedPackages
@@ -101,10 +96,10 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
 
-  readManifest = package: builtins.fromTOML (builtins.readFile (cratesDir + "/${package}/Cargo.toml"));
+  readManifest = package: builtins.fromTOML (builtins.readFile (packageDir package + "/Cargo.toml"));
 
   packageLayout = package: let
-    srcDir = cratesDir + "/${package}/src";
+    srcDir = packageDir package + "/src";
   in {
     hasLibRs = builtins.pathExists (srcDir + "/lib.rs");
     hasMainRs = builtins.pathExists (srcDir + "/main.rs");
@@ -208,7 +203,15 @@
         ++ lib.optionals (binCount != 1) [
           "${spec.package}: ${artifactLabel} must declare exactly one [[bin]] target, found ${builtins.toString binCount}"
         ]
-        ++ lib.optionals (binCount == 1 && (!(bin ? name) || bin.name != spec.package)) [
+        ++ lib.optionals (binCount
+          == 1
+          && (!(bin ? name)
+            || bin.name
+            != (
+              if spec.expected == "guest-emitter"
+              then spec.package
+              else "crucible-debug-gateway"
+            ))) [
           "${spec.package}: ${artifactLabel} [[bin]] name must be `${spec.package}`"
         ]
         ++ lib.optionals (binCount == 1 && (!(bin ? path) || bin.path != "src/main.rs")) [
@@ -221,7 +224,7 @@
           "${spec.package}: ${artifactLabel} must not add extra implicit binary targets under src/bin"
         ]
       # The debug gateway ships its mediated-transport library and one
-      # `crucible-debug-gateway` binary built from src/main.rs.
+      # `crucible-qemu-debug-gateway` binary built from src/main.rs.
       else if spec.expected == "gateway-binary"
       then let
         bins = binTargets manifest;
@@ -341,7 +344,7 @@
         package.name = "crucible-cli";
         bin = [
           {
-            name = "crucible";
+            name = "crucible-engine";
             path = "src/main.rs";
           }
           {
@@ -356,10 +359,10 @@
       };
     implicitBinFindings =
       checkArtifact {
-        package = "crucible-api";
+        package = "crucible-control-api";
         expected = "library";
       } {
-        package.name = "crucible-api";
+        package.name = "crucible-control-api";
       } {
         hasLibRs = true;
         hasMainRs = true;

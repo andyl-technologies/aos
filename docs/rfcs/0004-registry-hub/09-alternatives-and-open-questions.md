@@ -5,7 +5,7 @@
   with a tokio/axum/process-spawning core that cannot target Workers.
   The hub's job — tenancy, indexing, static-surface facade — is
   disjoint; what they share (token model, upload endpoints, protos) is
-  shared through `aos-proto` and protocol compatibility, not code
+  shared through `aos-build-api` and protocol compatibility, not code
   colocation.
 - **A JS/TS frontend with a Rust API.** Rejected by requirement (the
   WebUI is Rust→WASM) and by preference: one language across
@@ -35,7 +35,7 @@
   schema is small, the D1 driver would still need hand-writing, and
   dialect divergence is better handled by keeping the SQL in sight.
 - **gRPC-web or REST-only instead of ConnectRPC.** The repo already
-  standardized on ConnectRPC (`aos-proto`, `aos-remote`); Connect's
+  standardized on ConnectRPC (`aos-build-api`, `aos-build-client`); Connect's
   JSON mapping doubles as the pragmatic REST surface for third parties.
 
 ## Open questions

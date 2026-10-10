@@ -11,15 +11,15 @@
   propertiesModel = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
   guestMarkerAssertionsTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/guest_marker_assertions.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/tests/guest_marker_assertions.rs;
   };
   guestAssertionDeclarationsTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/guest_assertion_declarations.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/tests/guest_assertion_declarations.rs;
   };
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -42,7 +42,7 @@
         needle = "Completed by `checks.crucible.phase4.guestMarkerAssertions`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "guest assertion kind enum";
         needle = "pub enum GuestAssertionKind";
@@ -132,7 +132,7 @@
         needle = "AssertionRunVerdict::failed";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "guest assertion marker export";
         needle = "GuestAssertionMarker";
@@ -146,13 +146,13 @@
         needle = "GuestAssertionDetail";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" propertiesModel [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" propertiesModel [
       {
         label = "declared guest sometimes assertion constructor";
         needle = "pub fn guest_sometimes";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/guest_marker_assertions.rs" guestMarkerAssertionsTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/guest_marker_assertions.rs" guestMarkerAssertionsTest [
       {
         label = "payload field test";
         needle = "guest_assertion_marker_payload_carries_finalize_fields";
@@ -210,7 +210,7 @@
         needle = "catalog-reachable-fail";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/guest_assertion_declarations.rs" guestAssertionDeclarationsTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/guest_assertion_declarations.rs" guestAssertionDeclarationsTest [
       {
         label = "declared guest assertion outcome test";
         needle = "declared_guest_assertion_uses_marker_truth_without_duplicate_host_outcome";
@@ -226,7 +226,7 @@
         needle = "attrPath = \"checks.crucible.phase4.guestMarkerAssertions\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/trigger.rs" (scrubCommentsAndStrings trigger) [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/trigger.rs" (scrubCommentsAndStrings trigger) [
       {
         label = "host wall-clock dependency";
         needle = "SystemTime";
@@ -256,7 +256,7 @@
         needle = "rand::";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/guest_marker_assertions.rs" guestMarkerAssertionsTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/guest_marker_assertions.rs" guestMarkerAssertionsTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -270,7 +270,7 @@
         needle = "unimplemented!";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/guest_assertion_declarations.rs" guestAssertionDeclarationsTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/guest_assertion_declarations.rs" guestAssertionDeclarationsTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -293,7 +293,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -337,7 +340,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-guest-marker-assertions-target" \
-              -p crucible \
+              -p crucible-engine \
               --test guest_marker_assertions \
               --test guest_assertion_declarations \
               --test guest_marker_condition_leaf \

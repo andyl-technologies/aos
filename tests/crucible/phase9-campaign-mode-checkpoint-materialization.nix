@@ -16,13 +16,13 @@ in
         name = "checkpoint-materialization";
         sqliteRequired = true;
         cargoBuildCommands = [
-          "test --frozen --offline --release --no-run -p crucible --test gate_checkpoint_materialization"
+          "test --frozen --offline --release --no-run -p crucible-engine --test gate_checkpoint_materialization"
         ];
         installedTests = [
           {
             targetName = "gate_checkpoint_materialization";
             targetKind = "test";
-            crateDir = "crucible";
+            crateDir = "crucible-engine";
             destination = "crucible-gate-checkpoint-materialization";
           }
         ];

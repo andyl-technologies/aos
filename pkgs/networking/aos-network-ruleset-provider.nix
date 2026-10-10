@@ -47,8 +47,8 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-network-ruleset-provider --bin aos-network-ruleset-provider"
-      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-network-ruleset-provider"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-nftables --bin aos-network-ruleset-provider"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-nftables"
     ];
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
@@ -110,8 +110,8 @@ in
     inherit version cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
-    cargoFlags = "-p aos-network-ruleset-provider --bin aos-network-ruleset-provider";
-    cargoTestFlags = "-p aos-network-ruleset-provider";
+    cargoFlags = "-p aos-activation-nftables --bin aos-network-ruleset-provider";
+    cargoTestFlags = "-p aos-activation-nftables";
     doCheck = true;
     buildDeps = [patchelf];
     runtimeDeps = [nftables];

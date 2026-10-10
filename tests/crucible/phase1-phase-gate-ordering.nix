@@ -7,15 +7,15 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  phasePlanRust = builtins.readFile ../../crates/crucible-harness/src/phase_plan.rs;
-  phasePlanTest = builtins.readFile ../../crates/crucible-harness/tests/phase_plan.rs;
+  phasePlanRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/phase_plan.rs;
+  phasePlanTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/phase_plan.rs;
   gateCatalog = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-harness/src/phase_plan.rs" phasePlanRust [
+    failuresFor "crates/crucible/testing/crucible-test-support/src/phase_plan.rs" phasePlanRust [
       {
         label = "ordered phase gate data";
         needle = "pub const PHASE_GATE_ORDER";
@@ -45,7 +45,7 @@
         needle = "checks.crucible.phase7.gates.signalFaultSystem";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/phase_plan.rs" phasePlanTest [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/phase_plan.rs" phasePlanTest [
       {
         label = "RFC Section 13 parity test";
         needle = "phase_gate_plan_matches_rfc_section_13_and_nix_wiring";
@@ -188,7 +188,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-phase-gate-ordering-target" \
-              -p crucible-harness \
+              -p crucible-test-support \
               --test phase_plan \
               -- --test-threads=1
           '';
@@ -202,7 +202,7 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
-            rust_test=crucible-harness::phase_plan
+            rust_test=crucible_test_support::phase_plan
             phase_gate_ordering=green-before-advance
             terminal_gate=gate:signal-fault-system
             sim_double_available=phase1

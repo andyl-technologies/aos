@@ -117,8 +117,8 @@ invent a field.
 **Deliverables.**
 
 - [x] **Capability gate (D19) — first.** Add a `min-format` / `requires-features`
-      field to `PackageMeta` (`crates/aos-package/src/types.rs`) and the registry
-      parser (`crates/aos-package/src/registry/parse.rs`); permission-bearing
+      field to `PackageMeta` (`crates/aos/packages/aos-package-manager/src/types.rs`) and the registry
+      parser (`crates/aos/registry/aos-registry-client/src/registry/parse.rs`); permission-bearing
       entries carry the gate inside a structured `references` table so an apm
       predating the schema **fails closed** instead of silently dropping the
       privilege metadata. Land this *before* any `[permissions]`/`expose` package
@@ -137,7 +137,7 @@ invent a field.
       (package names, not store-path hashes). Semantics: **install-time pull-in**
       (deb-style `Depends:`) materialized atomically in the shared profile
       generation; **no version-constraint solver** (the registry channel model
-      already pins versions). Resolve names in `crates/aos-package/src/resolve.rs`
+      already pins versions). Resolve names in `crates/aos/packages/aos-package-manager/src/resolve.rs`
       (today hash-only); emit target ordering edges in the expose phase (P5).
 - [x] **The permission surface (`permissions.md`).** Document the manifest
       fields and their per-unit-directive mapping as the canonical table:
@@ -157,7 +157,7 @@ invent a field.
       allowlist; image-baked EROFS default, overridable per host by an
       Ignition-written copy in a higher overlay layer (same precedence as
       presets); evaluated by `apm` at install/enable. Nix-evaluated policy is
-      rejected (no evaluator at runtime install). Parser in `crates/aos-package/`.
+      rejected (no evaluator at runtime install). Parser in `crates/aos/packages/aos-package-manager/`.
 
 **Phase 0 implementation scope.** `apm` can parse, validate, display, resolve,
 persist, and policy-admit generator-authored registry metadata carrying these
@@ -354,8 +354,8 @@ apm at first boot; define upgrade/rollback.
 - [x] **`apm install` expose phase.** Read `expose` + the `[permissions]`
       manifest; verify `request ∩ host policy` (refuse if the manifest exceeds
       policy); materialize the per-unit + gated units; run the preset; start the
-      target. In `crates/aos-package/src/install.rs` (reuse the existing async
-      zbus client `crates/aos-systemd` for start/stop/reload).
+      target. In `crates/aos/packages/aos-package-manager/src/install.rs` (reuse the existing async
+      zbus client `crates/shared/aos-systemd-client` for start/stop/reload).
 - [x] **Attach dir (D16).** Materialize runtime-installed units as **gc-rooted
       store-path symlinks** under `/var/etc/systemd/system.attached/` (apm-owned,
       portablectl-attach shape) + the enable line in `30-aos-apm.preset`. Both
@@ -887,7 +887,7 @@ the cited phase's exit is ticked.
       tmpfiles entries, `systemd-measure`, TPM2 setup units and generator, and the
       cryptsetup TPM2 token plugin. Verified by `checks.systemd-credentials`.
 - [x] **Exact `expose` schema (P0/P1).** Verified in
-      `crates/aos-package/src/types.rs`: `PackageMeta` carries
+      `crates/aos/packages/aos-package-manager/src/types.rs`: `PackageMeta` carries
       `min-format`, `requires-features`, `expose: Option<ExposeMeta>`,
       `expose_artifact: Option<ExposeArtifactMeta>`, and the signed
       `PermissionsMeta`; `ExposeMeta` covers target, units, images, package
@@ -903,7 +903,7 @@ the cited phase's exit is ticked.
       `permissions`, computes confinement when absent, and rejects malformed
       MAC/profile artifacts before writing registry TOML.
 - [x] **Runtime package scope (P5).** Whether runtime apm-installed packages share
-      the `system` scope or get their own (`crates/aos-package/src/profile/mod.rs`);
+      the `system` scope or get their own (`crates/aos/packages/aos-package-manager/src/profile/mod.rs`);
       the apm package generation must stay independent of the toplevel generation.
 - [x] **Desired-packages file layout (P5).** Reuse `registries.d/` + a separate
       `packages.d/desired.toml`, or fold both into one document.
@@ -915,7 +915,7 @@ the cited phase's exit is ticked.
       download and generation-root `expose.images[].store_path` on ordinary
       packages, verify the image NAR against signed registry metadata, and
       reject image NARs that declare unsigned runtime references
-      (`crates/aos-package/src/install.rs`, `upgrade.rs`).
+      (`crates/aos/packages/aos-package-manager/src/install.rs`, `upgrade.rs`).
 - [x] **nspawn feature checks (P8, only if nspawn lands).** Not applicable to
       the MVP because the nspawn substrate did not land (D17/P11). If a future
       multi-unit-init package reopens nspawn, that implementation must check

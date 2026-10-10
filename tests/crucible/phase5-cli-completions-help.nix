@@ -12,8 +12,8 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliImplementation = import ./_cli-source.nix {inherit lib;};
-  cliProcessTest = builtins.readFile ../../crates/crucible-cli/tests/help_surface.rs;
-  cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
+  cliProcessTest = builtins.readFile ../../crates/crucible/control/crucible-cli/tests/help_surface.rs;
+  cliManifest = builtins.readFile ../../crates/crucible/control/crucible-cli/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -45,7 +45,7 @@
         needle = "completions  Generate shell completions.";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
+    ++ failuresFor "crates/crucible/control/crucible-cli/Cargo.toml" cliManifest [
       {
         label = "clap dependency";
         needle = "clap = { workspace = true }";
@@ -55,7 +55,7 @@
         needle = "clap_complete = { workspace = true }";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src Rust source tree" cliImplementation [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src Rust source tree" cliImplementation [
       {
         label = "completion shell argument";
         needle = "shell: Shell";
@@ -113,7 +113,7 @@
         needle = "cli_help_surface_rejects_unimplemented_future_flags";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/tests/help_surface.rs" cliProcessTest [
+    ++ failuresFor "crates/crucible/control/crucible-cli/tests/help_surface.rs" cliProcessTest [
       {
         label = "process help regression";
         needle = "cli_help_process_outputs_top_level_surface";

@@ -283,7 +283,7 @@ overlay/seed/network preconditions. This is also what the
 persistent `/var` partition — so the sysroot state is visible from stage 2.
 Runtime/boot-time `apm install --system` uses `ProfileScope::System`'s package
 profile path, `/var/lib/profiles/system-packages/`
-(`crates/aos-package/src/types.rs`), keeping package generations independent
+(`crates/aos/packages/aos-package-manager/src/types.rs`), keeping package generations independent
 from the sysroot generation pointer the seed step initializes.
 
 ### 4.2 Enable follows install
@@ -317,7 +317,7 @@ generations.
   must be a no-op (closure already in store, already in current generation).
   `apm`'s profile model already supports this — installs create a new generation
   by copying the previous gen's roots (`copy_roots`) and adding deltas
-  (`crates/aos-package/src/install.rs`), and importing an already-present NAR is
+  (`crates/aos/packages/aos-package-manager/src/install.rs`), and importing an already-present NAR is
   idempotent. **Verified:** `apm install` is generation-stable —
   `install.rs:67-73` exits early ("All requested packages are already
   installed. No changes made.") **without** minting a generation when nothing
@@ -327,7 +327,7 @@ generations.
   > **baked** into the image (seeded `registry: "seed"`), while **runtime
   > apm-installed** system packages live in the separate apm package profile at
   > `/var/lib/profiles/system-packages/`
-  > (`crates/aos-package/src/types.rs`:
+  > (`crates/aos/packages/aos-package-manager/src/types.rs`:
   > `ProfileScope::System.package_profile_path()`). An apm package generation is
   > independent of the *toplevel* (system-image) generation, so a host-image
   > upgrade does not by itself churn the apm-installed package set.

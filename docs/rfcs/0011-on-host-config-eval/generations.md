@@ -8,7 +8,7 @@ This document specifies the relationship between **image generations** and
 
 Today there is one bundled generation axis: a `SystemGeneration { number,
 toplevel, version, package_name, registry, created_at, kernel_path }` persisted
-in `/var/lib/profiles/system/state.json` (`crates/aos-package/src/types.rs:3083-3112`),
+in `/var/lib/profiles/system/state.json` (`crates/aos/packages/aos-package-manager/src/types.rs:3083-3112`),
 whose `toplevel` carries kernel + initrd + base `/etc` + everything, switched as
 one unit and applied with a `KernelUpgradeMode` (`sysroot.rs:78-90`).
 
@@ -51,7 +51,7 @@ Split today's `SystemGeneration`:
 - **Image-gen** keeps `{ kernel_path, uki/toplevel ref, version, module_abi,
   evaluator_ref }` — what A/B + UKI + `loader.conf` glob + TPM policy track.
 - **Config-gen** (new, mirroring the existing `Profile`/`Generation` machinery
-  in `crates/aos-package/src/profile/mod.rs`) holds `{ number, image_gen_parent,
+  in `crates/aos/packages/aos-package-manager/src/profile/mod.rs`) holds `{ number, image_gen_parent,
   module_abi_pinned, manifest_hash, package_module_closure, host_nix_ref }`. The
   `current → gen-N` pointer `activate.sh.in` already commits becomes the
   **config-gen** pointer.

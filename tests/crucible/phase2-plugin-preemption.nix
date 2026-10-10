@@ -8,17 +8,17 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  protocolPreemption = builtins.readFile ../../crates/crucible-protocol/src/preemption.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
+  protocolPreemption = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/preemption.rs;
   pluginPreemption =
-    builtins.readFile ../../crates/crucible-qemu-plugin/src/preemption.rs
-    + builtins.readFile ../../crates/crucible-qemu-plugin/src/preemption/injector.rs;
-  pluginRoundRobin = builtins.readFile ../../crates/crucible-qemu-plugin/src/round_robin.rs;
-  pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
+    builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/preemption.rs
+    + builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/preemption/injector.rs;
+  pluginRoundRobin = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/round_robin.rs;
+  pluginAbi = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs;
   pluginAbiTests =
-    builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs
-    + builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests/capabilities.rs;
-  pluginInertness = builtins.readFile ../../crates/crucible-qemu-plugin/src/inertness.rs;
+    builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi/tests.rs
+    + builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi/tests/capabilities.rs;
+  pluginInertness = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/inertness.rs;
   determinismSpec = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   patchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
@@ -72,7 +72,7 @@
         needle = "authorized `[deadline, ceiling]` window MUST be rejected loudly";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "preemption module exported";
         needle = "pub mod preemption;";
@@ -94,7 +94,7 @@
         needle = "`preemption` owns scheduler-commanded vCPU switch and interrupt injection";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/preemption.rs" pluginPreemption [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/preemption.rs" pluginPreemption [
       {
         label = "QEMU preemption symbol";
         needle = "QEMU_PLUGIN_INJECT_PREEMPTION_SYMBOL";
@@ -196,7 +196,7 @@
         needle = "deterministic_ipi_delivery_rejects_bad_vcpu_pairs_and_overflow";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/preemption.rs" protocolPreemption [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/preemption.rs" protocolPreemption [
       {
         label = "shared deterministic IPI boundary function";
         needle = "pub const fn deterministic_ipi_delivery_icount";
@@ -206,7 +206,7 @@
         needle = "ipi_delivery_adds_fixed_latency_and_rounds_to_rr_boundary";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/round_robin.rs" pluginRoundRobin [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/round_robin.rs" pluginRoundRobin [
       {
         label = "commanded switch validation";
         needle = "pub const fn validate_commanded_switch";
@@ -220,7 +220,7 @@
         needle = "WrongCurrentVcpu";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/abi.rs" pluginAbi [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs" pluginAbi [
       {
         label = "preemption resolver";
         needle = "pub fn resolve_qemu_inject_preemption_symbol";
@@ -242,13 +242,13 @@
         needle = "_preemption_injector";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
       {
         label = "ABI preemption capability test";
         needle = "runtime_install_rejects_each_missing_capability_family";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/inertness.rs" pluginInertness [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/inertness.rs" pluginInertness [
       {
         label = "preemption capability included in inertness";
         needle = "preemption_injections";
@@ -269,7 +269,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.rust
         pkgs.sed
       ];

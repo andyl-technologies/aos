@@ -11,10 +11,13 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  lifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
-  apiServer = import ./_rust-module-source.nix {
+  lifecycle = import ./_crucible-control-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/src/server.rs;
+    component = "lifecycle";
+  };
+  apiServer = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "server";
   };
   cliMain = import ./_cli-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
@@ -34,7 +37,7 @@
         needle = "`checks.crucible.phase5.cliServeMaxSessions`";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lifecycle.rs" lifecycle [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/lifecycle.rs" lifecycle [
       {
         label = "session cap field";
         needle = "max_sessions: Option<usize>";
@@ -48,7 +51,7 @@
         needle = "SessionLimitReached";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/server.rs" apiServer [
+    ++ failuresFor "crates/crucible/control/crucible-control-server/src/server.rs" apiServer [
       {
         label = "typed session-limit response";
         needle = "\"session-limit\"";
@@ -58,7 +61,7 @@
         needle = "server_create_session_limit_maps_to_typed_rpc_error";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "serve max-sessions flag";
         needle = "max_sessions: Option<usize>";
@@ -154,14 +157,14 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-cli-serve-max-sessions-target" \
-              -p crucible-api \
+              -p crucible-control-api \
               create_session_respects_live_session_limit \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-cli-serve-max-sessions-target" \
-              -p crucible-api \
+              -p crucible-control-api \
               server_create_session_limit \
               -- --test-threads=1
             cargo test \

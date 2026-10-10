@@ -9,8 +9,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
-  planTest = builtins.readFile ../../crates/crucible/tests/event_graph_serialization.rs;
-  propertiesTest = builtins.readFile ../../crates/crucible/tests/property_fingerprint_neutrality.rs;
+  planTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/event_graph_serialization.rs;
+  propertiesTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/property_fingerprint_neutrality.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -27,7 +27,7 @@
         needle = "`checks.crucible.phase1.spatialComponentAddressing`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "world content address accessor";
         needle = "pub fn id(&self) -> ContentHash";
@@ -77,7 +77,7 @@
         needle = "properties_ref={}";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_graph_serialization.rs" planTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_graph_serialization.rs" planTest [
       {
         label = "focused plan component addressing test";
         needle = "fn graph_plan_is_the_scenario_plan_component()";
@@ -99,7 +99,7 @@
         needle = "assert_eq!(changed_world_plan.content_hash(), plan.content_hash())";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/property_fingerprint_neutrality.rs" propertiesTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/property_fingerprint_neutrality.rs" propertiesTest [
       {
         label = "focused properties component addressing test";
         needle = "fn property_changes_move_scenario_identity_without_moving_run_material()";
@@ -132,7 +132,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -176,7 +179,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-spatial-component-addressing-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test event_graph_serialization \
               graph_plan_is_the_scenario_plan_component \
               -- --test-threads=1
@@ -185,7 +188,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-spatial-component-addressing-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test property_fingerprint_neutrality \
               property_changes_move_scenario_identity_without_moving_run_material \

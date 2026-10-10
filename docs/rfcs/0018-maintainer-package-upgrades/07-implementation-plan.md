@@ -200,7 +200,7 @@ network, Git, credentials, or later privileged phases.
 
 ## PR 8 series: Typed source and artifact materializers
 
-Refactor [`aos prefetch`](../../../crates/aos/src/commands/prefetch.rs) transfer
+Refactor [`aos prefetch`](../../../crates/aos/cli/aos-cli/src/commands/prefetch.rs) transfer
 and hash machinery, then add materializer kinds incrementally:
 
 1. flat/recursive source slots;

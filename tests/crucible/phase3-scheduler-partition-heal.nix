@@ -8,8 +8,8 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  partitionHealTest = builtins.readFile ../../crates/crucible/tests/scheduler_partition_heal.rs;
+  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  partitionHealTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_partition_heal.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -35,7 +35,7 @@
         needle = "last inbound edge is removed";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "topology effect enum";
         needle = "pub enum SchedulerTopologyChangeEffect";
@@ -89,7 +89,7 @@
         needle = "None => NetworkLookahead::Infinite";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "topology effect export";
         needle = "SchedulerTopologyChangeEffect";
@@ -99,7 +99,7 @@
         needle = "SchedulerLookaheadEdgeEndpoint";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_partition_heal.rs" partitionHealTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_partition_heal.rs" partitionHealTest [
       {
         label = "next minimum test";
         needle = "partition_removes_one_inbound_edge_and_recomputes_next_minimum";
@@ -133,7 +133,7 @@
         needle = "finite_lookahead(17)";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_partition_heal.rs" partitionHealTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_partition_heal.rs" partitionHealTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -158,7 +158,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -202,7 +205,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-partition-heal-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_partition_heal \
               -- --test-threads=1
           '';

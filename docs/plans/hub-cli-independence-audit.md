@@ -24,16 +24,16 @@ The desired boundary is:
 
 The package-manager transport boundary is already portable. `RegistryConfig`
 stores a URL whose scheme selects the transport
-(`crates/aos-package/src/types.rs:2404`). `apm update` sends both HTTP and Git
+(`crates/aos/packages/aos-package-manager/src/types.rs:2404`). `apm update` sends both HTTP and Git
 sources through the Git-native registry synchronizer
-(`crates/aos-package/src/update.rs:186`). Package and source downloads resolve
+(`crates/aos/packages/aos-package-manager/src/update.rs:186`). Package and source downloads resolve
 the committed and client-configured cache stack before falling back to the
-registry URL (`crates/aos-package/src/download.rs:155`).
+registry URL (`crates/aos/packages/aos-package-manager/src/download.rs:155`).
 
 Cache failover has an appropriate safety boundary: only a true not-found
 result advances to another mirror. Authentication failures, malformed
 metadata, integrity failures, and transport failures stop immediately
-(`crates/aos-package/src/download.rs:401`). Optional Hub discovery should use
+(`crates/aos/packages/aos-package-manager/src/download.rs:401`). Optional Hub discovery should use
 the same rule: absence can permit a documented portable source, while a failed
 explicit Hub operation must remain an error.
 
@@ -41,21 +41,21 @@ The following tests exercise the no-Hub data path:
 
 - `fixture_syncs_git_native_registry_over_static_http` synchronizes and reads a
   package from a static HTTP Git origin
-  (`crates/aos-package/tests/registry_e2e.rs:469`).
+  (`crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs:469`).
 - `signed_channel_http_e2e_advances_persisted_bucket` follows a signed channel
-  over static HTTP (`crates/aos-package/tests/registry_e2e.rs:960`).
+  over static HTTP (`crates/aos/registry/aos-registry-authoring/tests/registry_e2e.rs:960`).
 - `apr_cache_generate_cli_supports_apm_install_upgrade_and_execution` runs an
   author-to-consumer CLI flow through a static HTTP origin and cache
-  (`crates/aos/tests/apr_cache_cli.rs:194`).
+  (`crates/aos/cli/aos-cli/tests/apr_cache_cli.rs:194`).
 - `apr_release_store_path_publishes_signed_cache_channel_and_installs` covers
   the verified signed release and channel variant
-  (`crates/aos/tests/apr_cache_cli.rs:587`).
+  (`crates/aos/cli/aos-cli/tests/apr_cache_cli.rs:587`).
 
 ### APR registry and channel authoring
 
 `apr` owns a local registry workspace and signed Git state. In particular,
 `apr channel init`, `advance`, and `status` operate on the selected registry
-checkout (`crates/aos-package/src/registry_ops/channels.rs`). These commands do not
+checkout (`crates/aos/registry/aos-registry-authoring/src/registry_ops/channels.rs`). These commands do not
 need Hub control-plane state.
 
 Hub-authored change requests also cross a Git ref namespace. Reading and
@@ -67,7 +67,7 @@ transport.
 
 `aos cache` selects its backend from the explicit `--to` or `--from` URL and
 supports file, HTTP, S3, and SFTP backends
-(`crates/aos/src/cli/cache.rs:1`, `crates/aos/src/commands/cache.rs:20`). It does
+(`crates/aos/cli/aos-cli/src/cli/cache.rs:1`, `crates/aos/cli/aos-cli/src/commands/cache.rs:20`). It does
 not require Hub discovery. Tokens and headers are backend credentials rather
 than evidence that a Hub is present.
 
@@ -75,16 +75,16 @@ than evidence that a Hub is present.
 
 Ordinary `aos container inspect`, `pull`, and `push` derive an OCI Distribution
 origin from the registry reference when no override is supplied
-(`crates/aos/src/commands/container.rs:1284`). A stored profile is used only
+(`crates/aos/cli/aos-cli/src/commands/container.rs:1284`). A stored profile is used only
 when its origin matches the selected registry
-(`crates/aos/src/commands/hub_auth.rs:122`,
-`crates/aos/src/commands/hub_auth.rs:262`).
+(`crates/aos/cli/aos-cli/src/commands/hub_auth.rs:122`,
+`crates/aos/cli/aos-cli/src/commands/hub_auth.rs:262`).
 
 Container publication also has a deliberate split. `--stage-only` with an
 explicit registry credential uploads immutable OCI content without Hub control
-(`crates/aos/src/commands/container.rs:669`). The process test asserts that the
+(`crates/aos/cli/aos-cli/src/commands/container.rs:669`). The process test asserts that the
 stage operation makes no control calls
-(`crates/aos/tests/container_cli_transfer.rs:321`). Final mutable-tag commit
+(`crates/aos/cli/aos-cli/tests/container_cli_transfer.rs:321`). Final mutable-tag commit
 still requires Hub authorization and compare-and-swap state.
 
 ## Findings and outcomes
@@ -92,7 +92,7 @@ still requires Hub authorization and compare-and-swap state.
 ### 1. Portable system-image consumption implemented
 
 `aos image list`, `show`, and `download` now default to a named configured APM
-registry. The shared resolver in `crates/aos-package/src/images.rs` uses the
+registry. The shared resolver in `crates/aos/packages/aos-package-manager/src/images.rs` uses the
 existing Git/static-HTTP synchronizer, signature and TUF verification, validated
 package parser, and the selected registry's committed/client cache chain.
 `--hub` or `AOS_HUB` explicitly selects Hub discovery, where `--registry` is an
@@ -115,7 +115,7 @@ verifies the transport and NAR hashes, extracts only a canonical regular-file
 NAR, and checks signed disk size/hash before publishing the final output.
 Portable cache URLs retain APM's HTTP/file transport behavior.
 
-`crates/aos/tests/image_registry_cli.rs` exercises a real signed SHA-256 Git
+`crates/aos/cli/aos-cli/tests/image_registry_cli.rs` exercises a real signed SHA-256 Git
 origin and binary cache served by static HTTP. Consumer processes clear their
 environment and PATH and run outside a source checkout. Coverage includes
 list/show/download, ambiguity and image filters, historical TUF releases,
@@ -144,7 +144,7 @@ platform filters remain supported. Repository-only index controls are rejected
 in package/Hub modes. The implementation delegates actual lookup and canonical
 document validation to the existing APM documentation commands.
 
-Process regressions in `crates/aos/tests/documentation_cli.rs` cover offline
+Process regressions in `crates/aos/cli/aos-cli/tests/documentation_cli.rs` cover offline
 installed search, exact installed lookup, invalid mode combinations, malformed
 remote selectors, and an explicit Hub authorization failure without local
 fallback. Installed documentation remains available after ordinary bare-registry
@@ -195,7 +195,7 @@ and rejection of an external credential realm. Final combined results are in
 `apr channel` authors signed Git rollout state, while `aos maintain release step channel`
 verifies deployment identity and signed receipts before performing a
 production compare-and-swap through Hub
-(`crates/aos/src/commands/release/channel.rs:90`). The latter dependency is
+(`crates/aos/cli/aos-cli/src/commands/release/channel.rs:90`). The latter dependency is
 required for the command's authority and audit guarantees.
 
 Keep the command families distinct in help and documentation:

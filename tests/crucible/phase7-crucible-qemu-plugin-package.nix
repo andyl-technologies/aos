@@ -11,7 +11,7 @@
   workspaceBuildCheck = builtins.readFile ./phase1-aos-workspace-build.nix;
   pluginAbi = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/abi.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs;
   };
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
@@ -61,7 +61,7 @@
       }
       {
         label = "vendored cargo deps";
-        needle = "cargoDeps = fetchCargoVendor";
+        needle = "cargoDeps = aosWorkspaceVendor;";
       }
       {
         label = "plugin crate cargo build";
@@ -89,7 +89,7 @@
       }
       {
         label = "plugin API version source";
-        needle = "done < crucible-qemu-plugin/src/abi.rs";
+        needle = "done < crucible/qemu/crucible-qemu-plugin/src/abi.rs";
       }
       {
         label = "installed QEMU plugin path";
@@ -204,7 +204,7 @@
         needle = "grep -q '^plugin_abi=crucible-shmem-abi-v${shmemAbiVersion}$'";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/abi.rs" pluginAbi [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs" pluginAbi [
       {
         label = "plugin API version constant";
         needle = qemuPluginApiVersionPrefix + qemuPluginApiVersion + ";";
@@ -214,7 +214,7 @@
         needle = "pub static qemu_plugin_version: c_int = QEMU_PLUGIN_API_VERSION;";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmemLib [
       {
         label = "shmem ABI version constant";
         needle = shmemAbiVersionPrefix + shmemAbiVersion + ";";

@@ -25,7 +25,7 @@ at build time (e.g. `"/nix/store/<hash>-redis-8.2/bin/redis-server"`), never as
 `mkDerivation` results. A store-path string carries *string context* (metadata)
 but is not a derivation; interpolating it triggers no instantiation and no
 realization. This is the documented distinction in
-`crates/aos-doc/src/data/language.rs`: `"${pkgs.hello}/bin/hello"` forces the
+`crates/aos/cli/aos-nix-docs/src/data/language.rs`: `"${pkgs.hello}/bin/hello"` forces the
 derivation and instantiates; a bare path string does not.
 
 Stage-1 modules and stage-2 modules are therefore *different kinds of module*:
@@ -104,7 +104,7 @@ activation):
    not building**: it runs **no compiler, no `configure`/`make`, and realizes no
    derivation** — it only assembles already-present bytes into an image with a
    fixed tool, the same category as `systemd-tmpfiles` and the work APM already
-   does for `expose` artifacts (`crates/aos-package/src/exposed_units.rs`,
+   does for `expose` artifacts (`crates/aos/packages/aos-package-manager/src/exposed_units.rs`,
    `config_artifact.rs`). The composefs/erofs assembler ships as a base on-host
    tool.
 

@@ -11,7 +11,7 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  cliCargo = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
+  cliCargo = builtins.readFile ../../crates/crucible/control/crucible-cli/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
   cruciblePkg = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
   pluginPkg = builtins.readFile ../../pkgs/emulation/crucible-qemu-plugin.nix;
@@ -33,7 +33,7 @@
         needle = "`T-CLI-5` is green through `checks.crucible.phase5.cliHermeticDiscovery`";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "QEMU env constant";
         needle = "const CRUCIBLE_QEMU_ENV: &str = \"CRUCIBLE_QEMU\";";
@@ -56,7 +56,7 @@
       }
       {
         label = "plugin ABI derives from shmem";
-        needle = "crucible::SHMEM_ABI_VERSION";
+        needle = "crucible_engine::SHMEM_ABI_VERSION";
       }
       {
         label = "required plugin ABI helper";
@@ -183,10 +183,10 @@
         needle = "cli_hermetic_qemu_discovery_rejects_text_artifact_impersonation";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/Cargo.toml" cliCargo [
+    ++ failuresFor "crates/crucible/control/crucible-cli/Cargo.toml" cliCargo [
       {
         label = "CLI depends on the API-owned guest-host protocol surface";
-        needle = "crucible-api = { path = \"../crucible-api\" }";
+        needle = "crucible-control-api = { path = \"../crucible-control-api\" }";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePkg [
@@ -208,13 +208,13 @@
       }
       {
         label = "separate suite runtime closure";
-        needle = "runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux pkgs.sqlite]";
+        needle = "[controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]";
       }
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPkg [
       {
         label = "plugin build-info reads shmem source";
-        needle = "done < crucible-shmem/src/lib.rs";
+        needle = "done < crucible/protocol/crucible-qemu-shmem/src/lib.rs";
       }
       {
         label = "plugin build-info ABI prefix";
@@ -231,7 +231,7 @@
         needle = "cliHermeticDiscovery = import ./phase5-cli-hermetic-discovery.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ forbiddenFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "host PATH QEMU discovery";
         needle = "std::env::var(\"PATH\")";
@@ -257,6 +257,7 @@ in
     version = "0";
     LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     src = crucibleSrc;
+    runtimeDeps = [pkgs.sqlite];
 
     buildDeps = [
       pkgs.coreutils

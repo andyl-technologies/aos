@@ -110,15 +110,15 @@ in
             gate_campaign_replay \
             strict_campaign_planner_reproduces_every_accepted_step
           run_gate_test \
-            crucible \
+            crucible-engine \
             gate_campaign_replay \
             offline_rich_finding_replays_without_campaign_store
           run_gate_test \
-            crucible \
+            crucible-engine \
             gate_minimization \
             automatic_minimization_selects_and_authenticates_the_latest_interesting_window
           run_gate_test \
-            crucible \
+            crucible-engine \
             gate_minimization \
             automatic_minimization_uses_the_bounded_terminal_suffix_without_a_campaign_branch
 

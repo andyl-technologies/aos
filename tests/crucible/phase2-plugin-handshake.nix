@@ -8,11 +8,11 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginArgs = builtins.readFile ../../crates/crucible-qemu-plugin/src/args.rs;
-  pluginHandshake = builtins.readFile ../../crates/crucible-qemu-plugin/src/handshake.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
+  pluginArgs = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/args.rs;
+  pluginHandshake = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/handshake.rs;
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
-  protocol = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
+  protocol = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs;
   shmem = import ./_crucible-shmem-source.nix {inherit lib;};
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
@@ -52,7 +52,7 @@
         needle = "slot_index < node_count";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/lib.rs" protocol [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocol [
       {
         label = "plugin handshake config";
         needle = "pub struct PluginHandshakeConfig";
@@ -70,13 +70,13 @@
         needle = "CONTROL_PROTOCOL_VERSION";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmem [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmem [
       {
         label = "shmem ABI version constant";
         needle = "pub const ABI_VERSION: u32 = 30;";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/args.rs" pluginArgs [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/args.rs" pluginArgs [
       {
         label = "launch slot accessor";
         needle = "pub const fn slot(&self) -> u32";
@@ -86,7 +86,7 @@
         needle = "validate_slot_index";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "handshake module exported";
         needle = "pub mod handshake;";
@@ -100,7 +100,7 @@
         needle = "perform_plugin_handshake";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/handshake.rs" pluginHandshake [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/handshake.rs" pluginHandshake [
       {
         label = "plugin handshake token";
         needle = "pub struct PluginControlHandshake";
@@ -146,7 +146,7 @@
         needle = "let host_abi = u32::MAX;";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
       {
         label = "registration performs handshake";
         needle = "pub fn perform_control_handshake";
@@ -187,7 +187,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.rust
         pkgs.sed
       ];

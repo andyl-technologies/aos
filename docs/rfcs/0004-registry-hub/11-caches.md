@@ -22,7 +22,7 @@ reclamation when package versions are removed, no-JS web browsing, and a NAR
 file explorer + downloader.
 
 The guiding constraint, unchanged from the rest of RFC-0004: **one async
-codebase in `aos-hub-core`** serves both the native hub (sqlite/pg/mysql +
+codebase in `aos-hub-service`** serves both the native hub (sqlite/pg/mysql +
 local-fs/S3) and the Cloudflare Worker (D1 + R2), at parity. A cache is just a
 new object type over the same `Backend`, `Blobs`/`SurfaceProvider`, and
 Connect-JSON router — no Worker-only capability is introduced.
@@ -371,7 +371,7 @@ indexer with a cache-GC pass (no new Worker plumbing).
   `aos-registry-spa` SPA renders the interactive closure graph — reusing
   RFC-0005's store/ realisation-graph model so there is one closure renderer.
 - **NAR file explorer + downloader.** A `ListNarContents(store_hash)` RPC
-  lists a NAR's internal file tree (parsed via the existing `aos-core/src/nar`
+  lists a NAR's internal file tree (parsed via the existing `shared/aos-nar/src`
   reader, which already runs on wasm); the browse page renders the tree with
   per-file and whole-NAR download links, all served through the existing
   `facade_fetch` / `head_machine_path` machinery — a new content shape, not a
@@ -422,7 +422,9 @@ appropriate role.
 
 ## Native / Worker parity
 
-Everything lives in `aos-hub-core`, so it is identical on both shells. NAR and
+Application behavior lives in `aos-hub-service`, cache values and policies in
+`aos-hub-model`, and database operations in `aos-hub-db`; both shells share
+these implementations. NAR and
 narinfo are R2 objects under the cache `prefix` (native: local-fs/S3); the
 index is `cache_objects` rows in D1 (native: sqlite/pg/mysql); the read facade
 is the existing `facade_fetch` pointed at a cache's binding+prefix; upload is
@@ -437,6 +439,11 @@ infrastructure.
 The binary is already a multi-tenant control plane; registries are merely its
 first object type and caches are its second, so the `registry`-specific names
 are misleading. Mechanical, lands as its own PR before the cache work:
+
+This table records the original cache-era rename. The later monorepo layout
+splits `aos-hub-core` into `aos-hub-model`, `aos-hub-db`, and `aos-hub-service`,
+and names the native Cargo package `aos-hub-native` while preserving the
+`aos-hub` executable.
 
 | Old | New |
 | --- | --- |
@@ -529,7 +536,8 @@ the current spec. Phases are orderable; A lands first, E last.
       *provisioning* — the Worker can now bind several `--domain` routes;
       the native hub serving N custom domains needs a fronting SNI proxy or
       in-hub ACME, which is environment-coupled and out of this subsystem's scope.
-- [x] `aos-hub-core` cache domain types + `Database` methods: create/get/list/
+- [x] Shared cache domain types + `Database` methods (now `aos-hub-model`
+      and `aos-hub-db`): create/get/list/
       update/soft-delete/delete cache, link/unlink/list links, set/get GC policy,
       pin/renew/unpin/list roots, cache-object upsert/get/list/search/delete,
       `nar_refcount`, usage, GC-run lifecycle — all on the async `Backend`

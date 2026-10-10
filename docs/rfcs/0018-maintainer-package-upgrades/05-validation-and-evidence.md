@@ -85,7 +85,7 @@ that exact commit. `ready-for-pr` requires:
 9. repeat clean builds where exceptional policy requires comparison.
 
 The five repository layers are implemented in
-[`crates/aos/src/commands/test.rs`](../../../crates/aos/src/commands/test.rs).
+[`crates/aos/cli/aos-cli/src/commands/test.rs`](../../../crates/aos/cli/aos-cli/src/commands/test.rs).
 The maintainer tool invokes them through the documented AOS/Nix environment,
 not `cargo run`, host tools, or nixpkgs.
 

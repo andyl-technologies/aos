@@ -17,7 +17,7 @@ C++ Nix; its closed PR remains available if that work is revisited.
       The gate verifies contextual output references and exact manifest-to-unit
       inventory parity without committing generated system outputs.
 - [x] Keep the flat renderer as a deterministic migration oracle in
-      `crates/aos-package/tests/golden_config_artifact.rs` and
+      `crates/aos/packages/aos-package-manager/tests/golden_config_artifact.rs` and
       `checks.config-parity`.
 - [x] Render manager artifacts and job scripts as pure manifest data; materialize
       builder and runtime outputs from the same `aos.config-manifest/v1`

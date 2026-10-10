@@ -145,7 +145,7 @@ two VM tests that hard-code the old default (`tests/vm/apm/registry.nix`,
   tempdir `FsBackend` (not a hand mock). Concurrency is structural — no timing
   asserts.
 
-### B2. `crates/aos/tests/apr_cache_cli.rs` integration (the §13 matrix)
+### B2. `crates/aos/cli/aos-cli/tests/apr_cache_cli.rs` integration (the §13 matrix)
 Drive with `--json` and assert on report fields, not log scraping.
 - **(b) skip counts** — extend the v1→v2 overlapping-closure test: second
   release's `cache.remote_skipped > 0`, `cache.nars == <only-new>`.
@@ -198,6 +198,6 @@ skip + real-substitution path.)
 1. A2+A4 (membership) → 2. A1 (orchestration reorder) + dead-phase cleanup →
 3. A3 (path) → 4. B1/B2 → 5. C.
 
-Verify: `cargo test -p aos-package -p aos-cache` (unit + `apr_cache_cli`);
+Verify: `cargo test -p aos-package-manager -p aos-cache` (unit + `apr_cache_cli`);
 `aos test eval`; `aos test fleet apr-release-e2e`. Per repo principles, all test
 tooling is AOS-built (no host/nixpkgs tools).

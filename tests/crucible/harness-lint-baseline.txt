@@ -3,47 +3,47 @@
 #
 # Format:
 # category<TAB>repo-relative path<TAB>reason<TAB>pattern<TAB>suffix<TAB>count
-confinement	crates/crucible-api/src/lifecycle.rs	host monotonic time	Instant	; package `crucible-api` is not a host-nondeterminism boundary	2
-confinement	crates/crucible-api/src/lifecycle/observation_resume.rs	host monotonic time	Instant	; package `crucible-api` is not a host-nondeterminism boundary	5
-confinement	crates/crucible-api/src/server.rs	host monotonic time	Instant	; package `crucible-api` is not a host-nondeterminism boundary	2
-confinement	crates/crucible-api/src/server/response_wire.rs	nondeterministic select	select!	; package `crucible-api` is not a host-nondeterminism boundary	2
-confinement	crates/crucible-api/src/streaming.rs	nondeterministic select	select!	; package `crucible-api` is not a host-nondeterminism boundary	1
-confinement	crates/crucible-cas/src/content_store/composition.rs	host monotonic time	Instant	; package `crucible-cas` is not a host-nondeterminism boundary	5
-confinement	crates/crucible-daemon/src/campaign_endpoint.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	3
-confinement	crates/crucible-daemon/src/campaign_endpoint.rs	public export from nondeterministic boundary source	const		6
-confinement	crates/crucible-daemon/src/campaign_endpoint.rs	public export from nondeterministic boundary source	enum		1
-confinement	crates/crucible-daemon/src/campaign_endpoint.rs	public export from nondeterministic boundary source	fn		12
-confinement	crates/crucible-daemon/src/campaign_endpoint.rs	public export from nondeterministic boundary source	struct		5
-confinement	crates/crucible-daemon/src/executor_loopback.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	6
-confinement	crates/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	const		4
-confinement	crates/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	enum		2
-confinement	crates/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	fn		7
-confinement	crates/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	struct		2
-confinement	crates/crucible-daemon/src/planner_loopback.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	6
-confinement	crates/crucible-daemon/src/planner_loopback.rs	public export from nondeterministic boundary source	const		2
-confinement	crates/crucible-daemon/src/planner_loopback.rs	public export from nondeterministic boundary source	enum		2
-confinement	crates/crucible-daemon/src/planner_loopback.rs	public export from nondeterministic boundary source	fn		6
-confinement	crates/crucible-daemon/src/planner_loopback.rs	public export from nondeterministic boundary source	struct		2
-confinement	crates/crucible-qemu/src/linux_cgroup.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	3
-confinement	crates/crucible-qemu/src/linux_cgroup.rs	public export from nondeterministic boundary source	const		4
-confinement	crates/crucible-qemu/src/linux_cgroup.rs	public export from nondeterministic boundary source	enum		2
-confinement	crates/crucible-qemu/src/linux_cgroup.rs	public export from nondeterministic boundary source	fn		18
-confinement	crates/crucible-qemu/src/linux_cgroup.rs	public export from nondeterministic boundary source	struct		9
-confinement	crates/crucible-qemu/src/linux_cgroup.rs	public export from nondeterministic boundary source	use		1
-confinement	crates/crucible-qemu/src/live_plugin_gate/support.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	4
-confinement	crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	const		5
-confinement	crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	enum		1
-confinement	crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	fn		7
-confinement	crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	struct		3
-error-logging	crates/crucible-api/src/server.rs	stringly error	Result<_, String>		32
-error-logging	crates/crucible-api/src/server/debug_reposition.rs	stringly error	Result<_, String>		4
-error-logging	crates/crucible-api/src/server/debug_wire.rs	stringly error	Result<_, String>		10
-error-logging	crates/crucible-api/src/server/query_wire.rs	stringly error	Result<_, String>		1
-error-logging	crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs	stringly error	Result<_, String>		1
-error-logging	crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/persistence.rs	stringly error	Result<_, String>		2
-error-logging	crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/persistence/recovery.rs	stringly error	Result<_, String>		2
-error-logging	crates/crucible-daemon/src/assignment_ledger.rs	erased error	dyn Error		3
-error-logging	crates/crucible-daemon/src/qemu_campaign_lifecycle/app_random_branch_replay.rs	stringly error	Result<_, String>		1
-error-logging	crates/crucible-daemon/src/qemu_hot_fork_world_factory.rs	stringly error	Result<_, String>		7
-error-logging	crates/crucible-qemu/src/node_tests/fault_event_budget.rs	erased error	dyn Error		7
-error-logging	crates/crucible-qemu/src/node_tests/fingerprint.rs	erased error	dyn Error		1
+confinement	crates/crucible/control/crucible-control-server/src/lifecycle.rs	host monotonic time	Instant	; package `crucible-control-server` is not a host-nondeterminism boundary	2
+confinement	crates/crucible/control/crucible-control-server/src/lifecycle/observation_resume.rs	host monotonic time	Instant	; package `crucible-control-server` is not a host-nondeterminism boundary	5
+confinement	crates/crucible/control/crucible-control-server/src/server.rs	host monotonic time	Instant	; package `crucible-control-server` is not a host-nondeterminism boundary	2
+confinement	crates/crucible/control/crucible-control-server/src/server/response_wire.rs	nondeterministic select	select!	; package `crucible-control-server` is not a host-nondeterminism boundary	2
+confinement	crates/crucible/control/crucible-control-server/src/streaming.rs	nondeterministic select	select!	; package `crucible-control-server` is not a host-nondeterminism boundary	1
+confinement	crates/crucible/storage/crucible-store/src/content_store/composition.rs	host monotonic time	Instant	; package `crucible-store` is not a host-nondeterminism boundary	5
+confinement	crates/crucible/control/crucible-daemon/src/campaign_endpoint.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	3
+confinement	crates/crucible/control/crucible-daemon/src/campaign_endpoint.rs	public export from nondeterministic boundary source	const		6
+confinement	crates/crucible/control/crucible-daemon/src/campaign_endpoint.rs	public export from nondeterministic boundary source	enum		1
+confinement	crates/crucible/control/crucible-daemon/src/campaign_endpoint.rs	public export from nondeterministic boundary source	fn		12
+confinement	crates/crucible/control/crucible-daemon/src/campaign_endpoint.rs	public export from nondeterministic boundary source	struct		5
+confinement	crates/crucible/control/crucible-daemon/src/executor_loopback.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	6
+confinement	crates/crucible/control/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	const		4
+confinement	crates/crucible/control/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	enum		2
+confinement	crates/crucible/control/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	fn		7
+confinement	crates/crucible/control/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	struct		2
+confinement	crates/crucible/control/crucible-daemon/src/planner_loopback.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	6
+confinement	crates/crucible/control/crucible-daemon/src/planner_loopback.rs	public export from nondeterministic boundary source	const		2
+confinement	crates/crucible/control/crucible-daemon/src/planner_loopback.rs	public export from nondeterministic boundary source	enum		2
+confinement	crates/crucible/control/crucible-daemon/src/planner_loopback.rs	public export from nondeterministic boundary source	fn		6
+confinement	crates/crucible/control/crucible-daemon/src/planner_loopback.rs	public export from nondeterministic boundary source	struct		2
+confinement	crates/crucible/qemu/crucible-qemu-host/src/linux_cgroup.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	3
+confinement	crates/crucible/qemu/crucible-qemu-host/src/linux_cgroup.rs	public export from nondeterministic boundary source	const		4
+confinement	crates/crucible/qemu/crucible-qemu-host/src/linux_cgroup.rs	public export from nondeterministic boundary source	enum		2
+confinement	crates/crucible/qemu/crucible-qemu-host/src/linux_cgroup.rs	public export from nondeterministic boundary source	fn		18
+confinement	crates/crucible/qemu/crucible-qemu-host/src/linux_cgroup.rs	public export from nondeterministic boundary source	struct		9
+confinement	crates/crucible/qemu/crucible-qemu-host/src/linux_cgroup.rs	public export from nondeterministic boundary source	use		1
+confinement	crates/crucible/qemu/crucible-qemu-host/src/live_plugin_gate/support.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	4
+confinement	crates/crucible/qemu/crucible-qemu-host/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	const		5
+confinement	crates/crucible/qemu/crucible-qemu-host/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	enum		1
+confinement	crates/crucible/qemu/crucible-qemu-host/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	fn		7
+confinement	crates/crucible/qemu/crucible-qemu-host/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	struct		3
+error-logging	crates/crucible/control/crucible-control-server/src/server.rs	stringly error	Result<_, String>		32
+error-logging	crates/crucible/control/crucible-control-server/src/server/debug_reposition.rs	stringly error	Result<_, String>		4
+error-logging	crates/crucible/control/crucible-control-server/src/server/debug_wire.rs	stringly error	Result<_, String>		10
+error-logging	crates/crucible/control/crucible-control-server/src/server/query_wire.rs	stringly error	Result<_, String>		1
+error-logging	crates/crucible/control/crucible-daemon/src/vm_lifecycle/checkpoint_store.rs	stringly error	Result<_, String>		1
+error-logging	crates/crucible/control/crucible-daemon/src/vm_lifecycle/quantum_loop/lifecycle/persistence.rs	stringly error	Result<_, String>		2
+error-logging	crates/crucible/control/crucible-daemon/src/vm_lifecycle/quantum_loop/lifecycle/persistence/recovery.rs	stringly error	Result<_, String>		2
+error-logging	crates/crucible/control/crucible-daemon/src/assignment_ledger.rs	erased error	dyn Error		3
+error-logging	crates/crucible/control/crucible-daemon/src/qemu_campaign_lifecycle/app_random_branch_replay.rs	stringly error	Result<_, String>		1
+error-logging	crates/crucible/control/crucible-daemon/src/qemu_hot_fork_world_factory.rs	stringly error	Result<_, String>		7
+error-logging	crates/crucible/qemu/crucible-qemu-host/src/node_tests/fault_event_budget.rs	erased error	dyn Error		7
+error-logging	crates/crucible/qemu/crucible-qemu-host/src/node_tests/fingerprint.rs	erased error	dyn Error		1

@@ -192,7 +192,7 @@ in
           test -f "$source_root/build/aos/pkgs/default.nix"
           test -f "$source_root/build/aos/pkgs/emulation/qemu.nix"
           test -z "$(find "$source_root/build/aos" -type f -regex '.*/core[.][0-9]+' -print -quit)"
-          test -f "$source_root/build/aos/crates/crucible-shmem/include/crucible_shmem_abi.h"
+          test -f "$source_root/build/aos/crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h"
           samba_smbd_version=$(sed -n 's/^qemu_samba_smbd_version=//p' "$source_manifest")
           samba_smbd_source_hash_algo=$(sed -n 's/^qemu_samba_smbd_source_hash_algo=//p' "$source_manifest")
           samba_smbd_source_hash=$(sed -n 's/^qemu_samba_smbd_source_hash=//p' "$source_manifest")
@@ -259,7 +259,7 @@ in
           test -f "$source_root/patches/_atomic-patch.nix"
           test -f "$source_root/plugin/workspace/crates/Cargo.lock"
           test -f "$source_root/plugin/workspace/crates/Cargo.toml"
-          test -f "$source_root/plugin/workspace/crates/crucible-qemu-plugin/Cargo.toml"
+          test -f "$source_root/plugin/workspace/crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml"
           test -f "$source_root/plugin/workspace/pkgs/emulation/crucible-qemu-plugin.nix"
           test -n "$(find "$source_root/plugin/cargo-vendor" -mindepth 1 -maxdepth 1 -type d -print -quit)"
           archived_workspace="$TMPDIR/archived-plugin-workspace"
@@ -305,9 +305,9 @@ in
             | tr '\n' ' ' \
             | sed 's/[[:space:]][[:space:]]*/ /g' \
             > "$TMPDIR/crucible-suite-runtime-deps"
-          if ! grep -Fq 'runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux] ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [bash]; propagatedDeps = [];' \
+          if ! grep -Fq 'runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux bash]; propagatedDeps = [];' \
             "$TMPDIR/crucible-suite-runtime-deps"; then
-            echo "Crucible suite runtime dependencies must retain the matching QEMU source and cross-Linux Bash wrapper" >&2
+            echo "Crucible suite runtime dependencies must retain the matching QEMU source and Bash wrapper" >&2
             exit 1
           fi
           grep -Fq 'license = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause" "BSD-3-Clause"];' "$suite_nix"
@@ -329,7 +329,7 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-license-boundary-target" \
-            -p crucible-harness \
+            -p crucible-test-support \
             --test gate_license_boundary \
             -- --test-threads=1
         '';
@@ -343,7 +343,7 @@ in
           check=${attrPath}
           gate=gate:license-boundary
           tasks=${builtins.concatStringsSep "," taskIds}
-          rust_test=crucible-harness::gate_license_boundary
+          rust_test=crucible_test_support::gate_license_boundary
           controller_package=crucible-controller
           controller_license=Apache-2.0
           qemu_corresponding_source_package=qemu-crucible-source

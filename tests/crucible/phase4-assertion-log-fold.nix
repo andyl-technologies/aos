@@ -8,7 +8,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  assertionLogFoldTest = builtins.readFile ../../crates/crucible/tests/assertion_log_fold.rs;
+  assertionLogFoldTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/assertion_log_fold.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -22,7 +22,7 @@
         needle = "Completed by `checks.crucible.phase4.assertionLogFold`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "never evaluated outcome";
         needle = "NeverEvaluated";
@@ -52,7 +52,7 @@
         needle = "finalize_prefix";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/assertion_log_fold.rs" assertionLogFoldTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/assertion_log_fold.rs" assertionLogFoldTest [
       {
         label = "online/offline distinct never outcome test";
         needle = "online_and_offline_fold_report_distinct_never_outcomes_identically";
@@ -96,7 +96,7 @@
         needle = "attrPath = \"checks.crucible.phase4.assertionLogFold\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/assertion_log_fold.rs" assertionLogFoldTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/assertion_log_fold.rs" assertionLogFoldTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -119,7 +119,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -163,7 +166,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-assertion-log-fold-target" \
-              -p crucible \
+              -p crucible-engine \
               --test assertion_log_fold \
               --test offline_assertion_checker \
               --test host_side_assertions \

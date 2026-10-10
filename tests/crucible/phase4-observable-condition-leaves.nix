@@ -9,8 +9,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  observableTest = builtins.readFile ../../crates/crucible/tests/observable_condition_leaves.rs;
+  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  observableTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/observable_condition_leaves.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -28,7 +28,7 @@
         needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "NetworkMatch predicate";
         needle = "NetworkMatch {\n        /// Optional link to constrain the delivered frame.";
@@ -106,7 +106,7 @@
         needle = "fn validate_property_regex";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "observable event type";
         needle = "pub struct ObservableEvent";
@@ -168,7 +168,7 @@
         needle = "self.inner.observable_events()";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "FramePredicate export";
         needle = "FramePredicate";
@@ -186,7 +186,7 @@
         needle = "ObservableEventPayload";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/observable_condition_leaves.rs" observableTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/observable_condition_leaves.rs" observableTest [
       {
         label = "network delivered frame test";
         needle = "network_match_observes_delivered_frame_payload_at_the_evaluation_point";
@@ -246,7 +246,7 @@
         needle = "observableConditionLeaves = import ./phase4-observable-condition-leaves.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/observable_condition_leaves.rs" observableTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/observable_condition_leaves.rs" observableTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -269,7 +269,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -313,7 +316,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-observable-condition-leaves-target" \
-              -p crucible \
+              -p crucible-engine \
               --test observable_condition_leaves \
               -- --test-threads=1
           '';

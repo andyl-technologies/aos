@@ -10,12 +10,12 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  coverageTest = builtins.readFile ../../crates/crucible/tests/event_log_coverage.rs;
-  determinismTest = builtins.readFile ../../crates/crucible/tests/event_log_determinism.rs;
+  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  coverageTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/event_log_coverage.rs;
+  determinismTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/event_log_determinism.rs;
   replayOracleTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/event_graph_replay_oracle.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/tests/event_graph_replay_oracle.rs;
   };
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -34,7 +34,7 @@
         needle = "checkpoint coverage fingerprints are derived from that coverage projection";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "named coverage marker constructor";
         needle = "pub fn coverage_marker(retired_icount: Icount, node: NodeId, marker: MarkerId) -> Self";
@@ -52,7 +52,7 @@
         needle = "ObservableEventPayload::CoverageMarker { .. }";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "coverage observation enum";
         needle = "pub enum EventLogCoverageObservation";
@@ -98,7 +98,7 @@
         needle = "ObservableEventPayload::CoverageBlock { .. }";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "checkpoint derives coverage from event log";
         needle = "pub fn with_coverage_from_event_log";
@@ -128,7 +128,7 @@
         needle = "checkpoint.coverage_fingerprint";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "coverage observation export";
         needle = "EventLogCoverageObservation";
@@ -146,7 +146,7 @@
         needle = "event_log_coverage_projection";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_log_coverage.rs" coverageTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_log_coverage.rs" coverageTest [
       {
         label = "basic and named coverage projection test";
         needle = "coverage_projection_reads_basic_blocks_and_named_markers_from_one_log";
@@ -200,7 +200,7 @@
         needle = "assert!(comparison.passes())";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_log_determinism.rs" determinismTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_log_determinism.rs" determinismTest [
       {
         label = "determinism comparison still exists";
         needle = "compare_event_log_determinism";
@@ -210,7 +210,7 @@
         needle = "observational_verbosity_changes_do_not_change_causal_projection";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_graph_replay_oracle.rs" replayOracleTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_graph_replay_oracle.rs" replayOracleTest [
       {
         label = "coverage marker replay material";
         needle = "observable:coverage-marker";
@@ -230,7 +230,7 @@
         needle = "taskIds = [\"T-OBS-9\"]";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/event_log_coverage.rs" coverageTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/event_log_coverage.rs" coverageTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -253,7 +253,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -297,7 +300,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-event-log-coverage-target" \
-              -p crucible \
+              -p crucible-engine \
               --test event_log_coverage \
               --test event_log_determinism \
               --test event_graph_replay_oracle \

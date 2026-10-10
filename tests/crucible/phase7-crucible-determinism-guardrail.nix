@@ -6,9 +6,9 @@
   dependencies ? [],
 }: let
   dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
-  harnessLintMainRust = builtins.readFile ../../crates/crucible-harness/tests/harness_lint.rs;
-  harnessLintCommonRust = builtins.readFile ../../crates/crucible-harness/tests/support/harness_lint/common.rs;
-  harnessLintScanRust = builtins.readFile ../../crates/crucible-harness/tests/support/harness_lint/scan.rs;
+  harnessLintMainRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/harness_lint.rs;
+  harnessLintCommonRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/common.rs;
+  harnessLintScanRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/scan.rs;
   phase1HarnessLint = builtins.readFile ./phase1-harness-lint.nix;
   rootDefault = builtins.readFile ../../default.nix;
   defaultChecks = builtins.readFile ./default.nix;
@@ -52,7 +52,7 @@
         needle = "Determinism guardrails remain T-DCE-7";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/support/harness_lint/common.rs" harnessLintCommonRust [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/support/harness_lint/common.rs" harnessLintCommonRust [
       {
         label = "distribution metadata identifier set";
         needle = "DISTRIBUTION_METADATA_IDENTIFIERS";
@@ -118,7 +118,7 @@
         needle = "\"distribution-metadata-flow\"";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/support/harness_lint/scan.rs" harnessLintScanRust [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/support/harness_lint/scan.rs" harnessLintScanRust [
       {
         label = "custom static analysis calls distribution metadata flow";
         needle = "findings.extend(distribution_metadata_flow_failures(path, content, &tokens));";
@@ -152,7 +152,7 @@
         needle = "\"distribution-metadata-flow\"";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/harness_lint.rs" harnessLintMainRust [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/harness_lint.rs" harnessLintMainRust [
       {
         label = "negative identity-path regression";
         needle = "harness_lint_rejects_distribution_metadata_in_identity_paths";

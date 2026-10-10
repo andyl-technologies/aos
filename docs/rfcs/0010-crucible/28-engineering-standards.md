@@ -621,7 +621,7 @@ the conditions under which feature code can be trusted to stay deterministic
     ring", but neither crate appears in any `Cargo.toml` in the workspace and
     `crucible-shmem` declares no `[dev-dependencies]` at all. The actual
     implementation, `assert_spsc_ring_loom_model` in
-    `crucible-shmem/tests/gate_layer1_injection.rs`, is a hand-rolled exhaustive
+    `crucible/protocol/crucible-qemu-shmem/tests/gate_layer1_injection.rs`, is a hand-rolled exhaustive
     checker over the RFC 13.6 orderings with genuine negative controls proving
     that relaxed orderings admit torn frames — substantive work, but not loom and
     not property-based. `checks.crucible.phase1.concurrencyAbiOracleStandards`

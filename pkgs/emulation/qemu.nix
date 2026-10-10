@@ -235,8 +235,8 @@
     builtins.filter (name: name != "")
     (lib.splitString "\n" (builtins.readFile thoroughTestInventory))
   );
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
-  shmemGeneratedHeader = ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
+  shmemLib = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs;
+  shmemGeneratedHeader = ../../crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h;
   shmemHeaderInstallPath = "include/aos/crucible/crucible_shmem_abi.h";
   shmemHeaderHash = builtins.hashFile "sha256" shmemGeneratedHeader;
   qemuSimCapability =
@@ -516,79 +516,118 @@ in
       platformSupport =
         if pname == "qemu"
         then {
-        build = [{abi = ["gnu"]; os = ["linux"];}];
-        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-        target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-        role = "public-package";
-      }
+          build = [
+            {
+              abi = ["gnu"];
+              os = ["linux"];
+            }
+          ];
+          host = [
+            {
+              abi = ["gnu"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["linux"];
+            }
+            {
+              abi = ["darwin"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["darwin"];
+            }
+          ];
+          target = [
+            {
+              abi = ["gnu"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["linux"];
+            }
+            {
+              abi = ["darwin"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["darwin"];
+            }
+          ];
+          role = "public-package";
+        }
         else {
-        build = [{abi = ["gnu"]; os = ["linux"];}];
-        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
-        target = [];
-        role = "build-input";
-      };
-    qualification.packageProbe =
-      if qualification != null
-      then qualification.packageProbe
-      else lib.qualification.commandProbe {
-      "primary" = {
-        "artifacts" = [];
-        "expected" = "qemu-img reports the two images as identical.";
-        "files" = {
-          "left.raw" = "AOS raw image payload\n";
-          "right.raw" = "AOS raw image payload\n";
+          build = [
+            {
+              abi = ["gnu"];
+              os = ["linux"];
+            }
+          ];
+          host = [
+            {
+              abi = ["gnu"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["linux"];
+            }
+          ];
+          target = [];
+          role = "build-input";
         };
-        "input" = "Two raw disk-image byte streams with identical contents.";
-        "operation" = "Compare the images byte for byte through qemu-img's raw-image reader.";
-        "steps" = [
-          {
-            "argv" = [
-              "@out@/bin/qemu-img"
-              "compare"
-              "-f"
-              "raw"
-              "-F"
-              "raw"
-              "left.raw"
-              "right.raw"
-            ];
-            "exit_code" = 0;
-            "stderr" = {
-              "exact" = "";
+      qualification.packageProbe =
+        if qualification != null
+        then qualification.packageProbe
+        else
+          lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [];
+              "expected" = "qemu-img reports the two images as identical.";
+              "files" = {
+                "left.raw" = "AOS raw image payload\n";
+                "right.raw" = "AOS raw image payload\n";
+              };
+              "input" = "Two raw disk-image byte streams with identical contents.";
+              "operation" = "Compare the images byte for byte through qemu-img's raw-image reader.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/qemu-img"
+                    "compare"
+                    "-f"
+                    "raw"
+                    "-F"
+                    "raw"
+                    "left.raw"
+                    "right.raw"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "Images are identical.\n";
+                  };
+                }
+              ];
             };
-            "stdout" = {
-              "exact" = "Images are identical.\n";
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "qemu-img identifies the content mismatch and returns its comparison status.";
+              "files" = {
+                "left.raw" = "answer=41\n";
+                "right.raw" = "answer=42\n";
+              };
+              "input" = "Two raw disk-image byte streams that differ in one value.";
+              "operation" = "Compare the mismatched images through qemu-img.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/qemu-img"
+                    "compare"
+                    "-f"
+                    "raw"
+                    "-F"
+                    "raw"
+                    "left.raw"
+                    "right.raw"
+                  ];
+                  "exit_code" = 1;
+                  "observes_rejection" = true;
+                }
+              ];
             };
-          }
-        ];
-      };
-      "badInput" = {
-        "artifacts" = [];
-        "expected" = "qemu-img identifies the content mismatch and returns its comparison status.";
-        "files" = {
-          "left.raw" = "answer=41\n";
-          "right.raw" = "answer=42\n";
-        };
-        "input" = "Two raw disk-image byte streams that differ in one value.";
-        "operation" = "Compare the mismatched images through qemu-img.";
-        "steps" = [
-          {
-            "argv" = [
-              "@out@/bin/qemu-img"
-              "compare"
-              "-f"
-              "raw"
-              "-F"
-              "raw"
-              "left.raw"
-              "right.raw"
-            ];
-            "exit_code" = 1;
-            "observes_rejection" = true;
-          }
-        ];
-      };
-    };
+          };
 
       inherit pname;
       # QEMU permits deprecated interface removal without a major-version bump.

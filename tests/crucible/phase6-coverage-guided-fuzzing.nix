@@ -12,13 +12,13 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   libRs = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
   cliSource = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-cli/src/main.rs;
+    entry = ../../crates/crucible/control/crucible-cli/src/main.rs;
   };
-  coverageGuidedFuzzingTest = builtins.readFile ../../crates/crucible/tests/gate_coverage_guided_fuzzing.rs;
+  coverageGuidedFuzzingTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_coverage_guided_fuzzing.rs;
   liveFuzzFixture = builtins.readFile ./fixtures/live-qemu-fuzz.family.toml;
   cliSearchFuzzGate = builtins.readFile ./phase5-cli-search-fuzz-workflow.nix;
   coverageFeedbackGate = builtins.readFile ./phase6-coverage-feedback.nix;
@@ -118,7 +118,7 @@
         needle = "gate=gate:basic-block-coverage";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "fuzz config type";
         needle = "pub struct CoverageGuidedFuzzConfig";
@@ -176,7 +176,7 @@
         needle = "new_coverage";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libRs [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libRs [
       {
         label = "fuzz config export";
         needle = "CoverageGuidedFuzzConfig";
@@ -190,7 +190,7 @@
         needle = "CoverageGuidedFuzzRun";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_coverage_guided_fuzzing.rs" coverageGuidedFuzzingTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_coverage_guided_fuzzing.rs" coverageGuidedFuzzingTest [
       {
         label = "reproducible fuzzing gate";
         needle = "gate_coverage_guided_fuzzing_is_seeded_and_reproducible";
@@ -240,7 +240,7 @@
         needle = "reduce(&iteration.configuration.def, iteration.schedule()).is_ok()";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_coverage_guided_fuzzing.rs" coverageGuidedFuzzingTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_coverage_guided_fuzzing.rs" coverageGuidedFuzzingTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -250,14 +250,14 @@
         needle = "implementation is pending";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliSource [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliSource [
       {
         label = "live coverage-guided campaign exploration";
         needle = "GuardedCampaignExplorationStrategy::CoverageGuided";
       }
       {
         label = "accepted schedule override observation";
-        needle = "matches!(decision, crucible::Decision::Override(_))";
+        needle = "matches!(decision, crucible_engine::Decision::Override(_))";
       }
       {
         label = "accepted schedule replay closure validation";
@@ -383,7 +383,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -431,7 +434,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-coverage-guided-fuzzing-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_coverage_guided_fuzzing \
               -- --test-threads=1
           '';

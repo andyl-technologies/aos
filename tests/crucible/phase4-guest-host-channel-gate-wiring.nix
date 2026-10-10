@@ -32,7 +32,7 @@
     taskIds = ["T-GHC-11"];
   };
 
-  channelDeterminismTest = builtins.readFile ../../crates/crucible/tests/guest_host_channel_determinism.rs;
+  channelDeterminismTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/guest_host_channel_determinism.rs;
   blackBoxSurfaceGate = builtins.readFile ./phase4-guest-host-black-box-surface.nix;
   singleVmGate = builtins.readFile ./phase1-production-fingerprint-sample.nix;
   anyGuestGate = builtins.readFile ./phase2-any-guest.nix;
@@ -59,7 +59,7 @@
         needle = "gate definition files in lazy passthru";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/guest_host_channel_determinism.rs" channelDeterminismTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/guest_host_channel_determinism.rs" channelDeterminismTest [
       {
         label = "white-box on/off fingerprint equality";
         needle = "whitebox_channel_fingerprints_are_identical_with_markers_on_vs_off";
@@ -307,7 +307,7 @@
         needle = "canonical_gate_wiring_deferred=T-GHC-15";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/guest_host_channel_determinism.rs" channelDeterminismTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/guest_host_channel_determinism.rs" channelDeterminismTest [
       {
         label = "ignored channel determinism test";
         needle = "#[ignore";
@@ -389,7 +389,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-channel-gate-wiring-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test guest_host_channel_determinism \
               whitebox_channel_fingerprints_are_identical_with_markers_on_vs_off \

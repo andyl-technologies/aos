@@ -10,38 +10,38 @@
 
   pluginLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   };
   pluginAbi = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/abi.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs;
   };
   pluginAbiTests = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/abi/tests.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi/tests.rs;
   };
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginRuntime = import ./_qemu-plugin-runtime-source.nix {inherit lib;};
   pluginLiveCallbacks = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
   };
   pluginLiveCallbacksTests = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs;
   };
   pluginIdleLoop = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs;
   };
   pluginIdleLoopTests =
     (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs;
+      entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs;
     })
     + (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-qemu-plugin/src/idle_loop/tests/wake_cases.rs;
+      entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop/tests/wake_cases.rs;
     });
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
@@ -72,15 +72,15 @@
 
   timePathSources = [
     {
-      label = "crates/crucible-qemu-plugin/src/idle_loop.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs";
       content = pluginIdleLoop;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/time_control.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/time_control.rs";
       content = pluginTimeControl;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks.rs";
       content = pluginLiveCallbacks;
     }
   ];
@@ -155,7 +155,7 @@
         needle = "rr_crucible_sim_sync_vcpu_halt_callbacks";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "queued advance function pointer exported";
         needle = "QemuAdvanceTimeTicksFn";
@@ -185,7 +185,7 @@
         needle = "RequiredRuntimeApiSymbols";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
       {
         label = "queued advance symbol constant";
         needle = "QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL";
@@ -259,7 +259,7 @@
         needle = "queued_idle_advance_rejects_failed_or_mismatched_completion";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
       {
         label = "callback capabilities type";
         needle = "pub struct PluginCallbackCapabilities";
@@ -281,7 +281,7 @@
         needle = "registration_order_fails_loud_when_queued_idle_advance_missing";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
       {
         label = "completion takes queued advance capability";
         needle = "queued_idle_advance: &QueuedIdleAdvance";
@@ -311,13 +311,13 @@
         needle = "TimeAdvanceCompletionPending";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop/tests" pluginIdleLoopTests [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop/tests" pluginIdleLoopTests [
       {
         label = "idle range failure test";
         needle = "idle_loop_direct_advance_range_failure_leaves_clock_and_slot_unchanged";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/abi.rs" pluginAbi [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs" pluginAbi [
       {
         label = "queued advance dlsym bytes";
         needle = "QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL_C";
@@ -363,7 +363,7 @@
         needle = "let _queued_idle_advance = QueuedIdleAdvance::require(symbols.advance_time_ticks)";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
       {
         label = "missing queued advance capability rejection test";
         needle = "runtime_install_rejects_each_missing_capability_family";
@@ -373,7 +373,7 @@
         needle = "abi_install_entrypoint_fails_closed_without_required_runtime_symbols";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime.rs" pluginRuntime [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/runtime.rs" pluginRuntime [
       {
         label = "live install carries completion registration capability";
         needle = "register_time_advance_cb: Option<crate::QemuRegisterTimeAdvanceCbFn>";
@@ -383,7 +383,7 @@
         needle = "register_time_advance_cb: capabilities.register_time_advance_cb";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs" pluginLiveCallbacks [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks.rs" pluginLiveCallbacks [
       {
         label = "live preflight requires completion registration";
         needle = "QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL";
@@ -417,7 +417,7 @@
         needle = "Some(crucible_qemu_plugin_live_vcpu_idle_cb)";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs" pluginLiveCallbacksTests [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs" pluginLiveCallbacksTests [
       {
         label = "missing completion registration test";
         needle = "live_time_completion_rejects_missing_or_mismatched_pending_state";
@@ -451,7 +451,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.rust
         pkgs.sed
       ];

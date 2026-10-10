@@ -7,7 +7,7 @@ The repository-wide [license map](../../legal/licensing.md) is authoritative.
 
 Requirement IDs in this file use the prefix `BOUND`. Every requirement is
 guarded by `gate:license-boundary`, an **Always** gate owned by
-`crucible-harness`; ABI-shape requirements are additionally guarded by
+`crucible-test-support`; ABI-shape requirements are additionally guarded by
 `gate:abi-conformance`.
 
 ## 37.1 Component and license map
@@ -26,8 +26,8 @@ Apache-2.0 host process                 QEMU process (applicable GPL scope)
 ```
 
 - **[BOUND-1]** Original host-side Crucible code MUST remain Apache-2.0 unless a
-  file carries a more specific license. `crucible-protocol` and
-  `crucible-shmem`, the reusable boundary components, MUST be licensed
+  file carries a more specific license. `crucible-qemu-protocol` and
+  `crucible-qemu-shmem`, the reusable boundary components, MUST be licensed
   `MIT OR Apache-2.0`. *Gate:* `gate:license-boundary`. *Spec:* §37.1.
 
 - **[BOUND-2]** `crucible-qemu-plugin`, every patch or new implementation loaded

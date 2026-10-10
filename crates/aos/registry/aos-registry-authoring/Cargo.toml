@@ -1,0 +1,51 @@
+[package]
+name = "aos-registry-authoring"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Registry authoring, signed release transactions, staging, and static publication"
+
+[dependencies]
+rand.workspace = true
+ed25519-dalek.workspace = true
+base64.workspace = true
+ssh-key.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
+aos-registry-client.workspace = true
+aos-deployment-format.workspace = true
+aos-deployment.workspace = true
+aos-nar.workspace = true
+aos-nix.workspace = true
+aos-cli-ui.workspace = true
+aos-module-docs = { workspace = true }
+aos-nix-cache = { workspace = true }
+aos-transfer = { workspace = true, features = ["transfer"] }
+aos-oci-types = { workspace = true }
+aos-oci = { workspace = true }
+aos-hub-client = { workspace = true }
+aos-release-format = { workspace = true }
+aos-registry-format = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+toml = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+clap = { workspace = true }
+semver = { workspace = true }
+zstd = { workspace = true }
+url = { workspace = true }
+futures-util = { workspace = true }
+async-trait = { workspace = true }
+tempfile = { workspace = true }
+libc = { workspace = true }
+git2 = { workspace = true }
+flate2 = { workspace = true }
+rustix = { workspace = true, features = ["event", "net", "process"] }
+
+[dev-dependencies]
+aos-registry-client = { workspace = true, features = ["test-support"] }
+crc32fast = { workspace = true }

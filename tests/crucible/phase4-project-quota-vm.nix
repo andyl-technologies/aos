@@ -29,7 +29,7 @@
           sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
           cargo build --frozen --offline --release \
             --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
-            -p crucible-linux-resource --example project-quota-flight
+            -p aos-linux-project-quota --example project-quota-flight
           mkdir -p "$out/bin"
           cp "$TMPDIR/target/release/examples/project-quota-flight" "$out/bin/"
         '';

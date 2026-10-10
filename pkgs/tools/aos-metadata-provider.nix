@@ -48,8 +48,8 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-metadata-provider"
-      "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-metadata -p aos-metadata-provider"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-platform-metadata"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-platform-metadata"
     ];
     inherit cargoEnv;
     buildDeps = [buildPkgConfig buildCmake];
@@ -83,8 +83,8 @@ in
     inherit version cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
-    cargoFlags = "-p aos-metadata-provider";
-    cargoTestFlags = "-p aos-metadata -p aos-metadata-provider";
+    cargoFlags = "-p aos-platform-metadata";
+    cargoTestFlags = "-p aos-platform-metadata";
     doCheck = true;
     buildDeps = [buildPkgConfig buildCmake];
     runtimeDeps = [openssl libssh2 zlib nix];

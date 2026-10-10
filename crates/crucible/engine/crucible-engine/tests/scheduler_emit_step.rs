@@ -1,0 +1,352 @@
+//! Checks T-SCHED-19 EMIT event-log entries and STEP frontier advancement.
+
+#![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
+use crucible_engine::{
+    BackendInput, ContentHash, Decision, EventEvaluationKind, EventKey, ExactLocalEvent, Icount,
+    NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest, ScheduledEvent,
+    ScheduledEventKey, ScheduledEventPayload, SchedulerEventLogClass, SchedulerEventLogPayload,
+    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
+    SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler, VirtualTime,
+    check_scheduler_liveness,
+};
+
+#[test]
+fn emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes() {
+    let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
+    let frame_producer = scheduler_node("producer", SchedulingNodeKind::Vm);
+    let second_producer = scheduler_node("producer-b", SchedulingNodeKind::Vm);
+    let frame = backend_event(4, &consumer, &frame_producer, 1, b"frame");
+    let second_frame = backend_event(4, &consumer, &second_producer, 2, b"second-frame");
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "emit-step-entry-order",
+        8,
+        SimInstant { ticks: 30 },
+        vec![scenario_node("consumer", 0, finite_lookahead(12))],
+        vec![second_frame.clone(), frame.clone()],
+    );
+    let mut scheduler = SingleScheduler::new(scenario.clone()).expect("scenario should build");
+    let mut replay = SingleScheduler::new(scenario).expect("replay scenario should build");
+
+    let outcome = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .expect("scheduler should emit event-log entries");
+    let replay_outcome = replay
+        .drive_quantum(QuantumRequest {
+            configuration: replay.configuration().clone(),
+            control: Vec::new(),
+        })
+        .expect("replay should emit event-log entries");
+
+    assert_eq!(outcome.frontier, VirtualTime { ticks: 4 });
+    assert_eq!(
+        outcome.resolved_events,
+        vec![frame.clone(), second_frame.clone()]
+    );
+    assert_eq!(outcome.event_log_entries, replay_outcome.event_log_entries);
+    assert_eq!(outcome.event_log_offset, replay_outcome.event_log_offset);
+    assert!(outcome.event_log_offset.appended_segment.is_some());
+    assert_eq!(outcome.event_log_offset.events, 4);
+    assert!(outcome.event_log_offset.bytes > 0);
+    assert!(!outcome.event_log_segment_bytes.is_empty());
+    assert_eq!(
+        outcome.event_log_segment_hash,
+        Some(ContentHash::from_bytes(&outcome.event_log_segment_bytes))
+    );
+    assert_eq!(
+        outcome.event_log_offset.appended_segment,
+        outcome.event_log_segment_hash
+    );
+    assert_eq!(
+        scheduler.condition_event_log_prefix().point().kind(),
+        EventEvaluationKind::QuantumBoundary
+    );
+    assert_eq!(
+        scheduler.condition_event_log_prefix().point().at(),
+        VirtualTime { ticks: 4 }
+    );
+    assert_eq!(
+        outcome.event_log_offset.bytes,
+        outcome.event_log_segment_bytes.len() as u64
+    );
+
+    let sequences = outcome
+        .event_log_entries
+        .iter()
+        .map(|entry| entry.sequence())
+        .collect::<Vec<_>>();
+    assert_eq!(sequences, vec![0, 1, 2, 3]);
+    assert!(
+        outcome
+            .event_log_entries
+            .iter()
+            .all(|entry| entry.class() == SchedulerEventLogClass::Causal
+                && entry.content_hash() != Default::default())
+    );
+
+    assert!(matches!(
+        outcome.event_log_entries[0].payload(),
+        SchedulerEventLogPayload::ResolvedHappening(event) if event == &frame
+    ));
+    assert!(matches!(
+        outcome.event_log_entries[1].payload(),
+        SchedulerEventLogPayload::ResolvedHappening(event) if event == &second_frame
+    ));
+    assert!(matches!(
+        outcome.event_log_entries[2].payload(),
+        SchedulerEventLogPayload::Decision(Decision::DeliveryOrder(order))
+            if order.order == vec![event_key(&frame), event_key(&second_frame)]
+    ));
+    assert!(matches!(
+        outcome.event_log_entries[3].payload(),
+        SchedulerEventLogPayload::EvaluationBoundary(
+            crucible_engine::SchedulerEvaluationBoundaryKind::Quantum
+        )
+    ));
+}
+
+#[test]
+fn step_advances_schedule_and_event_log_prefix_across_quanta() {
+    let node_a = scheduler_node("node-a", SchedulingNodeKind::Vm);
+    let node_b = scheduler_node("node-b", SchedulingNodeKind::Vm);
+    let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
+        "emit-step-prefix-advance",
+        8,
+        SimInstant { ticks: 20 },
+        vec![
+            scenario_node("node-a", 0, finite_lookahead(10)),
+            scenario_node("node-b", 0, finite_lookahead(10)),
+        ],
+        vec![
+            backend_event(6, &node_b, &node_a, 2, b"b"),
+            backend_event(3, &node_a, &node_b, 1, b"a"),
+        ],
+    ))
+    .expect("scenario should build");
+
+    let first = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .expect("first quantum should emit");
+    let second = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .expect("second quantum should emit");
+
+    assert_eq!(first.event_log_entries.len(), 3);
+    assert_eq!(second.event_log_entries.len(), 3);
+    assert_eq!(first.event_log_offset.events, 3);
+    assert_eq!(second.event_log_entries[0].sequence(), 3);
+    assert_eq!(second.event_log_offset.events, 6);
+    assert!(second.event_log_offset.bytes > first.event_log_offset.bytes);
+    assert_ne!(
+        second.event_log_offset.prefix,
+        first.event_log_offset.prefix
+    );
+    assert_eq!(
+        scheduler.configuration().schedule.decisions().len(),
+        first.decisions.len() + second.decisions.len()
+    );
+}
+
+#[test]
+fn resolved_backend_input_retains_physical_counter_across_later_rebase() {
+    let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
+    let producer = scheduler_node("producer", SchedulingNodeKind::Vm);
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "emit-physical-frame-counter",
+        8,
+        SimInstant { ticks: 20 },
+        vec![scenario_node("consumer", 0, finite_lookahead(10))],
+        vec![
+            backend_event(3, &consumer, &producer, 1, b"before-rebase"),
+            backend_event(6, &consumer, &producer, 2, b"after-rebase"),
+        ],
+    );
+    let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
+
+    let first = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .expect("first frame should resolve");
+    let first_entry = &first.event_log_entries[0];
+    assert_eq!(first_entry.at(), VirtualTime { ticks: 3 });
+    assert_eq!(first_entry.time().stamp.tick, SimInstant { ticks: 3 });
+    assert_eq!(first_entry.time().stamp.node, Some(consumer.node.clone()));
+    assert_eq!(
+        first_entry.time().stamp.retired,
+        Some(Icount { retired: 3 })
+    );
+    assert!(
+        first
+            .event_log_segment_text
+            .contains("entry.at_raw_retired=3")
+    );
+
+    scheduler
+        .rebase_restarted_backend_counter(&consumer.node, NodeCounter { ticks: 100 })
+        .expect("replacement backend should rebase");
+    let second = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .expect("second frame should resolve");
+    let second_entry = &second.event_log_entries[0];
+
+    assert_eq!(
+        first_entry.time().stamp.retired,
+        Some(Icount { retired: 3 })
+    );
+    assert_eq!(second_entry.at(), VirtualTime { ticks: 6 });
+    assert_eq!(second_entry.time().stamp.tick, SimInstant { ticks: 6 });
+    assert_eq!(second_entry.time().stamp.node, Some(consumer.node));
+    assert_eq!(
+        second_entry.time().stamp.retired,
+        Some(Icount { retired: 103 })
+    );
+    assert!(
+        second
+            .event_log_segment_text
+            .contains("entry.at_raw_retired=103")
+    );
+    assert_ne!(first_entry.content_hash(), second_entry.content_hash());
+}
+
+#[test]
+fn liveness_report_includes_deterministic_event_log_hashes() {
+    let first = check_scheduler_liveness(report_scenario()).expect("first run should terminate");
+    let second = check_scheduler_liveness(report_scenario()).expect("second run should terminate");
+
+    assert_eq!(first, second);
+    assert_eq!(first.resolved_events, 2);
+    assert_eq!(first.event_log_entries, 8);
+    assert_eq!(first.event_log_entry_hashes.len(), 8);
+    assert_eq!(first.event_log_offset.events, 8);
+    assert!(first.event_log_offset.bytes > 0);
+}
+
+#[test]
+fn no_progress_quantum_does_not_append_polling_boundary_entries() {
+    let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
+        "emit-step-no-progress-poll",
+        8,
+        SimInstant { ticks: 20 },
+        Vec::new(),
+        Vec::new(),
+    ))
+    .expect("empty scheduler scenario should build");
+
+    let first = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .expect("first no-progress quantum should return");
+    let second = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .expect("second no-progress quantum should return");
+
+    assert!(first.event_log_entries.is_empty());
+    assert!(second.event_log_entries.is_empty());
+    assert_eq!(first.event_log_offset.events, 0);
+    assert_eq!(second.event_log_offset.events, 0);
+    assert!(first.event_log_segment_hash.is_none());
+    assert!(second.event_log_segment_hash.is_none());
+}
+
+fn report_scenario() -> SchedulerLivenessScenario {
+    let node_a = scheduler_node("node-a", SchedulingNodeKind::Vm);
+    let node_b = scheduler_node("node-b", SchedulingNodeKind::Vm);
+    SchedulerLivenessScenario::from_canonical_material(
+        "emit-step-report",
+        8,
+        SimInstant { ticks: 20 },
+        vec![
+            scenario_node("node-a", 0, finite_lookahead(10)),
+            scenario_node("node-b", 0, finite_lookahead(10)),
+        ],
+        vec![
+            backend_event(6, &node_b, &node_a, 2, b"b"),
+            backend_event(3, &node_a, &node_b, 1, b"a"),
+        ],
+    )
+}
+
+fn event_key(event: &ScheduledEvent) -> EventKey {
+    EventKey::new(
+        event.key.virtual_time(),
+        event.key.consumer().clone(),
+        event.key.producer().clone(),
+        event.key.sequence(),
+    )
+}
+
+fn backend_event(
+    virtual_time: u64,
+    consumer: &SchedulerNodeId,
+    producer: &SchedulerNodeId,
+    sequence: u64,
+    payload: &[u8],
+) -> ScheduledEvent {
+    ScheduledEvent {
+        key: ScheduledEventKey::new(
+            crucible_engine::SharedTimelineKey {
+                virtual_time: crucible_engine::SimInstant {
+                    ticks: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
+            },
+            producer.clone(),
+        ),
+        payload: ScheduledEventPayload::BackendInput(BackendInput {
+            node: consumer.node.clone(),
+            payload: payload.to_vec(),
+        }),
+    }
+}
+
+fn scenario_node(
+    name: &str,
+    counter: u64,
+    network_lookahead: NetworkLookahead,
+) -> SchedulerScenarioNode {
+    SchedulerScenarioNode {
+        id: scheduler_node(name, SchedulingNodeKind::Vm),
+        counter: NodeCounter { ticks: counter },
+        activity: SchedulerNodeActivity::Runnable,
+        network_lookahead,
+        exact_local_event: ExactLocalEvent::NoArmedTimer,
+    }
+}
+
+fn finite_lookahead(nanos: u64) -> NetworkLookahead {
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
+}
+
+fn scheduler_node(name: &str, kind: SchedulingNodeKind) -> SchedulerNodeId {
+    SchedulerNodeId {
+        node: NodeId {
+            name: name.to_owned(),
+        },
+        kind,
+    }
+}

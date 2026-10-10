@@ -37,7 +37,7 @@
 
 - **AOS / `apm` / `apr`** — ANDYL OS; the package-management CLI (`apm` ⇒ implicit
   `package`); the registry CLI (`apr` ⇒ implicit `package registry`). Same binary,
-  argv[0] dispatch (`crates/aos/src/main.rs`).
+  argv[0] dispatch (`crates/aos/cli/aos-cli/src/main.rs`).
 - **Registry (target)** — a **bare git repository, sha256 object format, served as
   static files over dumb HTTP**. The package metadata *is* the git tree content.
 - **Channel** — a named release line (e.g. `stable`, `testing`). Modeled as a git
@@ -75,7 +75,7 @@ as-built status, use
 [`TODO.md`](./TODO.md). At the time this brief was written:
 
 - A registry is a git repo of **nested** package TOMLs (`PackageToml` in
-  `crates/aos-package/src/registry/parse.rs:14-70`, written by `build_package_toml`
+  `crates/aos/registry/aos-registry-client/src/registry/parse.rs:14-70`, written by `build_package_toml`
   `registry_ops.rs:595-781`) plus `closures/<hash>` adjacency files;
   `PackageMeta` (`types.rs:43-77`) is the flattened in-memory projection.
 - Distribution is via **git bundles** + a `bundle-list.toml` manifest the *consumer*

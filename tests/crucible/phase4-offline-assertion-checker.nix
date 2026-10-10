@@ -8,8 +8,8 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
-  offlineAssertionCheckerTest = builtins.readFile ../../crates/crucible/tests/offline_assertion_checker.rs;
+  crateRoot = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  offlineAssertionCheckerTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/offline_assertion_checker.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -23,7 +23,7 @@
         needle = "Completed by `checks.crucible.phase4.offlineAssertionChecker`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "offline assertion checker";
         needle = "pub struct OfflineAssertionChecker";
@@ -77,7 +77,7 @@
         needle = "finalize_prefix";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "offline checker export";
         needle = "OfflineAssertionChecker";
@@ -91,7 +91,7 @@
         needle = "OfflineAssertionCheckError";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/offline_assertion_checker.rs" offlineAssertionCheckerTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/offline_assertion_checker.rs" offlineAssertionCheckerTest [
       {
         label = "online/offline equality test";
         needle = "offline_assertion_checker_matches_online_report_for_recorded_log";
@@ -139,7 +139,7 @@
         needle = "attrPath = \"checks.crucible.phase4.offlineAssertionChecker\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/offline_assertion_checker.rs" offlineAssertionCheckerTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/offline_assertion_checker.rs" offlineAssertionCheckerTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -162,7 +162,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -206,7 +209,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-offline-assertion-checker-target" \
-              -p crucible \
+              -p crucible-engine \
               --test offline_assertion_checker \
               --test host_side_assertions \
               --test guest_marker_assertions \

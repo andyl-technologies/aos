@@ -13,20 +13,20 @@ in
       name = "native-adversarial-determinism";
       sqliteRequired = true;
       cargoBuildCommands = [
-        "test --frozen --offline --no-run -p crucible-harness --test gate_adversarial_determinism"
-        "test --frozen --offline --no-run -p crucible --test gate_adversarial_determinism"
+        "test --frozen --offline --no-run -p crucible-test-support --test gate_adversarial_determinism"
+        "test --frozen --offline --no-run -p crucible-engine --test gate_adversarial_determinism"
       ];
       installedTests = [
         {
           targetName = "gate_adversarial_determinism";
           targetKind = "test";
-          crateDir = "crucible-harness";
+          crateDir = "crucible-test-support";
           destination = "crucible-harness-gate-adversarial-determinism";
         }
         {
           targetName = "gate_adversarial_determinism";
           targetKind = "test";
-          crateDir = "crucible";
+          crateDir = "crucible-engine";
           destination = "crucible-gate-adversarial-determinism";
         }
       ];

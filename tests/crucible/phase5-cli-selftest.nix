@@ -11,9 +11,9 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  helpSurface = builtins.readFile ../../crates/crucible-cli/tests/help_surface.rs;
+  helpSurface = builtins.readFile ../../crates/crucible/control/crucible-cli/tests/help_surface.rs;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
+  cliManifest = builtins.readFile ../../crates/crucible/control/crucible-cli/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -39,19 +39,19 @@
         needle = "process invocation of the packaged production\n  `crucible --campaign-deployment /tmp/executor.toml selftest` process";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/tests/help_surface.rs" helpSurface [
+    ++ failuresFor "crates/crucible/control/crucible-cli/tests/help_surface.rs" helpSurface [
       {
         label = "production selftest excludes test-double options";
         needle = "cli_production_selftest_help_excludes_test_double_options";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
+    ++ failuresFor "crates/crucible/control/crucible-cli/Cargo.toml" cliManifest [
       {
         label = "CLI dev-tests against canonical gate catalog";
-        needle = "crucible-harness = { path = \"../crucible-harness\" }";
+        needle = "crucible-test-support = { path = \"../../testing/crucible-test-support\" }";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "selftest gates flag";
         needle = "gates: Option<String>";
@@ -84,7 +84,7 @@
       }
       {
         label = "dev-test canonical gate catalog source";
-        needle = "crucible_harness::canonical_gates()";
+        needle = "crucible_test_support::canonical_gates()";
       }
       {
         label = "selftest gate planner";
@@ -108,7 +108,7 @@
       }
       {
         label = "built-in corpus runner";
-        needle = "crucible::built_in_example_corpus";
+        needle = "crucible_engine::built_in_example_corpus";
       }
       {
         label = "corpus manifest loader";
@@ -171,7 +171,7 @@
         needle = "selftest-corpus.txt";
       }
     ]
-    ++ forbiddenFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ forbiddenFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "production-hidden selftest qemu flag";
         needle = ''#[cfg_attr(not(any(test, feature = "test-double")), arg(hide = true))]'';

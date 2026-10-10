@@ -19,12 +19,26 @@
   unified `core::indexer`, and `SurfaceWrite`/`PublishLease` (D1) ports ship.
   The deployed wasm artifact is verified end-to-end under workerd + miniflare by
   `pkgs.aos-registry-worker-e2e` (`just test-worker-e2e`).
-- **Audience:** `crates/aos-registry-hub/`, `crates/aos-registry-worker/`,
-  `crates/aos-proto/`, the `aos` CLI (`crates/aos/`, `crates/aos-remote/`).
+- **Audience:** `crates/hub/aos-hub-native/`, `crates/hub/aos-hub-worker/`,
+  `crates/hub/aos-hub-api/`, the `aos` CLI (`crates/aos/cli/aos-cli/`, `crates/aos/packages/aos-build-client/`).
 
 > Code links reflect the tree at the time of writing and are illustrative
 > of the proposal; this is a design record, not a description of shipped
 > behavior.
+
+## Current crate boundaries
+
+The shared runtime now lives in `aos-hub-service`, with portable domain values
+and policy primitives in `aos-hub-model`, and database abstractions, migrations,
+and queries in `aos-hub-db`. Native and Worker adapters reuse those libraries.
+`aos-hub-api` and `aos-hub-client` are independent of the build server API/client
+pair. Canonical schemas live in `api/proto/`; generated Hub bindings consume no
+browser implementation source. The API integration tests own manifest and
+browser capability coverage checks.
+
+The original unification analysis below retains its historical module layout;
+references to a single shared `core` describe the predecessor of these explicit
+project-scoped boundaries.
 
 ## Problem: the read path is built twice
 
@@ -255,7 +269,7 @@ empirical:
 | `axum-cloudflare-adapter` 0.14 + `worker` 0.4.2 | ✅ compiles | confirms `#[event(fetch)]` can serve the shared router |
 | plain `axum` handlers (write/console/auth/facade) | ✅ | ordinary handlers — parity is just "move them into `core`" |
 | **`connectrpc` 0.3 server runtime** | ❌ **hard blocker** | unconditional `hyper` + `hyper-util` + `tokio`(+`mio`) + `tower`; `default` pulls `zstd-sys` (C + amd64 `.S`). Not portable even with `default-features = false, features = ["server","axum"]`. |
-| `prost` message types (in isolation) | ✅ (pure Rust) | wasm-clean as a standalone codec; **today's `aos-proto` crate is not** — it depends on `connectrpc`, hence the split below |
+| `prost` message types (in isolation) | ✅ (pure Rust) | wasm-clean as a standalone codec; **today's `aos-build-api` crate is not** — it depends on `connectrpc`, hence the split below |
 
 **Consequence — RPC drops the `connectrpc` runtime on *both* sides, and the hub
 serves one transport: Connect-JSON over plain `axum` (decision 2026-06-16).**
@@ -278,18 +292,18 @@ call.
 The schema stays in `.proto` (the contract, consistent with the rest of AOS);
 only the runtime path changes:
 
-- **`aos-proto-types`** (new, wasm-clean) — the request/response structs
+- **`aos-hub-api`** (new, wasm-clean) — the request/response structs
   generated from the `.proto` with `prost-build` + `serde` derives (no `buffa`,
   no `connectrpc`). `connectrpc-build` 0.3 can't supply these (it emits
   `buffa`-based types via its own `buffa_codegen`, with no `extern_path`/reuse
   knob), so they are generated separately. These serde structs are the lingua
   franca of `RpcService`, the shared handlers, and the client; JSON is the only
   wire encoding, so the structs' serde shape is the contract both ends agree on.
-- **`aos-proto`** keeps its `connectrpc`/`buffa` codegen for the *other* AOS
+- **`aos-build-api`** keeps its `connectrpc`/`buffa` codegen for the *other* AOS
   services (cache/build/gc/auth), which are unaffected — the registry hub simply
   stops using the connectrpc runtime.
-- **`aos-remote`** — `RegistryHubClient` becomes a small Connect-JSON client
-  (`reqwest` natively) over `aos-proto-types`, replacing the connectrpc client.
+- **`aos-hub-client`** — `HubClient` is a small Connect-JSON client
+  (`reqwest` natively) over `aos-hub-api`, replacing the connectrpc client.
   The `aos hub …` CLI is unchanged above that client.
 
 Every route — facade, browse, JSON read API, auth, console, **and RPC** — is
@@ -373,9 +387,9 @@ bypass of the API.
 
 The CLI stops opening the database and becomes a **Connect-JSON** client of the
 hub's `aos.registry.v1` services (`RegistryService`, `OrgService`,
-`ConfigService`, …) — a small `reqwest` client over `aos-proto-types`, posting
+`ConfigService`, …) — a small `reqwest` client over `aos-hub-api`, posting
 JSON to `/aos.registry.v1.{Service}/{Method}`. (The other AOS surfaces —
-`aos build --remote` / `aos gc --remote` — keep their `aos-remote` connectrpc
+`aos build --remote` / `aos gc --remote` — keep their `aos-build-client` ConnectRPC
 clients; only the registry hub leaves the connectrpc runtime.) The standalone
 `aos-registry-hub` subcommands move under `aos hub …`:
 
@@ -475,7 +489,7 @@ unification) are the remaining work that wins parity.
 4. **Handler unification** (the parity work — RPC, facade, browse, and most of
    the producer console now shared):
    - a. ✅ Worker read path + Cron indexer fold onto `core::Database`. *Done.*
-   - b. ✅ **`aos-proto-types`** — wasm-clean `prost`+`serde` message structs,
+   - b. ✅ **`aos-hub-api`** — wasm-clean `prost`+`serde` message structs,
      the lingua franca of `RpcService`/the shared handlers/the client. *Done.*
    - c. ✅ **Lift the handlers into `core`** — the shared Connect-JSON `axum`
      router (`core::connect`), the `RpcService` (all 26 `aos.registry.v1`
@@ -499,8 +513,8 @@ unification) are the remaining work that wins parity.
      `worker`⇄`axum` bridge + the `SendWrapper` Send bridge; its D1/R2/D1-limiter
      back the `RpcService`, and its `consoleports` (logging `Mailer`, Fetch-API
      `HttpClient`, AES-GCM sealer) back the `ConsoleDeps`. *Done.*
-   - f. ✅ **Port `aos-remote::RegistryHubClient`** to a Connect-JSON `reqwest`
-     client over `aos-proto-types`. *Done.*
+   - f. ✅ **Port `aos_hub_client::HubClient`** to a Connect-JSON `reqwest`
+     client over `aos-hub-api`. *Done.*
    - g. ✅ **Rewire the native hub** to mount `core::connect::rpc_router()` and
      `core::web::console::console_router()` (the CLI speaks Connect-JSON); the
      connectrpc `rpc.rs` services are retired. *Done.*
@@ -535,14 +549,14 @@ of soft-deleted orgs, matching the native hub's `list_registries` filter.)
   spike:** the router yes, the `connectrpc` *server* no — hence the single
   Connect-JSON transport over shared `axum` handlers (above).
 - **Connect-JSON body shape — RESOLVED: camelCase field names + native JSON
-  scalars.** `aos-proto-types` derives `serde` with `#[serde(rename_all =
+  scalars.** `aos-hub-api` derives `serde` with `#[serde(rename_all =
   "camelCase")]`, so fields are canonical proto3-JSON names (`orgSlug`,
   `nextPageToken`, `expiresAt`) — this is what the old connectrpc server emitted
   and what the hub tests assert. It is *not* fully canonical proto3-JSON: int64
   is a JSON **number**, not the proto3-canonical string, and there's no
   base64-bytes/enum-as-string handling. That's fine because all consumers
-  (the hub handlers, the Worker, the `aos-remote` client, `apr`/`apm`) share the
-  same `aos-proto-types` structs, so both ends agree. (Lesson learned: the
+  (the hub handlers, the Worker, the `aos-hub-client` client, `apr`/`apm`) share the
+  same `aos-hub-api` structs, so both ends agree. (Lesson learned: the
   field-name half *was* contract-load-bearing — plain snake_case 404'd
   `{"orgSlug":…}` requests; the int64-as-string half was not, and only one test
   assumed it.) Upgrade path if a *stock* Buf/Connect client ever needs byte-exact

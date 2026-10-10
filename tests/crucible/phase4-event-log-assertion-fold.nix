@@ -10,11 +10,11 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   eventCatalog = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/event_catalog.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/event_catalog.rs;
   };
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  assertionLogFoldTest = builtins.readFile ../../crates/crucible/tests/assertion_log_fold.rs;
-  classCatalogTest = builtins.readFile ../../crates/crucible/tests/event_log_class_catalog.rs;
+  assertionLogFoldTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/assertion_log_fold.rs;
+  classCatalogTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/event_log_class_catalog.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -32,7 +32,7 @@
         needle = "same `HostAssertionEvaluator` fold live and\n  offline";
       }
     ]
-    ++ failuresFor "crates/crucible/src/event_catalog.rs" eventCatalog [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/event_catalog.rs" eventCatalog [
       {
         label = "assertion evaluated catalog kind is causal";
         needle = "kind: \"assertion_evaluated\",\n        class: SchedulerEventLogClass::Causal,";
@@ -42,7 +42,7 @@
         needle = "kind: \"assertion_state_changed\",\n        class: SchedulerEventLogClass::Causal,";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "guest assertion marker projects through guest_marker kind";
         needle = "EventPayload::new(\"guest_marker\", attributes)";
@@ -76,7 +76,7 @@
         needle = "format!(\"detail.{index}.value\")";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "offline reconstructs condition prefix from recorded log";
         needle = "condition_prefix_from_recorded_log";
@@ -102,7 +102,7 @@
         needle = "fn observe_guest_marker_assertions";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/assertion_log_fold.rs" assertionLogFoldTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/assertion_log_fold.rs" assertionLogFoldTest [
       {
         label = "assertion state one-log parity test";
         needle = "online_and_offline_fold_read_assertion_state_changes_from_one_event_log";
@@ -136,7 +136,7 @@
         needle = "assert_eq!(offline, online)";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_log_class_catalog.rs" classCatalogTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_log_class_catalog.rs" classCatalogTest [
       {
         label = "assertion/guest marker catalog class regression";
         needle = "assertion_and_guest_marker_kinds_follow_rfc_catalog_classes";
@@ -180,7 +180,7 @@
         needle = "taskIds = [\"T-OBS-7\"]";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/assertion_log_fold.rs" assertionLogFoldTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/assertion_log_fold.rs" assertionLogFoldTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -203,7 +203,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -247,7 +250,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-event-log-assertion-fold-target" \
-              -p crucible \
+              -p crucible-engine \
               --test assertion_log_fold \
               --test event_log_class_catalog \
               -- --test-threads=1

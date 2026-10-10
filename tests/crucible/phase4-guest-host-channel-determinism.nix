@@ -10,15 +10,15 @@
 
   pluginWhitebox = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   };
   channelDeterminismTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/guest_host_channel_determinism.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/tests/guest_host_channel_determinism.rs;
   };
   markerObservabilityTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/guest_host_marker_observability.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/tests/guest_host_marker_observability.rs;
   };
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   phaseGate = builtins.readFile ./phase4-guest-host-channel-determinism.nix;
@@ -48,7 +48,7 @@
     lib.concatMap (
       api:
         lib.optionals (hasInfix api pluginWhitebox) [
-          "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs: forbidden host-time, entropy, or lock API in white-box channel safety path: `${api}`"
+          "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs: forbidden host-time, entropy, or lock API in white-box channel safety path: `${api}`"
         ]
     )
     forbiddenCallbackApis;
@@ -66,7 +66,7 @@
         needle = "`guest_host_channel_determinism`";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "shared trap-icount payload reader";
         needle = "let payload = read_doorbell_payload(self, reader, event)?;";
@@ -132,7 +132,7 @@
         needle = "whitebox_app_random_serves_random_request_records_decision_and_replies_at_trap_icount";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/guest_host_channel_determinism.rs" channelDeterminismTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/guest_host_channel_determinism.rs" channelDeterminismTest [
       {
         label = "channel determinism test";
         needle = "whitebox_channel_fingerprints_are_identical_with_markers_on_vs_off";
@@ -174,7 +174,7 @@
         needle = "changed-workload";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/guest_host_marker_observability.rs" markerObservabilityTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/guest_host_marker_observability.rs" markerObservabilityTest [
       {
         label = "prior marker observability fingerprint proof remains present";
         needle = "whitebox_marker_entries_do_not_move_determinism_or_backend_fingerprint";
@@ -220,7 +220,7 @@
         needle = "canonical_gate_wiring=checks.crucible.phase4.guestHostChannelGateWiring";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "unfinished todo";
         needle = "todo!";
@@ -313,7 +313,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-channel-determinism-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test guest_host_channel_determinism \
               -- --list > "$TMPDIR/channel-tests"
@@ -341,7 +341,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-channel-determinism-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test guest_host_channel_determinism \
               -- --test-threads=1

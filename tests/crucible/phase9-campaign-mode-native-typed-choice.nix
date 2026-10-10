@@ -14,7 +14,7 @@ in
       sqliteRequired = true;
       cargoBuildCommands = [
         "test --frozen --offline --no-run -p crucible-campaign --lib --test gate_typed_choice"
-        "test --frozen --offline --no-run -p crucible-protocol --lib"
+        "test --frozen --offline --no-run -p crucible-qemu-protocol --lib"
         "test --frozen --offline --no-run -p crucible-guest --lib"
       ];
       installedTests = [
@@ -31,9 +31,9 @@ in
           destination = "gate-typed-choice";
         }
         {
-          targetName = "crucible_protocol";
+          targetName = "crucible_qemu_protocol";
           targetKind = "lib";
-          crateDir = "crucible-protocol";
+          crateDir = "crucible-qemu-protocol";
           destination = "crucible-protocol-lib";
         }
         {

@@ -11,10 +11,10 @@
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   gateControlResponsive = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-session/tests/gate_control_responsive.rs;
+    entry = ../../crates/crucible/control/crucible-session/tests/gate_control_responsive.rs;
   };
-  apiGateControlResponsive = builtins.readFile ../../crates/crucible-api/tests/gate_control_responsive.rs;
-  daemonGateControlResponsive = builtins.readFile ../../crates/crucible-daemon/tests/gate_control_responsive.rs;
+  apiGateControlResponsive = builtins.readFile ../../crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs;
+  daemonGateControlResponsive = builtins.readFile ../../crates/crucible/control/crucible-daemon/tests/gate_control_responsive.rs;
   schedulerLib = import ./_crucible-scheduler-source.nix {inherit lib;};
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -37,7 +37,7 @@
         needle = "`T-SESS-6` is green through `checks.crucible.phase5.sessionBoundaryControl`";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" sessionLib [
       {
         label = "session control log entry";
         needle = "pub struct SessionControlLogEntry";
@@ -87,7 +87,7 @@
         needle = "shutdowns.load(Ordering::SeqCst)";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" schedulerLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" schedulerLib [
       {
         label = "quantum loop shutdown hook";
         needle = "fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError>";
@@ -97,19 +97,19 @@
         needle = "fn apply_control_at_boundary";
       }
     ]
-    ++ failuresFor "crates/crucible-session/tests/gate_control_responsive.rs" gateControlResponsive [
+    ++ failuresFor "crates/crucible/control/crucible-session/tests/gate_control_responsive.rs" gateControlResponsive [
       {
         label = "integration loop boundary control hook";
         needle = "fn apply_control_at_boundary";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_responsive.rs" apiGateControlResponsive [
+    ++ failuresFor "crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs" apiGateControlResponsive [
       {
         label = "api gate loop boundary control hook";
         needle = "fn apply_control_at_boundary";
       }
     ]
-    ++ failuresFor "crates/crucible-daemon/tests/gate_control_responsive.rs" daemonGateControlResponsive [
+    ++ failuresFor "crates/crucible/control/crucible-daemon/tests/gate_control_responsive.rs" daemonGateControlResponsive [
       {
         label = "daemon gate loop boundary control hook";
         needle = "fn apply_control_at_boundary";
@@ -130,8 +130,11 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps =
         [
+          pkgs.sqlite
           pkgs.coreutils
           pkgs.rust
           pkgs.sed

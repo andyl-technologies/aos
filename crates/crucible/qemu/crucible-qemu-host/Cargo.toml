@@ -1,0 +1,34 @@
+[package]
+name = "crucible-qemu-host"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[features]
+default = []
+test-support = ["crucible-engine/test-double"]
+
+[lints]
+workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
+crucible-engine = { path = "../../engine/crucible-engine" }
+crucible-device = { path = "../../engine/crucible-device" }
+aos-linux-project-quota = { path = "../../../shared/aos-linux-project-quota", default-features = false }
+crucible-qemu-protocol = { path = "../../protocol/crucible-qemu-protocol" }
+crucible-qemu-shmem = { path = "../../protocol/crucible-qemu-shmem" }
+libc = { workspace = true }
+rustix = { workspace = true, features = ["net", "param", "process"] }
+serde_json = { workspace = true }
+serde = { workspace = true }
+ciborium = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tempfile = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+crucible-engine = { path = "../../engine/crucible-engine", features = ["test-double"] }
+rustix = { workspace = true, features = ["time"] }

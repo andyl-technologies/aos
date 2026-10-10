@@ -11,6 +11,24 @@ across which the CLI ([`23-cli.md`](23-cli.md)), the search/fuzzing driver
 ([`22-advanced-features.md`](22-advanced-features.md)), and external tooling reach
 a running scenario.
 
+The Rust implementation separates this shared surface from its realizations:
+`crucible-control-api` owns native transport-independent request/response values,
+capability models, and frozen RPC encodings; `crucible-control-client` owns the `ControlClient`
+interface and HTTP/2 client; `crucible-control-server` owns in-process actor
+adapters, lifecycle registries, authentication, and HTTP/2 dispatch. Server-owned
+streams implement typed local transport interfaces without making remote clients
+depend on the server implementation. Production VM lifecycle composition belongs
+to `crucible-daemon`; remote clients and API messages do not depend on the QEMU
+host crate. Package and directory names do not change wire identifiers, version
+negotiation, or golden vectors.
+
+The contract crate shares existing session command, debugger, and event-log
+values with native clients and services. Its session and engine dependencies
+still include Tokio and native host support; the validated dependency graph is
+Linux-native. A WASM contract library requires a separate upstream values/runtime
+boundary. Live event-log hubs and subscriptions are exported by
+`crucible-control-server` and `crucible-session`, not by the contract crate.
+
 Crucible has **no web UI** ([INV/NG-4], [`01-goals-nongoals-invariants.md`](01-goals-nongoals-invariants.md)).
 This file specifies a programmatic API plus a machine-to-machine RPC surface, and
 nothing about a browser front-end. Where the reference service shape uses
@@ -615,10 +633,11 @@ ran in-process against the double or over the wire against QEMU.
   `crucible-session` actor without serializing, and an RPC client over HTTP/2 —
   so callers are transport-agnostic; assert the wire types are the serialized form
   of the in-process types. — satisfies [API-1], [API-4]; spec §21.1.
-  Completed by `checks.crucible.phase5.apiControlClient`: `crucible-api::client`
-  defines the async `ControlClient` trait, `InProcessControlClient` over the
-  same-process session actor handles, `RpcControlClient` over an HTTP/2 endpoint,
-  and a shared `ControlWireModel` backed by the frozen RPC ABI encoder. The
+  Completed by `checks.crucible.phase5.apiControlClient`: `crucible_control_client::client`
+  defines the async `ControlClient` trait and `RpcControlClient` over an HTTP/2
+  endpoint. `crucible_control_server::InProcessControlClient` adapts same-process
+  session actor handles, and `crucible_control_api::ControlWireModel` supplies
+  the shared types backed by the frozen RPC ABI encoder. The
   focused gate test proves both transports negotiate through the same typed trait:
   the RPC client posts the typed `Hello` payload over HTTP/2 to
   `/crucible.rpc/hello`, and both transports serialize through the same wire
@@ -628,7 +647,7 @@ ran in-process against the double or over the wire against QEMU.
   read, with no control semantics of its own and no browser-shaped request. —
   satisfies [API-2], [API-3]; spec §21.1, §21.2.
   Completed by `checks.crucible.phase5.apiSessionCommandMapping`:
-  `crucible-api::session_mapping` declares the closed service-method mapping,
+  `crucible_control_api::session_mapping` declares the closed service-method mapping,
   the full `SessionCommandKind::ALL` API command mapping, and the
   `validate_thin_api_mapping` gate assertion. `CreateSession` maps to
   `SessionCommandKind::Start`, `DestroySession` maps to `Stop`, session listings
@@ -642,7 +661,7 @@ ran in-process against the double or over the wire against QEMU.
   (epoch-guarded, idempotent) — each mapped to its session op (§21.2.1). —
   satisfies [API-5], [API-6], [API-7], [API-8]; spec §21.2, §21.2.1.
   Completed by `checks.crucible.phase5.apiLifecycleUnary`:
-  `crucible-api::lifecycle` implements side-effect-free `Hello` and
+  `crucible_control_server::lifecycle` implements side-effect-free `Hello` and
   `ListScenarios`, scenario-ref and inline `CreateSession` backed by a live
   `SessionActor` and `SessionCommand::Start`, lock-free mirror-backed
   `ListSessions`, campaign-authenticated portable-observation `ResumeSession`,
@@ -660,9 +679,11 @@ ran in-process against the double or over the wire against QEMU.
   (full lifecycle drivable from either), with `Send` returning CommandResult +
   optional StateUpdate. — satisfies [API-9], [API-10]; spec §21.2.
   Completed by `checks.crucible.phase5.apiStreamingEquivalence`:
-  `crucible-api::streaming` defines shared attach metadata, `ControlStream`,
-  `WatchStream`, unary `SendRequest`/`SendResponse`, typed `CommandResult`, and
-  optional `StateUpdate`. `ControlClient`/`RpcControlClient` expose transport
+  `crucible_control_api::streaming` defines shared attach metadata, unary
+  `SendRequest`/`SendResponse`, typed `CommandResult`, and optional `StateUpdate`.
+  `crucible_control_server::streaming` defines the in-process `ControlStream`
+  and `WatchStream` implementations over those shared contracts.
+  `ControlClient`/`RpcControlClient` expose transport
   paths for `Control` attach/send, `Watch` attach, and unary `Send`; accepted
   lifecycle stops preserve the joined actor's exact terminal snapshot in the
   response after registry cleanup, while rejected stops retain the session and
@@ -677,7 +698,7 @@ ran in-process against the double or over the wire against QEMU.
   Unsupported/InvalidArgument on send; capabilities-advertised kinds. — satisfies
   [API-11], [API-12], [API-13], [API-14]; spec §21.3.
   Completed by `checks.crucible.phase5.apiOpenSetPayload`:
-  `crucible-api::open_set` defines the shared `OpenSetPayload` typed attribute
+  `crucible_control_api::open_set` defines the shared `OpenSetPayload` typed attribute
   map, category capability catalog, event-log envelope conversion, opaque
   unknown-event receive path, and typed Unsupported/InvalidArgument send
   validation. Event payload schemas are generated from the unified event-kind
@@ -691,9 +712,9 @@ ran in-process against the double or over the wire against QEMU.
   every field log-derivable. — satisfies [API-15], [API-16], [API-17], [API-18];
   spec §21.4; cross-ref 19 §19.6.5, 20 §9.
   Completed by `checks.crucible.phase5.apiStreamingCursor`:
-  `crucible-session::SessionEventLog` now exposes attach-tail subscription and a
+  `crucible_session::SessionEventLog` now exposes attach-tail subscription and a
   retained-prefix snapshot fold without changing append or broadcast semantics.
-  `crucible-api::streaming` reports the attach replay tail as `event_log_len`,
+  `crucible_control_server::streaming` reports the attach replay tail as `event_log_len`,
   includes a log-derived `AttachSnapshot` when `snapshot_on_attach` is
   advertised, and adds `recv_event` helpers that convert replay/live frames into
   open-set API event envelopes carrying cursor, level, source, and
@@ -704,7 +725,7 @@ ran in-process against the double or over the wire against QEMU.
   applied monotonically, so a Watch-only client tracks run-state from
   StateUpdate + SendResponse. — satisfies [API-19]; spec §21.4; cross-ref 20 §2.
   Completed by `checks.crucible.phase5.apiStateUpdateStream`:
-  `crucible-api::streaming` now subscribes each `Control`/`Watch` attach to the
+  `crucible_control_server::streaming` now subscribes each `Control`/`Watch` attach to the
   session actor's state-transition bus, exposes monotone
   `StreamingStateUpdateFrame` delivery separately from event-log frames, and
   recovers a lagged state observer at the retained monotone tail because a newer
@@ -768,7 +789,7 @@ ran in-process against the double or over the wire against QEMU.
   events, payload kinds) wired into `gate:abi-conformance` as the RPC third of the
   boundary-ABI suite; regenerate-in-the-same-change discipline. — satisfies
   [API-26]; spec §21.6; cross-ref 24 §8.
-  Completed by `crucible-api::rpc_abi` and
+  Completed by `crucible_control_api::rpc_abi` and
   `checks.crucible.phase2.gates.abiConformance`: the seed RPC ABI corpus freezes
   Hello request/response, Attached, one command request/response, one event, and
   the advertised open-set payload kinds with explicit

@@ -8,12 +8,12 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginRoundRobin = builtins.readFile ../../crates/crucible-qemu-plugin/src/round_robin.rs;
-  pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
+  pluginRoundRobin = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/round_robin.rs;
+  pluginDeadline = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/deadline.rs;
   pluginIdleLoop = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs;
   };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -46,7 +46,7 @@
         needle = "minimum over all vCPUs";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "round-robin module exported";
         needle = "pub mod round_robin;";
@@ -60,7 +60,7 @@
         needle = "`round_robin` owns fixed-quantum vCPU rotation and per-vCPU halt tracking";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/round_robin.rs" pluginRoundRobin [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/round_robin.rs" pluginRoundRobin [
       {
         label = "validated RR config";
         needle = "pub struct RoundRobinConfig";
@@ -154,7 +154,7 @@
         needle = "all_halted_idle_wake_validates_complete_deadline_reports";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/deadline.rs" pluginDeadline [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/deadline.rs" pluginDeadline [
       {
         label = "per-vCPU deadline report";
         needle = "pub struct PerVcpuDeadlineReport";
@@ -164,7 +164,7 @@
         needle = "pub fn aggregate_multi_vcpu_deadline";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop module" pluginIdleLoop [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop module" pluginIdleLoop [
       {
         label = "shared idle wake planner";
         needle = "pub fn compute_idle_wake_plan";
@@ -185,7 +185,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.rust
         pkgs.sed
       ];

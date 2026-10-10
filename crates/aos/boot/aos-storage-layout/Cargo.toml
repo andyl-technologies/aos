@@ -1,0 +1,17 @@
+[package]
+name = "aos-storage-layout"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Validated storage provisioning intent, block topology, and canonical layout values"
+
+[dependencies]
+aos-core.workspace = true
+anyhow.workspace = true
+aos-module-format.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -52,7 +52,7 @@ normative policy is
   `qemu-crucible-source` output. Publication checks scan the full closure, so
   plugin or unmarked wrapper roots are not valid bypasses. Keep generic
   unpatched QEMU unrestricted.
-- `crucible-protocol` and `crucible-shmem` are permissive boundary components;
+- `crucible-qemu-protocol` and `crucible-qemu-shmem` are permissive boundary components;
   neither may acquire a dependency on a QEMU implementation or QEMU headers.
 - Boundary changes MUST pass `gate:abi-conformance` and
   `gate:license-boundary`. A distributed patched-QEMU binary MUST have a
@@ -252,6 +252,20 @@ crates/target/debug/aos <subcommand>
 - `crates/target/debug/` is independent of the packaged `aos`; `aos-dev run aos`
   and `nix run` use the hermetic package, while any installed CLI keeps its
   last packaged build until rebuilt.
+
+Native doctests need the same library paths baked into their temporary
+executables. Cargo does not forward its target `RUSTFLAGS` to rustdoc. Copy the
+host flags for that invocation; avoid `LD_LIBRARY_PATH` and keep these native
+linker flags separate from WebAssembly documentation:
+
+```sh
+AOS_DEV_ROOT="$PWD" nix develop --accept-flake-config --file cargo-shell.nix -c bash -c '
+  aos_doc_host=$(rustc -vV | sed -n "s/^host: //p")
+  aos_doc_flags_key="CARGO_TARGET_$(printf "%s" "$aos_doc_host" | tr "[:lower:]-" "[:upper:]_")_RUSTFLAGS"
+  export RUSTDOCFLAGS="${!aos_doc_flags_key}${RUSTDOCFLAGS:+ $RUSTDOCFLAGS}"
+  cargo test --manifest-path crates/Cargo.toml --workspace --doc --locked --offline --no-fail-fast
+'
+```
 
 ### Subcommands
 

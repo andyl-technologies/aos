@@ -2,25 +2,10 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
 
-  packages = [
-    "crucible-cas"
-    "crucible-sim"
-    "crucible-assert"
-    "crucible-shmem"
-    "crucible-protocol"
-    "crucible-device"
-    "crucible-qemu"
-    "crucible-qemu-plugin"
-    "crucible-guest"
-    "crucible"
-    "crucible-session"
-    "crucible-api"
-    "crucible-daemon"
-    "crucible-cli"
-    "crucible-harness"
-  ];
+  packages = cruciblePackages;
 
   forbiddenPrefixes = ["ratchet-" "aos-nix-"];
   forbiddenExactNames = ["ratchet" "aos-nix"];
@@ -28,7 +13,7 @@
     builtins.elem name forbiddenExactNames
     || builtins.any (prefix: lib.hasPrefix prefix name) forbiddenPrefixes;
 
-  readManifest = package: builtins.fromTOML (builtins.readFile (cratesDir + "/${package}/Cargo.toml"));
+  readManifest = package: builtins.fromTOML (builtins.readFile (packageDir package + "/Cargo.toml"));
 
   workspaceManifest = builtins.fromTOML (builtins.readFile (cratesDir + "/Cargo.toml"));
   workspaceDependencies =
@@ -167,7 +152,7 @@ in
             gate=gate:harness-lint
             tasks=T-CRATE-15
             forbidden_prefixes=ratchet-,aos-nix-
-            seam=crucible-sim::content-addressing
+            seam=crucible_determinism::content-addressing
             RESULT
           '';
         }

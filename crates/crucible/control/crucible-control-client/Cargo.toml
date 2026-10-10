@@ -1,0 +1,30 @@
+[package]
+name = "crucible-control-client"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+description = "Crucible HTTP/2 RPC clients and typed transport interfaces"
+
+[lints]
+workspace = true
+
+[dependencies]
+crucible-engine = { path = "../../engine/crucible-engine" }
+crucible-qemu-protocol = { path = "../../protocol/crucible-qemu-protocol" }
+crucible-session = { path = "../crucible-session" }
+thiserror = { workspace = true }
+crucible-control-api = { path = "../crucible-control-api" }
+bytes = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true, features = ["http2"] }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+crucible-control-server = { path = "../crucible-control-server" }
+crucible-engine = { path = "../../engine/crucible-engine", features = ["test-double", "test-support"] }
+crucible-session = { path = "../crucible-session", features = ["test-support"] }
+crucible-qemu-shmem = { path = "../../protocol/crucible-qemu-shmem" }
+tempfile = { workspace = true }

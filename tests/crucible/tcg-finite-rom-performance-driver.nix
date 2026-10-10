@@ -27,7 +27,8 @@ in
           from pathlib import Path
 
           frozen = Path(sys.argv[1]).read_bytes()
-          expected = '675114b2441a71a473d78b070407c6f84e84ab5d29fd297b350549de280f377b'
+          # Crate namespaces changed; historical fixture evidence retains its original hash.
+          expected = 'c7db55bfba0c066c52fc79fc2d08096910b74d946b5d9faafd48740176bb277a'
           if hashlib.sha256(frozen).hexdigest() != expected:
               raise AssertionError('frozen Linux helper changed; review shared support explicitly')
           marker = '/// Complete common milestone, emitted before the authenticated Sim request.'
@@ -48,8 +49,8 @@ in
           [workspace]
 
           [dependencies]
-          crucible-protocol = { path = "../crates/crucible-protocol" }
-          crucible-shmem = { path = "../crates/crucible-shmem" }
+          crucible-qemu-protocol = { path = "../crates/crucible/protocol/crucible-qemu-protocol" }
+          crucible-qemu-shmem = { path = "../crates/crucible/protocol/crucible-qemu-shmem" }
           libc = "0.2"
           serde_json = "1"
           sha2 = "0.10"

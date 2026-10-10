@@ -1,0 +1,24 @@
+[package]
+name = "aos-activation-filesystem"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-core.workspace = true
+anyhow.workspace = true
+aos-module-format.workspace = true
+aos-activation.workspace = true
+rustix = { workspace = true, features = ["process"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# Keep the installed command stable when its Cargo package is renamed.
+[[bin]]
+name = "aos-filesystem-provider"
+path = "src/main.rs"

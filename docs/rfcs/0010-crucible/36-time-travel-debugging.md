@@ -1491,7 +1491,7 @@ peer-credential completion remain open in T-DBG-11.
   implement whole-world-forked argv exec, PTY, resize, exit/close, and SSH-compatible
   byte bridging; close all streams on reposition and keep recording opt-in. —
   satisfies [DBG-45], [DBG-46], [SHM-47], [SHM-48]; spec §36.9.3, 13 §13.3.9.
-  The independently implementable `crucible-protocol::guest_introspection`
+  The independently implementable `crucible_qemu_protocol::guest_introspection`
   codec now freezes the owned `CRGI` v1 record header and closed feature, argv
   exec, PTY, SSH bridge, input, resize, close, output, and exit vocabulary. It
   rejects zero channel identities, unknown flags/features, unbounded argv and

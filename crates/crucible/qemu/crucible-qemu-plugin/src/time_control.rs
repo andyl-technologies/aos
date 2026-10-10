@@ -1,0 +1,1343 @@
+//! Plugin time-control registration order.
+//!
+//! The QEMU plugin ABI executes this safe contract while holding raw QEMU handles.
+
+use std::collections::BTreeSet;
+use std::os::raw::{c_int, c_uint, c_void};
+
+use thiserror::Error;
+
+use crucible_qemu_shmem::{FutexWait, NODE_SLOT_WAKE_SIGNAL_OFFSET, NodeSlot, TICKS_PER_NS};
+
+mod request;
+pub use request::{PluginTimeControlRequestError, QemuRequestTimeControlFn};
+
+/// QEMU plugin API symbol used to acquire virtual-time control.
+pub const QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL: &str = "qemu_plugin_request_time_control";
+/// Crucible-stable plugin API symbol used to enqueue idle time advances.
+pub const QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL: &str = "qemu_plugin_advance_time_ticks";
+/// Crucible-stable plugin API symbol used to register queued-advance completion.
+pub const QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL: &str =
+    "qemu_plugin_register_time_advance_cb";
+/// Crucible-stable one-shot idle futex-wait export.
+pub const QEMU_PLUGIN_CRUCIBLE_WAIT_IDLE_WAKE_SYMBOL: &str = "qemu_plugin_crucible_wait_idle_wake";
+/// QEMU's callback-safe queued virtual-time advance function.
+///
+/// Zero means the request was queued. A negative errno-style value rejects the
+/// request before ownership transfers to QEMU.
+pub type QemuAdvanceTimeTicksFn = extern "C" fn(i64) -> c_int;
+
+/// Normal-main-loop completion callback for a queued virtual-time advance.
+pub type QemuTimeAdvanceCompletionCbFn = extern "C" fn(c_int, i64, *mut c_void);
+
+/// QEMU function that registers the queued-advance completion callback.
+///
+/// Zero means the callback was installed. A negative errno-style value rejects
+/// registration, including while another advance remains outstanding.
+pub type QemuRegisterTimeAdvanceCbFn =
+    extern "C" fn(Option<QemuTimeAdvanceCompletionCbFn>, *mut c_void) -> c_int;
+
+/// QEMU's one-shot BQL-releasing idle futex wait.
+///
+/// QEMU declares the return type as
+/// enum qemu_plugin_crucible_idle_wait_status, whose ABI is a C int.
+pub(crate) type QemuCrucibleWaitIdleWakeFn = extern "C" fn(c_uint, *mut u32, u32) -> c_int;
+
+/// Result of QEMU's one-shot idle futex wait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QemuIdleWakeWaitStatus {
+    /// The raw futex syscall returned zero, including a possible spurious wake.
+    Woken,
+    /// The futex word changed before the kernel could park the callback.
+    ValueChanged,
+    /// A signal interrupted the futex wait.
+    Interrupted,
+    /// The pinned callback CPU changed while the BQL was released.
+    CpuChanged,
+    /// QEMU rejected an invalid futex address.
+    InvalidArgument,
+    /// QEMU rejected a call outside the exact simulated RR idle callback.
+    InvalidContext,
+    /// The same idle callback attempted a second exported wait.
+    AlreadyIssued,
+    /// The current QEMU host does not provide a raw futex wait.
+    Unsupported,
+    /// The raw futex syscall failed for another reason.
+    SyscallError,
+    /// QEMU discovered pending work during its final pre-wait check.
+    QemuWorkPending,
+    /// QEMU returned a status unknown to this plugin build.
+    Unknown(i32),
+}
+
+impl QemuIdleWakeWaitStatus {
+    fn from_qemu(status: c_int) -> Self {
+        match status {
+            0 => Self::Woken,
+            1 => Self::ValueChanged,
+            2 => Self::Interrupted,
+            3 => Self::CpuChanged,
+            4 => Self::InvalidArgument,
+            5 => Self::InvalidContext,
+            6 => Self::AlreadyIssued,
+            7 => Self::Unsupported,
+            8 => Self::SyscallError,
+            9 => Self::QemuWorkPending,
+            status => Self::Unknown(status),
+        }
+    }
+
+    pub(crate) const fn into_raw(self) -> i32 {
+        match self {
+            Self::Woken => 0,
+            Self::ValueChanged => 1,
+            Self::Interrupted => 2,
+            Self::CpuChanged => 3,
+            Self::InvalidArgument => 4,
+            Self::InvalidContext => 5,
+            Self::AlreadyIssued => 6,
+            Self::Unsupported => 7,
+            Self::SyscallError => 8,
+            Self::QemuWorkPending => 9,
+            Self::Unknown(status) => status,
+        }
+    }
+}
+
+/// Required handle for QEMU's one-shot idle wake wait.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct QemuIdleWakeWait {
+    wait_idle_wake: QemuCrucibleWaitIdleWakeFn,
+}
+
+impl QemuIdleWakeWait {
+    #[cfg(test)]
+    pub(crate) const fn test_stub(wait_idle_wake: QemuCrucibleWaitIdleWakeFn) -> Self {
+        Self { wait_idle_wake }
+    }
+
+    /// Wraps the required QEMU one-shot idle-wait export.
+    pub(crate) const fn from_required_pointer(wait_idle_wake: QemuCrucibleWaitIdleWakeFn) -> Self {
+        Self { wait_idle_wake }
+    }
+
+    /// Performs at most one QEMU-owned wait for a published idle request.
+    ///
+    /// A runnable request never crosses the FFI boundary. A wait request passes
+    /// the stable shared wake word and exact expected value to QEMU, which
+    /// releases the BQL only around one raw non-private FUTEX_WAIT.
+    #[must_use]
+    pub fn wait_once(
+        self,
+        vcpu_index: u32,
+        slot: &NodeSlot,
+        wait: FutexWait,
+    ) -> Option<QemuIdleWakeWaitStatus> {
+        let FutexWait::Wait { expected } = wait else {
+            return None;
+        };
+
+        let slot_address = std::ptr::from_ref(slot).cast_mut().cast::<u8>();
+        // SAFETY: NodeSlot has a stable repr(C) shared-memory layout, and the
+        // exported offset identifies its aligned AtomicU32 wake word. The setup
+        // mapping retains the slot for every registered callback.
+        let wake_signal = unsafe { slot_address.add(NODE_SLOT_WAKE_SIGNAL_OFFSET).cast::<u32>() };
+        let status = (self.wait_idle_wake)(vcpu_index, wake_signal, expected);
+        Some(QemuIdleWakeWaitStatus::from_qemu(status))
+    }
+}
+
+/// The canonical registration steps that protect virtual time before guest code runs.
+pub const CANONICAL_TIME_CONTROL_REGISTRATION_ORDER: [PluginRegistrationStep; 10] = [
+    PluginRegistrationStep::ParseArguments,
+    PluginRegistrationStep::ControlHandshake,
+    PluginRegistrationStep::RequestTimeControl,
+    PluginRegistrationStep::ReceiveSetup,
+    PluginRegistrationStep::MapSharedMemory,
+    PluginRegistrationStep::ArmWakeFd,
+    PluginRegistrationStep::RegisterCallbacks,
+    PluginRegistrationStep::SendSetupAck,
+    PluginRegistrationStep::WaitBootBarrier,
+    PluginRegistrationStep::FirstVisibleInstruction,
+];
+
+/// A single milestone in the QEMU plugin registration path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PluginRegistrationStep {
+    /// Parses plugin arguments before any side effect.
+    ParseArguments,
+    /// Performs the host control-socket `Hello`/`HelloAck` handshake.
+    ControlHandshake,
+    /// Requests QEMU virtual-time control.
+    RequestTimeControl,
+    /// Receives setup file descriptors and node metadata from the host.
+    ReceiveSetup,
+    /// Maps and validates the shared-memory ABI region.
+    MapSharedMemory,
+    /// Arms the setup wake fd before acknowledging readiness.
+    ArmWakeFd,
+    /// Registers deterministic device, coverage, and white-box callbacks.
+    RegisterCallbacks,
+    /// Sends `SetupAck` only after setup has completed.
+    SendSetupAck,
+    /// Waits at the initial ceiling boot barrier.
+    WaitBootBarrier,
+    /// Represents the first architecturally visible guest instruction.
+    FirstVisibleInstruction,
+}
+
+/// Proof that this plugin instance acquired QEMU virtual-time control.
+#[derive(Debug)]
+pub struct PluginTimeControlOwnership {
+    _private: (),
+}
+
+impl PluginTimeControlOwnership {
+    /// Records time-control ownership after the fixed registration path completes.
+    ///
+    /// [`crate::PluginRegistrationReady`] is non-forgeable and can be produced
+    /// only after the fixed registration sequencer has recorded
+    /// [`PluginRegistrationStep::RequestTimeControl`], which corresponds to a
+    /// successful [`QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL`] call in the FFI
+    /// entry point.
+    #[must_use]
+    pub const fn acquired_after_registration(_ready: crate::PluginRegistrationReady) -> Self {
+        Self { _private: () }
+    }
+}
+
+/// A scheduler-published execution ceiling in aggregate node-icount units.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SchedulerCeiling {
+    icount: u64,
+}
+
+impl SchedulerCeiling {
+    /// Builds a scheduler ceiling.
+    #[must_use]
+    pub const fn new(icount: u64) -> Self {
+        Self { icount }
+    }
+
+    /// Returns the ceiling icount.
+    #[must_use]
+    pub const fn icount(self) -> u64 {
+        self.icount
+    }
+}
+
+/// Explicit scheduler authorization for an idle virtual-time jump.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SchedulerAuthorizedIdleJump {
+    from_icount: u64,
+    target_icount: u64,
+    ceiling_icount: u64,
+    _private: (),
+}
+
+impl SchedulerAuthorizedIdleJump {
+    /// Returns the icount at which the authorization was issued.
+    #[must_use]
+    pub const fn from_icount(self) -> u64 {
+        self.from_icount
+    }
+
+    /// Returns the scheduler-authorized jump target.
+    #[must_use]
+    pub const fn target_icount(self) -> u64 {
+        self.target_icount
+    }
+
+    /// Returns the ceiling that bounded the authorization.
+    #[must_use]
+    pub const fn ceiling_icount(self) -> u64 {
+        self.ceiling_icount
+    }
+
+    /// Returns the exact logical tick authorized for QEMU's idle advance.
+    #[must_use]
+    pub const fn target_tick(self) -> u64 {
+        self.target_icount
+    }
+}
+
+/// The only accepted sources of virtual-clock movement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginClockAdvanceSource {
+    /// Guest instructions retired under the scheduler ceiling.
+    GuestInstructions,
+    /// An explicit scheduler-authorized idle jump.
+    SchedulerAuthorizedIdleJump,
+}
+
+/// A completed plugin virtual-clock advance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PluginClockAdvance {
+    source: PluginClockAdvanceSource,
+    from_icount: u64,
+    to_icount: u64,
+    virtual_ns: u64,
+}
+
+impl PluginClockAdvance {
+    /// Returns the source that authorized this advance.
+    #[must_use]
+    pub const fn source(self) -> PluginClockAdvanceSource {
+        self.source
+    }
+
+    /// Returns the icount before the advance.
+    #[must_use]
+    pub const fn from_icount(self) -> u64 {
+        self.from_icount
+    }
+
+    /// Returns the icount after the advance.
+    #[must_use]
+    pub const fn to_icount(self) -> u64 {
+        self.to_icount
+    }
+
+    /// Returns the virtual nanoseconds after the advance.
+    #[must_use]
+    pub const fn virtual_ns(self) -> u64 {
+        self.virtual_ns
+    }
+}
+
+/// Required handle for enqueueing idle jumps through QEMU.
+#[derive(Clone, Copy, Debug)]
+pub struct QueuedIdleAdvance {
+    advance_time_ticks: QemuAdvanceTimeTicksFn,
+}
+
+impl QueuedIdleAdvance {
+    /// Requires QEMU's callback-safe queued-advance export.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueuedIdleAdvanceError::CapabilityUnavailable`] when the
+    /// `qemu_plugin_advance_time_ticks` export was not resolved.
+    pub fn require(
+        advance_time_ticks: Option<QemuAdvanceTimeTicksFn>,
+    ) -> Result<Self, QueuedIdleAdvanceError> {
+        let Some(advance_time_ticks) = advance_time_ticks else {
+            return Err(QueuedIdleAdvanceError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL,
+            });
+        };
+
+        Ok(Self { advance_time_ticks })
+    }
+
+    /// Enqueues a QEMU virtual-time advance without claiming completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueuedIdleAdvanceError::TickOutOfRange`] when the target
+    /// cannot be passed through QEMU's signed tick ABI, or
+    /// [`QueuedIdleAdvanceError::EnqueueRejected`] when QEMU rejects the request.
+    pub fn enqueue(&self, target_tick: u64) -> Result<PendingIdleAdvance, QueuedIdleAdvanceError> {
+        let prepared = self.prepare(target_tick)?;
+        let pending = prepared.pending();
+
+        self.enqueue_prepared(prepared)?;
+        Ok(pending)
+    }
+
+    /// Validates an advance target before its completion identity is published.
+    pub(crate) fn prepare(
+        &self,
+        target_tick: u64,
+    ) -> Result<PreparedIdleAdvance, QueuedIdleAdvanceError> {
+        let qemu_target_tick = i64::try_from(target_tick)
+            .map_err(|_error| QueuedIdleAdvanceError::TickOutOfRange { target_tick })?;
+
+        Ok(PreparedIdleAdvance {
+            target_tick,
+            qemu_target_tick,
+        })
+    }
+
+    /// Submits a target whose completion identity is already visible to callbacks.
+    pub(crate) fn enqueue_prepared(
+        &self,
+        prepared: PreparedIdleAdvance,
+    ) -> Result<(), QueuedIdleAdvanceError> {
+        let status = (self.advance_time_ticks)(prepared.qemu_target_tick);
+        if status != 0 {
+            return Err(QueuedIdleAdvanceError::EnqueueRejected {
+                target_tick: prepared.target_tick,
+                status,
+            });
+        }
+
+        Ok(())
+    }
+}
+
+/// A validated target that has not yet crossed the QEMU enqueue boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PreparedIdleAdvance {
+    target_tick: u64,
+    qemu_target_tick: i64,
+}
+
+impl PreparedIdleAdvance {
+    /// Returns the completion identity that callers must publish before enqueueing.
+    pub(crate) const fn pending(self) -> PendingIdleAdvance {
+        PendingIdleAdvance {
+            target_tick: self.target_tick,
+            completion_pending: true,
+        }
+    }
+}
+
+/// Evidence that QEMU accepted an advance whose completion is still pending.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingIdleAdvance {
+    target_tick: u64,
+    completion_pending: bool,
+}
+
+/// Completion delivered by QEMU's normal-main-loop advance callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeAdvanceCompletion {
+    status: c_int,
+    target_tick: i64,
+}
+
+impl TimeAdvanceCompletion {
+    /// Captures the exact status and target delivered by QEMU.
+    #[must_use]
+    pub const fn from_qemu(status: c_int, target_tick: i64) -> Self {
+        Self {
+            status,
+            target_tick,
+        }
+    }
+
+    /// Returns QEMU's errno-style completion status.
+    #[must_use]
+    pub const fn status(self) -> c_int {
+        self.status
+    }
+
+    /// Returns the signed target echoed by QEMU.
+    #[must_use]
+    pub const fn target_tick(self) -> i64 {
+        self.target_tick
+    }
+}
+
+impl PendingIdleAdvance {
+    /// Returns the exact logical tick queued through QEMU.
+    #[must_use]
+    pub const fn target_tick(self) -> u64 {
+        self.target_tick
+    }
+
+    /// Returns whether normal-main-loop completion is still required.
+    #[must_use]
+    pub const fn completion_pending(self) -> bool {
+        self.completion_pending
+    }
+
+    /// Validates the later normal-main-loop completion for this request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueuedIdleAdvanceError::CompletionFailed`] when QEMU reports a
+    /// failure, or [`QueuedIdleAdvanceError::CompletionTargetMismatch`] when the
+    /// callback does not echo this request's exact target.
+    pub fn validate_completion(
+        mut self,
+        completion: TimeAdvanceCompletion,
+    ) -> Result<Self, QueuedIdleAdvanceError> {
+        if completion.status != 0 {
+            return Err(QueuedIdleAdvanceError::CompletionFailed {
+                target_tick: self.target_tick,
+                status: completion.status,
+            });
+        }
+        let Ok(completed_target) = u64::try_from(completion.target_tick) else {
+            return Err(QueuedIdleAdvanceError::CompletionTargetMismatch {
+                expected_target_tick: self.target_tick,
+                completed_target_tick: completion.target_tick,
+            });
+        };
+        if completed_target != self.target_tick {
+            return Err(QueuedIdleAdvanceError::CompletionTargetMismatch {
+                expected_target_tick: self.target_tick,
+                completed_target_tick: completion.target_tick,
+            });
+        }
+        self.completion_pending = false;
+        Ok(self)
+    }
+}
+
+/// Plugin-owned virtual clock state.
+///
+/// This type deliberately has no wall-clock or monotonic-clock input. It can
+/// move only by guest retirement bounded by [`SchedulerCeiling`] or by consuming
+/// a [`SchedulerAuthorizedIdleJump`] issued for the current icount.
+#[derive(Debug)]
+pub struct PluginVirtualClock {
+    current_icount: u64,
+    _ownership: PluginTimeControlOwnership,
+}
+
+impl PluginVirtualClock {
+    /// Creates plugin virtual-clock state after time control has been acquired.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginClockError::QemuTickOutOfRange`] when the initial tick
+    /// cannot pass through QEMU's signed icount ABI.
+    pub fn new(
+        initial_icount: u64,
+        ownership: PluginTimeControlOwnership,
+    ) -> Result<Self, PluginClockError> {
+        project_virtual_ns(initial_icount)?;
+        Ok(Self {
+            current_icount: initial_icount,
+            _ownership: ownership,
+        })
+    }
+
+    /// Returns the aggregate node icount currently owned by the plugin.
+    #[must_use]
+    pub const fn current_icount(&self) -> u64 {
+        self.current_icount
+    }
+
+    /// Advances by retired guest instructions bounded by a scheduler ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginClockError`] when the icount addition overflows, when the
+    /// resulting icount would exceed `ceiling` or QEMU's signed tick range.
+    pub fn advance_guest_instructions(
+        &mut self,
+        retired_instructions: u64,
+        ceiling: SchedulerCeiling,
+    ) -> Result<PluginClockAdvance, PluginClockError> {
+        let delta_ticks = retired_instructions
+            .checked_mul(crucible_qemu_shmem::TICKS_PER_INSTRUCTION)
+            .ok_or(PluginClockError::IcountOverflow {
+                current_icount: self.current_icount,
+                delta_icount: retired_instructions,
+            })?;
+        let target_icount = self.current_icount.checked_add(delta_ticks).ok_or(
+            PluginClockError::IcountOverflow {
+                current_icount: self.current_icount,
+                delta_icount: retired_instructions,
+            },
+        )?;
+        self.advance_to_icount(
+            PluginClockAdvanceSource::GuestInstructions,
+            target_icount,
+            ceiling,
+        )
+    }
+
+    /// Authorizes an idle jump against the current icount and scheduler ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginClockError`] when `target_icount` moves backward, exceeds
+    /// `ceiling`, or exceeds QEMU's signed tick range.
+    pub fn authorize_idle_jump(
+        &self,
+        target_icount: u64,
+        ceiling: SchedulerCeiling,
+    ) -> Result<SchedulerAuthorizedIdleJump, PluginClockError> {
+        validate_target(self.current_icount, target_icount, ceiling)?;
+        Ok(SchedulerAuthorizedIdleJump {
+            from_icount: self.current_icount,
+            target_icount,
+            ceiling_icount: ceiling.icount(),
+            _private: (),
+        })
+    }
+
+    /// Advances by consuming an explicit scheduler-authorized idle jump.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginClockError::StaleIdleJumpAuthorization`] when the
+    /// authorization was issued for a different current icount, or another
+    /// [`PluginClockError`] if the target no longer validates.
+    pub fn advance_authorized_idle_jump(
+        &mut self,
+        authorization: SchedulerAuthorizedIdleJump,
+    ) -> Result<PluginClockAdvance, PluginClockError> {
+        if authorization.from_icount != self.current_icount {
+            return Err(PluginClockError::StaleIdleJumpAuthorization {
+                authorized_from_icount: authorization.from_icount,
+                current_icount: self.current_icount,
+            });
+        }
+        self.advance_to_icount(
+            PluginClockAdvanceSource::SchedulerAuthorizedIdleJump,
+            authorization.target_icount,
+            SchedulerCeiling::new(authorization.ceiling_icount),
+        )
+    }
+
+    fn advance_to_icount(
+        &mut self,
+        source: PluginClockAdvanceSource,
+        target_icount: u64,
+        ceiling: SchedulerCeiling,
+    ) -> Result<PluginClockAdvance, PluginClockError> {
+        validate_target(self.current_icount, target_icount, ceiling)?;
+        let from_icount = self.current_icount;
+        let virtual_ns = project_virtual_ns(target_icount)?;
+        self.current_icount = target_icount;
+        Ok(PluginClockAdvance {
+            source,
+            from_icount,
+            to_icount: target_icount,
+            virtual_ns,
+        })
+    }
+}
+
+/// A planned plugin registration sequence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimeControlRegistrationPlan {
+    steps: Vec<PluginRegistrationStep>,
+}
+
+impl TimeControlRegistrationPlan {
+    /// Returns the canonical registration plan required for time control.
+    #[must_use]
+    pub fn canonical() -> Self {
+        Self {
+            steps: CANONICAL_TIME_CONTROL_REGISTRATION_ORDER.to_vec(),
+        }
+    }
+
+    /// Builds a registration plan from explicit steps.
+    #[must_use]
+    pub fn from_steps(steps: impl Into<Vec<PluginRegistrationStep>>) -> Self {
+        Self {
+            steps: steps.into(),
+        }
+    }
+
+    /// Returns the registration steps in execution order.
+    #[must_use]
+    pub fn steps(&self) -> &[PluginRegistrationStep] {
+        &self.steps
+    }
+
+    /// Validates the ordering constraints that make time control active before guest code.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeControlRegistrationError`] when a required step is absent
+    /// or duplicated, or when time control, setup, callback registration, setup
+    /// acknowledgement, or the boot barrier would run in an order that allows
+    /// guest-visible time to advance before the plugin owns the virtual clock.
+    pub fn validate(&self) -> Result<(), TimeControlRegistrationError> {
+        self.validate_unique_steps()?;
+        self.require_before(
+            PluginRegistrationStep::ParseArguments,
+            PluginRegistrationStep::ControlHandshake,
+        )?;
+        self.require_before(
+            PluginRegistrationStep::ControlHandshake,
+            PluginRegistrationStep::RequestTimeControl,
+        )?;
+        self.require_before(
+            PluginRegistrationStep::RequestTimeControl,
+            PluginRegistrationStep::ReceiveSetup,
+        )?;
+        self.require_before(
+            PluginRegistrationStep::ReceiveSetup,
+            PluginRegistrationStep::MapSharedMemory,
+        )?;
+        self.require_before(
+            PluginRegistrationStep::MapSharedMemory,
+            PluginRegistrationStep::ArmWakeFd,
+        )?;
+        self.require_before(
+            PluginRegistrationStep::ArmWakeFd,
+            PluginRegistrationStep::SendSetupAck,
+        )?;
+        self.require_before(
+            PluginRegistrationStep::ArmWakeFd,
+            PluginRegistrationStep::RegisterCallbacks,
+        )?;
+        self.require_before(
+            PluginRegistrationStep::RegisterCallbacks,
+            PluginRegistrationStep::SendSetupAck,
+        )?;
+        self.require_before(
+            PluginRegistrationStep::SendSetupAck,
+            PluginRegistrationStep::WaitBootBarrier,
+        )?;
+        self.require_before(
+            PluginRegistrationStep::WaitBootBarrier,
+            PluginRegistrationStep::FirstVisibleInstruction,
+        )?;
+        self.require_before(
+            PluginRegistrationStep::RequestTimeControl,
+            PluginRegistrationStep::FirstVisibleInstruction,
+        )?;
+        Ok(())
+    }
+
+    fn validate_unique_steps(&self) -> Result<(), TimeControlRegistrationError> {
+        let mut seen = BTreeSet::new();
+        for step in &self.steps {
+            if !seen.insert(*step) {
+                return Err(TimeControlRegistrationError::DuplicateStep { step: *step });
+            }
+        }
+        Ok(())
+    }
+
+    fn require_before(
+        &self,
+        earlier: PluginRegistrationStep,
+        later: PluginRegistrationStep,
+    ) -> Result<(), TimeControlRegistrationError> {
+        let earlier_index = self
+            .step_index(earlier)
+            .ok_or(TimeControlRegistrationError::MissingStep { step: earlier })?;
+        let later_index = self
+            .step_index(later)
+            .ok_or(TimeControlRegistrationError::MissingStep { step: later })?;
+
+        if earlier_index < later_index {
+            Ok(())
+        } else {
+            Err(TimeControlRegistrationError::OutOfOrderStep { earlier, later })
+        }
+    }
+
+    fn step_index(&self, step: PluginRegistrationStep) -> Option<usize> {
+        self.steps.iter().position(|candidate| *candidate == step)
+    }
+}
+
+/// A time-control registration ordering error.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum TimeControlRegistrationError {
+    /// A required registration step is absent.
+    #[error("plugin registration step {step:?} is missing")]
+    MissingStep {
+        /// The missing step.
+        step: PluginRegistrationStep,
+    },
+    /// A registration step appears more than once.
+    #[error("plugin registration step {step:?} appears more than once")]
+    DuplicateStep {
+        /// The duplicated step.
+        step: PluginRegistrationStep,
+    },
+    /// A registration step appears after a step that depends on it.
+    #[error("plugin registration step {earlier:?} must run before {later:?}")]
+    OutOfOrderStep {
+        /// The step that must run first.
+        earlier: PluginRegistrationStep,
+        /// The step that depends on `earlier`.
+        later: PluginRegistrationStep,
+    },
+}
+
+/// An error produced while advancing the plugin-owned virtual clock.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum PluginClockError {
+    /// Scaling or adding retired instructions to the current exact tick overflowed.
+    #[error(
+        "plugin tick overflow at current tick {current_icount} plus {delta_icount} retired instructions"
+    )]
+    IcountOverflow {
+        /// Current aggregate node icount.
+        current_icount: u64,
+        /// Requested raw retired instruction delta.
+        delta_icount: u64,
+    },
+    /// A requested advance would move the virtual clock backward.
+    #[error("plugin virtual clock cannot move backward from {current_icount} to {target_icount}")]
+    BackwardsAdvance {
+        /// Current aggregate node icount.
+        current_icount: u64,
+        /// Rejected target icount.
+        target_icount: u64,
+    },
+    /// A requested advance exceeds the scheduler-published ceiling.
+    #[error(
+        "plugin virtual clock target {target_icount} exceeds scheduler ceiling {ceiling_icount}"
+    )]
+    BeyondSchedulerCeiling {
+        /// Rejected target icount.
+        target_icount: u64,
+        /// Scheduler-published ceiling.
+        ceiling_icount: u64,
+    },
+    /// The logical tick exceeds QEMU's signed icount range.
+    #[error("plugin logical tick {icount} exceeds QEMU's signed icount range")]
+    QemuTickOutOfRange {
+        /// Rejected logical tick.
+        icount: u64,
+    },
+    /// An idle-jump authorization no longer matches the current clock.
+    #[error(
+        "idle jump authorization was issued at icount {authorized_from_icount}, current icount is {current_icount}"
+    )]
+    StaleIdleJumpAuthorization {
+        /// Icount captured when the jump was authorized.
+        authorized_from_icount: u64,
+        /// Current aggregate node icount.
+        current_icount: u64,
+    },
+}
+
+/// An error produced while requiring or enqueueing QEMU's idle advance.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum QueuedIdleAdvanceError {
+    /// QEMU does not expose the required queued-advance symbol.
+    #[error("required QEMU plugin queued idle-advance symbol {symbol} is unavailable")]
+    CapabilityUnavailable {
+        /// Missing QEMU plugin symbol.
+        symbol: &'static str,
+    },
+    /// The target tick cannot pass through QEMU's signed icount ABI.
+    #[error("queued idle advance target tick {target_tick} exceeds QEMU int64 range")]
+    TickOutOfRange {
+        /// Rejected absolute logical tick.
+        target_tick: u64,
+    },
+    /// QEMU rejected the request before accepting ownership.
+    #[error("QEMU rejected queued idle advance to tick {target_tick} with status {status}")]
+    EnqueueRejected {
+        /// Rejected absolute virtual-time target.
+        target_tick: u64,
+        /// Negative errno-style status returned by QEMU.
+        status: c_int,
+    },
+    /// The accepted request later failed in QEMU's queued worker.
+    #[error("QEMU failed queued idle advance to tick {target_tick} with status {status}")]
+    CompletionFailed {
+        /// Requested absolute virtual-time target.
+        target_tick: u64,
+        /// Negative errno-style completion status.
+        status: c_int,
+    },
+    /// QEMU's completion did not identify the outstanding request.
+    #[error(
+        "QEMU completed idle advance at tick {completed_target_tick} while tick {expected_target_tick} was pending"
+    )]
+    CompletionTargetMismatch {
+        /// Outstanding request target.
+        expected_target_tick: u64,
+        /// Target supplied by the completion callback.
+        completed_target_tick: i64,
+    },
+}
+
+fn validate_target(
+    current_icount: u64,
+    target_icount: u64,
+    ceiling: SchedulerCeiling,
+) -> Result<(), PluginClockError> {
+    if target_icount < current_icount {
+        return Err(PluginClockError::BackwardsAdvance {
+            current_icount,
+            target_icount,
+        });
+    }
+    if target_icount > ceiling.icount() {
+        return Err(PluginClockError::BeyondSchedulerCeiling {
+            target_icount,
+            ceiling_icount: ceiling.icount(),
+        });
+    }
+    project_virtual_ns(target_icount)?;
+    Ok(())
+}
+
+fn project_virtual_ns(icount: u64) -> Result<u64, PluginClockError> {
+    if icount > i64::MAX as u64 {
+        return Err(PluginClockError::QemuTickOutOfRange { icount });
+    }
+    Ok(icount / TICKS_PER_NS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::cell::Cell;
+
+    use crucible_qemu_shmem::{KIND_VM, NodeSlot, authorize_advance_ceiling};
+
+    thread_local! {
+        static LAST_DIRECT_ADVANCE_TICK: Cell<i64> = const { Cell::new(-1) };
+    }
+
+    #[test]
+    fn time_control_registration_order_requests_control_before_first_instruction() {
+        let plan = TimeControlRegistrationPlan::canonical();
+
+        assert_eq!(plan.validate(), Ok(()));
+        assert_order(
+            &plan,
+            PluginRegistrationStep::RequestTimeControl,
+            PluginRegistrationStep::FirstVisibleInstruction,
+        );
+        assert_order(
+            &plan,
+            PluginRegistrationStep::RequestTimeControl,
+            PluginRegistrationStep::ReceiveSetup,
+        );
+        assert_order(
+            &plan,
+            PluginRegistrationStep::MapSharedMemory,
+            PluginRegistrationStep::ArmWakeFd,
+        );
+    }
+
+    #[test]
+    fn time_control_registration_order_keeps_boot_barrier_before_guest_code() {
+        let plan = TimeControlRegistrationPlan::canonical();
+
+        assert_order(
+            &plan,
+            PluginRegistrationStep::ArmWakeFd,
+            PluginRegistrationStep::SendSetupAck,
+        );
+        assert_order(
+            &plan,
+            PluginRegistrationStep::SendSetupAck,
+            PluginRegistrationStep::WaitBootBarrier,
+        );
+        assert_order(
+            &plan,
+            PluginRegistrationStep::WaitBootBarrier,
+            PluginRegistrationStep::FirstVisibleInstruction,
+        );
+    }
+
+    #[test]
+    fn time_control_registration_order_rejects_late_or_missing_control() {
+        let late_control = TimeControlRegistrationPlan::from_steps([
+            PluginRegistrationStep::ParseArguments,
+            PluginRegistrationStep::ControlHandshake,
+            PluginRegistrationStep::ReceiveSetup,
+            PluginRegistrationStep::RequestTimeControl,
+            PluginRegistrationStep::MapSharedMemory,
+            PluginRegistrationStep::ArmWakeFd,
+            PluginRegistrationStep::RegisterCallbacks,
+            PluginRegistrationStep::SendSetupAck,
+            PluginRegistrationStep::WaitBootBarrier,
+            PluginRegistrationStep::FirstVisibleInstruction,
+        ]);
+        let missing_control = TimeControlRegistrationPlan::from_steps([
+            PluginRegistrationStep::ParseArguments,
+            PluginRegistrationStep::ControlHandshake,
+            PluginRegistrationStep::ReceiveSetup,
+            PluginRegistrationStep::MapSharedMemory,
+            PluginRegistrationStep::ArmWakeFd,
+            PluginRegistrationStep::RegisterCallbacks,
+            PluginRegistrationStep::SendSetupAck,
+            PluginRegistrationStep::WaitBootBarrier,
+            PluginRegistrationStep::FirstVisibleInstruction,
+        ]);
+
+        assert_eq!(
+            late_control.validate(),
+            Err(TimeControlRegistrationError::OutOfOrderStep {
+                earlier: PluginRegistrationStep::RequestTimeControl,
+                later: PluginRegistrationStep::ReceiveSetup,
+            })
+        );
+        assert_eq!(
+            missing_control.validate(),
+            Err(TimeControlRegistrationError::MissingStep {
+                step: PluginRegistrationStep::RequestTimeControl,
+            })
+        );
+    }
+
+    #[test]
+    fn time_control_registration_order_rejects_setup_ack_before_wake_fd_arm() {
+        let early_setup_ack = TimeControlRegistrationPlan::from_steps([
+            PluginRegistrationStep::ParseArguments,
+            PluginRegistrationStep::ControlHandshake,
+            PluginRegistrationStep::RequestTimeControl,
+            PluginRegistrationStep::ReceiveSetup,
+            PluginRegistrationStep::MapSharedMemory,
+            PluginRegistrationStep::SendSetupAck,
+            PluginRegistrationStep::ArmWakeFd,
+            PluginRegistrationStep::RegisterCallbacks,
+            PluginRegistrationStep::WaitBootBarrier,
+            PluginRegistrationStep::FirstVisibleInstruction,
+        ]);
+
+        assert_eq!(
+            early_setup_ack.validate(),
+            Err(TimeControlRegistrationError::OutOfOrderStep {
+                earlier: PluginRegistrationStep::ArmWakeFd,
+                later: PluginRegistrationStep::SendSetupAck,
+            })
+        );
+    }
+
+    #[test]
+    fn time_control_registration_order_rejects_duplicate_steps() {
+        let duplicate_control = TimeControlRegistrationPlan::from_steps([
+            PluginRegistrationStep::ParseArguments,
+            PluginRegistrationStep::ControlHandshake,
+            PluginRegistrationStep::RequestTimeControl,
+            PluginRegistrationStep::RequestTimeControl,
+            PluginRegistrationStep::ReceiveSetup,
+            PluginRegistrationStep::MapSharedMemory,
+            PluginRegistrationStep::ArmWakeFd,
+            PluginRegistrationStep::RegisterCallbacks,
+            PluginRegistrationStep::SendSetupAck,
+            PluginRegistrationStep::WaitBootBarrier,
+            PluginRegistrationStep::FirstVisibleInstruction,
+        ]);
+
+        assert_eq!(
+            duplicate_control.validate(),
+            Err(TimeControlRegistrationError::DuplicateStep {
+                step: PluginRegistrationStep::RequestTimeControl,
+            })
+        );
+    }
+
+    fn assert_order(
+        plan: &TimeControlRegistrationPlan,
+        earlier: PluginRegistrationStep,
+        later: PluginRegistrationStep,
+    ) {
+        let earlier_index = match plan.steps().iter().position(|step| *step == earlier) {
+            Some(index) => index,
+            None => panic!("missing earlier step {earlier:?}"),
+        };
+        let later_index = match plan.steps().iter().position(|step| *step == later) {
+            Some(index) => index,
+            None => panic!("missing later step {later:?}"),
+        };
+        assert!(earlier_index < later_index);
+    }
+
+    #[test]
+    fn time_control_clock_advances_by_guest_instructions_up_to_ceiling() {
+        let mut clock = owned_clock(750);
+
+        let advance = match clock.advance_guest_instructions(5, SchedulerCeiling::new(1_000)) {
+            Ok(advance) => advance,
+            Err(error) => panic!("guest retirement within ceiling should advance: {error}"),
+        };
+
+        assert_eq!(
+            advance.source(),
+            PluginClockAdvanceSource::GuestInstructions
+        );
+        assert_eq!(advance.from_icount(), 750);
+        assert_eq!(advance.to_icount(), 1_000);
+        assert_eq!(advance.virtual_ns(), 1);
+        assert_eq!(clock.current_icount(), 1_000);
+        assert_eq!(project_virtual_ns(clock.current_icount()), Ok(1));
+    }
+
+    #[test]
+    fn time_control_clock_rejects_guest_instruction_advance_past_ceiling() {
+        let mut clock = owned_clock(10);
+
+        assert_eq!(
+            clock.advance_guest_instructions(1, SchedulerCeiling::new(59)),
+            Err(PluginClockError::BeyondSchedulerCeiling {
+                target_icount: 60,
+                ceiling_icount: 59,
+            })
+        );
+        assert_eq!(clock.current_icount(), 10);
+    }
+
+    #[test]
+    fn virtual_nanoseconds_preserve_fractional_instruction_phase() {
+        let mut clock = owned_clock(975);
+        assert_eq!(project_virtual_ns(clock.current_icount()), Ok(0));
+
+        let first = clock
+            .advance_guest_instructions(1, SchedulerCeiling::new(1_075))
+            .unwrap_or_else(|error| panic!("tick 1025 should be reachable: {error}"));
+        assert_eq!(first.virtual_ns(), 1);
+
+        let second = clock
+            .advance_guest_instructions(1, SchedulerCeiling::new(1_075))
+            .unwrap_or_else(|error| panic!("tick 1075 should be reachable: {error}"));
+        assert_eq!(second.virtual_ns(), 1);
+        assert_eq!(clock.current_icount(), 1_075);
+    }
+
+    #[test]
+    fn idle_jump_keeps_phase_for_following_guest_instruction() {
+        let mut clock = owned_clock(970);
+        let authorization = clock
+            .authorize_idle_jump(995, SchedulerCeiling::new(1_045))
+            .unwrap_or_else(|error| panic!("scheduler ceiling admits tick 995: {error}"));
+        assert_eq!(authorization.target_tick(), 995);
+
+        let idle = clock
+            .advance_authorized_idle_jump(authorization)
+            .unwrap_or_else(|error| panic!("idle advance preserves the exact target: {error}"));
+        assert_eq!(idle.virtual_ns(), 0);
+        assert_eq!(clock.current_icount(), 995);
+
+        let guest = clock
+            .advance_guest_instructions(1, SchedulerCeiling::new(1_045))
+            .unwrap_or_else(|error| panic!("guest retires from tick 995 to 1045: {error}"));
+        assert_eq!(guest.virtual_ns(), 1);
+        assert_eq!(clock.current_icount(), 1_045);
+    }
+
+    #[test]
+    fn time_control_clock_advances_by_scheduler_authorized_idle_jump() {
+        let mut clock = owned_clock(2_000);
+        let authorization = match clock.authorize_idle_jump(4_000, SchedulerCeiling::new(5_000)) {
+            Ok(authorization) => authorization,
+            Err(error) => panic!("idle jump inside ceiling should authorize: {error}"),
+        };
+
+        assert_eq!(authorization.from_icount(), 2_000);
+        assert_eq!(authorization.target_icount(), 4_000);
+        assert_eq!(authorization.ceiling_icount(), 5_000);
+
+        let advance = match clock.advance_authorized_idle_jump(authorization) {
+            Ok(advance) => advance,
+            Err(error) => panic!("authorized idle jump should advance: {error}"),
+        };
+
+        assert_eq!(
+            advance.source(),
+            PluginClockAdvanceSource::SchedulerAuthorizedIdleJump
+        );
+        assert_eq!(advance.from_icount(), 2_000);
+        assert_eq!(advance.to_icount(), 4_000);
+        assert_eq!(advance.virtual_ns(), 4);
+        assert_eq!(clock.current_icount(), 4_000);
+    }
+
+    #[test]
+    fn queued_idle_advance_requires_qemu_enqueue_symbol() {
+        let Err(error) = QueuedIdleAdvance::require(None) else {
+            panic!("missing queued advance symbol should fail closed");
+        };
+
+        assert_eq!(
+            error,
+            QueuedIdleAdvanceError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL,
+            }
+        );
+    }
+
+    #[test]
+    fn queued_idle_advance_reports_pending_completion() {
+        set_last_direct_advance_tick(-1);
+        let advance = match QueuedIdleAdvance::require(Some(test_direct_advance)) {
+            Ok(advance) => advance,
+            Err(error) => panic!("queued advance symbol should be accepted: {error}"),
+        };
+
+        let pending = match advance.enqueue(4096) {
+            Ok(pending) => pending,
+            Err(error) => panic!("queued advance should accept signed target: {error}"),
+        };
+
+        assert_eq!(last_direct_advance_tick(), 4096);
+        assert_eq!(pending.target_tick(), 4096);
+        assert!(pending.completion_pending());
+        let completed = pending
+            .validate_completion(TimeAdvanceCompletion::from_qemu(0, 4096))
+            .unwrap_or_else(|error| panic!("matching completion should validate: {error}"));
+        assert!(!completed.completion_pending());
+    }
+
+    #[test]
+    fn queued_idle_advance_rejects_failed_or_mismatched_completion() {
+        let pending = PendingIdleAdvance {
+            target_tick: 4096,
+            completion_pending: true,
+        };
+        assert_eq!(
+            pending.validate_completion(TimeAdvanceCompletion::from_qemu(-34, 4096)),
+            Err(QueuedIdleAdvanceError::CompletionFailed {
+                target_tick: 4096,
+                status: -34,
+            })
+        );
+        assert_eq!(
+            pending.validate_completion(TimeAdvanceCompletion::from_qemu(0, 4097)),
+            Err(QueuedIdleAdvanceError::CompletionTargetMismatch {
+                expected_target_tick: 4096,
+                completed_target_tick: 4097,
+            })
+        );
+    }
+
+    #[test]
+    fn queued_idle_advance_preserves_qemu_rejection_status() {
+        let advance = match QueuedIdleAdvance::require(Some(test_rejected_direct_advance)) {
+            Ok(advance) => advance,
+            Err(error) => panic!("queued advance symbol should be accepted: {error}"),
+        };
+
+        assert_eq!(
+            advance.enqueue(4096),
+            Err(QueuedIdleAdvanceError::EnqueueRejected {
+                target_tick: 4096,
+                status: -16,
+            })
+        );
+    }
+
+    #[test]
+    fn queued_idle_advance_rejects_targets_outside_qemu_signed_range() {
+        set_last_direct_advance_tick(-1);
+        let advance = match QueuedIdleAdvance::require(Some(test_direct_advance)) {
+            Ok(advance) => advance,
+            Err(error) => panic!("queued advance symbol should be accepted: {error}"),
+        };
+
+        assert_eq!(
+            advance.enqueue(i64::MAX as u64 + 1),
+            Err(QueuedIdleAdvanceError::TickOutOfRange {
+                target_tick: i64::MAX as u64 + 1,
+            })
+        );
+        assert_eq!(last_direct_advance_tick(), -1);
+    }
+
+    #[test]
+    fn time_control_clock_rejects_stale_idle_jump_authorization() {
+        let mut clock = owned_clock(20);
+        let authorization = match clock.authorize_idle_jump(25, SchedulerCeiling::new(30)) {
+            Ok(authorization) => authorization,
+            Err(error) => panic!("idle jump should authorize: {error}"),
+        };
+        if let Err(error) = clock.advance_guest_instructions(1, SchedulerCeiling::new(70)) {
+            panic!("guest instruction should advance before stale jump check: {error}");
+        }
+
+        assert_eq!(
+            clock.advance_authorized_idle_jump(authorization),
+            Err(PluginClockError::StaleIdleJumpAuthorization {
+                authorized_from_icount: 20,
+                current_icount: 70,
+            })
+        );
+    }
+
+    #[test]
+    fn time_control_clock_rejects_backward_jump_and_signed_tick_overflow() {
+        let clock = owned_clock(20);
+
+        assert_eq!(
+            clock.authorize_idle_jump(19, SchedulerCeiling::new(30)),
+            Err(PluginClockError::BackwardsAdvance {
+                current_icount: 20,
+                target_icount: 19,
+            })
+        );
+        assert_eq!(
+            PluginVirtualClock::new(i64::MAX as u64 + 1, ownership()).err(),
+            Some(PluginClockError::QemuTickOutOfRange {
+                icount: i64::MAX as u64 + 1,
+            })
+        );
+    }
+
+    fn owned_clock(initial_icount: u64) -> PluginVirtualClock {
+        match PluginVirtualClock::new(initial_icount, ownership()) {
+            Ok(clock) => clock,
+            Err(error) => panic!("test clock should construct: {error}"),
+        }
+    }
+
+    fn ownership() -> PluginTimeControlOwnership {
+        PluginTimeControlOwnership::acquired_after_registration(registration_ready())
+    }
+
+    fn registration_ready() -> crate::PluginRegistrationReady {
+        let mut sequence = crate::PluginRegistrationSequence::new();
+        let args = crate::PluginArgs::parse("simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576")
+            .unwrap_or_else(|error| panic!("test args should parse: {error}"));
+        let mut setup_ack = None;
+        for step in CANONICAL_TIME_CONTROL_REGISTRATION_ORDER {
+            let result = if step == PluginRegistrationStep::RegisterCallbacks {
+                sequence
+                    .register_callbacks_for_test(
+                        &args,
+                        Some(time_control_test_deadline),
+                        Some(time_control_test_direct_advance),
+                        crate::CoverageCapabilities::none(),
+                    )
+                    .map(|_capabilities| ())
+            } else if step == PluginRegistrationStep::SendSetupAck {
+                sequence.record_test_ready_setup_ack().map(|ack| {
+                    setup_ack = Some(ack);
+                })
+            } else if step == PluginRegistrationStep::WaitBootBarrier {
+                let ack = setup_ack
+                    .take()
+                    .unwrap_or_else(|| panic!("setup ack should precede boot barrier"));
+                let slot = NodeSlot::new(KIND_VM);
+                publish_boot_barrier_ceiling(&slot);
+                sequence.wait_boot_barrier(ack, &slot).map(|_release| ())
+            } else {
+                sequence.record_step(step)
+            };
+            if let Err(error) = result {
+                panic!("canonical registration step {step:?} should record: {error}");
+            }
+        }
+        match sequence.finish() {
+            Ok(ready) => ready,
+            Err(error) => panic!("canonical registration should finish: {error}"),
+        }
+    }
+
+    extern "C" fn time_control_test_deadline() -> i64 {
+        1
+    }
+
+    extern "C" fn time_control_test_direct_advance(_target_tick: i64) -> c_int {
+        0
+    }
+
+    fn publish_boot_barrier_ceiling(slot: &NodeSlot) {
+        let ceiling = authorize_advance_ceiling(0, crate::BOOT_BARRIER_FIRST_GUEST_ICOUNT, None)
+            .unwrap_or_else(|error| panic!("boot barrier ceiling should authorize: {error}"));
+        slot.publish_scheduler_advance(ceiling, crucible_qemu_shmem::AdvanceStopCondition::Ceiling)
+            .unwrap_or_else(|error| panic!("boot barrier ceiling should publish: {error}"));
+    }
+
+    extern "C" fn test_direct_advance(target_tick: i64) -> c_int {
+        set_last_direct_advance_tick(target_tick);
+        0
+    }
+
+    extern "C" fn test_rejected_direct_advance(_target_tick: i64) -> c_int {
+        -16
+    }
+
+    fn set_last_direct_advance_tick(value: i64) {
+        LAST_DIRECT_ADVANCE_TICK.with(|cell| cell.set(value));
+    }
+
+    fn last_direct_advance_tick() -> i64 {
+        LAST_DIRECT_ADVANCE_TICK.with(|cell| cell.get())
+    }
+}

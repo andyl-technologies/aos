@@ -12,9 +12,9 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   libRs = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
-  artifactTest = builtins.readFile ../../crates/crucible/tests/gate_reproduction_artifacts.rs;
+  artifactTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_reproduction_artifacts.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -45,7 +45,7 @@
         needle = "regardless of how\n  the finding was reached (campaign branching, state-space search, or\n  coverage-guided fuzzing)";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "discovery path enum";
         needle = "pub enum FindingDiscoveryPath";
@@ -91,7 +91,7 @@
         needle = "ReproductionScenarioMismatch";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libRs [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libRs [
       {
         label = "discovery path export";
         needle = "FindingDiscoveryPath";
@@ -105,7 +105,7 @@
         needle = "FindingReproductionArtifactError";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_reproduction_artifacts.rs" artifactTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_reproduction_artifacts.rs" artifactTest [
       {
         label = "interactive/search gate";
         needle = "gate_findings_emit_same_artifact_for_interactive_and_search_paths";
@@ -165,7 +165,7 @@
         needle = "phase6.coverageGuidedCorpus";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_reproduction_artifacts.rs" artifactTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_reproduction_artifacts.rs" artifactTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -184,7 +184,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -232,7 +235,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-reproduction-artifacts-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_reproduction_artifacts \
               -- --test-threads=1
           '';

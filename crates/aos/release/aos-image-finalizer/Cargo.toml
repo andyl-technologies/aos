@@ -1,0 +1,27 @@
+[package]
+name = "aos-image-finalizer"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "External final-byte assembly and verification for AOS release images"
+
+[dependencies]
+anyhow = { workspace = true }
+aos-boot-identity = { workspace = true }
+async-trait = { workspace = true }
+aos-deployment-format = { workspace = true }
+aos-release-format = { workspace = true }
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+rustix = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "aos-image-metadata"
+path = "src/bin/image_metadata.rs"

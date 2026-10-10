@@ -11,12 +11,12 @@
   triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  failureSignatureMaterial = builtins.readFile ../../crates/crucible/src/model/failure/material.rs;
+  failureSignatureMaterial = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/model/failure/material.rs;
   engineLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
-  signatureTest = builtins.readFile ../../crates/crucible/tests/gate_failure_signature.rs;
+  signatureTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -57,7 +57,7 @@
         needle = "checks.crucible.phase6.failureNormalization";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "normalization input";
         needle = "pub struct FailureSignatureNormalization";
@@ -115,7 +115,7 @@
         needle = "Result<usize, EngineError>";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" engineLib [
       {
         label = "normalization export";
         needle = "FailureSignatureNormalization";
@@ -125,7 +125,7 @@
         needle = "FailureSymmetryCanonicalizer";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_failure_signature.rs" signatureTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs" signatureTest [
       {
         label = "property report-only icount and guest witness regression";
         needle = "property_signature_excludes_report_only_icount_but_binds_guest_witness";
@@ -193,7 +193,7 @@
         needle = "phase6.failureSignature";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_failure_signature.rs" signatureTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs" signatureTest [
       {
         label = "ignored test";
         needle = "#[ignore]";
@@ -207,7 +207,7 @@
         needle = "unimplemented!";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/src/model/failure/material.rs" failureSignatureMaterial [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/src/model/failure/material.rs" failureSignatureMaterial [
       {
         label = "deferred causal slice";
         needle = "until the T-TRI-2 cone normalization";
@@ -238,7 +238,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -286,7 +289,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-failure-normalization-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_failure_signature \
               -- --test-threads=1
           '';

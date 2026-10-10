@@ -50,8 +50,8 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-nix-store-provider --bin aos-nix-store-provider"
-      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-nix-store-provider"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-nix-store --bin aos-nix-store-provider"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-nix-store"
     ];
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
@@ -84,8 +84,8 @@ in
     inherit version cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
-    cargoFlags = "-p aos-nix-store-provider --bin aos-nix-store-provider";
-    cargoTestFlags = "-p aos-nix-store-provider";
+    cargoFlags = "-p aos-activation-nix-store --bin aos-nix-store-provider";
+    cargoTestFlags = "-p aos-activation-nix-store";
     doCheck = true;
     buildDeps = [patchelf];
     runtimeDeps = [coreutils grep nix];

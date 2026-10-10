@@ -9,9 +9,9 @@
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
-  nodeTime = builtins.readFile ../../crates/crucible/src/node_time.rs;
-  icountCeilingTest = builtins.readFile ../../crates/crucible/tests/scheduler_icount_ceiling.rs;
-  runCeilingTest = builtins.readFile ../../crates/crucible/tests/scheduler_run_ceiling.rs;
+  nodeTime = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/node_time.rs;
+  icountCeilingTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_icount_ceiling.rs;
+  runCeilingTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_run_ceiling.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -37,7 +37,7 @@
         needle = "RUN publications retain exact ticks into the shmem ABI `max_advance_icount`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "one nanosecond has one thousand exact ticks";
         needle = "pub const SIM_TICKS_PER_NS: u64 = 1_000;";
@@ -51,7 +51,7 @@
         needle = "self.ticks / SIM_TICKS_PER_NS";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "exact horizon projects to a node counter";
         needle = "pub fn max_advance_counter_for_horizon";
@@ -101,7 +101,7 @@
         needle = "\"dependency_at\"";
       }
     ]
-    ++ failuresFor "crates/crucible/src/node_time.rs" nodeTime [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/node_time.rs" nodeTime [
       {
         label = "anchored exact-tick ceiling projection";
         needle = "pub fn counter_for_logical_time_ceil";
@@ -119,7 +119,7 @@
         needle = "let _ = self.logical_time(counter)?;";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_icount_ceiling.rs" icountCeilingTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_icount_ceiling.rs" icountCeilingTest [
       {
         label = "both sides of a nanosecond remain distinct";
         needle = "fn shared_timeline_preserves_both_sides_of_nanosecond_boundary()";
@@ -145,7 +145,7 @@
         needle = "SimInstant { ticks: 1_000 }.nanoseconds_floor(), 1";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_run_ceiling.rs" runCeilingTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_run_ceiling.rs" runCeilingTest [
       {
         label = "one exact ceiling per selected RUN";
         needle = "fn run_publishes_one_max_advance_ceiling_for_selected_node()";
@@ -181,7 +181,7 @@
         needle = "schedulerIcountCeiling = import ./phase3-scheduler-icount-ceiling.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler ceiling" (icountCeilingTest + runCeilingTest) [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler ceiling" (icountCeilingTest + runCeilingTest) [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -208,7 +208,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -252,14 +255,14 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-icount-ceiling-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_icount_ceiling \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-icount-ceiling-target" \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test scheduler_run_ceiling \
               -- --test-threads=1

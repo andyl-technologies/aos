@@ -80,6 +80,12 @@ fallback; an empty cache still permits source builds. See
 [the development instructions](AGENTS.md#the-aos-dev-development-entry-point)
 for cache setup and incremental Rust builds.
 
+Rust code uses one Cargo workspace under `crates/`, grouped into shared libraries,
+AOS subsystems, Hub, and Crucible. See the
+[workspace organization](docs/architecture/crate-workspace.md) and
+[crate inventory](docs/architecture/crate-inventory.md) for package ownership,
+full names, and reusable boundaries.
+
 ## Project status
 
 AOS is under active development. Interfaces and disk formats may change before

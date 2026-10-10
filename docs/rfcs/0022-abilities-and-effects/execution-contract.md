@@ -17,9 +17,9 @@ results, preserving dependency ordering.
 
 ## Process protocol
 
-`aos-package::deployment::handler::ProcessAdapter` launches the selected executable
+`aos_package_manager::deployment::handler::ProcessAdapter` launches the selected executable
 with one argument: `apply`, `remove`, or `observe`. It sends a serialized
-`aos-ability-runtime::activation::Invocation` on stdin. That type is the source of
+`aos_activation::activation::Invocation` on stdin. That type is the source of
 truth for the invocation shape, including the effect, resolved inputs, and
 previous state. Authors should use the type or the executable fixture rather
 than maintain an independent protocol model.
