@@ -75,6 +75,9 @@ in {
       bootMode = "image";
       # Cache and import the complete image closure before staging its slot.
       imageDiskMiB = 32768;
+      # Rollforward overlaps package reconciliation and boot commit. The full
+      # operator image needs room for both without killing either process.
+      memoryMiB = 4096;
       varProvisioning = "repart";
     };
     hub = {
