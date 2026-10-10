@@ -3832,6 +3832,43 @@ owner promotion, and recurring permanent residue recovery, required by GC-15,
 GC-16 and GC-29. Existing local-v1 checks and pure record validation do not close
 those implementation gaps.
 
+The latest frozen composition `c2daf3f55c` passes native build, strict
+all-target Clippy and actual fresh test compilation. Its executable-bound
+inventory contains 1,034 nonignored tests across three binaries. The six
+metadata and paired-history cases pass in 17.135 seconds, including the real
+unregistered Legacy refusal and corrected historical positive case. The
+separate twelve-case preparation run passes in 35.699 seconds; overlapping
+selectors remain explicit. The first permanent-GC regression then times out
+at the unchanged 120.004-second limit: two actual permanent observations return
+success before a third submission has no logged return. Neither this prefix
+nor earlier failures establishes the cause. All subsequent GC cases, native
+population witnesses, feature controls, full native suite and owning gates
+remain unrun. All 6,224 tracked source seals and three actual executable
+archives remain unchanged. The 78-payload immutable qualification manifest
+has SHA-256 `dbdc636fe525402b035c443680de95c3c5137ea60d9bbb2578aad8691f3484e2`.
+The source-only preflight for the exact same tree preserves all 292 registry
+names, 89 current gates and three workflows, with 203 future gates failing
+explicitly. All 682 payload hashes and generated AOS Bash scripts are checked.
+Its fixture annotation incorrectly calls the current revision an attribute
+revision; the actual constructor remains property 1, current 3, attribute 1,
+with preserve-only `index-roots`. The sealed annotation is retained and the
+correction recorded separately; no implementation is changed by this correction.
+
+Three additional disjoint T1 harness worklines use the existing immutable native
+image: `6cbb20cf7e` preserves 44 index selectors across five leaves,
+`8f9ec5de8d` preserves five memo selectors across two leaves, and `d978438a25`
+preserves 26 lease, mutation and collector-clock selectors across five leaves.
+Shared import plumbing lands first in `bcc024de67`. Each leaf still discovers
+and executes its own exact cases with fresh protected storage, retains raw
+logs before refusal and requires a single passing nonignored result. Their
+full diffs, source bindings and 90 packet payload hashes are reviewed; pure
+Nix evaluation, instantiation, AOS Bash syntax and scoped formatting pass.
+Runtime qualification remains pending. A separate permanent-observation
+workline investigates the preserved timeout. Its first diagnostic refuses
+native fixture opening before observation in a different process namespace;
+that refusal supplies no timeout cause or replacement qualification. No task
+checkbox, milestone status or freeze advances.
+
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
 out to a directory through the `sdk` surface.
