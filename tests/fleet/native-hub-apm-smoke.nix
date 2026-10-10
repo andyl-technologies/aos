@@ -127,6 +127,7 @@ in {
       NGINX = "${pkgs.nginx}"
       CONFIGURATION_PROVIDER = "${pkgs.aos-configuration-provider}"
       AOS_HUB_PACKAGE = "${pkgs.aos-hub}"
+      BASELINE_CONFIGURATION = "${fixture.consumerBaselineModule}/module.nix"
       UPGRADE_TOPLEVEL = "${upgradeToplevel}"
       UPGRADE_IMAGE = "${upgradeImage}"
       UPGRADE_IMAGE_DISK = "${upgradeImageDisk}"
@@ -1024,6 +1025,18 @@ in {
       # Finally publish a locally built AOS toplevel and its authenticated raw
       # OTA image as a sysroot package. Stage it over the Hub, boot it through
       # UEFI, then exercise durable image rollback and roll-forward.
+      # Establish a checked operator intent before testing its preservation.
+      # Image-authored initial settings alone do not establish the active
+      # configuration after the preceding package-management scenarios.
+      consumer.succeed(textwrap.dedent(f"""
+          set -eu
+          export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
+          {APM} config add {BASELINE_CONFIGURATION} --name image-transition.nix
+          {APM} config apply
+          systemctl is-active --quiet aos-upgrade-removed.service
+          test ! -e /etc/aos/upgrade-test/marker.conf
+          ! systemctl is-active --quiet aos-upgrade-test-marker.service
+      """), timeout=600)
       print("Native image: preparing the signed release", flush=True)
       publisher.succeed(textwrap.dedent(f"""
           set -eu

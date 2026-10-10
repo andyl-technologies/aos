@@ -307,6 +307,7 @@
 in {
   inherit
     hubRuntimeModule
+    consumerBaselineModule
     consumerSystem
     consumerUpgradeSystem
     helperV1
