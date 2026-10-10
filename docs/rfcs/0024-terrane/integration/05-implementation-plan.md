@@ -517,8 +517,13 @@ fresh compiler, feature and runtime qualification. Source and formatter review
 do not establish passing tests, a deadline fix or task acceptance.
 Frozen qualification `2e73ff48d0` passes its fresh native build and strict
 all-target Clippy with warnings denied. Actual all-target test compilation
-continues before fresh inventory and the six registered runtime witnesses;
-no runtime result follows from these compiler checks. A further isolated
+passes, and its executable-bound inventory contains 1,028 nonignored tests
+across three binaries. All six new preparation witnesses pass in 9.979 seconds
+under the unchanged default limits with tracing unset. Independent review
+verifies all 6,220 source bytes and modes, all three actual executable seals,
+genuine compiler metadata and exact nonignored selector coverage. Feature,
+broader native and population qualification continue separately; these focused
+passes establish neither owning gates nor a deadline fix. A further isolated
 T-DRV-2/T-BKT-1 implementation addresses source-proven repeated whole-pack
 parsing during metadata-batch final confirmation. Its three exact reuse,
 physical-refusal and batch-scope witnesses are registered before implementation.
