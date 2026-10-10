@@ -29,7 +29,7 @@ use aos_sandbox_protocol::domain_ledger::resource_bank::{
 
 use super::{
     AccountHead, Claim, NativeCrossing, ResourceReservationErrorV1, Transition, TransitionOriginal,
-    State, bank,
+    State, bank, q04_resource_error,
 };
 
 
@@ -58,7 +58,7 @@ impl Q04ResourceTransferV1 {
     ) -> Result<Self, CreateQ04ErrorV1> {
         root.recheck_resource_bank(journal)?;
         let original = root.resource_preparation()?;
-        let retained = original.original_binding().map_err(resource_error)?;
+        let retained = original.original_binding().map_err(q04_resource_error)?;
         let root_loan = root.cache_terminal_loan(identity)?;
         root_loan.cache_signing_challenge(prepared.staged(), prepared.proposed())?;
         ledger.require_identity(identity)?;
@@ -72,7 +72,7 @@ impl Q04ResourceTransferV1 {
         // The immutable Spec comes from the same original Request/Desired
         // descriptor, not a Runtime (which does not yet exist for fresh Create).
         let specification = crate::sandbox_spec_state::get(journal, ledger.specification())
-            .map_err(|error| resource_error(ResourceReservationErrorV1::Specification(Box::new(error))))?
+            .map_err(|error| q04_resource_error(ResourceReservationErrorV1::Specification(Box::new(error))))?
             .ok_or(CreateQ04ErrorV1::ChangedCut)?;
         let requested = specification.spec().resource_profile().limits();
         let resolved = candidate.hard_resources().core_profile().limits();
@@ -116,15 +116,13 @@ impl Q04ResourceTransferV1 {
             .native_fields()
             .amount
             .checked_sub(amount)
-            .map_err(|error| resource_error(error.into()))?;
+            .map_err(q04_resource_error)?;
         let residual = retained.claim().with_amount(residual_amount);
         let state = journal.controller_resource_state_v1()?;
         bank::validate(state)
-            .map_err(ResourceReservationErrorV1::from)
-            .map_err(resource_error)?;
+            .map_err(q04_resource_error)?;
         let before = bank::find_head(state, retained.claim().native_fields().account)
-            .map_err(ResourceReservationErrorV1::from)
-            .map_err(resource_error)?;
+            .map_err(q04_resource_error)?;
         let generation = before
             .native_fields()
             .generation
@@ -134,8 +132,7 @@ impl Q04ResourceTransferV1 {
         let after = before.with_generation(generation);
         let sandbox = identity.sandbox().into_bytes();
         let child = bank::sandbox_child(before, sandbox, amount, retained_use)
-            .map_err(ResourceReservationErrorV1::from)
-            .map_err(resource_error)?;
+            .map_err(q04_resource_error)?;
         let grant = bank::inclusive_claim_for_cut(retained.claim(), identity, sandbox, amount);
         let use_claim = bank::retained_use_claim_for_cut(grant, identity, sandbox, retained_use);
         let binding = Binding::from_parts((
@@ -153,21 +150,21 @@ impl Q04ResourceTransferV1 {
         ));
         let transfer = Self {
             before, after, residual, child, binding,
-            original_clock: original.original_clock().map_err(resource_error)?,
+            original_clock: original.original_clock().map_err(q04_resource_error)?,
             crossing: OnceCell::new(),
             last_clock: OnceCell::new(),
             transaction: OnceCell::new(),
             specification,
             input_origin: prepared.input_origin().bytes().to_vec(),
         };
-        transfer.require_predecessor(state).map_err(resource_error)?;
+        transfer.require_predecessor(state).map_err(q04_resource_error)?;
         root_loan.recheck()?;
         Ok(transfer)
     }
 
     pub(crate) fn append_records(&self, records: &mut Vec<JournalRecord>) -> Result<(), CreateQ04ErrorV1> {
         records.try_reserve_exact(BANK_MEMBERS + 1)?;
-        records.extend(self.records().map_err(resource_error)?);
+        records.extend(self.records().map_err(q04_resource_error)?);
         records.push(self.origin_record());
         Ok(())
     }
@@ -265,7 +262,7 @@ impl Q04ResourceTransferV1 {
 
     pub(crate) fn retain_transaction(&self, transaction: &JournalTransaction) -> Result<(), CreateQ04ErrorV1> {
         if self.transaction.get().is_some() || transaction.records().len() != 4 + BANK_MEMBERS
-            || transaction.records()[3..9] != self.records().map_err(resource_error)?
+            || transaction.records()[3..9] != self.records().map_err(q04_resource_error)?
             || !self.matches_retained_origin(&transaction.records()[9])
         {
             return Err(CreateQ04ErrorV1::ChangedCut);
@@ -310,8 +307,4 @@ impl Q04ResourceTransferV1 {
             && record.key() == bank::CONTROLLER_INPUT_ORIGIN_KEY
             && record.value() == Some(self.input_origin.as_slice())
     }
-}
-
-fn resource_error(error: ResourceReservationErrorV1) -> CreateQ04ErrorV1 {
-    CreateQ04ErrorV1::ResourceReservation(Box::new(error))
 }

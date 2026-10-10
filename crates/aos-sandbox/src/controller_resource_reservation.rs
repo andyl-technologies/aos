@@ -48,6 +48,7 @@ use aos_sandbox_protocol::domain_ledger::resource_bank::{
 };
 
 type State = std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
+use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
 use crate::{JournalTransaction, RecordNamespace};
 
 // The bootstrap interval is paid by the same original enrollment, not the
@@ -138,6 +139,11 @@ impl From<bank::ResourceBankDataError> for ResourceReservationErrorV1 {
             bank::ResourceBankDataError::Frame(error) => Self::Journal(crate::JournalError::from(error)),
         }
     }
+}
+
+// Preserve the Native cause before placing it in the Q04 retained error slot.
+fn q04_resource_error(error: impl Into<ResourceReservationErrorV1>) -> CreateQ04ErrorV1 {
+    CreateQ04ErrorV1::ResourceReservation(Box::new(error.into()))
 }
 
 /// Compares the original fixed Host policy and PID1 delivery as borrowed DATA.

@@ -23,7 +23,7 @@ use crate::policy_compiler::create_q04::{
 };
 use crate::Journal;
 
-use super::{AccountTransition, ResourceReservationErrorV1, bank};
+use super::{AccountTransition, bank, q04_resource_error};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct NativeOrigin {
@@ -66,8 +66,8 @@ impl Q04TerminalDispositionV1 {
         {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
-        original.require_readback(journal).map_err(resource_error)?;
-        original.require_last_clock().map_err(resource_error)?;
+        original.require_readback(journal).map_err(q04_resource_error)?;
+        original.require_last_clock().map_err(q04_resource_error)?;
         journal.require_controller_resource_q04_prefix_v1(recipes)?;
 
         let mut origins = [NativeOrigin {
@@ -90,8 +90,7 @@ impl Q04TerminalDispositionV1 {
             origins[index] = NativeOrigin {
                 id: *recipe.transaction().id(),
                 members: bank::transaction_digest(recipe.transaction())
-                    .map_err(ResourceReservationErrorV1::from)
-                    .map_err(resource_error)?,
+                    .map_err(q04_resource_error)?,
                 returned: *result,
             };
             next = result.commit_sequence.checked_add(1).ok_or(CreateQ04ErrorV1::Bounds)?;
@@ -100,9 +99,9 @@ impl Q04TerminalDispositionV1 {
         journal.require_q04_returned_commit_v1(&origins[7].returned)?;
         let state = journal.controller_resource_state_v1()?;
         let use_claim = original.binding.native_fields().use_claim;
-        let before = bank::find_head(state, use_claim.native_fields().account).map_err(ResourceReservationErrorV1::from).map_err(resource_error)?;
+        let before = bank::find_head(state, use_claim.native_fields().account).map_err(q04_resource_error)?;
         let mut transition = AccountTransition::settle(before, use_claim, true)
-            .map_err(resource_error)?;
+            .map_err(q04_resource_error)?;
         transition.original_clock = Some(original.original_clock);
         let binding = bank::TerminalBinding::from_parts((
             original.binding.native_fields().has_input_origin,
@@ -115,8 +114,7 @@ impl Q04TerminalDispositionV1 {
             original
                 .binding
                 .commitment()
-                .map_err(ResourceReservationErrorV1::from)
-                .map_err(resource_error)?,
+                .map_err(q04_resource_error)?,
             transition.transaction_id,
             journal.protected_writer_physical_names_v1()?,
             next, prior_end,
@@ -127,15 +125,11 @@ impl Q04TerminalDispositionV1 {
         ));
         binding
             .require_predecessor(state, transition.history())
-            .map_err(ResourceReservationErrorV1::from)
-            .map_err(resource_error)?;
+            .map_err(q04_resource_error)?;
         transition.terminal = Some(binding);
         root.recheck()?;
         Ok(Self { transition })
     }
-}
-fn resource_error(error: ResourceReservationErrorV1) -> CreateQ04ErrorV1 {
-    CreateQ04ErrorV1::ResourceReservation(Box::new(error))
 }
 
 #[cfg(test)]
