@@ -79,7 +79,14 @@ def start_direct_worker(worker, tools, configuration, generation):
             os.fsync(output.fileno())
         # Existing observers use this selected process. Its immutable receipt
         # remains available across a deliberate configuration reload.
-        (root / 'worker.pid').write_text(str(process.pid))
+        descriptor = os.open(root / 'worker.pid',
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, 'w') as output:
+            # An existing PID file may retain an earlier generation's mode.
+            os.fchmod(output.fileno(), 0o600)
+            output.write(str(process.pid))
+            output.flush()
+            os.fsync(output.fileno())
         print(json.dumps(receipt))
     """, {**{name: tools[name] for name in ("node", "runner", "miniflare", "workerd")},
             "configuration": configuration, "generation": generation}))
