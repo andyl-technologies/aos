@@ -133,10 +133,21 @@ pub(crate) async fn physical(
             serde_json::json!(qualification_failure::refused(diagnostics.as_ref())),
         ),
     };
+    // A Clock reply carries one measured instant in both signed locations.
+    // Reading the clock again can cross a millisecond and invalidate that join.
+    let observed_at_millis = if status == 200 && matches!(control.action, Action::Clock) {
+        result
+            .get("observedAtMillis")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| runtime_error("Clock observation absent"))?
+            .to_owned()
+    } else {
+        worker::Date::now().as_millis().to_string()
+    };
     let reply = serde_json::json!({"version":1,"requestSha256":hex::encode(sha2::Sha256::digest(&body)),
         "nonce":control.nonce,"sourceDigest":fixture::source().map_err(runtime_error)?,
         "scriptVersion":config::runtime_script_version(env).map_err(runtime_error)?,
-        "observedAtMillis":worker::Date::now().as_millis().to_string(),"result":result});
+        "observedAtMillis":observed_at_millis,"result":result});
     let bytes = encode_direct_control(&reply).map_err(runtime_error)?;
     let headers = Headers::new();
     headers.set("content-type", "application/json")?;
