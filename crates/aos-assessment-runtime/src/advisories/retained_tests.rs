@@ -175,3 +175,37 @@ fn captures_reject_corruption_and_preserve_explicit_empty_history() -> Result<()
     assert!(page.next_cursor.is_none());
     Ok(())
 }
+
+#[test]
+fn retained_wrapper_reports_typed_bounds_without_truncating_original_revisions() -> Result<()> {
+    let snapshot = fixture()?;
+    let mut page = snapshot.page(&snapshot.selection, &snapshot.pages[0].as_of)?;
+    let mut found = false;
+    for padding in 1900..=2020 {
+        let revision = &mut page.page.revisions[0];
+        revision.record.references = (0..128)
+            .map(|index| format!("https://example.org/{index:03}/{}", "x".repeat(padding)))
+            .collect();
+        revision.record_digest = revision.record.digest()?;
+        let Ok(bytes) = page.page.to_bytes() else {
+            continue;
+        };
+        if bytes.len() + 128 > crate::validation::ENVELOPE_LIMITS.max_bytes {
+            found = true;
+            break;
+        }
+    }
+    ensure!(
+        found,
+        "fixture must fit the original payload near its byte allowance"
+    );
+    let error = page
+        .to_bytes()
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("wrapper must exceed response allowance"))?;
+    assert_eq!(
+        error.downcast_ref::<AdvisoryProjectionLimit>(),
+        Some(&AdvisoryProjectionLimit::ResponseBounds)
+    );
+    Ok(())
+}

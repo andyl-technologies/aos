@@ -92,5 +92,12 @@ in {
         timeout=240,
     )
     assert "1 passed; 0 failed" in output, output
+    output = hub.succeed(
+        "AOS_ASSESSMENT_CLI=${pkgs.aos}/bin/aos TOKIO_WORKER_THREADS=2 "
+        "${fixture}/bin/aos-assessment-retained-pages-fixture "
+        "--ignored --exact ${fixture.passthru.advisoryCliTestSelector} --nocapture --test-threads=1",
+        timeout=240,
+    )
+    assert "PASS: actual CLI retained advisory revisions survive new evidence and database reopen" in output, output
   '';
 }

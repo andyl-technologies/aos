@@ -91,44 +91,38 @@ fn report_policy_requires_a_shared_local_scan_or_a_waited_hub_scan() {
 fn historical_policy_requires_exact_local_report_and_preserves_legacy_filters() {
     let digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-    assert!(
-        parse_cli([
-            "aos",
-            "maintain",
-            "report",
-            "--assessment-digest",
-            digest,
-            "--fail-on",
-            "updates,coverage",
-        ])
-        .is_ok()
-    );
-    assert!(
-        parse_cli([
-            "aos",
-            "hub",
-            "maintain",
-            "get",
-            "--registry",
-            "fixture",
-            digest,
-            "--fail-on",
-            "updates,coverage",
-        ])
-        .is_ok()
-    );
+    assert!(parse_cli([
+        "aos",
+        "maintain",
+        "report",
+        "--assessment-digest",
+        digest,
+        "--fail-on",
+        "updates,coverage",
+    ])
+    .is_ok());
+    assert!(parse_cli([
+        "aos",
+        "hub",
+        "maintain",
+        "get",
+        "--registry",
+        "fixture",
+        digest,
+        "--fail-on",
+        "updates,coverage",
+    ])
+    .is_ok());
     assert!(parse_cli(["aos", "maintain", "report", "--fail-on", "coverage"]).is_err());
-    assert!(
-        parse_cli([
-            "aos",
-            "maintain",
-            "report",
-            "--assessment-digest",
-            digest,
-            "--outdated",
-        ])
-        .is_err()
-    );
+    assert!(parse_cli([
+        "aos",
+        "maintain",
+        "report",
+        "--assessment-digest",
+        digest,
+        "--outdated",
+    ])
+    .is_err());
     assert!(parse_cli(["aos", "maintain", "report", "--outdated"]).is_ok());
 }
 

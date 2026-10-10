@@ -15,12 +15,13 @@ async fn offline_vulnerability_acquisition_pins_absent_sources_as_unknown_covera
         .claim_assessment_scan(registry_id, &scan.scan_id, 60)
         .await?;
     let data = db.assessment_evaluation_base(registry_id, &claim).await?;
-    assert!(data
-        .advisory_snapshot
-        .as_ref()
-        .context("explicit missing-source snapshot")?
-        .sources
-        .is_empty());
+    assert!(
+        data.advisory_snapshot
+            .as_ref()
+            .context("explicit missing-source snapshot")?
+            .sources
+            .is_empty()
+    );
     let input = db
         .freeze_assessment_evaluation(registry_id, &claim, &data)
         .await?;
@@ -86,9 +87,11 @@ async fn pinned_evaluation_replays_and_unknown_coverage_is_not_a_clean_result() 
     );
     assert!(attention[0].issues[0].uncertain);
     assert!(attention[0].proofs.is_empty());
-    assert!(aos_assessment::evaluator::ScopeGraph::new(&data)?
-        .components("absent")
-        .is_err());
+    assert!(
+        aos_assessment::evaluator::ScopeGraph::new(&data)?
+            .components("absent")
+            .is_err()
+    );
     db.commit_assessment_evaluation(registry_id, &claim, &result)
         .await?;
     db.commit_assessment_evaluation(registry_id, &claim, &result)
@@ -99,10 +102,7 @@ async fn pinned_evaluation_replays_and_unknown_coverage_is_not_a_clean_result() 
         .context("completed scan")?;
     assert_eq!(completed.state, ScanState::Partial);
     assert_eq!(completed.assessment_digest, Some(result.digest()?));
-    assert!(
-        db.has_admitted_assessment(registry_id, result.digest()?)
-            .await?
-    );
+    assert!(db.has_admitted_assessment(registry_id, result.digest()?).await?);
     let head = db
         .backend
         .query_opt(
@@ -116,10 +116,11 @@ async fn pinned_evaluation_replays_and_unknown_coverage_is_not_a_clean_result() 
     assert_eq!(head.get::<u64>(1)?, scan.generation);
     assert_eq!(head.get::<String>(2)?, result.digest()?.to_string());
     assert_eq!(head.get::<Option<i64>>(3)?, None);
-    assert!(db
-        .check_assessment_scan_claim(registry_id, &claim)
-        .await
-        .is_err());
+    assert!(
+        db.check_assessment_scan_claim(registry_id, &claim)
+            .await
+            .is_err()
+    );
     Ok(())
 }
 
@@ -136,20 +137,22 @@ async fn forged_result_and_changed_frozen_evidence_cannot_advance_heads() -> Res
         .await?;
     let mut result = aos_assessment::evaluator::evaluate(&input, &data)?;
     result.diagnostics.clear();
-    assert!(db
-        .commit_assessment_evaluation(registry_id, &claim, &result)
-        .await
-        .is_err());
+    assert!(
+        db.commit_assessment_evaluation(registry_id, &claim, &result)
+            .await
+            .is_err()
+    );
     data.history.push(aos_assessment::input::CandidateHistory {
         provider: "github-releases".into(),
         project: "example/fixture".into(),
         raw_id: "v1.2.0".into(),
         first_observed_at: input.evaluated_at.clone(),
     });
-    assert!(db
-        .freeze_assessment_evaluation(registry_id, &claim, &data)
-        .await
-        .is_err());
+    assert!(
+        db.freeze_assessment_evaluation(registry_id, &claim, &data)
+            .await
+            .is_err()
+    );
     let head = db
         .backend
         .query_opt(
@@ -178,10 +181,11 @@ async fn one_superseded_profile_rolls_back_all_profile_heads() -> Result<()> {
     request.idempotency_key = "newer-updates-only".into();
     request.profiles = vec![Profile::Updates];
     db.request_assessment_scan(registry_id, &request).await?;
-    assert!(db
-        .commit_assessment_evaluation(registry_id, &claim, &result)
-        .await
-        .is_err());
+    assert!(
+        db.commit_assessment_evaluation(registry_id, &claim, &result)
+            .await
+            .is_err()
+    );
     let rows = db
         .backend
         .query(
@@ -204,13 +208,13 @@ async fn one_superseded_profile_rolls_back_all_profile_heads() -> Result<()> {
 }
 
 #[tokio::test]
-async fn vulnerability_attention_retains_partial_positive_evidence_without_unrelated_query_support(
-) -> Result<()> {
+async fn vulnerability_attention_retains_partial_positive_evidence_without_unrelated_query_support()
+-> Result<()> {
     use aos_assessment::advisory::{
-        AdvisorySnapshotSource, AdvisorySnapshotV1, ADVISORY_SNAPSHOT_V1,
+        ADVISORY_SNAPSHOT_V1, AdvisorySnapshotSource, AdvisorySnapshotV1,
     };
     use aos_assessment::observation::{
-        ProviderCoverage, ProviderObservationV1, SourceEvidenceRef, PROVIDER_OBSERVATION_V1,
+        PROVIDER_OBSERVATION_V1, ProviderCoverage, ProviderObservationV1, SourceEvidenceRef,
     };
     use aos_assessment::time::Timestamp;
     use aos_contract::Sha256Digest;
@@ -286,10 +290,12 @@ async fn vulnerability_attention_retains_partial_positive_evidence_without_unrel
         )?]
     );
     assert_eq!(issue.lineage_ids, vec!["CVE-2026-12345", "OSV-2026-1"]);
-    assert!(!projected[0]
-        .proofs
-        .iter()
-        .any(|proof| proof.context_digest == issue.context_digest));
+    assert!(
+        !projected[0]
+            .proofs
+            .iter()
+            .any(|proof| proof.context_digest == issue.context_digest)
+    );
     // A successfully admitted historical closure can be inspected without a
     // mutable provider index or any further source request.
     let frozen = db

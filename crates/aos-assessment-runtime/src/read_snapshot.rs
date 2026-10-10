@@ -220,6 +220,10 @@ pub fn parse_scan_cursor(token: &str) -> Result<(Sha256Digest, &str)> {
     parse_cursor(token, "s1")
 }
 
+/// Parses a fixed-size, kind-bound capture token without granting authority.
+///
+/// # Errors
+/// Returns an error for a wrong kind or noncanonical digest or random handle.
 pub(crate) fn parse_cursor<'a>(token: &'a str, prefix: &str) -> Result<(Sha256Digest, &'a str)> {
     if token.len() != 100 {
         return Err(ScanPageError::InvalidCursor.into());
@@ -242,6 +246,10 @@ pub(crate) fn parse_cursor<'a>(token: &'a str, prefix: &str) -> Result<(Sha256Di
     Ok((Sha256Digest::parse(&format!("sha256:{digest}"))?, handle))
 }
 
+/// Checks the canonical hexadecimal encoding of a random 128-bit page handle.
+///
+/// # Errors
+/// Returns an error for incorrect length or non-lowercase hexadecimal text.
 pub(crate) fn validate_handle(handle: &str) -> Result<()> {
     validate_hex(handle, 32)
 }

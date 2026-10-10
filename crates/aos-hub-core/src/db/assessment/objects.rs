@@ -130,7 +130,12 @@ impl AssessmentObjectKind {
 
     fn normalize(self, bytes: &[u8]) -> Result<Vec<u8>> {
         match self {
-            Self::AdvisoryReadSnapshot => aos_assessment_runtime::advisories::retained::AdvisoryReadSnapshotV1::from_slice(bytes)?.to_bytes(),
+            Self::AdvisoryReadSnapshot => {
+                aos_assessment_runtime::advisories::retained::AdvisoryReadSnapshotV1::from_slice(
+                    bytes,
+                )?
+                .to_bytes()
+            }
             Self::DeliveryReadSnapshot => {
                 use aos_assessment_runtime::read_snapshot::deliveries::DeliveryReadSnapshotV1;
 

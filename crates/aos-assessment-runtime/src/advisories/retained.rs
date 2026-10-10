@@ -13,7 +13,7 @@ use aos_assessment::time::Timestamp;
 use aos_contract::{Sha256Digest, canonical, limits::JsonLimits};
 use serde::{Deserialize, Serialize};
 
-use super::{AdvisoryPageV1, AdvisoryQueryV1};
+use super::{AdvisoryPageV1, AdvisoryProjectionLimit, AdvisoryQueryV1};
 use crate::read_snapshot::{ScanPageError, parse_cursor, validate_handle};
 use crate::validation::{decode, encoded, reject_null};
 
@@ -131,7 +131,7 @@ impl AdvisoryPageV2 {
         if let Some(cursor) = &self.next_cursor {
             parse_advisory_cursor(cursor)?;
         }
-        encoded(self)
+        encoded(self).map_err(|_| AdvisoryProjectionLimit::ResponseBounds.into())
     }
 
     /// Decodes the same closed response consumed by hosted clients.
