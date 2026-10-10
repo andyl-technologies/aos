@@ -24,6 +24,7 @@
 //!   stdin.
 
 mod artifact_consumption_fixture;
+mod exported_artifact_fixture;
 mod assessment_handoff_fixture;
 mod initrd_contract_fixture;
 mod native_deployment_fixture;
@@ -120,6 +121,7 @@ async fn main() -> Result<()> {
         Some("artifact-consumption-evidence") => {
             artifact_consumption_fixture::generate(&arguments[1..])
         }
+        Some("resolve-exported-artifact") => exported_artifact_fixture::resolve(&arguments[1..]),
         Some("initrd-contract") => initrd_contract_fixture::verify(&arguments[1..]),
         Some("image-assembly-contract") => {
             initrd_contract_fixture::verify_assembly(&arguments[1..])
