@@ -33,40 +33,44 @@ impl RpcService {
                 "assessment notification resource was replaced",
             ));
         }
-        let mut deliveries = self
-            .db
-            .assessment_notification_delivery_page(
-                registry.id,
-                query.after_delivery.as_deref().unwrap_or(""),
-                query.subscription_id.as_deref(),
-                query.delivery_id.as_deref(),
-                query.limit + 1,
-            )
-            .await
-            .map_err(RpcError::internal)?;
-        if query.delivery_id.is_some() && deliveries.is_empty() {
-            return Err(RpcError::not_found("assessment notification delivery"));
-        }
-        let has_more = deliveries.len() > query.limit as usize;
-        deliveries.truncate(query.limit as usize);
-        let next_delivery = if has_more {
-            deliveries
-                .last()
-                .map(|delivery| delivery.delivery_id.clone())
-        } else {
-            None
-        };
-        let page = NotificationDeliveryPageV1 {
-            schema: "aos.assessment-notification-delivery-page/v1".into(),
-            resource_scope: registry.scope_key.clone(),
-            as_of: self
+        let page = if let Some(identity) = &query.delivery_id {
+            let deliveries = self
                 .db
-                .assessment_database_time()
+                .assessment_notification_delivery_page(
+                    registry.id,
+                    "",
+                    query.subscription_id.as_deref(),
+                    Some(identity),
+                    1,
+                )
                 .await
-                .map_err(RpcError::internal)?,
-            subscription_id: query.subscription_id,
-            deliveries,
-            next_delivery,
+                .map_err(RpcError::internal)?;
+            if deliveries.is_empty() {
+                return Err(RpcError::not_found("assessment notification delivery"));
+            }
+            NotificationDeliveryPageV1 {
+                schema: "aos.assessment-notification-delivery-page/v1".into(),
+                resource_scope: registry.scope_key.clone(),
+                as_of: self
+                    .db
+                    .assessment_database_time()
+                    .await
+                    .map_err(RpcError::internal)?,
+                subscription_id: query.subscription_id,
+                deliveries,
+                next_delivery: None,
+            }
+        } else {
+            self.db
+                .assessment_retained_delivery_page(
+                    registry.id,
+                    &registry.scope_key,
+                    query.limit,
+                    query.subscription_id.as_deref(),
+                    query.after_delivery.as_deref(),
+                )
+                .await
+                .map_err(retained_page_error)?
         };
         let document_json = page.to_bytes().map_err(RpcError::internal)?;
         self.recheck_assessment(&claims, &registry, "assessment.read")

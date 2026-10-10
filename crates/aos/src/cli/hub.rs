@@ -327,7 +327,7 @@ pub enum HubAssessmentCmd {
         /// Filter by a public notification subscription identity
         #[arg(long)]
         subscription_id: Option<String>,
-        /// Continue after a delivery identity from the preceding page
+        /// Continue with the opaque nextDelivery token from the preceding page
         #[arg(long, requires = "resource_scope")]
         after_delivery: Option<String>,
         /// Pin the registry incarnation from the preceding page

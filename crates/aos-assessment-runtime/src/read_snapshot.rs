@@ -25,6 +25,8 @@ use crate::validation::{reject_null, text};
 
 pub mod alerts;
 
+pub mod deliveries;
+
 pub mod schedules;
 
 pub mod subscriptions;
@@ -46,7 +48,7 @@ pub enum ScanPageError {
     InvalidCursor,
     /// Retained custody expired, disappeared or has an unusable clock interval.
     CursorExpired,
-    /// The current resource incarnation or requested page size differs.
+    /// The resource incarnation, original filter or requested page size differs.
     SelectorChanged,
     /// A finite snapshot row or retained-storage bound was exhausted.
     CapacityExceeded,

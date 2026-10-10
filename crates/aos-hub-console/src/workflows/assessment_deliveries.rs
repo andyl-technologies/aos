@@ -65,6 +65,9 @@ pub(super) fn RegistryAssessmentDeliveries(client: ApiClient, slug: String) -> i
                     );
                 }
                 scope.set(Some(page.resource_scope.clone()));
+                if page.next_delivery.is_some() || query.after_delivery.is_some() {
+                    polling.set(false);
+                }
                 Ok::<_, String>(page)
             }
             .await;
@@ -111,7 +114,7 @@ pub(super) fn RegistryAssessmentDeliveries(client: ApiClient, slug: String) -> i
                                 NotificationFailureCode::DestinationPermanentFailure => "Permanent destination failure",
                             }).unwrap_or("");
                             view! { <tr>
-                                <td><button class="secondary-button" on:click=move |_| { after.set(None); delivery.set(Some(id.clone())); }>{item.delivery_id}</button></td>
+                                <td><button class="secondary-button" on:click=move |_| { after.set(None); delivery.set(Some(id.clone())); polling.set(true); }>{item.delivery_id}</button></td>
                                 <td>{item.subscription_id}</td><td>{item.event_sequence}</td>
                                 <td>{state}</td><td>{item.attempt}</td><td>{item.not_before.to_string()}</td>
                                 <td>{item.lease_expires_at.map(|time| time.to_string()).unwrap_or_default()}</td>

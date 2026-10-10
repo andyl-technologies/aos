@@ -678,8 +678,19 @@ page; `--subscription-id NAME` applies a public subscription filter.
 event intent. JSON output preserves decimal event/revision counters, state,
 attempt count, eligibility, lease expiry, closed failure categories and compact
 receipt/body commitments. Continue a list with the returned `--resource-scope`
-and `--after-delivery`, retaining the same subscription filter. The web
-notification panel exposes the same status and physical batch linkage.
+and opaque `nextDelivery` token as `--after-delivery`, retaining the same
+subscription filter and page limit. Pages preserve their original state,
+attempt counters, batch linkage and observation time across later attempts,
+review replacement and database restart. A resource admits sixteen active
+captures, each bounded to 128 complete delivery projections and eight MiB,
+with a fifteen-minute custody deadline. Excessive rows, bytes or retained
+captures fail explicitly; expired custody requires restarting the list. Initial
+projection also bounds immutable batch-body reads to sixteen MiB.
+
+The web notification panel holds paginated delivery status until refresh and
+displays its observation time. Inspecting one delivery resumes current status
+polling. Every server read requires current access; retained historical status
+confers no execution authority.
 
 Status reads neither reconcile nor retry delivery. Digest members share one
 physical delivery identity after their first claim. A leased record can have an

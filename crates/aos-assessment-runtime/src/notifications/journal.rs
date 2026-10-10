@@ -7,7 +7,7 @@
 //! A continuation preserves its authorized registry incarnation and filter:
 //!
 //! ```json
-//! {"schema":"aos.assessment-notification-delivery-query/v1","resourceScope":"registry-incarnation","subscriptionId":"review","afterDelivery":"intent-a","limit":10}
+//! {"schema":"aos.assessment-notification-delivery-query/v1","resourceScope":"registry-incarnation","subscriptionId":"review","limit":10}
 //! ```
 
 use anyhow::{Result, ensure};
@@ -161,7 +161,7 @@ pub struct NotificationDeliveryQueryV1 {
     /// Optional public subscription filter, retained across page continuations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_id: Option<String>,
-    /// Exclusive event-intent identity from the preceding page.
+    /// Opaque retained page handle from the preceding response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_delivery: Option<String>,
     /// Maximum projected rows, from one through ten.
@@ -208,6 +208,9 @@ impl NotificationDeliveryQueryV1 {
             self.after_delivery.is_none() || self.resource_scope.is_some(),
             "delivery continuation requires its original resource incarnation"
         );
+        if let Some(cursor) = &self.after_delivery {
+            crate::read_snapshot::deliveries::parse_delivery_cursor(cursor)?;
+        }
         Ok(())
     }
 }
@@ -220,14 +223,14 @@ pub struct NotificationDeliveryPageV1 {
     pub schema: String,
     /// Exact authorized registry incarnation.
     pub resource_scope: String,
-    /// Database time for interpreting eligibility and lease expiry.
+    /// Original database observation time for interpreting eligibility and leases.
     pub as_of: Timestamp,
     /// Applied public subscription filter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_id: Option<String>,
     /// At most ten projections in stable event-intent identity order.
     pub deliveries: Vec<NotificationDeliveryV1>,
-    /// Exclusive identity for the next page under the same scope/filter.
+    /// Opaque next-page handle bound to the original scope, filter and page size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_delivery: Option<String>,
 }
@@ -267,11 +270,10 @@ impl NotificationDeliveryPageV1 {
             "notification delivery identities are unordered or duplicated"
         );
         if let Some(next) = &self.next_delivery {
+            crate::read_snapshot::deliveries::parse_delivery_cursor(next)?;
             ensure!(
-                self.deliveries
-                    .last()
-                    .is_some_and(|last| &last.delivery_id == next),
-                "notification delivery cursor differs from its last identity"
+                !self.deliveries.is_empty(),
+                "empty notification delivery page has a continuation"
             );
         }
         encoded(self)
@@ -341,7 +343,10 @@ mod tests {
             as_of: delivery().created_at,
             subscription_id: Some("review".into()),
             deliveries: vec![delivery()],
-            next_delivery: Some("intent-a".into()),
+            next_delivery: Some(format!(
+                "d1:{}:0123456789abcdef0123456789abcdef",
+                Sha256Digest::of_bytes("capture").hex()
+            )),
         };
         let bytes = page.to_bytes().unwrap();
         assert_eq!(
@@ -368,12 +373,21 @@ mod tests {
             resource_scope: None,
             delivery_id: None,
             subscription_id: None,
-            after_delivery: Some("intent-a".into()),
+            after_delivery: Some(format!(
+                "d1:{}:0123456789abcdef0123456789abcdef",
+                Sha256Digest::of_bytes("capture").hex()
+            )),
             limit: 10,
         };
         assert!(query.validate().is_err());
         query.resource_scope = Some("registry-incarnation".into());
         query.validate().unwrap();
+        let cursor = query.after_delivery.clone();
+        for invalid in ["intent-a", "d1:invalid", "n1:invalid"] {
+            query.after_delivery = Some(invalid.into());
+            assert!(query.validate().is_err());
+        }
+        query.after_delivery = cursor;
         query.delivery_id = Some("intent-a".into());
         assert!(query.validate().is_err());
         query.delivery_id = None;

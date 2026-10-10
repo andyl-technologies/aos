@@ -12,6 +12,7 @@ mod authority;
 mod budgets;
 mod cache;
 mod clock;
+mod delivery_snapshot;
 mod evaluation;
 mod inventory;
 mod job_authority;
