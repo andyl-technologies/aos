@@ -131,12 +131,14 @@ passes its 21 core, 25 native and one SDK cases. Native build, strict
 all-target Clippy, fresh compilation and the three focused fold witnesses
 also pass on that tree. These results do not qualify subsequent shared
 maintenance interfaces or the complete T1 floor.
-Four disjoint implementation worklines now address auxiliary placement
+Five disjoint implementation worklines now address auxiliary placement
 classification, fresh repair authority after each replacement, the native
-current-history producer, and its immutable data reader. The latter two
-share data only within one authorization history walk and require distinct
-current-purpose physical completion before promotion. Shared declarations
-are reserved; implementation, integration and runtime checks remain pending.
+current-history producer, its immutable data reader, and native read-only
+physical closure. The current-history worklines share data only within one
+authorization history walk and require distinct current-purpose physical
+completion before promotion. Shared closing interfaces and original selected
+Guard snapshot recipes are committed; integration and runtime checks remain
+pending.
 No additional task is accepted, and T2 and branch worklines remain deferred.
 
 Earlier combined candidate `6889de2180` passes native build, strict all-target

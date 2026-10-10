@@ -43,7 +43,9 @@ mod current_history_inputs;
 #[path = "effects/history_inputs.rs"]
 mod history_inputs;
 #[cfg(all(feature = "tokio", unix))]
-pub(crate) use current_history_inputs::close_current_history_inputs;
+pub(crate) use current_history_inputs::{
+    CurrentHistoryPhysicalInputs, close_current_history_inputs,
+};
 #[cfg(all(feature = "tokio", unix))]
 pub(crate) use history_inputs::{CheckedHistoryInputs, close_history_inputs};
 #[path = "effects/commands.rs"]
