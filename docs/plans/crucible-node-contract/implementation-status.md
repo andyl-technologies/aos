@@ -1025,6 +1025,27 @@ NativeArchive, external networking/serial, CPU timing and full device parity
 remain unqualified. Combined callback publication bounds and post-effect
 uncertainty custody remain required for broader execution admission.
 
+## Installed live debug operations
+
+The public node service and CLI preserve the original live stop, report, ACK
+and resume transaction. A per-world worker retains the current native owner,
+token and unpublished outcome across completion errors or unwinding. Original
+debug claims and durable namespace credits precede dispatch; exact retries
+recover the same immutable result. Resume requires reconciliation against the
+current trusted report roots, and paused owners retain their aggregate capacity
+until authenticated native reclamation.
+
+Central verification passes eight actual native actor cases, the actual CLI
+process case, one debug wire case, five existing control cases and 37
+current-source hygiene cases. Daemon and CLI all-target strict checks pass.
+The native continuation preserves stop position `(513010, 3, BoundaryControl)`
+and the original future read exactly once, including its causal parent and
+512-byte payload. Completion errors, panic recovery and historical report
+reopening retain the original ownership and publication boundaries. Three
+mechanical formatting differences are handled in a separate follow-up.
+This stage supplies live Debug8 operations; cold debug preservation, Scheduler4,
+scenario finalization and broader device support remain unqualified.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

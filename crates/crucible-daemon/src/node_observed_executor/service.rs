@@ -13,12 +13,17 @@ use crucible_cas::content_store::{ContentId, ImmutableBlobBackend, MutableRefBac
 use crucible_node_contract::ContentRef;
 
 mod capability_preparation;
+mod debug;
 mod original_claim;
 mod replay;
 use capability_preparation::ledger::CapabilityPreparationLedger;
 pub use capability_preparation::{
     CapabilityCandidateRecipe, CapabilityPreparationAction, CapabilityPreparationRecord,
     CapabilityPreparationRequest, CapabilityPreparationState,
+};
+use debug::{DebugLedger, DebugReservation, DebugWorker};
+pub use debug::{
+    NodeDebugRecord, NodeDebugResumeRequest, NodeDebugStartRequest, NodeDebugState, NodeDebugStop,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -76,6 +81,14 @@ pub use conditional_preparation::{
 type Reply = SyncSender<Result<ObservedAttemptState, NodeObservationServiceError>>;
 
 enum Command {
+    DebugStart {
+        request: NodeDebugStartRequest,
+        reservation: DebugReservation,
+    },
+    DebugResume {
+        request: NodeDebugResumeRequest,
+        reservation: DebugReservation,
+    },
     CapabilityPreparation {
         request: CapabilityPreparationRequest,
         reservation: Box<capability_preparation::ledger::CapabilityReservation>,
@@ -123,6 +136,7 @@ struct ActorStorage {
     capability_archive: PathBuf,
     preparations: Option<ConditionalPreparationLedger>,
     capabilities: CapabilityPreparationLedger,
+    debug: DebugLedger,
     transcripts: Option<crucible::node_adapters::transcript::TranscriptArchive>,
     repository: Arc<CampaignRepository>,
     blobs: Arc<dyn ImmutableBlobBackend>,
@@ -147,6 +161,7 @@ pub struct NodeObservationRetention {
     retired: Arc<AtomicBool>,
     preparations: Option<ConditionalPreparationLedger>,
     capabilities: CapabilityPreparationLedger,
+    debug: DebugLedger,
 }
 
 impl NodeObservationRetention {
@@ -161,6 +176,7 @@ impl NodeObservationRetention {
             .map_err(|_| refused("operational retention fence is poisoned"))?
             .clone();
         roots.extend(self.capabilities.retention_roots()?);
+        roots.extend(self.debug.retention_roots()?);
         if let Some(preparations) = &self.preparations {
             roots.extend(preparations.retention_roots()?);
         }
@@ -188,6 +204,7 @@ pub struct NodeObservationService {
     retired: Arc<AtomicBool>,
     preparations: Option<ConditionalPreparationLedger>,
     capabilities: CapabilityPreparationLedger,
+    debug: DebugLedger,
 }
 
 impl NodeObservationService {
@@ -229,6 +246,8 @@ impl NodeObservationService {
         };
         let capabilities = CapabilityPreparationLedger::new(blobs.clone(), refs.clone())?;
         let actor_capabilities = capabilities.clone();
+        let debug = DebugLedger::new(blobs.clone(), refs.clone())?;
+        let actor_debug = debug.clone();
         let capability_archive = configuration.socket_parent.join("capability-clock-archive");
         let (commands, receiver) = mpsc::sync_channel(configuration.maximum_pending_requests);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
@@ -262,6 +281,7 @@ impl NodeObservationService {
                             ActorStorage {
                                 preparations: actor_preparations,
                                 capabilities: actor_capabilities,
+                                debug: actor_debug,
                                 capability_archive,
                                 transcripts,
                                 repository,
@@ -292,6 +312,7 @@ impl NodeObservationService {
             retired,
             preparations,
             capabilities,
+            debug,
         })
     }
 
@@ -408,6 +429,7 @@ impl NodeObservationService {
             retired: self.retired.clone(),
             preparations: self.preparations.clone(),
             capabilities: self.capabilities.clone(),
+            debug: self.debug.clone(),
         }
     }
 
@@ -444,6 +466,7 @@ fn run_actor(
         retired,
     } = control;
     let mut workers: BTreeMap<ExecutionId, ActorWorker> = BTreeMap::new();
+    let mut debug_workers: BTreeMap<ExecutionId, DebugWorker> = BTreeMap::new();
     let mut retired_roots: BTreeMap<ExecutionId, BTreeSet<ContentId>> = BTreeMap::new();
     let mut context = Context::from_waker(Waker::noop());
     loop {
@@ -474,6 +497,7 @@ fn run_actor(
                     handle_command(
                         command,
                         &mut workers,
+                        &mut debug_workers,
                         &mut catalog,
                         maximum_worlds.saturating_sub(retired_roots.len()),
                         &storage,
@@ -492,6 +516,26 @@ fn run_actor(
                 } else {
                     let _ = owned.worker.poll(*execution);
                 }
+            }))
+            .is_err()
+            {
+                stopping.store(true, Ordering::Release);
+            }
+        }
+        debug::poll_owned(&mut debug_workers, &storage, &stopping);
+        let finished_debug: Vec<_> = debug_workers
+            .iter()
+            .filter_map(|(execution, owned)| {
+                (owned.published
+                    && (stopping.load(Ordering::Acquire)
+                        || matches!(owned.outcome, Some(NodeDebugState::Resumed { .. }))))
+                .then_some(*execution)
+            })
+            .collect();
+        for execution in finished_debug {
+            retired_roots.insert(execution, BTreeSet::new());
+            if catch_unwind(AssertUnwindSafe(|| {
+                debug_workers.remove(&execution);
             }))
             .is_err()
             {
@@ -547,7 +591,11 @@ fn run_actor(
                 }
             }
         }
-        if stopping.load(Ordering::Acquire) && workers.is_empty() && reclaimed {
+        if stopping.load(Ordering::Acquire)
+            && workers.is_empty()
+            && debug_workers.is_empty()
+            && reclaimed
+        {
             retired.store(true, Ordering::Release);
             break;
         }
@@ -566,6 +614,47 @@ fn run_actor(
 fn handle_command(
     command: Command,
     workers: &mut BTreeMap<ExecutionId, ActorWorker>,
+    debug_workers: &mut BTreeMap<ExecutionId, DebugWorker>,
+    catalog: &mut InstalledNodeCatalog,
+    maximum_worlds: usize,
+    storage: &ActorStorage,
+) {
+    match command {
+        Command::DebugStart {
+            request,
+            reservation,
+        } => {
+            debug::start_owned(
+                request,
+                reservation,
+                workers,
+                debug_workers,
+                catalog,
+                maximum_worlds,
+                storage,
+            );
+        }
+        Command::DebugResume {
+            request,
+            reservation,
+        } => {
+            debug::resume_owned(request, reservation, debug_workers, storage);
+        }
+        command => {
+            handle_other_command(
+                command,
+                workers,
+                catalog,
+                maximum_worlds.saturating_sub(debug_workers.len()),
+                storage,
+            );
+        }
+    }
+}
+
+fn handle_other_command(
+    command: Command,
+    workers: &mut BTreeMap<ExecutionId, ActorWorker>,
     catalog: &mut InstalledNodeCatalog,
     maximum_worlds: usize,
     storage: &ActorStorage,
@@ -577,6 +666,9 @@ fn handle_command(
         ..
     } = storage;
     match command {
+        command @ (Command::DebugStart { .. } | Command::DebugResume { .. }) => {
+            reply_refusal(command, refused("Debug command bypassed owning dispatch"));
+        }
         Command::CapabilityPreparation {
             request,
             reservation,
@@ -674,6 +766,12 @@ fn handle_command(
             reply,
         } => {
             let result = (|| {
+                if storage
+                    .debug
+                    .owns(&capability_preparation::execution_text(execution))?
+                {
+                    return Err(refused("execution belongs to original Debug custody"));
+                }
                 if storage
                     .capabilities
                     .owns(&capability_preparation::execution_text(execution))?
@@ -795,6 +893,9 @@ fn handle_command(
 
 fn reply_refusal(command: Command, error: NodeObservationServiceError) {
     match command {
+        Command::DebugStart { .. } | Command::DebugResume { .. } => {
+            // The durable original stays pending; restart cannot dispatch it.
+        }
         Command::CapabilityPreparation {
             reservation,
             ledger,

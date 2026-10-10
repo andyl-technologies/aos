@@ -180,6 +180,7 @@ fn pending_status_and_exact_retry_do_not_wait_for_the_owning_actor() {
         roots: Arc::new(Mutex::new(Default::default())),
         retired: Arc::new(AtomicBool::new(false)),
         preparations: Some(ledger.clone()),
+        debug: super::super::debug::DebugLedger::new(blobs.clone(), refs.clone()).unwrap(),
         capabilities:
             super::super::capability_preparation::ledger::CapabilityPreparationLedger::new(
                 blobs.clone(),
@@ -535,6 +536,7 @@ fn queued_shutdown_completion_panic_preserves_original_and_reclaims_native_world
                     )
                     .unwrap(),
                 preparations: Some(ledger.clone()),
+                debug: super::super::debug::DebugLedger::new(durable.clone(), refs.clone()).unwrap(),
                 transcripts: None,
                 repository: Arc::new(CampaignRepository::new(durable.clone(), refs.clone())),
                 blobs: fault,

@@ -465,6 +465,15 @@ impl NodeControlDaemon {
             .as_ref()
             .ok_or_else(|| refused("node actor admission stopped"))?;
         match command {
+            NodeControlCommand::DebugStart { request } => Ok(NodeControlResult::DebugState {
+                record: Box::new(service.start_debug(*request).map_err(refused)?),
+            }),
+            NodeControlCommand::DebugResume { request } => Ok(NodeControlResult::DebugState {
+                record: Box::new(service.resume_debug(*request).map_err(refused)?),
+            }),
+            NodeControlCommand::DebugStatus { execution } => Ok(NodeControlResult::DebugState {
+                record: Box::new(service.debug_state(&execution).map_err(refused)?),
+            }),
             NodeControlCommand::CapabilityPreparation { request } => {
                 let record = service
                     .submit_capability_preparation(*request)

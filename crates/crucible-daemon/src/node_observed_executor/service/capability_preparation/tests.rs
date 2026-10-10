@@ -140,7 +140,7 @@ fn original_raw_custody_survives_restart_and_changed_context_never_dispatches() 
 fn pending_status_and_exact_retry_do_not_wait_for_actor_and_full_queue_keeps_original() {
     let directory = tempfile::tempdir().unwrap();
     let (blobs, refs) = storage(directory.path());
-    let capabilities = ledger::CapabilityPreparationLedger::new(blobs, refs).unwrap();
+    let capabilities = ledger::CapabilityPreparationLedger::new(blobs.clone(), refs.clone()).unwrap();
     let (commands, receiver) = mpsc::sync_channel(1);
     let service = super::super::NodeObservationService {
         commands,
@@ -149,6 +149,7 @@ fn pending_status_and_exact_retry_do_not_wait_for_actor_and_full_queue_keeps_ori
         retired: Arc::new(AtomicBool::new(false)),
         preparations: None,
         capabilities: capabilities.clone(),
+        debug: super::super::debug::DebugLedger::new(blobs.clone(), refs.clone()).unwrap(),
     };
     let original = request();
     let first = service

@@ -13,6 +13,8 @@
 //! operator. Requests cannot install implementations or mint qualification.
 //! Compilation and dispatch belong to the actual daemon's installed catalog.
 
+mod debug;
+pub use debug::decode_debug_record;
 mod capability_preparation;
 mod conditional_replay;
 #[cfg(test)]
@@ -86,6 +88,21 @@ pub struct NodeControlRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControlCommand {
+    /// Queues one original live condition stop under explicit edition eight.
+    DebugStart {
+        /// Carries authored installed selections without native authority.
+        request: Box<crate::node_observed_executor::NodeDebugStartRequest>,
+    },
+    /// Queues the original current-owner resume under explicit edition eight.
+    DebugResume {
+        /// Preserves the exact original resume operation and suffix bound.
+        request: Box<crate::node_observed_executor::NodeDebugResumeRequest>,
+    },
+    /// Reads original live Debug custody without dispatch.
+    DebugStatus {
+        /// Names the original execution across actor incarnations.
+        execution: String,
+    },
     /// Queues original authored capability requirements under control edition seven.
     CapabilityPreparation {
         /// Carries only raw demands and complete installed candidate recipes.
@@ -169,6 +186,11 @@ pub struct NodeControlReply {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControlResult {
+    /// Retains original live Debug status without transferring native authority.
+    DebugState {
+        /// Contains the exact durable original request and control state.
+        record: Box<crate::node_observed_executor::NodeDebugRecord>,
+    },
     /// Returns original capability admission or qualified Clock preservation bytes.
     CapabilityPreparation {
         /// Contains closed canonical data, never imported runtime authority.
@@ -309,6 +331,9 @@ impl NodeControlRequest {
 
     fn validate(&self) -> Result<(), NodeControlError> {
         let expected_version = match self.command {
+            NodeControlCommand::DebugStart { .. }
+            | NodeControlCommand::DebugResume { .. }
+            | NodeControlCommand::DebugStatus { .. } => 8,
             NodeControlCommand::CapabilityPreparation { .. }
             | NodeControlCommand::CapabilityPreparationStatus { .. } => 7,
             NodeControlCommand::CacheReuse { .. } => 6,
@@ -323,6 +348,9 @@ impl NodeControlRequest {
             return Err(refused("unsupported local node control edition"));
         }
         match &self.command {
+            NodeControlCommand::DebugStart { request } => request.validate().map_err(refused),
+            NodeControlCommand::DebugResume { request } => request.validate().map_err(refused),
+            NodeControlCommand::DebugStatus { execution } => execution_id(execution).map(|_| ()),
             NodeControlCommand::CapabilityPreparation { request } => {
                 request.validate().map_err(refused)
             }
@@ -432,6 +460,9 @@ pub fn decode_node_state(
     reply: &NodeControlReply,
 ) -> Result<ObservedAttemptState, NodeControlError> {
     match &reply.result {
+        NodeControlResult::DebugState { .. } => Err(refused(
+            "Debug custody is not ordinary observed execution state",
+        )),
         NodeControlResult::State { state } => {
             ObservedAttemptState::from_canonical_bytes(state.as_slice()).map_err(refused)
         }

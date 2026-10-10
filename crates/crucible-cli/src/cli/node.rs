@@ -4,6 +4,9 @@
 //! and native cleanup. These commands transport authored bytes and render original
 //! durable state without implementing scheduling or claiming deterministic replay.
 
+#[path = "node_debug.rs"]
+mod debug;
+
 #[path = "node_cache_reuse.rs"]
 mod cache_reuse;
 #[path = "node_capability.rs"]
@@ -49,6 +52,8 @@ pub(super) struct NodeArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum NodeCommand {
+    #[command(flatten)]
+    Debug(debug::NodeDebugCommand),
     #[command(flatten)]
     Capability(capability::NodeCapabilityCommand),
     #[command(flatten)]
@@ -134,6 +139,7 @@ pub(super) fn run_node_invocation(cli: &Cli, args: &NodeArgs) -> Result<(), CliE
         ));
     }
     match &args.command {
+        NodeCommand::Debug(command) => debug::run(command),
         NodeCommand::Capability(command) => capability::run(command),
         NodeCommand::CacheReuse(command) => cache_reuse::run(command),
         NodeCommand::TerminalState(command) => terminal_state::run(command),

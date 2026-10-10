@@ -20,11 +20,11 @@ pub use condition_execution::ConditionExecution;
 pub use condition_publication::StoredConditionResultPublisher;
 pub use factory::{
     InstalledCapabilityCandidate, InstalledCapabilityClockFactory, InstalledClockLabelFactory,
-    InstalledClockLabelProfile, InstalledConditionalReplay, InstalledControlledFaultProfile,
-    InstalledGem5ClosedProfile, InstalledGem5Isa, InstalledHostIoProfile,
-    InstalledHostSemanticProfile, InstalledHostStateFactory, InstalledIoArtifact,
-    InstalledIoArtifactSource, InstalledNativePreservation, InstalledNodeCatalog,
-    InstalledNodeKind, InstalledNodeSelection, InstalledPreparedNativeWorld,
+    InstalledClockLabelProfile, InstalledConditionDebugProfile, InstalledConditionalReplay,
+    InstalledControlledFaultProfile, InstalledGem5ClosedProfile, InstalledGem5Isa,
+    InstalledHostIoProfile, InstalledHostSemanticProfile, InstalledHostStateFactory,
+    InstalledIoArtifact, InstalledIoArtifactSource, InstalledNativePreservation,
+    InstalledNodeCatalog, InstalledNodeKind, InstalledNodeSelection, InstalledPreparedNativeWorld,
     InstalledPreparedRootWorld, InstalledPreparedWorld, InstalledPublicReferencePackage,
     InstalledRecordedIngressProfile, InstalledRecordedWorld, InstalledReferenceQualifier,
     InstalledReferenceRecording, InstalledReplayRecipe, InstalledRootPreservation,
@@ -38,8 +38,10 @@ pub use factory::{
 pub use service::{
     CapabilityCandidateRecipe, CapabilityPreparationAction, CapabilityPreparationRecord,
     CapabilityPreparationRequest, CapabilityPreparationState, ConditionalPreparationRecord,
-    ConditionalPreparationRequest, ConditionalPreparationState, NodeObservationRetention,
-    NodeObservationService, NodeObservationServiceConfig, NodeObservationServiceError,
+    ConditionalPreparationRequest, ConditionalPreparationState, NodeDebugRecord,
+    NodeDebugResumeRequest, NodeDebugStartRequest, NodeDebugState, NodeDebugStop,
+    NodeObservationRetention, NodeObservationService, NodeObservationServiceConfig,
+    NodeObservationServiceError,
 };
 pub use terminal_publication::StoredTerminalResultPublisher;
 
