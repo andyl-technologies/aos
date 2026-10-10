@@ -1820,11 +1820,17 @@ not retained for independent reinspection. This checks the existing
 HostArchive/Scheduling1 path and supplies no Runtime7 conditional-capture,
 installed typed-source, class or readiness qualification.
 
-A fresh local hermetic application test-target compilation is in progress.
-Its frozen source contains all 51 changed core Rust files and excludes only
-the engineering baseline from this join. Completion and test execution are not
-claimed. Earlier application compilation receipts remain bound to their original
-selected source images. Raw evidence stays local.
+Fresh local hermetic application test-target compilation passes for the frozen
+preservation image. Its immutable 5,709-file source contains all 51 changed core
+Rust files and excludes only the engineering baseline from that join. Output
+`13pp3wzwrzz957sgvnkn928wv73aak6s-aos-test-targets-0.1.0` records 943 compiler
+artifacts, all 167 test targets, 69 integration targets and successful build
+completion. Its receipt has SHA256
+`394053438d4f01bd850dc615f4e7157bcc8404b8957bd7953e1f7eb43cd68392`.
+This historical image predates the ledger, common-counter and typed-reader joins;
+it supplies no later source, test execution, daemon, CLI, QEMU or native credit.
+Earlier compilation receipts retain their original selected images. Raw evidence
+stays local.
 
 ## Common execution-quantum accounting
 
@@ -1847,6 +1853,39 @@ cases. The original four passing accounting controls were retained without
 reexecution. Exact sources, commands, logs and five test/scanner executables stay
 local. This changes API ownership and supplies no wire, native, capability,
 readiness or capture qualification. Raw evidence is excluded from Git.
+
+## Typed reader source and original negotiated construction
+
+A distinct typed reader provider exports its complete source-owned extension
+selection, profile, schemas and implementation manifest. Its startup requires the
+original negotiated registrar and exact selected tuple. The semantic consumer
+retains that same registrar through source preparation and revalidates it before
+construction; the legacy constructor refuses typed mode. Package and suite wiring
+retain this implementation separately from the historical reader installation.
+
+The current 22-path source/API join passes all 1,020 core tests and 249 primary
+provider tests, plus one subprocess test; 13 native provider tests remain
+intentionally ignored. All 37 source-quality checks, core/provider/daemon
+all-target strict checks, formatting of 18 Rust files and two Nix files pass.
+All 8,720 source files match before and after verification. The final combined
+receipt has SHA256
+`2469b30767f6a7c9afed0affb25255e350a00872781fd9132d20429df3a2806e`.
+Local retention preserves 64 source, log and command files and six actual
+test/scanner executables. Fresh application compilation is running against an
+immutable 5,716-file source image containing every changed Rust/Cargo file;
+completion is not claimed.
+
+The separate privately frozen source22 image also passes source-built package
+checks and produces the distinct `4ac8a9w60vm7w5lxsazp141znl44rkn2` implementation.
+Independent review checks all 328 complete content-reference roles, 5,973 archived
+workspace members and the generated platform role against that image, together
+with its actual build and derivation. Its package review has SHA256
+`f2775f54cb7827fe596338d72c6d8875b3b3c3d773af386bd7dc632bf430e2b4`.
+This package is not the complete current worktree image and does not supersede
+earlier package identities. Source exports and generic negotiated construction do
+not supply installed behavioral acceptance, a native execution epoch, ordinary
+selection, readiness, a class, or conditional capture. Those remain separate
+owning-cohort requirements. Raw evidence stays local.
 
 ## Performance evidence
 

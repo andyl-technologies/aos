@@ -18,7 +18,7 @@ impl sealed::Sealed for ReaderState {}
 
 impl ControlledReference for ReaderState {
     fn quantized_facet(&self) -> &str {
-        "reference-device/quantized-lineage-reader-v1"
+        self.transport.facet()
     }
 
     fn publication_causal_parents(

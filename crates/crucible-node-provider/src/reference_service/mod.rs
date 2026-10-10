@@ -16,8 +16,10 @@ mod lineage_measurement;
 mod lineage_reader_launch;
 mod native_child;
 mod native_supervision;
+mod negotiated_reader_launch;
 pub mod profile;
 mod progress;
+mod reader_negotiation;
 mod resources;
 mod retirement;
 mod security;
@@ -34,10 +36,14 @@ pub use lineage_launch::ReferenceLineageLaunchBootstrap;
 pub use lineage_reader_launch::{
     LineageReaderDefinitionSources, ReferenceLineageReaderLaunchBootstrap,
 };
+pub use negotiated_reader_launch::ReferenceNegotiatedLineageReaderLaunchBootstrap;
 pub use profile::{ProfileContent, ReferenceProfile};
 pub use progress::{ReferenceProgressLaunchBootstrap, serve_progress};
 pub use resources::{ConsumedRequest, PublicationConsumption, RequestConsumption};
-pub use server::{serve, serve_installed, serve_lineage, serve_lineage_reader, serve_selected};
+pub use server::{
+    serve, serve_installed, serve_lineage, serve_lineage_reader, serve_negotiated_lineage_reader,
+    serve_selected,
+};
 
 use crucible_node_contract::ContractError;
 use serde::Serialize;

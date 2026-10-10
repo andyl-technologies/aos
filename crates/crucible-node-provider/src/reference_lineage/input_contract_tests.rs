@@ -126,3 +126,46 @@ fn containing_application_credit_stays_separate_from_manifest_body_credit() {
     let bytes = canonical::canonical_json(&serde_json::to_value(application).unwrap()).unwrap();
     assert!(bytes.len() < definition.declaration().limits.maximum_message_bytes.get() as usize);
 }
+
+#[test]
+fn typed_peer_definition_has_a_distinct_published_version_and_closed_bodies()
+-> Result<(), ProviderError> {
+    let namespace = canonical::content_ref(b"namespace data", "application/json")?;
+    let handler = canonical::content_ref(b"handler data", "application/json")?;
+    let event = canonical::content_ref(b"Event definition", "text/plain")?;
+    let input = canonical::content_ref(b"InputBatch definition", "text/plain")?;
+    let receipt = canonical::content_ref(b"StopReceipt definition", "text/plain")?;
+    let old = InputLineageDefinition::build(
+        namespace.clone(),
+        handler.clone(),
+        event.clone(),
+        input.clone(),
+        receipt.clone(),
+    )?;
+    let typed =
+        InputLineageDefinition::build_negotiated(namespace, handler, event, input, receipt)?;
+
+    assert_eq!(old.selection().semantic_version.minor, U64::new(0));
+    assert_eq!(typed.selection().semantic_version.minor, U64::new(1));
+    assert_ne!(old.selection().declaration, typed.selection().declaration);
+    assert_eq!(
+        old.selection().schema_digest,
+        typed.selection().schema_digest
+    );
+    let typed_feature = Id::new(crate::handshake::EXTENSION_NEGOTIATION_V1)?;
+    assert!(!old.declaration().required_features.contains(&typed_feature));
+    assert!(
+        typed
+            .declaration()
+            .required_features
+            .contains(&typed_feature)
+    );
+    for (reference, bytes) in typed.objects() {
+        reference.verify(bytes)?;
+        assert_ne!(reference, &old.selection().declaration);
+        assert_ne!(reference, &old.declaration().specification);
+        assert_ne!(reference, &old.declaration().conformance);
+    }
+    assert_eq!(old.declaration().limits, typed.declaration().limits);
+    Ok(())
+}

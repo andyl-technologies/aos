@@ -23,6 +23,7 @@ mod implementation;
 mod input;
 mod inventory;
 mod lifecycle;
+mod negotiation;
 mod pending;
 mod publication;
 mod readiness;
@@ -46,6 +47,29 @@ pub trait LineageReferenceQualification {
         guard: &LineageSourceGuard,
         original: &OriginalLineageRealization<'_>,
     ) -> Result<(), ProviderError>;
+
+    /// Authenticates the installed typed source and its exact admitted interpretation.
+    ///
+    /// The source policy independently authenticates the complete original peer
+    /// selection, measured definition/profile and dynamic input handler. When
+    /// `admitted` is present it also checks the frozen graph's exact durable
+    /// facet, compatibility and schema applications for this original node.
+    /// A namespace label or successful Hello cannot satisfy this callback.
+    ///
+    /// # Errors
+    /// Refuses by default. An installed policy refuses altered source contracts,
+    /// unsupported graph scope or a missing independently installed handler.
+    fn authenticate_peer_extensions(
+        &self,
+        _guard: &LineageSourceGuard,
+        _original: &OriginalLineageRealization<'_>,
+        _selected: &[ExtensionSelection],
+        _admitted: Option<(&AdmittedGraph, &Id)>,
+    ) -> Result<(), ProviderError> {
+        Err(ProviderError::Correlation(
+            "installed typed lineage source policy unavailable",
+        ))
+    }
 
     /// Authenticates actual ordered native consumption against opaque common input.
     ///
@@ -132,9 +156,29 @@ impl LineageControlledReference {
         slot: Box<dyn LineageRuntimeCustodySlot>,
         maximum_operations: usize,
     ) -> Result<Self, Box<LineagePreparationFailure>> {
+        Self::prepare_original(
+            guard,
+            realization,
+            qualification,
+            slot,
+            maximum_operations,
+            negotiation::ReaderTransport::Legacy,
+        )
+    }
+
+    fn prepare_original(
+        guard: LineageSourceGuard,
+        realization: Id,
+        qualification: Box<dyn LineageReferenceQualification>,
+        slot: Box<dyn LineageRuntimeCustodySlot>,
+        maximum_operations: usize,
+        transport: negotiation::ReaderTransport,
+    ) -> Result<Self, Box<LineagePreparationFailure>> {
         let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             guard.with_original_realization(&realization, |original| {
+                transport.authenticate(&guard, &original, qualification.as_ref(), None)?;
                 qualification.authenticate_realization(&guard, &original)?;
+                transport.verify_registrar(&guard)?;
                 if maximum_operations == 0
                     || maximum_operations > 65_536
                     || slot.identity().get() == 0
@@ -226,6 +270,7 @@ impl LineageControlledReference {
                 qualification,
                 supervision,
                 input_lineages: BTreeMap::new(),
+                transport,
             })),
             slot: Some(slot),
             owner,
@@ -250,37 +295,11 @@ impl LineageControlledReference {
         crate::node_adapters::reference_device::ControlledReferenceNode<Self>,
         OperationFailure,
     > {
-        let original_facets = &self
-            .state()
-            .map_err(readiness::unknown)?
-            .binding
-            .compatibility
-            .operating_contract
-            .facets;
-        if original_facets.len() != 1
-            || original_facets[0].version != 1
-            || original_facets[0].id.as_str() != "reference-device/quantized-lineage-reader-v1"
-        {
-            return Err(readiness::refused("original selected source facet differs"));
-        }
-        let original_facet = original_facets[0].id.clone();
-
-        crate::node_adapters::reference_device::ControlledReferenceNode::from_controlled_prepared(
+        self.install_node(
             graph,
             node,
-            self,
-            original_facet,
-            &|control, descriptor, binding| {
-                let state = control.state().map_err(readiness::unknown)?;
-                state.verify_native_custody().map_err(readiness::unknown)?;
-                if descriptor != &state.profile.descriptor || binding != &state.binding {
-                    return Err(readiness::refused(
-                        "admitted selected source identity changed",
-                    ));
-                }
-                Ok(())
-            },
             maximum_operations,
+            negotiation::ReaderTransport::Legacy,
         )
     }
 

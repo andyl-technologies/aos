@@ -37,12 +37,76 @@ impl ReferenceProfile {
         host_budget: crucible_node_contract::U64,
         selection: InputLineageProfileSelection,
     ) -> Result<Self, ProviderError> {
+        Self::build_lineage_reader_profile(
+            node,
+            owner,
+            provider,
+            device,
+            quantum,
+            host_budget,
+            (selection, false),
+        )
+    }
+
+    /// Builds the separately selected reader with exact typed peer negotiation.
+    ///
+    /// This profile publishes distinct implementation, configuration and facet
+    /// identities. It cannot substitute for a legacy launch6 binding. Installation
+    /// and original native consumption remain independently qualified.
+    ///
+    /// # Errors
+    /// Refuses a legacy definition, invalid original artifacts or profile encoding.
+    pub fn build_public_negotiated_lineage_reader(
+        node: crucible_node_contract::Id,
+        owner: crucible_node_contract::Id,
+        provider: crucible_node_contract::ContentRef,
+        device: crucible_node_contract::ContentRef,
+        quantum: crucible_node_contract::U64,
+        host_budget: crucible_node_contract::U64,
+        selection: InputLineageProfileSelection,
+    ) -> Result<Self, ProviderError> {
+        Self::build_lineage_reader_profile(
+            node,
+            owner,
+            provider,
+            device,
+            quantum,
+            host_budget,
+            (selection, true),
+        )
+    }
+
+    fn build_lineage_reader_profile(
+        node: crucible_node_contract::Id,
+        owner: crucible_node_contract::Id,
+        provider: crucible_node_contract::ContentRef,
+        device: crucible_node_contract::ContentRef,
+        quantum: crucible_node_contract::U64,
+        host_budget: crucible_node_contract::U64,
+        selected: (InputLineageProfileSelection, bool),
+    ) -> Result<Self, ProviderError> {
+        let (selection, negotiated) = selected;
         let InputLineageProfileSelection {
             closed_ingress,
             definition,
         } = selection;
         definition.declaration().validate()?;
         definition.selection().validate()?;
+        let typed_feature = id(crate::handshake::EXTENSION_NEGOTIATION_V1)?;
+        let typed_definition = definition
+            .declaration()
+            .required_features
+            .contains(&typed_feature);
+        if negotiated != typed_definition {
+            return Err(ProviderError::Correlation(
+                "reader negotiation edition differs",
+            ));
+        }
+        let facet_id = if negotiated {
+            "reference-device/quantized-lineage-reader-typed-v2"
+        } else {
+            "reference-device/quantized-lineage-reader-v1"
+        };
         let mut profile = Self::build_public_lineage(
             node,
             owner,
@@ -76,7 +140,7 @@ impl ReferenceProfile {
         profile.descriptor.configuration_ref = configuration_ref.clone();
         let applications = definition.durable_extensions()?;
         for facet in &mut profile.operating_contract.facets {
-            facet.id = id("reference-device/quantized-lineage-reader-v1")?;
+            facet.id = id(facet_id)?;
             facet.configuration_ref = configuration_ref.clone();
             facet.extensions = applications.clone();
         }
@@ -84,7 +148,11 @@ impl ReferenceProfile {
         // body; a new configuration or extension changes that complete identity.
         profile.capabilities.facets = profile.operating_contract.facets.clone();
         profile.capabilities_ref = put_json(&mut profile.content, &profile.capabilities)?;
-        profile.implementation.implementation_id = id("crucible-reference-lineage-reader")?;
+        profile.implementation.implementation_id = id(if negotiated {
+            "crucible-reference-lineage-reader-typed"
+        } else {
+            "crucible-reference-lineage-reader"
+        })?;
         profile.implementation.formats.push(schema(
             &mut profile.content,
             "reference-device/original-input-lineage-inventory-v1",
@@ -94,15 +162,24 @@ impl ReferenceProfile {
             .implementation
             .formats
             .sort_by(|a, b| (&a.id, a.version).cmp(&(&b.id, b.version)));
-        profile.node_manifest.profile_id = id(if closed_ingress {
-            "reference-device/cnp-lineage-reader-source-v1"
-        } else {
-            "reference-device/cnp-lineage-reader-consumer-v1"
+        profile.node_manifest.profile_id = id(match (negotiated, closed_ingress) {
+            (true, true) => "reference-device/cnp-lineage-reader-typed-source-v2",
+            (true, false) => "reference-device/cnp-lineage-reader-typed-consumer-v2",
+            (false, true) => "reference-device/cnp-lineage-reader-source-v1",
+            (false, false) => "reference-device/cnp-lineage-reader-consumer-v1",
         })?;
         profile.node_manifest.configuration_schema = schema(
             &mut profile.content,
-            "reference-device/configuration-public-lineage-reader-v1",
-            CONFIGURATION_SCHEMA,
+            if negotiated {
+                "reference-device/configuration-public-lineage-reader-typed-v2"
+            } else {
+                "reference-device/configuration-public-lineage-reader-v1"
+            },
+            if negotiated {
+                TYPED_CONFIGURATION_SCHEMA
+            } else {
+                CONFIGURATION_SCHEMA
+            },
         )?;
         profile.node_manifest.operation_facets = profile.operating_contract.facets.clone();
         profile.node_manifest.allowed_combinations_ref = put_json(
@@ -112,7 +189,11 @@ impl ReferenceProfile {
                 "facets":profile.operating_contract.facets,"capture":"none","continuation":"unsupported"
             }),
         )?;
-        profile.provider_manifest.provider_id = id("crucible-reference-lineage-reader-provider")?;
+        profile.provider_manifest.provider_id = id(if negotiated {
+            "crucible-reference-lineage-reader-typed-provider"
+        } else {
+            "crucible-reference-lineage-reader-provider"
+        })?;
         profile.provider_manifest.implementation = profile.implementation.clone();
         profile.provider_manifest.supported_profiles = vec![profile.node_manifest.clone()];
         profile
@@ -120,9 +201,15 @@ impl ReferenceProfile {
             .extensions_supported
             .retain(|feature| feature.as_str() != "reference-device/quantized-lineage-v1");
         profile.provider_manifest.extensions_supported.extend([
-            id("reference-device/quantized-lineage-reader-v1")?,
+            id(facet_id)?,
             id(crate::reference_lineage::INPUT_LINEAGE_FEATURE)?,
         ]);
+        if negotiated {
+            profile
+                .provider_manifest
+                .extensions_supported
+                .push(typed_feature);
+        }
         profile.provider_manifest.extensions_supported.sort();
         profile.profile_ref = put_json(
             &mut profile.content,
@@ -185,3 +272,13 @@ const CONFIGURATION_SCHEMA: &str = concat!(
 #[allow(clippy::unwrap_used)]
 #[path = "input_reader_tests.rs"]
 mod tests;
+
+const TYPED_CONFIGURATION_SCHEMA: &str = concat!(
+    "reference-device/configuration-public-lineage-reader-typed-v2 requires the exact published ",
+    "reader declaration1.1.0 and full typed cnp.extension-negotiation/1 peer selection before ",
+    "Initialize/Ready or dynamic Input. Original inventory1, quantized consumption, source/native ",
+    "two-group custody, finite4096/67108864/65536/8704 credits and Stage65KiB stay independently ",
+    "checked. Legacy launch6/profile selection cannot enable this separately measured source. ",
+    "Resumption preserves exact original declaration/SemVer/schema and registrar identity; ",
+    "peer selection does not grant graph admission, namespace control or capture authority.",
+);

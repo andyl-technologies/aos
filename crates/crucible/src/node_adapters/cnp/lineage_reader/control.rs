@@ -28,6 +28,7 @@ pub(super) struct ReaderState {
     pub(super) realization: Id,
     pub(super) qualification: Box<dyn LineageReferenceQualification>,
     pub(super) supervision: U64,
+    pub(super) transport: super::negotiation::ReaderTransport,
     pub(super) input_lineages:
         std::collections::BTreeMap<Id, crate::node_contract::OriginalInputLineage>,
 }
@@ -55,6 +56,7 @@ impl ReaderState {
     }
 
     pub(super) fn verify_native_custody(&self) -> Result<(), ProviderError> {
+        self.transport.verify_registrar(&self.guard)?;
         self.guard
             .with_original_realization(&self.realization, |_| Ok(()))
     }

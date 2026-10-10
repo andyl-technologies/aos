@@ -31,6 +31,18 @@ impl BodySchemaVerifier for SchemaVerifier {
                 "reference envelope extensions unsupported",
             ));
         }
+        if let Some(definition) = &self.reader
+            && definition
+                .declaration()
+                .required_features
+                .iter()
+                .any(|feature| feature.as_str() == crate::handshake::EXTENSION_NEGOTIATION_V1)
+            && authority.selected_extensions() != Some(std::slice::from_ref(definition.selection()))
+        {
+            return Err(ProviderError::Correlation(
+                "typed reader original peer selection differs",
+            ));
+        }
         let extensions = match body {
             ReceivedBody::Request(request) => match request.as_ref() {
                 bodies::RequestBody::Hello(value) => &value.extensions,

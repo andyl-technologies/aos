@@ -153,6 +153,97 @@ impl InputLineageDefinition {
         })
     }
 
+    /// Builds a separately published reader requiring exact typed peer selection.
+    ///
+    /// The original reader declaration remains version 1.0.0. This declaration
+    /// publishes version 1.1.0 with mandatory typed Hello negotiation; the native
+    /// input inventory and its independently installed custody checks are unchanged.
+    /// Returned bytes are definition data, never namespace or handler authority.
+    ///
+    /// # Errors
+    /// Refuses malformed original source roles or canonical definition encoding.
+    pub fn build_negotiated(
+        namespace_publication: ContentRef,
+        handler: ContentRef,
+        core_event: ContentRef,
+        core_input: ContentRef,
+        core_receipt: ContentRef,
+    ) -> Result<Self, ProviderError> {
+        let mut definition = Self::build(
+            namespace_publication,
+            handler,
+            core_event,
+            core_input,
+            core_receipt,
+        )?;
+        let old_specification = definition.declaration.specification.clone();
+        let old_conformance = definition.declaration.conformance.clone();
+        let old_declaration = definition.selection.declaration.clone();
+        definition.objects.retain(|(reference, _)| {
+            reference != &old_specification
+                && reference != &old_conformance
+                && reference != &old_declaration
+        });
+
+        let specification = format!(
+            "{SPECIFICATION} Typed reader edition1.1 requires exact installed declaration, \
+             SemVer and schema selection through cnp.extension-negotiation/1 before \
+             original Initialize/Ready and every dynamic Input. Legacy IdSet offers \
+             cannot qualify this declaration; resume retains the original typed roster."
+        );
+        definition.declaration.specification = put(&mut definition.objects, &specification)?;
+        let conformance = format!(
+            "{CONFORMANCE} Typed edition1.1 additionally refuses missing, foreign or \
+             substituted peer declaration/version/schema and changed resume selection."
+        );
+        definition.declaration.conformance = put(&mut definition.objects, &conformance)?;
+        definition.declaration.semantic_version.minor = U64::new(1);
+        definition
+            .declaration
+            .required_features
+            .push(Id::new(crate::handshake::EXTENSION_NEGOTIATION_V1)?);
+        definition.declaration.required_features.sort();
+        definition.declaration.validate()?;
+        let bytes = canonical::canonical_json(
+            &serde_json::to_value(&definition.declaration).map_err(ContractError::from)?,
+        )?;
+        let reference = canonical::content_ref(&bytes, "application/json")?;
+        definition.objects.push((reference.clone(), bytes));
+        definition.selection.declaration = reference;
+        definition.selection.semantic_version = definition.declaration.semantic_version.clone();
+        definition.selection.validate()?;
+        let roles = [
+            &definition.declaration.schema.definition,
+            &definition.declaration.specification,
+            &definition.declaration.timing_effects,
+            &definition.declaration.state_effects,
+            &definition.declaration.error_behavior,
+            &definition.declaration.conformance,
+            &definition.selection.declaration,
+        ];
+        let mut ordered = Vec::new();
+        ordered.try_reserve_exact(roles.len()).map_err(|_| {
+            ProviderError::ResourceExhausted("typed reader definition role reservation")
+        })?;
+        for role in roles {
+            let index = definition
+                .objects
+                .iter()
+                .position(|(reference, _)| reference == role)
+                .ok_or(ProviderError::Correlation(
+                    "typed reader definition role absent",
+                ))?;
+            ordered.push(definition.objects.remove(index));
+        }
+        if !definition.objects.is_empty() {
+            return Err(ProviderError::Correlation(
+                "typed reader definition contains an unused body",
+            ));
+        }
+        definition.objects = ordered;
+        Ok(definition)
+    }
+
     /// Borrows the exact original declaration with required nullable SemVer fields.
     pub fn declaration(&self) -> &ExtensionDeclaration {
         &self.declaration

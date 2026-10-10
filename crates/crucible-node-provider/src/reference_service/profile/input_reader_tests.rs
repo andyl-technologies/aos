@@ -158,3 +158,91 @@ fn reader_selected_facets_are_exactly_advertised_by_regenerated_capability_body(
     assert_eq!(legacy.capabilities_ref, after.capabilities_ref);
     assert_eq!(legacy.capabilities, after.capabilities);
 }
+
+#[test]
+fn typed_reader_profile_cannot_cross_legacy_selection_and_advertises_exact_new_facet()
+-> Result<(), ProviderError> {
+    let object = |bytes: &[u8]| canonical::content_ref(bytes, "application/octet-stream");
+    let typed = InputLineageDefinition::build_negotiated(
+        object(b"namespace")?,
+        object(b"handler")?,
+        object(b"Event")?,
+        object(b"InputBatch")?,
+        object(b"Stop")?,
+    )?;
+    let node = Id::new("node/typed")?;
+    let owner = Id::new("owner/typed")?;
+    let selected = ReferenceProfile::build_public_negotiated_lineage_reader(
+        node.clone(),
+        owner.clone(),
+        object(b"provider")?,
+        object(b"device")?,
+        U64::new(10),
+        U64::new(1_000_000_000),
+        InputLineageProfileSelection {
+            closed_ingress: false,
+            definition: typed.clone(),
+        },
+    )?;
+    let legacy = InputLineageDefinition::build(
+        object(b"namespace")?,
+        object(b"handler")?,
+        object(b"Event")?,
+        object(b"InputBatch")?,
+        object(b"Stop")?,
+    )?;
+    assert!(
+        ReferenceProfile::build_public_lineage_reader(
+            node.clone(),
+            owner.clone(),
+            object(b"provider")?,
+            object(b"device")?,
+            U64::new(10),
+            U64::new(1_000_000_000),
+            InputLineageProfileSelection {
+                closed_ingress: false,
+                definition: typed
+            },
+        )
+        .is_err()
+    );
+    assert!(
+        ReferenceProfile::build_public_negotiated_lineage_reader(
+            node,
+            owner,
+            object(b"provider")?,
+            object(b"device")?,
+            U64::new(10),
+            U64::new(1_000_000_000),
+            InputLineageProfileSelection {
+                closed_ingress: false,
+                definition: legacy
+            },
+        )
+        .is_err()
+    );
+
+    assert_eq!(
+        selected.operating_contract.facets,
+        selected.capabilities.facets
+    );
+    assert_eq!(
+        selected.operating_contract.facets,
+        selected.node_manifest.operation_facets
+    );
+    assert_eq!(
+        selected.operating_contract.facets[0].id.as_str(),
+        "reference-device/quantized-lineage-reader-typed-v2"
+    );
+    assert!(
+        selected
+            .provider_manifest
+            .extensions_supported
+            .iter()
+            .any(|feature| { feature.as_str() == crate::handshake::EXTENSION_NEGOTIATION_V1 })
+    );
+    selected
+        .capabilities_ref
+        .verify(selected.content(&selected.capabilities_ref)?)?;
+    Ok(())
+}

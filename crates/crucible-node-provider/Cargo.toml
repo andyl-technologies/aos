@@ -65,3 +65,11 @@ path = "src/bin/crucible-reference-lineage-reader-provider.rs"
 [[bin]]
 name = "crucible-reference-lineage-reader-manifest"
 path = "src/bin/crucible-reference-lineage-reader-manifest.rs"
+
+[[bin]]
+name = "crucible-reference-lineage-reader-typed-provider"
+path = "src/bin/crucible-reference-lineage-reader-typed-provider.rs"
+
+[[bin]]
+name = "crucible-reference-lineage-reader-typed-manifest"
+path = "src/bin/crucible-reference-lineage-reader-typed-manifest.rs"

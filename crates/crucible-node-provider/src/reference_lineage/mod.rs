@@ -30,7 +30,8 @@ pub use protocol::{
     DIALECT, LineageConsumedEntry, LineageStage, NativeLineageReceipt, StagedLineageEntry,
 };
 pub use source_custody::{
-    LineageSourceCustody, LineageSourceCustodySlot, LineageSourceFailure, LineageSourceGuard,
+    LineageSourceCustody, LineageSourceCustodySlot, LineageSourceExtensionFailure,
+    LineageSourceFailure, LineageSourceGuard,
 };
 
 pub use relation::{ConsumptionEvidence, ConsumptionRelationCredit, NativeConsumptionRelation};

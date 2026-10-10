@@ -16,7 +16,7 @@ use crate::client::{
     LineageWindowRequests, OriginalLineageRealization, OriginalLineageWindow, ReferenceController,
 };
 use crate::envelope::Method;
-use crate::handshake::Handshake;
+use crate::handshake::{ExtensionHandshake, Handshake};
 
 #[path = "source_kernel.rs"]
 mod kernel;
@@ -47,6 +47,7 @@ pub struct LineageSourceCustody {
     expected_native: ContentRef,
     controller: Option<ReferenceController>,
     handshake: Option<Handshake>,
+    extension_handshake: Option<ExtensionHandshake>,
     native: NativeCustody,
     provider_signalled: bool,
     reaped: Option<ExitStatus>,
@@ -66,6 +67,18 @@ pub struct LineageSourceFailure {
     pub error: ProviderError,
     /// Retains the original process, journals and pre-spawn supervision slot.
     pub guard: LineageSourceGuard,
+}
+
+/// Retains every original handle when a typed registrar attachment refuses.
+pub struct LineageSourceExtensionFailure {
+    /// Reports attachment refusal without classifying native effects.
+    pub error: ProviderError,
+    /// Retains the original provider, kernel identities and supervision slot.
+    pub guard: LineageSourceGuard,
+    /// Retains the supplied controller and its exact original request journals.
+    pub controller: Box<ReferenceController>,
+    /// Retains the supplied typed registrar and its original private lease.
+    pub handshake: Box<ExtensionHandshake>,
 }
 
 /// Keeps a complete two-group source capsule beneath a pre-spawn reservation.
@@ -101,6 +114,7 @@ impl LineageSourceGuard {
                 expected_native,
                 controller: None,
                 handshake: None,
+                extension_handshake: None,
                 native: NativeCustody::NotStarted,
                 provider_signalled: false,
                 reaped: None,
@@ -138,7 +152,10 @@ impl LineageSourceGuard {
     ) -> Result<Self, LineageSourceFailure> {
         let result = (|| {
             let custody = self.custody_mut()?;
-            if custody.controller.is_some() || custody.handshake.is_some() {
+            if custody.controller.is_some()
+                || custody.handshake.is_some()
+                || custody.extension_handshake.is_some()
+            {
                 return Err(ProviderError::Correlation(
                     "lineage source already attached",
                 ));
@@ -154,6 +171,18 @@ impl LineageSourceGuard {
             if controller.peer_pid() != custody.child.id()
                 || controller.peer_executable() != &custody.expected_provider
                 || !controller.profile.is_lineage()
+                || controller
+                    .profile
+                    .input_lineage_definition()
+                    .is_some_and(|definition| {
+                        definition
+                            .declaration()
+                            .required_features
+                            .iter()
+                            .any(|feature| {
+                                feature.as_str() == crate::handshake::EXTENSION_NEGOTIATION_V1
+                            })
+                    })
             {
                 return Err(ProviderError::Correlation(
                     "lineage source attached peer differs",
@@ -165,6 +194,113 @@ impl LineageSourceGuard {
             Ok(()) => Ok(self),
             Err(error) => Err(LineageSourceFailure { error, guard: self }),
         }
+    }
+
+    /// Attaches a separately selected typed reader without discarding any handle.
+    ///
+    /// The caller supplies its already reserved boxed controller and registrar;
+    /// this attachment allocates no replacement failure custody. Every check
+    /// precedes transfer. On refusal the original guard, controller
+    /// and registrar are returned together. A matching tuple alone cannot replace
+    /// the exact private Hello registration or qualify original native consumption.
+    ///
+    /// # Errors
+    /// Returns complete owned handles on duplicate attachment, foreign provider,
+    /// legacy profile, changed typed selection or stale original registrar.
+    pub fn attach_extensions(
+        mut self,
+        controller: Box<ReferenceController>,
+        handshake: Box<ExtensionHandshake>,
+    ) -> Result<Self, LineageSourceExtensionFailure> {
+        let checked =
+            (|| {
+                let custody = self.custody_mut()?;
+                if custody.controller.is_some()
+                    || custody.handshake.is_some()
+                    || custody.extension_handshake.is_some()
+                {
+                    return Err(ProviderError::Correlation(
+                        "lineage source already attached",
+                    ));
+                }
+                custody.verify_provider()?;
+                let definition = controller.profile.input_lineage_definition().ok_or(
+                    ProviderError::Correlation("typed lineage reader definition absent"),
+                )?;
+                if controller.peer_pid() != custody.child.id()
+                    || controller.peer_executable() != &custody.expected_provider
+                    || !controller.profile.is_lineage()
+                    || !definition
+                        .declaration()
+                        .required_features
+                        .iter()
+                        .any(|feature| {
+                            feature.as_str() == crate::handshake::EXTENSION_NEGOTIATION_V1
+                        })
+                    || controller.selected_extensions()
+                        != Some(std::slice::from_ref(definition.selection()))
+                {
+                    return Err(ProviderError::Correlation(
+                        "typed lineage attached source differs",
+                    ));
+                }
+                controller.verify_extension_registrar(&handshake)
+            })();
+        if let Err(error) = checked {
+            return Err(LineageSourceExtensionFailure {
+                error,
+                guard: self,
+                controller,
+                handshake,
+            });
+        }
+        // The capsule cannot disappear between the preceding borrow and transfer.
+        if let Some(custody) = self.custody.as_mut() {
+            custody.controller = Some(*controller);
+            custody.extension_handshake = Some(*handshake);
+            Ok(self)
+        } else {
+            Err(LineageSourceExtensionFailure {
+                error: ProviderError::Correlation("lineage source custody transferred"),
+                guard: self,
+                controller,
+                handshake,
+            })
+        }
+    }
+
+    /// Borrows the original typed peer selection as historical transport data.
+    pub fn selected_extensions(&self) -> Option<&[crucible_node_contract::ExtensionSelection]> {
+        self.custody
+            .as_ref()?
+            .controller
+            .as_ref()?
+            .selected_extensions()
+    }
+
+    /// Checks the surviving exact typed registrar and original provider identity.
+    ///
+    /// # Errors
+    /// Refuses legacy attachment, transferred custody, changed kernel identity,
+    /// missing typed registration or a stale/contained original private lease.
+    pub fn verify_extension_registrar(&self) -> Result<(), ProviderError> {
+        let custody = self.custody.as_ref().ok_or(ProviderError::Correlation(
+            "lineage source custody transferred",
+        ))?;
+        custody.verify_provider()?;
+        let controller = custody
+            .controller
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "lineage source controller omitted",
+            ))?;
+        let handshake = custody
+            .extension_handshake
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "typed lineage source registrar omitted",
+            ))?;
+        controller.verify_extension_registrar(handshake)
     }
 
     /// Writes and retains one complete original private launch document.
@@ -242,6 +378,15 @@ impl LineageSourceGuard {
     ) -> Result<ResponseBody, ProviderError> {
         let custody = self.custody_mut()?;
         custody.verify_provider()?;
+        if let Some(handshake) = &custody.extension_handshake {
+            custody
+                .controller
+                .as_ref()
+                .ok_or(ProviderError::Correlation(
+                    "typed lineage source controller omitted",
+                ))?
+                .verify_extension_registrar(handshake)?;
+        }
         if method == Method::Realize {
             if custody
                 .realization
@@ -479,6 +624,9 @@ impl LineageSourceCustody {
             controller.fence();
         }
         if let Some(handshake) = &mut self.handshake {
+            handshake.contain();
+        }
+        if let Some(handshake) = &mut self.extension_handshake {
             handshake.contain();
         }
         if !self.provider_signalled && self.reaped.is_none() {

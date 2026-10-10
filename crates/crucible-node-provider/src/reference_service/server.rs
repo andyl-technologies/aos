@@ -147,6 +147,39 @@ pub fn serve_lineage_reader(
     )
 }
 
+/// Serves the separately measured launch7 reader requiring full typed Hello selection.
+///
+/// # Errors
+/// Refuses legacy launch/definition, changed installed source roles or admission,
+/// unsupported exact peer selection, and unavailable native/transport custody.
+pub fn serve_negotiated_lineage_reader(
+    socket: &Path,
+    child: &Path,
+    launch: super::ReferenceNegotiatedLineageReaderLaunchBootstrap,
+) -> Result<(), ProviderError> {
+    launch.validate()?;
+    let roles = &launch.definition_sources;
+    let definition = crate::reference_lineage::InputLineageDefinition::build_negotiated(
+        roles.namespace_publication.clone(),
+        roles.handler.clone(),
+        roles.event.clone(),
+        roles.input.clone(),
+        roles.stop.clone(),
+    )?;
+    serve_bound(
+        socket,
+        child,
+        launch.bootstrap,
+        SourceSelection::NegotiatedLineageReader(Box::new(
+            super::profile::InputLineageProfileSelection {
+                closed_ingress: launch.closed_ingress,
+                definition,
+            },
+        )),
+        &launch.qualification_refs,
+    )
+}
+
 pub(super) enum SourceSelection {
     Legacy(PublicReferenceProfile),
     Lineage {
@@ -157,6 +190,7 @@ pub(super) enum SourceSelection {
         endpoint: std::path::PathBuf,
     },
     LineageReader(Box<super::profile::InputLineageProfileSelection>),
+    NegotiatedLineageReader(Box<super::profile::InputLineageProfileSelection>),
 }
 
 pub(super) fn serve_bound(
@@ -235,6 +269,17 @@ pub(super) fn serve_bound(
             bootstrap.host_budget_ns,
             *selection,
         ),
+        SourceSelection::NegotiatedLineageReader(selection) => {
+            ReferenceProfile::build_public_negotiated_lineage_reader(
+                bootstrap.node_id.clone(),
+                bootstrap.owner_id.clone(),
+                provider_executable,
+                device_executable,
+                bootstrap.quantum_ps,
+                bootstrap.host_budget_ns,
+                *selection,
+            )
+        }
     }?;
     let (binding, owner_binding) =
         profile.bind_qualified(bootstrap.authority.clone(), qualifications)?;
@@ -346,7 +391,28 @@ pub(super) fn serve_bound(
         required_features.push(Id::new(crate::reference_lineage::INPUT_LINEAGE_FEATURE)?);
         required_features.sort();
     }
-    let mut handshake = Handshake::new(
+    let typed_negotiation = profile
+        .input_lineage_definition()
+        .is_some_and(|definition| {
+            definition
+                .declaration()
+                .required_features
+                .iter()
+                .any(|feature| feature.as_str() == EXTENSION_NEGOTIATION_V1)
+        });
+    if typed_negotiation {
+        required_features.push(Id::new(EXTENSION_NEGOTIATION_V1)?);
+        required_features.sort();
+    }
+    let envelope_extension_features = if typed_negotiation {
+        BTreeMap::from([(
+            EXTENSION_NEGOTIATION_V1.into(),
+            Id::new(EXTENSION_NEGOTIATION_V1)?,
+        )])
+    } else {
+        BTreeMap::new()
+    };
+    let handshake = Handshake::new(
         TrustedInstallation {
             session_id: bootstrap.authority.session_id.clone(),
             incarnation_id: bootstrap.authority.incarnation_id.clone(),
@@ -360,8 +426,12 @@ pub(super) fn serve_bound(
             provider_limits: bootstrap.limits,
             required_schemas: Vec::new(),
             required_guarantees: guarantees,
-            envelope_extension_features: BTreeMap::new(),
+            envelope_extension_features,
         },
+    )?;
+    let mut handshake = super::reader_negotiation::SourceHandshake::new(
+        handshake,
+        profile.input_lineage_definition(),
     )?;
     let listener = UnixListener::bind(socket)?;
     fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
@@ -511,7 +581,7 @@ fn negotiate(
     stream: UnixStream,
     connection: Id,
     bootstrap: &ReferenceServiceBootstrap,
-    handshake: &mut Handshake,
+    handshake: &mut super::reader_negotiation::SourceHandshake,
     journal: &NativeJournal<Resources>,
     old: &mut Option<UnixStream>,
 ) -> Result<(UnixStream, ConnectionAuthority), ProviderError> {
@@ -583,14 +653,14 @@ fn negotiate(
     response.message = MessageKind::Response;
     response.incarnation_id = Nullable(Some(bootstrap.authority.incarnation_id.clone()));
     response.body = completed(result)?;
+    handshake.select_response(&request, &mut response, &selected_features)?;
     let mut verifier = ExchangeVerifier {
         journal,
         old,
         peer_uid: credentials.uid.as_raw(),
         expected_uid: bootstrap.controller_uid,
     };
-    let authority = match handshake.admit_envelopes(&request, &response, connection, &mut verifier)
-    {
+    let authority = match handshake.admit(&request, &response, connection, &mut verifier) {
         Ok(authority) => authority,
         Err(error) => {
             let mut refused = response;

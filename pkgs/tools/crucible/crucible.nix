@@ -20,6 +20,7 @@
   gem5-arm-root-model-profile,
   crucible-reference-implementation,
   crucible-reference-lineage-implementation,
+  crucible-reference-lineage-reader-typed-implementation,
   crucible-reference-progress-implementation,
   bash,
   coreutils,
@@ -148,6 +149,9 @@
   # This distinct installation pins ordered-consumption source identity only;
   # its native association/source-class qualification remains independently gated.
   referenceLineageMechanismInputs = lib.optionals (!stdenv.isCross) [crucible-reference-lineage-implementation];
+  # Typed peer selection remains a distinct source installation; retaining its
+  # recipe, binaries and source closure grants no native reader qualification.
+  referenceTypedLineageInputs = lib.optionals (!stdenv.isCross) [crucible-reference-lineage-reader-typed-implementation];
   # This distinct source package proves an original native prefix before response
   # loss; its candidate remains Unknown and cannot establish class acceptance.
   referenceProgressMechanismInputs = lib.optionals (!stdenv.isCross) [crucible-reference-progress-implementation];
@@ -177,6 +181,7 @@
       # retains its original complete population and cannot infer passing review.
       CRUCIBLE_REFERENCE_IMPLEMENTATION_MANIFEST = "${crucible-reference-implementation}/share/crucible/reference/implementation.json";
       CRUCIBLE_REFERENCE_LINEAGE_IMPLEMENTATION_MANIFEST = "${crucible-reference-lineage-implementation}/share/crucible/reference-lineage/implementation.json";
+      CRUCIBLE_REFERENCE_LINEAGE_READER_TYPED_IMPLEMENTATION_MANIFEST = "${crucible-reference-lineage-reader-typed-implementation}/share/crucible/reference-lineage-reader-typed/implementation.json";
       CRUCIBLE_REFERENCE_PROGRESS_IMPLEMENTATION_MANIFEST = "${crucible-reference-progress-implementation}/share/crucible/reference-progress/implementation.json";
     };
   controllerArtifactContract = {
@@ -185,6 +190,7 @@
       [buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile]
       ++ referenceQualificationInputs
       ++ referenceLineageMechanismInputs
+      ++ referenceTypedLineageInputs
       ++ referenceProgressMechanismInputs
       ++ armRootMechanismInputs
       ++ armModelFixtureInputs
@@ -207,11 +213,12 @@
       [buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile]
       ++ referenceQualificationInputs
       ++ referenceLineageMechanismInputs
+      ++ referenceTypedLineageInputs
       ++ referenceProgressMechanismInputs
       ++ armRootMechanismInputs
       ++ armModelFixtureInputs
       ++ lib.optionals stdenv.isCross [buildPackages.crucible-controller];
-    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ referenceLineageMechanismInputs ++ referenceProgressMechanismInputs ++ armRootMechanismInputs;
+    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ referenceLineageMechanismInputs ++ referenceTypedLineageInputs ++ referenceProgressMechanismInputs ++ armRootMechanismInputs;
   };
   debugGatewayArtifactContract = {
     family = "crucible-gpl-debug-gateway-release-and-test";
@@ -324,10 +331,11 @@
       ++ lib.optionals (!stdenv.isCross) [qemu-crucible]
       ++ referenceQualificationInputs
       ++ referenceLineageMechanismInputs
+      ++ referenceTypedLineageInputs
       ++ referenceProgressMechanismInputs
       ++ armRootMechanismInputs
       ++ armModelFixtureInputs;
-    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ referenceLineageMechanismInputs ++ referenceProgressMechanismInputs ++ armRootMechanismInputs;
+    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ referenceLineageMechanismInputs ++ referenceTypedLineageInputs ++ referenceProgressMechanismInputs ++ armRootMechanismInputs;
     # The controller is the Apache side of a process boundary. Fail the build
     # if any QEMU-side implementation, guest kernel, or fixture enters either
     # its direct references or its runtime closure.
