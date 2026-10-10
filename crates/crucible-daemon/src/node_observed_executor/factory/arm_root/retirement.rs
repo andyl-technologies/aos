@@ -14,7 +14,7 @@ use std::{
 
 use crucible::node_contract::{ActivationRecord, QuarantinedRuntime, RuntimeCustodyQueue};
 
-use super::{custody::RootCustodyQueue, factory::RootNativeFactory};
+use super::{custody::RootCustodyQueue, factory::RootNativeFactory, installed::RootColdPlan};
 use crate::node_observed_executor::{NodeObservedError, factory::refused};
 
 pub(super) struct RootRetirementScope {
@@ -40,6 +40,30 @@ impl RootRetirementScope {
         })
     }
 
+    pub(super) fn cleanup_status(
+        &self,
+    ) -> Result<super::InstalledRootCleanupStatus, NodeObservedError> {
+        self.native.cleanup_status(&self.target)
+    }
+
+    pub(super) fn namespace(&self) -> &Path {
+        &self.namespace.path
+    }
+
+    pub(super) fn begin_unstarted(
+        self,
+        factory: Rc<RootNativeFactory>,
+        original: RootColdPlan,
+    ) -> InstalledRootRetirement {
+        InstalledRootRetirement {
+            scope: self,
+            _factory: factory,
+            quarantine: None,
+            unstarted: Some(original),
+            reclaimed: false,
+        }
+    }
+
     pub(super) fn begin(
         self,
         factory: Rc<RootNativeFactory>,
@@ -49,6 +73,7 @@ impl RootRetirementScope {
             scope: self,
             _factory: factory,
             quarantine,
+            unstarted: None,
             reclaimed: false,
         }
     }
@@ -58,16 +83,30 @@ impl RootRetirementScope {
 ///
 /// It exposes no execution or native capture interface. The actor retains this
 /// value and its original request/GC roots while polling the authentic queues.
+/// An unstarted restore retains the original unused lease instead of asserting
+/// that an absent child was reclaimed. Runtime supervision remains mandatory.
 /// The actor-local runtime queue must be completely reclaimed before namespace
 /// removal; another live world conservatively keeps this operation pending.
 pub struct InstalledRootRetirement {
     scope: RootRetirementScope,
     _factory: Rc<RootNativeFactory>,
     quarantine: Option<QuarantinedRuntime>,
+    unstarted: Option<RootColdPlan>,
     reclaimed: bool,
 }
 
 impl InstalledRootRetirement {
+    /// Reads this retained target's native cleanup state without advancing it.
+    ///
+    /// The snapshot grants no reclamation or namespace-release authority. It
+    /// neither probes a caller PID nor polls, commands, or reaps the native peer.
+    ///
+    /// # Errors
+    /// Refuses an absent original queue entry; the same owning handle is retained.
+    pub fn cleanup_status(&self) -> Result<super::InstalledRootCleanupStatus, NodeObservedError> {
+        self.scope.cleanup_status()
+    }
+
     /// Polls original runtime and exact-target native reclamation without execution.
     ///
     /// # Errors
@@ -97,6 +136,28 @@ impl InstalledRootRetirement {
             Poll::Pending => return Poll::Pending,
             Poll::Ready(Err(error)) => return Poll::Ready(Err(refused(&error.to_string()))),
             Poll::Ready(Ok(())) => {}
+        }
+        if let Some(original) = &self.unstarted {
+            let Some(owner) = original
+                .target
+                .owners
+                .iter()
+                .find(|owner| owner.owner.as_str() == "owner/root")
+            else {
+                return Poll::Ready(Err(refused("Root original unused owner absent")));
+            };
+            // This owned plan can exist here only after the factory consumed
+            // its still-unused cold lease. A missing native entry or world is
+            // never substituted for that explicit original reservation proof.
+            if let Err(error) =
+                self.scope
+                    .native
+                    .verify_reserved(&self.scope.target, owner, &original.archive)
+            {
+                return Poll::Ready(Err(error));
+            }
+            self.reclaimed = true;
+            return Poll::Ready(Ok(()));
         }
         match self
             .scope

@@ -125,6 +125,24 @@ fn actual_initial_and_restored_retirement_preserve_custody_until_namespace_relea
     drop(record);
 
     let record = archive.load(&artifact).unwrap();
+    let mut unused = catalog
+        .prepare_root_native_restore(&selections, record.clone())
+        .unwrap();
+    let unused_namespace = unused.namespace.clone();
+    let original_target = unused.target.clone();
+    let original_factory = unused.factory.clone();
+    unused.target.activation_id = id("retirement/foreign-target");
+
+    let failure = unused.begin_unstarted_retirement().unwrap_err();
+    assert!(unused_namespace.is_dir());
+    assert!(Rc::ptr_eq(&failure.restore.factory, &original_factory));
+    let mut unused = failure.restore;
+    unused.target = original_target;
+    let retirement = unused.begin_unstarted_retirement().unwrap();
+    finish_retirement(retirement, &unused_namespace);
+    assert!(!unused_namespace.exists());
+    drop(original_factory);
+
     let plan = catalog
         .prepare_root_native_restore(&selections, record.clone())
         .unwrap();
@@ -152,7 +170,20 @@ fn actual_initial_and_restored_retirement_preserve_custody_until_namespace_relea
     drop(driver);
     drop(factory);
     drop(publisher);
-    let retirement = plan.begin_retirement(*restored).unwrap();
+    // The actual factory consumed its lease during staging. A missing cold
+    // plan cannot be relabeled as unused, even while the real world is retained.
+    let original_factory = plan.factory.clone();
+    let failure = plan.begin_unstarted_retirement().unwrap_err();
+    assert!(
+        failure
+            .error
+            .to_string()
+            .contains("already entered staging")
+    );
+    assert!(Rc::ptr_eq(&failure.restore.factory, &original_factory));
+    assert!(restored_namespace.is_dir());
+    drop(original_factory);
+    let retirement = failure.restore.begin_retirement(*restored).unwrap();
     assert!(restored_namespace.is_dir());
     finish_retirement(retirement, &restored_namespace);
     assert!(!restored_namespace.exists());

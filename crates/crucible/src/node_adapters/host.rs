@@ -666,5 +666,7 @@ pub(super) mod condition_provenance;
 #[path = "host_condition_state.rs"]
 pub(super) mod condition_state;
 
+#[path = "host_clock_evidence.rs"]
+mod clock_evidence;
 #[path = "host_condition_objects.rs"]
 mod condition_objects;

@@ -13,6 +13,7 @@ mod profile;
 pub(super) mod public_catalog;
 mod publication;
 mod qualification;
+mod queue_diagnostics;
 mod retirement;
 mod staging;
 
@@ -21,6 +22,8 @@ mod tests;
 
 #[cfg(test)]
 mod cold_tests;
+
+pub use queue_diagnostics::{InstalledRootCleanupFailure, InstalledRootCleanupStatus};
 
 pub use retirement::{InstalledRootRetirement, RootNamespaceReleaseFailure};
 

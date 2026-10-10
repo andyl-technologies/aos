@@ -1138,6 +1138,37 @@ of every application unit and integration target, yielding
 Its complete controller/ABI/license qualification remains in progress; these
 results supply no later Root-operation or gem5 source credit.
 
+## Installed Root operations and retained restoration custody
+
+The node service and CLI expose original Root inspection, capture and
+continuation transactions. A dedicated worker retains the native owner,
+unpublished results and authenticated retirement work across errors and
+unwinding. Original claims enforce exclusion against other node operations.
+Initial preparation reserves one custody capsule; restoration reserves two
+distinct staging and runtime capsules before effects. The per-world quota
+and existing main catalog capacity remain unchanged.
+
+The exact coordinator reader selects condition, recorded or closed Clock
+state without discarding its original reference context. Fresh restoration
+authenticates the current published target ownership while preserving the
+original source outcome and signed archive. The native test independently
+reads those two ownership records; it replaces only their declared vectors
+and compares every remaining outcome field and all archive bytes.
+
+Central verification passes 16 Root, 11 queue, 19 control and five CLI oracle
+cases, 37 current-source hygiene cases, three-crate all-target strict checks
+and 39 Rust formatting checks. The matching current-parent native CLI cohort
+passes once in 400.14 seconds. It removes the entire original namespace,
+restores two independently fresh owners, recovers the held original UART
+transaction, commits and acknowledges it, verifies exact outcomes and
+archives, then retires both owners and releases their namespaces. All 4,466
+frozen source leaves and actual executable/profile identities match before
+and after execution. The earlier private native cohorts remain separate.
+
+These results qualify the installed fixed closed ARM Root and Clock queued recipe.
+They supply no broader machine profile, Linux device parity, physical
+lineage, conditional cold-state reader or performance credit.
+
 ## Canonical gem5 closed Linux disk and 9p mechanisms
 
 The separately registered closed disk and 9p recipes bind actual Linux writes

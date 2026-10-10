@@ -644,6 +644,35 @@ impl SimulationNode for QualifiedArmRootNode {
         Ok(())
     }
 
+    fn input_provenance_dependencies(
+        &self,
+        activation: &WorldActivation,
+        root: &ContentRef,
+        limits: InputProvenanceLimits,
+    ) -> Result<Vec<ContentRef>, OperationFailure> {
+        self.stopped_dependencies(activation, root, limits)
+    }
+
+    fn validate_input_provenance_dependencies(
+        &self,
+        activation: &WorldActivation,
+        root: &ContentRef,
+        dependencies: &[ContentRef],
+    ) -> Result<(), OperationFailure> {
+        if self.stopped_dependencies(
+            activation,
+            root,
+            InputProvenanceLimits {
+                maximum_objects: 2,
+                maximum_bytes: self.resources.maximum_retained_bytes,
+            },
+        )? != dependencies
+        {
+            return Err(refusal("ARM original stopped dependency row changed"));
+        }
+        Ok(())
+    }
+
     fn begin_operation(&mut self, admission: &OperationAdmission) -> Submission {
         self.begin(admission)
     }

@@ -151,6 +151,10 @@ fn pending_status_and_exact_retry_do_not_wait_for_actor_and_full_queue_keeps_ori
         preparations: None,
         capabilities: capabilities.clone(),
         debug: super::super::debug::DebugLedger::new(blobs.clone(), refs.clone()).unwrap(),
+        root_preparations: super::super::root_preparation::ledger::RootPreparationLedger::new(
+            blobs, refs,
+        )
+        .unwrap(),
     };
     let original = request();
     let first = service

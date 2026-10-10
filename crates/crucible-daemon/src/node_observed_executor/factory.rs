@@ -37,9 +37,12 @@ pub(super) use transcript::replay_stepper::{ReplayStep, ReplayStepper};
 
 pub use arm_root::public_catalog::{
     InstalledPreparedRootWorld, InstalledRootPreservation, InstalledRootRestore,
-    RootInitialRetirementFailure, RootRestoredRetirementFailure,
+    RootInitialRetirementFailure, RootRestoredRetirementFailure, RootUnstartedRetirementFailure,
 };
-pub use arm_root::{InstalledRootRetirement, RootNamespaceReleaseFailure};
+pub use arm_root::{
+    InstalledRootCleanupFailure, InstalledRootCleanupStatus, InstalledRootRetirement,
+    RootNamespaceReleaseFailure,
+};
 pub use capabilities::{
     InstalledCapabilityCandidate, InstalledCapabilityClockFactory, ResolvedCapabilityWorld,
 };

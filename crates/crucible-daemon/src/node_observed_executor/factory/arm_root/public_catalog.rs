@@ -36,6 +36,17 @@ pub struct InstalledRootPreservation {
 }
 
 impl InstalledRootPreservation {
+    /// Reads this retained target's native cleanup state without advancing it.
+    ///
+    /// The snapshot grants no reclamation or namespace-release authority. It
+    /// neither probes a caller PID nor polls, commands, or reaps the native peer.
+    ///
+    /// # Errors
+    /// Refuses an absent original queue entry; the same owning handle is retained.
+    pub fn cleanup_status(&self) -> Result<super::InstalledRootCleanupStatus, NodeObservedError> {
+        self.retirement.cleanup_status()
+    }
+
     /// Returns the source-installed factory with its original owning native lease.
     pub fn factory(&self) -> Rc<dyn crucible::node_state::NativeWorldFactory> {
         self.factory.clone()
@@ -212,6 +223,17 @@ pub struct InstalledRootRestore {
 }
 
 impl InstalledRootRestore {
+    /// Reads this retained target's native cleanup state without advancing it.
+    ///
+    /// The snapshot grants no reclamation or namespace-release authority. It
+    /// neither probes a caller PID nor polls, commands, or reaps the native peer.
+    ///
+    /// # Errors
+    /// Refuses an absent original queue entry; the same owning handle is retained.
+    pub fn cleanup_status(&self) -> Result<super::InstalledRootCleanupStatus, NodeObservedError> {
+        self.retirement.cleanup_status()
+    }
+
     /// Consumes the original restored wrapper before polling retained reclamation.
     ///
     /// # Errors
@@ -233,6 +255,41 @@ impl InstalledRootRestore {
         // obligations to the supervisors; no NodeRuntime is extracted or cloned.
         drop(restored);
         Ok(self.retirement.begin(self.factory, None))
+    }
+
+    /// Consumes a restore plan whose exact original cold lease has not entered staging.
+    ///
+    /// No missing-world or missing-activation observation grants this path. The
+    /// installed factory must still own the original unused reservation, signed
+    /// image backing and pinned target. Successful transfer disables staging and
+    /// retains that lease until authentic runtime cleanup and namespace release.
+    ///
+    /// # Errors
+    /// Returns this same owning plan when the target changed, the lease entered
+    /// staging or is borrowed, publication began, or native custody was allocated.
+    pub fn begin_unstarted_retirement(
+        self,
+    ) -> Result<super::InstalledRootRetirement, Box<RootUnstartedRetirementFailure>> {
+        if self.target != self.retirement.target {
+            return Err(Box::new(RootUnstartedRetirementFailure {
+                error: refused("Root unstarted retirement target differs from original scope"),
+                restore: self,
+            }));
+        }
+        let original = match self.factory.take_unstarted(
+            &self.retirement.target,
+            &self.archive,
+            self.retirement.namespace(),
+        ) {
+            Ok(original) => original,
+            Err(error) => {
+                return Err(Box::new(RootUnstartedRetirementFailure {
+                    error,
+                    restore: self,
+                }));
+            }
+        };
+        Ok(self.retirement.begin_unstarted(self.factory, original))
     }
 
     /// Returns the installed policy that independently authenticates the original source.
@@ -271,6 +328,14 @@ impl InstalledRootRestore {
             &self.target,
         )?))
     }
+}
+
+/// Retains the original restore plan when unused-lease retirement is refused.
+pub struct RootUnstartedRetirementFailure {
+    /// Describes the unmet original target, lease or custody precondition.
+    pub error: NodeObservedError,
+    /// Owns the same signed image backing, factory, queues and namespace pin.
+    pub restore: InstalledRootRestore,
 }
 
 /// Retains the same restored world after a retirement target mismatch.
@@ -334,6 +399,15 @@ impl std::fmt::Debug for RootRestoredRetirementFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("RootRestoredRetirementFailure")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for RootUnstartedRetirementFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RootUnstartedRetirementFailure")
             .field("error", &self.error)
             .finish_non_exhaustive()
     }

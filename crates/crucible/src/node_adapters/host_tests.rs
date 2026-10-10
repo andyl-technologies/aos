@@ -1172,3 +1172,6 @@ fn actual_host_restore_preserves_original_input_and_pending_reply_without_reexec
     );
     assert!(restored.next_local_event().is_none());
 }
+
+#[path = "host_clock_evidence_tests.rs"]
+mod clock_evidence;

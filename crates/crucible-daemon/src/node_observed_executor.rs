@@ -27,13 +27,14 @@ pub use factory::{
     InstalledNodeCatalog, InstalledNodeKind, InstalledNodeSelection, InstalledPreparedNativeWorld,
     InstalledPreparedRootWorld, InstalledPreparedWorld, InstalledPublicReferencePackage,
     InstalledRecordedIngressProfile, InstalledRecordedWorld, InstalledReferenceQualifier,
-    InstalledReferenceRecording, InstalledReplayRecipe, InstalledRootPreservation,
-    InstalledRootRestore, InstalledRootRetirement, InstalledScriptedSourceProfile,
-    MAX_KVM_CANDIDATE_POLICY_BYTES, NativeCapturePoint, NativeWorldOutcome, NativeWorldRecord,
-    NativeWorldRequest, NativeWorldRetention, NativeWorldService, QualificationRunError,
+    InstalledReferenceRecording, InstalledReplayRecipe, InstalledRootCleanupFailure,
+    InstalledRootCleanupStatus, InstalledRootPreservation, InstalledRootRestore,
+    InstalledRootRetirement, InstalledScriptedSourceProfile, MAX_KVM_CANDIDATE_POLICY_BYTES,
+    NativeCapturePoint, NativeWorldOutcome, NativeWorldRecord, NativeWorldRequest,
+    NativeWorldRetention, NativeWorldService, QualificationRunError,
     ReferenceQualificationObservation, ReferenceQualificationRun, ResolvedCapabilityWorld,
     RootInitialRetirementFailure, RootNamespaceReleaseFailure, RootRestoredRetirementFailure,
-    load_installed_kvm_candidate, prepare_installed_kvm_candidate,
+    RootUnstartedRetirementFailure, load_installed_kvm_candidate, prepare_installed_kvm_candidate,
 };
 pub use service::{
     CapabilityCandidateRecipe, CapabilityPreparationAction, CapabilityPreparationRecord,
@@ -47,3 +48,9 @@ pub use terminal_publication::StoredTerminalResultPublisher;
 
 #[cfg(test)]
 mod tests;
+
+/// Original asynchronous fixed Root recipe request and custody records.
+pub use service::{
+    RootFirstRefusal, RootGrantedOperation, RootPreparationAction, RootPreparationDiagnostic,
+    RootPreparationRecord, RootPreparationRequest, RootPreparationState,
+};

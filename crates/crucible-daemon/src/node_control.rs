@@ -16,6 +16,8 @@
 mod debug;
 pub use debug::decode_debug_record;
 mod capability_preparation;
+mod root_preparation;
+pub use root_preparation::{decode_root_diagnostic, decode_root_preparation};
 mod conditional_replay;
 #[cfg(test)]
 mod conditional_replay_tests;
@@ -101,6 +103,21 @@ pub enum NodeControlCommand {
     /// Reads original live Debug custody without dispatch.
     DebugStatus {
         /// Names the original execution across actor incarnations.
+        execution: String,
+    },
+    /// Queues the exact source-qualified Root recipe under explicit edition nine.
+    RootPreparation {
+        /// Carries raw original scenario and complete fixed selections.
+        request: Box<crate::node_observed_executor::RootPreparationRequest>,
+    },
+    /// Reads bounded original phase diagnostics without waiting for the native actor.
+    RootDiagnostic {
+        /// Preserves the original lowercase execution nonce.
+        execution: String,
+    },
+    /// Reads original Root custody without another native dispatch.
+    RootPreparationStatus {
+        /// Preserves the original lowercase execution nonce.
         execution: String,
     },
     /// Queues original authored capability requirements under control edition seven.
@@ -190,6 +207,16 @@ pub enum NodeControlResult {
     DebugState {
         /// Contains the exact durable original request and control state.
         record: Box<crate::node_observed_executor::NodeDebugRecord>,
+    },
+    /// Returns data-only original diagnostics independently of readiness or reclamation.
+    RootDiagnostic {
+        /// Carries a canonical finite original diagnostic snapshot.
+        record: Bytes,
+    },
+    /// Retains original queued Root custody and genuine retired native recipe bytes.
+    RootPreparation {
+        /// Carries canonical data without execution or restore authority.
+        record: Bytes,
     },
     /// Returns original capability admission or qualified Clock preservation bytes.
     CapabilityPreparation {
@@ -334,6 +361,9 @@ impl NodeControlRequest {
             NodeControlCommand::DebugStart { .. }
             | NodeControlCommand::DebugResume { .. }
             | NodeControlCommand::DebugStatus { .. } => 8,
+            NodeControlCommand::RootPreparation { .. }
+            | NodeControlCommand::RootPreparationStatus { .. }
+            | NodeControlCommand::RootDiagnostic { .. } => 9,
             NodeControlCommand::CapabilityPreparation { .. }
             | NodeControlCommand::CapabilityPreparationStatus { .. } => 7,
             NodeControlCommand::CacheReuse { .. } => 6,
@@ -351,6 +381,11 @@ impl NodeControlRequest {
             NodeControlCommand::DebugStart { request } => request.validate().map_err(refused),
             NodeControlCommand::DebugResume { request } => request.validate().map_err(refused),
             NodeControlCommand::DebugStatus { execution } => execution_id(execution).map(|_| ()),
+            NodeControlCommand::RootPreparation { request } => request.validate().map_err(refused),
+            NodeControlCommand::RootPreparationStatus { execution }
+            | NodeControlCommand::RootDiagnostic { execution } => {
+                execution_id(execution).map(|_| ())
+            }
             NodeControlCommand::CapabilityPreparation { request } => {
                 request.validate().map_err(refused)
             }
@@ -470,6 +505,9 @@ pub fn decode_node_state(
         NodeControlResult::CacheReused { .. } => Err(refused(
             "cache reuse is original evidence, not fresh execution state",
         )),
+        NodeControlResult::RootPreparation { .. } | NodeControlResult::RootDiagnostic { .. } => {
+            Err(refused("Root custody is not ordinary execution state"))
+        }
         NodeControlResult::CapabilityPreparation { .. } => Err(refused(
             "capability custody is not ordinary execution state",
         )),

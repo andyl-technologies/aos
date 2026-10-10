@@ -53,6 +53,45 @@ impl RootNativeFactory {
         }
     }
 
+    // Consumes only the original lease that has not entered empty_staging.
+    // Keeping it in retirement disables every future staging caller, including
+    // callers that still hold another Rc to this installed factory.
+    pub(super) fn take_unstarted(
+        &self,
+        target: &ActivationRecord,
+        archive: &NativeArchiveRecord,
+        namespace: &std::path::Path,
+    ) -> Result<RootColdPlan, super::super::NodeObservedError> {
+        let mut pending = self
+            .cold
+            .try_borrow_mut()
+            .map_err(|_| super::super::refused("Root original cold lease is currently borrowed"))?;
+        let plan = pending.as_ref().ok_or_else(|| {
+            super::super::refused("Root original cold lease has already entered staging")
+        })?;
+        if &plan.target != target
+            || plan.namespace != namespace
+            || plan.archive.artifact() != archive.artifact()
+            || plan.archive.manifest() != archive.manifest()
+            || plan.archive.owners() != archive.owners()
+        {
+            return Err(super::super::refused(
+                "Root unstarted retirement names another original reserved lease",
+            ));
+        }
+        let owner = target
+            .owners
+            .iter()
+            .find(|owner| owner.owner.as_str() == "owner/root")
+            .ok_or_else(|| super::super::refused("Root original reserved owner absent"))?;
+        self.queue.verify_reserved(target, owner, archive)?;
+        // All fallible validation precedes this move. The same slot, image
+        // handles and signed backing stay owned until namespace release.
+        pending
+            .take()
+            .ok_or_else(|| super::super::refused("Root original cold lease is unavailable"))
+    }
+
     pub(super) fn native_queue(&self) -> RootCustodyQueue {
         self.queue.clone()
     }

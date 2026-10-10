@@ -179,6 +179,11 @@ fn pending_status_and_exact_retry_do_not_wait_for_the_owning_actor() {
         stopping: Arc::new(AtomicBool::new(false)),
         roots: Arc::new(Mutex::new(Default::default())),
         retired: Arc::new(AtomicBool::new(false)),
+        root_preparations: super::super::root_preparation::ledger::RootPreparationLedger::new(
+            blobs.clone(),
+            refs.clone(),
+        )
+        .unwrap(),
         preparations: Some(ledger.clone()),
         debug: super::super::debug::DebugLedger::new(blobs.clone(), refs.clone()).unwrap(),
         capabilities:
@@ -528,6 +533,19 @@ fn queued_shutdown_completion_panic_preserves_original_and_reclaims_native_world
             catalog,
             1,
             ActorStorage {
+                root_installation: super::super::root_preparation::worker::Installation {
+                    companion: executable.clone(),
+                    expected_companion: measure_executable(&executable).unwrap(),
+                    parent: directory.path().to_owned(),
+                    timeout: Duration::from_secs(5),
+                    maximum_admitted_worlds: 1,
+                },
+                root_preparations:
+                    super::super::root_preparation::ledger::RootPreparationLedger::new(
+                        durable.clone(),
+                        refs.clone(),
+                    )
+                    .unwrap(),
                 capability_archive: directory.path().join("capability-clock-archive"),
                 capabilities:
                     super::super::capability_preparation::ledger::CapabilityPreparationLedger::new(

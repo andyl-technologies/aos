@@ -9,6 +9,7 @@
 use crate::node_contract::{EffectKnowledge, OperationFailure};
 
 mod ancestry;
+mod boundary_dependencies;
 mod capture;
 mod continuation;
 mod encoding;

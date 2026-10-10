@@ -13,6 +13,8 @@ mod cache_reuse;
 mod capability;
 #[path = "node_conditional_replay.rs"]
 mod conditional_replay;
+#[path = "node_root.rs"]
+mod root;
 
 #[path = "node_host_state.rs"]
 mod host_state;
@@ -54,6 +56,8 @@ pub(super) struct NodeArgs {
 enum NodeCommand {
     #[command(flatten)]
     Debug(debug::NodeDebugCommand),
+    #[command(flatten)]
+    Root(root::NodeRootCommand),
     #[command(flatten)]
     Capability(capability::NodeCapabilityCommand),
     #[command(flatten)]
@@ -140,6 +144,7 @@ pub(super) fn run_node_invocation(cli: &Cli, args: &NodeArgs) -> Result<(), CliE
     }
     match &args.command {
         NodeCommand::Debug(command) => debug::run(command),
+        NodeCommand::Root(command) => root::run(command),
         NodeCommand::Capability(command) => capability::run(command),
         NodeCommand::CacheReuse(command) => cache_reuse::run(command),
         NodeCommand::TerminalState(command) => terminal_state::run(command),

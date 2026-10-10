@@ -19,6 +19,7 @@ use crucible::{
 use crucible_node_provider::gem5::{ArmRootCustodySlot, ArmRootNativeCustody};
 
 use super::super::{NodeObservedError, refused};
+use super::queue_diagnostics::{CleanupFailureRecord, InstalledRootCleanupStatus};
 
 pub(super) enum RootBacking {
     Fresh(Vec<File>),
@@ -41,6 +42,7 @@ struct Entry {
     in_flight: bool,
     reclaimed: bool,
     failed: bool,
+    first_failure: Option<CleanupFailureRecord>,
 }
 
 struct Registry {
@@ -143,6 +145,7 @@ impl RootCustodyQueue {
             in_flight: false,
             reclaimed: false,
             failed: false,
+            first_failure: None,
         });
         Ok(Box::new(Slot {
             shared: Arc::clone(&self.0),
@@ -158,22 +161,7 @@ impl RootCustodyQueue {
         archive: &NativeArchiveRecord,
     ) -> Result<(), NodeObservedError> {
         let registry = self.0.lock();
-        let entry = registry
-            .slots
-            .iter()
-            .flatten()
-            .find(|entry| &entry.scope.activation == activation && &entry.scope.owner == owner)
-            .ok_or_else(|| refused("Root original image lease is not reserved"))?;
-        if entry.custody.is_some()
-            || entry.in_flight
-            || entry.reclaimed
-            || entry.failed
-            || entry.scope.publication != PublicationKnowledge::NotAttempted
-        {
-            return Err(refused(
-                "Root image reservation no longer owns unused inactive custody",
-            ));
-        }
+        let entry = original_unused_entry(&registry, activation, owner)?;
         match &entry.scope.backing {
             RootBacking::Archived { source, .. }
                 if source.artifact() == archive.artifact()
@@ -268,6 +256,29 @@ impl RootCustodyQueue {
             .all(|entry| entry.reclaimed && !entry.in_flight && entry.custody.is_some())
     }
 
+    pub(super) fn cleanup_status(
+        &self,
+        target: &ActivationRecord,
+    ) -> Result<InstalledRootCleanupStatus, NodeObservedError> {
+        let registry = self.0.lock();
+        let entry = registry
+            .slots
+            .iter()
+            .flatten()
+            .find(|entry| &entry.scope.activation == target)
+            .ok_or_else(|| refused("Root diagnostics name no retained original target"))?;
+        Ok(InstalledRootCleanupStatus {
+            custody_present: entry.custody.is_some(),
+            in_flight: entry.in_flight,
+            reclaimed: entry.reclaimed,
+            failed: entry.failed,
+            first_failure: entry
+                .first_failure
+                .as_ref()
+                .map(CleanupFailureRecord::status),
+        })
+    }
+
     pub(super) fn original_group_reclaimed(
         &self,
         target: &ActivationRecord,
@@ -281,6 +292,32 @@ impl RootCustodyQueue {
             .ok_or_else(|| refused("Root reclamation names no retained original target"))?;
         Ok(entry.reclaimed && !entry.in_flight && entry.custody.is_some())
     }
+}
+
+// This predicate authenticates only the original entry's unused state. The
+// caller still verifies its actual sealed archive backing before any transfer.
+fn original_unused_entry<'a>(
+    registry: &'a Registry,
+    activation: &ActivationRecord,
+    owner: &OwnerIdentity,
+) -> Result<&'a Entry, NodeObservedError> {
+    let entry = registry
+        .slots
+        .iter()
+        .flatten()
+        .find(|entry| &entry.scope.activation == activation && &entry.scope.owner == owner)
+        .ok_or_else(|| refused("Root original image lease is not reserved"))?;
+    if entry.custody.is_some()
+        || entry.in_flight
+        || entry.reclaimed
+        || entry.failed
+        || entry.scope.publication != PublicationKnowledge::NotAttempted
+    {
+        return Err(refused(
+            "Root image reservation no longer owns unused inactive custody",
+        ));
+    }
+    Ok(entry)
 }
 
 struct Slot {
@@ -299,6 +336,12 @@ impl ArmRootCustodySlot for Slot {
                 || launch.generation() != entry.scope.owner.generation
             {
                 entry.failed = true;
+                CleanupFailureRecord::retain_first(
+                    &mut entry.first_failure,
+                    CleanupFailureRecord::refused(
+                        &"Root custody owner differs from its reserved original target",
+                    ),
+                );
                 registry.accepting = false;
             }
         }
@@ -381,7 +424,20 @@ fn cleanup_turn(shared: &Arc<Shared>) {
             match result {
                 Ok(Ok(true)) => entry.reclaimed = true,
                 Ok(Ok(false)) => {}
-                Ok(Err(_)) | Err(_) => entry.failed = true,
+                Ok(Err(error)) => {
+                    entry.failed = true;
+                    CleanupFailureRecord::retain_first(
+                        &mut entry.first_failure,
+                        CleanupFailureRecord::refused(&error),
+                    );
+                }
+                Err(_) => {
+                    entry.failed = true;
+                    CleanupFailureRecord::retain_first(
+                        &mut entry.first_failure,
+                        CleanupFailureRecord::unwound(),
+                    );
+                }
             }
         }
         drop(registry);
@@ -399,3 +455,7 @@ fn clone_artifacts(
     retained.extend(original.iter().cloned());
     Ok(retained)
 }
+
+#[cfg(test)]
+#[path = "queue_diagnostics/queue_tests.rs"]
+mod diagnostic_tests;

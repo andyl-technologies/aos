@@ -474,6 +474,30 @@ impl NodeControlDaemon {
             NodeControlCommand::DebugStatus { execution } => Ok(NodeControlResult::DebugState {
                 record: Box::new(service.debug_state(&execution).map_err(refused)?),
             }),
+            NodeControlCommand::RootPreparation { request } => {
+                let record = service
+                    .submit_root_preparation(*request)
+                    .map_err(super::refused)?;
+                Ok(NodeControlResult::RootPreparation {
+                    record: Bytes::new(record.canonical_bytes().map_err(super::refused)?),
+                })
+            }
+            NodeControlCommand::RootDiagnostic { execution } => {
+                let record = service
+                    .root_preparation_diagnostic(&execution)
+                    .map_err(super::refused)?;
+                Ok(NodeControlResult::RootDiagnostic {
+                    record: Bytes::new(record.canonical_bytes().map_err(super::refused)?),
+                })
+            }
+            NodeControlCommand::RootPreparationStatus { execution } => {
+                let record = service
+                    .root_preparation_status(&execution)
+                    .map_err(super::refused)?;
+                Ok(NodeControlResult::RootPreparation {
+                    record: Bytes::new(record.canonical_bytes().map_err(super::refused)?),
+                })
+            }
             NodeControlCommand::CapabilityPreparation { request } => {
                 let record = service
                     .submit_capability_preparation(*request)

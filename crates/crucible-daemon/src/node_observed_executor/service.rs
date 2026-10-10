@@ -15,6 +15,12 @@ use crucible_node_contract::ContentRef;
 mod capability_preparation;
 mod debug;
 mod original_claim;
+mod root_preparation;
+use root_preparation::ledger::RootPreparationLedger;
+pub use root_preparation::{
+    RootFirstRefusal, RootGrantedOperation, RootPreparationAction, RootPreparationDiagnostic,
+    RootPreparationRecord, RootPreparationRequest, RootPreparationState,
+};
 mod replay;
 use capability_preparation::ledger::CapabilityPreparationLedger;
 pub use capability_preparation::{
@@ -89,6 +95,11 @@ enum Command {
         request: NodeDebugResumeRequest,
         reservation: DebugReservation,
     },
+    RootPreparation {
+        request: RootPreparationRequest,
+        reservation: Box<root_preparation::ledger::RootReservation>,
+        ledger: RootPreparationLedger,
+    },
     CapabilityPreparation {
         request: CapabilityPreparationRequest,
         reservation: Box<capability_preparation::ledger::CapabilityReservation>,
@@ -132,11 +143,19 @@ struct ActorWorker {
     replay: Option<replay::ReplaySubmission>,
 }
 
+struct RootWorker {
+    worker: root_preparation::worker::Worker,
+    reservation: Box<root_preparation::ledger::RootReservation>,
+    ledger: RootPreparationLedger,
+}
+
 struct ActorStorage {
+    root_installation: root_preparation::worker::Installation,
     capability_archive: PathBuf,
     preparations: Option<ConditionalPreparationLedger>,
     capabilities: CapabilityPreparationLedger,
     debug: DebugLedger,
+    root_preparations: RootPreparationLedger,
     transcripts: Option<crucible::node_adapters::transcript::TranscriptArchive>,
     repository: Arc<CampaignRepository>,
     blobs: Arc<dyn ImmutableBlobBackend>,
@@ -162,6 +181,7 @@ pub struct NodeObservationRetention {
     preparations: Option<ConditionalPreparationLedger>,
     capabilities: CapabilityPreparationLedger,
     debug: DebugLedger,
+    root_preparations: RootPreparationLedger,
 }
 
 impl NodeObservationRetention {
@@ -177,6 +197,7 @@ impl NodeObservationRetention {
             .clone();
         roots.extend(self.capabilities.retention_roots()?);
         roots.extend(self.debug.retention_roots()?);
+        roots.extend(self.root_preparations.retention_roots()?);
         if let Some(preparations) = &self.preparations {
             roots.extend(preparations.retention_roots()?);
         }
@@ -205,6 +226,7 @@ pub struct NodeObservationService {
     preparations: Option<ConditionalPreparationLedger>,
     capabilities: CapabilityPreparationLedger,
     debug: DebugLedger,
+    root_preparations: RootPreparationLedger,
 }
 
 impl NodeObservationService {
@@ -248,6 +270,10 @@ impl NodeObservationService {
         let actor_capabilities = capabilities.clone();
         let debug = DebugLedger::new(blobs.clone(), refs.clone())?;
         let actor_debug = debug.clone();
+        let root_preparations = RootPreparationLedger::new(blobs.clone(), refs.clone())?;
+        let actor_root_preparations = root_preparations.clone();
+        let root_installation =
+            root_preparation::worker::Installation::from_configuration(&configuration)?;
         let capability_archive = configuration.socket_parent.join("capability-clock-archive");
         let (commands, receiver) = mpsc::sync_channel(configuration.maximum_pending_requests);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
@@ -282,6 +308,8 @@ impl NodeObservationService {
                                 preparations: actor_preparations,
                                 capabilities: actor_capabilities,
                                 debug: actor_debug,
+                                root_preparations: actor_root_preparations,
+                                root_installation,
                                 capability_archive,
                                 transcripts,
                                 repository,
@@ -313,6 +341,7 @@ impl NodeObservationService {
             preparations,
             capabilities,
             debug,
+            root_preparations,
         })
     }
 
@@ -430,6 +459,7 @@ impl NodeObservationService {
             preparations: self.preparations.clone(),
             capabilities: self.capabilities.clone(),
             debug: self.debug.clone(),
+            root_preparations: self.root_preparations.clone(),
         }
     }
 
@@ -467,6 +497,7 @@ fn run_actor(
     } = control;
     let mut workers: BTreeMap<ExecutionId, ActorWorker> = BTreeMap::new();
     let mut debug_workers: BTreeMap<ExecutionId, DebugWorker> = BTreeMap::new();
+    let mut root_workers: BTreeMap<ExecutionId, RootWorker> = BTreeMap::new();
     let mut retired_roots: BTreeMap<ExecutionId, BTreeSet<ContentId>> = BTreeMap::new();
     let mut context = Context::from_waker(Waker::noop());
     loop {
@@ -498,6 +529,7 @@ fn run_actor(
                         command,
                         &mut workers,
                         &mut debug_workers,
+                        &mut root_workers,
                         &mut catalog,
                         maximum_worlds.saturating_sub(retired_roots.len()),
                         &storage,
@@ -542,6 +574,27 @@ fn run_actor(
                 stopping.store(true, Ordering::Release);
             }
         }
+        let mut completed_roots = Vec::new();
+        for (execution, owned) in &mut root_workers {
+            if catch_unwind(AssertUnwindSafe(|| {
+                if let std::task::Poll::Ready(Ok(outcome)) = owned
+                    .worker
+                    .poll(&mut context, stopping.load(Ordering::Acquire))
+                {
+                    owned.ledger.complete(&owned.reservation, outcome)?;
+                    completed_roots.push(*execution);
+                }
+                Ok::<(), NodeObservationServiceError>(())
+            }))
+            .is_err()
+            {
+                owned.worker.retain_unwind_diagnostic();
+                stopping.store(true, Ordering::Release);
+            }
+        }
+        for execution in completed_roots {
+            root_workers.remove(&execution);
+        }
         // Transfer finished native runtimes into the already reserved queue,
         // while retaining their immutable roots separately. Keeping the backend
         // value itself would keep its reservation live and prevent retirement.
@@ -579,6 +632,11 @@ fn run_actor(
                 .values()
                 .flat_map(|owned| owned.worker.retention_roots())
                 .chain(
+                    root_workers
+                        .values()
+                        .flat_map(|owned| owned.worker.retention_roots()),
+                )
+                .chain(
                     retired_roots
                         .values()
                         .flat_map(|roots| roots.iter().copied()),
@@ -594,6 +652,7 @@ fn run_actor(
         if stopping.load(Ordering::Acquire)
             && workers.is_empty()
             && debug_workers.is_empty()
+            && root_workers.is_empty()
             && reclaimed
         {
             retired.store(true, Ordering::Release);
@@ -615,6 +674,7 @@ fn handle_command(
     command: Command,
     workers: &mut BTreeMap<ExecutionId, ActorWorker>,
     debug_workers: &mut BTreeMap<ExecutionId, DebugWorker>,
+    root_workers: &mut BTreeMap<ExecutionId, RootWorker>,
     catalog: &mut InstalledNodeCatalog,
     maximum_worlds: usize,
     storage: &ActorStorage,
@@ -630,7 +690,7 @@ fn handle_command(
                 workers,
                 debug_workers,
                 catalog,
-                maximum_worlds,
+                maximum_worlds.saturating_sub(root_workers.len()),
                 storage,
             );
         }
@@ -644,6 +704,7 @@ fn handle_command(
             handle_other_command(
                 command,
                 workers,
+                root_workers,
                 catalog,
                 maximum_worlds.saturating_sub(debug_workers.len()),
                 storage,
@@ -655,6 +716,7 @@ fn handle_command(
 fn handle_other_command(
     command: Command,
     workers: &mut BTreeMap<ExecutionId, ActorWorker>,
+    root_workers: &mut BTreeMap<ExecutionId, RootWorker>,
     catalog: &mut InstalledNodeCatalog,
     maximum_worlds: usize,
     storage: &ActorStorage,
@@ -665,17 +727,105 @@ fn handle_other_command(
         refs,
         ..
     } = storage;
+    let original_execution = match &command {
+        Command::CapabilityPreparation { request, .. } => Some(request.execution.clone()),
+        Command::ConditionalPreparation { request, .. } => Some(request.execution.clone()),
+        Command::Submit { execution, .. } => {
+            Some(capability_preparation::execution_text(*execution))
+        }
+        Command::ConditionalReplay { request, .. } => {
+            Some(capability_preparation::execution_text(request.execution))
+        }
+        _ => None,
+    };
+    if let Some(execution) = original_execution {
+        match storage.root_preparations.owns(&execution) {
+            Ok(false) => {}
+            Ok(true) => {
+                reply_refusal(
+                    command,
+                    refused("execution belongs to original Root custody"),
+                );
+                return;
+            }
+            Err(error) => {
+                reply_refusal(command, error);
+                return;
+            }
+        }
+    }
+    // Root workers retain their own native reservation until positive retirement.
+    // Other routes cannot spend those same aggregate live-world slots.
+    let available_worlds = maximum_worlds.saturating_sub(root_workers.len());
     match command {
         command @ (Command::DebugStart { .. } | Command::DebugResume { .. }) => {
             reply_refusal(command, refused("Debug command bypassed owning dispatch"));
+        }
+        Command::RootPreparation {
+            request,
+            reservation,
+            ledger,
+        } => {
+            let result = (|| {
+                let execution = root_preparation::execution_id(&request.execution)?;
+                if workers.contains_key(&execution)
+                    || repository
+                        .observed_execution_state(execution)
+                        .map_err(refused)?
+                        .is_some()
+                    || root_workers.len() + workers.len() >= maximum_worlds
+                {
+                    return Err(refused(
+                        "Root original nonce or finite live-world capacity is occupied",
+                    ));
+                }
+                let mut journal = root_preparation::diagnostics::Journal::new(
+                    ledger.clone(),
+                    &reservation.record,
+                );
+                journal.enter("construct_worker")?;
+                let worker = root_preparation::worker::Worker::new(
+                    request,
+                    &storage.root_installation,
+                    blobs.clone(),
+                    refs.clone(),
+                    journal,
+                )?;
+                Ok((execution, worker))
+            })();
+            match result {
+                Ok((execution, worker)) => {
+                    root_workers.insert(
+                        execution,
+                        RootWorker {
+                            worker,
+                            reservation,
+                            ledger,
+                        },
+                    );
+                }
+                Err(error) => {
+                    let _ = ledger.complete(
+                        &reservation,
+                        RootPreparationState::Unavailable {
+                            reason: root_preparation::diagnostic(error),
+                        },
+                    );
+                }
+            }
         }
         Command::CapabilityPreparation {
             request,
             reservation,
             ledger,
         } => {
-            let result =
-                capability_preparation::execute(request, workers, catalog, maximum_worlds, storage);
+            let result = capability_preparation::execute(
+                request,
+                workers,
+                catalog,
+                available_worlds,
+                storage,
+            );
             let outcome = result.unwrap_or_else(|error| CapabilityPreparationState::Unavailable {
                 reason: error.to_string(),
             });
@@ -702,7 +852,7 @@ fn handle_other_command(
                         },
                         workers,
                         catalog,
-                        maximum_worlds,
+                        available_worlds,
                         storage,
                         Some(&reservation),
                     )
@@ -729,7 +879,7 @@ fn handle_other_command(
                             "execution nonce belongs to original capability custody",
                         ));
                     }
-                    replay::submit(request, workers, catalog, maximum_worlds, storage, None)
+                    replay::submit(request, workers, catalog, available_worlds, storage, None)
                 });
             let _ = reply.send(result);
         }
@@ -815,7 +965,7 @@ fn handle_other_command(
                         .map_err(refused)?;
                     return Ok(original);
                 }
-                if workers.len() >= maximum_worlds {
+                if workers.len() >= available_worlds {
                     return Err(NodeObservationServiceError::Capacity);
                 }
                 let original_scope = crucible_node_contract::canonical::canonical_json(
@@ -895,6 +1045,18 @@ fn reply_refusal(command: Command, error: NodeObservationServiceError) {
     match command {
         Command::DebugStart { .. } | Command::DebugResume { .. } => {
             // The durable original stays pending; restart cannot dispatch it.
+        }
+        Command::RootPreparation {
+            reservation,
+            ledger,
+            ..
+        } => {
+            let _ = ledger.complete(
+                &reservation,
+                RootPreparationState::Unavailable {
+                    reason: error.to_string(),
+                },
+            );
         }
         Command::CapabilityPreparation {
             reservation,

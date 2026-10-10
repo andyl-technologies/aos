@@ -533,7 +533,11 @@ impl SimulationNode for HostModelNode {
         if self.terminal_inventory.0.as_str() == HOST_CONDITION_INVENTORY_PROFILE {
             return self.condition_producer_objects(activation, references, maximum_bytes);
         }
-        self.read_recorded_evidence(activation, references, maximum_bytes)
+        if self.recorded_ingress.is_some() {
+            self.read_recorded_evidence(activation, references, maximum_bytes)
+        } else {
+            self.read_closed_clock_evidence(activation, references, maximum_bytes)
+        }
     }
 
     fn validate_boundary_evidence(
@@ -559,7 +563,11 @@ impl SimulationNode for HostModelNode {
         if self.terminal_inventory.0.as_str() == HOST_CONDITION_INVENTORY_PROFILE {
             return self.condition_producer_dependencies(activation, root, limits);
         }
-        self.recorded_dependencies(activation, root, limits)
+        if self.recorded_ingress.is_some() {
+            self.recorded_dependencies(activation, root, limits)
+        } else {
+            self.closed_clock_dependencies(activation, root, limits)
+        }
     }
 
     fn validate_input_provenance_dependencies(
