@@ -11,6 +11,26 @@ use serde_json::{json, Value};
 
 use super::*;
 
+#[test]
+fn preparation_diagnostics_never_include_private_error_values() {
+    let known = preparation_failure(anyhow::anyhow!("OCI immutable NAR bytes differ"));
+    assert_eq!(
+        known.to_string(),
+        "OCI SDK selected actual evidence refused (immutable_source)"
+    );
+
+    for private in [
+        "private-token https://private.invalid/object",
+        "OCI immutable NAR bytes differ: private-token",
+    ] {
+        let unknown = preparation_failure(anyhow::anyhow!(private.to_owned()));
+        assert_eq!(
+            unknown.to_string(),
+            "OCI SDK selected actual evidence refused"
+        );
+    }
+}
+
 struct PrivateDirectory {
     _retained: tempfile::TempDir,
     relative: PathBuf,

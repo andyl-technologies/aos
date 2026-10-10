@@ -88,11 +88,37 @@ pub fn observe_oci_sdk_native(
 /// Rejects unsafe custody, substituted files, invalid Clock authentication,
 /// unknown anchors, old source relabeling, changed installed facts or cutoffs.
 pub fn prepare_oci_sdk_review(selection_file: &Path, output: &Path) -> Result<String> {
-    let candidate = assembly::assemble(selection_file, now()?)
-        .map_err(|_| anyhow::anyhow!("OCI SDK selected actual evidence refused"))?;
+    let candidate = assembly::assemble(selection_file, now()?).map_err(preparation_failure)?;
     let bytes = serde_json::to_vec_pretty(&candidate)?;
     files::write_new(output, &bytes)?;
     Ok(files::digest(&bytes))
+}
+
+// Only fixed source messages select a diagnostic category. Unknown errors can
+// contain private paths or inputs and retain the generic refusal.
+fn preparation_failure(error: anyhow::Error) -> anyhow::Error {
+    let category = match error.to_string().as_str() {
+        "OCI immutable NAR bytes differ"
+        | "OCI NAR observer cannot start"
+        | "OCI NAR observer failed"
+        | "OCI NAR observer exceeded original deadline"
+        | "OCI NAR observer output failed" => "immutable_source",
+        "OCI installed file cannot be opened"
+        | "OCI installed file is not bounded regular input"
+        | "OCI installed file commitment differs" => "installed_files",
+        "OCI review document is not a closed supported format" => "document_format",
+        "OCI actual namespace, source or installed bytes differ" => "namespace",
+        "OCI actual Native process/executable observation differs"
+        | "OCI retained Native private configuration differs" => "native_process",
+        "OCI independently installed configuration differs"
+        | "OCI independently installed registry slot differs"
+        | "OCI actual conformance key installation differs" => "configuration",
+        "OCI actual Clock original, source or reference bracket differs"
+        | "OCI Clock reply authentication differs" => "clock",
+        "OCI SDK original, actual positive receipt or namespace differs" => "storage_readback",
+        _ => return anyhow::anyhow!("OCI SDK selected actual evidence refused"),
+    };
+    anyhow::anyhow!("OCI SDK selected actual evidence refused ({category})")
 }
 
 /// Signs only an explicitly reviewed, rebuilt candidate under the separate verifier.
