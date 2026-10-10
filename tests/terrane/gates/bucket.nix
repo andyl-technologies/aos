@@ -44,6 +44,13 @@
     "content::selected_get::held_tests::held_get_rechecks_actual_selection_and_each_request_under_one_holder"
     "content::selected_get::held_tests::held_get_native_and_scalar_verify_dictionary_dependency_and_native_closing"
     "content::selected_get::held_tests::held_get_cancellation_releases_request_inputs_and_namespace"
+    "content::selected_get::held_tests::index_auxiliary_placement_distinguishes_unplaced_and_present_nodes"
+    "content::selected_get::held_tests::index_auxiliary_placement_reports_only_closed_selected_artifact_loss"
+    "content::selected_get::held_tests::index_auxiliary_placement_refuses_corrupt_present_companions"
+    "content::selected_get::held_tests::index_auxiliary_placement_refuses_foreign_observations_and_non_nodes"
+    "content::selected_get::held_tests::index_auxiliary_placement_refuses_existing_unserved_catalog_rows"
+    "content::selected_get::held_tests::index_auxiliary_placement_refuses_catalog_changes_for_all_states"
+    "content::selected_get::held_tests::index_auxiliary_placement_refuses_selection_changes_and_reappearance"
   ];
 
   rangedPackTests = [

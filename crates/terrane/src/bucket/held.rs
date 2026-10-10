@@ -7,6 +7,8 @@
 
 pub(crate) use super::content::BatchOutcome;
 #[cfg(all(feature = "tokio", unix))]
+pub(crate) use super::content::current_node_reads::{CurrentNodeReads, HeldCurrentNodeReads};
+#[cfg(all(feature = "tokio", unix))]
 pub(crate) use super::content::held_nodes::NodeReads;
 
 use super::{BucketBinding, FileBucket, files};
@@ -196,6 +198,38 @@ impl<'a, F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidat
             return Err(files::layout_corrupt());
         }
         bucket.ensure_layout().await?;
+        Ok(Self {
+            bucket,
+            identity: checked_identity,
+            retention,
+            write_allowed: false,
+            _guard: guard,
+        })
+    }
+
+    /// Acquires actual read exclusion before one fresh selected observation.
+    ///
+    /// The current reader validates its catalog from that original observation.
+    /// This holder grants no layout repair, actor or mutation permission.
+    ///
+    /// # Errors
+    /// Rejects legacy access, changed or unsafe namespace identities, failed
+    /// exclusion and unavailable actual descriptor retention.
+    pub(crate) async fn acquire_read_namespace(
+        bucket: &'a FileBucket<F, C, V>,
+    ) -> Result<Self, StoreFailure> {
+        if bucket.inner.access.read_only() {
+            return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
+        }
+        let checked_identity = identity(bucket).await?;
+        let guard = bucket.existing_exclusive().await?;
+        if identity(bucket).await? != checked_identity {
+            return Err(files::layout_corrupt());
+        }
+        let retention = NamespaceRetention::capture(&bucket.inner.fs, &guard)?;
+        if identity(bucket).await? != checked_identity {
+            return Err(files::layout_corrupt());
+        }
         Ok(Self {
             bucket,
             identity: checked_identity,

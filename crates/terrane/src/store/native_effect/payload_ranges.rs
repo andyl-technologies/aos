@@ -305,7 +305,11 @@ impl RetainedPayloadRanges {
     }
 
     #[cfg(all(feature = "tokio", unix))]
-    fn check_ranges(&self) -> io::Result<()> {
+    /// Checks the same original descriptor and every previously consumed range.
+    ///
+    /// # Errors
+    /// Refuses changed ancestors, leaf incarnations or consumed bytes and I/O failures.
+    pub(in crate::store::native_effect) fn check_ranges(&self) -> io::Result<()> {
         self.original.check()?;
         for expected in &self.ranges {
             let bytes = self.original.read(expected.range)?;

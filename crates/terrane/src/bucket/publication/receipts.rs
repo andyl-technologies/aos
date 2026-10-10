@@ -89,6 +89,12 @@ impl RecordRead {
         self.retained_payload.as_deref()
     }
 
+    /// Borrows the original ordinary recipe solely for read-only native closing.
+    #[cfg(all(feature = "tokio", unix))]
+    pub(crate) fn ordinary_retained(&self) -> Option<&Arc<RetainedPayloadRanges>> {
+        self.ordinary_retained.as_ref()
+    }
+
     /// Revalidates the original protected or ordinary observation before reuse.
     ///
     /// # Errors

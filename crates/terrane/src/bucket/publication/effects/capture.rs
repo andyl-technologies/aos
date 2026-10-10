@@ -479,6 +479,31 @@ impl Frame {
         ))
     }
 
+    /// Packages original ordinary DATA in a distinct token-checked read projection.
+    ///
+    /// # Errors
+    /// Refuses collector pair inputs or incomplete protected physical recipes.
+    #[cfg(all(feature = "tokio", unix))]
+    pub(super) fn current_read_projection(
+        &self,
+        ordinary: Vec<Arc<crate::store::native_publication_effects::RetainedPayloadRanges>>,
+        current: crate::guard::PendingCurrentReadCheck,
+    ) -> Result<crate::store::native_effect::NativeReadProjection, StoreFailure> {
+        if !self.pairs.is_empty() {
+            return Err(unsupported());
+        }
+        let (names, preimages) = self.physical_inputs()?;
+        Ok(
+            crate::store::native_effect::NativeReadProjection::new_current(
+                Arc::clone(&self.exclusions),
+                names,
+                preimages,
+                ordinary,
+                current,
+            ),
+        )
+    }
+
     /// Submits a privately fixed command with owned exclusions and current checks.
     ///
     /// # Errors

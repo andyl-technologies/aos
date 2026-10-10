@@ -355,6 +355,35 @@ impl<
         selection::resolve_held(self.bucket(), &control, &held).await
     }
 
+    /// Decodes the whole current ref from this exact actual selected observation.
+    ///
+    /// Its original selected snapshot recipes already retain these logical
+    /// bytes. The caller must close those recipes and this same observation;
+    /// materialized ref caches supply neither the value nor its evidence.
+    ///
+    /// # Errors
+    /// Refuses foreign or stale observations, invalid keys and malformed records.
+    pub(crate) async fn current_ref_from_observation(
+        &self,
+        observed: &SelectedObservation<'_>,
+        name: &str,
+    ) -> Result<Option<terrane_core::refs::RefRecord>, StoreFailure> {
+        self.check_observation(observed).await?;
+        let key =
+            terrane_core::bucket::BucketKey::ref_record(name).map_err(|_| files::malformed())?;
+        observed
+            .logical()
+            .get(key.as_str())
+            .and_then(Option::as_deref)
+            .map(terrane_core::refs::RefRecord::decode)
+            .transpose()
+            .map_err(|_| {
+                StoreFailure::new(StoreErrorKind::Corrupt(
+                    crate::store::CorruptSubject::RefName(key.as_str().into()),
+                ))
+            })
+    }
+
     /// Reads a canonical ref from a fresh complete held selection.
     ///
     /// Each call resolves the whole exact chain and inventory under this actual
