@@ -89,6 +89,14 @@
   ];
 
   nativeTokioTests = [
+    "guard::history::completion::active::relationship_reuse_tests::repeated_grafts_reuse_one_complete_present_relationship"
+    "guard::history::completion::active::relationship_reuse_tests::completed_relationship_reuse_stays_with_one_call_and_store"
+    "guard::history::completion::active::relationship_reuse_tests::completed_relationship_reuse_distinguishes_explicit_tree_usage"
+    "guard::history::completion::active::relationship_reuse_tests::completed_relationship_reuse_distinguishes_attribute_and_full_preparation"
+    "guard::history::completion::active::relationship_reuse_tests::missing_bindings_are_rechecked_without_completed_relationship_reuse"
+    "guard::history::completion::active::relationship_reuse_tests::completed_relationship_reuse_cannot_cross_revisions_or_minimum"
+    "guard::history::completion::active::relationship_reuse_tests::relationship_reuse_preserves_original_store_refusals_and_new_owner_divergence"
+    "guard::history::completion::active::relationship_reuse_tests::repeated_occurrence_policy_and_structural_role_refusals_precede_reuse"
     "guard::authoring::tests::authoring_attribute_two_is_selected_before_candidate_signing"
     "guard::authoring::tests::selected_required_index_publishes_real_context_and_full_carriers"
     "guard::authoring::tests::selected_required_index_refuses_divergence_before_immutable_effects"
