@@ -171,6 +171,9 @@ in {
     ${runNativeTest "guard::merge::recorded_tests::ordinary_contracts::recorded_merge_input_configuration_requires_all_original_view_root_pairs"}
     ${runNativeTest "guard::merge::recorded_tests::ordinary_contracts::recorded_merge_occurrences_preserve_per_view_fences_and_refuse_domain_ambiguity"}
     ${runNativeTest "guard::merge::recorded_tests::ordinary_contracts::recorded_merge_contexts_bind_original_interpretations_through_fold_replay"}
+    ${runNativeTest "guard::merge::recorded_tests::native_fold_contracts::recorded_native_fold_selects_trusted_remaining_incoming_and_replays"}
+    ${runNativeTest "guard::merge::recorded_tests::native_fold_contracts::recorded_native_graft_fold_preserves_prefix_trust_and_original_associations"}
+    ${runNativeTest "guard::merge::recorded_tests::native_fold_contracts::recorded_native_fold_materializes_implicit_owner_and_replays_preserved_domain"}
     printf 'PASS: merge, fold bindings, verified recipes and retained input interpretations\n' > "$out/result"
   '';
 
