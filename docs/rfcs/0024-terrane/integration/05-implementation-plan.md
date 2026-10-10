@@ -187,6 +187,32 @@ failed or ignored cases. Parent review confirms the actual outputs and unique
 executions against the frozen `6c9fb0a508` tree. An additional isolated full
 current-trunk qualification targets that exact immutable candidate, including
 every current gate and all three local workflows; its result remains pending.
+Subsequent qualification of that frozen candidate passes fresh all-target
+compilation, discovery of 1,077 tests, and all twenty-six current-history cases
+from the retained compiler-derived archive. Recovery verification passes in
+43.761 seconds; recovery rebuilding times out at the unchanged 120-second
+host limit, leaving eleven focused cases unrun. The separate unchanged owning
+native-index integration reaches a semantic `Unsupported` failure in its second
+case after 121.22 seconds, following one verification pass. Its remaining four
+cases do not run; changing the runner limit would not resolve this fault.
+All five current chunking gates pass 41 executions, all three property gates
+pass 70 executions, and the required application-target check compiles 114
+test executables across 29 packages, including all 77 integration targets.
+These results retain their exact immutable source binding.
+The full current-trunk request fails at the first cold-source case with
+`Advance(Store(Unsupported))`; the other twelve cold-source cases do not run.
+Only registered outputs with actual result receipts and completed execution
+logs establish individual success. Existing output directories alone do not
+qualify a gate, and the complete T1 exit set remains unqualified.
+A reviewed test-only forwarding correction on private `f91a83414d` gives the
+cold-source filesystem fixture the existing native payload-range executor while
+preserving its pack-read traps and requalification observations. Native build,
+strict all-target Clippy, fresh test compilation, inventory and archive pass.
+All thirteen focused cases pass under the unchanged default finite runner
+profile; owning cold-source and fork Nix qualification remain pending.
+A separate isolated recovery workline
+investigates its concrete `Unsupported` failure. No task is accepted or later
+milestone started by these parallel results.
 The two additional current-token/current-policy cases and four captured-input
 cases pass independent source review. Their owning gate registration extends
 the new current-history population to twenty-six cases while preserving every
