@@ -384,6 +384,15 @@ interpretation, Original and history-union assertions unchanged. The parent
 corrects only this stale selector; the stable gate and strict exactly-one-pass
 helper remain unchanged. The failed gate and remaining five checks require
 execution on the corrected candidate before any acceptance.
+On frozen `ea64a04697`, the corrected signature gate passes all twenty-two
+cases, including the relocated case exactly once without ignoring it. The
+selector-presets gate then passes forty-three cases before another stale
+`recorded` selector executes zero tests; the remaining four checks do not run.
+Its unconditional evaluator test also moved into `recorded::private_cases`.
+The parent corrects that path while retaining the unchanged test body,
+interpretation mismatch and Legacy refusal controls, stable gate ID and strict
+exactly-one-pass helper. The failed gate and four remaining checks require
+execution on the corrected candidate; neither failure is suppressed.
 No owning gate or task is accepted by these results.
 The same frozen retained-read candidate passes all twenty-nine mandatory
 native read cases in 46.960 seconds and the public SDK case in 0.009 seconds,
