@@ -66,6 +66,13 @@ wait_for_local_health() {
   done
 }
 
+# Each VM parks at its phase marker as soon as it emits it, so every boundary
+# hand-off adds its poll interval to the virtual time before the last marker.
+# Short polls keep the staggered markers inside the attempt's run ceiling; the
+# attempt count keeps the original 90 seconds of sleep budget.
+boundary_poll_seconds=0.1
+boundary_poll_attempts=900
+
 wait_for_control_boundary() {
   boundary=$1
   attempts=0
@@ -74,11 +81,11 @@ wait_for_control_boundary() {
     "$control_url/$boundary" 2>/dev/null) \
     && [ "$status" = 204 ]; do
     attempts=$((attempts + 1))
-    if [ "$attempts" -ge 90 ]; then
+    if [ "$attempts" -ge "$boundary_poll_attempts" ]; then
       echo "$role did not observe $boundary" >&2
       return 1
     fi
-    sleep 1
+    sleep "$boundary_poll_seconds"
   done
 }
 
@@ -89,11 +96,11 @@ acknowledge_control_boundary() {
     --show-error --fail --request POST --data '' \
     "$control_url/ready/$phase/$role" >/dev/null 2>&1; do
     attempts=$((attempts + 1))
-    if [ "$attempts" -ge 90 ]; then
+    if [ "$attempts" -ge "$boundary_poll_attempts" ]; then
       echo "$role could not acknowledge $phase readiness" >&2
       return 1
     fi
-    sleep 1
+    sleep "$boundary_poll_seconds"
   done
 }
 
@@ -112,11 +119,11 @@ wait_for_peer_acks() {
     attempts=0
     until [ -e "/run/ready-$phase-$peer" ]; do
       attempts=$((attempts + 1))
-      if [ "$attempts" -ge 90 ]; then
+      if [ "$attempts" -ge "$boundary_poll_attempts" ]; then
         echo "router-a did not receive $phase readiness from $peer" >&2
         return 1
       fi
-      sleep 1
+      sleep "$boundary_poll_seconds"
     done
   done
 }
