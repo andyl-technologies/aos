@@ -251,20 +251,11 @@ impl CapabilityService {
                 })?;
                 Ok(issued)
             }
-            Err(ControllerCommandFailure::DeadlineExceeded) => Err(ConnectError::new(
-                ErrorCode::DeadlineExceeded,
+            Err(failure) => Err(public_controller_command_error(
+                failure,
                 "capability bootstrap expired",
-            )),
-            Err(ControllerCommandFailure::Rejected) => Err(ConnectError::new(
-                ErrorCode::PermissionDenied,
-                "capability bootstrap rejected",
-            )),
-            Err(ControllerCommandFailure::InvalidRequest) => Err(ConnectError::new(
-                ErrorCode::InvalidArgument,
                 "capability bootstrap request is invalid",
-            )),
-            Err(ControllerCommandFailure::ControllerUnavailable) => Err(ConnectError::new(
-                ErrorCode::Unavailable,
+                "capability bootstrap rejected",
                 "capability bootstrap authority is unavailable",
             )),
         }
@@ -381,21 +372,12 @@ impl CapabilityService {
                 ErrorCode::NotFound,
                 "authorized resource was not found",
             )),
-            Err(ControllerCommandFailure::DeadlineExceeded) => Err(ConnectError::new(
-                ErrorCode::DeadlineExceeded,
+            Err(failure) => Err(public_controller_command_error(
+                failure,
                 "controller public resource read expired",
-            )),
-            Err(ControllerCommandFailure::ControllerUnavailable) => Err(ConnectError::new(
-                ErrorCode::Unavailable,
-                "controller public resource state is unavailable",
-            )),
-            Err(ControllerCommandFailure::InvalidRequest) => Err(ConnectError::new(
-                ErrorCode::InvalidArgument,
                 "public resource request is invalid",
-            )),
-            Err(ControllerCommandFailure::Rejected) => Err(ConnectError::new(
-                ErrorCode::PermissionDenied,
                 "public resource read was rejected",
+                "controller public resource state is unavailable",
             )),
         }
     }
@@ -442,21 +424,12 @@ impl CapabilityService {
                 ErrorCode::NotFound,
                 "authorized resource was not found",
             )),
-            Err(ControllerCommandFailure::DeadlineExceeded) => Err(ConnectError::new(
-                ErrorCode::DeadlineExceeded,
+            Err(failure) => Err(public_controller_command_error(
+                failure,
                 "controller public-read authorization expired",
-            )),
-            Err(ControllerCommandFailure::ControllerUnavailable) => Err(ConnectError::new(
-                ErrorCode::Unavailable,
-                "controller authorization state is unavailable",
-            )),
-            Err(ControllerCommandFailure::InvalidRequest) => Err(ConnectError::new(
-                ErrorCode::InvalidArgument,
                 "public read request is invalid",
-            )),
-            Err(ControllerCommandFailure::Rejected) => Err(ConnectError::new(
-                ErrorCode::PermissionDenied,
                 "public read was rejected",
+                "controller authorization state is unavailable",
             )),
         }
     }
@@ -693,28 +666,13 @@ impl CapabilityService {
                     "operation was not found",
                 ));
             }
-            Err(ControllerCommandFailure::DeadlineExceeded) => {
-                return Err(ConnectError::new(
-                    ErrorCode::DeadlineExceeded,
+            Err(failure) => {
+                return Err(public_controller_command_error(
+                    failure,
                     "controller operation lookup expired",
-                ));
-            }
-            Err(ControllerCommandFailure::ControllerUnavailable) => {
-                return Err(ConnectError::new(
-                    ErrorCode::Unavailable,
-                    "controller operation state is unavailable",
-                ));
-            }
-            Err(ControllerCommandFailure::InvalidRequest) => {
-                return Err(ConnectError::new(
-                    ErrorCode::InvalidArgument,
                     "operation lookup request is invalid",
-                ));
-            }
-            Err(ControllerCommandFailure::Rejected) => {
-                return Err(ConnectError::new(
-                    ErrorCode::PermissionDenied,
                     "operation lookup was rejected",
+                    "controller operation state is unavailable",
                 ));
             }
         };
