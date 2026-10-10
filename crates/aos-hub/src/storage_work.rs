@@ -204,6 +204,9 @@ impl RemoteStorageWorkClient {
         );
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            // Retire idle connections before workerd's five-second server
+            // timeout, even when a busy executor delays reading its close.
+            .pool_idle_timeout(Duration::from_secs(3))
             .timeout(Duration::from_secs(30))
             .build()
             .context("building storage Worker client")?;
