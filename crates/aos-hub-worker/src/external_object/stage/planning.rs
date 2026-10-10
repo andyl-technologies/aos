@@ -6,7 +6,7 @@
 
 use std::rc::Rc;
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context as _, Result};
 use aos_hub_core::direct_upload::{
     DirectExternalStorageCapabilities, DirectPartGrant, DirectUploadAdmission, WireInteger,
 };
@@ -136,7 +136,8 @@ pub(crate) async fn prepare_stage_request_with_cutoff(
     work.validate(
         &env.var("HUB_DEPLOYMENT_ID")?.to_string(),
         aos_hub_core::clock::now_unix_secs(),
-    )?;
+    )
+    .context("stage preparation: foreground cutoff")?;
     Ok(work)
 }
 
@@ -185,15 +186,25 @@ async fn prepare_stage_with_mode(
     if let Some(diagnostics) = diagnostics {
         diagnostics.recovery(RecoveryPhase::Preparation);
     }
-    executor_key(env)?;
-    let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
-    admission.validate(&deployment)?;
-    let context = ExternalStageContext::from_admission(admission, placement_id, &deployment)?;
-    let object =
-        configured(env)?.ok_or_else(|| anyhow::anyhow!("external object consumer disabled"))?;
-    let config = config::configured(env, &object)?
+    executor_key(env).context("stage preparation: executor key")?;
+    let deployment = env
+        .var("HUB_DEPLOYMENT_ID")
+        .context("stage preparation: deployment")?
+        .to_string();
+    admission
+        .validate(&deployment)
+        .context("stage preparation: admission")?;
+    let context = ExternalStageContext::from_admission(admission, placement_id, &deployment)
+        .context("stage preparation: context")?;
+    let object = configured(env)
+        .context("stage preparation: object consumer")?
+        .ok_or_else(|| anyhow::anyhow!("external object consumer disabled"))?;
+    let config = config::configured(env, &object)
+        .context("stage preparation: stage consumer")?
         .ok_or_else(|| anyhow::anyhow!("external stage consumer disabled"))?;
-    let domain = config.domain(&context)?;
+    let domain = config
+        .domain(&context)
+        .context("stage preparation: domain")?;
     let now = object.clock().observed_at;
     let (write_lease, read_lease) =
         if admission_mode == ExternalStageAdmissionMode::ResumeImmutableRead {
@@ -257,8 +268,12 @@ async fn prepare_stage_with_mode(
             (String::new(), read_lease)
         } else if now < i64::try_from(admission.expires_at.get())? {
             (
-                acquire_lease(env, &object, domain, &domain.write_cohort).await?,
-                acquire_lease(env, &object, domain, &domain.read_cohort).await?,
+                acquire_lease(env, &object, domain, &domain.write_cohort)
+                    .await
+                    .context("stage preparation: write lease")?,
+                acquire_lease(env, &object, domain, &domain.read_cohort)
+                    .await
+                    .context("stage preparation: read lease")?,
             )
         } else {
             // Fresh authentication can recover an exact historical terminal after
@@ -283,7 +298,8 @@ async fn prepare_stage_with_mode(
         operation,
     );
     work.admission_mode = admission_mode;
-    work.validate(&deployment, now)?;
+    work.validate(&deployment, now)
+        .context("stage preparation: request")?;
     Ok(work)
 }
 

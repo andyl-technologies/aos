@@ -160,9 +160,51 @@ pub(crate) fn refused(diagnostics: Option<&Diagnostics>) -> Refusal {
     }
 }
 
+/// Names a source-owned preparation boundary without exposing its error payload.
+pub(crate) fn preparation_check(error: &anyhow::Error) -> &'static str {
+    const CHECKS: &[(&str, &str)] = &[
+        ("stage preparation: executor key", "executor_key"),
+        ("stage preparation: deployment", "deployment"),
+        ("stage preparation: admission", "admission"),
+        ("stage preparation: context", "context"),
+        ("stage preparation: object consumer", "object_consumer"),
+        ("stage preparation: stage consumer", "stage_consumer"),
+        ("stage preparation: domain", "domain"),
+        ("stage preparation: write lease", "write_lease"),
+        ("stage preparation: read lease", "read_lease"),
+        ("stage preparation: request", "request"),
+        ("stage preparation: foreground cutoff", "foreground_cutoff"),
+    ];
+
+    CHECKS
+        .iter()
+        .find(|(message, _)| error.chain().any(|cause| cause.to_string() == *message))
+        .map_or("other", |(_, check)| check)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preparation_logs_only_known_boundaries_in_nested_errors() {
+        let error = anyhow::anyhow!("unit-only-secret https://unit.invalid/private")
+            .context("stage preparation: write lease")
+            .context("outer private context");
+
+        assert_eq!(preparation_check(&error), "write_lease");
+        assert!(error.root_cause().to_string().contains("unit-only-secret"));
+    }
+
+    #[test]
+    fn unknown_preparation_errors_and_prefix_lookalikes_remain_redacted() {
+        for message in [
+            "unit-only-secret https://unit.invalid/private",
+            "stage preparation: write lease https://unit.invalid/private",
+        ] {
+            assert_eq!(preparation_check(&anyhow::anyhow!(message)), "other");
+        }
+    }
 
     #[test]
     fn begin_reports_only_its_selected_step() {

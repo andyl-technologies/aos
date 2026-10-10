@@ -775,6 +775,21 @@ impl RpcService {
             expected.staging_object_key = admission.staging_object_key.clone();
         }
         if received != expected {
+            tracing::warn!(
+                version_changed =
+                    received.upload_resource_version != expected.upload_resource_version,
+                offset_changed = received.offset != expected.offset,
+                ordinal_changed = received.ordinal != expected.ordinal,
+                allowance_changed = received.maximum_chunk_bytes != expected.maximum_chunk_bytes,
+                placement_changed = received.placement_id != expected.placement_id
+                    || received.placement_resource_version != expected.placement_resource_version,
+                binding_changed = received.binding_id != expected.binding_id
+                    || received.binding_write_revision != expected.binding_write_revision,
+                prefix_changed = received.placement_prefix != expected.placement_prefix,
+                staging_key_changed = received.staging_object_key != expected.staging_object_key,
+                hash_state_changed = received.sha256_state != expected.sha256_state,
+                "OCI chunk upload state changed before completion"
+            );
             return upload_error(
                 StatusCode::CONFLICT,
                 DistributionErrorCode::BlobUploadInvalid,
@@ -910,11 +925,32 @@ impl RpcService {
                     false,
                 )
             }
-            Err(_) => upload_error(
-                StatusCode::CONFLICT,
-                DistributionErrorCode::BlobUploadInvalid,
-                "upload state changed; query status before retrying",
-            ),
+            Err(error) => {
+                let check = error.chain().find_map(|cause| {
+                    let message = cause.to_string();
+                    let sql = message
+                        .strip_prefix("checked batch expected ")?
+                        .split_once(" for ")?
+                        .1;
+                    [
+                        ("UPDATE oci_registry_state", "registry"),
+                        ("UPDATE org_usage", "quota"),
+                        ("UPDATE oci_quota_reservations", "reservation"),
+                        ("UPDATE oci_upload_sessions", "upload"),
+                    ]
+                    .into_iter()
+                    .find_map(|(prefix, check)| sql.starts_with(prefix).then_some(check))
+                });
+                tracing::warn!(
+                    check = check.unwrap_or("other_database_check"),
+                    "OCI chunk database commit failed"
+                );
+                upload_error(
+                    StatusCode::CONFLICT,
+                    DistributionErrorCode::BlobUploadInvalid,
+                    "upload state changed; query status before retrying",
+                )
+            }
         }
     }
 

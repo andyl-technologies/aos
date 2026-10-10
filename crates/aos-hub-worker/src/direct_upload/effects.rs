@@ -139,7 +139,13 @@ pub(super) async fn begin_with_signal(
                             ExternalStageOperation::CreateStage,
                             context.foreground.expires_at,
                         )
-                        .await?;
+                        .await
+                        .inspect_err(|error| {
+                            worker::console_error!(
+                                "external_upload_preparation_refused check={}",
+                                qualification_failure::preparation_check(error)
+                            );
+                        })?;
                         current(authority, context, admission)?;
                         qualification_failure::enter_begin(
                             diagnostics,
