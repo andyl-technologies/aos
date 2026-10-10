@@ -18,7 +18,170 @@ use super::objects::encode;
 use super::scans::claim_values;
 use super::AssessmentObjectKind;
 
+/// Reuses an already settled physical question within the same logical scan.
+#[derive(Clone, Debug)]
+pub enum AssessmentProviderReplay {
+    /// Previously admitted compact evidence, including explicitly partial results.
+    Admitted(Box<ProviderWorkResultV1>),
+    /// A settled failure that must remain an incomplete source in this scan.
+    Failed,
+}
+
 impl Database {
+    /// Reads one exact admitted question under a current coordinator claim.
+    ///
+    /// Admission time, rather than the old plan's expired execution window,
+    /// validates retained evidence. Reuse never dispatches source work, extends
+    /// authority or changes consumed quota. Unsettled attempts are not evidence.
+    ///
+    /// # Errors
+    /// Returns an error for lost claims, ambiguous questions, changed retained
+    /// commitments, conflicting scope, malformed evidence or persistence failure.
+    pub async fn assessment_provider_replay(
+        &self,
+        registry_id: i64,
+        claim: &aos_assessment_runtime::scan::TaskClaim,
+        operation: &aos_assessment_runtime::provider::ProviderOperation,
+        previous: Option<&aos_assessment_runtime::provider::ProviderPageV1>,
+    ) -> Result<Option<AssessmentProviderReplay>> {
+        self.check_assessment_scan_claim(registry_id, claim).await?;
+        let scan = self
+            .assessment_scan(registry_id, &claim.scan_id)
+            .await?
+            .context("assessment replay scan is absent")?;
+        let rows = self
+            .backend
+            .query(
+                "SELECT state, plan_digest, plan_json, result_digest, result_json
+             FROM assessment_tasks WHERE scan_id = ?1 AND operation_digest = ?2
+               AND generation = ?3 AND state IN ('succeeded', 'partial', 'failed')
+               AND (plan_json IS NULL OR length(plan_json) <= 262144)
+               AND (result_json IS NULL OR length(result_json) <= 262144) LIMIT 2",
+                &vals![@slice claim.scan_id, operation.digest()?.to_string(), claim.generation],
+            )
+            .await?;
+        if rows.len() > 1 {
+            bail!("assessment question has ambiguous retained attempts");
+        }
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        let Some(result_bytes) = row.get::<Option<Vec<u8>>>(4)? else {
+            if row.get::<String>(0)? != "failed" {
+                bail!("settled provider evidence is absent");
+            }
+            self.check_assessment_scan_claim(registry_id, claim).await?;
+            return Ok(Some(AssessmentProviderReplay::Failed));
+        };
+        let plan_bytes = row
+            .get::<Option<Vec<u8>>>(2)?
+            .context("replay plan is absent")?;
+        let plan: ProviderWorkPlanV1 = serde_json::from_slice(&plan_bytes)?;
+        let result: ProviderWorkResultV1 = serde_json::from_slice(&result_bytes)?;
+        if encode(&plan)? != plan_bytes
+            || encode(&result)? != result_bytes
+            || row.get::<Option<String>>(1)?.as_deref() != Some(plan.digest()?.to_string().as_str())
+            || row.get::<Option<String>>(3)?.as_deref()
+                != Some(
+                    Sha256Digest::separated("aos.provider-work-result/v1", &result_bytes)
+                        .to_string()
+                        .as_str(),
+                )
+            || plan.operation != *operation
+            || plan.claim.scan_id != claim.scan_id
+            || plan.claim.request_digest != claim.request_digest
+            || plan.claim.generation != claim.generation
+            || plan.claim.inventory_revision != claim.inventory_revision
+            || plan.inventory_digest != scan.request.inventory_digest
+            || plan.policy_digest != scan.request.policy_digest
+            || plan.authorization_partition != scan.request.authorization_partition
+            || plan.continuation != previous.map(|page| page.digest()).transpose()?
+            || plan.continuation_ref.as_ref() != previous
+        {
+            bail!("assessment replay differs from its admitted question or scope");
+        }
+        result.validate_for(&plan, &result.completed_at)?;
+        self.check_assessment_scan_claim(registry_id, claim).await?;
+        Ok(Some(AssessmentProviderReplay::Admitted(Box::new(result))))
+    }
+
+    /// Retains an incomplete pre-dispatch question without inventing a reservation.
+    ///
+    /// A missing route, unavailable capability or refused quota is stable for
+    /// this logical scan. Later quanta skip it; a new explicitly admitted scan
+    /// can ask again. Existing physical attempts are preserved, including unknown
+    /// outcomes. At most 8192 settled questions fit one bounded acquisition plan.
+    ///
+    /// # Errors
+    /// Returns an error for revoked or lost authority, excessive question count,
+    /// conflicting work or unavailable persistence.
+    pub async fn refuse_assessment_provider_question_fenced(
+        &self,
+        registry_id: i64,
+        claim: &aos_assessment_runtime::scan::TaskClaim,
+        operation: &aos_assessment_runtime::provider::ProviderOperation,
+        authority_fences: &[CheckedStatement],
+    ) -> Result<()> {
+        if authority_fences.len() > 32 {
+            bail!("assessment question refusal exceeds its authority ceiling");
+        }
+        operation.validate()?;
+        self.check_assessment_scan_claim(registry_id, claim).await?;
+        let scan = self
+            .assessment_scan(registry_id, &claim.scan_id)
+            .await?
+            .context("refused question scan is absent")?;
+        let existing = self.backend.query_opt(
+            "SELECT 1 FROM assessment_tasks WHERE scan_id = ?1 AND operation_digest = ?2 LIMIT 1",
+            &vals![@slice claim.scan_id, operation.digest()?.to_string()],
+        ).await?.is_some();
+        let usage = if existing {
+            scan.usage.clone()
+        } else {
+            scan.usage.consume(
+                &ScanUsage {
+                    tasks: 1,
+                    ..Default::default()
+                },
+                &scan.request.limits,
+            )?
+        };
+        let mut values = claim_values(registry_id, claim);
+        values.extend(vals![
+            operation.digest()?.hex(),
+            operation.digest()?.to_string()
+        ]);
+        let mut statements = authority_fences.to_vec();
+        statements.push(
+            Statement::new(
+                format!(
+                    "UPDATE assessment_scans SET resource_version = resource_version + 1, usage_json = ?9
+             WHERE {} AND resource_version = ?10 AND (SELECT count(*) FROM assessment_tasks WHERE scan_id = ?2) < 8192",
+                    self.assessment_claim_guard()
+                ),
+                { let mut usage_values = claim_values(registry_id, claim);
+                    usage_values.extend(vals![encode(&usage)?, scan.resource_version]); usage_values },
+            )
+            .expecting(1),
+        );
+        statements.push(
+            Statement::new(
+                format!(
+                    "INSERT INTO assessment_tasks(scan_id, task_id, operation_digest, generation,
+                 state, attempt, not_before, last_error_code, resource_version)
+             SELECT ?2, ?9, ?10, ?4, 'failed', ?7, 0, 'source-question-refused', 1
+             WHERE EXISTS(SELECT 1 FROM assessment_scans WHERE {})
+               AND NOT EXISTS(SELECT 1 FROM assessment_tasks WHERE scan_id = ?2
+                 AND operation_digest = ?10)",
+                    self.assessment_claim_guard()
+                ),
+                values,
+            )
+            .unchecked(),
+        );
+        self.backend.checked_batch(&statements).await
+    }
+
     /// Settles a failed physical attempt without refunding its reserved allowance.
     ///
     /// A response deadline may already have elapsed. Settlement still requires

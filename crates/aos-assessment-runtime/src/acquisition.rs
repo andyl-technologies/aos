@@ -8,6 +8,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context as _, Result, bail};
+use serde::{Deserialize, Serialize};
+
+mod checkpoint;
 use aos_assessment::advisory::{
     ADVISORY_SNAPSHOT_V1, AdvisoryRecordV1, AdvisorySnapshotSource, AdvisorySnapshotV1,
 };
@@ -20,6 +23,7 @@ use aos_assessment::security::SecurityIdentity;
 use aos_assessment::time::Timestamp;
 use aos_assessment_providers::osv::Query;
 use aos_contract::Sha256Digest;
+pub use checkpoint::AcquisitionCheckpointV1;
 
 use crate::ports::{EvidenceStore, RuntimeBounds};
 use crate::provider::{NormalizedObject, ProviderOperation, ProviderPageV1, ProviderWorkResultV1};
@@ -28,6 +32,22 @@ use crate::provider::{NormalizedObject, ProviderOperation, ProviderPageV1, Provi
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait AcquisitionPort: RuntimeBounds {
+    /// Reads a previously journal-admitted acquisition cursor, if present.
+    ///
+    /// # Errors
+    /// Returns an error for unavailable custody or an invalid retained checkpoint.
+    async fn acquisition_checkpoint(&self) -> Result<Option<AcquisitionCheckpointV1>> {
+        Ok(None)
+    }
+
+    /// Pins a bounded acquisition cursor before releasing a host quantum.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported persistence, lost authority or failed custody.
+    async fn save_acquisition_checkpoint(&self, _: &AcquisitionCheckpointV1) -> Result<()> {
+        bail!("acquisition host cannot retain a resumable checkpoint")
+    }
+
     /// Executes exact work after reserving quota and checking current authority.
     ///
     /// Implementations validate the result against their issued plan, retain
@@ -36,7 +56,9 @@ pub trait AcquisitionPort: RuntimeBounds {
     ///
     /// # Errors
     /// Returns an error for stale authority, exhausted budgets, unavailable
-    /// sources, invalid continuations or failed result admission.
+    /// sources, invalid continuations or failed result admission. A resumable
+    /// host returns [`AcquisitionPaused`] before another physical effect when its
+    /// invocation quantum is exhausted; this never becomes incomplete coverage.
     async fn invoke(
         &self,
         operation: &ProviderOperation,
@@ -44,8 +66,25 @@ pub trait AcquisitionPort: RuntimeBounds {
     ) -> Result<ProviderWorkResultV1>;
 }
 
+/// Requests journal-backed continuation before another physical source effect.
+///
+/// Hosts preserve independently admitted results and release their current
+/// coordinator lease. The next invocation reconstructs the same source chain
+/// from those immutable results without reserving their quota again.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AcquisitionPaused;
+
+impl std::fmt::Display for AcquisitionPaused {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("assessment acquisition requires another bounded invocation")
+    }
+}
+
+impl std::error::Error for AcquisitionPaused {}
+
 /// Describes one deduplicated provider question and its exact component consumers.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AcquisitionJob {
     /// Typed source operation derived from immutable package declarations.
     pub operation: ProviderOperation,
@@ -235,7 +274,7 @@ pub async fn acquire<P: AcquisitionPort, E: EvidenceStore>(
     profiles: &[Profile],
 ) -> Result<Vec<String>> {
     let jobs = plan_acquisition(data, subjects, profiles)?;
-    acquire_jobs(port, evidence, partition, data, jobs, profiles).await
+    acquire_jobs(port, evidence, partition, data, jobs, subjects, profiles).await
 }
 
 /// Acquires only missing, incomplete or expired exact declared source questions.
@@ -261,7 +300,7 @@ pub async fn acquire_stale<P: AcquisitionPort, E: EvidenceStore>(
             jobs.push(job);
         }
     }
-    acquire_jobs(port, evidence, partition, data, jobs, profiles).await
+    acquire_jobs(port, evidence, partition, data, jobs, subjects, profiles).await
 }
 
 fn job_is_fresh(data: &EvaluationData, job: &AcquisitionJob, now: &Timestamp) -> Result<bool> {
@@ -318,9 +357,21 @@ async fn acquire_jobs<P: AcquisitionPort, E: EvidenceStore>(
     evidence: &E,
     partition: &str,
     data: &mut EvaluationData,
-    jobs: Vec<AcquisitionJob>,
+    mut jobs: Vec<AcquisitionJob>,
+    subjects: &[String],
     profiles: &[Profile],
 ) -> Result<Vec<String>> {
+    let mut position = 0;
+    let mut source_progress = None;
+    let mut diagnostics = BTreeSet::new();
+    if let Some(checkpoint) = port.acquisition_checkpoint().await? {
+        checkpoint.require_scope(partition, data, subjects, profiles)?;
+        position = checkpoint.position;
+        jobs = checkpoint.jobs;
+        source_progress = checkpoint.source;
+        diagnostics.extend(checkpoint.diagnostics);
+        *data = checkpoint.data;
+    }
     if profiles.contains(&Profile::Vulnerabilities) && data.advisory_snapshot.is_none() {
         data.advisory_snapshot = Some(AdvisorySnapshotV1 {
             schema: ADVISORY_SNAPSHOT_V1.into(),
@@ -328,13 +379,26 @@ async fn acquire_jobs<P: AcquisitionPort, E: EvidenceStore>(
             exploit_catalog: None,
         });
     }
-    let mut diagnostics = BTreeSet::new();
-    for job in jobs {
+    for (index, job) in jobs.iter().enumerate().skip(position) {
         let advisory = matches!(
             job.operation,
             ProviderOperation::QueryOsv { .. } | ProviderOperation::QueryNvd { .. }
         );
-        let chain = collect_chain(port, &job.operation).await;
+        let chain = match collect_chain(port, &job.operation, source_progress.take()).await {
+            ChainOutcome::Settled(chain) => chain,
+            ChainOutcome::Paused(source) => {
+                let checkpoint = AcquisitionCheckpointV1::new(
+                    partition,
+                    data.clone(),
+                    jobs.clone(),
+                    (subjects, profiles),
+                    (index, source),
+                    diagnostics.iter().cloned().collect(),
+                );
+                port.save_acquisition_checkpoint(&checkpoint).await?;
+                return Err(AcquisitionPaused.into());
+            }
+        };
         if !chain.complete {
             diagnostics.insert("source-acquisition-incomplete".into());
         }
@@ -347,7 +411,7 @@ async fn acquire_jobs<P: AcquisitionPort, E: EvidenceStore>(
                     .iter()
                     .any(|object| matches!(object, NormalizedObject::Upstream(_))))
         {
-            install_upstream(data, evidence, partition, &job, chain).await?;
+            install_upstream(data, evidence, partition, job, chain).await?;
         } else {
             if advisory {
                 mark_cached_advisory_incomplete(data, &job.operation);
@@ -386,8 +450,15 @@ async fn acquire_jobs<P: AcquisitionPort, E: EvidenceStore>(
     Ok(diagnostics.into_iter().collect())
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct SourceChain {
     initial: ProviderOperation,
+    operation: ProviderOperation,
+    previous: Option<ProviderPageV1>,
+    page_position: u32,
+    enumeration_complete: bool,
+    record_offset: usize,
     observations: Vec<ProviderObservationV1>,
     objects: Vec<NormalizedObject>,
     revisions: BTreeMap<String, String>,
@@ -395,19 +466,37 @@ struct SourceChain {
     normalized_bytes: usize,
 }
 
-async fn collect_chain<P: AcquisitionPort>(port: &P, initial: &ProviderOperation) -> SourceChain {
-    let mut chain = SourceChain {
+enum ChainOutcome {
+    Settled(SourceChain),
+    Paused(SourceChain),
+}
+
+async fn collect_chain<P: AcquisitionPort>(
+    port: &P,
+    initial: &ProviderOperation,
+    progress: Option<SourceChain>,
+) -> ChainOutcome {
+    let mut chain = progress.unwrap_or_else(|| SourceChain {
         initial: initial.clone(),
+        operation: initial.clone(),
+        previous: None,
+        page_position: 0,
+        enumeration_complete: false,
+        record_offset: 0,
         observations: vec![],
         objects: vec![],
         revisions: BTreeMap::new(),
         complete: false,
         normalized_bytes: 0,
-    };
-    // Retain independently admitted positive evidence even when a later page
-    // or full-record request fails. Such evidence cannot prove a clean answer.
-    chain.complete = collect_chain_into(port, initial, &mut chain).await.is_ok();
-    chain
+    });
+    // Retain positive evidence after a source failure. A cooperative yield
+    // instead retains the exact next cursor without publishing partial coverage.
+    match collect_chain_into(port, initial, &mut chain).await {
+        Ok(()) => chain.complete = true,
+        Err(error) if error.is::<AcquisitionPaused>() => return ChainOutcome::Paused(chain),
+        Err(_) => {}
+    }
+    ChainOutcome::Settled(chain)
 }
 
 async fn collect_chain_into<P: AcquisitionPort>(
@@ -415,10 +504,12 @@ async fn collect_chain_into<P: AcquisitionPort>(
     initial: &ProviderOperation,
     chain: &mut SourceChain,
 ) -> Result<()> {
-    let mut operation = initial.clone();
-    let mut previous = None;
-    for position in 0..64 {
-        let result = port.invoke(&operation, previous.as_ref()).await?;
+    for position in chain.page_position..64 {
+        if chain.enumeration_complete {
+            break;
+        }
+        let operation = chain.operation.clone();
+        let result = port.invoke(&operation, chain.previous.as_ref()).await?;
         account_result(chain, &result)?;
         let mut page = None;
         for projection in result.normalized_objects {
@@ -460,8 +551,9 @@ async fn collect_chain_into<P: AcquisitionPort>(
             if position == 63 {
                 bail!("source chain exceeds its page count ceiling");
             }
-            previous = page;
-            operation = next;
+            chain.previous = page;
+            chain.operation = next;
+            chain.page_position = position + 1;
             continue;
         }
         let osv_ids = matches!(initial, ProviderOperation::QueryOsv { .. })
@@ -476,11 +568,12 @@ async fn collect_chain_into<P: AcquisitionPort>(
         {
             bail!("advisory enumeration lacks its retained source-bound page");
         }
+        chain.enumeration_complete = true;
         break;
     }
     if let ProviderOperation::QueryOsv { projects, .. } = initial {
         let ids = chain.revisions.keys().cloned().collect::<Vec<_>>();
-        for ids in ids.chunks(10) {
+        for ids in ids[chain.record_offset..].chunks(10) {
             let operation = ProviderOperation::RetrieveAdvisories {
                 project: projects[0].clone(),
                 ids: ids.to_vec(),
@@ -509,6 +602,7 @@ async fn collect_chain_into<P: AcquisitionPort>(
             if !result.coverage.is_complete() {
                 bail!("OSV full-record retrieval is incomplete");
             }
+            chain.record_offset += ids.len();
         }
     }
     Ok(())

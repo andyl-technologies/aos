@@ -4,6 +4,7 @@
 //! Native SQL and HubDb. Source HTTP never runs inside a database transaction.
 //! Raw source bodies stay on the admitted evidence path, including in Hybrid.
 
+mod acquisition_progress;
 mod alerts;
 mod authority;
 mod budgets;
@@ -26,6 +27,7 @@ pub use inventory::{AssessmentInventoryAdmission, AssessmentResource};
 pub use job_authority::assessment_actor_ref;
 pub use publication::AssessmentPublicationRefresh;
 pub use objects::AssessmentObjectKind;
+pub use provider_state::AssessmentProviderReplay;
 pub use scans::AssessmentScanRecord;
 pub use status::{
     AssessmentProfileStatus, AssessmentScanSummary, AssessmentStatusPage, AssessmentSubjectStatus,

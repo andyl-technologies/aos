@@ -92,5 +92,61 @@ async fn serving_inventory_scan_heads_alerts_acknowledgements_and_events_are_ato
         .await?
         .is_none()
     );
+    // PostgreSQL binds every original claim parameter through the guarded
+    // INSERT, and yielding never converts refusal into quota or result authority.
+    request.idempotency_key = "postgres-resumable-refusal".into();
+    let resumed_scan = db.request_assessment_scan(registry_id, &request).await?;
+    let first_claim = db
+        .claim_assessment_scan(registry_id, &resumed_scan.scan_id, 90)
+        .await?;
+    let question = aos_assessment_runtime::provider::ProviderOperation::ObserveTags {
+        repository: "fixture/unavailable".into(),
+        tag_prefix: "v".into(),
+        page: 1,
+    };
+    db.refuse_assessment_provider_question_fenced(registry_id, &first_claim, &question, &[])
+        .await?;
+    db.pause_assessment_scan_fenced(registry_id, &first_claim, &[])
+        .await?;
+    let next_claim = db
+        .claim_assessment_scan(registry_id, &resumed_scan.scan_id, 90)
+        .await?;
+    assert!(matches!(
+        db.assessment_provider_replay(registry_id, &next_claim, &question, None)
+            .await?,
+        Some(super::AssessmentProviderReplay::Failed)
+    ));
+    assert!(
+        db.check_assessment_scan_claim(registry_id, &first_claim)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        db.assessment_scan(registry_id, &resumed_scan.scan_id)
+            .await?
+            .unwrap()
+            .usage
+            .provider_requests,
+        0
+    );
+    let base = db
+        .assessment_evaluation_base(registry_id, &next_claim)
+        .await?;
+    let progress = super::acquisition_progress::tests::initial_checkpoint(&base, &request)?;
+    db.save_assessment_acquisition_checkpoint_fenced(registry_id, &next_claim, &progress, &[])
+        .await?;
+    db.pause_assessment_scan_fenced(registry_id, &next_claim, &[])
+        .await?;
+    let continued = db
+        .claim_assessment_scan(registry_id, &resumed_scan.scan_id, 90)
+        .await?;
+    assert_eq!(continued.attempt, next_claim.attempt);
+    assert_eq!(
+        db.assessment_acquisition_checkpoint(registry_id, &continued)
+            .await?
+            .unwrap()
+            .digest()?,
+        progress.digest()?
+    );
     Ok(())
 }

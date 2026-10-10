@@ -61,6 +61,8 @@ pub enum AssessmentObjectKind {
     ProviderPage,
     /// Closed compact upstream custody with ordinary exact-byte evidence identity.
     SourceChain,
+    /// Exact resumable acquisition progress, independent of frozen evaluation.
+    AcquisitionCheckpoint,
 }
 
 impl AssessmentObjectKind {
@@ -85,11 +87,16 @@ impl AssessmentObjectKind {
             Self::KnownExploit => "aos.known-exploit/v1",
             Self::ProviderPage => "aos.provider-page/v1",
             Self::SourceChain => "aos.source-chain-custody/v1",
+            Self::AcquisitionCheckpoint => "aos.acquisition-checkpoint/v1",
         }
     }
 
     fn normalize(self, bytes: &[u8]) -> Result<Vec<u8>> {
         match self {
+            Self::AcquisitionCheckpoint => {
+                aos_assessment_runtime::acquisition::AcquisitionCheckpointV1::from_slice(bytes)?
+                    .encoded()
+            }
             Self::SourceChain => encode(
                 &aos_assessment_runtime::source_chain::SourceChainCustodyV1::from_slice(bytes)?,
             ),

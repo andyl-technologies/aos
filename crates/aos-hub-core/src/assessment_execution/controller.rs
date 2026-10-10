@@ -81,7 +81,15 @@ where
         .await
         {
             Ok(_) => pass.committed += 1,
-            Err(_) => pass.deferred += 1,
+            Err(error) => {
+                pass.deferred += 1;
+                if error.is::<aos_assessment_runtime::acquisition::AcquisitionPaused>() {
+                    // The yielded scan is immediately claimable. Preserve the
+                    // incoming cursor so a queue continuation can revisit it.
+                    pass.next_scan = Some(after_scan.into());
+                    break;
+                }
+            }
         }
     }
     Ok(pass)

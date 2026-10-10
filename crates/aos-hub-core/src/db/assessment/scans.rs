@@ -37,6 +37,8 @@ pub struct AssessmentScanRecord {
     pub assessment_digest: Option<Sha256Digest>,
     /// Bounded stable terminal diagnostic, never an exception or source response.
     pub failure_code: Option<String>,
+    // Internal continuation marker never appears as a terminal API diagnostic.
+    cooperative_pause: bool,
     /// Optimistic state version.
     pub resource_version: u64,
     /// Database admission time.
@@ -127,7 +129,8 @@ impl Database {
         if request.digest()? != request_digest {
             bail!("stored scan request identity changed");
         }
-        let state = serde_json::from_value(serde_json::Value::String(row.get(4)?))?;
+        let state: ScanState = serde_json::from_value(serde_json::Value::String(row.get(4)?))?;
+        let diagnostic: Option<String> = row.get(11)?;
         Ok(Some(AssessmentScanRecord {
             scan_id: scan_id.into(),
             registry_id,
@@ -145,7 +148,15 @@ impl Database {
                 .transpose()?,
             resource_version: row.get(9)?,
             created_at: Timestamp::from_unix_seconds(row.get(10)?)?,
-            failure_code: row.get(11)?,
+            cooperative_pause: diagnostic.as_deref() == Some("acquisition-paused"),
+            failure_code: if matches!(
+                state,
+                ScanState::Failed | ScanState::Superseded | ScanState::Cancelled
+            ) {
+                diagnostic
+            } else {
+                None
+            },
         }))
     }
 
@@ -429,7 +440,8 @@ impl Database {
         let clock = self.backend.dialect().unix_time_expression();
         let sql = format!(
             "UPDATE assessment_scans SET state = 'running', claim_token = ?3, lease_expires_at = ?4,
-                 attempt = attempt + 1, updated_at = {clock}, resource_version = resource_version + 1
+                 attempt = attempt + CASE WHEN last_error_code = 'acquisition-paused' THEN 0 ELSE 1 END,
+                 last_error_code = NULL, updated_at = {clock}, resource_version = resource_version + 1
              WHERE registry_id = ?1 AND scan_id = ?2 AND admission_complete = 1 AND attempt < 100
                AND resource_version = ?5 AND ?4 > {clock}
                AND (state = 'queued' OR (state = 'running' AND lease_expires_at <= {clock}))
@@ -462,7 +474,7 @@ impl Database {
             inventory_revision: record.request.inventory_revision,
             claim_token: token,
             expires_at,
-            attempt: record.attempt + 1,
+            attempt: record.attempt + u32::from(!record.cooperative_pause),
         })
     }
 
@@ -529,6 +541,45 @@ impl Database {
         let mut renewed = claim.clone();
         renewed.expires_at = Timestamp::from_unix_seconds(deadline)?;
         Ok(renewed)
+    }
+
+    /// Releases a live coordinator quantum without completing its assessment.
+    ///
+    /// The exact old claim becomes unusable immediately. Independently admitted
+    /// child results and consumed quota remain immutable; unfinished physical
+    /// attempts must settle before a host can yield.
+    ///
+    /// # Errors
+    /// Returns an error for stale or revoked authority, active child effects,
+    /// excessive guards or unavailable persistence.
+    pub async fn pause_assessment_scan_fenced(
+        &self,
+        registry_id: i64,
+        claim: &TaskClaim,
+        authority_fences: &[CheckedStatement],
+    ) -> Result<()> {
+        if authority_fences.len() > 32 {
+            bail!("assessment pause exceeds its authority bound");
+        }
+        self.check_assessment_scan_claim(registry_id, claim).await?;
+        let clock = self.backend.dialect().unix_time_expression();
+        let mut statements = authority_fences.to_vec();
+        statements.push(
+            Statement::new(
+                format!(
+                    "UPDATE assessment_scans SET lease_expires_at = {clock}, updated_at = {clock},
+                 last_error_code = CASE WHEN checkpoint_digest IS NOT NULL THEN 'acquisition-paused' ELSE last_error_code END,
+                 resource_version = resource_version + 1
+             WHERE {} AND NOT EXISTS(SELECT 1 FROM assessment_tasks AS task
+                 WHERE task.scan_id = ?2 AND task.state = 'leased'
+                   AND task.lease_expires_at > {clock})",
+                    self.assessment_claim_guard()
+                ),
+                claim_values(registry_id, claim),
+            )
+            .expecting(1),
+        );
+        self.backend.checked_batch(&statements).await
     }
 
     /// Fences cancellation immediately without mutating prior assessment heads.

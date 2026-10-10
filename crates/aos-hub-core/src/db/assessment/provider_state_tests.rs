@@ -437,3 +437,145 @@ async fn cancelled_operations_reject_results_without_changing_usage_or_task_rece
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn yielding_reclaims_one_scan_and_replays_settled_questions_without_new_quota() -> Result<()>
+{
+    use super::AssessmentProviderReplay;
+    let (db, registry_id, plan) = planned().await?;
+    db.admit_assessment_provider_plan(registry_id, &plan)
+        .await?;
+    let mut coordinator = plan.claim.clone();
+    coordinator.task_id = "coordinator".into();
+
+    // An in-flight physical effect cannot be abandoned by a cooperative yield.
+    assert!(
+        db.pause_assessment_scan_fenced(registry_id, &coordinator, &[])
+            .await
+            .is_err()
+    );
+    let result = failure(&plan)?;
+    db.admit_assessment_provider_result(registry_id, &plan, &result)
+        .await?;
+    let usage = db
+        .assessment_scan(registry_id, &plan.claim.scan_id)
+        .await?
+        .unwrap()
+        .usage;
+    db.pause_assessment_scan_fenced(registry_id, &coordinator, &[])
+        .await?;
+    assert!(
+        db.check_assessment_scan_claim(registry_id, &coordinator)
+            .await
+            .is_err()
+    );
+    assert!(
+        db.assessment_evaluation_checkpoint(registry_id, &coordinator)
+            .await
+            .is_err()
+    );
+
+    let resumed = db
+        .claim_assessment_scan(registry_id, &plan.claim.scan_id, 90)
+        .await?;
+    assert_eq!(resumed.attempt, coordinator.attempt + 1);
+    assert_ne!(resumed.claim_token, coordinator.claim_token);
+    assert!(
+        matches!(db.assessment_provider_replay(registry_id, &resumed,
+        &plan.operation, None).await?, Some(AssessmentProviderReplay::Admitted(value)) if *value == result)
+    );
+    assert_eq!(
+        db.assessment_scan(registry_id, &plan.claim.scan_id)
+            .await?
+            .unwrap()
+            .usage,
+        usage
+    );
+    assert!(
+        db.assessment_provider_replay(registry_id, &coordinator, &plan.operation, None)
+            .await
+            .is_err()
+    );
+    let current = db
+        .assessment_scan(registry_id, &plan.claim.scan_id)
+        .await?
+        .unwrap();
+    db.cancel_assessment_scan(registry_id, &plan.claim.scan_id, current.resource_version)
+        .await?;
+    assert!(
+        db.assessment_provider_replay(registry_id, &resumed, &plan.operation, None)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn transport_failure_replays_incomplete_without_reissuing_a_physical_attempt() -> Result<()> {
+    let (db, registry_id, plan) = planned().await?;
+    db.admit_assessment_provider_plan(registry_id, &plan)
+        .await?;
+    db.fail_assessment_provider_work(registry_id, &plan.claim, "source-transport-failed")
+        .await?;
+    let mut coordinator = plan.claim.clone();
+    coordinator.task_id = "coordinator".into();
+    db.pause_assessment_scan_fenced(registry_id, &coordinator, &[])
+        .await?;
+    let resumed = db
+        .claim_assessment_scan(registry_id, &plan.claim.scan_id, 90)
+        .await?;
+    assert!(matches!(
+        db.assessment_provider_replay(registry_id, &resumed, &plan.operation, None)
+            .await?,
+        Some(super::AssessmentProviderReplay::Failed)
+    ));
+    assert_eq!(
+        db.assessment_scan(registry_id, &plan.claim.scan_id)
+            .await?
+            .unwrap()
+            .usage
+            .provider_requests,
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn pre_dispatch_refusal_is_replayable_but_does_not_consume_source_quota() -> Result<()> {
+    let (db, registry_id, request) = setup().await?;
+    let scan = db.request_assessment_scan(registry_id, &request).await?;
+    let claim = db
+        .claim_assessment_scan(registry_id, &scan.scan_id, 90)
+        .await?;
+    let operation = ProviderOperation::ObserveTags {
+        repository: "fixture/unavailable".into(),
+        tag_prefix: "v".into(),
+        page: 1,
+    };
+    db.refuse_assessment_provider_question_fenced(registry_id, &claim, &operation, &[])
+        .await?;
+    db.refuse_assessment_provider_question_fenced(registry_id, &claim, &operation, &[])
+        .await?;
+    assert!(matches!(
+        db.assessment_provider_replay(registry_id, &claim, &operation, None)
+            .await?,
+        Some(super::AssessmentProviderReplay::Failed)
+    ));
+    let current = db
+        .assessment_scan(registry_id, &scan.scan_id)
+        .await?
+        .unwrap();
+    assert_eq!(current.usage.provider_requests, 0);
+    assert_eq!(current.usage.tasks, 1);
+    db.pause_assessment_scan_fenced(registry_id, &claim, &[])
+        .await?;
+    let resumed = db
+        .claim_assessment_scan(registry_id, &scan.scan_id, 90)
+        .await?;
+    assert!(matches!(
+        db.assessment_provider_replay(registry_id, &resumed, &operation, None)
+            .await?,
+        Some(super::AssessmentProviderReplay::Failed)
+    ));
+    Ok(())
+}

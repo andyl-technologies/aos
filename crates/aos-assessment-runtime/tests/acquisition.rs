@@ -482,3 +482,214 @@ async fn refresh_stale_skips_complete_fresh_queries_and_refreshes_expired_eviden
     );
     Ok(())
 }
+
+struct YieldingPort;
+
+#[async_trait::async_trait]
+impl AcquisitionPort for YieldingPort {
+    async fn save_acquisition_checkpoint(
+        &self,
+        checkpoint: &aos_assessment_runtime::acquisition::AcquisitionCheckpointV1,
+    ) -> Result<()> {
+        checkpoint.encoded()?;
+        Ok(())
+    }
+
+    async fn invoke(
+        &self,
+        _: &ProviderOperation,
+        _: Option<&ProviderPageV1>,
+    ) -> Result<ProviderWorkResultV1> {
+        Err(aos_assessment_runtime::acquisition::AcquisitionPaused.into())
+    }
+}
+
+#[tokio::test]
+async fn a_host_quantum_yield_never_becomes_partial_source_coverage() -> Result<()> {
+    let mut data = common::fixture("1.2.0")?;
+    let subjects = data
+        .inventory
+        .subjects
+        .iter()
+        .map(|subject| subject.subject_ref.clone())
+        .collect::<Vec<_>>();
+    let error = acquire(
+        &YieldingPort,
+        &Custody::default(),
+        "fixture",
+        &mut data,
+        &subjects,
+        &[Profile::Updates],
+    )
+    .await
+    .unwrap_err();
+    assert!(error.is::<aos_assessment_runtime::acquisition::AcquisitionPaused>());
+    assert!(data.upstream.is_empty());
+    Ok(())
+}
+
+struct RestartingPort {
+    port: Port,
+    checkpoint: Mutex<Option<Vec<u8>>>,
+    remaining: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl AcquisitionPort for RestartingPort {
+    async fn acquisition_checkpoint(
+        &self,
+    ) -> Result<Option<aos_assessment_runtime::acquisition::AcquisitionCheckpointV1>> {
+        self.checkpoint
+            .lock()
+            .map_err(|_| anyhow::anyhow!("checkpoint lock"))?
+            .as_deref()
+            .map(aos_assessment_runtime::acquisition::AcquisitionCheckpointV1::from_slice)
+            .transpose()
+    }
+
+    async fn save_acquisition_checkpoint(
+        &self,
+        checkpoint: &aos_assessment_runtime::acquisition::AcquisitionCheckpointV1,
+    ) -> Result<()> {
+        *self
+            .checkpoint
+            .lock()
+            .map_err(|_| anyhow::anyhow!("checkpoint lock"))? = Some(checkpoint.encoded()?);
+        Ok(())
+    }
+
+    async fn invoke(
+        &self,
+        operation: &ProviderOperation,
+        previous: Option<&ProviderPageV1>,
+    ) -> Result<ProviderWorkResultV1> {
+        if self
+            .remaining
+            .fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |remaining| remaining.checked_sub(1),
+            )
+            .is_err()
+        {
+            return Err(aos_assessment_runtime::acquisition::AcquisitionPaused.into());
+        }
+        self.port.invoke(operation, previous).await
+    }
+}
+
+#[tokio::test]
+async fn persisted_source_cursor_resumes_the_next_page_without_reinvoking_its_prefix() -> Result<()>
+{
+    let page = (3..23)
+        .map(|minor| {
+            json!({"tag_name":format!("v1.{minor}.0"),
+        "published_at":"2026-10-01T00:00:00Z"})
+        })
+        .collect::<Vec<_>>();
+    let port = RestartingPort {
+        port: Port::new(vec![
+            json!(page),
+            json!([{ "tag_name":"v1.23.0", "published_at":"2026-10-01T00:00:00Z" }]),
+        ])?,
+        checkpoint: Mutex::new(None),
+        remaining: std::sync::atomic::AtomicUsize::new(1),
+    };
+    let mut data = common::fixture("1.2.0")?;
+    let subjects = vec!["subject".into()];
+    let error = acquire(
+        &port,
+        &port.port.custody,
+        "fixture",
+        &mut data,
+        &subjects,
+        &[Profile::Updates],
+    )
+    .await
+    .unwrap_err();
+    assert!(error.is::<aos_assessment_runtime::acquisition::AcquisitionPaused>());
+    assert!(data.upstream.is_empty());
+
+    // Recreate the closure, as a new process/lease does, and load only persisted progress.
+    let mut restarted = common::fixture("1.2.0")?;
+    port.remaining.store(1, std::sync::atomic::Ordering::SeqCst);
+    acquire(
+        &port,
+        &port.port.custody,
+        "fixture",
+        &mut restarted,
+        &subjects,
+        &[Profile::Updates],
+    )
+    .await?;
+    let operations = port.port.operations.lock().unwrap();
+    assert_eq!(operations.len(), 2);
+    assert!(matches!(
+        operations[0],
+        ProviderOperation::ObserveReleases { page: 1, .. }
+    ));
+    assert!(matches!(
+        operations[1],
+        ProviderOperation::ObserveReleases { page: 2, .. }
+    ));
+    assert_eq!(restarted.upstream[0].observation.candidates.len(), 21);
+    assert_eq!(
+        restarted.upstream[0].observation.coverage,
+        aos_assessment::discovery::ObservationCoverage::Complete
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn persisted_osv_cursor_resumes_full_record_retrieval_without_requerying_ids() -> Result<()> {
+    let port = RestartingPort {
+        port: Port::new(vec![
+            json!({"results":[{"vulns":[{"id":"GHSA-fixture-one", "modified":"2026-10-09T01:00:00Z"}]}]}),
+            osv_record("2026-10-09T01:00:00Z"),
+        ])?,
+        checkpoint: Mutex::new(None),
+        remaining: std::sync::atomic::AtomicUsize::new(1),
+    };
+    let mut data = common::fixture("1.2.0")?;
+    let subjects = vec!["subject".into()];
+    let error = acquire(
+        &port,
+        &port.port.custody,
+        "fixture",
+        &mut data,
+        &subjects,
+        &[Profile::Vulnerabilities],
+    )
+    .await
+    .unwrap_err();
+    assert!(error.is::<aos_assessment_runtime::acquisition::AcquisitionPaused>());
+    let mut restarted = common::fixture("1.2.0")?;
+    port.remaining.store(1, std::sync::atomic::Ordering::SeqCst);
+    acquire(
+        &port,
+        &port.port.custody,
+        "fixture",
+        &mut restarted,
+        &subjects,
+        &[Profile::Vulnerabilities],
+    )
+    .await?;
+    let operations = port.port.operations.lock().unwrap();
+    assert_eq!(operations.len(), 2);
+    assert!(matches!(operations[0], ProviderOperation::QueryOsv { .. }));
+    assert!(matches!(
+        operations[1],
+        ProviderOperation::RetrieveAdvisories { .. }
+    ));
+    assert!(
+        restarted.advisory_snapshot.as_ref().unwrap().sources[0]
+            .observation
+            .coverage
+            .is_complete()
+    );
+    let input =
+        restarted.freeze_selected(vec![Profile::Vulnerabilities], subjects, FixedClock.now()?)?;
+    let result = aos_assessment::evaluator::evaluate(&input, &restarted)?;
+    assert_eq!(result.subject_results[0].findings.len(), 1);
+    Ok(())
+}

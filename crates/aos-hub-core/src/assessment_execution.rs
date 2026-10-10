@@ -8,7 +8,9 @@
 use anyhow::{bail, Context as _, Result};
 use aos_assessment::input::{FreshnessMode, ScanInputV1};
 use aos_assessment::result::PackageAssessmentV1;
-use aos_assessment_runtime::acquisition::{acquire, acquire_stale, AcquisitionPort};
+use aos_assessment_runtime::acquisition::{
+    acquire, acquire_stale, AcquisitionPaused, AcquisitionPort,
+};
 use aos_assessment_runtime::ports::{EvidenceStore, ProviderTransport, RuntimeBounds};
 use aos_assessment_runtime::provider::{
     CapabilityChallenge, ProviderLimits, ProviderOperation, ProviderPageV1, ProviderWorkPlanV1,
@@ -181,6 +183,7 @@ where
         db,
         scan: &scan,
         claim: std::sync::Mutex::new(claim.clone()),
+        quantum: std::sync::Mutex::new((0, None)),
         authority,
         transport,
         routes,
@@ -193,7 +196,7 @@ where
         // Each selected source question is independently admitted. Host caches
         // may provide conditional custody through their issued route/profile;
         // an explicit refresh never bypasses source or operation allowance.
-        if scan.request.freshness == FreshnessMode::RefreshStale {
+        let acquisition = if scan.request.freshness == FreshnessMode::RefreshStale {
             acquire_stale(
                 &port,
                 evidence,
@@ -203,7 +206,7 @@ where
                 &scan.request.profiles,
                 &db.assessment_database_time().await?,
             )
-            .await?;
+            .await
         } else {
             acquire(
                 &port,
@@ -213,7 +216,18 @@ where
                 &scan.request.subjects,
                 &scan.request.profiles,
             )
-            .await?;
+            .await
+        };
+        if let Err(error) = acquisition {
+            if error.is::<AcquisitionPaused>() {
+                db.pause_assessment_scan_fenced(
+                    registry_id,
+                    &port.current_claim()?,
+                    &authority.current_fences(&scan).await?,
+                )
+                .await?;
+            }
+            return Err(error);
         }
     }
     restore_candidate_history(db, &scan, &mut data).await?;
@@ -296,6 +310,9 @@ struct DatabaseAcquisition<'a, A, T, R> {
     db: &'a Database,
     scan: &'a AssessmentScanRecord,
     claim: std::sync::Mutex<TaskClaim>,
+    // Cached replay does not consume a physical quantum. Start its deadline
+    // at the frontier so a growing retained prefix cannot starve new work.
+    quantum: std::sync::Mutex<(u32, Option<u64>)>,
     authority: &'a A,
     transport: &'a T,
     routes: &'a R,
@@ -315,7 +332,56 @@ impl<A, T, R> DatabaseAcquisition<'_, A, T, R> {
 impl<A: AssessmentAuthority, T: ProviderTransport, R: AssessmentSourceRoutes> AcquisitionPort
     for DatabaseAcquisition<'_, A, T, R>
 {
+    async fn acquisition_checkpoint(
+        &self,
+    ) -> Result<Option<aos_assessment_runtime::acquisition::AcquisitionCheckpointV1>> {
+        self.authority.require_current(self.scan).await?;
+        self.db
+            .assessment_acquisition_checkpoint(self.scan.registry_id, &self.current_claim()?)
+            .await
+    }
+
+    async fn save_acquisition_checkpoint(
+        &self,
+        checkpoint: &aos_assessment_runtime::acquisition::AcquisitionCheckpointV1,
+    ) -> Result<()> {
+        self.db
+            .save_assessment_acquisition_checkpoint_fenced(
+                self.scan.registry_id,
+                &self.current_claim()?,
+                checkpoint,
+                &self.authority.current_fences(self.scan).await?,
+            )
+            .await
+    }
+
     async fn invoke(
+        &self,
+        operation: &ProviderOperation,
+        previous: Option<&ProviderPageV1>,
+    ) -> Result<ProviderWorkResultV1> {
+        let outcome = self.invoke_question(operation, previous).await;
+        if outcome
+            .as_ref()
+            .is_err_and(|error| !error.is::<AcquisitionPaused>())
+        {
+            self.db
+                .refuse_assessment_provider_question_fenced(
+                    self.scan.registry_id,
+                    &self.current_claim()?,
+                    operation,
+                    &self.authority.current_fences(self.scan).await?,
+                )
+                .await?;
+        }
+        outcome
+    }
+}
+
+impl<A: AssessmentAuthority, T: ProviderTransport, R: AssessmentSourceRoutes>
+    DatabaseAcquisition<'_, A, T, R>
+{
+    async fn invoke_question(
         &self,
         operation: &ProviderOperation,
         previous: Option<&ProviderPageV1>,
@@ -347,6 +413,33 @@ impl<A: AssessmentAuthority, T: ProviderTransport, R: AssessmentSourceRoutes> Ac
                 .claim
                 .lock()
                 .map_err(|_| anyhow::anyhow!("assessment claim lock is poisoned"))? = claim.clone();
+        }
+        if let Some(replay) = self
+            .db
+            .assessment_provider_replay(self.scan.registry_id, &claim, operation, previous)
+            .await?
+        {
+            return match replay {
+                crate::db::AssessmentProviderReplay::Admitted(result) => Ok(*result),
+                crate::db::AssessmentProviderReplay::Failed => {
+                    bail!("source question previously settled without complete evidence")
+                }
+            };
+        }
+        {
+            let mut quantum = self
+                .quantum
+                .lock()
+                .map_err(|_| anyhow::anyhow!("assessment quantum lock is poisoned"))?;
+            if quantum.0 >= 16
+                || quantum
+                    .1
+                    .is_some_and(|started| now.unix_seconds().saturating_sub(started) >= 20)
+            {
+                return Err(AcquisitionPaused.into());
+            }
+            quantum.0 += 1;
+            quantum.1.get_or_insert(now.unix_seconds());
         }
         if now
             .unix_seconds()
