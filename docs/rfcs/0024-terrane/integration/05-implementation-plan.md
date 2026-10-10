@@ -456,10 +456,47 @@ new-source diagnostic on frozen `3ab7fa81c9` fails after 22.879 seconds:
 The actual fixture publishes a Commit-only ACL; AUTH-22 requires Commit to
 imply Read, so this expectation is invalid. An isolated correction must use a
 genuine published revocation and preserve both ref and immutable-commit read
-refusals, protected historical evidence and typed denial assertions. The old
-failure remains separate; the correction and owning gate are unqualified.
-Independent current-source read and index runtime checks proceed separately
-while fixture implementation leaves their sealed executables unchanged.
+refusals, protected historical evidence and typed denial assertions. Reviewed
+fixture corrections `e53de8b401` and `e625b83b08` publish zero-permission ACLs,
+require exact Read denials for both addressing forms and independently preserve
+the protected signed history. The old failure remains separate. Private
+composition `fb8c86423e` includes both corrections and the reviewed property
+gate's reuse of the source-bound native SDK test image. That gate retains all
+twenty-three core selectors and fifteen native selectors in their original
+order, executing each native witness independently with exactly-one-pass checks.
+Only compilation is shared across gates. Scoped formatting, source/profile
+evaluation and independent verification of all twenty-nine review packet files
+pass; no runtime acceptance follows from evaluation. The composition's native
+build and strict all-target Clippy pass; actual all-target test compilation and
+the two corrected exact witnesses precede its owning property gate qualification.
+Separate runtime qualification on unchanged frozen `3ab7fa81c9` passes all
+ninety-five selected native cases in 335.835 seconds, all twenty-nine mandatory
+read cases in 34.337 seconds, the exact attributes SDK case in 0.008 seconds
+and index key-limit refusal in 13.957 seconds. The genuine 1,024-entry ordinary
+index case fails after 59.141 seconds during baseline publication, after
+constructing twenty source and 557 auxiliary nodes, with a typed Commit denial.
+All tracing switches were unset; this run identifies neither the refusing
+deadline predicate nor the expensive interval. The remaining five population
+cases do not run. Independent review verifies all fifty-four packet files and
+the preserved executable seals.
+A separate source-unchanged diagnostic enables only the existing denial
+callsite switch and fails after 55.078 seconds. Its retained writer samples
+30.766731875 seconds against the unchanged thirty-second limit at
+`guard/time.rs:285`; no coordinator deadline sample is emitted. Independent
+review verifies all twenty-nine diagnostic packet files. This confirms that
+diagnostic's refusing predicate, without establishing a performance cause or
+benefit. Two disjoint implementation worklines now address source-proven
+duplicate pure candidate preparation within one held operation and repeated
+canonical owner preparation within one immutable synchronous invocation.
+Their six exact positive and negative witnesses are registered before the
+worker branches. Fresh physical and issuer checks, occurrence policy and role
+checks, independent history completion, populations and deadlines remain
+mandatory; implementation and runtime qualification are pending.
+The owning `algebra-merge` gate passes separately on frozen `ea64a04697`,
+executing thirty-two core and six native cases with zero failures or ignored
+tests. Independent review verifies all twenty packet files and the actual
+store artifact and deriver. This earlier-source result does not qualify
+`algebra-fork`, later production changes or the complete T1 floor.
 The actual application test-target check passes on frozen `4a1ff5d5fb`, compiling
 all twenty-nine selected packages and 114 test executables: seventy-seven
 integration and thirty-seven unit targets. Every selected compiler artifact has
