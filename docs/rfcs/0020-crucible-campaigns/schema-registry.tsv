@@ -40,7 +40,7 @@ crucible.guest-selectable.pending-request	2	crucible-protocol::selectable_transp
 crucible.qemu-plugin.setup-plan	3	crucible-protocol::plugin_setup_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.qemu.hot-fork.template	30	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-equivalence,gate:hot-fork-isolation
 crucible.qemu.hot-fork.template-resource-stage	14	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
-crucible.qemu.hot-fork.fork	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-equivalence,gate:hot-fork-isolation
+crucible.qemu.hot-fork.fork	4	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-equivalence,gate:hot-fork-isolation
 crucible.qemu.hot-fork.plugin-resource-inventory	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.plugin-barrier	6	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.child-runtime	4	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
