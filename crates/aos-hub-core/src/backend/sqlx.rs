@@ -824,12 +824,59 @@ mod postgres {
         Ok(())
     }
 
-    /// Runs a checked postgres transaction, rolling back on a row-count mismatch.
+    /// Runs a checked PostgreSQL transaction with bounded deadlock recovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for failed statements, row-count assertions, rollback,
+    /// commit, or exhausted deadlock recovery.
     pub(super) async fn checked_batch(pool: &PgPool, stmts: &[CheckedStatement]) -> Result<()> {
-        let mut tx = pool
-            .begin()
-            .await
-            .context("beginning postgres transaction")?;
+        const MAX_DEADLOCK_RETRIES: u8 = 2;
+        let mut retries = 0_u8;
+
+        loop {
+            let mut tx = pool
+                .begin()
+                .await
+                .context("beginning postgres transaction")?;
+            match checked_statements(&mut tx, stmts).await {
+                Ok(()) => {
+                    return tx.commit().await.context("committing postgres transaction");
+                }
+                Err(error) => {
+                    let deadlock = error.chain().any(|cause| {
+                        cause.downcast_ref::<sqlx::Error>().is_some_and(|error| {
+                            error
+                                .as_database_error()
+                                .and_then(sqlx::error::DatabaseError::code)
+                                .as_deref()
+                                == Some("40P01")
+                        })
+                    });
+
+                    // Only a server-confirmed deadlock and acknowledged rollback
+                    // allow the original statement list to run again. Every
+                    // affected-row fence remains in place on the next attempt.
+                    tx.rollback()
+                        .await
+                        .context("rolling back postgres checked transaction")?;
+                    if !deadlock || retries == MAX_DEADLOCK_RETRIES {
+                        return Err(error);
+                    }
+
+                    retries += 1;
+                    tracing::warn!(retries, "retrying rolled-back postgres deadlock");
+                    tokio::time::sleep(std::time::Duration::from_millis(5 * u64::from(retries)))
+                        .await;
+                }
+            }
+        }
+    }
+
+    async fn checked_statements(
+        tx: &mut sqlx::Transaction<'_, Postgres>,
+        stmts: &[CheckedStatement],
+    ) -> Result<()> {
         for checked in stmts {
             let (sql, params) = prepare(
                 Dialect::Postgres,
@@ -837,7 +884,7 @@ mod postgres {
                 &checked.statement.params,
             )?;
             let result = bind(sqlx::query(&sql), &params, &sql)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .with_context(|| format!("executing {sql}"))?;
             if let Some(expected) = checked.expected_rows {
@@ -848,10 +895,194 @@ mod postgres {
                 );
             }
         }
-        tx.commit()
-            .await
-            .context("committing postgres transaction")?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod transaction_tests {
+        //! Real PostgreSQL checks for deadlock recovery and retained row-count fences.
+        //!
+        //! The ignored test uses an isolated local server selected with
+        //! `AOS_TEST_POSTGRES_SOCKET`. Its private schema is removed after the check.
+
+        use std::time::Duration;
+
+        use anyhow::{Context, Result};
+        use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+
+        use super::checked_batch;
+        use crate::backend::{CheckedStatement, Statement};
+        use crate::value::Value;
+
+        #[tokio::test]
+        #[ignore = "requires an isolated PostgreSQL server via AOS_TEST_POSTGRES_SOCKET"]
+        async fn deadlocks_retry_after_rollback_and_row_count_failures_remain_terminal(
+        ) -> Result<()> {
+            let socket = std::env::var("AOS_TEST_POSTGRES_SOCKET")
+                .context("AOS_TEST_POSTGRES_SOCKET is required")?;
+            anyhow::ensure!(socket.starts_with('/'), "a local Unix socket is required");
+
+            let options = PgConnectOptions::new()
+                .host(&socket)
+                .username("postgres")
+                .database("postgres")
+                .ssl_mode(PgSslMode::Disable);
+            let pool = PgPoolOptions::new()
+                .max_connections(6)
+                .acquire_timeout(Duration::from_secs(5))
+                .connect_with(options)
+                .await?;
+            let schema = format!("checked_batch_{}", uuid::Uuid::new_v4().simple());
+            sqlx::raw_sql(&format!(
+                "CREATE SCHEMA {schema};
+                 CREATE TABLE {schema}.counters (id BIGINT PRIMARY KEY, value BIGINT NOT NULL);
+                 INSERT INTO {schema}.counters VALUES (1, 0), (2, 0);
+                 CREATE SEQUENCE {schema}.attempts;"
+            ))
+            .execute(&pool)
+            .await?;
+
+            let result = check_transaction_recovery(&pool, &schema).await;
+            let cleanup = sqlx::raw_sql(&format!("DROP SCHEMA {schema} CASCADE"))
+                .execute(&pool)
+                .await;
+            pool.close().await;
+
+            result?;
+            cleanup?;
+            Ok(())
+        }
+
+        async fn check_transaction_recovery(pool: &sqlx::PgPool, schema: &str) -> Result<()> {
+            let advisory_key = (uuid::Uuid::new_v4().as_u128() & 0x7fff_ffff) as i64;
+            let mut coordinator = pool.acquire().await?;
+            sqlx::query("SELECT pg_advisory_lock($1)")
+                .bind(advisory_key)
+                .execute(&mut *coordinator)
+                .await?;
+
+            let first_pool = pool.clone();
+            let first_statements = opposing_updates(schema, advisory_key, 1, 2);
+            let first =
+                tokio::spawn(async move { checked_batch(&first_pool, &first_statements).await });
+
+            let second_pool = pool.clone();
+            let second_statements = opposing_updates(schema, advisory_key, 2, 1);
+            let second =
+                tokio::spawn(async move { checked_batch(&second_pool, &second_statements).await });
+
+            // Both transactions hold their first row before the coordinator releases
+            // the shared gate. Taking the second row then creates a real deadlock.
+            let both_waiting = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let waiting: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM pg_locks
+                         WHERE locktype = 'advisory' AND NOT granted
+                           AND classid = 0 AND objid::bigint = $1",
+                    )
+                    .bind(advisory_key)
+                    .fetch_one(pool)
+                    .await?;
+                    if waiting == 2 {
+                        return Ok::<(), sqlx::Error>(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await;
+
+            sqlx::query("SELECT pg_advisory_unlock($1)")
+                .bind(advisory_key)
+                .execute(&mut *coordinator)
+                .await?;
+            drop(coordinator);
+
+            let completed = tokio::time::timeout(Duration::from_secs(10), async {
+                first.await??;
+                second.await??;
+                Ok::<(), anyhow::Error>(())
+            })
+            .await;
+            both_waiting??;
+            completed??;
+
+            let values: Vec<i64> =
+                sqlx::query_scalar(&format!("SELECT value FROM {schema}.counters ORDER BY id"))
+                    .fetch_all(pool)
+                    .await?;
+            assert_eq!(
+                values,
+                vec![2, 2],
+                "an aborted attempt must not count twice"
+            );
+
+            // Sequences intentionally survive transaction rollback, making the number
+            // of attempts observable even though the checked writes are rolled back.
+            let refused = checked_batch(
+                pool,
+                &[
+                    Statement::new(format!("SELECT nextval('{schema}.attempts')"), Vec::new())
+                        .unchecked(),
+                    Statement::new(
+                        format!("UPDATE {schema}.counters SET value = value + 1 WHERE id = 1"),
+                        Vec::new(),
+                    )
+                    .expecting(1),
+                    Statement::new(
+                        format!("UPDATE {schema}.counters SET value = value + 1 WHERE id = 999"),
+                        Vec::new(),
+                    )
+                    .expecting(1),
+                ],
+            )
+            .await;
+            assert!(
+                refused.is_err(),
+                "a failed row-count fence must remain refused"
+            );
+
+            let attempts: i64 =
+                sqlx::query_scalar(&format!("SELECT last_value FROM {schema}.attempts"))
+                    .fetch_one(pool)
+                    .await?;
+            assert_eq!(attempts, 1, "a row-count refusal must not retry");
+
+            let values: Vec<i64> =
+                sqlx::query_scalar(&format!("SELECT value FROM {schema}.counters ORDER BY id"))
+                    .fetch_all(pool)
+                    .await?;
+            assert_eq!(
+                values,
+                vec![2, 2],
+                "a row-count refusal rolls back all writes"
+            );
+            Ok(())
+        }
+
+        fn opposing_updates(
+            schema: &str,
+            advisory_key: i64,
+            first: i64,
+            second: i64,
+        ) -> Vec<CheckedStatement> {
+            vec![
+                Statement::new(
+                    format!("UPDATE {schema}.counters SET value = value + 1 WHERE id = ?1"),
+                    vec![Value::Int(first)],
+                )
+                .expecting(1),
+                Statement::new(
+                    "SELECT pg_advisory_xact_lock(?1)",
+                    vec![Value::Int(advisory_key)],
+                )
+                .unchecked(),
+                Statement::new(
+                    format!("UPDATE {schema}.counters SET value = value + 1 WHERE id = ?1"),
+                    vec![Value::Int(second)],
+                )
+                .expecting(1),
+            ]
+        }
     }
 
     /// References `Column` so the import is not flagged unused.
