@@ -515,6 +515,17 @@ earlier mismatched identity reporting is corrected separately with its original
 observations retained. Private `4b840ade60` composes these disjoint changes for
 fresh compiler, feature and runtime qualification. Source and formatter review
 do not establish passing tests, a deadline fix or task acceptance.
+Frozen qualification `2e73ff48d0` passes its fresh native build and strict
+all-target Clippy with warnings denied. Actual all-target test compilation
+continues before fresh inventory and the six registered runtime witnesses;
+no runtime result follows from these compiler checks. A further isolated
+T-DRV-2/T-BKT-1 implementation addresses source-proven repeated whole-pack
+parsing during metadata-batch final confirmation. Its three exact reuse,
+physical-refusal and batch-scope witnesses are registered before implementation.
+The design retains fresh artifact reads and exact member validation for every
+offered identity and confines successful pure parsing reuse to one batch.
+Independent review and a separate remaining-requirements audit proceed in
+parallel; no measured bottleneck, speedup or task acceptance is inferred.
 The owning `algebra-merge` gate passes separately on frozen `ea64a04697`,
 executing thirty-two core and six native cases with zero failures or ignored
 tests. Independent review verifies all twenty packet files and the actual
