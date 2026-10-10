@@ -822,8 +822,9 @@ def launch_managed_process(machine, tools, root, label, arguments, environment, 
         log_path = root / (selected['label'] + '.log')
         fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, 'wb') as log:
+            # Binding state and process-created materials stay with this owner.
             child = subprocess.Popen(selected['arguments'], env=environment,
-                stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+                stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, umask=0o077)
         time.sleep(0.2)
         if child.poll() is not None:
             raise ValueError('Managed process exited before observation; retain its log')

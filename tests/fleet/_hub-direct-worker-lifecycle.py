@@ -54,8 +54,9 @@ def start_direct_worker(worker, tools, configuration, generation):
         log_path = root / (selected['generation'] + '.log')
         descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, 'wb') as log:
+            # Miniflare creates binding state in the child; retain private custody.
             process = subprocess.Popen(arguments, env=environment, stdin=subprocess.DEVNULL,
-                stdout=log, stderr=log, start_new_session=True)
+                stdout=log, stderr=log, start_new_session=True, umask=0o077)
         time.sleep(0.2)
         if process.poll() is not None:
             raise ValueError('selected Worker runner exited before observation')
