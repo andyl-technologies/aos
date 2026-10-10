@@ -1,6 +1,6 @@
 //! Authorized cached advisory lookup with current registry and principal checks.
 
-use aos_assessment_runtime::advisories::AdvisoryQueryV1;
+use aos_assessment_runtime::advisories::{AdvisoryProjectionLimit, AdvisoryQueryV1};
 
 use super::{pb, RpcError, RpcService};
 
@@ -25,13 +25,19 @@ impl RpcService {
             .db
             .assessment_advisory_page(registry.id, &query)
             .await
-            .map_err(RpcError::internal)?
+            .map_err(projection_error)?
             .ok_or_else(|| RpcError::not_found("assessment advisory selection"))?;
-        let document_json = page.to_bytes().map_err(|_| RpcError::ResourceExhausted(
-            "advisory response exceeds its finite size; reduce the revision limit or select one subject".into(),
-        ))?;
+        let document_json = page.to_bytes().map_err(projection_error)?;
         self.recheck_assessment(&claims, &registry, "assessment.read")
             .await?;
         Ok(pb::AssessmentDocumentResponse { document_json })
+    }
+}
+
+fn projection_error(error: anyhow::Error) -> RpcError {
+    if let Some(limit) = error.downcast_ref::<AdvisoryProjectionLimit>() {
+        RpcError::ResourceExhausted(limit.to_string())
+    } else {
+        RpcError::internal(error)
     }
 }

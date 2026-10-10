@@ -6,8 +6,8 @@ use aos_assessment::result::PackageAssessmentV1;
 use aos_assessment::time::Timestamp;
 
 use super::{
-    AdvisoryAssessmentContext, AdvisoryFindingLink, AdvisoryPageV1, AdvisoryQueryV1,
-    AdvisoryRevisionV1,
+    AdvisoryAssessmentContext, AdvisoryFindingLink, AdvisoryPageV1, AdvisoryProjectionLimit,
+    AdvisoryQueryV1, AdvisoryRevisionV1,
 };
 
 /// Projects exact snapshot revisions and raw finding links without source acquisition.
@@ -95,10 +95,9 @@ pub fn lookup_assessment(
                     .binary_search(&digest)
                     .is_ok()
                 {
-                    ensure!(
-                        finding_links.len() < 100,
-                        "advisory association page exceeds its finite link budget; select one subject"
-                    );
+                    if finding_links.len() == 100 {
+                        return Err(AdvisoryProjectionLimit::FindingLinks.into());
+                    }
                     finding_links.push(AdvisoryFindingLink {
                         subject_ref: subject.subject_ref.clone(),
                         component_ref: finding.component_ref.clone(),

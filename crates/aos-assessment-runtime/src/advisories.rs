@@ -21,6 +21,30 @@ mod assessment;
 
 pub use assessment::lookup_assessment;
 
+/// Identifies a finite projection limit without treating omitted evidence as clean.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdvisoryProjectionLimit {
+    /// Matching finding links exceed the per-revision response allowance.
+    FindingLinks,
+    /// A complete response exceeds its byte, item or structural allowance.
+    ResponseBounds,
+}
+
+impl std::fmt::Display for AdvisoryProjectionLimit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::FindingLinks => {
+                "advisory finding links exceed their finite budget; select one subject"
+            }
+            Self::ResponseBounds => {
+                "advisory response exceeds its finite budget; reduce the revision limit"
+            }
+        })
+    }
+}
+
+impl std::error::Error for AdvisoryProjectionLimit {}
+
 /// Selects exact cached advisory equivalence and an optional admitted assessment.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -230,7 +254,7 @@ impl AdvisoryPageV1 {
                 .is_some_and(|last| last.record_digest == next)),
             "advisory continuation differs from its last returned revision"
         );
-        encoded(self)
+        encoded(self).map_err(|_| AdvisoryProjectionLimit::ResponseBounds.into())
     }
 
     /// Decodes the same strict response consumed by CLI and console.
@@ -388,5 +412,31 @@ mod tests {
         page.next_record = None;
         page.revisions.push(page.revisions[0].clone());
         assert!(page.to_bytes().is_err());
+    }
+
+    #[test]
+    fn reports_complete_response_bounds_without_returning_a_truncated_page() {
+        let mut page = page();
+        page.revisions[0].record.references = (0..128)
+            .map(|index| format!("https://example.org/{index:03}/{}", "x".repeat(2000)))
+            .collect();
+        page.revisions[0].record_digest = page.revisions[0].record.digest().unwrap();
+        let mut second = page.revisions[0].clone();
+        second.record.modified = "2026-10-09T12:00:00Z".into();
+        second.record_digest = second.record.digest().unwrap();
+        page.revisions.push(second);
+        page.revisions
+            .sort_by_key(|revision| revision.record_digest);
+        let error = match page.to_bytes() {
+            Ok(bytes) => panic!(
+                "unexpected complete advisory response of {} bytes",
+                bytes.len()
+            ),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.downcast_ref::<AdvisoryProjectionLimit>(),
+            Some(&AdvisoryProjectionLimit::ResponseBounds)
+        );
     }
 }
