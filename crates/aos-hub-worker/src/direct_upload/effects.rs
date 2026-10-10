@@ -18,6 +18,7 @@ use super::{
     config::QualifiedConfig,
     journal::{self, PartRecord},
     managed,
+    qualification_failure::{self, BeginPhase, Diagnostics},
     storage::{self, Operation, Reply},
     verification::{self, CreatedStage},
 };
@@ -56,7 +57,7 @@ pub(super) async fn begin(
     admission: &DirectUploadAdmission,
     context: &DirectRequestContext,
 ) -> Result<()> {
-    begin_with_signal(env, authority, admission, context, None).await
+    begin_with_signal(env, authority, admission, context, None, None).await
 }
 
 /// Creates original private stages with the actual request cancellation signal.
@@ -69,6 +70,7 @@ pub(super) async fn begin_with_signal(
     admission: &DirectUploadAdmission,
     context: &DirectRequestContext,
     signal: Option<worker::web_sys::AbortSignal>,
+    diagnostics: Option<&Diagnostics>,
 ) -> Result<()> {
     // External EmptyPut has no qualified exact-incarnation deletion primitive.
     // Reject the whole object before creating any of its required placements.
@@ -83,8 +85,10 @@ pub(super) async fn begin_with_signal(
         "external empty direct upload unavailable"
     );
     current(authority, context, admission)?;
+    qualification_failure::enter_begin(diagnostics, BeginPhase::AdmissionJournal);
     storage::call(env, admission, Operation::Admit).await?;
     for placement in &admission.placements {
+        qualification_failure::enter_begin(diagnostics, BeginPhase::ProtectedMaterial);
         authority.protected_material(env, placement).await?;
         current(authority, context, admission)?;
         let operation_id = verification::step_id(
@@ -93,6 +97,7 @@ pub(super) async fn begin_with_signal(
             &admission.intent.client_operation_id,
             "create-stage",
         )?;
+        qualification_failure::enter_begin(diagnostics, BeginPhase::StageEffect);
         storage::effect(
             env,
             admission,
@@ -122,6 +127,10 @@ pub(super) async fn begin_with_signal(
                         })
                     }
                     DirectPhysicalContext::External { .. } => {
+                        qualification_failure::enter_begin(
+                            diagnostics,
+                            BeginPhase::ExternalPreparation,
+                        );
                         let work = crate::external_object::prepare_stage_request_with_cutoff(
                             env,
                             admission,
@@ -132,6 +141,10 @@ pub(super) async fn begin_with_signal(
                         )
                         .await?;
                         current(authority, context, admission)?;
+                        qualification_failure::enter_begin(
+                            diagnostics,
+                            BeginPhase::ExternalExecution,
+                        );
                         Ok(CreatedStage::External {
                             result: crate::external_object::execute_stage_with_signal(
                                 env,

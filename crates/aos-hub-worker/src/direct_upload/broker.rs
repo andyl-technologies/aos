@@ -120,6 +120,7 @@ async fn execute(request: &mut Request, env: &Env) -> Result<DirectUploadRespons
                             admission,
                             &context,
                             Some(request.inner().signal()),
+                            None,
                         )
                         .await,
                     )

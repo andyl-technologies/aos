@@ -119,7 +119,11 @@ pub(crate) async fn physical(
         Ok(value) => value,
         Err(_) => return Response::error("qualification authentication refused", 409),
     };
-    let diagnostics = matches!(&control.action, Action::Enqueue { .. }).then(Diagnostics::new);
+    let diagnostics = match &control.action {
+        Action::Begin { .. } => Some(Diagnostics::for_begin()),
+        Action::Enqueue { .. } => Some(Diagnostics::new()),
+        _ => None,
+    };
     let outcome = execute(&control, env, state, diagnostics.as_ref()).await;
     let (status, result) = match outcome {
         Ok(result) => (200, result),
@@ -332,16 +336,25 @@ async fn execute(
         uncertainty: fixture::uncertainty(env)?,
     };
     fixture::installed(env, &original)?;
+    qualification_failure::enter_begin(
+        diagnostics,
+        qualification_failure::BeginPhase::ProtectedMaterial,
+    );
     authority
         .protected_material(env, &admission.placements[0])
         .await?;
+    qualification_failure::enter_begin(
+        diagnostics,
+        qualification_failure::BeginPhase::OriginalContext,
+    );
     super::provider_capacity::policy::configure_exact(env, u32::try_from(
         original.limits.maximum_provider_requests.get(),
     )?)?;
     let context = fixture::context(env, control, admission)?;
     match &control.action {
         Action::Begin { .. } => {
-            effects::begin(env, &authority, admission, &context).await?;
+            effects::begin_with_signal(env, &authority, admission, &context, None, diagnostics)
+                .await?;
             Ok(
                 serde_json::json!({"state":"created","session":session(admission),
                 "placement":admission.placements[0].public_ref(&context.deployment_id)?}),
