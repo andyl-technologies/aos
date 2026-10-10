@@ -1266,9 +1266,12 @@ cases, three choice-closure cases, the schema registry case, 37 source-hygiene
 cases and daemon all-target strict checks. The fixed choice closure is nonempty;
 the finding golden preserves an empty incorporated catalog with its complete
 authenticated query transcript. It does not assert a nonempty finding catalog
-or native object materialization. The initial formatter check identifies two
-files requiring declaration sorting and a wrapped test-helper reexport; these
-formatting changes are tracked separately from the functional extraction.
+or native object materialization. The initial formatter check identified two
+files requiring declaration sorting and a wrapped test-helper reexport. A
+separate formatting-only commit corrects those two files; all 11 selected Rust
+files then pass the current-worktree formatter check. Module declarations,
+attributes and import names retain their original meaning. The failed initial
+formatter log remains part of the local evidence.
 
 Independent reviews verify all 14 source images, the exact approved predecessor
 algorithms and the two affected campaign responsibility rows. Current Root,

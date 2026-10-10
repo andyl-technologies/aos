@@ -1289,4 +1289,6 @@ mod tests {
 mod compatibility_tests;
 
 #[cfg(test)]
-pub(crate) use compatibility_tests::{retained_response_material, validate_retained_responses_for_test};
+pub(crate) use compatibility_tests::{
+    retained_response_material, validate_retained_responses_for_test,
+};

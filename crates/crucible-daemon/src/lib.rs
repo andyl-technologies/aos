@@ -90,11 +90,11 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 mod anchored_fs;
-pub mod modeled_campaign_driver;
 pub mod assignment_ledger;
 pub mod attempt_evidence;
-pub mod campaign_replay_closure;
 pub mod campaign_finding_export;
+pub mod campaign_replay_closure;
+pub mod modeled_campaign_driver;
 
 pub(crate) use qemu_campaign_lifecycle::{
     GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignRunError,
@@ -132,11 +132,6 @@ pub mod exact_pin_retention;
 pub mod executor_capability;
 pub mod executor_loopback;
 pub mod executor_node_capabilities;
-pub mod node_scenario;
-pub mod node_qualification;
-pub mod node_observed_executor;
-pub mod node_control;
-pub(crate) mod node_execution;
 pub mod executor_pool;
 pub mod executor_server;
 pub mod executor_service;
@@ -155,6 +150,11 @@ mod hot_checkpoint_pool;
 pub mod hot_checkpoint_retention;
 #[cfg(target_os = "linux")]
 mod managed_qemu_hot_fork_source_world_pool;
+pub mod node_control;
+pub(crate) mod node_execution;
+pub mod node_observed_executor;
+pub mod node_qualification;
+pub mod node_scenario;
 mod owned_advisory_lock;
 pub mod packaged_qemu_executor;
 pub mod packaged_qemu_identity;
