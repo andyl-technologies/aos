@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use crucible::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeCustody};
 
 use super::{
-    ProductionVmGuestAssets, ProductionVmLifecycleConfig, QemuRootImageFormat, VmArchitecture,
+    ProductionVmGuestAssets, ProductionVmLifecycleConfig, RootImageFormat, VmArchitecture,
 };
 
 /// Borrows the concrete paths for one lifecycle configuration.
@@ -26,7 +26,7 @@ pub struct ProductionVmGuestAssetPaths<'input> {
     /// Selects an optional guest initrd.
     pub initrd: Option<&'input Path>,
     /// Selects the authenticated root image format.
-    pub root_image_format: QemuRootImageFormat,
+    pub root_image_format: RootImageFormat,
     /// Selects durable recovery storage owned by the enclosing service.
     pub run_state_root: &'input Path,
 }

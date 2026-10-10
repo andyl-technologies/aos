@@ -147,7 +147,7 @@ impl OriginalWorkflowArtifactsOwner {
                     .as_ref()
                     .ok_or_else(|| check.error(ArtifactCause::Identity))?;
                 for artifact in [
-                    &projection.qemu,
+                    &projection.executable,
                     &projection.plugin,
                     &projection.guest_assets.kernel,
                 ] {

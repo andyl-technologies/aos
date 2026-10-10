@@ -30,8 +30,9 @@
 //!
 //! Unsafe boundary discipline: raw `sendmsg`/`recvmsg` and ancillary-buffer
 //! details stay private; public callers use safe setup descriptor handover wrappers.
-//! These validate the fixed three-or-four-fd order and descriptor count before exposing
-//! owned close-on-exec descriptors.
+//! These validate the fixed descriptor order and exact count before exposing
+//! owned close-on-exec descriptors: shared memory, wake, and immutable plan;
+//! the digest workspace is fourth exactly when the setup frame declares it.
 //!
 //! Wire-format:
 //!
@@ -685,7 +686,7 @@ pub enum DescriptorHandoverError {
         message: HostMsg,
     },
     /// The setup frame carried the wrong descriptor count.
-    #[error("setup frame carried {count} descriptors, expected 2")]
+    #[error("setup frame carried {count} descriptors, expected 3 or 4 matching workspace presence")]
     WrongDescriptorCount {
         /// Number of descriptors received with the setup frame.
         count: usize,
@@ -1166,8 +1167,9 @@ pub fn host_validate_setup_ack(
 /// Sends a `Setup` frame and its fixed-order descriptors over a Unix socket.
 ///
 /// The descriptors are attached as `SCM_RIGHTS` ancillary data using
-/// `sendmsg`, in the RFC-defined order
-/// `[shmem_fd, wake_fd, plugin_setup_plan_fd]`.
+/// `sendmsg`, in the fixed order
+/// `[shmem_fd, wake_fd, plugin_setup_plan_fd]`. Sampling appends the digest
+/// workspace descriptor fourth and records its presence in the setup frame.
 ///
 /// # Errors
 ///
@@ -1207,9 +1209,10 @@ pub fn send_setup_with_descriptors(
 
 /// Receives a `Setup` frame and its fixed-order descriptors from a Unix socket.
 ///
-/// The frame carries exactly three descriptors without sampling or four with a digest workspace. The returned
-/// descriptors are owned, marked close-on-exec, and returned in the RFC-defined
-/// order: shmem first, wake second, immutable current-version plugin plan third.
+/// The frame carries exactly three descriptors without sampling or four with
+/// a digest workspace. The returned descriptors are owned, marked close-on-exec,
+/// and ordered as shared memory, wake, immutable current-version plan, then the
+/// optional workspace. Descriptor count must match the decoded workspace presence.
 ///
 /// # Errors
 ///

@@ -57,8 +57,9 @@ pub struct WorkflowProjection<'input> {
     pub service_profile: ServiceProfile<'input>,
     /// Declares the guest assets.
     pub guest_assets: GuestAssets,
-    /// Declares the qemu.
-    pub qemu: IgnoredAny,
+    /// Declares the emulator executable artifact.
+    #[serde(rename = "qemu")]
+    pub executable: IgnoredAny,
     /// Declares the plugin.
     pub plugin: IgnoredAny,
     /// Declares the rows.

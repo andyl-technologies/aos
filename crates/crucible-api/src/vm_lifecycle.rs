@@ -2231,6 +2231,9 @@ fn finish_reaped_node_lease_map(
 
 mod checkpoint_recovery;
 use checkpoint_recovery::durable_run_state_api_error;
+// The generic admitted-path constructor uses the existing driver format type.
+type RootImageFormat = QemuRootImageFormat;
+
 mod admitted_assets;
 pub use admitted_assets::{ProductionVmGuestAssetAdmissionError, ProductionVmGuestAssetPaths};
 

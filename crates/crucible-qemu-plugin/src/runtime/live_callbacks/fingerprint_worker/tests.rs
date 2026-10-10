@@ -332,25 +332,31 @@ fn actual_fork_child_disarms_without_inherited_mutex_or_stale_unmap() {
     assert!(child >= 0);
     if child == 0 {
         let mut resident = 0_u8;
+        // SAFETY: the saved page-aligned address is inspected without dereference; resident is writable.
         let inspected = unsafe { libc::mincore(address.cast(), 4096, &mut resident) };
         // SAFETY: this is the calling Linux thread's errno, saved immediately.
         let absent_errno = unsafe { *libc::__errno_location() };
         let absent = inspected == -1 && absent_errno == libc::ENOMEM;
         let disarmed = worker.disarm_child_workspace().is_ok();
+        // SAFETY: F_GETFD inspects the saved descriptor number without a pointer argument.
         let inspected = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
         // SAFETY: preserve the exact inspection cause before another syscall.
         let close_errno = unsafe { *libc::__errno_location() };
         let closed = inspected == -1 && close_errno == libc::EBADF;
+        // SAFETY: the fork child exits directly without unwinding inherited Rust owners.
         unsafe { libc::_exit(if absent && disarmed && closed { 0 } else { 71 }) };
     }
     let mut status = 0;
     loop {
+        // SAFETY: child is the actual fork result and status is writable for this call.
         let observed = unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) };
         if observed == child {
             break;
         }
         if deadline.remaining().is_err() {
+            // SAFETY: child is this test's actual unreaped fork child; the signal has no pointer argument.
             unsafe { libc::kill(child, libc::SIGKILL) };
+            // SAFETY: the same unreaped child is joined into valid writable status storage.
             assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
             panic!("child disarm used inherited synchronization");
         }
@@ -358,6 +364,7 @@ fn actual_fork_child_disarms_without_inherited_mutex_or_stale_unmap() {
     }
     assert!(libc::WIFEXITED(status));
     assert_eq!(libc::WEXITSTATUS(status), 0);
+    // SAFETY: F_GETFD only inspects the retained descriptor number without taking ownership.
     assert!(unsafe { libc::fcntl(descriptor, libc::F_GETFD) } >= 0);
     drop(inherited_lock);
     // SAFETY: the parent still holds the same complete exclusion.
@@ -407,6 +414,7 @@ fn surviving_weak_control_prevents_workspace_close_until_actual_alias_release() 
     let weak = Arc::downgrade(worker.control.as_ref().unwrap());
     let refused = worker.retire().unwrap_err();
 
+    // SAFETY: F_GETFD only inspects the retained descriptor number without taking ownership.
     assert!(unsafe { libc::fcntl(descriptor, libc::F_GETFD) } >= 0);
     assert!(worker.control.as_ref().unwrap().workspace().is_some());
     drop(refused);

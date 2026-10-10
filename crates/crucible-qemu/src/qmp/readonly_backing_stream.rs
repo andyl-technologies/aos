@@ -16,7 +16,7 @@ use std::error::Error;
 use std::fmt;
 use std::io;
 
-use crucible_cas::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeScratch};
+use crucible::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeScratch};
 use serde::{Deserialize, Serialize};
 
 const MAX_OWNERS: u64 = 4096;

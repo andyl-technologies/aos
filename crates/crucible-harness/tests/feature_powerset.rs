@@ -73,7 +73,11 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
             ("kernel-swap-measurement", &[][..]),
             (
                 "private-measurement-domain",
-                &["crucible-linux-resource/private-measurement-domain"][..],
+                &[
+                    "crucible-linux-resource/private-measurement-domain",
+                    "crucible-cas/private-measurement-domain",
+                    "rustix/thread",
+                ][..],
             ),
             (
                 "test-support",

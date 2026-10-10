@@ -62,7 +62,8 @@ impl fmt::Display for SchedulePrefixFailure {
 
 impl Error for SchedulePrefixFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.error.first().map(|error| error as &dyn Error)
+        let error = self.error.first()?;
+        Some(error)
     }
 }
 

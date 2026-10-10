@@ -311,7 +311,7 @@ impl WorkflowProjectionValidation for WorkflowProjection<'_> {
         // These fields remain in the authenticated input for the genuine
         // packaged decoder. Ignoring their shape here supplies no artifact,
         // scenario, schedule or completed-row authentication.
-        let _packaged_inputs = (&self.qemu, &self.plugin, &self.rows);
+        let _packaged_inputs = (&self.executable, &self.plugin, &self.rows);
         Ok(())
     }
 }
@@ -474,7 +474,7 @@ mod tests {
                 invocation_seconds: 3900,
             },
             guest_assets: GuestAssets::fixture(),
-            qemu: IgnoredAny,
+            executable: IgnoredAny,
             plugin: IgnoredAny,
             rows: IgnoredAny,
         }

@@ -121,12 +121,104 @@ const CONTRACTS: &[Contract] = &[
             "std::thread::sleep(slice.min(std::time::Duration::from_millis(10)));",
             1,
         )],
+        companions: &[
+            Companion {
+                path: "crates/crucible-qemu-plugin/src/runtime.rs",
+                required: &[
+                    "callbacks_registered.check_original_startup()",
+                    ".wait_initial_ready(||callbacks_registered.original_startup_slice())",
+                    ".and_then(|()|callbacks_registered.complete_original_startup_registration())",
+                    ".setup.original_startup_slice().map_err(crate::startup_source::InstallerStartupSource::retained_ram_error)",
+                ],
+                counts: &[],
+            },
+            Companion {
+                path: "crates/crucible-qemu-plugin/src/setup.rs",
+                required: &[
+                    "self.original_startup()?.wait_slice()",
+                    r#"self.startup_source.as_mut().ok_or(crate::StartupSourceError::Ownership{reason:"initial installer Source is absent",})?.registration_complete()"#,
+                ],
+                counts: &[],
+            },
+            Companion {
+                path: "crates/crucible-qemu-plugin/src/startup_source.rs",
+                required: &[
+                    "self.accept_status((api.query_slice)(self.plugin_id,&mutbounded_ns))?;",
+                    "ifbounded_ns==0{",
+                    "self.invalid_slice.store(true,Ordering::Release);",
+                    "Ok(Duration::from_nanos(bounded_ns))",
+                    "self.registration_completed=true;",
+                    "self.accept_status((api.registration_complete)(self.plugin_id,0))",
+                ],
+                counts: &[],
+            },
+        ],
+    },
+    // Fingerprint readiness observes the same retained installer Source before
+    // each inspection and once more before returning registration success.
+    Contract {
+        package: "crucible-qemu-plugin",
+        target: "src/runtime/live_callbacks/fingerprint_worker",
+        required: &[
+            "fnwait_registered(",
+            "mutwait_slice:implFnMut()->Result<std::time::Duration,crate::StartupSourceError>",
+            "letslice=control.check_original(&mutwait_slice)?;",
+            "wait_slice().map_err(|source|{",
+            "ifstate.supervision_failure.is_none(){state.supervision_failure=Some(source);}",
+            "ifstate.failure.is_some(){drop(state);returnErr(Self::failed(control));}",
+            "letregistered=state.registered;drop(state);",
+            "ifregistered{control.check_original(&mutwait_slice)?;returnOk(());}",
+            "ifself.join.as_ref().is_none_or(JoinHandle::is_finished){",
+            "control.refuse(FingerprintWorkerCause::Panic);",
+        ],
+        expressions: &[(
+            "thread::sleep(slice.min(std::time::Duration::from_millis(10)));",
+            1,
+        )],
+        companions: &[
+            Companion {
+                path: "crates/crucible-qemu-plugin/src/runtime.rs",
+                required: &[
+                    ".wait_fingerprint_registered(||state.setup.original_startup_slice())",
+                    ".setup.check_original_startup()",
+                ],
+                counts: &[],
+            },
+            Companion {
+                path: "crates/crucible-qemu-plugin/src/setup.rs",
+                required: &["self.original_startup()?.wait_slice()"],
+                counts: &[],
+            },
+        ],
+    },
+    // The real fork fixture polls its one finite transport end, kills and joins
+    // the actual child on expiry, and asserts physical inherited-owner cleanup.
+    Contract {
+        package: "crucible-qemu-plugin",
+        target: "src/runtime/live_callbacks/fingerprint_worker/tests",
+        required: &[
+            "fnactual_fork_child_disarms_without_inherited_mutex_or_stale_unmap()",
+            "letdeadline=TransportDeadline::new(Duration::from_secs(5)).unwrap();",
+            "letchild=unsafe{libc::fork()};",
+            "letobserved=unsafe{libc::waitpid(child,&mutstatus,libc::WNOHANG)};",
+            "ifobserved==child{break;}",
+            "ifdeadline.remaining().is_err(){",
+            "unsafe{libc::kill(child,libc::SIGKILL)};",
+            "assert_eq!(unsafe{libc::waitpid(child,&mutstatus,0)},child);",
+            "assert!(libc::WIFEXITED(status));",
+            "assert_eq!(libc::WEXITSTATUS(status),0);",
+            "unsafe{worker.restore_workspace_after_fork()}.unwrap();",
+        ],
+        expressions: &[("thread::sleep(Duration::from_millis(1));", 1)],
         companions: &[Companion {
-            path: "crates/crucible-qemu-plugin/src/runtime.rs",
+            path: "crates/crucible-qemu-plugin/src/paged_ram/supervision.rs",
             required: &[
-                "ifletSome(operation)=startup{",
-                ".wait_initial_ready(||{operation.wait_slice().map_err(crate::ram_error::RamError::from)})",
-                ".and_then(|()|{operation.complete().map_err(crate::ram_error::RamError::from)})",
+                "pub(crate)structTransportDeadline{started:OperationalStart,total:Duration,}",
+                "letstarted=OperationalStart::begin();",
+                "if total.is_zero()||started.0.checked_add(total).is_none(){",
+                "Ok(Self{started,total})",
+                "self.total.checked_sub(self.started.elapsed()).filter(|duration|!duration.is_zero())",
+                "monotonic_now().saturating_duration_since(self.0)",
             ],
             counts: &[],
         }],
@@ -231,12 +323,12 @@ mod tests {
             let companions = read_companions(contract)?;
             for requirement in contract.required {
                 assert!(
-                    compact.contains(requirement),
+                    compact.contains(&pattern(requirement)),
                     "missing local obligation: {} {requirement}",
                     contract.target
                 );
-                let changed = compact.replace(requirement, "removed_obligation()");
-                assert!(!changed.contains(requirement));
+                let changed = compact.replace(&pattern(requirement), "removed_obligation()");
+                assert!(!changed.contains(&pattern(requirement)));
                 assert!(
                     has_escape(&mask_with_companions(contract, &changed, &companions)),
                     "removed local obligation was masked: {} {requirement}",
@@ -266,6 +358,7 @@ mod tests {
                     .replace("90", "91")
                     .replace("120", "121")
                     .replace("from_millis(10)", "from_millis(11)")
+                    .replace("from_millis(1)", "from_millis(2)")
                     .replace("read_retry", "read_retry_changed");
                 assert_ne!(changed_expression, *expression);
                 let changed = compact.replacen(expression, &changed_expression, 1);
@@ -316,13 +409,14 @@ mod tests {
                 ));
                 for obligation in binding.required {
                     assert!(
-                        compact.contains(obligation),
+                        compact.contains(&pattern(obligation)),
                         "missing companion obligation: {} {obligation}",
                         binding.path
                     );
                     let mut changed = companions.clone();
-                    changed[index] = compact.replace(obligation, "removed_original_boundary()");
-                    assert!(!changed[index].contains(obligation));
+                    changed[index] =
+                        compact.replace(&pattern(obligation), "removed_original_boundary()");
+                    assert!(!changed[index].contains(&pattern(obligation)));
                     assert!(
                         has_escape(&mask_with_companions(contract, &code, &changed)),
                         "removed original source obligation admitted: {} {obligation}",
@@ -336,6 +430,21 @@ mod tests {
                     "crates/crucible-qemu-plugin/src/paged_ram/control.rs" => (
                         "install(Duration::from_millis(25))?",
                         "install(Duration::from_millis(250))?",
+                    ),
+                    "crates/crucible-qemu-plugin/src/runtime.rs" => {
+                        (".original_startup_slice()", ".unbounded_startup_slice()")
+                    }
+                    "crates/crucible-qemu-plugin/src/setup.rs" => (
+                        "self.original_startup()?.wait_slice()",
+                        "Ok(std::time::Duration::from_secs(60))",
+                    ),
+                    "crates/crucible-qemu-plugin/src/startup_source.rs" => (
+                        "(api.query_slice)(self.plugin_id,&mutbounded_ns)",
+                        "(api.unbounded_slice)(self.plugin_id,&mutbounded_ns)",
+                    ),
+                    "crates/crucible-qemu-plugin/src/paged_ram/supervision.rs" => (
+                        "self.total.checked_sub(self.started.elapsed())",
+                        "Some(std::time::Duration::from_secs(60))",
                     ),
                     _ => (
                         "operation.wait_slice()",

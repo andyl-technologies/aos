@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use crucible_cas::owned_decode::{DecodeResourceAuthority, ResourceLoan};
+use crucible::owned_decode::{DecodeResourceAuthority, ResourceLoan};
 
 use super::*;
 

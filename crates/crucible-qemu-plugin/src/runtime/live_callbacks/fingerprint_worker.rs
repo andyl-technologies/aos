@@ -424,6 +424,10 @@ impl LiveFingerprintDigestWorker {
     ///
     /// The caller must have observed the complete existing worker parked set,
     /// empty pending mask and zero callback/worker operations under its barrier.
+    ///
+    /// # Safety
+    ///
+    /// The caller retains the complete worker/callback barrier with no queued or in-flight work until restoration or child disarm.
     pub(super) unsafe fn hold_workspace_for_fork(&self) -> Result<(), DeviceDigestWorkspaceError> {
         if self.owner_process != std::process::id() {
             return Err(DeviceDigestWorkspaceError::Ownership {
@@ -459,6 +463,10 @@ impl LiveFingerprintDigestWorker {
     }
 
     /// Restores the same parent owner before its worker barrier releases.
+    ///
+    /// # Safety
+    ///
+    /// The caller retains the same parent barrier from the preceding hold; no worker or callback may access the workspace until this returns.
     pub(super) unsafe fn restore_workspace_after_fork(
         &self,
     ) -> Result<(), DeviceDigestWorkspaceError> {

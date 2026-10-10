@@ -219,9 +219,8 @@ impl std::fmt::Display for OriginalActorCatalogOwner {
 
 impl std::error::Error for OriginalActorCatalogOwner {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.close_failure
-            .as_ref()
-            .map(|error| error as &dyn std::error::Error)
+        let error = self.close_failure.as_ref()?;
+        Some(error)
     }
 }
 

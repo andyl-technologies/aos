@@ -5,6 +5,8 @@
 //! committed CPU ticket. The live-node projection fixture below is deliberately
 //! synthetic and cannot establish equal physical RAM.
 
+#![cfg(test)]
+
 use super::*;
 use crucible::model::{
     ByteRange, HexBytes, MemoryAccessClasses, MemoryAccessMutation, NodeOccurrencePolicy,

@@ -103,7 +103,7 @@ fn paths() -> ProductionVmGuestAssetPaths<'static> {
         kernel: Path::new("kernel"),
         root_image: Path::new("root"),
         initrd: Some(Path::new("initrd")),
-        root_image_format: QemuRootImageFormat::Raw,
+        root_image_format: RootImageFormat::Raw,
         run_state_root: Path::new("run"),
     }
 }

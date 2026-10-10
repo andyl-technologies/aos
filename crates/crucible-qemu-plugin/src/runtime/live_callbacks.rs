@@ -1380,6 +1380,10 @@ impl LiveVcpuTimeCallbackState {
     }
 
     /// Moves the workspace only after the complete native barrier is parked.
+    ///
+    /// # Safety
+    ///
+    /// The caller has parked every worker and callback under the complete native barrier, with no pending or in-flight work.
     pub(super) unsafe fn hold_fingerprint_workspace(
         &self,
     ) -> Result<(), crate::DeviceDigestWorkspaceError> {
@@ -1391,6 +1395,10 @@ impl LiveVcpuTimeCallbackState {
     }
 
     /// Restores the same parent workspace before any worker can resume.
+    ///
+    /// # Safety
+    ///
+    /// The caller retains the same complete native barrier from workspace hold and excludes every worker/callback until restoration completes.
     pub(super) unsafe fn restore_fingerprint_workspace(
         &self,
     ) -> Result<(), crate::DeviceDigestWorkspaceError> {

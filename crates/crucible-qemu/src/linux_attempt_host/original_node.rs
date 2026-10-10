@@ -111,9 +111,8 @@ impl std::fmt::Display for OriginalNativeFreshLaunchError {
 
 impl std::error::Error for OriginalNativeFreshLaunchError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.primary
-            .get()
-            .map(|primary| primary as &(dyn std::error::Error + 'static))
+        let primary = self.primary.get()?;
+        Some(primary)
     }
 }
 

@@ -27,8 +27,9 @@ pub struct Projection {
     pub _service_profile: IgnoredAny,
     /// Declares the guest assets.
     pub guest_assets: GuestAssets,
-    /// Declares the qemu.
-    pub qemu: Artifact,
+    /// Declares the emulator executable artifact.
+    #[serde(rename = "qemu")]
+    pub executable: Artifact,
     /// Declares the plugin.
     pub plugin: Artifact,
     /// Declares the rows.

@@ -1019,6 +1019,7 @@ fn assert_source_refusal_before_registration(
     // SAFETY: these explicit fixture paths have no native borrower. The same
     // retained descriptor was not closed by failed-owner containment.
     assert!(unsafe { libc::fcntl(descriptor, libc::F_GETFD) } >= 0);
+    // SAFETY: the preceding inspection proved this fixture retained the unique fd; no native borrower exists.
     assert_eq!(unsafe { libc::close(descriptor) }, 0);
 }
 

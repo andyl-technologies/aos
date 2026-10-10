@@ -438,16 +438,19 @@ impl DeviceDigestWorkspace {
         // SAFETY: memfd_create returned this unique owned descriptor.
         let descriptor = unsafe { OwnedFd::from_raw_fd(descriptor) };
         assert_eq!(
+            // SAFETY: the live unique descriptor permits sizing this local fixture; no mapping exists.
             unsafe { libc::ftruncate(descriptor.as_raw_fd(), 65_536) },
             0
         );
         let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
         assert_eq!(
+            // SAFETY: the live memfd and supported seal bitmask require no pointer argument.
             unsafe { libc::fcntl(descriptor.as_raw_fd(), libc::F_ADD_SEALS, seals) },
             0
         );
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
         assert_eq!(
+            // SAFETY: the live descriptor and writable stat storage remain valid for the call.
             unsafe { libc::fstat(descriptor.as_raw_fd(), stat.as_mut_ptr()) },
             0
         );

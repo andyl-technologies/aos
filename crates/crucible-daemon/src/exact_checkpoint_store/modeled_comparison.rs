@@ -313,6 +313,7 @@ impl CapturedAttemptCheckpoint {
     /// # Errors
     /// Returns the first original, boundary, source/relation, modeled decoder or
     /// choice authentication error while retaining its same-original custody.
+    // crucible-lint: allow rust-allow -- Both retained captures and original accounts must remain distinct comparison inputs.
     #[allow(clippy::too_many_arguments)]
     pub fn same_modeled_continuation_under_original(
         &self,

@@ -77,7 +77,7 @@ impl ProjectionValidation for Projection {
         {
             return Err(ArtifactCause::Identity);
         }
-        self.qemu.validate()?;
+        self.executable.validate()?;
         self.plugin.validate()?;
         self.guest_assets.kernel.validate()?;
         self.guest_assets.root_image.validate()?;

@@ -119,6 +119,7 @@ fn dropping_a_refused_owner_does_not_close_the_actual_descriptor() {
     // SAFETY: this fixture has no native borrower. Inspection first proves
     // containment retained the real fd; only the fixture explicitly closes it.
     assert!(unsafe { libc::fcntl(descriptor, libc::F_GETFD) } >= 0);
+    // SAFETY: the preceding inspection proved this fixture retained the unique fd; no native borrower exists.
     assert_eq!(unsafe { libc::close(descriptor) }, 0);
 }
 

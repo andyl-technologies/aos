@@ -184,20 +184,11 @@ impl OriginalCheckpointDecodeError {
             },
         }
     }
-
-    fn primary(&self) -> Option<&(dyn Error + 'static)> {
-        match self.first {
-            FirstFailure::Admission => self.admission.as_ref().map(|error| error as &dyn Error),
-            FirstFailure::Boundary => self.boundary.as_ref().map(|error| error as &dyn Error),
-            FirstFailure::Source => self.source.as_ref().map(|error| error as &dyn Error),
-            FirstFailure::Decode => self.decode.as_ref().map(|error| error as &dyn Error),
-        }
-    }
 }
 
 impl fmt::Display for OriginalCheckpointDecodeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.primary() {
+        match Error::source(self) {
             Some(error) => fmt::Display::fmt(error, formatter),
             None => formatter.write_str("original checkpoint decoding refused"),
         }
@@ -206,7 +197,12 @@ impl fmt::Display for OriginalCheckpointDecodeError {
 
 impl Error for OriginalCheckpointDecodeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.primary()
+        match self.first {
+            FirstFailure::Admission => Some(self.admission.as_ref()?),
+            FirstFailure::Boundary => Some(self.boundary.as_ref()?),
+            FirstFailure::Source => Some(self.source.as_ref()?),
+            FirstFailure::Decode => Some(self.decode.as_ref()?),
+        }
     }
 }
 
@@ -309,6 +305,7 @@ impl<F: FnMut() -> io::Result<()>> OriginalDecodeBoundary<'_, F> {
 /// # Errors
 /// Returns an exact original refusal, boundary failure, or malformed/noncanonical
 /// relation and modeled continuation, retaining distinct causes and custody.
+// crucible-lint: allow rust-allow -- The explicit original is distinct from format limits and the existing relation inputs.
 #[allow(clippy::too_many_arguments)]
 pub fn decode_authenticated_production_exact_checkpoint_under_original(
     closure: ExactCheckpointClosureBinding,

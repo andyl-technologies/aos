@@ -71,7 +71,8 @@ const FENCE_SPECS: &[FenceSpec] = &[
         safe_wrapper_contract: &[
             "Unsafe boundary discipline:",
             "public callers use safe setup descriptor handover wrappers",
-            "validate the fixed three-fd order and descriptor count",
+            "validate the fixed descriptor order and exact count",
+            "the digest workspace is fourth exactly when the setup frame declares it",
         ],
     },
     FenceSpec {
