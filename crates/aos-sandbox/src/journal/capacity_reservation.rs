@@ -15,7 +15,8 @@
 
 use aos_sandbox_protocol::domain_ledger::operation::effect_key;
 use aos_sandbox_protocol::domain_ledger::project_admission_metadata::{
-    ProjectAdmissionMetadata, ProjectAdmissionPhase,
+    ProjectAdmissionMetadataV1 as ProjectAdmissionMetadata,
+    ProjectAdmissionPhaseV1 as ProjectAdmissionPhase,
 };
 
 use sha2::{Digest as _, Sha256};
