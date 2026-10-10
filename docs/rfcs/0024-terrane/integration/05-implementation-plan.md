@@ -256,6 +256,19 @@ conflict sides, copies target digests and clones only retained graft overrides.
 It preserves traversal order and metadata-only accounting without cloning
 recursive graphs. Corrected native compilation remains pending while the
 independent core qualification proceeds on its frozen candidate.
+That frozen assembled core candidate passes its library build, strict
+all-target Clippy, actual all-target test compilation and genuine executable-bound
+inventory. The independent current-registry witness passes. Its complete
+752-case population finishes with 750 passes, two failures and no skips in
+19.330 seconds at the unchanged default limits. The failures are completion
+arena accounting after a second successful layer completion, and a source
+discovery fixture's expected overlay-layer refusal. Separate task worktrees
+investigate both against the contextual layer contract; no assertion is weakened
+to qualify the failures. All 6,209 tracked source entries and eleven compiled
+executable seals remain unchanged. Nine executable suites contain the 752
+nonignored tests; the two additional all-target examples are explicitly
+non-test targets and remain sealed separately. Corrected native qualification
+proceeds independently; the complete core run and owning gates remain required.
 No owning gate or task is accepted by these results.
 The same frozen retained-read candidate passes all twenty-nine mandatory
 native read cases in 46.960 seconds and the public SDK case in 0.009 seconds,
