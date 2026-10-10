@@ -320,6 +320,18 @@ build proceeds independently on `4a1ff5d5fb`, using ordinary hermetic derivation
 with shared caches disabled. Its configured Linux scope includes all twenty-nine
 packages and all five Terrane crates. Golden-vector consumers continue on their
 own frozen source; the complete aggregate remains pending.
+Frozen `7d7f050095` now passes the actual hermetic `golden-vectors` gate:
+all twenty owning consumers execute 104 exact tests with no failures or ignored
+cases, and all thirty-one reviewed sections have required consumers. Its 6,209
+tracked source entries remain unchanged; the filtered build input matches all
+5,155 included files, and independent review verifies all 268 retained packet
+hashes. This earlier source result does not qualify the newer aggregate.
+Reviewed test-only correction `b9a7821f3b` adds twenty-six bounded fixture markers
+through a separate opt-in diagnostic, preserving existing trace calls and every
+assertion. Composition `cf7fa4d256` passes actual all-target compilation with
+source seals unchanged; its phase-only diagnostic remains pending. Twenty-six
+independent core and foundation gates proceed on frozen `4a1ff5d5fb` with private
+hermetic Cargo targets, separately from application and native qualification.
 No owning gate or task is accepted by these results.
 The same frozen retained-read candidate passes all twenty-nine mandatory
 native read cases in 46.960 seconds and the public SDK case in 0.009 seconds,
