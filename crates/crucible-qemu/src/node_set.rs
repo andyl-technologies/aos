@@ -54,6 +54,8 @@ mod disk_seal;
 mod fault_events;
 #[path = "node_set/lifecycle.rs"]
 mod lifecycle;
+// Host wall-clock accounting lives with the supervision clock boundary.
+#[path = "supervision/run_window.rs"]
 mod run_window;
 
 #[cfg(target_os = "linux")]

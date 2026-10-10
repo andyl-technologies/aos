@@ -28,6 +28,18 @@ const WINDOW: Duration = Duration::from_secs(5);
 /// Upper bound on emitted records, so a long run cannot flood stderr.
 const MAX_RECORDS: u32 = 512;
 
+/// Reads wall time exclusively for noncanonical diagnostic attribution.
+// crucible-lint: allow clippy-disallowed-method -- private host-cost observations do not drive guest clocks, deadlines, or results.
+#[allow(clippy::disallowed_methods)]
+fn diagnostic_clock() -> Instant {
+    Instant::now()
+}
+
+/// Measures host time since `started` on the diagnostic clock.
+fn elapsed_since(started: Instant) -> Duration {
+    diagnostic_clock().saturating_duration_since(started)
+}
+
 /// Totals for the currently open window.
 #[derive(Debug)]
 struct OpenWindow {
@@ -88,7 +100,7 @@ impl RunWindow {
                 .and_then(|value| value.parse::<u16>().ok())
                 .is_some_and(|budget| budget != 0)
         });
-        (enabled && self.emitted < MAX_RECORDS).then(Instant::now)
+        (enabled && self.emitted < MAX_RECORDS).then(diagnostic_clock)
     }
 
     /// Records one RUN dispatched through the single-node path.
@@ -98,7 +110,7 @@ impl RunWindow {
         };
         let window = self.open.get_or_insert_with(|| OpenWindow::new(started));
         window.serial_runs = window.serial_runs.saturating_add(1);
-        window.backend = window.backend.saturating_add(started.elapsed());
+        window.backend = window.backend.saturating_add(elapsed_since(started));
         self.close_if_due();
     }
 
@@ -121,7 +133,7 @@ impl RunWindow {
             .realized_sum
             .saturating_add(u64::try_from(realized).unwrap_or(u64::MAX));
         window.max_realized = window.max_realized.max(realized);
-        window.backend = window.backend.saturating_add(started.elapsed());
+        window.backend = window.backend.saturating_add(elapsed_since(started));
         self.close_if_due();
     }
 
@@ -129,7 +141,7 @@ impl RunWindow {
         let Some(window) = &self.open else {
             return;
         };
-        let elapsed = window.started.elapsed();
+        let elapsed = elapsed_since(window.started);
         if elapsed < WINDOW {
             return;
         }

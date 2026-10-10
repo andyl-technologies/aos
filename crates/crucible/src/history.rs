@@ -42,7 +42,7 @@ const CHUNK_LEN: usize = 64;
 ///
 /// # Examples
 ///
-/// ```
+/// ```rust
 /// use crucible::History;
 ///
 /// let mut log = History::new();
@@ -514,8 +514,12 @@ mod tests {
         assert!(original.shares_storage_with(&snapshot));
 
         original.push(1000);
-        *original.get_mut(0).unwrap() = 2000;
-        *original.last_mut().unwrap() = 3000;
+        if let Some(first) = original.get_mut(0) {
+            *first = 2000;
+        }
+        if let Some(last) = original.last_mut() {
+            *last = 3000;
+        }
 
         assert_eq!(snapshot, reference(CHUNK_LEN + 3));
         assert_eq!(original[0], 2000);
@@ -539,7 +543,9 @@ mod tests {
         let right: History<usize> = reference(CHUNK_LEN * 2).into_iter().collect();
         let shorter = History::from(reference(CHUNK_LEN * 2 - 1));
         let mut changed = left.clone();
-        *changed.get_mut(CHUNK_LEN).unwrap() = usize::MAX;
+        if let Some(middle) = changed.get_mut(CHUNK_LEN) {
+            *middle = usize::MAX;
+        }
 
         assert_eq!(left, right);
         assert_ne!(left, shorter);
