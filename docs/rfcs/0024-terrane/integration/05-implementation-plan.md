@@ -425,9 +425,37 @@ within one checker invocation, after each occurrence independently resolves
 policy. Eight actual-loader regressions check reuse and refusal boundaries;
 missing bindings, errors and current/history/Original/producer/ACK authority
 are never cached. No measured timeout cause or speedup is established.
-Native integration and these assertions remain uncompiled and
-unqualified. The DRV-29 qualification blocker, complete T1 floor and formal
+Complete native runtime qualification of these changes remains pending.
+The DRV-29 qualification blocker, complete T1 floor and formal
 task acceptance remain open.
+Combined native candidate `6e261155ee` passes its production build and four
+host feature checks. The two intentionally incompatible feature combinations
+refuse with the required CRATE diagnostics. Strict all-target Clippy fails on
+the independent wire fixture being compiled in two test contexts; all original
+handles terminate before test compilation, inventory or runtime. Independent
+review verifies all fifty-eight retained packet hashes and unchanged 6,216-file
+source seals. A reviewed test-only exception applies solely to that intentional
+fixture include, preserving its bytes and original visibility. On frozen
+`3ab7fa81c9`, strict all-target native Clippy passes with warnings denied; actual
+test compilation and the twenty-four registered focused native cases remain
+under qualification. Neither these host checks nor Clippy establish a wasm32
+target or the complete feature-matrix gate.
+The property-resolution gate on frozen `58730f184a` reaches runtime and passes
+twenty-nine core and six native cases before the recorded-evaluator case fails.
+Its remaining eleven cases do not execute. The original handle is terminal,
+and source seals remain unchanged. The harness exited before printing redirected
+failed-test output, and no sandbox or executable survived, so the assertion
+cause is unavailable. The shared helpers now print complete Cargo output on
+failure without changing selectors, flags or success conditions. Diagnosis and
+the owning gate remain pending; no speculative production fix is made.
+The actual application test-target check passes on frozen `4a1ff5d5fb`, compiling
+all twenty-nine selected packages and 114 test executables: seventy-seven
+integration and thirty-seven unit targets. Every selected compiler artifact has
+`fresh=false`. Independent review verifies all fifty-six packet files, exact
+package/target coverage and retained source binding, including all 5,155 filtered
+files and the executable seed mode. This is compilation evidence for that
+earlier candidate; it executes no tests and does not qualify the later native
+source changes or the full T1 floor.
 Five replacement core gate commands pass on frozen `25ac838bda`, including
 the corrected provenance selector, required attributes, reference domains,
 ref names and node distribution. The four Rust test gates execute 102
