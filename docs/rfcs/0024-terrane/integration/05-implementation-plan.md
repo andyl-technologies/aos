@@ -181,6 +181,12 @@ tree. Their older results remain source-specific; these worklines own separate
 implementation files and report any new requirement failure before changing
 shared interfaces. Parallel qualification does not accept another task or
 advance the milestone.
+Independent current-source algebra qualification passes all 49 graft cases
+(including all 24 overlay integration cases) and all five diff cases, with no
+failed or ignored cases. Parent review confirms the actual outputs and unique
+executions against the frozen `6c9fb0a508` tree. An additional isolated full
+current-trunk qualification targets that exact immutable candidate, including
+every current gate and all three local workflows; its result remains pending.
 The two additional current-token/current-policy cases and four captured-input
 cases pass independent source review. Their owning gate registration extends
 the new current-history population to twenty-six cases while preserving every
