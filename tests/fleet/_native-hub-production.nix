@@ -289,6 +289,19 @@
     qualificationImage
     consumerTools
     consumerUpgrade
+    # This candidate is published independently of the fleet's machine-image
+    # adapter. Carry the same control channel and network ABI across its boot.
+    (consumerSystem.config.aos.image.platform.testMachineModule {
+      bakeAgentUnit = true;
+      bootMode = "image";
+      varProvisioning = "repart";
+      varSizeMiB = 256;
+      debugMac = "52:54:00:12:01:01";
+      defaultAgentPackage = pkgs.aos-test-agent;
+      ip = "192.168.50.10";
+      mac = "52:54:00:12:00:01";
+      inherit (pkgs) writeTextFile;
+    })
     {aos.activation.stages.host.configuration = ["${consumerUpgradeModule}/module.nix"];}
   ];
 in {
