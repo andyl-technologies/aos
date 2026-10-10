@@ -106,7 +106,9 @@ acknowledge_control_boundary() {
 
 # East reaches A's control listener only through C's /control/ route. C must
 # not park at its marker until A has recorded east's acknowledgement, or the
-# relay would stop with east's request still behind it.
+# relay would stop with east's request still behind it. C waits before its own
+# acknowledgement: A parks once every acknowledgement is present, after which
+# C could no longer observe east's through A.
 wait_for_relayed_east_ack() {
   phase=$1
   [ "$role" = router-c ] || return 0
@@ -227,12 +229,12 @@ run_router() {
     wait_for_local_health
     crucible-guest event boot.local-healthy
     wait_for_control_boundary converged
-    acknowledge_control_boundary transport
     wait_for_relayed_east_ack transport
+    acknowledge_control_boundary transport
     crucible-guest event fault.transport.ready
     wait_for_control_boundary followup-ready
-    acknowledge_control_boundary followup
     wait_for_relayed_east_ack followup
+    acknowledge_control_boundary followup
     crucible-guest event fault.followup.ready
     wait "$envoy_pid" || :
     crucible-guest unreachable control-plane-crash-or-deadlock \
