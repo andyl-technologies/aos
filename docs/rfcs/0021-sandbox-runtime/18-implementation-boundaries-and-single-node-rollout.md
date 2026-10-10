@@ -228,8 +228,17 @@ Idempotency, clock, recovery and currentness recipes and converts lower DATA
 errors to the original Reconciler causes at their existing boundaries. Journal's
 actual materialized-row Effect key uses Protocol directly. This cohesive format
 owner relocates one complete recipe and earns no engine-deletion credit; it does
-not remove the separate capacity/Delete admission validation backreferences or
-complete the protected Controller/Journal boundary.
+not complete the protected Controller/Journal boundary.
+
+The complete ordinary/Q04 Effect history codec and its semantic/hash helpers
+belong to a private descendant of the Native Effect owner. Original model fields
+and factory scopes stay intact; current-authority recipes keep their Native owners.
+Domain Journal owns the complete capacity transfer, settlement and Delete recipes;
+fixed history operations preserve their original row and error frontiers. Journal
+retains opaque original Effect/Gate holders without inspecting Native plans or
+drafts. Gate's codec remains with its complete private owner. This organization
+removes aggregate recipe callbacks without removing a Cargo dependency or
+completing the portable Effect/Gate or protected admission boundaries.
 
 Protocol transaction DATA extent accounting and its duplicate-key index share the lower
 journal's `NativeRecordValidation` owner with native suffix measurement. Keys
