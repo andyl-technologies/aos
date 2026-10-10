@@ -572,11 +572,16 @@ impl Database {
             work.plan.attempt,
             receipt.retry_after_seconds,
         )?;
+        let mut not_before = now.unix_seconds().saturating_add(u64::from(delay));
+        if receipt.status.is_none() {
+            // A timed-out remote invocation may still be finishing its admitted
+            // effect. No new attempt may overlap the old authority window.
+            not_before = not_before.max(work.plan.deadline.unix_seconds());
+        }
         let retry = receipt.outcome == DeliveryOutcome::Retryable
             && work.plan.attempt < 20
-            && now.unix_seconds() + u64::from(delay) < root.created_at.saturating_add(604800)
-            && now.unix_seconds() + u64::from(delay)
-                < record.review.authority_expires_at.unix_seconds();
+            && not_before < root.created_at.saturating_add(604800)
+            && not_before < record.review.authority_expires_at.unix_seconds();
         let state = match receipt.outcome {
             DeliveryOutcome::Accepted => "delivered",
             DeliveryOutcome::Retryable if retry => "pending",
@@ -588,7 +593,7 @@ impl Database {
             DeliveryOutcome::PermanentFailure => Some("destination-permanent-failure"),
         };
         checked.push(Statement::new(format!("UPDATE assessment_notification_outbox SET state = ?7, claim_token = NULL, lease_expires_at = NULL, not_before = ?8, last_error_code = ?9, receipt_digest = ?10, resource_version = resource_version + 1, updated_at = {clock}
-            WHERE registry_id = ?1 AND subscription_id = ?2 AND subscription_revision = ?3 AND payload_digest = ?4 AND state = 'leased' AND claim_token = ?5 AND attempt = ?6 AND lease_expires_at = ?11 AND {clock} < ?11"), vals![work.registry_id, record.key, record.revision, work.plan.body_digest.to_string(), work.plan.claim_token, u32::from(work.plan.attempt), state, now.unix_seconds() + u64::from(delay), failure, receipt_digest.to_string(), work.plan.deadline.unix_seconds()]).expecting(work.plan.body.events.len() as u64));
+            WHERE registry_id = ?1 AND subscription_id = ?2 AND subscription_revision = ?3 AND payload_digest = ?4 AND state = 'leased' AND claim_token = ?5 AND attempt = ?6 AND lease_expires_at = ?11 AND {clock} < ?11"), vals![work.registry_id, record.key, record.revision, work.plan.body_digest.to_string(), work.plan.claim_token, u32::from(work.plan.attempt), state, not_before, failure, receipt_digest.to_string(), work.plan.deadline.unix_seconds()]).expecting(work.plan.body.events.len() as u64));
         self.backend.checked_batch(&checked).await
     }
 

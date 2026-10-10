@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{ensure, Context as _, Result};
 use aos_assessment_runtime::credentials::SourceCredentialSetV1;
 use aos_assessment_runtime::installation::WorkerAssessmentInstallationV1;
+use aos_assessment_runtime::notifications::WorkerNotificationInstallationV1;
 use aos_contract::limits::JsonLimits;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -37,6 +38,9 @@ pub struct AssessmentEdgeProfileV1 {
     /// Optional logical coordinator; prohibited on Hybrid edge deployments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<WorkerAssessmentInstallationV1>,
+    /// Optional separately authenticated physical callbacks in every edge topology.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notifications: Option<WorkerNotificationInstallationV1>,
 }
 
 impl AssessmentEdgeProfileV1 {
@@ -93,6 +97,7 @@ impl AssessmentEdgeProfileV1 {
         for grant in &self.credentials.grants {
             ensure!(
                 grant.secret_binding.starts_with("ASSESSMENT_")
+                    && !grant.secret_binding.starts_with("ASSESSMENT_NOTIFICATION_")
                     && grant.secret_binding != "ASSESSMENT_EVIDENCE"
                     && grant.secret_binding != "ASSESSMENT_PROVIDER_TASKS",
                 "assessment source secrets require separate ASSESSMENT_ bindings"
@@ -112,6 +117,28 @@ impl AssessmentEdgeProfileV1 {
                 "assessment edge and coordinator installations differ"
             );
         }
+        if let Some(notifications) = &self.notifications {
+            notifications.validate()?;
+            ensure!(
+                notifications.installation.deployment_id == self.deployment_id,
+                "notification edge and coordinator pairing differs"
+            );
+            for version in &notifications.secret_bindings {
+                aos_hub_core::secret_version::validate_secret_version_ref(
+                    &version.version_reference,
+                )?;
+            }
+            if let Some(worker) = &self.worker {
+                ensure!(
+                    worker.budgets.iter().all(|source| notifications
+                        .installation
+                        .budgets
+                        .iter()
+                        .all(|callback| callback.key != source.key)),
+                    "source and callback quota domains must remain independent"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -128,21 +155,45 @@ impl AssessmentEdgeProfileV1 {
                 toml_string(&serde_json::to_string(worker)?)
             ));
         }
+        if let Some(notifications) = &self.notifications {
+            variables.push_str(&format!(
+                "HUB_ASSESSMENT_NOTIFICATION_CONFIG = {}\nHUB_ASSESSMENT_NOTIFICATION_COORDINATOR_ID = {}\nHUB_ASSESSMENT_NOTIFICATION_EXECUTOR_ID = {}\n",
+                toml_string(&serde_json::to_string(notifications)?),
+                toml_string(&notifications.installation.coordinator_id),
+                toml_string(&notifications.installation.executor_id),
+            ));
+        }
         Ok(variables)
     }
 
     pub(super) fn bindings(&self) -> String {
-        format!("\n[[r2_buckets]]\nbinding = \"ASSESSMENT_EVIDENCE\"\nbucket_name = {}\n\n[[durable_objects.bindings]]\nname = \"ASSESSMENT_PROVIDER_TASKS\"\nclass_name = \"AssessmentProviderObject\"\n\n[[migrations]]\ntag = \"assessment-provider-attempt-v1\"\nnew_classes = [\"AssessmentProviderObject\"]\n",
-            toml_string(&self.evidence_bucket))
+        let mut bindings = format!("\n[[r2_buckets]]\nbinding = \"ASSESSMENT_EVIDENCE\"\nbucket_name = {}\n\n[[durable_objects.bindings]]\nname = \"ASSESSMENT_PROVIDER_TASKS\"\nclass_name = \"AssessmentProviderObject\"\n\n[[migrations]]\ntag = \"assessment-provider-attempt-v1\"\nnew_classes = [\"AssessmentProviderObject\"]\n",
+            toml_string(&self.evidence_bucket));
+        if self.notifications.is_some() {
+            bindings.push_str("\n[[durable_objects.bindings]]\nname = \"ASSESSMENT_NOTIFICATION_TASKS\"\nclass_name = \"AssessmentNotificationObject\"\n\n[[migrations]]\ntag = \"assessment-notification-attempt-v1\"\nnew_classes = [\"AssessmentNotificationObject\"]\n");
+        }
+        bindings
     }
 
     fn required_secret_bindings(&self) -> BTreeSet<String> {
-        self.credentials
+        let mut bindings: BTreeSet<_> = self
+            .credentials
             .grants
             .iter()
             .map(|grant| grant.secret_binding.clone())
             .chain(std::iter::once("HUB_ASSESSMENT_WORK_KEY".into()))
-            .collect()
+            .collect();
+        if let Some(notifications) = &self.notifications {
+            bindings.extend(
+                notifications
+                    .secret_bindings
+                    .iter()
+                    .map(|secret| secret.binding.clone()),
+            );
+            bindings.insert("HUB_ASSESSMENT_NOTIFICATION_WORK_KEY".into());
+            bindings.insert("HUB_EGRESS_GATEWAY_KEY".into());
+        }
+        bindings
     }
 }
 
@@ -154,6 +205,83 @@ pub struct AssessmentDeploymentSecrets {
 }
 
 impl AssessmentDeploymentSecrets {
+    /// Reads explicitly selected notification work, gateway and callback key files.
+    ///
+    /// Omitted installed secrets retain their deployed versions. The manifest
+    /// selects only dedicated callback bindings and `HUB_EGRESS_GATEWAY_KEY`.
+    ///
+    /// # Errors
+    /// Returns an error for absent installation, insecure files, unselected
+    /// bindings, weak work keys or callback fingerprint mismatch.
+    pub fn with_notifications(
+        mut self,
+        profile: Option<&AssessmentEdgeProfileV1>,
+        work_key: Option<&Path>,
+        manifest: Option<&Path>,
+    ) -> Result<Self> {
+        let installation = profile.and_then(|profile| profile.notifications.as_ref());
+        ensure!(
+            installation.is_some() || (work_key.is_none() && manifest.is_none()),
+            "notification secret files require an explicit notification installation"
+        );
+        if let Some(path) = work_key {
+            let value = private_text(path)?;
+            ensure!(
+                value.len() >= 32,
+                "notification work key requires at least thirty-two bytes"
+            );
+            self.entries
+                .insert("HUB_ASSESSMENT_NOTIFICATION_WORK_KEY".into(), value);
+        }
+        if let Some(path) = manifest {
+            let installation = installation.context("notification installation is absent")?;
+            let bytes = crate::auth::seal::read_secret_file(path)?;
+            let files: BTreeMap<String, PathBuf> = JsonLimits {
+                max_bytes: 65_536,
+                max_depth: 4,
+                max_items: 512,
+                max_string_bytes: 4096,
+            }
+            .decode(&bytes, "notification secret file manifest")?;
+            for (binding, path) in files {
+                ensure!(
+                    path.is_absolute(),
+                    "notification secret paths must be absolute"
+                );
+                let selected = installation
+                    .secret_bindings
+                    .iter()
+                    .find(|secret| secret.binding == binding);
+                ensure!(
+                    selected.is_some() || binding == "HUB_EGRESS_GATEWAY_KEY",
+                    "notification secret binding is not explicitly installed"
+                );
+                let value = private_text(&path)?;
+                if let Some(selected) = selected {
+                    for destination in &installation.installation.destinations {
+                        if destination.destination.secret_version_reference
+                            == selected.version_reference
+                        {
+                            ensure!(
+                                value.len() >= 32
+                                    && aos_contract::Sha256Digest::of_bytes(value.as_bytes())
+                                        == destination.destination.credential_fingerprint,
+                                "notification key differs from its immutable fingerprint"
+                            );
+                        }
+                    }
+                }
+                ensure!(
+                    !self.entries.contains_key(&binding),
+                    "notification secret binding is already selected"
+                );
+                self.entries.insert(binding, value);
+            }
+        }
+        self.require_separate(&[])?;
+        Ok(self)
+    }
+
     /// Reads a work key and a bounded binding-to-private-file source manifest.
     ///
     /// # Errors
@@ -189,8 +317,12 @@ impl AssessmentDeploymentSecrets {
             let allowed = profile.required_secret_bindings();
             for (binding, path) in files {
                 ensure!(
-                    binding != "HUB_ASSESSMENT_WORK_KEY"
-                        && allowed.contains(&binding)
+                    allowed.contains(&binding)
+                        && profile
+                            .credentials
+                            .grants
+                            .iter()
+                            .any(|grant| grant.secret_binding == binding)
                         && path.is_absolute(),
                     "source secret file is outside the reviewed installation"
                 );
@@ -217,9 +349,18 @@ impl AssessmentDeploymentSecrets {
     }
 
     pub(super) fn require_separate(&self, controls: &[&str]) -> Result<()> {
-        if let Some(key) = self.entries.get("HUB_ASSESSMENT_WORK_KEY") {
+        for (binding, key) in &self.entries {
+            if binding != "HUB_ASSESSMENT_WORK_KEY"
+                && binding != "HUB_ASSESSMENT_NOTIFICATION_WORK_KEY"
+                && !binding.starts_with("ASSESSMENT_NOTIFICATION_")
+            {
+                continue;
+            }
             ensure!(
-                controls.iter().all(|other| *other != key.as_str()),
+                controls.iter().all(|other| *other != key.as_str())
+                    && self.entries.iter().all(|(other_binding, other)| {
+                        other_binding == binding || other.as_str() != key.as_str()
+                    }),
                 "assessment work key requires independent control material"
             );
         }
@@ -240,6 +381,20 @@ impl AssessmentDeploymentSecrets {
             })?;
         }
         Ok(())
+    }
+
+    pub(super) async fn confirm_notification_gateway(
+        &self,
+        profile: Option<&AssessmentEdgeProfileV1>,
+    ) -> Result<()> {
+        let Some(notifications) = profile.and_then(|profile| profile.notifications.as_ref()) else {
+            return Ok(());
+        };
+        let key = self.entries.get("HUB_EGRESS_GATEWAY_KEY").context(
+            "notification deployment requires the gateway key to qualify its callback contract",
+        )?;
+        super::authenticate_notification_gateway_contract(&notifications.egress_gateway_url, key)
+            .await
     }
 }
 
@@ -280,6 +435,7 @@ mod tests {
                 grants: vec![],
             },
             worker: None,
+            notifications: None,
         }
     }
 
@@ -314,6 +470,100 @@ mod tests {
             }))
             .unwrap(),
         }
+    }
+
+    fn notification_configuration(
+        profile: &AssessmentEdgeProfileV1,
+    ) -> WorkerNotificationInstallationV1 {
+        use aos_assessment_runtime::notifications::{
+            InstalledNotificationDestination, NotificationDestinationV1,
+            NotificationInstallationV1, NotificationSecretBinding,
+        };
+        WorkerNotificationInstallationV1 {
+            schema: "aos.assessment-worker-notification-installation/v1".into(),
+            egress_gateway_url: "https://egress.fixture.invalid/v1/fetch".into(),
+            installation: NotificationInstallationV1 {
+                schema: "aos.assessment-notification-installation/v1".into(),
+                deployment_id: profile.deployment_id.clone(),
+                coordinator_id: profile.coordinator_id.clone(),
+                executor_id: profile.executor_id.clone(),
+                destinations: vec![InstalledNotificationDestination {
+                    destination: NotificationDestinationV1 {
+                        schema: "aos.assessment-notification-destination/v1".into(),
+                        destination_reference: "webhook:1".into(),
+                        revision: 1,
+                        resource_scope: "registry-partition".into(),
+                        url: "https://receiver.example/callback".into(),
+                        secret_version_reference: "worker://assessment/notification/v1".into(),
+                        credential_fingerprint: aos_contract::Sha256Digest::of_bytes(
+                            b"fixture-callback-key-thirty-two-bytes",
+                        ),
+                        expires_at: Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
+                    },
+                    budget_key: "notification:account".into(),
+                }],
+                budgets: vec![InstalledSourceBudget {
+                    key: "notification:account".into(),
+                    window_seconds: 60,
+                    allowance: 10,
+                    min_interval_seconds: 0,
+                }],
+            },
+            secret_bindings: vec![NotificationSecretBinding {
+                version_reference: "worker://assessment/notification/v1".into(),
+                binding: "ASSESSMENT_NOTIFICATION_CALLBACK_V1".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn notification_profiles_install_independent_attempts_without_hybrid_logical_authority() {
+        let mut cfg = super::super::direct_upload::tests::config();
+        let mut profile = profile();
+        profile.notifications = Some(notification_configuration(&profile));
+        cfg.assessment = Some(profile.clone());
+
+        let rendered = super::super::render_hybrid_wrangler_toml(&cfg).unwrap();
+        let parsed: toml::Value = toml::from_str(&rendered).unwrap();
+        let notification: WorkerNotificationInstallationV1 = serde_json::from_str(
+            parsed["vars"]["HUB_ASSESSMENT_NOTIFICATION_CONFIG"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(Some(notification), profile.notifications);
+        assert!(rendered.contains("AssessmentNotificationObject"));
+        assert!(!rendered.contains("HUB_DB"));
+        assert!(!rendered.contains("fixture-callback-key-thirty-two-bytes"));
+        assert!(parsed.get("triggers").is_none());
+        let required = profile.required_secret_bindings();
+        assert!(required.contains("HUB_ASSESSMENT_NOTIFICATION_WORK_KEY"));
+        assert!(required.contains("HUB_EGRESS_GATEWAY_KEY"));
+        assert!(required.contains("ASSESSMENT_NOTIFICATION_CALLBACK_V1"));
+
+        let notifications = profile.notifications.as_mut().unwrap();
+        notifications.installation.deployment_id = "unpaired".into();
+        assert!(profile.validate("deployment-1", true).is_err());
+    }
+
+    #[test]
+    fn notification_secret_selection_requires_installation_and_separate_material() {
+        let empty = AssessmentDeploymentSecrets::from_files(None, None, None).unwrap();
+        assert!(empty
+            .with_notifications(None, Some(Path::new("/unselected")), None)
+            .is_err());
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            "HUB_ASSESSMENT_WORK_KEY".into(),
+            Zeroizing::new("shared-fixture-key-thirty-two-bytes".into()),
+        );
+        entries.insert(
+            "HUB_ASSESSMENT_NOTIFICATION_WORK_KEY".into(),
+            Zeroizing::new("shared-fixture-key-thirty-two-bytes".into()),
+        );
+        assert!(AssessmentDeploymentSecrets { entries }
+            .require_separate(&[])
+            .is_err());
     }
 
     #[test]

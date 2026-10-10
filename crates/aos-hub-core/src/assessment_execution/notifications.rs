@@ -4,13 +4,75 @@
 //! quota-backed claim, rechecks current reviewer authority, then delegates one
 //! physical attempt. A failed or uncertain effect retains its lease and quota.
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context as _, Result};
 use aos_assessment_runtime::notifications::{
-    NotificationInstallationV1, NotificationWorkReceiptV1,
+    NotificationEffectGrantV1, NotificationEffectQueryV1, NotificationInstallationV1,
+    NotificationWorkPlanV1, NotificationWorkReceiptV1,
 };
 use aos_assessment_runtime::ports::RuntimeBounds;
 
-use crate::db::{AssessmentNotificationPlacement, AssessmentNotificationWork, Database};
+use crate::db::{
+    AssessmentNotificationPlacement, AssessmentNotificationWork, AssessmentObjectKind, Database,
+};
+
+/// Confirms current SQL authority for an authenticated physical dispatch challenge.
+///
+/// Hosts authenticate the query before invoking this function. Both Native and
+/// Worker coordinators use the retained immutable plan and the same live fences;
+/// installation alone never grants reviewer permissions.
+///
+/// # Errors
+/// Returns an error for wrong pairing, stale challenges, missing retained work,
+/// revoked authority or insufficient time for the complete physical invocation.
+pub async fn confirm_assessment_notification_effect(
+    db: &Database,
+    installation: &NotificationInstallationV1,
+    query: &NotificationEffectQueryV1,
+) -> Result<NotificationEffectGrantV1> {
+    installation.validate()?;
+    ensure!(
+        query.deployment_id == installation.deployment_id
+            && query.issuer == installation.coordinator_id
+            && query.audience == installation.executor_id,
+        "notification effect differs from the installed service pairing"
+    );
+    let now = db.assessment_database_time().await?;
+    query.validate_at(&now)?;
+    let registry = db
+        .assessment_registry_for_partition(&query.resource_scope)
+        .await?
+        .context("notification effect resource is absent")?;
+    let bytes = db
+        .assessment_object(
+            &query.resource_scope,
+            AssessmentObjectKind::NotificationWork,
+            query.plan_digest,
+        )
+        .await?
+        .context("notification effect retained work is absent")?;
+    let plan = NotificationWorkPlanV1::from_slice(&bytes, &now)?;
+    query.require_plan(&plan)?;
+    let destination = installation
+        .destinations
+        .iter()
+        .find(|route| {
+            route.destination.resource_scope == query.resource_scope
+                && route.destination.destination_reference == plan.destination_reference
+                && route
+                    .destination
+                    .digest()
+                    .is_ok_and(|digest| digest == plan.destination_digest)
+        })
+        .context("notification effect destination is not independently installed")?;
+    let work = AssessmentNotificationWork {
+        registry_id: registry,
+        plan,
+        destination: destination.destination.clone(),
+    };
+    db.check_assessment_notification_work(&work).await?;
+    let checked_at = db.assessment_database_time().await?;
+    NotificationEffectGrantV1::from_current_check(query, &work.plan, checked_at)
+}
 
 /// Executes one pinned notification attempt at the independently installed placement.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]

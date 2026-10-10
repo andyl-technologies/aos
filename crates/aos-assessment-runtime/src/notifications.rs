@@ -10,6 +10,7 @@ mod auth;
 mod configuration;
 mod control;
 mod delivery;
+mod effect;
 mod installation;
 mod summary;
 
@@ -26,7 +27,11 @@ pub use delivery::{
     DeliveryOutcome, NotificationDestinationV1, NotificationTransport, NotificationWorkPlanV1,
     NotificationWorkReceiptV1, execute_notification, retry_delay,
 };
-pub use installation::{InstalledNotificationDestination, NotificationInstallationV1};
+pub use effect::{NOTIFICATION_EFFECT_PATH, NotificationEffectGrantV1, NotificationEffectQueryV1};
+pub use installation::{
+    InstalledNotificationDestination, NotificationInstallationV1, NotificationSecretBinding,
+    WorkerNotificationInstallationV1,
+};
 pub use summary::{NotificationBodyV1, NotificationEventKind, NotificationSummaryV1};
 
 /// Names the independent authenticated notification execution endpoint.

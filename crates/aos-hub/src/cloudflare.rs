@@ -789,7 +789,7 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> Result<String> {
         rate_burst5 = toml_string(&cfg.rate_limit_namespaces.burst5),
         rate_burst10 = toml_string(&cfg.rate_limit_namespaces.burst10),
         rate_browse120 = toml_string(&cfg.rate_limit_namespaces.browse120),
-        cron = if cfg.assessment.as_ref().is_some_and(|profile| profile.worker.is_some()) {
+        cron = if cfg.assessment.as_ref().is_some_and(|profile| profile.worker.is_some() || profile.notifications.is_some()) {
             format!("{}, {}", toml_string(INDEXER_CRON), toml_string("* * * * *"))
         } else { toml_string(INDEXER_CRON) },
         observability = observability,
@@ -1699,6 +1699,9 @@ pub async fn deploy(
             secrets.seal_key.as_deref().unwrap_or(""),
             secrets.egress_gateway_key.as_deref().unwrap_or(""),
         ])?;
+        assessment
+            .confirm_notification_gateway(cfg.assessment.as_ref())
+            .await?;
     }
     let _ = render_wrangler_toml(cfg)?;
     if let Some(profile) = &cfg.assessment {
@@ -1912,6 +1915,21 @@ pub async fn deploy(
 /// It runs before `wrangler deploy` and before any Worker secret write, so a
 /// missing or stale gateway key cannot create or rotate a Worker deployment.
 async fn authenticate_gateway_contract(gateway_url: &str, shared_key: &str) -> Result<()> {
+    authenticate_gateway_profile(gateway_url, shared_key, false).await
+}
+
+pub(super) async fn authenticate_notification_gateway_contract(
+    gateway_url: &str,
+    shared_key: &str,
+) -> Result<()> {
+    authenticate_gateway_profile(gateway_url, shared_key, true).await
+}
+
+async fn authenticate_gateway_profile(
+    gateway_url: &str,
+    shared_key: &str,
+    notification: bool,
+) -> Result<()> {
     use base64::Engine as _;
     use rand::RngCore as _;
 
@@ -1939,14 +1957,20 @@ async fn authenticate_gateway_contract(gateway_url: &str, shared_key: &str) -> R
         timestamp,
         nonce: &nonce,
     };
-    let signature = aos_hub_core::egress_protocol::sign_challenge(&key, &evidence)?;
+    let contract = if notification {
+        aos_hub_core::egress_protocol::notifications::CONTRACT
+    } else {
+        aos_hub_core::egress_protocol::CONTRACT
+    };
+    let signature = if notification {
+        aos_hub_core::egress_protocol::notifications::sign_challenge(&key, &evidence)?
+    } else {
+        aos_hub_core::egress_protocol::sign_challenge(&key, &evidence)?
+    };
     let response = crate::fetch::hardened_client()
         .await
         .post(challenge_url)
-        .header(
-            "x-aos-egress-contract",
-            aos_hub_core::egress_protocol::CONTRACT,
-        )
+        .header("x-aos-egress-contract", contract)
         .header("x-aos-egress-key-id", key_id)
         .header("x-aos-egress-timestamp", timestamp.to_string())
         .header("x-aos-egress-nonce", &nonce)
@@ -1959,18 +1983,23 @@ async fn authenticate_gateway_contract(gateway_url: &str, shared_key: &str) -> R
         "authenticated hardened-egress challenge returned HTTP {}",
         response.status()
     );
-    verify_gateway_challenge_response(key_id, &key, &nonce, &response)
+    verify_gateway_profile_response(key_id, &key, &nonce, &response, notification)
 }
 
-fn verify_gateway_challenge_response(
+fn verify_gateway_profile_response(
     key_id: &str,
     key: &[u8],
     nonce: &str,
     response: &reqwest::Response,
+    notification: bool,
 ) -> Result<()> {
+    let contract = if notification {
+        aos_hub_core::egress_protocol::notifications::CONTRACT
+    } else {
+        aos_hub_core::egress_protocol::CONTRACT
+    };
     anyhow::ensure!(
-        required_challenge_header(response, "x-aos-egress-contract")?
-            == aos_hub_core::egress_protocol::CONTRACT,
+        required_challenge_header(response, "x-aos-egress-contract")? == contract,
         "hardened-egress challenge contract mismatch"
     );
     anyhow::ensure!(
@@ -1985,11 +2014,15 @@ fn verify_gateway_challenge_response(
         required_challenge_header(response, "x-aos-egress-timestamp")?.parse::<i64>()?;
     let now = aos_hub_core::clock::now_unix_secs();
     require_fresh_challenge_timestamp(timestamp, now)?;
-    aos_hub_core::egress_protocol::verify_challenge_response(
-        key,
-        &aos_hub_core::egress_protocol::ChallengeEvidence { timestamp, nonce },
-        required_challenge_header(response, "x-aos-egress-signature")?,
-    )
+    let evidence = aos_hub_core::egress_protocol::ChallengeEvidence { timestamp, nonce };
+    let signature = required_challenge_header(response, "x-aos-egress-signature")?;
+    if notification {
+        aos_hub_core::egress_protocol::notifications::verify_challenge_response(
+            key, &evidence, signature,
+        )
+    } else {
+        aos_hub_core::egress_protocol::verify_challenge_response(key, &evidence, signature)
+    }
 }
 
 fn require_fresh_challenge_timestamp(timestamp: i64, now: i64) -> Result<()> {

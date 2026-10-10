@@ -188,6 +188,7 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         route_reservation_keyring: None,
         container_rollout: aos_hub_core::container_rollout::ContainerRollout::all_enabled(),
         release_evidence: None,
+        assessment_notification_authority: Default::default(),
     })
 }
 

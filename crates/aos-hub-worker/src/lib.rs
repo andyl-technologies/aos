@@ -143,6 +143,8 @@ mod bridge_dispatch;
 #[cfg(target_arch = "wasm32")]
 pub mod assessment_provider;
 #[cfg(target_arch = "wasm32")]
+pub mod assessment_notifications;
+#[cfg(target_arch = "wasm32")]
 mod assessment_controller;
 
 #[cfg(target_arch = "wasm32")]
@@ -1455,6 +1457,9 @@ mod entry {
         .contains(&req.url()?.path())
         {
             return crate::assessment_provider::fetch(req, &env).await;
+        }
+        if req.url()?.path() == aos_assessment_runtime::notifications::NOTIFICATION_WORK_PATH {
+            return crate::assessment_notifications::fetch(req, &env).await;
         }
         let hybrid = hybrid_mode(&env)?;
         if hybrid && req.url()?.path() == DEPLOYMENT_ID_PATH {

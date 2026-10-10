@@ -30,6 +30,8 @@
 //! Worker secret by [`sealer_from_secret`]. The *crypto* is shared; only the
 //! Worker's key *sourcing* (a Wrangler secret) is platform-specific.
 
+mod notification_egress;
+
 use anyhow::{bail, Context, Result};
 use aos_hub_core::auth::magic::Mailer;
 use aos_hub_core::auth::seal::{parse_key, AesGcmSealer, SecretSealer};

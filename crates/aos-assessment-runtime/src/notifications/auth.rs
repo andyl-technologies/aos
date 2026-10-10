@@ -9,8 +9,9 @@ use sha2::Sha256;
 use zeroize::Zeroizing;
 
 use super::{
-    NOTIFICATION_WORK_PATH, NotificationBodyV1, NotificationDestinationV1, NotificationWorkPlanV1,
-    NotificationWorkReceiptV1,
+    NOTIFICATION_EFFECT_PATH, NOTIFICATION_WORK_PATH, NotificationBodyV1,
+    NotificationDestinationV1, NotificationEffectGrantV1, NotificationEffectQueryV1,
+    NotificationWorkPlanV1, NotificationWorkReceiptV1,
 };
 use crate::validation::{decode, encoded, text};
 
@@ -234,6 +235,111 @@ impl NotificationWorkAuth {
         Ok(receipt)
     }
 
+    /// Signs a fresh compact current-effect challenge in its independent endpoint domain.
+    ///
+    /// # Errors
+    /// Returns an error for wrong pairing, stale/future challenges or envelope limits.
+    pub fn sign_effect_query(
+        &self,
+        query: &NotificationEffectQueryV1,
+        now: &Timestamp,
+    ) -> Result<(Vec<u8>, String)> {
+        self.effect_pairing(query)?;
+        query.validate_at(now)?;
+        let bytes = encoded(query)?;
+        let signature = hex::encode(
+            self.mac_for(
+                b"aos-assessment-notification-effect-query-v1",
+                NOTIFICATION_EFFECT_PATH,
+                &bytes,
+            )?
+            .finalize()
+            .into_bytes(),
+        );
+        Ok((bytes, signature))
+    }
+
+    /// Verifies challenge authentication before any current coordinator database lookup.
+    ///
+    /// # Errors
+    /// Returns an error for invalid MAC/domain, wrong pairing or stale/malformed challenges.
+    pub fn verify_effect_query(
+        &self,
+        bytes: &[u8],
+        signature: &str,
+        now: &Timestamp,
+    ) -> Result<NotificationEffectQueryV1> {
+        self.verify_for(
+            b"aos-assessment-notification-effect-query-v1",
+            NOTIFICATION_EFFECT_PATH,
+            bytes,
+            signature,
+        )?;
+        let query = NotificationEffectQueryV1::from_slice(bytes, now)?;
+        self.effect_pairing(&query)?;
+        Ok(query)
+    }
+
+    /// Signs exact positive current-check facts independently of delivery receipts.
+    ///
+    /// # Errors
+    /// Returns an error for wrong pairing, unrelated challenges or expired grants.
+    pub fn sign_effect_grant(
+        &self,
+        grant: &NotificationEffectGrantV1,
+        query: &NotificationEffectQueryV1,
+        plan: &NotificationWorkPlanV1,
+        now: &Timestamp,
+    ) -> Result<(Vec<u8>, String)> {
+        self.effect_pairing(query)?;
+        grant.validate_for(query, plan, now)?;
+        let bytes = encoded(grant)?;
+        let signature = hex::encode(
+            self.mac_for(
+                b"aos-assessment-notification-effect-grant-v1",
+                NOTIFICATION_EFFECT_PATH,
+                &bytes,
+            )?
+            .finalize()
+            .into_bytes(),
+        );
+        Ok((bytes, signature))
+    }
+
+    /// Authenticates fresh dispatch authority for exactly the original physical challenge.
+    ///
+    /// # Errors
+    /// Returns an error for wrong MAC/domain, altered scope, unrelated plans or expiry.
+    pub fn verify_effect_grant(
+        &self,
+        bytes: &[u8],
+        signature: &str,
+        query: &NotificationEffectQueryV1,
+        plan: &NotificationWorkPlanV1,
+        now: &Timestamp,
+    ) -> Result<NotificationEffectGrantV1> {
+        self.effect_pairing(query)?;
+        self.verify_for(
+            b"aos-assessment-notification-effect-grant-v1",
+            NOTIFICATION_EFFECT_PATH,
+            bytes,
+            signature,
+        )?;
+        let grant: NotificationEffectGrantV1 = decode(bytes, "notification current-effect grant")?;
+        grant.validate_for(query, plan, now)?;
+        Ok(grant)
+    }
+
+    fn effect_pairing(&self, query: &NotificationEffectQueryV1) -> Result<()> {
+        ensure!(
+            query.deployment_id == self.deployment
+                && query.issuer == self.issuer
+                && query.audience == self.audience,
+            "notification effect pairing differs from installation"
+        );
+        Ok(())
+    }
+
     fn pairing(&self, plan: &NotificationWorkPlanV1) -> Result<()> {
         ensure!(
             plan.deployment_id == self.deployment
@@ -245,6 +351,10 @@ impl NotificationWorkAuth {
     }
 
     fn mac(&self, domain: &[u8], body: &[u8]) -> Result<Hmac<Sha256>> {
+        self.mac_for(domain, NOTIFICATION_WORK_PATH, body)
+    }
+
+    fn mac_for(&self, domain: &[u8], path: &str, body: &[u8]) -> Result<Hmac<Sha256>> {
         ensure!(
             body.len() <= 262_144,
             "notification authentication body exceeds limit"
@@ -254,7 +364,7 @@ impl NotificationWorkAuth {
         for field in [
             domain,
             b"POST",
-            NOTIFICATION_WORK_PATH.as_bytes(),
+            path.as_bytes(),
             self.deployment.as_bytes(),
             self.issuer.as_bytes(),
             self.audience.as_bytes(),
@@ -266,8 +376,12 @@ impl NotificationWorkAuth {
     }
 
     fn verify(&self, domain: &[u8], body: &[u8], signature: &str) -> Result<()> {
+        self.verify_for(domain, NOTIFICATION_WORK_PATH, body, signature)
+    }
+
+    fn verify_for(&self, domain: &[u8], path: &str, body: &[u8], signature: &str) -> Result<()> {
         let signature = decode_signature(signature)?;
-        self.mac(domain, body)?
+        self.mac_for(domain, path, body)?
             .verify_slice(&signature)
             .map_err(|_| anyhow::anyhow!("notification work authentication failed"))?;
         Ok(())

@@ -9,6 +9,9 @@ use anyhow::{ensure, Context as _, Result};
 use aos_assessment::time::Timestamp;
 use aos_assessment_runtime::credentials::SourceCredentialSetV1;
 use aos_assessment_runtime::installation::WorkerAssessmentInstallationV1 as Installation;
+use aos_assessment_runtime::notifications::{
+    NotificationWorkAuth, NotificationWorkReceiptV1, NOTIFICATION_WORK_PATH,
+};
 use aos_assessment_runtime::ports::ProviderTransport;
 use aos_assessment_runtime::provider::{
     CapabilityChallenge, ProviderCapabilitiesV1, ProviderWorkAuth, ProviderWorkPlanV1,
@@ -17,10 +20,11 @@ use aos_assessment_runtime::provider::{
 };
 use aos_contract::limits::JsonLimits;
 use aos_hub_core::assessment_execution::{
-    run_assessment_controller_pass, AssessmentControllerPorts, CoordinatorEvidenceStore,
-    DatabaseAssessmentAuthority, InstalledAssessmentRoutes,
+    run_assessment_controller_pass, run_assessment_notification_pass, AssessmentControllerPorts,
+    AssessmentNotificationExecutor, CoordinatorEvidenceStore, DatabaseAssessmentAuthority,
+    InstalledAssessmentRoutes,
 };
-use aos_hub_core::db::Database;
+use aos_hub_core::db::{AssessmentNotificationWork, Database};
 use aos_hub_core::jobs::{Job, JobEnvelope};
 use worker::{Env, Headers, Method, Request, RequestInit};
 
@@ -65,18 +69,62 @@ fn installation(env: &Env) -> Result<Option<Installation>> {
 /// # Errors
 /// Returns an error for invalid or conflicting deployment installation.
 pub(crate) fn installed_partitions(env: &Env) -> Result<Vec<String>> {
-    let Some(installation) = installation(env)? else {
-        return Ok(vec![]);
-    };
-    let scopes: std::collections::BTreeSet<_> = installation
-        .routes
-        .routes
-        .iter()
-        .map(|route| route.partition.clone())
-        .collect();
+    let mut scopes = std::collections::BTreeSet::new();
+    if let Some(installation) = installation(env)? {
+        scopes.extend(
+            installation
+                .routes
+                .routes
+                .iter()
+                .map(|route| route.partition.clone()),
+        );
+    }
+    if let Some(notifications) = crate::assessment_notifications::installation(env)? {
+        scopes.extend(
+            notifications
+                .installation
+                .destinations
+                .iter()
+                .map(|route| route.destination.resource_scope.clone()),
+        );
+    }
     // Registry keys are resolved by the dispatcher from the current logical
     // database. Configuration cannot guess a key or grant scope via a label.
     Ok(scopes.into_iter().collect())
+}
+
+struct WorkerNotificationExecutor {
+    env: Env,
+    auth: NotificationWorkAuth,
+}
+
+#[async_trait::async_trait(?Send)]
+impl AssessmentNotificationExecutor for WorkerNotificationExecutor {
+    async fn execute(
+        &self,
+        work: &AssessmentNotificationWork,
+    ) -> Result<NotificationWorkReceiptV1> {
+        let (bytes, signature) = self.auth.sign_plan(&work.plan, &now()?)?;
+        let request = crate::assessment_notifications::work_request(
+            &format!("https://assessment.invalid{NOTIFICATION_WORK_PATH}"),
+            &bytes,
+            &signature,
+        )?;
+        let response = crate::assessment_notifications::fetch(request, &self.env).await?;
+        ensure!(
+            response.status_code() == 200,
+            "Worker notification executor refused work"
+        );
+        let signature = response
+            .headers()
+            .get(crate::assessment_notifications::SIGNATURE_HEADER)?
+            .context("Worker notification receipt authentication is absent")?;
+        let bytes = crate::hybrid::read_bounded_response(response, 4096)
+            .await?
+            .context("Worker notification receipt exceeds its compact bound")?;
+        self.auth
+            .verify_receipt(&bytes, &signature, &work.plan, &now()?)
+    }
 }
 
 fn now() -> Result<Timestamp> {
@@ -170,20 +218,46 @@ pub(crate) async fn run(
     resource_scope: &str,
     after_scan: &str,
 ) -> Result<()> {
-    let installation =
-        installation(env)?.context("Worker assessment controller is not installed")?;
     ensure!(
-        installation
-            .routes
-            .routes
+        installed_partitions(env)?
             .iter()
-            .any(|route| route.partition == resource_scope),
+            .any(|scope| scope == resource_scope),
         "Worker assessment partition is not installed"
     );
     ensure!(
         db.assessment_registry_for_partition(resource_scope).await? == Some(registry_id),
         "Worker assessment wakeup lost its registry incarnation"
     );
+    // Pending notifications remain eligible when a newer publication cannot
+    // supply assessment metadata; its history never silently disappears.
+    if let Some(notifications) = crate::assessment_notifications::installation(env)? {
+        for budget in &notifications.installation.budgets {
+            db.install_assessment_source_budget(&budget.into()).await?;
+        }
+        let executor = WorkerNotificationExecutor {
+            env: env.clone(),
+            auth: crate::assessment_notifications::auth(env)?,
+        };
+        run_assessment_notification_pass(
+            &db,
+            registry_id,
+            &notifications.installation,
+            1,
+            &executor,
+        )
+        .await?;
+    }
+    let Some(installation) = installation(env)? else {
+        return Ok(());
+    };
+    if !installation
+        .routes
+        .routes
+        .iter()
+        .any(|route| route.partition == resource_scope)
+    {
+        return Ok(());
+    }
     for budget in &installation.budgets {
         db.install_assessment_source_budget(&budget.into()).await?;
     }

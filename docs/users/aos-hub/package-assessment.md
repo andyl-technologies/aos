@@ -209,8 +209,46 @@ stable delivery and original event identities. Retryable transport outcomes use
 bounded backoff; attempts stop after 20 tries or seven days, or when review
 revocation prevents another effect.
 
-Worker notification execution and deployment bindings are still under development.
-Hybrid's notification client already requires a dedicated work key and uses only its
-paired Worker. Enabling that placement requires the matching Worker executor; it
-cannot fall back to Native callbacks. Assessment permission policy remains pending,
-so this draft does not yet provide authorized end-user delivery through these controls.
+The edge assessment profile accepts a separate `notifications` installation:
+
+```json
+{
+  "schema": "aos.assessment-worker-notification-installation/v1",
+  "installation": "REPLACE_WITH_SHARED_NOTIFICATION_INSTALLATION",
+  "egressGatewayUrl": "https://egress.example/v1/fetch",
+  "secretBindings": [{
+    "versionReference": "worker://assessment/notification/v1",
+    "binding": "ASSESSMENT_NOTIFICATION_CALLBACK_V1"
+  }]
+}
+```
+
+Replace the installation placeholder with the same reviewed grants, budgets and
+notification pairing used by the coordinator. Sort key versions, and declare
+exactly the versions referenced by those grants. Source and callback bindings and
+quota domains are separate. Notification coordinator/executor identities have their
+own bindings and can differ from provider identities.
+
+Both Worker and Hybrid deploy commands accept
+`--assessment-notification-work-key-file` and
+`--assessment-notification-secrets-file`. The latter is an owner-private JSON map
+from the selected callback bindings and `HUB_EGRESS_GATEWAY_KEY` to absolute private
+files. The work key must match Native's `notifications.workKeyFile` in Hybrid and
+must differ from provider, ingress, storage and callback keys. A deployment checks
+callback key fingerprints and independently challenges the gateway's notification
+contract before delivering secrets or publishing the Worker. Updates require the
+gateway key file for that check; other omitted deployed secrets are preserved.
+
+Worker callbacks require the connect-time public-address gateway, which must support
+`aos-hardened-egress-assessment-notification-v1`. There is no direct Fetch or Native
+callback fallback. Hybrid uses the already configured exact Native origin for fresh
+SQL confirmation; Worker-only uses the Hub database object and the same shared SQL
+checks. A dispatch grant lasts at most five seconds and requires authority through
+the complete physical timeout. Per-attempt durable objects pin work before any
+effect. Completed replay returns the exact receipt; interrupted replay cannot
+dispatch again. Uncertain retries wait until the original dispatch deadline.
+
+Assessment permission policy remains pending, so this draft does not yet provide
+authorized end-user delivery through these controls. The callback Worker fleet
+suite exercises physical execution and durable replay with paired protocol fixtures;
+it does not establish public service IAM admission.

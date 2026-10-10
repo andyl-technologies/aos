@@ -113,3 +113,105 @@ impl NotificationInstallationV1 {
         Ok(())
     }
 }
+
+/// Maps one immutable callback key version to a dedicated Worker secret binding.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct NotificationSecretBinding {
+    /// Exact immutable version referenced by the installed destinations.
+    pub version_reference: String,
+    /// Dedicated `ASSESSMENT_NOTIFICATION_` binding containing the callback key.
+    pub binding: String,
+}
+
+/// Installs finite Worker callback routes without retaining credential material.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WorkerNotificationInstallationV1 {
+    /// Exact supported Worker installation discriminator.
+    pub schema: String,
+    /// Shared service pairing, destination grants and notification-only quotas.
+    pub installation: NotificationInstallationV1,
+    /// Exact HTTPS `/v1/fetch` gateway; native Worker Fetch cannot pin public DNS.
+    pub egress_gateway_url: String,
+    /// Sorted exact key versions and unique dedicated physical secret bindings.
+    pub secret_bindings: Vec<NotificationSecretBinding>,
+}
+
+impl WorkerNotificationInstallationV1 {
+    /// Decodes bounded installed references without resolving Worker credentials.
+    ///
+    /// # Errors
+    /// Returns an error for unknown fields, conflicting authority or secret mappings.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
+        let installation: Self = decode(bytes, "Worker notification installation")?;
+        installation.validate()?;
+        Ok(installation)
+    }
+
+    /// Requires exactly the independently installed immutable callback versions.
+    ///
+    /// Hosts additionally validate version references against their secret provider
+    /// profile before deployment or resolution. These declarations contain no keys.
+    ///
+    /// # Errors
+    /// Returns an error for unbounded, duplicated, missing or unused bindings.
+    pub fn validate(&self) -> Result<()> {
+        self.installation.validate()?;
+        text(&self.egress_gateway_url, 2048, "notification gateway URL")?;
+        let gateway = url::Url::parse(&self.egress_gateway_url)?;
+        ensure!(
+            gateway.scheme() == "https"
+                && gateway.host_str().is_some()
+                && gateway.path() == "/v1/fetch"
+                && gateway.query().is_none()
+                && gateway.fragment().is_none()
+                && gateway.username().is_empty()
+                && gateway.password().is_none(),
+            "notification gateway requires its exact HTTPS route"
+        );
+        ensure!(
+            self.schema == "aos.assessment-worker-notification-installation/v1"
+                && (1..=64).contains(&self.secret_bindings.len())
+                && self
+                    .secret_bindings
+                    .windows(2)
+                    .all(|pair| { pair[0].version_reference < pair[1].version_reference }),
+            "Worker notification versions require sorted unique bounded identities"
+        );
+        for secret in &self.secret_bindings {
+            text(&secret.version_reference, 128, "notification key version")?;
+            ensure!(
+                secret.binding.starts_with("ASSESSMENT_NOTIFICATION_")
+                    && secret.binding.len() > "ASSESSMENT_NOTIFICATION_".len()
+                    && secret.binding.len() <= 96
+                    && secret.binding.bytes().all(|byte| {
+                        byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+                    }),
+                "notification callback keys require dedicated Worker secret bindings"
+            );
+        }
+        let required: BTreeSet<_> = self
+            .installation
+            .destinations
+            .iter()
+            .map(|route| &route.destination.secret_version_reference)
+            .collect();
+        let declared: BTreeSet<_> = self
+            .secret_bindings
+            .iter()
+            .map(|secret| &secret.version_reference)
+            .collect();
+        let bindings: BTreeSet<_> = self
+            .secret_bindings
+            .iter()
+            .map(|secret| &secret.binding)
+            .collect();
+        ensure!(
+            required == declared && bindings.len() == self.secret_bindings.len(),
+            "notification key versions differ from their exact unique custody bindings"
+        );
+        encoded(self)?;
+        Ok(())
+    }
+}

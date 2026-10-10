@@ -319,6 +319,7 @@ async fn spawn_hub_with_rollout(
         route_reservation_keyring: None,
         container_rollout,
         release_evidence: None,
+        assessment_notification_authority: Default::default(),
     });
     let app = router(state).await;
     let server = tokio::spawn(async move {

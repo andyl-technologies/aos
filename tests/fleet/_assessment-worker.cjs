@@ -125,9 +125,13 @@ async function main() {
           { reference: 'github-expired-v1', partition: PARTITION, provider: 'github-tags',
             scope: { kind: 'github-repositories', repositories: ['example/fixture'] },
             secretBinding: 'ASSESSMENT_GITHUB_V1', expiresAt: timestamp(Math.floor(Date.now() / 1000) - 1) },
+          { reference: 'github-callback-key-v1', partition: PARTITION, provider: 'github-tags',
+            scope: { kind: 'github-repositories', repositories: ['example/fixture'] },
+            secretBinding: 'ASSESSMENT_NOTIFICATION_CALLBACK_V1', expiresAt: timestamp(Math.floor(Date.now() / 1000) + 3600) },
         ].sort((left, right) => left.reference.localeCompare(right.reference)),
       }),
       ASSESSMENT_GITHUB_V1: 'fixture-only-upstream-credential',
+      ASSESSMENT_NOTIFICATION_CALLBACK_V1: 'fixture-only-protected-callback-key',
     },
   };
   let runtime = new Miniflare(options);
@@ -235,6 +239,9 @@ async function main() {
     // Missing references never select ambient secrets or an anonymous fallback.
     const credential = { ...plan(), credentialRef: 'uninstalled-credential' };
     assert.equal((await request(runtime, WORK, credential, 'aos-provider-plan-v1')).status, 409);
+    assert.equal(physicalCalls, 4);
+    const callbackCredential = { ...plan(), credentialRef: 'github-callback-key-v1' };
+    assert.equal((await request(runtime, WORK, callbackCredential, 'aos-provider-plan-v1')).status, 409);
     assert.equal(physicalCalls, 4);
 
     await runtime.dispose();

@@ -458,3 +458,111 @@ fn installed_notifications_require_exact_independent_quotas_and_sorted_destinati
     oversized.budgets[0].allowance = 1_000_001;
     assert!(oversized.validate().is_err());
 }
+
+#[test]
+fn worker_notification_keys_require_exact_versions_and_separate_unique_bindings() {
+    let (destination, _) = fixture();
+    let version = destination.secret_version_reference.clone();
+    let mut installation = WorkerNotificationInstallationV1 {
+        schema: "aos.assessment-worker-notification-installation/v1".into(),
+        egress_gateway_url: "https://egress.fixture.invalid/v1/fetch".into(),
+        installation: NotificationInstallationV1 {
+            schema: "aos.assessment-notification-installation/v1".into(),
+            deployment_id: "deployment".into(),
+            coordinator_id: "coordinator".into(),
+            executor_id: "executor".into(),
+            destinations: vec![InstalledNotificationDestination {
+                destination,
+                budget_key: "notification:account".into(),
+            }],
+            budgets: vec![crate::routes::InstalledSourceBudget {
+                key: "notification:account".into(),
+                window_seconds: 60,
+                allowance: 10,
+                min_interval_seconds: 0,
+            }],
+        },
+        secret_bindings: vec![NotificationSecretBinding {
+            version_reference: version,
+            binding: "ASSESSMENT_NOTIFICATION_CALLBACK_V3".into(),
+        }],
+    };
+    installation.validate().unwrap();
+    let bytes = aos_contract::canonical::to_vec(&installation).unwrap();
+    assert_eq!(
+        WorkerNotificationInstallationV1::from_slice(&bytes).unwrap(),
+        installation
+    );
+
+    installation.secret_bindings[0].binding = "ASSESSMENT_GITHUB_TOKEN".into();
+    assert!(installation.validate().is_err());
+    installation.secret_bindings[0].binding = "ASSESSMENT_NOTIFICATION_CALLBACK_V3".into();
+    installation.secret_bindings[0].version_reference = "other-version".into();
+    assert!(installation.validate().is_err());
+}
+
+#[test]
+fn fresh_effect_grants_bind_the_exact_challenge_and_cannot_extend_dispatch_authority() {
+    let (_, plan) = fixture();
+    let query = NotificationEffectQueryV1 {
+        schema: "aos.assessment-notification-effect-query/v1".into(),
+        deployment_id: plan.deployment_id.clone(),
+        issuer: plan.issuer.clone(),
+        audience: plan.audience.clone(),
+        resource_scope: plan.body.resource_scope.clone(),
+        plan_digest: plan.digest().unwrap(),
+        claim_token: plan.claim_token.clone(),
+        nonce: "0123456789abcdef0123456789abcdef".into(),
+        issued_at: time(1001),
+    };
+    let auth = NotificationWorkAuth::new(
+        vec![11; 32],
+        plan.deployment_id.clone(),
+        plan.issuer.clone(),
+        plan.audience.clone(),
+    )
+    .unwrap();
+    let (query_bytes, query_signature) = auth.sign_effect_query(&query, &time(1001)).unwrap();
+    assert_eq!(
+        auth.verify_effect_query(&query_bytes, &query_signature, &time(1002))
+            .unwrap(),
+        query
+    );
+    assert!(
+        auth.verify_plan(&query_bytes, &query_signature, &time(1002))
+            .is_err()
+    );
+    assert!(
+        auth.verify_effect_query(&query_bytes, &query_signature, &time(1006))
+            .is_err()
+    );
+
+    let grant = NotificationEffectGrantV1::from_current_check(&query, &plan, time(1002)).unwrap();
+    let (bytes, signature) = auth
+        .sign_effect_grant(&grant, &query, &plan, &time(1002))
+        .unwrap();
+    assert_eq!(
+        auth.verify_effect_grant(&bytes, &signature, &query, &plan, &time(1006))
+            .unwrap(),
+        grant
+    );
+    assert!(
+        auth.verify_effect_grant(&bytes, &signature, &query, &plan, &time(1007))
+            .is_err()
+    );
+    let mut different = query.clone();
+    different.nonce = "abcdef0123456789abcdef0123456789".into();
+    assert!(
+        auth.verify_effect_grant(&bytes, &signature, &different, &plan, &time(1003))
+            .is_err()
+    );
+    let mut extended = grant;
+    extended.dispatch_by = time(1008);
+    assert!(
+        auth.sign_effect_grant(&extended, &query, &plan, &time(1003))
+            .is_err()
+    );
+    let mut late_query = query;
+    late_query.issued_at = time(1040);
+    assert!(NotificationEffectGrantV1::from_current_check(&late_query, &plan, time(1040)).is_err());
+}

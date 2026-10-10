@@ -604,6 +604,12 @@ struct HybridDeployArgs {
     /// Read a private JSON map from selected source bindings to absolute secret files.
     #[arg(long, requires = "assessment_profile_file")]
     assessment_source_secrets_file: Option<PathBuf>,
+    /// Read the independent Native-matched notification work key from a private file.
+    #[arg(long, requires = "assessment_profile_file")]
+    assessment_notification_work_key_file: Option<PathBuf>,
+    /// Read a private map from callback bindings and the gateway key to absolute files.
+    #[arg(long, requires = "assessment_profile_file")]
+    assessment_notification_secrets_file: Option<PathBuf>,
     /// Read the Native-matched ingress key from an owner-private file.
     #[arg(long)]
     hybrid_ingress_key_file: Option<PathBuf>,
@@ -632,6 +638,10 @@ impl HybridDeployArgs {
         aos_hub::cloudflare::HybridDeploySecretFiles {
             assessment_work_key_file: self.assessment_work_key_file.clone(),
             assessment_source_secrets_file: self.assessment_source_secrets_file.clone(),
+            assessment_notification_work_key_file: self
+                .assessment_notification_work_key_file
+                .clone(),
+            assessment_notification_secrets_file: self.assessment_notification_secrets_file.clone(),
             hybrid_ingress_key_file: self.hybrid_ingress_key_file.clone(),
             storage_work_key_file: self.storage_work_key_file.clone(),
             direct_upload_guard_key_file: self.direct_upload_guard_key_file.clone(),
@@ -755,6 +765,12 @@ struct WorkerArgs {
     /// Read a private JSON map from selected source bindings to absolute secret files.
     #[arg(long, requires = "assessment_profile_file")]
     assessment_source_secrets_file: Option<PathBuf>,
+    /// Read the independent notification work key from a private file.
+    #[arg(long, requires = "assessment_profile_file")]
+    assessment_notification_work_key_file: Option<PathBuf>,
+    /// Read a private map from callback bindings and the gateway key to absolute files.
+    #[arg(long, requires = "assessment_profile_file")]
+    assessment_notification_secrets_file: Option<PathBuf>,
     /// The hosting provider.
     #[arg(long, value_enum, default_value_t = Provider::Cloudflare)]
     provider: Provider,
@@ -2566,6 +2582,11 @@ async fn deploy_worker(
         assessment_profile.as_ref(),
         args.assessment_work_key_file.as_deref(),
         args.assessment_source_secrets_file.as_deref(),
+    )?
+    .with_notifications(
+        assessment_profile.as_ref(),
+        args.assessment_notification_work_key_file.as_deref(),
+        args.assessment_notification_secrets_file.as_deref(),
     )?;
     let secrets = cloudflare::Secrets {
         assessment: Some(assessment),

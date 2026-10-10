@@ -32,7 +32,8 @@ pub use controller::{
 };
 pub use custody::CoordinatorEvidenceStore;
 pub use notifications::{
-    run_assessment_notification_pass, AssessmentNotificationExecutor, AssessmentNotificationPass,
+    confirm_assessment_notification_effect, run_assessment_notification_pass,
+    AssessmentNotificationExecutor, AssessmentNotificationPass,
 };
 pub use routes::InstalledAssessmentRoutes;
 

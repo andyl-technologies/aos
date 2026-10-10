@@ -313,6 +313,56 @@ async fn uncertain_expired_attempts_keep_consumed_quota_and_old_receipts_cannot_
     Ok(())
 }
 
+#[tokio::test]
+async fn uncertain_receipts_cannot_admit_an_overlapping_retry() -> Result<()> {
+    let (db, registry, request, identity, fences) = super::notifications_tests::fixture().await?;
+    db.write_assessment_subscription_fenced(registry, &request, &identity, &fences)
+        .await?;
+    let placement = install(&db).await?;
+    let destination = destination(&db, registry, &request).await?;
+    emit(&db, registry, 1, &db.assessment_database_time().await?).await?;
+    let id = db
+        .assessment_notification_due_page(registry, 1)
+        .await?
+        .remove(0);
+    let work = db
+        .claim_assessment_notification_work_fenced(registry, &id, &placement, &destination, &fences)
+        .await?;
+
+    let mut uncertain = receipt(
+        &work,
+        db.assessment_database_time().await?,
+        DeliveryOutcome::Retryable,
+    )?;
+    uncertain.status = None;
+    db.admit_assessment_notification_receipt_fenced(&work, &uncertain, &fences)
+        .await?;
+
+    let row = db.backend.query_opt(
+        "SELECT not_before FROM assessment_notification_outbox WHERE registry_id = ?1 AND delivery_id = ?2",
+        &vals![@slice registry, id],
+    ).await?.context("notification intent disappeared")?;
+    assert!(row.get::<u64>(0)? >= work.plan.deadline.unix_seconds());
+    assert!(db
+        .assessment_notification_due_page(registry, 1)
+        .await?
+        .is_empty());
+    assert!(
+        db.claim_assessment_notification_work_fenced(
+            registry,
+            &id,
+            &placement,
+            &destination,
+            &fences,
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(consumed(&db, &placement).await?, 1);
+    assert_eq!(states(&db, registry, "pending").await?, 1);
+    Ok(())
+}
+
 #[cfg(feature = "postgres")]
 #[tokio::test]
 #[ignore = "Requires AOS_ASSESSMENT_PG_URL_FILE pointing to a disposable PostgreSQL database"]

@@ -35,6 +35,9 @@ use zeroize::Zeroizing;
 
 use crate::server::AppState;
 
+mod authority;
+pub(crate) use authority::notification_effect;
+pub use authority::NotificationAuthorityService;
 mod notifications;
 pub use notifications::AssessmentNotificationInstallation;
 use notifications::InstalledNotificationExecutor;
@@ -302,6 +305,18 @@ pub async fn install_controller(
             InstalledNotificationExecutor::install(state, configuration, &installation.executor)
         })
         .transpose()?;
+    if let Some(authority) = notification_executor
+        .as_ref()
+        .and_then(InstalledNotificationExecutor::authority)
+    {
+        ensure!(
+            state
+                .assessment_notification_authority
+                .set(authority)
+                .is_ok(),
+            "notification effect authority is already installed"
+        );
+    }
     let db = Arc::clone(&state.db);
     if let Some(configuration) = &installation.notifications {
         for budget in &configuration.installation.budgets {

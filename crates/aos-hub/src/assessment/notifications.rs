@@ -134,10 +134,20 @@ impl NotificationCredentials for NativeNotificationCredentials {
 
 pub(super) enum InstalledNotificationExecutor {
     Native(NativeNotificationTransport),
-    Worker(RemoteNotificationExecutor),
+    Worker {
+        executor: RemoteNotificationExecutor,
+        authority: Arc<super::NotificationAuthorityService>,
+    },
 }
 
 impl InstalledNotificationExecutor {
+    pub(super) fn authority(&self) -> Option<Arc<super::NotificationAuthorityService>> {
+        match self {
+            Self::Native(_) => None,
+            Self::Worker { authority, .. } => Some(Arc::clone(authority)),
+        }
+    }
+
     pub(super) fn install(
         state: &AppState,
         configuration: &AssessmentNotificationInstallation,
@@ -180,7 +190,15 @@ impl InstalledNotificationExecutor {
                     configuration.installation.coordinator_id.clone(),
                     configuration.installation.executor_id.clone(),
                 )?);
-                Ok(Self::Worker(RemoteNotificationExecutor::new(origin, auth)?))
+                let authority = Arc::new(super::NotificationAuthorityService::new(
+                    Arc::clone(&state.db),
+                    configuration.installation.clone(),
+                    Arc::clone(&auth),
+                ));
+                Ok(Self::Worker {
+                    executor: RemoteNotificationExecutor::new(origin, auth)?,
+                    authority,
+                })
             }
         }
     }
@@ -196,7 +214,7 @@ impl AssessmentNotificationExecutor for InstalledNotificationExecutor {
             Self::Native(transport) => {
                 execute_notification(transport, &PhysicalClock, &work.destination, &work.plan).await
             }
-            Self::Worker(transport) => transport.execute(&work.plan).await,
+            Self::Worker { executor, .. } => executor.execute(&work.plan).await,
         }
     }
 }

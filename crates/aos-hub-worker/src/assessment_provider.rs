@@ -308,6 +308,15 @@ impl WorkerSourceTransport {
             configuration.as_bytes(),
         )?;
         let grant = grants.resolve(plan, &WorkerClock.now()?)?;
+        // Source grants cannot select callback or control custody, even when
+        // bindings were installed outside the repository deployment renderer.
+        anyhow::ensure!(
+            grant.secret_binding.starts_with("ASSESSMENT_")
+                && !grant.secret_binding.starts_with("ASSESSMENT_NOTIFICATION_")
+                && grant.secret_binding != "ASSESSMENT_EVIDENCE"
+                && grant.secret_binding != "ASSESSMENT_PROVIDER_TASKS",
+            "source credential requires its independent assessment binding"
+        );
         let secret = Zeroizing::new(
             self.env
                 .secret(&grant.secret_binding)
