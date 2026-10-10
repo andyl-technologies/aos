@@ -210,6 +210,14 @@ deletion credit for relocation. It does not complete the durable Effect or
 OwnershipGate extraction, remove protected Controller/Journal admission
 backreferences, or establish production lifecycle qualification.
 
+Controller mutation Effects require retained authenticated admission context;
+the public bare-envelope factory and its acceptance fallback are retired.
+Canonical decoding rejects bare V3/V5/V6 rows, including Applied and terminal
+history, at the existing request-validation frontier. Such rows can block
+whole-ledger reconciliation and public projection; their Journal bytes remain
+intact, with no inferred context, automatic upgrade or deletion. Context-bearing
+history, broker Effects and reserved Observe children retain their own semantics.
+
 Protocol's complete `domain_ledger::operation` DATA owner now holds both native
 Operation record versions, their full decoder and unchecked encoder, all five
 private Copy fields, and the Operation/Effect key grammar. Public DATA getters,
@@ -502,13 +510,11 @@ every hypothetical backend, forwarding layers without a contract, or a new
 record family per refactor. Implementation and co-located tests are reviewed
 separately under the repository's file-size and documentation standards.
 
-Reconciler's private `operation_ledger` module owns the complete canonical
-Operation and OwnershipGate record models, codecs, bounds, and key layouts.
-It reuses Core's bounded byte reader without moving immutable draft validation
-or canonical domains into Core. The existing public-metadata owner supplies the
-V2 operation tail; admission, activation, currentness, clocks, effects, Journal
-custody, and recovery stay with their actual owners. This private DATA grouping
-does not establish a new crate boundary or complete protected-owner extraction.
+Reconciler's private `operation_ledger` retains the OwnershipGate model and codec
+and uses Protocol's complete Operation record and key owner directly. Gate
+decoding reuses Core's bounded reader; immutable draft validation stays native.
+Protected admission, activation, currentness, clocks and Journal custody remain
+with their actual owners; the protected-owner extraction is incomplete.
 
 ## Multi-node boundary reserved for later
 
