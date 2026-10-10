@@ -114,7 +114,7 @@ pub(crate) fn authenticate_owned_peer(
 }
 
 /// Reads a finite original Linux generation record; malformed evidence refuses.
-fn process_generation(process_id: u32) -> Result<u64, OperationFailure> {
+pub(super) fn process_generation(process_id: u32) -> Result<u64, OperationFailure> {
     let mut record = [0_u8; 4096];
     let mut file = File::open(format!("/proc/{process_id}/stat"))
         .map_err(|error| failure(&format!("original process observation failed: {error}")))?;

@@ -46,7 +46,7 @@ fn explicit_native_fixture_binding_refuses_missing_relative_and_nonexecutable_pa
     assert!(configured_qemu(Some(file.as_os_str().to_owned())).is_err());
 }
 
-fn allocation() -> ActivationRecord {
+pub(in crate::kvm_profile) fn allocation() -> ActivationRecord {
     ActivationRecord {
         generation: 1.into(),
         activation_id: Id::new("test/component-allocation").unwrap(),
@@ -69,7 +69,7 @@ fn allocation() -> ActivationRecord {
     clippy::disallowed_methods,
     reason = "host cleanup test allowance, never modeled time"
 )]
-fn reclaim(queue: &RuntimeCustodyQueue) {
+pub(in crate::kvm_profile) fn reclaim(queue: &RuntimeCustodyQueue) {
     let mut context = Context::from_waker(Waker::noop());
     let start = std::time::Instant::now();
     loop {
@@ -83,7 +83,7 @@ fn reclaim(queue: &RuntimeCustodyQueue) {
     assert_eq!(queue.reserved_worlds(), 0);
 }
 
-fn diagnostic_owner(
+pub(in crate::kvm_profile) fn diagnostic_owner(
     queue: &RuntimeCustodyQueue,
     maximum_commands: usize,
 ) -> (
@@ -355,6 +355,111 @@ fn actual_tcg_initial_response_refuses_without_inventing_callback_custody() {
         .unwrap();
     assert!(owner.observe_process_exit().unwrap().is_none());
     assert_eq!(queue.reserved_worlds(), 1);
+    drop(owner);
+    reclaim(&queue);
+}
+
+#[test]
+fn actual_tcg_response_bytes_refuse_without_native_payload_or_completion() {
+    let queue = RuntimeCustodyQueue::new(1).unwrap();
+    let (mut owner, _directory, _socket, _disconnect) = diagnostic_owner(&queue, 1);
+    owner
+        .custody
+        .control(|journal| {
+            let request = super::super::QmpKvmResponseBytesRequest {
+                operation: super::super::QmpKvmResponseBytesOperation::Query,
+                record_index: 0,
+                generation: 1,
+                expected_invocation: 1,
+                operation_id: 0,
+                expected_sequence: 0,
+            };
+            assert!(matches!(
+                journal.qmp.control_native_kvm_response_bytes(&request),
+                Err(QmpError::Command { .. })
+            ));
+            assert!(journal.entries.is_empty());
+            assert!(journal.observations.is_empty());
+            Ok(())
+        })
+        .unwrap();
+    assert!(owner.observe_process_exit().unwrap().is_none());
+    assert_eq!(queue.reserved_worlds(), 1);
+    drop(owner);
+    reclaim(&queue);
+}
+
+#[test]
+fn actual_tcg_more_callback_refuses_without_inventing_original_completion() {
+    let queue = RuntimeCustodyQueue::new(1).unwrap();
+    let (mut owner, _directory, _socket, _disconnect) = diagnostic_owner(&queue, 1);
+    owner
+        .custody
+        .control(|journal| {
+            let request = super::super::QmpKvmMoreResponseRequest {
+                operation: super::super::QmpKvmMoreResponseOperation::Poll,
+                vcpu_index: 0,
+                completion_id: 1,
+                exit_sequence: 1,
+            };
+            assert!(matches!(
+                journal.qmp.control_native_kvm_more_response(&request),
+                Err(QmpError::Command { .. })
+            ));
+            assert!(journal.entries.is_empty());
+            assert!(journal.observations.is_empty());
+            Ok(())
+        })
+        .unwrap();
+    assert!(owner.observe_process_exit().unwrap().is_none());
+    assert_eq!(queue.reserved_worlds(), 1);
+    drop(owner);
+    reclaim(&queue);
+}
+
+#[test]
+fn actual_owned_child_wrong_class_cannot_admit_completion_or_more() {
+    let queue = RuntimeCustodyQueue::new(1).unwrap();
+    let (mut owner, _directory, _socket, _disconnect) = diagnostic_owner(&queue, 2);
+    let submission = owner
+        .submit_window(super::super::QmpKvmOriginalWindowRequest {
+            operation: super::super::QmpKvmOriginalWindowOperation::Begin,
+            generation: 1,
+            start_ns: 0,
+            end_ns: 100,
+            stop_budget_ns: 0,
+        })
+        .unwrap();
+    assert!(submission.exchange.is_err());
+    assert!(matches!(
+        owner.submit_response_completion(&submission.token),
+        Err(KvmComponentError::ForeignToken)
+    ));
+    assert!(matches!(
+        owner.submit_more_response(&submission.token),
+        Err(KvmComponentError::ForeignToken)
+    ));
+    assert!(matches!(
+        owner.reconcile_response_completion(&submission.token),
+        Err(KvmComponentError::ForeignToken)
+    ));
+    assert!(matches!(
+        owner.reconcile_more_response(&submission.token),
+        Err(KvmComponentError::ForeignToken)
+    ));
+    assert!(matches!(
+        owner.retained_completion_reply(&submission.token, 0),
+        Err(KvmComponentError::ForeignToken)
+    ));
+    assert_eq!(owner.observations(&submission.token).unwrap().len(), 1);
+    owner
+        .custody
+        .control(|journal| {
+            assert_eq!(journal.entries.len(), 1);
+            Ok(())
+        })
+        .unwrap();
+    assert!(owner.observe_process_exit().unwrap().is_none());
     drop(owner);
     reclaim(&queue);
 }

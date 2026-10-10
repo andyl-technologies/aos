@@ -24,8 +24,9 @@ use crucible::node_contract::{
 };
 
 use crate::qmp::{
-    QmpError, QmpKvmInitialResponseState, QmpKvmOriginalReturnState, QmpKvmOriginalWindowRequest,
-    QmpKvmOriginalWindowState,
+    QmpError, QmpKvmCompletionSummary, QmpKvmInitialResponseState, QmpKvmMoreResponseState,
+    QmpKvmOriginalReturnState, QmpKvmOriginalWindowRequest, QmpKvmOriginalWindowState,
+    QmpKvmResponseBytesState,
 };
 
 use super::{KvmArchitecture, KvmCandidateError, KvmInstalledCandidate};
@@ -79,6 +80,20 @@ pub struct KvmComponentSubmission<T> {
 /// retained original history, never a fresh native observation after timeout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KvmComponentObservation {
+    /// Retains original completion classification without copying binary payloads.
+    Completion {
+        /// Stores checked scalar facts; full original binary history stays owned.
+        state: Option<QmpKvmCompletionSummary>,
+        /// Preserves original uncertainty even after native result recovery.
+        uncertain: bool,
+    },
+    /// Retains the original More callback without replacing its completion ancestry.
+    More {
+        /// Stores checked source callback facts without native execution authority.
+        state: Option<QmpKvmMoreResponseState>,
+        /// Preserves original native and transport effect uncertainty.
+        uncertain: bool,
+    },
     /// Retains original first-callback facts, including a checked conflicting result.
     Initial {
         /// Stores the original callback reply without an execution qualification.
@@ -317,6 +332,91 @@ impl KvmOwnedComponents {
             .control(|native| native.reconcile_initial(token))
     }
 
+    /// Completes the original response from this owner's collected callback.
+    ///
+    /// This token must refer to a known original Initial or More callback on the
+    /// same child. The owner observes its actual current native bytes and derives
+    /// the consecutive completion identity; caller-supplied buffers cannot enter.
+    ///
+    /// # Errors
+    /// Refuses foreign, unknown, uncertain or duplicate ancestry, unavailable
+    /// finite byte/history credit and invalid source facts before mutation. An
+    /// ambiguous Complete still returns its retained original token.
+    pub fn submit_response_completion(
+        &mut self,
+        handler: &KvmComponentToken,
+    ) -> Result<KvmComponentSubmission<QmpKvmCompletionSummary>, KvmComponentError> {
+        self.custody.control(|native| {
+            let (token, exchange) = native.submit_completion(handler)?;
+            Ok(KvmComponentSubmission { token, exchange })
+        })
+    }
+
+    /// Reconciles the same completion against its source last-operation journal.
+    ///
+    /// Known results are read locally before another original can replace the
+    /// source cache. Unknown recovery repeats exactly the retained Complete;
+    /// native original-operation identity prevents a new callback admission.
+    ///
+    /// # Errors
+    /// Refuses foreign/wrong-class tokens, exhausted attempt credit and changed
+    /// native facts. Original requests, byte history and uncertainty stay retained.
+    pub fn reconcile_response_completion(
+        &mut self,
+        token: &KvmComponentToken,
+    ) -> Result<QmpKvmCompletionSummary, KvmComponentError> {
+        self.custody
+            .control(|native| native.reconcile_completion(token))
+    }
+
+    /// Submits More from this owner's known original native completion.
+    ///
+    /// The complete original byte result is copied with checked host credit and
+    /// retained before source dispatch. Raw callers cannot supply a More birth.
+    ///
+    /// # Errors
+    /// Refuses foreign, duplicate, non-More or uncertain completion ancestry and
+    /// exhausted finite credit before callback admission. Failed exchanges retain
+    /// the original token and entire byte ancestry in the supervisory capsule.
+    pub fn submit_more_response(
+        &mut self,
+        completion: &KvmComponentToken,
+    ) -> Result<KvmComponentSubmission<QmpKvmMoreResponseState>, KvmComponentError> {
+        self.custody.control(|native| {
+            let (token, exchange) = native.submit_more(completion)?;
+            Ok(KvmComponentSubmission { token, exchange })
+        })
+    }
+
+    /// Polls the same More callback or reads its retained known result locally.
+    ///
+    /// # Errors
+    /// Refuses foreign/wrong-class tokens, exhausted attempts and failed/changed
+    /// original source facts. No callback or completion is silently repeated.
+    pub fn reconcile_more_response(
+        &mut self,
+        token: &KvmComponentToken,
+    ) -> Result<QmpKvmMoreResponseState, KvmComponentError> {
+        self.custody.control(|native| native.reconcile_more(token))
+    }
+
+    /// Copies one retained checked completion reply without consuming its bytes.
+    ///
+    /// Input echoes remain distinctly classified. Inspection cannot grant output
+    /// publication, a native callback or continuation authority.
+    ///
+    /// # Errors
+    /// Refuses a foreign/wrong-class token, absent reply or unavailable host copy
+    /// credit while preserving the complete original native record.
+    pub fn retained_completion_reply(
+        &mut self,
+        token: &KvmComponentToken,
+        reply: usize,
+    ) -> Result<QmpKvmResponseBytesState, KvmComponentError> {
+        self.custody
+            .control(|native| native.completion_reply(token, reply))
+    }
+
     /// Copies the bounded original observation history without native effects.
     ///
     /// # Errors
@@ -346,6 +446,16 @@ impl KvmOwnedComponents {
         self.custody
             .reconnect(stream, &self.executable)
             .map_err(custody_error)
+    }
+
+    // This authenticates original installation and peer custody only. Whole
+    // native readiness is intentionally absent from this common mapping seam.
+    pub(super) fn validate_admitted_installation(
+        &self,
+        artifacts: &[crucible_node_contract::ArtifactIdentity],
+    ) -> Result<(), KvmComponentError> {
+        self.custody
+            .validate_admitted_installation(artifacts, &self.executable)
     }
 
     /// Borrows the original prepared allocation record without granting activation.
@@ -432,4 +542,4 @@ fn custody_error(error: OperationFailure) -> KvmComponentError {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

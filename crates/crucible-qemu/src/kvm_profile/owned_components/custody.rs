@@ -294,6 +294,62 @@ impl KvmComponentCustody {
         Ok(())
     }
 
+    pub(super) fn validate_admitted_installation(
+        &self,
+        artifacts: &[crucible_node_contract::ArtifactIdentity],
+        executable: &File,
+    ) -> Result<(), super::KvmComponentError> {
+        use std::os::unix::fs::MetadataExt;
+
+        let capsule = self.shared.borrow();
+        if capsule.quarantined || capsule.reaped || capsule.native.is_none() {
+            return Err(super::KvmComponentError::Transition(
+                "original common mapping has no live retained controller",
+            ));
+        }
+        let installed = capsule
+            .source
+            .as_ref()
+            .ok_or(super::KvmComponentError::Transition(
+                "original installed artifact custody is absent",
+            ))?;
+        installed.verify_original_artifacts()?;
+        if !installed.artifact_identities().all(|reference| {
+            artifacts
+                .iter()
+                .any(|artifact| &artifact.content == reference)
+        }) {
+            return Err(super::KvmComponentError::Transition(
+                "admitted artifacts differ from original measured installation",
+            ));
+        }
+        let peer = capsule
+            .original_peer
+            .as_ref()
+            .ok_or(super::KvmComponentError::Transition(
+                "original OS peer custody is absent",
+            ))?;
+        let metadata = executable
+            .metadata()
+            .map_err(|error| super::KvmComponentError::Custody(error.to_string()))?;
+        let actual = File::open(format!("/proc/{}/exe", peer.process_id))
+            .and_then(|file| file.metadata())
+            .map_err(|error| super::KvmComponentError::Custody(error.to_string()))?;
+        if super::peer::process_generation(peer.process_id).map_err(super::custody_error)?
+            != peer.start_time_ticks
+            || metadata.dev() != peer.executable_device
+            || metadata.ino() != peer.executable_inode
+            || actual.dev() != metadata.dev()
+            || actual.ino() != metadata.ino()
+            || actual.len() != metadata.len()
+        {
+            return Err(super::KvmComponentError::Transition(
+                "original process generation or retained executable differs",
+            ));
+        }
+        Ok(())
+    }
+
     /// Borrows the actual original OS peer observation without granting readiness.
     pub(crate) fn original_peer(&self) -> Option<KvmNativePeerIdentity> {
         self.shared.borrow().original_peer.clone()

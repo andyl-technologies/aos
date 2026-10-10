@@ -11,19 +11,24 @@ mod capture;
 pub mod clock;
 mod coverage;
 mod installed;
+mod node;
 mod owned_components;
 mod prepare;
 mod probe;
 
 pub use crate::qmp::{
     QmpKvmAccelerationState, QmpKvmClockComponentState, QmpKvmClockOperation, QmpKvmClockRequest,
-    QmpKvmClockV3ComponentState, QmpKvmInitialResponseObservation, QmpKvmInitialResponseOperation,
-    QmpKvmInitialResponseRequest, QmpKvmInitialResponseState, QmpKvmInitialResponseTransaction,
-    QmpKvmOriginalAckTransaction, QmpKvmOriginalReturnIdentity, QmpKvmOriginalReturnObservation,
-    QmpKvmOriginalReturnOperation, QmpKvmOriginalReturnRequest, QmpKvmOriginalReturnState,
-    QmpKvmOriginalReturnsObservation, QmpKvmOriginalReturnsRequest, QmpKvmOriginalReturnsState,
-    QmpKvmOriginalWindowObservation, QmpKvmOriginalWindowOperation, QmpKvmOriginalWindowRequest,
-    QmpKvmOriginalWindowState, QmpKvmOriginalWindowTransaction, QmpKvmUserspaceComponentState,
+    QmpKvmClockV3ComponentState, QmpKvmCompletionSummary, QmpKvmCompletionTransaction,
+    QmpKvmInitialResponseObservation, QmpKvmInitialResponseOperation, QmpKvmInitialResponseRequest,
+    QmpKvmInitialResponseState, QmpKvmInitialResponseTransaction, QmpKvmMoreResponseObservation,
+    QmpKvmMoreResponseOperation, QmpKvmMoreResponseRequest, QmpKvmMoreResponseState,
+    QmpKvmMoreResponseTransaction, QmpKvmOriginalAckTransaction, QmpKvmOriginalReturnIdentity,
+    QmpKvmOriginalReturnObservation, QmpKvmOriginalReturnOperation, QmpKvmOriginalReturnRequest,
+    QmpKvmOriginalReturnState, QmpKvmOriginalReturnsObservation, QmpKvmOriginalReturnsRequest,
+    QmpKvmOriginalReturnsState, QmpKvmOriginalWindowObservation, QmpKvmOriginalWindowOperation,
+    QmpKvmOriginalWindowRequest, QmpKvmOriginalWindowState, QmpKvmOriginalWindowTransaction,
+    QmpKvmResponseBytesObservation, QmpKvmResponseBytesOperation, QmpKvmResponseBytesPayloadKind,
+    QmpKvmResponseBytesRequest, QmpKvmResponseBytesState, QmpKvmUserspaceComponentState,
     QmpKvmUserspaceExitPhase, QmpKvmUserspaceExitRecord, QmpKvmUserspaceInventory,
 };
 pub use capture::{KvmArchitecturalCapture, KvmCaptureIdentity, KvmCapturedState};
@@ -36,6 +41,7 @@ pub use installed::{
     MAX_KVM_CANDIDATE_ARTIFACT_BYTES, MAX_KVM_CANDIDATE_POLICY_BYTES,
     MAX_KVM_CANDIDATE_TOTAL_ARTIFACT_BYTES,
 };
+pub use node::{KVM_NODE_IMPLEMENTATION_ID, KvmNodePreparationFailure, KvmPreparedNode};
 pub use owned_components::{
     KvmComponentError, KvmComponentObservation, KvmComponentSubmission, KvmComponentToken,
     KvmOwnedComponents,

@@ -4,13 +4,18 @@
 //! a pending native obligation. Native errors and conflicting observations stay
 //! retained independently of whether the transport remains usable.
 
+#[path = "completion_journal.rs"]
+mod completion;
+
 use std::rc::Rc;
 
 use crate::qmp::{
-    QmpClient, QmpError, QmpKvmInitialResponseState, QmpKvmInitialResponseTransaction,
-    QmpKvmOriginalAckTransaction, QmpKvmOriginalReturnOperation, QmpKvmOriginalReturnRequest,
-    QmpKvmOriginalReturnState, QmpKvmOriginalReturnsRequest, QmpKvmOriginalWindowRequest,
-    QmpKvmOriginalWindowState, QmpKvmOriginalWindowTransaction, QmpTimeoutStream,
+    QmpClient, QmpError, QmpKvmCompletionSummary, QmpKvmCompletionTransaction,
+    QmpKvmInitialResponseState, QmpKvmInitialResponseTransaction, QmpKvmMoreResponseState,
+    QmpKvmMoreResponseTransaction, QmpKvmOriginalAckTransaction, QmpKvmOriginalReturnOperation,
+    QmpKvmOriginalReturnRequest, QmpKvmOriginalReturnState, QmpKvmOriginalReturnsRequest,
+    QmpKvmOriginalWindowRequest, QmpKvmOriginalWindowState, QmpKvmOriginalWindowTransaction,
+    QmpTimeoutStream,
 };
 
 use super::{KvmComponentError, KvmComponentToken};
@@ -21,6 +26,14 @@ pub(super) enum Original {
     Window(QmpKvmOriginalWindowTransaction),
     Ack(QmpKvmOriginalAckTransaction),
     Initial(QmpKvmInitialResponseTransaction),
+    Completion {
+        handler: usize,
+        transaction: QmpKvmCompletionTransaction,
+    },
+    More {
+        completion: usize,
+        transaction: QmpKvmMoreResponseTransaction,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -28,10 +41,20 @@ enum CommandClass {
     Window,
     Ack,
     Initial,
+    Completion,
+    More,
 }
 
 #[derive(Clone, Copy)]
 pub(super) enum Observation {
+    Completion {
+        state: Option<QmpKvmCompletionSummary>,
+        uncertain: bool,
+    },
+    More {
+        state: Option<QmpKvmMoreResponseState>,
+        uncertain: bool,
+    },
     Initial {
         state: Option<QmpKvmInitialResponseState>,
         uncertain: bool,
@@ -58,6 +81,7 @@ pub(super) struct Journal<S: QmpTimeoutStream> {
     pub(super) observations: Vec<(usize, Observation)>,
     maximum_entries: usize,
     maximum_attempts: usize,
+    retained_byte_credit: usize,
 }
 
 pub(super) struct JournalReservation {
@@ -102,6 +126,7 @@ impl JournalReservation {
             observations: self.observations,
             maximum_entries: self.maximum_entries,
             maximum_attempts: self.maximum_attempts,
+            retained_byte_credit: 0,
         }
     }
 }
@@ -117,6 +142,9 @@ impl<S: QmpTimeoutStream> Journal<S> {
         ),
         KvmComponentError,
     > {
+        if request.operation == crate::qmp::QmpKvmOriginalWindowOperation::Begin {
+            self.require_settled_response_chains()?;
+        }
         self.reserve_entry()?;
         let original = QmpKvmOriginalWindowTransaction::prepare(request)?;
         if self.entries.iter().any(|entry| {
@@ -253,6 +281,7 @@ impl<S: QmpTimeoutStream> Journal<S> {
         ),
         KvmComponentError,
     > {
+        self.require_settled_response_chains()?;
         self.reserve_entry()?;
         if self.entries.iter().any(|entry| {
             matches!(&entry.original, Original::Initial(prior)
@@ -345,6 +374,16 @@ impl<S: QmpTimeoutStream> Journal<S> {
             .filter(|(index, _)| *index == token.index)
         {
             retained.push(match observation {
+                Observation::Completion { state, uncertain } => {
+                    super::KvmComponentObservation::Completion {
+                        state: *state,
+                        uncertain: *uncertain,
+                    }
+                }
+                Observation::More { state, uncertain } => super::KvmComponentObservation::More {
+                    state: *state,
+                    uncertain: *uncertain,
+                },
                 Observation::Initial { state, uncertain } => {
                     super::KvmComponentObservation::Initial {
                         state: *state,
@@ -390,25 +429,37 @@ impl<S: QmpTimeoutStream> Journal<S> {
         token: &KvmComponentToken,
         class: CommandClass,
     ) -> Result<usize, KvmComponentError> {
+        let index = self.original_index(token, class)?;
+        let entry = &mut self.entries[index];
+        if entry.attempts >= self.maximum_attempts {
+            return Err(KvmComponentError::ResourceLimit);
+        }
+        entry.attempts += 1;
+        Ok(token.index)
+    }
+
+    fn original_index(
+        &self,
+        token: &KvmComponentToken,
+        class: CommandClass,
+    ) -> Result<usize, KvmComponentError> {
         if !Rc::ptr_eq(&self.identity, &token.identity) {
             return Err(KvmComponentError::ForeignToken);
         }
         let entry = self
             .entries
-            .get_mut(token.index)
+            .get(token.index)
             .ok_or(KvmComponentError::ForeignToken)?;
         if !matches!(
             (&entry.original, class),
             (Original::Window(_), CommandClass::Window)
                 | (Original::Ack(_), CommandClass::Ack)
                 | (Original::Initial(_), CommandClass::Initial)
+                | (Original::Completion { .. }, CommandClass::Completion)
+                | (Original::More { .. }, CommandClass::More)
         ) {
             return Err(KvmComponentError::ForeignToken);
         }
-        if entry.attempts >= self.maximum_attempts {
-            return Err(KvmComponentError::ResourceLimit);
-        }
-        entry.attempts += 1;
         Ok(token.index)
     }
 }
@@ -429,3 +480,7 @@ pub(super) fn validate_limits(entries: usize, attempts: usize) -> Result<(), Kvm
 #[cfg(test)]
 #[path = "initial_journal_tests.rs"]
 mod initial_response_tests;
+
+#[cfg(test)]
+#[path = "completion_journal_tests.rs"]
+mod completion_tests;

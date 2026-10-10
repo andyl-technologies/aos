@@ -51,13 +51,17 @@ pub(crate) use fingerprint_projection::{
 #[cfg(target_os = "linux")]
 pub use kvm_profile::{
     QmpKvmAccelerationState, QmpKvmClockComponentState, QmpKvmClockOperation, QmpKvmClockRequest,
-    QmpKvmClockV3ComponentState, QmpKvmInitialResponseObservation, QmpKvmInitialResponseOperation,
-    QmpKvmInitialResponseRequest, QmpKvmInitialResponseState, QmpKvmInitialResponseTransaction,
-    QmpKvmOriginalAckTransaction, QmpKvmOriginalReturnIdentity, QmpKvmOriginalReturnObservation,
-    QmpKvmOriginalReturnOperation, QmpKvmOriginalReturnRequest, QmpKvmOriginalReturnState,
-    QmpKvmOriginalReturnsObservation, QmpKvmOriginalReturnsRequest, QmpKvmOriginalReturnsState,
-    QmpKvmOriginalWindowObservation, QmpKvmOriginalWindowOperation, QmpKvmOriginalWindowRequest,
-    QmpKvmOriginalWindowState, QmpKvmOriginalWindowTransaction, QmpKvmUserspaceComponentState,
+    QmpKvmClockV3ComponentState, QmpKvmCompletionSummary, QmpKvmCompletionTransaction,
+    QmpKvmInitialResponseObservation, QmpKvmInitialResponseOperation, QmpKvmInitialResponseRequest,
+    QmpKvmInitialResponseState, QmpKvmInitialResponseTransaction, QmpKvmMoreResponseObservation,
+    QmpKvmMoreResponseOperation, QmpKvmMoreResponseRequest, QmpKvmMoreResponseState,
+    QmpKvmMoreResponseTransaction, QmpKvmOriginalAckTransaction, QmpKvmOriginalReturnIdentity,
+    QmpKvmOriginalReturnObservation, QmpKvmOriginalReturnOperation, QmpKvmOriginalReturnRequest,
+    QmpKvmOriginalReturnState, QmpKvmOriginalReturnsObservation, QmpKvmOriginalReturnsRequest,
+    QmpKvmOriginalReturnsState, QmpKvmOriginalWindowObservation, QmpKvmOriginalWindowOperation,
+    QmpKvmOriginalWindowRequest, QmpKvmOriginalWindowState, QmpKvmOriginalWindowTransaction,
+    QmpKvmResponseBytesObservation, QmpKvmResponseBytesOperation, QmpKvmResponseBytesPayloadKind,
+    QmpKvmResponseBytesRequest, QmpKvmResponseBytesState, QmpKvmUserspaceComponentState,
     QmpKvmUserspaceExitPhase, QmpKvmUserspaceExitRecord, QmpKvmUserspaceInventory,
 };
 #[cfg(all(test, target_os = "linux"))]
@@ -1356,6 +1360,12 @@ pub enum QmpCommandKind {
     /// Submits or polls the original first response without execution authority.
     #[cfg(target_os = "linux")]
     KvmInitialResponse,
+    /// Queries or completes original kernel-owned response bytes without a guest RUN.
+    #[cfg(target_os = "linux")]
+    KvmResponseBytes,
+    /// Submits or polls an original More callback without another guest RUN.
+    #[cfg(target_os = "linux")]
+    KvmMoreResponse,
     /// Controls an original native window component without whole-node qualification.
     #[cfg(target_os = "linux")]
     KvmOriginalWindow,
@@ -1458,6 +1468,10 @@ impl QmpCommandKind {
             Self::KvmUserspaceExits => "x-crucible-kvm-userspace-exits",
             #[cfg(target_os = "linux")]
             Self::KvmInitialResponse => "x-crucible-kvm-initial-response",
+            #[cfg(target_os = "linux")]
+            Self::KvmResponseBytes => "x-crucible-kvm-response-bytes",
+            #[cfg(target_os = "linux")]
+            Self::KvmMoreResponse => "x-crucible-kvm-response-service",
             #[cfg(target_os = "linux")]
             Self::KvmOriginalWindow => "x-crucible-kvm-original-window",
             #[cfg(target_os = "linux")]

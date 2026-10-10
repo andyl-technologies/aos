@@ -1231,6 +1231,33 @@ checkpoint supplies SDK and owning-journal credit only. Live KVM hardware,
 ordinary execution grants, common clock windows, capture and readiness remain
 unqualified.
 
+## KVM original byte and completion custody
+
+The prepared component SDK retains native response payloads, consecutive
+completion identities and bounded complete reply histories across Initial,
+More and Complete. Callback and completion requests remain distinct original
+operations. Unknown replies and transport failures retain the same request;
+reconciliation cannot replace its native ancestry or reexecute a later effect.
+A pending or unfinished response chain refuses fresh Initial and Begin before
+Query, I/O or a new credit reservation. Actual owner and channel authentication
+remain separate from typed protocol facts.
+
+The common prepared-node wrapper retains the original child, installed files,
+peer, journals and supervisory reservation under one admitted owner. Preparation
+refuses substituted installations, foreign owners and stronger guarantee claims.
+Its execution gate stays closed: no executable facets, readiness, common grants,
+physical capture, replay or branch authority are issued by component receipts.
+Existing component launch arguments and general native profile gates are retained.
+
+Current-source checks pass 111 KVM component cases, 145 QMP unit cases, 33 QMP
+integration cases, 37 source-hygiene cases, all-target strict checks and formatting
+of all 23 Rust paths. The KVM and QMP filters overlap; these counts do not claim
+that every case is distinct. All 8,640 source leaves agree before and after the
+checks. The two actual test executables and four source scanners are retained
+outside Git, with every scanner binding the actual worktree. Callback positives
+are modeled; matching stopped-TCG source refusals remain distinct. KVM hardware
+execution is NotExecuted because this machine has no `/dev/kvm`.
+
 ## Cold preservation of original condition Stops
 
 The selected installed Source/Block/condition world captures an acknowledged,

@@ -155,6 +155,15 @@ impl KvmInstalledCandidate {
         artifact.clone_descriptor()
     }
 
+    // Rechecks the same retained descriptors without opening KVM or allocating
+    // another process. This establishes content custody, not build provenance.
+    pub(super) fn verify_original_artifacts(&self) -> Result<(), KvmCandidateError> {
+        for artifact in &self.artifacts {
+            artifact.verify()?;
+        }
+        Ok(())
+    }
+
     /// Prepares a genuine stopped kernel VM and probes its component inventory.
     ///
     /// The returned object retains the actual system/VM descriptors. No vCPU,

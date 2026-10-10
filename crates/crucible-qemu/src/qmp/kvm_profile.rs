@@ -379,3 +379,16 @@ mod tests {
         assert!(validate_clock_request(&request).is_err());
     }
 }
+
+mod response_bytes;
+pub use response_bytes::{
+    QmpKvmCompletionSummary, QmpKvmCompletionTransaction, QmpKvmResponseBytesObservation,
+    QmpKvmResponseBytesOperation, QmpKvmResponseBytesPayloadKind, QmpKvmResponseBytesRequest,
+    QmpKvmResponseBytesState,
+};
+
+mod more_response;
+pub use more_response::{
+    QmpKvmMoreResponseObservation, QmpKvmMoreResponseOperation, QmpKvmMoreResponseRequest,
+    QmpKvmMoreResponseState, QmpKvmMoreResponseTransaction,
+};

@@ -199,6 +199,14 @@ pub(super) enum QmpCommand<'a> {
         request: &'a QmpKvmInitialResponseRequest,
     },
     #[cfg(target_os = "linux")]
+    KvmResponseBytes {
+        request: &'a QmpKvmResponseBytesRequest,
+    },
+    #[cfg(target_os = "linux")]
+    KvmMoreResponse {
+        request: &'a QmpKvmMoreResponseRequest,
+    },
+    #[cfg(target_os = "linux")]
     KvmOriginalWindow {
         request: &'a QmpKvmOriginalWindowRequest,
     },
@@ -350,6 +358,10 @@ impl QmpCommand<'_> {
             #[cfg(target_os = "linux")]
             Self::KvmInitialResponse { .. } => QmpCommandKind::KvmInitialResponse,
             #[cfg(target_os = "linux")]
+            Self::KvmResponseBytes { .. } => QmpCommandKind::KvmResponseBytes,
+            #[cfg(target_os = "linux")]
+            Self::KvmMoreResponse { .. } => QmpCommandKind::KvmMoreResponse,
+            #[cfg(target_os = "linux")]
             Self::KvmOriginalWindow { .. } => QmpCommandKind::KvmOriginalWindow,
             #[cfg(target_os = "linux")]
             Self::KvmOriginalReturn { .. } => QmpCommandKind::KvmOriginalReturn,
@@ -459,6 +471,16 @@ impl QmpCommand<'_> {
             #[cfg(target_os = "linux")]
             Self::KvmInitialResponse { request } => json!({
                 "execute": "x-crucible-kvm-initial-response",
+                "arguments": request,
+            }),
+            #[cfg(target_os = "linux")]
+            Self::KvmResponseBytes { request } => json!({
+                "execute": "x-crucible-kvm-response-bytes",
+                "arguments": request,
+            }),
+            #[cfg(target_os = "linux")]
+            Self::KvmMoreResponse { request } => json!({
+                "execute": "x-crucible-kvm-response-service",
                 "arguments": request,
             }),
             #[cfg(target_os = "linux")]
