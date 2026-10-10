@@ -69,7 +69,7 @@ pub use control_effect::{
 mod control_publication;
 pub use control_publication::HostControlBoundaryPublication;
 #[cfg(feature = "test-support")]
-pub use control_publication::ModeledControlBoundaryPublication;
+pub use control_publication::{ModeledControlBoundaryPublication, ModeledNodeStatePublication};
 
 #[path = "frame_node/layout.rs"]
 mod layout;

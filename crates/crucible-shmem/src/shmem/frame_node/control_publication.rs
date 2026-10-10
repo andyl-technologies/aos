@@ -143,7 +143,7 @@ impl HostControlBoundaryPublication<'_> {
 #[path = "control_publication_model.rs"]
 mod model;
 #[cfg(feature = "test-support")]
-pub use model::ModeledControlBoundaryPublication;
+pub use model::{ModeledControlBoundaryPublication, ModeledNodeStatePublication};
 
 #[cfg(test)]
 #[path = "control_publication_tests.rs"]

@@ -1432,3 +1432,5 @@ fn checkpoint_observation_refuses_changed_advance_and_unpaired_request() -> Resu
 mod publication_handoff;
 
 mod completed_observation;
+
+mod request_contention;

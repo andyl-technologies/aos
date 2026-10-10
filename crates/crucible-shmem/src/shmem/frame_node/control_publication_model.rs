@@ -56,3 +56,38 @@ impl Drop for ModeledControlBoundaryPublication<'_> {
                 .compare_exchange(self.value.get(), 0, Ordering::Release, Ordering::Relaxed);
     }
 }
+
+/// A modeled node-state writer holding the publication seqlock odd.
+///
+/// Bounded host reads observe an unfinished plugin publication until the
+/// fixture is dropped, which completes the generation without changing any
+/// published field. It is absent unless the `test-support` feature is selected.
+pub struct ModeledNodeStatePublication<'a> {
+    generation: &'a AtomicU32,
+}
+
+impl NodeSlot {
+    /// Begins a modeled node-state publication for a contention test.
+    ///
+    /// # Panics
+    ///
+    /// Panics if another writer already left the generation odd, because the
+    /// fixture would otherwise complete a publication it does not own.
+    #[must_use]
+    pub fn begin_node_state_publication_for_test(&self) -> ModeledNodeStatePublication<'_> {
+        let previous = self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        assert!(
+            previous.is_multiple_of(2),
+            "node state publication already in progress"
+        );
+        ModeledNodeStatePublication {
+            generation: &self.publish_gen,
+        }
+    }
+}
+
+impl Drop for ModeledNodeStatePublication<'_> {
+    fn drop(&mut self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+    }
+}

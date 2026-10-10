@@ -353,9 +353,12 @@ impl HostConsoleOwner {
         publication: &crucible_shmem::HostControlBoundaryPublication<'_>,
     ) -> Result<PreparedConsoleRequest<'_>, ConsoleOwnerError> {
         let fence = self.clamp.ok_or(NativeConsoleError::Binding)?;
+        // The plugin may be republishing node state, often woken by this same
+        // clamp. A torn read is contention, as in every other bounded read of
+        // this publication; the advance and ACK comparisons below stay fatal.
         let observed = publication
             .try_snapshot()
-            .ok_or(NativeConsoleError::Binding)?;
+            .ok_or(ConsoleOwnerError::Unavailable)?;
         if observed.advance_publication_sequence != fence.advance
             || fence
                 .request

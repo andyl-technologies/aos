@@ -170,7 +170,12 @@ impl QemuLiveHostIoRuntime {
                 fingerprint_capture_request,
             ) {
                 Ok(generation) => generation,
-                Err(crate::native_console_owner::ConsoleOwnerError::PublicationUnavailable) => {
+                // Both refusals precede the paired-field commit and request
+                // CAS, so the dropped lease leaves nothing to reconcile.
+                Err(
+                    crate::native_console_owner::ConsoleOwnerError::PublicationUnavailable
+                    | crate::native_console_owner::ConsoleOwnerError::Unavailable,
+                ) => {
                     #[cfg(test)]
                     {
                         self.control_publication_unavailable_seen_for_test = true;
