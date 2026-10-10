@@ -256,14 +256,20 @@ escape, or callback and does not complete a protected role-crate migration.
 
 The private `journal::semantic_append` group owns the complete ordinary and
 closed semantic append recipes, paired advisory preflights, Q04 adapters and
-append-only guards as inherent methods on the original Journal. Its fields,
-selector DATA and independent loan lifetimes stay in the parent. Native final
-crossings, clocks, retained causes, durable append and subsequent publication
-keep their original order, while the actual callers retain their outcomes and
-postchecks. Thirteen private methods use `pub(super)` inside the child to
-restore exactly their former journal-module access; fields and crate/public API
-access do not widen. This is an internal cohesion improvement, not a lower
-crate cut, an authority-interface solution or production qualification.
+append-only guards as inherent methods on the original Journal. Its private
+`AppendScope` and `PreflightScope` name passive selectors; fourteen escalating
+routing methods are retired. Ordinary appends and forecasts use one fixed
+entrypoint each. Native appends carry the actual original loans separately to
+the unchanged final engine, including all independent Q04 loan lifetimes.
+
+The nine-field forecast scope cannot select project-genesis phases; the original
+fixed recipes retain that separate private selection. Append and forecast keep
+their distinct validation/error order, state-clone and frame lifetimes, Cache
+locks, clocks, first causes and publication chronology. Actual callers retain
+their original outcomes and postchecks. Selector visibility stays within Journal
+and its descendants; protected constructors and crate/public APIs do not widen.
+This dispatch consolidation removes production routing code without a Cargo
+edge cut, complete protected owner migration or production qualification.
 
 Linux owns the unchanged bounded optional credential reader and its retained
 native read DATA; role-specific decoding, key separation, and startup admission
