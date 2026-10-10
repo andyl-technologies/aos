@@ -70,6 +70,7 @@ pub(super) async fn fixture_database(
         .assessment_notification_destination(registry_id, &format!("webhook:{webhook}"), &expiry)
         .await?;
     let request = SubscriptionWriteV1 {
+        service_credential_id: None,
         schema: "aos.assessment-subscription-write/v1".into(),
         resource_scope: registry.scope_key,
         subscription_id: "security-updates".into(),

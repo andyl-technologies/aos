@@ -15,6 +15,7 @@ use aos_assessment_runtime::notifications::{
 use aos_contract::{canonical, limits::JsonLimits, Sha256Digest};
 use serde::{Deserialize, Serialize};
 
+use super::service_authority::{distinct_authority_fences, ReviewedServiceAuthority};
 use super::AssessmentObjectKind;
 use crate::auth::jwt::{Claims, AUTHORIZATION_CLAIMS_VERSION};
 use crate::backend::{CheckedStatement, Statement};
@@ -28,12 +29,18 @@ const LIMITS: JsonLimits = JsonLimits {
 };
 const MAX_SUBSCRIPTIONS: usize = 64;
 
+#[cfg(test)]
+#[path = "service_notification_tests.rs"]
+pub(super) mod service_tests;
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct PrivateReview {
     pub(super) subscription_id: String,
     pub(super) configuration: NotificationConfigurationV1,
     pub(super) claims: Claims,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) service_authority: Option<ReviewedServiceAuthority>,
     pub(super) authority_expires_at: Timestamp,
 }
 
@@ -83,6 +90,57 @@ impl Database {
         completion: Option<&super::reviews::AssessmentReviewCompletion>,
     ) -> Result<SubscriptionV1> {
         request.validate()?;
+        let (service_authority, fences) = if let Some(credential) = &request.service_credential_id {
+            let permission = crate::domain::Permission::parse("assessment.read")
+                .context("assessment read permission policy is unavailable")?;
+            let (authority, mut execution_fences) = self
+                .prepare_assessment_service_authority(
+                    registry_id,
+                    credential,
+                    &request.configuration.review_expires_at,
+                    claims,
+                    &[permission],
+                )
+                .await?;
+            execution_fences.extend_from_slice(fences);
+            (
+                Some(authority),
+                distinct_authority_fences(execution_fences)?,
+            )
+        } else {
+            (None, distinct_authority_fences(fences.to_vec())?)
+        };
+        self.write_prepared_assessment_subscription(
+            registry_id,
+            request,
+            claims,
+            &fences,
+            completion,
+            service_authority,
+        )
+        .await
+    }
+
+    async fn write_prepared_assessment_subscription(
+        &self,
+        registry_id: i64,
+        request: &SubscriptionWriteV1,
+        claims: &Claims,
+        fences: &[CheckedStatement],
+        completion: Option<&super::reviews::AssessmentReviewCompletion>,
+        service_authority: Option<ReviewedServiceAuthority>,
+    ) -> Result<SubscriptionV1> {
+        request.validate()?;
+        ensure!(
+            request.service_credential_id.as_deref()
+                == service_authority
+                    .as_ref()
+                    .map(|authority| authority.principal.sub.as_str()),
+            "service review differs from the exact requested credential"
+        );
+        if let Some(authority) = &service_authority {
+            authority.validate(claims)?;
+        }
         if let Some(completion) = completion {
             completion.require_kind("assessment_subscription_review")?;
         }
@@ -102,7 +160,10 @@ impl Database {
         );
         let key = subscription_key(&request.resource_scope, &request.subscription_id)?;
         let now = self.assessment_database_time().await?;
-        let expires = Timestamp::from_unix_seconds(u64::try_from(claims.exp)?)?
+        let execution_principal = service_authority
+            .as_ref()
+            .map_or(claims, |authority| &authority.principal);
+        let expires = Timestamp::from_unix_seconds(u64::try_from(execution_principal.exp)?)?
             .min(request.configuration.review_expires_at.clone());
         ensure!(
             !request.enabled || expires > now,
@@ -137,6 +198,12 @@ impl Database {
                 || existing.revision == request.expected_revision + 1)
                 && existing.enabled == request.enabled
                 && existing.review.configuration == request.configuration
+                && existing
+                    .review
+                    .service_authority
+                    .as_ref()
+                    .map(|authority| authority.principal.sub.as_str())
+                    == request.service_credential_id.as_deref()
                 && super::assessment_actor_ref(&existing.review.claims)?
                     == super::assessment_actor_ref(claims)?
             {
@@ -169,6 +236,7 @@ impl Database {
             subscription_id: request.subscription_id.clone(),
             configuration: request.configuration.clone(),
             claims: claims.clone(),
+            service_authority: service_authority.clone(),
             authority_expires_at: expires,
         };
         let bytes = canonical::to_vec(&review)?;
@@ -226,6 +294,7 @@ impl Database {
             enabled: request.enabled,
             authority_expires_at: review.authority_expires_at.clone(),
             configuration: request.configuration.clone(),
+            service_authority: service_authority.map(|authority| authority.receipt),
         };
         receipt.to_bytes()?;
         if let Some(completion) = completion {
@@ -481,10 +550,14 @@ fn decode_record(row: crate::value::Row) -> Result<SubscriptionRecord> {
     let review: PrivateReview =
         LIMITS.decode(&row.get::<Vec<u8>>(1)?, "private notification review")?;
     review.configuration.validate()?;
+    if let Some(authority) = &review.service_authority {
+        authority.validate(&review.claims)?;
+    }
     ensure!(
         review.claims.authz_version == AUTHORIZATION_CLAIMS_VERSION
             && review.authority_expires_at <= review.configuration.review_expires_at
-            && review.authority_expires_at.unix_seconds() <= u64::try_from(review.claims.exp)?,
+            && review.authority_expires_at.unix_seconds()
+                <= u64::try_from(review.execution_principal().exp)?,
         "retained notification review exceeds its original authority"
     );
     let record = SubscriptionRecord {
@@ -500,6 +573,14 @@ fn decode_record(row: crate::value::Row) -> Result<SubscriptionRecord> {
     Ok(record)
 }
 
+impl PrivateReview {
+    pub(super) fn execution_principal(&self) -> &Claims {
+        self.service_authority
+            .as_ref()
+            .map_or(&self.claims, |authority| &authority.principal)
+    }
+}
+
 pub(super) fn project(resource: &str, record: &SubscriptionRecord) -> Result<SubscriptionV1> {
     ensure!(
         subscription_key(resource, &record.review.subscription_id)? == record.key,
@@ -513,6 +594,11 @@ pub(super) fn project(resource: &str, record: &SubscriptionRecord) -> Result<Sub
         enabled: record.enabled,
         authority_expires_at: record.review.authority_expires_at.clone(),
         configuration: record.review.configuration.clone(),
+        service_authority: record
+            .review
+            .service_authority
+            .as_ref()
+            .map(|authority| authority.receipt.clone()),
     };
     value.to_bytes()?;
     Ok(value)

@@ -203,6 +203,9 @@ pub struct SubscriptionWriteV1 {
     pub expected_revision: u64,
     /// Whether new committed events may create delivery intents.
     pub enabled: bool,
+    /// Explicit existing service credential; absence retains session-bounded delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_credential_id: Option<String>,
     /// Complete reviewed selectors and destination commitment.
     pub configuration: NotificationConfigurationV1,
 }
@@ -230,6 +233,9 @@ impl SubscriptionWriteV1 {
         );
         text(&self.resource_scope, 128, "subscription resource")?;
         text(&self.subscription_id, 128, "subscription identity")?;
+        if let Some(credential) = &self.service_credential_id {
+            crate::service_authority::validate_service_credential_id(credential)?;
+        }
         self.configuration.validate()
     }
 }
@@ -252,6 +258,9 @@ pub struct SubscriptionV1 {
     pub authority_expires_at: Timestamp,
     /// Exact independently reviewed configuration.
     pub configuration: NotificationConfigurationV1,
+    /// Descriptive service review receipt, never a delivery credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_authority: Option<crate::service_authority::ServiceAuthorityV1>,
 }
 
 impl SubscriptionV1 {
@@ -269,6 +278,13 @@ impl SubscriptionV1 {
         text(&self.resource_scope, 128, "subscription resource")?;
         text(&self.subscription_id, 128, "subscription identity")?;
         self.configuration.validate()?;
+        if let Some(authority) = &self.service_authority {
+            authority.to_bytes()?;
+            ensure!(
+                authority.expires_at == self.authority_expires_at,
+                "subscription service authority deadline differs from its review"
+            );
+        }
         ensure!(
             self.authority_expires_at <= self.configuration.review_expires_at,
             "subscription authority exceeds reviewed deadline"

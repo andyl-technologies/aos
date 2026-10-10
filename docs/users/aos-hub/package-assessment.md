@@ -556,10 +556,25 @@ review starts a new listing. Single-page listings continue to poll.
 A subscription chooses explicit event kinds, issue families, all attention or
 confirmed attention, and immediate delivery or a UTC digest window of 60 through
 86,400 seconds. It binds the exact destination revision and digest. The effective
-review expiry is capped by the original authenticated credential expiry. Replaying
+review expiry for a session-backed subscription is capped by the original
+authenticated credential expiry. Replaying
 an identical write preserves that original authority; replacing or disabling a
 review revokes its pending and leased deliveries. A disabled or rotated destination
 does not prevent an unchanged subscription from being disabled.
+
+For recurring delivery, explicitly select an existing service-account credential
+UUID in the subscription write's `serviceCredentialId`. The applying reviewer
+requires current subscription-management and read permission; the selected
+service account requires current assessment read permission in the registry's
+organization. The review expires within thirty days and no later than the service
+credential's expiry. Delivery can continue after the reviewing session expires or
+is revoked. Each attempt and receipt settlement checks the exact service
+credential generation, membership, organization, destination and enabled review
+revision. Revoking that credential or replacing/disabling the review fences
+outstanding work without refunding consumed delivery quota. The public
+`serviceAuthority` receipt contains commitments, never credential secrets or
+authentication authority. Replacing the review requires selecting the service
+credential again; neither CLI nor console silently adopts rotated credentials.
 
 The complete subscription configuration also supports `packageCoordinates`,
 `severity`, and `suppressions`. An absent or empty coordinate list includes the

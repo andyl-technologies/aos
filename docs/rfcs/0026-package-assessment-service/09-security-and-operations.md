@@ -25,7 +25,10 @@ Recurring execution MAY use a separately reviewed existing service-account
 credential. The reviewer MUST explicitly select the credential generation in
 the exact configuration plan. The coordinator MUST verify the reviewer's current
 management, scan and read authority and the service account's current scan and
-read authority when applying that plan. The service account MUST belong to the
+read authority when applying a schedule plan. Notification plans MUST instead
+verify the reviewer's current subscription-management and read authority and
+the service account's current read authority. Execution MUST NOT require a
+notification service account to administer subscriptions. The service account MUST belong to the
 registry's organization. This review MUST NOT mint an access token, modify role
 grants, extend the reviewer's authenticated claims, or infer delegation from an
 imported public receipt. Reviews MUST expire within thirty days and no later than

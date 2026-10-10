@@ -625,23 +625,27 @@ impl Database {
             );
         }
         let mut fences = Vec::new();
-        for name in ["assessment.read", "assessment.subscription.manage"] {
+        let permissions: &[&str] = if record.review.service_authority.is_some() {
+            &["assessment.read"]
+        } else {
+            &["assessment.read", "assessment.subscription.manage"]
+        };
+        for name in permissions {
             let permission = Permission::parse(name)
                 .context("assessment notification permission policy is unavailable")?;
             fences.extend(
                 self.assessment_iam_statements(
-                    &record.review.claims,
+                    record.review.execution_principal(),
                     &registry.scope_key,
                     permission,
                 )
                 .await?,
             );
         }
-        ensure!(
-            fences.len() <= 32,
-            "notification authority lock scope exceeds its bound"
-        );
-        Ok(fences)
+        if let Some(authority) = &record.review.service_authority {
+            fences.push(self.assessment_service_owner_guard(registry_id, authority));
+        }
+        super::service_authority::distinct_authority_fences(fences)
     }
 
     async fn notification_body(

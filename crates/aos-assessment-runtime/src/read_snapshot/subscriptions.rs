@@ -207,6 +207,7 @@ mod tests {
             subscriptions: ["a", "b", "c"]
                 .into_iter()
                 .map(|id| SubscriptionV1 {
+                    service_authority: None,
                     schema: "aos.assessment-subscription/v1".into(),
                     resource_scope: scope.into(),
                     subscription_id: id.into(),

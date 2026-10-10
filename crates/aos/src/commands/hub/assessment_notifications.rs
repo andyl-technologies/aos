@@ -1,6 +1,6 @@
 //! Canonical notification review controls over the public Hub API.
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{bail, ensure, Result};
 use aos_assessment_runtime::notifications::{
     DestinationReviewQueryV1, NotificationDeliveryPageV1, NotificationDeliveryQueryV1,
     NotificationDestinationV1, SubscriptionPageV1, SubscriptionQueryV1, SubscriptionV1,
@@ -245,4 +245,10 @@ fn render(printer: &Printer, subscription: &SubscriptionV1) {
         escape_terminal(&subscription.configuration.destination_reference, 128),
         subscription.authority_expires_at
     ));
+    if let Some(authority) = &subscription.service_authority {
+        printer.info(&format!(
+            "  service principal {}\n  credential commitment {}\n  reviewer commitment {}",
+            authority.actor_ref, authority.credential_ref, authority.reviewer_ref
+        ));
+    }
 }

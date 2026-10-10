@@ -12,9 +12,9 @@ use aos_assessment_runtime::notifications::{
 use leptos::prelude::*;
 
 use super::assessment_deliveries::RegistryAssessmentDeliveries;
-use super::assessments::{AssessmentReadGuard, start_status_poll};
+use super::assessments::{start_status_poll, AssessmentReadGuard};
 use crate::components::InlineError;
-use crate::mutation::{PendingPlan, idempotency_key, scoped_workflow_tasks};
+use crate::mutation::{idempotency_key, scoped_workflow_tasks, PendingPlan};
 use crate::transport::ApiClient;
 
 /// Shows reviewed notifications without exposing private actor or signing material.
@@ -44,6 +44,8 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
     let silence_issue = RwSignal::new(String::new());
     let silence_until = RwSignal::new(String::new());
     let enabled = RwSignal::new(true);
+    let use_service = RwSignal::new(false);
+    let service_credential = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
     let failure = RwSignal::new(None::<String>);
     let pending = RwSignal::new(None::<(PendingPlan, SubscriptionWriteV1)>);
@@ -228,6 +230,11 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                     }
                 };
                 let request = SubscriptionWriteV1 {
+                    service_credential_id: if use_service.get_untracked() && is_enabled {
+                        Some(service_credential.get_untracked().trim().to_owned())
+                    } else {
+                        None
+                    },
                     schema: "aos.assessment-subscription-write/v1".into(),
                     resource_scope,
                     subscription_id,
@@ -294,10 +301,21 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                     .map_err(|error| error.to_string())?;
                 let admitted = SubscriptionV1::from_slice(&response.document_json)
                     .map_err(|error| error.to_string())?;
+                let credential_ref = request
+                    .service_credential_id
+                    .as_deref()
+                    .map(aos_assessment_runtime::service_authority::service_credential_ref)
+                    .transpose()
+                    .map_err(|error| error.to_string())?;
                 if admitted.resource_scope != request.resource_scope
                     || admitted.subscription_id != request.subscription_id
                     || admitted.enabled != request.enabled
                     || admitted.configuration != request.configuration
+                    || admitted
+                        .service_authority
+                        .as_ref()
+                        .map(|authority| authority.credential_ref)
+                        != credential_ref
                     || request.expected_revision.checked_add(1) != Some(admitted.revision)
                 {
                     return Err(
@@ -389,6 +407,8 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                                                         }
                                                     }
                                                     enabled.set(subscription.enabled);
+                                                    use_service.set(subscription.service_authority.is_some());
+                                                    service_credential.set(String::new());
                                                     selected.set(Some(subscription.clone()));
                                                     failure.set(None);
                                                 }
@@ -430,6 +450,9 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                     <label>"Subscription name"<input prop:value=move || identity.get() disabled=move || (busy.get() || pending.get().is_some()) || selected.get().is_some() on:input=move |event| identity.set(event_target_value(&event))/></label>
                     <label>"Registered webhook reference"<input placeholder="webhook:42" prop:value=move || destination.get() disabled=move || (busy.get() || pending.get().is_some()) || (!enabled.get() && selected.get().is_some()) on:input=move |event| destination.set(event_target_value(&event))/></label>
                     <label>"Review expires (UTC)"<input placeholder="2026-10-10T00:00:00Z" prop:value=move || expiry.get() disabled=move || (busy.get() || pending.get().is_some()) || (!enabled.get() && selected.get().is_some()) on:input=move |event| expiry.set(event_target_value(&event))/></label>
+                    <label><input type="checkbox" prop:checked=move || use_service.get() disabled=move || busy.get() || pending.get().is_some() || !enabled.get() on:change=move |event| use_service.set(event_target_checked(&event))/>"Use an existing service-account credential"</label>
+                    <label>"Service credential ID"<input placeholder="Credential UUID (not its secret)" prop:value=move || service_credential.get() disabled=move || busy.get() || pending.get().is_some() || !enabled.get() || !use_service.get() on:input=move |event| service_credential.set(event_target_value(&event))/></label>
+                    <p>"Service delivery requires current assessment read authority in this registry's organization. Review it for at most 30 days; select the credential again when replacing a review."</p>
                     <label><input type="checkbox" prop:checked=move || digest.get() disabled=move || (busy.get() || pending.get().is_some()) || (!enabled.get() && selected.get().is_some()) on:change=move |event| digest.set(event_target_checked(&event))/>"Group events into digests"</label>
                     <label>"Digest window in seconds"<input type="number" min="60" max="86400" prop:value=move || window.get() disabled=move || (busy.get() || pending.get().is_some()) || !digest.get() || (!enabled.get() && selected.get().is_some()) on:input=move |event| window.set(event_target_value(&event))/></label>
                     <label><input type="checkbox" prop:checked=move || uncertainty.get() disabled=move || (busy.get() || pending.get().is_some()) || (!enabled.get() && selected.get().is_some()) on:change=move |event| uncertainty.set(event_target_checked(&event))/>"Include uncertain attention"</label>
@@ -475,7 +498,7 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                     </fieldset>
                     <label><input type="checkbox" prop:checked=move || enabled.get() disabled=move || (busy.get() || pending.get().is_some()) on:change=move |event| enabled.set(event_target_checked(&event))/>"Enable notifications"</label>
                     <button class="primary-button" disabled=move || (busy.get() || pending.get().is_some()) || !polling.get() || scope.get().is_none() on:click=save>"Plan notification review"</button>
-                    <button class="secondary-button" disabled=move || (busy.get() || pending.get().is_some()) on:click=move |_| { selected.set(None); identity.set(String::new()); packages.set(String::new()); minimum_severity.set("all".to_owned()); unknown_severity.set(true); silences.set(Vec::new()); silence_issue.set(String::new()); silence_until.set(String::new()); enabled.set(true); failure.set(None); }>"New subscription"</button>
+                    <button class="secondary-button" disabled=move || (busy.get() || pending.get().is_some()) on:click=move |_| { selected.set(None); identity.set(String::new()); packages.set(String::new()); minimum_severity.set("all".to_owned()); unknown_severity.set(true); silences.set(Vec::new()); silence_issue.set(String::new()); silence_until.set(String::new()); enabled.set(true); use_service.set(false); service_credential.set(String::new()); failure.set(None); }>"New subscription"</button>
 
                     {move || pending.get().map(|(review, _)| {
                         let effects = review.plan.effects.join("\n");
