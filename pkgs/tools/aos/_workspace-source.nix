@@ -41,6 +41,7 @@ in
           || base == ".worktrees"
           || base == "result"
           || lib.hasPrefix "result-" base
+          || base == "__pycache__"
           || base == "target"
           || lib.hasPrefix "target-" base
         );
@@ -91,5 +92,8 @@ in
         || pathString == "${repoRootString}/justfile";
     in
       !generatedDir
+      # Local Python bytecode depends on host tooling, not package source.
+      && !lib.hasSuffix ".pyc" base
+      && !lib.hasSuffix ".pyo" base
       && (workspaceInput || (includeIntegrationInputs && integrationInput));
   }
