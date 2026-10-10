@@ -125,6 +125,20 @@ empty `terrane` binary.
 ### T1 — Local repository
 
 **Status:** In progress; eight of twenty-two T1 tasks are complete.
+Latest independent review qualifies frozen `3f2e13e3b0` (tree `6bebc09752`):
+`algebra-merge` passes all 41 registered cases, and `derived-attr-record`
+passes its 21 core, 25 native and one SDK cases. Native build, strict
+all-target Clippy, fresh compilation and the three focused fold witnesses
+also pass on that tree. These results do not qualify subsequent shared
+maintenance interfaces or the complete T1 floor.
+Four disjoint implementation worklines now address auxiliary placement
+classification, fresh repair authority after each replacement, the native
+current-history producer, and its immutable data reader. The latter two
+share data only within one authorization history walk and require distinct
+current-purpose physical completion before promotion. Shared declarations
+are reserved; implementation, integration and runtime checks remain pending.
+No additional task is accepted, and T2 and branch worklines remain deferred.
+
 Earlier combined candidate `6889de2180` passes native build, strict all-target
 Clippy, fresh compilation with 1,037 nonignored tests and the three new pure
 selection-memo tests. The independent application check compiles 114 test
