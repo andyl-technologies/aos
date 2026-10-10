@@ -536,7 +536,8 @@ fn queued_shutdown_completion_panic_preserves_original_and_reclaims_native_world
                     )
                     .unwrap(),
                 preparations: Some(ledger.clone()),
-                debug: super::super::debug::DebugLedger::new(durable.clone(), refs.clone()).unwrap(),
+                debug: super::super::debug::DebugLedger::new(durable.clone(), refs.clone())
+                    .unwrap(),
                 transcripts: None,
                 repository: Arc::new(CampaignRepository::new(durable.clone(), refs.clone())),
                 blobs: fault,

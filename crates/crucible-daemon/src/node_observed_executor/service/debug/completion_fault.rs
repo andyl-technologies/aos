@@ -1,7 +1,6 @@
 //! Keeps exact native Stop outcomes through completion callback failure.
 
 #![cfg(test)]
-
 // crucible-lint: allow panic-shortcut -- Storage panic injection and independent original-custody oracles deliberately panic.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

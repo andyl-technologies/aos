@@ -1041,8 +1041,9 @@ current-source hygiene cases. Daemon and CLI all-target strict checks pass.
 The native continuation preserves stop position `(513010, 3, BoundaryControl)`
 and the original future read exactly once, including its causal parent and
 512-byte payload. Completion errors, panic recovery and historical report
-reopening retain the original ownership and publication boundaries. Three
-mechanical formatting differences are handled in a separate follow-up.
+reopening retain the original ownership and publication boundaries. A separate
+format-only follow-up passes independent token-equivalence review, all 18 owned
+Rust formatting checks and another 37 current-source hygiene checks.
 This stage supplies live Debug8 operations; cold debug preservation, Scheduler4,
 scenario finalization and broader device support remain unqualified.
 
