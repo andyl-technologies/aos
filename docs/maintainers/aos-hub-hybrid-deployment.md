@@ -114,6 +114,13 @@ installs its retained metadata before advertising release refs. The CLI gives
 this operation a ten-minute deadline; ordinary API calls retain their shorter
 request deadline.
 
+Signed direct uploads are the default. For a storage binding without a
+presigning endpoint, explicitly set `HUB_HYBRID_UPLOAD_MODE=worker_proxy` on
+Native, or `aos.registry-hub.hybrid.uploadMode = "worker_proxy"` in the Nix
+module. Clients then send upload bytes to the Worker; only bounded controls
+reach Native. A failed direct upload never switches modes automatically.
+Keep `direct` for deployments with signed upload URLs.
+
 Configure `aos.registry-hub` on the Native host with `hybrid.enable = true`,
 `externalUrl` set to the public Worker origin, `hybrid.originUrl` set to the
 private Native origin, and `hybrid.workerUrl` set to a dedicated HTTPS probe
