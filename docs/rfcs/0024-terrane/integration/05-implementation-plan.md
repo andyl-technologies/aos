@@ -125,11 +125,12 @@ empty `terrane` binary.
 ### T1 — Local repository
 
 **Status:** In progress; eight of twenty-two T1 tasks are complete.
-Two further isolated worklines now cover current codec and domain conformance.
-Together with index lookup, collector, recovery, ref ordering and growing-index
-workers, they retain disjoint file ownership and separate worktrees. Independent
+Parallel worklines cover codec and domain conformance, index lookup, collector
+synchronization, permanent recovery and growing-index source acquisition.
+Workers retain disjoint file ownership and separate worktrees. Independent
 review remains separate, and one coordinated compiler serves executable and Nix
-gate requests. T2 and branch worklines remain deferred.
+gate requests. Shared storage currently delays fresh compilation; source
+investigation and review continue. T2 and branch worklines remain deferred.
 
 Reviewed candidate `3f9230be533` (tree `36c83412443`) passes native library build,
 fresh all-target SDK test compilation, strict all-target Clippy and the exact
@@ -146,8 +147,28 @@ before ancestor fields finish destruction; the reviewed test-only correction
 waits for both within the unchanged five-second bound and preserves its final
 assertions. A separate reviewed index fixture fix forwards genuine native
 payload capture and closing after the first current snapshot returns
-`Unsupported`. Both corrections await a fresh joint executable. Their private
-composition `48ea952b9bb` passes the required formatter pair.
+`Unsupported`. Both corrections await a fresh joint executable.
+
+The same frozen source passes all five owning codec gates:
+`object-identity-from-manifest`, `cdc-boundaries`, `chunk-codec`,
+`chunk-bomb-cap` and `zstd-concat`. Together they execute 41 cases with
+registered outputs and nonempty result receipts; another 34 exact SDK and
+Core executions pass separately. Native domain baseline coverage passes
+seventeen SDK and fifteen Core cases. A held-publication timing failure is
+preserved alongside its unchanged passing retry and thirteen separately
+executed cases; these observations do not make the original grouped run green.
+
+Reviewed private candidate `279017b295f` (tree `b6350d547d8`) composes the
+cancellation and lookup corrections, domain admission and genuine failed audit
+intent coverage, and removal of the unused generic domain deletion interface.
+Its native directory cohorts share the same original descriptor while every
+fresh capture remains distinct; registry entries require original lifetime and
+replaced ancestor regressions. Empty test fault lists skip an otherwise
+unconditional whole-inventory prescan, while nonempty fault ordering and all
+physical refreshes remain unchanged. Existing opt-in permanent progress tracing
+now identifies stage starts separately from completions. Fresh compilation,
+regression execution and owning qualification of this changed source remain
+pending; older gate results do not qualify it.
 
 All three genuine body-read error witnesses pass on the current host archive
 and in a registered protected runtime diagnostic, including the compiled
@@ -157,16 +178,21 @@ It consumes an opaque host archive; source-built SDK and owning gate
 qualification remain required.
 
 The current indexed collector replay reaches its unchanged 120-second limit.
-The ancestry case separately fails with actual descriptor exhaustion; the weak
-ancestor-sharing correction does not yet qualify that case. A bounded observer
-now investigates actual retained descriptors without changing authority or
-limits. Permanent recovery before-open again reaches its unchanged 120-second
-limit. Current growing-index execution and other recovery/ref/domain cases
-remain in progress. Recorded descriptor limits distinguish launchers and actual
-test children; a high-limit pass cannot qualify the earlier low-limit failure.
-The preceding owning source passes both 1,024-entry populations, but the third
-2,048-entry population times out and three remain unrun. The DRV-29 blocker
-remains until all six current owning populations qualify.
+The ancestry case separately fails with actual descriptor exhaustion. Its
+bounded observer records 128 descriptors at the sampled maximum under the
+unchanged 1,024 soft limit; it does not capture or establish the failing peak.
+Neither ancestor sharing nor the reviewed cohort correction qualifies that
+case yet. Permanent recovery before-open again reaches its unchanged
+120-second limit, while the after-directory-sync case passes in 109.651
+seconds. The current ordinary 2,048-entry growing case times out at 1,800.055
+seconds. Its last marker spans publication, reopening and independent output
+verification, so the unfinished operation remains unresolved. All five trace
+flags are unset for qualification. Recorded descriptor limits distinguish
+launchers and actual test children; a high-limit pass cannot qualify the earlier
+low-limit failure. The preceding owning source passes both 1,024-entry
+populations, but the third 2,048-entry population times out and three remain
+unrun. The DRV-29 blocker remains until all six current owning populations
+qualify.
 
 These results accept no additional task, milestone exit or freeze. Every owning
 task gate and the complete current T1 floor remain required before a formal
