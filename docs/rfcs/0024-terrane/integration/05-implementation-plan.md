@@ -125,51 +125,52 @@ empty `terrane` binary.
 ### T1 — Local repository
 
 **Status:** In progress; eight of twenty-two T1 tasks are complete.
-Four further isolated GPT 6.1 Sol implementation worklines now diagnose current
-index lookup, paired disclosure retry, collector timing and projection rebuild.
-Their file ownership is disjoint. Separate workers execute remaining recovery
-cases, qualify protected body-read behavior and review the signed-parent fix;
-one coordinated host compiler serves their executable requests.
-Fresh native test compilation of private tree `355ac2f7` reports a private
-pack-header field access in the collector fixture. Its owner corrects that
-single access to the public accessor without changing the identity assertion.
-Reviewed candidate `4431b3571c` (tree `d974908398`) includes that correction,
-the bounded collector candidate oracle, genuine retained payload-range
-forwarding, the isolated namespace-attribute fixture, bounded cancellation
-exclusion reacquisition and the genuine procfs body-read fixture. Its native
-library build, fresh all-target test compilation, strict all-target Clippy and
-required formatter pair pass. The archived native inventory contains 1,078
-tests. Current-source host receipts independently establish 68 distinct ref
-passes and three failures, sixteen historical passes, eleven additional history
-passes with a lookup failure, and a separate projection-rebuild failure. Three
-dictionary/preload witnesses pass. The ref failures are the losing-writer merge
-and two paired disclosure retries; the lookup returns `Unsupported`, and the
-positive rebuilt advance returns `Denied(commit)`. A reviewed private correction
-genuinely captures signed parent Originals before retention without relaxing
-missing-record refusal or final checks; its runtime qualification remains open.
-The collector's default/forged-context and copied-control cases pass; ancestry
-and reverse overlay reach the unchanged 120-second limit. These timeouts do not
-establish a source assertion failure.
-An independent cleanup review also replaces a potentially panicking stderr
-diagnostic with a best-effort write on the isolated fixture branch. That
-additional correction remains separately uncompiled and unqualified.
-The preceding frozen `8b70b0edf5` archive supplies 55 independently audited
-exact host diagnostics: 35 pass, 20 fail, none time out or are ignored.
-Those results remain bound to that preceding source. Three cancellation
-cases additionally pass under their original finite limits; a storage failure
-prevents a terminal receipt for the fourth and leaves the next two unrun.
-An isolated registered harness probe verifies three genuine body-read EIOs,
-inode continuity and normal/unwind cleanup. All three native Rust cases also
-pass on the frozen host archive and in a registered protected runtime diagnostic
-that preserves the inherited procfs owner and requires both alias tools. The
-protected diagnostic consumes an opaque host archive; source-built SDK and owning
-gate qualification remain pending. The ordinary and adversarial
-1,024-entry index populations pass in 1,397.98 and 1,252.25 seconds on their
-separate frozen owning source. The third, ordinary 2,048-entry population reaches
-the unchanged 1,800-second limit; the last three populations remain unrun, and
-the DRV-29 blocker remains.
-These parallel results accept no additional task or milestone, and T2 remains
-deferred until the complete current T1 gate floor is green.
+Two further isolated worklines now cover current codec and domain conformance.
+Together with index lookup, collector, recovery, ref ordering and growing-index
+workers, they retain disjoint file ownership and separate worktrees. Independent
+review remains separate, and one coordinated compiler serves executable and Nix
+gate requests. T2 and branch worklines remain deferred.
+
+Reviewed candidate `3f9230be533` (tree `36c83412443`) passes native library build,
+fresh all-target SDK test compilation, strict all-target Clippy and the exact
+formatter pair. Its SDK inventory contains 1,081 tests. Genuine no-default Core
+compilation separately passes, with 761 tests across eleven binaries; SDK
+executables do not substitute for those Core witnesses. Full source, compiler
+inputs, actual executable hashes and raw child terminals bind these results.
+Fresh exact host executions on that source pass the twelve paired disclosure
+regressions, all eight epoch/watch cases including the losing-writer merge, the
+projection rebuild, four Core history/producer witnesses, and all sixty-one
+Core index prerequisites. Ten additional retained payload cases pass. A
+cancellation lifetime test fails because its Original strong count expires
+before ancestor fields finish destruction; the reviewed test-only correction
+waits for both within the unchanged five-second bound and preserves its final
+assertions. A separate reviewed index fixture fix forwards genuine native
+payload capture and closing after the first current snapshot returns
+`Unsupported`. Both corrections await a fresh joint executable. Their private
+composition `48ea952b9bb` passes the required formatter pair.
+
+All three genuine body-read error witnesses pass on the current host archive
+and in a registered protected runtime diagnostic, including the compiled
+best-effort Drop diagnostic. The protected run preserves inherited procfs
+ownership, requires both alias tools, and verifies normal and unwind cleanup.
+It consumes an opaque host archive; source-built SDK and owning gate
+qualification remain required.
+
+The current indexed collector replay reaches its unchanged 120-second limit.
+The ancestry case separately fails with actual descriptor exhaustion; the weak
+ancestor-sharing correction does not yet qualify that case. A bounded observer
+now investigates actual retained descriptors without changing authority or
+limits. Permanent recovery before-open again reaches its unchanged 120-second
+limit. Current growing-index execution and other recovery/ref/domain cases
+remain in progress. Recorded descriptor limits distinguish launchers and actual
+test children; a high-limit pass cannot qualify the earlier low-limit failure.
+The preceding owning source passes both 1,024-entry populations, but the third
+2,048-entry population times out and three remain unrun. The DRV-29 blocker
+remains until all six current owning populations qualify.
+
+These results accept no additional task, milestone exit or freeze. Every owning
+task gate and the complete current T1 floor remain required before a formal
+trunk merge or task checkbox advances.
 
 Current qualification of frozen tree `a067e57b21` passes all 28 owning
 `derivation-memo` cases. Parent review confirms actual exact executions,
