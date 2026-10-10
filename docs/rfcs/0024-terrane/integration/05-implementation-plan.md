@@ -526,6 +526,13 @@ The design retains fresh artifact reads and exact member validation for every
 offered identity and confines successful pure parsing reuse to one batch.
 Independent review and a separate remaining-requirements audit proceed in
 parallel; no measured bottleneck, speedup or task acceptance is inferred.
+A second disjoint T-DRV-2 workline shares pure namespace preparation between
+consecutive pending-policy preparation and relationship planning over the same
+immutable inputs. Three exact witnesses require output parity, unchanged role
+and refusal ordering, and independently executed history and relationship
+checks. Standalone planning and Legacy paths retain their existing behavior;
+sharing creates no completed context or authority. Both implementation
+worklines use separate checkouts while the qualification source remains frozen.
 The owning `algebra-merge` gate passes separately on frozen `ea64a04697`,
 executing thirty-two core and six native cases with zero failures or ignored
 tests. Independent review verifies all twenty packet files and the actual
