@@ -12,7 +12,9 @@ use crucible::node_admission::{
 };
 use crucible::node_contract::{InputProvenanceClosure, OriginalInputLineage};
 use crucible::node_scheduling::RuntimeInputBatch;
-use crucible_node_contract::{ContentRef, ExtensionSelection, HashRef, Id, ResourceLimits, Validate};
+use crucible_node_contract::{
+    ContentRef, ExtensionSelection, HashRef, Id, ResourceLimits, Validate,
+};
 use crucible_node_provider::{
     ProviderError, bodies::RealizeResult, client::OriginalLineageRealization,
     reference_lineage::LineageSourceGuard, reference_service::ReferenceProfile,
@@ -23,7 +25,9 @@ use super::{
     InstalledTypedReaderCatalogPolicy, InstalledTypedReaderPackage,
 };
 use super::{fixture_authority::InstalledTypedReaderFixtureAuthority, kernel};
-use crate::node_qualification::{AcceptanceLimits, CnpBehavioralAcceptance, InstalledAcceptancePolicy};
+use crate::node_qualification::{
+    AcceptanceLimits, CnpBehavioralAcceptance, InstalledAcceptancePolicy,
+};
 
 #[path = "owning_windows.rs"]
 mod windows;

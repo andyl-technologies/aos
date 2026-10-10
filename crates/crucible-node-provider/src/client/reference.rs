@@ -46,7 +46,9 @@ pub(crate) mod transmissions;
 pub use conflict_transmissions::{
     OriginalConflictLimits, OriginalConflictObservation, OriginalConflictObservationHandle,
 };
-pub use transmissions::{TransmissionLimits, TransmissionObservation, TransmissionObservationHandle};
+pub use transmissions::{
+    TransmissionLimits, TransmissionObservation, TransmissionObservationHandle,
+};
 
 /// Owns original public control and receipt bytes beneath a separately retained native peer.
 ///

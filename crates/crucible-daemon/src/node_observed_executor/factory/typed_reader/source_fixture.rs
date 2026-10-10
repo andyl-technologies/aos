@@ -8,7 +8,9 @@ use std::{cell::RefCell, rc::Rc};
 
 use super::{InstalledTypedReaderPackage, TypedReaderProgramme, kernel};
 use crate::node_qualification::{QualificationError, QualificationUnit, WitnessPlan};
-use crucible_node_contract::{BindingCompatibility, ContentRef, HashRef, Id, ResourceLimits, Validate};
+use crucible_node_contract::{
+    BindingCompatibility, ContentRef, HashRef, Id, ResourceLimits, Validate,
+};
 use crucible_node_provider::{
     ProviderError,
     reference_service::{ReferenceNegotiatedLineageReaderLaunchBootstrap, ReferenceProfile},
