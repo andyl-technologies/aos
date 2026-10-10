@@ -13,7 +13,7 @@ git-helper-mechanics = []
 # Run explicitly in the AOS kernel-test VM, outside the package-build sandbox.
 kernel-tests = ["aos-sandbox-linux/kernel-tests"]
 # Enables a private-directory protected-journal opener for dependent crate tests.
-test-fixtures = []
+test-fixtures = ["aos-sandbox-journal/test-fixtures"]
 # Only the isolated KVM fixture can prepare an inert Cache hold and empty manifest.
 cache-physical-join-vm-fixture = []
 # Only a debug VM probe can seed nonauthorizing original-Effect history.
@@ -27,7 +27,7 @@ aos-sandbox-agent.workspace = true
 aos-sandbox-guest-root-tree.workspace = true
 aos-sandbox-broker-session-protocol.workspace = true
 aos-sandbox-core.workspace = true
-aos-sandbox-journal.workspace = true
+aos-sandbox-journal = { workspace = true, features = ["protected-unix"] }
 aos-sandbox-policy.workspace = true
 aos-sandbox-ownership-protocol.workspace = true
 aos-sandbox-ownership.workspace = true

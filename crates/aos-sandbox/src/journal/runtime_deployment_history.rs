@@ -73,7 +73,7 @@ impl Journal {
         if owner.canary_purpose().is_none() {
             return Err(JournalError::ProtectedBoundary);
         }
-        let before = FileIdentity::of(self.native.file())?;
+        let before = FileIdentity::of::<crate::journal::JournalError>(self.native.file())?;
         let history = match member {
             CanaryCommitMemberV2::Main => self.capture_runtime_deployment_main_history_v1(owner)?,
             CanaryCommitMemberV2::Sidecar => self.capture_runtime_deployment_sidecar_history_v1(owner)?,
@@ -84,14 +84,14 @@ impl Journal {
         if last.transaction() != transaction || last.commit_sequence() != returned.commit_sequence
             || last.begin_sequence().checked_add(distance) != Some(returned.commit_sequence)
             || returned.commit_sequence.checked_add(1) != Some(last.next_sequence())
-            || last.next_sequence() != self.native.next_sequence() || returned.durable_bytes != before.size
+            || last.next_sequence() != self.native.next_sequence() || returned.durable_bytes != before.byte_len()
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
         // The capture above uses the sole ReadAt/native framing engine and
         // checks the complete replayed physical end against this SAME File.
         // No reopened File, second parser or caller-reconstructed cut is used.
-        if FileIdentity::of(self.native.file())? != before {
+        if FileIdentity::of::<crate::journal::JournalError>(self.native.file())? != before {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
         owner.recheck().map_err(|_| JournalError::ProtectedBoundary)
@@ -150,8 +150,8 @@ impl Journal {
         }
 
         let witness = self.protected_writer_name_witness()?;
-        let physical = FileIdentity::of(self.native.file())?;
-        if physical.size > limits.maximum_journal_bytes {
+        let physical = FileIdentity::of::<crate::journal::JournalError>(self.native.file())?;
+        if physical.byte_len() > limits.maximum_journal_bytes {
             return Err(JournalError::JournalTooLarge);
         }
 
@@ -165,18 +165,18 @@ impl Journal {
                 owner.publisher_verifier(),
             )? };
             if matches!(observation, MainHistoryObservationV1::RetainNative) {
-                history.retained = Some(RetainedDeploymentNativeHistoryV1::new(physical.size)?);
+                history.retained = Some(RetainedDeploymentNativeHistoryV1::new(physical.byte_len())?);
             }
 
-            let mut reader = ReadAtCursorV1::new(self.native.file(), physical.size);
+            let mut reader = ReadAtCursorV1::new(self.native.file(), physical.byte_len());
             let replayed = replay_observed(&mut reader, limits, Some(&mut history))?;
             history.finish(&replayed)?;
-            self.require_deployment_replayed_snapshot(&replayed, physical.size)?;
+            self.require_deployment_replayed_snapshot(&replayed, physical.byte_len())?;
 
             match observation {
                 MainHistoryObservationV1::AuditOnly => Ok(None),
                 MainHistoryObservationV1::RetainNative => {
-                    self.require_deployment_pair_replayed_snapshot_v1(&replayed, physical.size)?;
+                    self.require_deployment_pair_replayed_snapshot_v1(&replayed, physical.byte_len())?;
                     let retained = history.retained.take()
                         .ok_or(JournalError::ProtectedBoundary)?;
                     retained.finish(&replayed)?;
@@ -191,7 +191,7 @@ impl Journal {
             Path::new(MAIN_DIRECTORY_V1), MAIN_NAME, 0, limits,
         )?;
         self.validate_protected_writer_name_witness(&witness)?;
-        if FileIdentity::of(self.native.file())? != physical {
+        if FileIdentity::of::<crate::journal::JournalError>(self.native.file())? != physical {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
         owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
@@ -261,7 +261,7 @@ pub(super) fn require_no_compaction(journal: &Journal) -> Result<(), JournalErro
         || *journal.native.path() == Path::new(MAIN_DIRECTORY_V1).join(SIDECAR_NAME)
         || journal.protected.as_ref().is_some_and(|location| {
             matches!(
-                location.original_compaction_selection,
+                *location.original_compaction_selection(),
                 OriginalCompactionSelectionV1::DeploymentMain
                     | OriginalCompactionSelectionV1::DeploymentSidecar,
             )

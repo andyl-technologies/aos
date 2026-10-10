@@ -26,8 +26,8 @@ use std::io::Write as _;
 use std::os::fd::AsFd as _;
 
 #[cfg(target_os = "linux")]
-use aos_sandbox_linux::protected_file::{open_nofollow_child, read_exact_positioned};
-use rustix::fs::{FileType, Mode, OFlags, RenameFlags};
+use aos_sandbox_linux::protected_file::read_exact_positioned;
+use rustix::fs::FileType;
 use aos_sandbox_core::ProjectId;
 
 use super::{
@@ -880,38 +880,29 @@ impl Journal {
         if saved.is_none_or(|saved| saved.packet != *packet) {
             return Err(JournalError::ProtectedBoundary);
         }
-        let directory = &self.protected.as_ref()
-            .ok_or(JournalError::ProtectedBoundary)?.directory;
-        match rustix::fs::statat(
-            directory, temporary, rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
-        ) {
+        let directory = self.protected.as_ref()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        match directory.inspect_staged_name(temporary) {
             Err(error) if error == rustix::io::Errno::NOENT => {}
-            Err(error) => return Err(super::rustix_io(error)),
+            Err(error) => return Err(super::rustix_io::<crate::journal::JournalError>(error)),
             Ok(_) => return Err(JournalError::ProtectedBoundary),
         }
 
-        match open_nofollow_child(directory, output) {
+        match directory.open_named_child(output) {
             Ok(file) => custody.original = Some(File::from(file)),
             Err(error) if error == rustix::io::Errno::NOENT => {
                 if custody.staged.is_some() || custody.original.is_some() {
                     return Err(JournalError::ProtectedBoundary);
                 }
-                custody.staged = Some(File::from(rustix::fs::openat(
-                    directory,
-                    temporary,
-                    OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                    Mode::from_bits_truncate(0o600),
-                ).map_err(super::rustix_io)?));
+                custody.staged = Some(File::from(directory.open_exclusive_stage(temporary).map_err(super::rustix_io::<crate::journal::JournalError>)?));
                 let staged = custody.staged.as_mut().ok_or(JournalError::ProtectedBoundary)?;
                 staged.write_all(packet.as_bytes())?;
                 staged.sync_all()?;
                 self.ensure_protected_authority()?;
-                rustix::fs::renameat_with(
-                    directory, temporary, directory, output, RenameFlags::NOREPLACE,
-                ).map_err(super::rustix_io)?;
-                custody.original = Some(File::from(open_nofollow_child(directory, output).map_err(super::rustix_io)?));
+                directory.publish_exclusive_stage(temporary, output).map_err(super::rustix_io::<crate::journal::JournalError>)?;
+                custody.original = Some(File::from(directory.open_named_child(output).map_err(super::rustix_io::<crate::journal::JournalError>)?));
             }
-            Err(error) => return Err(super::rustix_io(error)),
+            Err(error) => return Err(super::rustix_io::<crate::journal::JournalError>(error)),
         }
 
         // Replay equality is not delivery durability. Both branches validate
@@ -923,7 +914,7 @@ impl Journal {
             .ok_or(JournalError::ProtectedBoundary)?;
         original.sync_all()?;
         self.ensure_protected_authority()?;
-        rustix::fs::fsync(directory).map_err(super::rustix_io)?;
+        directory.sync_directory().map_err(super::rustix_io::<crate::journal::JournalError>)?;
 
         self.recheck_successor_publication_with_name(packet, custody, output)
     }
@@ -953,10 +944,10 @@ impl Journal {
         self.ensure_protected_authority()?;
         let location = self.protected.as_ref().ok_or(JournalError::ProtectedBoundary)?;
         let original = custody.original.as_ref().ok_or(JournalError::ProtectedBoundary)?;
-        let metadata = rustix::fs::fstat(original).map_err(super::rustix_io)?;
+        let metadata = rustix::fs::fstat(original).map_err(super::rustix_io::<crate::journal::JournalError>)?;
         if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
             || metadata.st_mode & 0o7777 != 0o600
-            || metadata.st_uid != location.expected_uid
+            || metadata.st_uid != location.expected_uid()
             || metadata.st_gid != rustix::process::getegid().as_raw()
             || metadata.st_nlink != 1
             || metadata.st_size != packet.as_bytes().len() as i64
@@ -964,8 +955,8 @@ impl Journal {
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        let named = open_nofollow_child(&location.directory, output).map_err(super::rustix_io)?;
-        let named_metadata = rustix::fs::fstat(&named).map_err(super::rustix_io)?;
+        let named = location.open_named_child(output).map_err(super::rustix_io::<crate::journal::JournalError>)?;
+        let named_metadata = rustix::fs::fstat(&named).map_err(super::rustix_io::<crate::journal::JournalError>)?;
         if named_metadata.st_dev != metadata.st_dev || named_metadata.st_ino != metadata.st_ino {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -974,7 +965,7 @@ impl Journal {
         let readback = custody.readbacks.last_mut().ok_or(JournalError::ProtectedBoundary)?;
         read_exact_positioned(original.as_fd(), readback)
             .map_err(|_| JournalError::ProtectedBoundary)?;
-        let after = rustix::fs::fstat(original).map_err(super::rustix_io)?;
+        let after = rustix::fs::fstat(original).map_err(super::rustix_io::<crate::journal::JournalError>)?;
         if readback.as_slice() != packet.as_bytes()
             || metadata.st_dev != after.st_dev
             || metadata.st_ino != after.st_ino
@@ -990,8 +981,8 @@ impl Journal {
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        let final_named = open_nofollow_child(&location.directory, output).map_err(super::rustix_io)?;
-        let final_metadata = rustix::fs::fstat(&final_named).map_err(super::rustix_io)?;
+        let final_named = location.open_named_child(output).map_err(super::rustix_io::<crate::journal::JournalError>)?;
+        let final_metadata = rustix::fs::fstat(&final_named).map_err(super::rustix_io::<crate::journal::JournalError>)?;
         if final_metadata.st_dev != metadata.st_dev || final_metadata.st_ino != metadata.st_ino {
             return Err(JournalError::ProtectedBoundary);
         }

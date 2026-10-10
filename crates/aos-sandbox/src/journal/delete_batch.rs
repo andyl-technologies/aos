@@ -375,14 +375,14 @@ impl Journal {
                 transaction: batch.transaction(),
                 proof: None,
             };
-            let mut reader = ReadAtCursorV1::new(self.native.file(), witness.file.size);
+            let mut reader = ReadAtCursorV1::new(self.native.file(), witness.file().byte_len());
             let replayed = replay_original_observed(
                 &mut reader,
                 self.native.limits(),
                 None,
                 Some(DeploymentHistoryObserverV1::Delete(&mut observer)),
             )?;
-            if replayed.durable_end != witness.file.size
+            if replayed.durable_end != witness.file().byte_len()
                 || replayed.next_sequence != self.native.next_sequence()
                 || replayed.committed_transactions != self.native.committed_transactions()
                 || replayed.transaction_ids != *self.native.transaction_ids()

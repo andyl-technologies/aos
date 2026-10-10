@@ -16,6 +16,7 @@ mod client;
 mod controller_peer;
 mod git_evidence_credential;
 mod nix_offline_provision;
+pub(crate) use nix_offline_provision::nix_offline_location_has_original_label_v5;
 pub(crate) mod images;
 mod nix_startup;
 mod root_startup;

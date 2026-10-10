@@ -838,7 +838,7 @@ impl Journal {
     ) -> Result<(), JournalError> {
         if !has_durable_owner_fence_v1(state)
             || self.protected.as_ref().is_none_or(|location| {
-                location.name != "storage-state.journal"
+                location.name() != "storage-state.journal"
             })
         {
             return Ok(());
@@ -981,7 +981,7 @@ impl Journal {
     pub(crate) fn cache_coverage_native_prefix_v1(
         &self,
     ) -> Result<GitCoverageNativePrefixLoanV1<'_>, GitCoverageNativeHistoryErrorV1> {
-        if self.protected.as_ref().map(|location| location.name.as_str())
+        if self.protected.as_ref().map(|location| location.name())
             != Some(super::cache_policy_hold::NAME)
         {
             return Err(GitCoverageNativeHistoryErrorV1 {
@@ -996,7 +996,7 @@ impl Journal {
         &self,
         catalog: &'data GitCoverageCatalogV1<'data>,
     ) -> Result<GitCoverageNativePrefixLoanV1<'_>, GitCoverageNativeHistoryErrorV1> {
-        if self.protected.as_ref().map(|location| location.name.as_str())
+        if self.protected.as_ref().map(|location| location.name())
             != Some("bootstrap-v1.journal")
         {
             return Err(GitCoverageNativeHistoryErrorV1 {
@@ -1057,7 +1057,7 @@ impl Journal {
         name: &'static str,
         recipe: NativePrefixRecipeV1,
     ) -> Result<GitCoverageNativePrefixLoanV1<'_>, GitCoverageNativeHistoryErrorV1> {
-        if self.protected.as_ref().map(|location| location.name.as_str()) != Some(name) {
+        if self.protected.as_ref().map(|location| location.name()) != Some(name) {
             return Err(GitCoverageNativeHistoryErrorV1 {
                 first: JournalError::ProtectedBoundary,
                 final_bookend: None,
@@ -1095,12 +1095,12 @@ impl Journal {
                     previous_clock: None,
                 });
             }
-            let mut cursor = ReadAtCursorV1::new(self.native.file(), witness.file.size);
+            let mut cursor = ReadAtCursorV1::new(self.native.file(), witness.file().byte_len());
             let replayed = replay_original_observed(
                 &mut cursor, self.native.limits(), None,
                 Some(DeploymentHistoryObserverV1::GitCoverage(&mut observer)),
             )?;
-            require_replayed_snapshot(self, &replayed, &observer, witness.file.size)?;
+            require_replayed_snapshot(self, &replayed, &observer, witness.file().byte_len())?;
             if matches!(recipe, NativePrefixRecipeV1::OwnerCoverage(
                 GitCoverageJournalProfileV1::Controller,
             )) && observer.publisher_account_seen {
@@ -1241,12 +1241,12 @@ fn require_owner_fence_transaction(
 fn provision_origin(journal: &Journal, witness: &ProtectedWriterNameWitness) -> [u8; 32] {
     let mut digest = Sha256::new().chain_update(PROVISION_ORIGIN_DOMAIN);
     if let Some(location) = &journal.protected {
-        digest.update(location.name.as_bytes());
+        digest.update(location.name().as_bytes());
     }
     digest.update([0]);
-    for identity in [&witness.directory, &witness.file, &witness.lock] {
-        digest.update(identity.device.to_be_bytes());
-        digest.update(identity.inode.to_be_bytes());
+    for identity in [&witness.directory(), &witness.file(), &witness.lock()] {
+        digest.update(identity.physical_pair().0.to_be_bytes());
+        digest.update(identity.physical_pair().1.to_be_bytes());
     }
     digest.finalize().into()
 }
@@ -1258,7 +1258,7 @@ fn require_bookend(
     journal.ensure_healthy()?;
     journal.require_protected_names_current()?;
     journal.validate_protected_writer_name_witness(witness)?;
-    if FileIdentity::of(journal.native.file())? != witness.file {
+    if FileIdentity::of::<crate::journal::JournalError>(journal.native.file())? != witness.file() {
         return Err(JournalError::StaleAuthoritySnapshot);
     }
     Ok(())

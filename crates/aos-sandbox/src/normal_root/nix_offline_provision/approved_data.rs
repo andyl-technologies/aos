@@ -20,64 +20,51 @@ use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 /// Names the original offline job metadata DATA, not an admitted file owner.
-pub type NixOfflineJobIdentityDataV5 = (u64, u64, u32, u32, u32, u64, u64, i64, i64, i64, i64);
+pub use aos_sandbox_journal::protected_storage::OriginalFileMetadataV1 as NixOfflineJobIdentityDataV5;
 
-/// Observes the sole offline job identity recipe without admitting custody.
-///
-/// Directory entry/link/time changes are intentionally excluded because the
-/// serialized purpose owner creates entries. File links, extents and times
-/// remain exact; the genuine caller owns names, modes, bounds and OFD custody.
-///
-/// # Errors
-/// Returns the actual metadata error. No descriptor is moved or duplicated.
-pub fn inspect_nix_offline_job_identity_v5(
-    file: &std::fs::File,
-) -> std::io::Result<NixOfflineJobIdentityDataV5> {
-    use std::os::unix::fs::MetadataExt as _;
-
-    let metadata = file.metadata()?;
-    let (links, length, modified, modified_ns, changed, changed_ns) = if metadata.is_dir() {
-        (0, 0, 0, 0, 0, 0)
-    } else {
-        (
-            metadata.nlink(),
-            metadata.len(),
-            metadata.mtime(),
-            metadata.mtime_nsec(),
-            metadata.ctime(),
-            metadata.ctime_nsec(),
-        )
-    };
-    Ok((
-        metadata.dev(),
-        metadata.ino(),
-        metadata.uid(),
-        metadata.gid(),
-        metadata.mode(),
-        links,
-        length,
-        modified,
-        modified_ns,
-        changed,
-        changed_ns,
-    ))
-}
+/// Observes original metadata without admitting custody.
+pub use aos_sandbox_journal::protected_storage::inspect_original_file_metadata as inspect_nix_offline_job_identity_v5;
 
 /// Observes the fixed offline job label and ACL absence as nonauthorizing DATA.
 ///
 /// # Errors
-/// Returns the actual native xattr error. `Ok(false)` reports a label mismatch
-/// or an ACL, never an alternate policy or permission to continue an effect.
+/// Returns the actual native xattr error without changing descriptor custody.
 pub fn nix_offline_job_has_original_label_v5(file: &std::fs::File) -> std::io::Result<bool> {
+    original_label_matches::<()>(OriginalLabelFile::File(file))
+}
+
+pub(crate) fn nix_offline_location_has_original_label_v5<P>(
+    location: &aos_sandbox_journal::protected_storage::ProtectedJournalLocation<P>,
+) -> std::io::Result<bool> {
+    original_label_matches(OriginalLabelFile::Location(location))
+}
+
+// This fixed borrowed selector keeps the actor policy here. No directory FD
+// leaves the physical owner and no predicate/provider callback is supplied.
+enum OriginalLabelFile<'a, P> {
+    File(&'a std::fs::File),
+    Location(&'a aos_sandbox_journal::protected_storage::ProtectedJournalLocation<P>),
+}
+
+impl<P> OriginalLabelFile<'_, P> {
+    fn xattr(&self, name: &str, bytes: &mut [u8]) -> Result<usize, rustix::io::Errno> {
+        match self {
+            Self::File(file) => rustix::fs::fgetxattr(file, name, bytes),
+            Self::Location(location) => location.directory_xattr(name, bytes),
+        }
+    }
+}
+
+fn original_label_matches<P>(file: OriginalLabelFile<'_, P>) -> std::io::Result<bool> {
     let mut context = [0; 256];
-    let length = rustix::fs::fgetxattr(file, "security.selinux", &mut context[..])?;
+    let length = file.xattr("security.selinux", &mut context[..])?;
     let actual = context[..length].strip_suffix(&[0]).unwrap_or(&context[..length]);
     if actual != b"system_u:object_r:aos_nix_offline_prepare_state_t" {
         return Ok(false);
     }
     let mut bytes = [0; 4096];
     for name in ["system.posix_acl_access", "system.posix_acl_default"] {
-        match rustix::fs::fgetxattr(file, name, &mut bytes[..]) {
+        match file.xattr(name, &mut bytes[..]) {
             Err(rustix::io::Errno::NODATA) => {}
             Err(error) => return Err(error.into()),
             Ok(_) => return Ok(false),

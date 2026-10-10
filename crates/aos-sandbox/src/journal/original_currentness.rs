@@ -207,7 +207,7 @@ impl Journal {
         let uid = hold.protected_owner_uid()?;
         hold.require_q04_cache_prepare_v1()?;
         let location = self.protected.as_ref().ok_or(JournalError::ProtectedBoundary)?;
-        let fixed_target = match location.name.as_str() {
+        let fixed_target = match location.name() {
             "clock.journal" => self.cache_policy_gate.is_none(),
             "authority.journal" | "state.journal" => self.cache_policy_gate.as_ref().is_some_and(|(root, owner)| {
                 root.as_path() == Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT) && *owner == uid
@@ -219,7 +219,7 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         self.require_protected_named_location(
-            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), &location.name, uid, self.native.limits(),
+            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), &location.name(), uid, self.native.limits(),
         )?;
         self.require_q04_native_recipes_v1(&[])
             .map_err(|cause| JournalError::Q04RootOriginal(Box::new(cause)))?;
@@ -532,7 +532,7 @@ impl Journal {
                 bank_history: crate::controller_resource_reservation::ResourceNativeHistoryV1::new(self.native.state()),
             };
             let mut reader = runtime_deployment_history::ReadAtCursorV1::new(
-                self.native.file(), witness.file.size,
+                self.native.file(), witness.file().byte_len(),
             );
             let replayed = replay_original_observed(
                 &mut reader, self.native.limits(), None,
@@ -543,9 +543,9 @@ impl Journal {
             }
             if history.matched != recipe_count
                 || (recipe_count == 0 && original_next.is_some_and(|next| next != self.native.next_sequence()))
-                || history.previous_end != witness.file.size
+                || history.previous_end != witness.file().byte_len()
                 || history.previous_next != self.native.next_sequence()
-                || replayed.durable_end != witness.file.size
+                || replayed.durable_end != witness.file().byte_len()
                 || replayed.next_sequence != self.native.next_sequence()
                 || replayed.committed_transactions != self.native.committed_transactions()
                 || replayed.transaction_ids != *self.native.transaction_ids()

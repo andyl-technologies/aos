@@ -11,18 +11,13 @@
 //! does not establish a lower-crate authority boundary or add an FD factory.
 
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, Seek as _, SeekFrom};
 use std::os::fd::{AsFd as _, BorrowedFd};
-use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
-use rustix::fs::{
-    AtFlags, CWD, FileType, Mode, OFlags, ResolveFlags, fcntl_getfl, fstat, fsync, openat2,
-    renameat, statat, unlinkat,
-};
+use rustix::fs::{FileType, Mode, OFlags, fcntl_getfl};
 
 #[cfg(target_os = "linux")]
 use super::runtime_deployment_history;
@@ -39,8 +34,36 @@ pub(crate) use opening::{
 #[cfg(test)]
 pub(super) use opening::{ProtectedJournalOpenMode, ProtectedOwnerPolicy};
 
-pub(super) const MAXIMUM_PROTECTED_COMPONENT_BYTES: usize = 255;
-pub(super) const MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES: usize = 200;
+pub(super) use aos_sandbox_journal::protected_storage::{
+    FileIdentity, MAXIMUM_PROTECTED_COMPONENT_BYTES,
+    MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES, ProtectedAncestry,
+    open_protected_file, open_protected_file_into,
+    open_protected_file_into_original, open_read_only_protected_file,
+    open_read_only_protected_file_original, protected_compaction_name,
+    protected_directory_flags, protected_open_error, reject_operator_provisioning_history,
+    reject_stale_protected_compaction, remove_stale_protected_compaction,
+    require_opened_directory_identity, require_protected_file_names_current,
+    resolve_protected_directory_from_root, resolve_protected_directory_from_root_original,
+    rustix_io,
+    traverse_protected_directory, validate_basename, validate_protected_fd,
+};
+
+pub(crate) use aos_sandbox_journal::protected_storage::ProtectedWriterNameWitness;
+
+impl aos_sandbox_journal::protected_storage::ProtectedFailure for JournalError {
+    const BOUNDARY: Self = Self::ProtectedBoundary;
+    const UNSUPPORTED_OPEN: Self = Self::UnsupportedProtectedOpen;
+    const STALE_NAME: Self = Self::StaleAuthoritySnapshot;
+}
+
+#[cfg(target_os = "linux")]
+pub(super) type ProtectedJournalLocation =
+    aos_sandbox_journal::protected_storage::ProtectedJournalLocation<
+        runtime_deployment_history::OriginalCompactionSelectionV1,
+    >;
+#[cfg(not(target_os = "linux"))]
+pub(super) type ProtectedJournalLocation =
+    aos_sandbox_journal::protected_storage::ProtectedJournalLocation<()>;
 
 /// Retains only an existing protected writer's lock open-file description.
 ///
@@ -74,22 +97,12 @@ impl ProtectedJournalLockCustodyV1 {
             || metadata.len() != 0
             || metadata.nlink() != 1
             || metadata.mode() & 0o7777 != 0o600
-            || fcntl_getfl(&self.lock).map_err(rustix_io)? & OFlags::ACCMODE != OFlags::RDWR
+            || fcntl_getfl(&self.lock).map_err(rustix_io::<crate::journal::JournalError>)? & OFlags::ACCMODE != OFlags::RDWR
         {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok((metadata.dev(), metadata.ino(), metadata.uid()))
     }
-}
-
-/// Retains byte-level metadata for a protected writer readback.
-///
-/// Its caller must also recheck the fixed directory and names. A flock alone
-/// does not prevent another same-UID process from writing an already open file.
-pub(crate) struct ProtectedWriterNameWitness {
-    pub(super) directory: FileIdentity,
-    pub(super) file: FileIdentity,
-    pub(super) lock: FileIdentity,
 }
 
 pub use aos_sandbox_protocol::domain_ledger::protected_names::ProtectedJournalNamesV1;
@@ -100,9 +113,9 @@ fn names_from_identities(
     lock: FileIdentity,
 ) -> ProtectedJournalNamesV1 {
     ProtectedJournalNamesV1::from_historical_fields(
-        (directory.device, directory.inode),
-        (journal.device, journal.inode),
-        (lock.device, lock.inode),
+        directory.physical_pair(),
+        journal.physical_pair(),
+        lock.physical_pair(),
     )
 }
 
@@ -116,51 +129,9 @@ pub(crate) struct ReadOnlyProtectedJournal {
     pub(super) witness: ReadOnlyJournalNameWitness,
 }
 
-/// Retains the physical names observed by one read-only replay.
+/// Keeps the original role-private read-only witness API over physical custody.
 pub(crate) struct ReadOnlyJournalNameWitness {
-    pub(super) directory_path: PathBuf,
-    pub(super) name: String,
-    pub(super) expected_uid: u32,
-    pub(super) directory_identity: FileIdentity,
-    pub(super) file_identity: FileIdentity,
-    pub(super) lock_identity: FileIdentity,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) struct FileIdentity {
-    pub(super) device: u64,
-    pub(super) inode: u64,
-    pub(super) size: u64,
-    pub(super) modified_seconds: i64,
-    pub(super) modified_nanoseconds: i64,
-    pub(super) changed_seconds: i64,
-    pub(super) changed_nanoseconds: i64,
-}
-
-impl FileIdentity {
-    pub(super) fn of(file: &File) -> Result<Self, JournalError> {
-        let metadata = file.metadata()?;
-        Ok(Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-            size: metadata.len(),
-            modified_seconds: metadata.mtime(),
-            modified_nanoseconds: metadata.mtime_nsec(),
-            changed_seconds: metadata.ctime(),
-            changed_nanoseconds: metadata.ctime_nsec(),
-        })
-    }
-}
-
-pub(super) fn require_opened_directory_identity(
-    directory: &File,
-    expected: (u64, u64),
-) -> Result<(), JournalError> {
-    let opened = FileIdentity::of(directory)?;
-    if (opened.device, opened.inode) != expected {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
+    physical: aos_sandbox_journal::protected_storage::ReadOnlyJournalNameWitness,
 }
 
 impl ReadOnlyProtectedJournal {
@@ -172,28 +143,21 @@ impl ReadOnlyProtectedJournal {
     /// Re-resolves the directory and both physical names independently.
     pub(crate) fn check_named_currentness(&self) -> Result<(), JournalError> {
         self.witness.check_named_currentness()?;
-        if FileIdentity::of(self.journal.native.file())? != self.witness.file_identity {
-            return Err(JournalError::ProtectedBoundary);
-        }
+        self.witness.physical.require_file_identity::<JournalError>(self.journal.native.file())?;
         Ok(())
     }
 
     /// Returns only the fixed names observed by this read-only replay.
     pub(crate) fn physical_names_v1(&self) -> ProtectedJournalNamesV1 {
-        names_from_identities(
-            self.witness.directory_identity,
-            self.witness.file_identity,
-            self.witness.lock_identity,
-        )
+        let (directory, journal, lock) = self.witness.physical.physical_pairs();
+        ProtectedJournalNamesV1::from_historical_fields(directory, journal, lock)
     }
 
     #[cfg(test)]
     /// Checks the retained name using the test fixture's exact UID.
     pub(crate) fn check_named_currentness_at_uid_for_test(&self) -> Result<(), JournalError> {
         self.witness.check_named_currentness_at_uid_for_test()?;
-        if FileIdentity::of(self.journal.native.file())? != self.witness.file_identity {
-            return Err(JournalError::ProtectedBoundary);
-        }
+        self.witness.physical.require_file_identity::<JournalError>(self.journal.native.file())?;
         Ok(())
     }
 
@@ -204,61 +168,18 @@ impl ReadOnlyProtectedJournal {
 }
 
 impl ReadOnlyJournalNameWitness {
-    /// Re-resolves the originally observed directory, lock, and journal.
     pub(crate) fn check_named_currentness(&self) -> Result<(), JournalError> {
-        let directory =
-            resolve_protected_directory_from_root(&self.directory_path, self.expected_uid)?;
-        self.check_in_directory(&directory)
+        self.physical.check_named_currentness::<JournalError>()
     }
 
     #[cfg(test)]
-    /// Resolves a test-owned directory without changing production root ancestry checks.
     pub(crate) fn check_named_currentness_at_uid_for_test(&self) -> Result<(), JournalError> {
-        let directory: File = openat2(
-            CWD,
-            &self.directory_path,
-            protected_directory_flags(),
-            Mode::empty(),
-            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
-        )
-        .map_err(protected_open_error)?
-        .into();
-        validate_protected_fd(
-            &directory,
-            self.expected_uid,
-            FileType::Directory,
-            Mode::RWXU,
-        )?;
-        self.check_in_directory(&directory)
+        self.physical.check_named_currentness_at_uid_for_test::<JournalError>()
     }
 
     pub(super) fn check_in_directory(&self, directory: &File) -> Result<(), JournalError> {
-        if FileIdentity::of(&directory)? != self.directory_identity {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let lock = open_read_only_protected_file(
-            directory,
-            &format!("{}.lock", self.name),
-            self.expected_uid,
-        )?;
-        let file = open_read_only_protected_file(directory, &self.name, self.expected_uid)?;
-        if FileIdentity::of(&lock)? != self.lock_identity
-            || FileIdentity::of(&file)? != self.file_identity
-        {
-            return Err(JournalError::StaleAuthoritySnapshot);
-        }
-        Ok(())
+        self.physical.check_in_directory::<JournalError>(directory)
     }
-}
-
-pub(super) struct ProtectedJournalLocation {
-    pub(super) directory: File,
-    pub(super) name: String,
-    pub(super) expected_uid: u32,
-    // Denial only; this never substitutes for the actual native-history audit.
-    #[cfg(target_os = "linux")]
-    pub(super) original_compaction_selection:
-        runtime_deployment_history::OriginalCompactionSelectionV1,
 }
 
 impl Journal {
@@ -279,21 +200,15 @@ impl Journal {
             .protected
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
-        if retained.name != name
-            || retained.expected_uid != expected_uid
+        if retained.name() != name
+            || retained.expected_uid() != expected_uid
             || self.native.limits() != limits
         {
             return Err(JournalError::ProtectedBoundary);
         }
 
-        let current = resolve_protected_directory_from_root(directory, expected_uid)?;
-        let retained_stat = fstat(&retained.directory).map_err(rustix_io)?;
-        let current_stat = fstat(&current).map_err(rustix_io)?;
-        if retained_stat.st_dev != current_stat.st_dev
-            || retained_stat.st_ino != current_stat.st_ino
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
+        // Keep the independent current description through the health bookend.
+        let _current = retained.require_directory::<JournalError>(directory, expected_uid)?;
 
         self.ensure_healthy()
     }
@@ -320,11 +235,7 @@ impl Journal {
             .protected
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
-        Ok(ProtectedWriterNameWitness {
-            directory: FileIdentity::of(&location.directory)?,
-            file: FileIdentity::of(self.native.file())?,
-            lock: FileIdentity::of(self.native.lock_file())?,
-        })
+        location.writer_witness::<JournalError>(self.native.file(), self.native.lock_file())
     }
 
     /// Returns the retained writer's physical names after fixed-name revalidation.
@@ -336,11 +247,8 @@ impl Journal {
             .protected
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
-        Ok(names_from_identities(
-            FileIdentity::of(&location.directory)?,
-            FileIdentity::of(self.native.file())?,
-            FileIdentity::of(self.native.lock_file())?,
-        ))
+        let witness = location.writer_witness::<JournalError>(self.native.file(), self.native.lock_file())?;
+        Ok(names_from_identities(witness.directory(), witness.file(), witness.lock()))
     }
 
     pub(crate) fn validate_protected_writer_name_witness(
@@ -352,13 +260,7 @@ impl Journal {
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
         self.require_protected_names_current()?;
-        if FileIdentity::of(&location.directory)? != witness.directory
-            || FileIdentity::of(self.native.file())? != witness.file
-            || FileIdentity::of(self.native.lock_file())? != witness.lock
-        {
-            return Err(JournalError::StaleAuthoritySnapshot);
-        }
-        Ok(())
+        location.require_writer_witness::<JournalError>(self.native.file(), self.native.lock_file(), witness)
     }
 
     #[cfg(any(test, all(feature = "test-fixtures", debug_assertions)))]
@@ -373,27 +275,14 @@ impl Journal {
             .protected
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
-        if retained.name != name
-            || retained.expected_uid != expected_uid
+        if retained.name() != name
+            || retained.expected_uid() != expected_uid
             || self.native.limits() != limits
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        let current: File = openat2(
-            CWD,
-            directory_path,
-            protected_directory_flags(),
-            Mode::empty(),
-            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
-        )
-        .map_err(protected_open_error)?
-        .into();
-        validate_protected_fd(&current, expected_uid, FileType::Directory, Mode::RWXU)?;
-        let held = fstat(&retained.directory).map_err(rustix_io)?;
-        let named = fstat(&current).map_err(rustix_io)?;
-        if held.st_dev != named.st_dev || held.st_ino != named.st_ino {
-            return Err(JournalError::StaleAuthoritySnapshot);
-        }
+        // Keep this independent description through the original name bookend.
+        let _current = retained.require_directory_at_uid_for_test::<JournalError>(directory_path, expected_uid)?;
         self.require_protected_names_current()
     }
 
@@ -401,7 +290,7 @@ impl Journal {
     pub(crate) fn protected_owner_uid(&self) -> Result<u32, JournalError> {
         self.protected
             .as_ref()
-            .map(|location| location.expected_uid)
+            .map(|location| location.expected_uid())
             .ok_or(JournalError::ProtectedBoundary)
     }
 
@@ -410,13 +299,7 @@ impl Journal {
             .protected
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
-        require_protected_file_names_current(
-            &retained.directory,
-            &retained.name,
-            retained.expected_uid,
-            self.native.lock_file(),
-            self.native.file(),
-        )
+        retained.require_names::<JournalError>(self.native.lock_file(), self.native.file())
     }
 
     #[cfg(test)]
@@ -527,266 +410,6 @@ impl Journal {
     }
 }
 
-pub(super) fn protected_directory_flags() -> OFlags {
-    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW
-}
-
-pub(super) fn resolve_protected_directory_from_root(
-    path: &Path,
-    expected_uid: u32,
-) -> Result<File, JournalError> {
-    resolve_protected_directory_from_root_with_retention(path, expected_uid, None)
-}
-
-pub(super) fn resolve_protected_directory_from_root_with_retention(
-    path: &Path,
-    expected_uid: u32,
-    retained: Option<&mut Vec<File>>,
-) -> Result<File, JournalError> {
-    resolve_protected_directory_from_root_original(path, expected_uid, retained, None)
-}
-
-pub(super) fn resolve_protected_directory_from_root_original(
-    path: &Path,
-    expected_uid: u32,
-    retained: Option<&mut Vec<File>>,
-    mut native_error: Option<&mut Option<rustix::io::Errno>>,
-) -> Result<File, JournalError> {
-    let bytes = path.as_os_str().as_bytes();
-    if bytes.first() != Some(&b'/') {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    let components = &bytes[1..];
-    if components.is_empty() {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    let components = components.split(|byte| *byte == b'/');
-    if components.clone().any(|component| {
-        component.is_empty()
-            || component == b"."
-            || component == b".."
-            || component.contains(&0)
-            || component.len() > MAXIMUM_PROTECTED_COMPONENT_BYTES
-    }) {
-        return Err(JournalError::ProtectedBoundary);
-    }
-
-    if let Some(ancestors) = retained.as_ref() {
-        if !ancestors.is_empty() {
-            return Err(JournalError::ProtectedBoundary);
-        }
-    }
-    let retained = match retained {
-        Some(ancestors) => {
-            ancestors
-                .try_reserve_exact(components.clone().count().saturating_add(1))
-                .map_err(io::Error::other)?;
-            Some(ancestors)
-        }
-        None => None,
-    };
-    let root: File = openat2(
-        CWD,
-        "/",
-        protected_directory_flags(),
-        Mode::empty(),
-        ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
-    )
-    .map_err(|error| {
-        if let Some(slot) = native_error.as_mut() {
-            **slot = Some(error);
-        }
-        protected_open_error(error)
-    })?
-    .into();
-    match retained {
-        None => traverse_protected_directory(root, components, expected_uid),
-        Some(ancestors) => {
-            // Capacity was reserved before the first descriptor exists.
-            ancestors.push(root);
-            traverse_protected_directory_observed(
-                ControllerDirectoryTraversalV1::Retained(ancestors),
-                components,
-                expected_uid,
-                native_error,
-            )
-        }
-    }
-}
-
-pub(super) fn traverse_protected_directory<'a>(
-    directory: File,
-    components: impl IntoIterator<Item = &'a [u8]>,
-    expected_uid: u32,
-) -> Result<File, JournalError> {
-    traverse_protected_directory_originals(
-        ControllerDirectoryTraversalV1::Ordinary(directory),
-        components,
-        expected_uid,
-    )
-}
-
-pub(super) enum ControllerDirectoryTraversalV1<'owner> {
-    Ordinary(File),
-    Retained(&'owner mut Vec<File>),
-}
-
-impl ControllerDirectoryTraversalV1<'_> {
-    pub(super) fn current(&self) -> Result<&File, JournalError> {
-        match self {
-            Self::Ordinary(directory) => Ok(directory),
-            Self::Retained(ancestors) => ancestors.last().ok_or(JournalError::ProtectedBoundary),
-        }
-    }
-
-    pub(super) fn admit_child(
-        &mut self,
-        child: File,
-        ancestry: &mut ProtectedAncestry,
-    ) -> Result<(), JournalError> {
-        match self {
-            Self::Ordinary(directory) => {
-                ancestry.admit(&child)?;
-                *directory = child;
-                Ok(())
-            }
-            Self::Retained(ancestors) => {
-                ancestors.push(child);
-                ancestry.admit(ancestors.last().ok_or(JournalError::ProtectedBoundary)?)
-            }
-        }
-    }
-
-    pub(super) fn finish(self) -> Result<File, JournalError> {
-        match self {
-            Self::Ordinary(directory) => Ok(directory),
-            Self::Retained(ancestors) => ancestors.pop().ok_or(JournalError::ProtectedBoundary),
-        }
-    }
-}
-
-pub(super) fn traverse_protected_directory_originals<'a>(
-    directory: ControllerDirectoryTraversalV1<'_>,
-    components: impl IntoIterator<Item = &'a [u8]>,
-    expected_uid: u32,
-) -> Result<File, JournalError> {
-    traverse_protected_directory_observed(directory, components, expected_uid, None)
-}
-
-pub(super) fn traverse_protected_directory_observed<'a>(
-    mut directory: ControllerDirectoryTraversalV1<'_>,
-    components: impl IntoIterator<Item = &'a [u8]>,
-    expected_uid: u32,
-    mut native_error: Option<&mut Option<rustix::io::Errno>>,
-) -> Result<File, JournalError> {
-    let mut ancestry = ProtectedAncestry::new(expected_uid);
-    ancestry.admit(directory.current()?)?;
-    for component in components {
-        let child: File = openat2(
-            directory.current()?,
-            OsStr::from_bytes(component),
-            protected_directory_flags(),
-            Mode::empty(),
-            ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
-        )
-        .map_err(|error| {
-            if let Some(slot) = native_error.as_mut() {
-                **slot = Some(error);
-            }
-            protected_open_error(error)
-        })?
-        .into();
-        directory.admit_child(child, &mut ancestry)?;
-    }
-    validate_protected_fd(
-        directory.current()?,
-        expected_uid,
-        FileType::Directory,
-        Mode::RWXU,
-    )?;
-    directory.finish()
-}
-
-/// Tracks the one-way transition from administrative to service-owned ancestry.
-pub(super) struct ProtectedAncestry {
-    pub(super) expected_uid: u32,
-    pub(super) service_owned: bool,
-}
-
-impl ProtectedAncestry {
-    pub(super) const fn new(expected_uid: u32) -> Self {
-        Self {
-            expected_uid,
-            service_owned: false,
-        }
-    }
-
-    pub(super) fn admit(&mut self, file: &File) -> Result<(), JournalError> {
-        let stat = fstat(file).map_err(rustix_io)?;
-        self.admit_metadata(stat.st_uid, stat.st_mode)
-    }
-
-    pub(super) fn admit_metadata(&mut self, uid: u32, mode: u32) -> Result<(), JournalError> {
-        if FileType::from_raw_mode(mode) != FileType::Directory || mode & 0o022 != 0 {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        if uid == self.expected_uid {
-            self.service_owned = true;
-        } else if uid != 0 || self.service_owned {
-            // A root-owned descendant cannot restore trust after a service has
-            // acquired authority over the path above it.
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(())
-    }
-}
-
-pub(super) fn validate_basename(name: &str) -> Result<(), JournalError> {
-    if name.is_empty()
-        || name.len() > MAXIMUM_PROTECTED_COMPONENT_BYTES
-        || name == "."
-        || name == ".."
-        || name.as_bytes().contains(&0)
-        || name.as_bytes().contains(&b'/')
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
-}
-
-pub(super) fn rustix_io(error: rustix::io::Errno) -> JournalError {
-    JournalError::Io(io::Error::from_raw_os_error(error.raw_os_error()))
-}
-
-pub(super) fn protected_open_error(error: rustix::io::Errno) -> JournalError {
-    if error == rustix::io::Errno::NOSYS
-        || error == rustix::io::Errno::PERM
-        || error == rustix::io::Errno::INVAL
-    {
-        JournalError::UnsupportedProtectedOpen
-    } else if error == rustix::io::Errno::LOOP
-        || error == rustix::io::Errno::XDEV
-        || error == rustix::io::Errno::NOTDIR
-        || error == rustix::io::Errno::ISDIR
-        || error == rustix::io::Errno::ACCESS
-    {
-        JournalError::ProtectedBoundary
-    } else {
-        rustix_io(error)
-    }
-}
-
-pub(super) fn protected_compaction_name(name: &str) -> String {
-    format!("{name}.compact.tmp")
-}
-
-pub(super) fn reject_operator_provisioning_history(length: u64) -> Result<(), JournalError> {
-    if length != 0 {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
-}
-
 pub(super) fn require_empty_operator_provisioning_state(
     next_sequence: u64,
     committed_transactions: usize,
@@ -798,287 +421,22 @@ pub(super) fn require_empty_operator_provisioning_state(
     Ok(())
 }
 
-pub(super) fn remove_stale_protected_compaction(
-    directory: &File,
-    name: &str,
-) -> Result<(), JournalError> {
-    let temporary = protected_compaction_name(name);
-    validate_basename(&temporary)?;
-    match unlinkat(directory, temporary.as_str(), AtFlags::empty()) {
-        Ok(()) => fsync(directory).map_err(rustix_io),
-        Err(error) if error == rustix::io::Errno::NOENT => Ok(()),
-        Err(error) => Err(rustix_io(error)),
-    }
-}
-
-pub(super) fn reject_stale_protected_compaction(
-    directory: &File,
-    name: &str,
-) -> Result<(), JournalError> {
-    let temporary = protected_compaction_name(name);
-    validate_basename(&temporary)?;
-    match statat(directory, temporary.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
-        Ok(_) => Err(JournalError::ProtectedBoundary),
-        Err(error) if error == rustix::io::Errno::NOENT => Ok(()),
-        Err(error) => Err(protected_open_error(error)),
-    }
-}
-
-pub(super) fn validate_protected_fd(
-    file: &File,
-    expected_uid: u32,
-    expected_type: FileType,
-    expected_mode: Mode,
-) -> Result<(), JournalError> {
-    let stat = fstat(file).map_err(rustix_io)?;
-    if stat.st_uid != expected_uid
-        || FileType::from_raw_mode(stat.st_mode) != expected_type
-        || Mode::from_raw_mode(stat.st_mode) != expected_mode
-        || (expected_type == FileType::RegularFile && stat.st_nlink != 1)
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
-}
-
-pub(super) fn open_protected_file(
-    directory: &File,
-    name: &str,
-    expected_uid: u32,
-    create: bool,
-    exclusive: bool,
-    truncate: bool,
-) -> Result<File, JournalError> {
-    let mut original = None;
-    let result = open_protected_file_into(
-        directory,
-        name,
-        expected_uid,
-        create,
-        exclusive,
-        truncate,
-        &mut original,
-    );
-    if let Err(error) = result {
-        if create && exclusive && original.is_some() {
-            drop(original);
-            let _ = unlinkat(directory, name, AtFlags::empty());
-            let _ = fsync(directory);
-        }
-        return Err(error);
-    }
-    original.ok_or(JournalError::ProtectedBoundary)
-}
-
-// The selected purpose parks the same actual open result before the shared
-// checks. The ordinary adapter keeps its historical local cleanup disposition.
-pub(super) fn open_protected_file_into(
-    directory: &File,
-    name: &str,
-    expected_uid: u32,
-    create: bool,
-    exclusive: bool,
-    truncate: bool,
-    original: &mut Option<File>,
-) -> Result<(), JournalError> {
-    open_protected_file_into_original(
-        directory,
-        name,
-        expected_uid,
-        create,
-        exclusive,
-        truncate,
-        original,
-        None,
-    )
-}
-
-pub(super) fn open_protected_file_into_original(
-    directory: &File,
-    name: &str,
-    expected_uid: u32,
-    create: bool,
-    exclusive: bool,
-    truncate: bool,
-    original: &mut Option<File>,
-    native_error: Option<&mut Option<rustix::io::Errno>>,
-) -> Result<(), JournalError> {
-    if original.is_some() {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    validate_basename(name)?;
-    let mut flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW;
-    if create {
-        flags |= OFlags::CREATE;
-    }
-    if exclusive {
-        flags |= OFlags::EXCL;
-    }
-    if truncate {
-        flags |= OFlags::TRUNC;
-    }
-    let create_mode = if create {
-        Mode::RUSR | Mode::WUSR
-    } else {
-        Mode::empty()
-    };
-    *original = Some(
-        openat2(
-            directory,
-            name,
-            flags,
-            create_mode,
-            ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
-        )
-        .map_err(|error| {
-            if let Some(slot) = native_error {
-                *slot = Some(error);
-            }
-            protected_open_error(error)
-        })?
-        .into(),
-    );
-    validate_protected_fd(
-        original.as_ref().ok_or(JournalError::ProtectedBoundary)?,
-        expected_uid,
-        FileType::RegularFile,
-        Mode::RUSR | Mode::WUSR,
-    )
-}
-
-pub(super) fn open_read_only_protected_file(
-    directory: &File,
-    name: &str,
-    expected_uid: u32,
-) -> Result<File, JournalError> {
-    let mut original = None;
-    open_read_only_protected_file_original(directory, name, expected_uid, &mut original)?;
-    match original {
-        Some(Ok(file)) => Ok(file),
-        _ => Err(JournalError::ProtectedBoundary),
-    }
-}
-
-pub(super) fn require_protected_file_names_current(
-    directory: &File,
-    name: &str,
-    expected_uid: u32,
-    lock: &File,
-    file: &File,
-) -> Result<(), JournalError> {
-    let named_lock =
-        open_read_only_protected_file(directory, &format!("{name}.lock"), expected_uid)?;
-    let named_file = open_read_only_protected_file(directory, name, expected_uid)?;
-    let held_lock = fstat(lock).map_err(rustix_io)?;
-    let held_file = fstat(file).map_err(rustix_io)?;
-    let current_lock = fstat(&named_lock).map_err(rustix_io)?;
-    let current_file = fstat(&named_file).map_err(rustix_io)?;
-    if held_lock.st_dev != current_lock.st_dev
-        || held_lock.st_ino != current_lock.st_ino
-        || held_file.st_dev != current_file.st_dev
-        || held_file.st_ino != current_file.st_ino
-    {
-        return Err(JournalError::StaleAuthoritySnapshot);
-    }
-    Ok(())
-}
-
-pub(super) fn open_read_only_protected_file_original(
-    directory: &File,
-    name: &str,
-    expected_uid: u32,
-    original: &mut Option<Result<File, rustix::io::Errno>>,
-) -> Result<(), JournalError> {
-    if original.is_some() {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    validate_basename(name)?;
-    *original = Some(
-        openat2(
-            directory,
-            name,
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::empty(),
-            ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
-        )
-        .map(File::from),
-    );
-    let file = match original.as_ref() {
-        Some(Ok(file)) => file,
-        Some(Err(error)) => return Err(protected_open_error(*error)),
-        None => return Err(JournalError::ProtectedBoundary),
-    };
-    validate_protected_fd(
-        file,
-        expected_uid,
-        FileType::RegularFile,
-        Mode::RUSR | Mode::WUSR,
-    )
-}
-
-/// Removes an uncommitted compaction file relative to the retained directory.
-pub(super) struct ProtectedTemporary<'a> {
-    pub(super) directory: &'a File,
-    pub(super) name: String,
-    pub(super) armed: bool,
-}
-
-impl ProtectedTemporary<'_> {
-    pub(super) fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for ProtectedTemporary<'_> {
-    fn drop(&mut self) {
-        if self.armed {
-            let _ = unlinkat(self.directory, self.name.as_str(), AtFlags::empty());
-            let _ = fsync(self.directory);
-        }
-    }
-}
 
 pub(super) fn compact_protected(
     location: &ProtectedJournalLocation,
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     limits: JournalLimits,
 ) -> Result<(File, ReplayState), JournalError> {
-    let temporary = protected_compaction_name(&location.name);
-    let mut replacement = open_protected_file(
-        &location.directory,
-        &temporary,
-        location.expected_uid,
-        true,
-        true,
-        true,
-    )?;
-    let mut cleanup = ProtectedTemporary {
-        directory: &location.directory,
-        name: temporary.clone(),
-        armed: true,
-    };
+    let (temporary, mut replacement, mut cleanup) =
+        location.begin_replacement::<JournalError>()?;
     write_compacted(&mut replacement, state, limits)?;
     replacement.sync_all()?;
     if replacement.metadata()?.len() > limits.maximum_journal_bytes {
         return Err(JournalError::JournalTooLarge);
     }
     drop(replacement);
-    renameat(
-        &location.directory,
-        temporary.as_str(),
-        &location.directory,
-        location.name.as_str(),
-    )
-    .map_err(rustix_io)?;
-    cleanup.disarm();
-    fsync(&location.directory).map_err(rustix_io)?;
-    let mut file = open_protected_file(
-        &location.directory,
-        &location.name,
-        location.expected_uid,
-        false,
-        false,
-        false,
+    let mut file = location.install_replacement::<JournalError>(
+        temporary.as_str(), &mut cleanup,
     )?;
     let replay = replay(&mut file, limits)?;
     if replay.durable_end != file.metadata()?.len() {

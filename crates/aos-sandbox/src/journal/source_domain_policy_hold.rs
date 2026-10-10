@@ -917,7 +917,7 @@ pub(super) fn ensure_source_domain(journal: &Journal) -> Result<(), JournalError
     if journal
         .protected
         .as_ref()
-        .map(|location| location.name.as_str())
+        .map(|location| location.name())
         != Some(JOURNAL_NAME)
     {
         return Err(JournalError::ProtectedBoundary);

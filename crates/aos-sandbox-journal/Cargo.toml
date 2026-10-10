@@ -5,12 +5,20 @@ edition = "2024"
 license.workspace = true
 
 [features]
+# Explicit Unix protected physical custody; generic Journal defaults stay portable.
+protected-unix = ["dep:rustix", "dep:aos-sandbox-linux"]
 # Dependent test harnesses explicitly select raw configuration/head/path injection.
 test-fixtures = []
 
 [dependencies]
 sha2.workspace = true
 thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+aos-sandbox-linux = { workspace = true, optional = true }
 
 [lints]
 workspace = true

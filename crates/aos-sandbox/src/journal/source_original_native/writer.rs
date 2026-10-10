@@ -1252,7 +1252,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
     ) -> Result<SourceOriginalAppendSubjectV5, JournalError> {
         self.require_current()?;
         super::super::validate_transaction(transaction, self.configured_limits())?;
-        let identity = super::super::FileIdentity::of(self.authority.journal.native.file())?;
+        let identity = super::super::FileIdentity::of::<crate::journal::JournalError>(self.authority.journal.native.file())?;
         let mutation_frames = u64::try_from(transaction.records().len())
             .map_err(|_| JournalError::SequenceExhausted)?;
         let commit_sequence = self.authority.journal.native.next_sequence()
@@ -1260,12 +1260,12 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             .and_then(|sequence| sequence.checked_add(1))
             .ok_or(JournalError::SequenceExhausted)?;
         Ok(SourceOriginalAppendSubjectV5 {
-            identity: (identity.device, identity.inode),
+            identity: identity.physical_pair(),
             transaction: *transaction.id(),
             digest: authority_preflight_digest(std::slice::from_ref(transaction)),
             begin_sequence: self.authority.journal.native.next_sequence(),
             commit_sequence,
-            begin_offset: identity.size,
+            begin_offset: identity.byte_len(),
         })
     }
 

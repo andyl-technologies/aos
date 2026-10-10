@@ -244,8 +244,7 @@ impl Journal {
                 .protected
                 .as_ref()
                 .ok_or(JournalError::ProtectedBoundary)?
-                .directory
-                .try_clone()?,
+                .clone_directory_for_test()?,
             NAME,
             hold_limits(),
             super::super::ProtectedOwnerPolicy::Exact(*uid),
@@ -438,11 +437,11 @@ impl RetainedCacheGateChecksV1 {
             original.limits,
         )?;
         let successor = target.protected_writer_name_witness()?;
-        if successor.directory != original.witness.directory
-            || successor.lock != original.witness.lock
-            || (successor.file.device, successor.file.inode)
-                != (original.witness.file.device, original.witness.file.inode)
-            || successor.file.size != length
+        if successor.directory() != original.witness.directory()
+            || successor.lock() != original.witness.lock()
+            || successor.file().physical_pair()
+                != original.witness.file().physical_pair()
+            || successor.file().byte_len() != length
             || target.snapshot_sequence() != sequence
             || sequence <= original.sequence
             || transaction

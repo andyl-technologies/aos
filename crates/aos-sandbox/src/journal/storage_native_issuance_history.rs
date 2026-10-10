@@ -135,7 +135,7 @@ impl<'journal> StorageNativeIssuanceHistoryDataV1<'journal> {
     /// Returns the complete captured physical extent, including native framing.
     #[must_use]
     pub const fn physical_bytes(&self) -> u64 {
-        self.witness.file.size
+        self.witness.file().byte_len()
     }
 
     /// Returns every validated committed transaction, not the final row count.
@@ -721,22 +721,22 @@ impl Journal {
         let result = (|| {
             let mut observer = match purpose {
                 StorageHistoryPurpose::NativeIssuance => {
-                    StorageHistoryObserverV1::new(self.native.limits(), witness.file.size)?
+                    StorageHistoryObserverV1::new(self.native.limits(), witness.file().byte_len())?
                 }
                 StorageHistoryPurpose::CanaryExport | StorageHistoryPurpose::PrimaryBootstrap => {
-                    StorageHistoryObserverV1::new_for_purpose(self.native.limits(), witness.file.size, purpose)?
+                    StorageHistoryObserverV1::new_for_purpose(self.native.limits(), witness.file().byte_len(), purpose)?
                 }
             };
-            let mut reader = ReadAtCursorV1::new(self.native.file(), witness.file.size);
+            let mut reader = ReadAtCursorV1::new(self.native.file(), witness.file().byte_len());
             let replayed = replay_original_observed(
                 &mut reader, self.native.limits(), None,
                 Some(DeploymentHistoryObserverV1::Storage(&mut observer)),
             )?;
             observer.finish(&replayed)?;
             if matches!(purpose, StorageHistoryPurpose::PrimaryBootstrap) {
-                require_primary_replayed_snapshot(self, &replayed, witness.file.size)?;
+                require_primary_replayed_snapshot(self, &replayed, witness.file().byte_len())?;
             } else {
-                require_replayed_snapshot(self, &replayed, witness.file.size)?;
+                require_replayed_snapshot(self, &replayed, witness.file().byte_len())?;
             }
             Ok((observer.transactions, replayed.committed_records))
         })();

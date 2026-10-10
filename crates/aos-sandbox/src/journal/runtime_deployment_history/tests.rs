@@ -255,8 +255,8 @@ fn unrun_actual_unrelated_protected_opener_captures_other_and_keeps_compaction()
     let (mut journal, _) = Journal::open_protected_at_uid(
         directory.path(), MAIN_NAME, MAIN_LIMITS, uid,
     ).unwrap();
-    assert!(journal.protected.as_ref().unwrap().original_compaction_selection
-        == OriginalCompactionSelectionV1::Other);
+    assert!(journal.protected.as_ref().unwrap().original_compaction_selection()
+        == &OriginalCompactionSelectionV1::Other);
 
     journal.commit(&JournalTransaction::new([96; 16], vec![
         JournalRecord::put(NAMESPACE, b"unrelated-catalog".to_vec(), b"data".to_vec()),
@@ -288,12 +288,12 @@ fn unrun_read_at_cursor_borrows_the_original_file_identity() {
     file.seek(SeekFrom::Start(11)).unwrap();
 
     let mut reader = ReadAtCursorV1::new(&file, bytes.len() as u64);
-    let original = FileIdentity::of(&file).unwrap();
+    let original = FileIdentity::of::<crate::journal::JournalError>(&file).unwrap();
     let borrowed = <ReadAtCursorV1<'_> as Borrow<File>>::borrow(&reader);
 
-    assert!(FileIdentity::of(borrowed).unwrap() == original);
+    assert!(FileIdentity::of::<crate::journal::JournalError>(borrowed).unwrap() == original);
     assert!(fixture.audit(&mut reader, bytes.len() as u64).is_ok());
-    let after = FileIdentity::of(
+    let after = FileIdentity::of::<crate::journal::JournalError>(
         <ReadAtCursorV1<'_> as Borrow<File>>::borrow(&reader),
     )
     .unwrap();
@@ -374,8 +374,8 @@ fn unrun_readonly_and_existing_openers_capture_actual_unrelated_origin() {
     )
     .unwrap();
 
-    assert!(readonly.journal.protected.as_ref().unwrap().original_compaction_selection
-        == OriginalCompactionSelectionV1::Other);
+    assert!(readonly.journal.protected.as_ref().unwrap().original_compaction_selection()
+        == &OriginalCompactionSelectionV1::Other);
     assert!(require_no_compaction(&readonly.journal).is_ok());
     drop(readonly);
     drop(writer);
@@ -387,7 +387,7 @@ fn unrun_readonly_and_existing_openers_capture_actual_unrelated_origin() {
         uid,
     )
     .unwrap();
-    assert!(existing.protected.as_ref().unwrap().original_compaction_selection
-        == OriginalCompactionSelectionV1::Other);
+    assert!(existing.protected.as_ref().unwrap().original_compaction_selection()
+        == &OriginalCompactionSelectionV1::Other);
     assert!(require_no_compaction(&existing).is_ok());
 }

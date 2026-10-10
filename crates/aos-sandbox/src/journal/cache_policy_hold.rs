@@ -769,7 +769,7 @@ pub(super) fn require_no_exclusive_mutation_v1(
     journal: &Journal,
     state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<(), JournalError> {
-    if journal.protected.as_ref().map(|location| location.name.as_str()) == Some(NAME)
+    if journal.protected.as_ref().map(|location| location.name()) == Some(NAME)
         && state.keys().any(|(namespace, key)| {
             *namespace == RecordNamespace::DesiredState
                 && (key.as_slice() == GIT_BIRTH_KEY || key.as_slice() == GIT_FENCE_KEY)
@@ -1034,7 +1034,7 @@ pub(super) fn require_valid_compaction(journal: &mut Journal) -> Result<(), Jour
     if journal
         .protected
         .as_ref()
-        .is_some_and(|location| location.name == NAME)
+        .is_some_and(|location| location.name() == NAME)
     {
         current_state(journal)?;
     }
@@ -1102,7 +1102,7 @@ impl Journal {
     pub(crate) fn cache_git_coverage_observation_for_writer_v1(
         &mut self,
     ) -> Result<Option<CacheGitCoverageObservationV1>, JournalError> {
-        if self.protected.as_ref().map(|location| location.name.as_str()) != Some(NAME) {
+        if self.protected.as_ref().map(|location| location.name()) != Some(NAME) {
             return Err(JournalError::ProtectedBoundary);
         }
         self.require_protected_names_current()?;
@@ -1278,7 +1278,7 @@ impl Journal {
             .protected
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
-        if location.name != NAME {
+        if location.name() != NAME {
             return Err(JournalError::ProtectedBoundary);
         }
         self.require_protected_names_current()?;
@@ -1370,9 +1370,9 @@ impl Journal {
             .protected
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
-        if location.expected_uid != uid
+        if location.expected_uid() != uid
             || !matches!(
-                location.name.as_str(),
+                location.name(),
                 "state.journal" | "authority.journal"
             )
         {

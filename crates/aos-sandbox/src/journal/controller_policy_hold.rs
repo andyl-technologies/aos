@@ -1591,7 +1591,7 @@ fn ensure_controller(journal: &Journal) -> Result<(), JournalError> {
     if journal
         .protected
         .as_ref()
-        .map(|location| location.name.as_str())
+        .map(|location| location.name())
         != Some("controller.journal")
     {
         return Err(JournalError::ProtectedBoundary);

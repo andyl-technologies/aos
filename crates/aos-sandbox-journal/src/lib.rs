@@ -24,10 +24,15 @@
 //! Controller, Storage, and session-security owners use these same mechanics
 //! without sharing authority.
 //!
-//! This crate does not open protected storage, decode domain namespaces, issue
-//! authority, sign records, apply semantic transitions, or own replay visibility.
-//! Lock acquisition, compaction, and semantic replay remain with
-//! their existing owners; this is not a complete journal ownership migration.
+//! The opt-in Unix physical owner opens protected paths and retains the
+//! actual directory and replacement-cleanup loan. Default generic selection
+//! remains portable. Domain owners still acquire locks, replay domain schemas,
+//! admit authority, and perform final crossings while retaining original causes.
+//! This physical prerequisite is not a complete protected Journal migration.
+
+/// Owns opt-in Unix physical custody without semantic replay or authority.
+#[cfg(all(unix, feature = "protected-unix"))]
+pub mod protected_storage;
 
 pub mod framing;
 pub mod geometry;

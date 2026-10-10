@@ -193,20 +193,20 @@ impl Journal {
             Path::new(MAIN_DIRECTORY_V1), SIDECAR_NAME, 0, self.native.limits(),
         )?;
         let witness = self.protected_writer_name_witness()?;
-        let physical = FileIdentity::of(self.native.file())?;
-        if physical.size > MAIN_LIMITS.maximum_journal_bytes
-            || physical.size > self.native.limits().maximum_journal_bytes
+        let physical = FileIdentity::of::<crate::journal::JournalError>(self.native.file())?;
+        if physical.byte_len() > MAIN_LIMITS.maximum_journal_bytes
+            || physical.byte_len() > self.native.limits().maximum_journal_bytes
         {
             return Err(JournalError::JournalTooLarge);
         }
 
         let result = (|| {
-            let mut history = SidecarHistoryAuditV1::new(physical.size)?;
-            let mut reader = ReadAtCursorV1::new(self.native.file(), physical.size);
+            let mut history = SidecarHistoryAuditV1::new(physical.byte_len())?;
+            let mut reader = ReadAtCursorV1::new(self.native.file(), physical.byte_len());
             let replayed = replay_sidecar_observed(&mut reader, self.native.limits(), &mut history)?;
             let retained = history.finish(&replayed)?;
             self.require_deployment_pair_replayed_snapshot_v1(
-                &replayed, physical.size,
+                &replayed, physical.byte_len(),
             )?;
             Ok(retained)
         })();
@@ -216,7 +216,7 @@ impl Journal {
             Path::new(MAIN_DIRECTORY_V1), SIDECAR_NAME, 0, self.native.limits(),
         )?;
         self.validate_protected_writer_name_witness(&witness)?;
-        if FileIdentity::of(self.native.file())? != physical {
+        if FileIdentity::of::<crate::journal::JournalError>(self.native.file())? != physical {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
         owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
@@ -362,11 +362,11 @@ pub(crate) fn observed_native_fixture_v1(
             .ok_or(JournalError::SequenceExhausted)?;
         sequence = sequence.checked_add(frames).ok_or(JournalError::SequenceExhausted)?;
     }
-    let physical = FileIdentity::of(&file)?;
+    let physical = FileIdentity::of::<crate::journal::JournalError>(&file)?;
     let writer_position = file.stream_position()?;
     require_sidecar_capture_limits(limits)?;
-    let mut audit = SidecarHistoryAuditV1::new(physical.size)?;
-    let mut reader = ReadAtCursorV1::new(&file, physical.size);
+    let mut audit = SidecarHistoryAuditV1::new(physical.byte_len())?;
+    let mut reader = ReadAtCursorV1::new(&file, physical.byte_len());
     let replayed = replay_sidecar_observed(&mut reader, limits, &mut audit)?;
     drop(reader);
     if file.stream_position()? != writer_position {

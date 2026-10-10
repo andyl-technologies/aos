@@ -1028,26 +1028,26 @@ pub(crate) fn require_capacity_owner(
         GlobalCapacityReservationPurposeV1::SourceFirstSourceSuccessorAck => {
             let location = journal.protected.as_ref()
                 .ok_or(JournalError::ProtectedBoundary)?;
-            if location.expected_uid == 0 {
+            if location.expected_uid() == 0 {
                 return Err(JournalError::ProtectedBoundary);
             }
             journal.require_protected_named_location(
                 Path::new(crate::lifecycle::protected_journal_join::PROTECTED_SOURCE_DOMAIN_ROOT),
                 crate::lifecycle::protected_journal_join::PROTECTED_SOURCE_DOMAIN_JOURNAL,
-                location.expected_uid,
+                location.expected_uid(),
                 crate::lifecycle::protected_journal_join::source_domain_journal_limits(),
             )
         }
         GlobalCapacityReservationPurposeV1::ControllerFirstSourceSuccessorComplete => {
             let location = journal.protected.as_ref()
                 .ok_or(JournalError::ProtectedBoundary)?;
-            if location.expected_uid == 0 {
+            if location.expected_uid() == 0 {
                 return Err(JournalError::ProtectedBoundary);
             }
             journal.require_protected_named_location(
                 Path::new("/var/lib/aos/sandboxd"),
                 "controller.journal",
-                location.expected_uid,
+                location.expected_uid(),
                 crate::controller_service::journal::production_journal_limits(),
             )
         }
