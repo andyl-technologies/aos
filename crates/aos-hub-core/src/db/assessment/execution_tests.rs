@@ -492,6 +492,7 @@ async fn cached_and_offline_scans_reuse_committed_observations_without_provider_
         first_observed_at: observed_at.clone(),
     });
     data.upstream.push(aos_assessment::input::UpstreamBinding {
+        page_observations: vec![],
         component_ref: "component".into(),
         response_byte_length: 2,
         source_refs: vec![],

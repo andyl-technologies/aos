@@ -54,6 +54,7 @@ impl EvidenceStore for Custody {
 
 struct Source {
     responses: Mutex<VecDeque<Vec<u8>>>,
+    status: u16,
 }
 
 #[async_trait::async_trait]
@@ -66,10 +67,13 @@ impl SourceTransport for Source {
             .pop_front()
             .context("source unavailable")?;
         Ok(SourceResponse {
-            status: 200,
+            status: self.status,
             transferred_bytes: bytes.len() as u64,
             body: bytes,
-            validators: None,
+            validators: Some(aos_assessment::observation::HttpValidators {
+                etag: Some("fixture-etag".into()),
+                last_modified: None,
+            }),
             throttle: Default::default(),
         })
     }
@@ -79,12 +83,15 @@ struct Port {
     source: Source,
     custody: Custody,
     operations: Mutex<Vec<ProviderOperation>>,
+    observations: Mutex<BTreeMap<Sha256Digest, aos_assessment::observation::ProviderObservationV1>>,
+    now: Timestamp,
 }
 
 impl Port {
     fn new(responses: Vec<serde_json::Value>) -> Result<Self> {
         Ok(Self {
             source: Source {
+                status: 200,
                 responses: Mutex::new(
                     responses
                         .iter()
@@ -94,6 +101,8 @@ impl Port {
             },
             custody: Custody::default(),
             operations: Mutex::new(vec![]),
+            observations: Mutex::new(BTreeMap::new()),
+            now: common::evaluated_at()?,
         })
     }
 }
@@ -109,7 +118,23 @@ impl AcquisitionPort for Port {
             .lock()
             .map_err(|_| anyhow::anyhow!("operation lock"))?
             .push(operation.clone());
-        let now = FixedClock.now()?;
+        let now = self.now.clone();
+        let cache_ref = self
+            .observations
+            .lock()
+            .map_err(|_| anyhow::anyhow!("observation lock"))?
+            .get(&operation.digest()?)
+            .cloned()
+            .map(|observation| {
+                CachedResponse::from_observation(
+                    operation,
+                    observation,
+                    &now,
+                    ProviderLimits::default().response_bytes,
+                )
+            })
+            .transpose()?
+            .flatten();
         let expires = Timestamp::from_unix_seconds(now.unix_seconds() + 60)?;
         let requests = operation.source_requests()?.len() as u32;
         let plan = ProviderWorkPlanV1 {
@@ -141,7 +166,7 @@ impl AcquisitionPort for Port {
                 requests,
                 deadline: expires,
             },
-            cache_ref: None,
+            cache_ref,
             continuation: previous.map(ProviderPageV1::digest).transpose()?,
             continuation_ref: previous.cloned(),
             operation: operation.clone(),
@@ -152,16 +177,199 @@ impl AcquisitionPort for Port {
                 ..Default::default()
             },
         };
-        execute_source(
+        let result = execute_source(
             &self.source,
             &self.custody,
-            &FixedClock,
+            &InstantClock(self.now.clone()),
             &plan,
             "fixture/v1",
             3600,
         )
-        .await
+        .await?;
+        for object in &result.normalized_objects {
+            if let NormalizedObject::Observation(observation) = &object.object {
+                self.observations
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("observation lock"))?
+                    .insert(operation.digest()?, observation.clone());
+            }
+        }
+        Ok(result)
     }
+}
+
+struct InstantClock(Timestamp);
+
+impl Clock for InstantClock {
+    fn now(&self) -> Result<Timestamp> {
+        Ok(self.0.clone())
+    }
+}
+
+#[tokio::test]
+async fn conditional_chain_renews_freshness_without_resetting_retrieval_or_candidate_history()
+-> Result<()> {
+    let mut data = common::fixture("1.2.0")?;
+    data.policy.upstream_max_age_seconds = 3600;
+    let subjects = vec!["subject".into()];
+    let profiles = vec![Profile::Updates];
+    let mut port = Port::new(vec![json!([{"tag_name":"v1.3.0"}])])?;
+    acquire(
+        &port,
+        &port.custody,
+        "fixture",
+        &mut data,
+        &subjects,
+        &profiles,
+    )
+    .await?;
+    let original = data.upstream[0].clone();
+    let history = data.history.clone();
+    port.now = Timestamp::from_unix_seconds(port.now.unix_seconds() + 7200)?;
+    port.source.status = 304;
+    port.source
+        .responses
+        .get_mut()
+        .map_err(|_| anyhow::anyhow!("source lock"))?
+        .push_back(vec![]);
+    acquire(
+        &port,
+        &port.custody,
+        "fixture",
+        &mut data,
+        &subjects,
+        &profiles,
+    )
+    .await?;
+    let binding = &data.upstream[0];
+    assert_eq!(
+        binding.observation.retrieved_at_unix,
+        original.observation.retrieved_at_unix
+    );
+    assert_eq!(
+        binding.observation.response_digest,
+        original.observation.response_digest
+    );
+    assert_eq!(data.history, history);
+    assert_eq!(binding.validated_at_unix(), port.now.unix_seconds());
+    assert_ne!(
+        binding.page_observations[0].digest()?,
+        original.page_observations[0].digest()?
+    );
+    let input = data.freeze_selected(profiles.clone(), subjects.clone(), port.now.clone())?;
+    let result = aos_assessment::evaluator::evaluate(&input, &data)?;
+    let mut unbound = data.clone();
+    unbound.upstream[0].page_observations.clear();
+    assert!(aos_assessment::evaluator::evaluate(&input, &unbound).is_err());
+    let coverage = &result.subject_results[0].coverage[0];
+    assert_eq!(
+        coverage.state,
+        aos_assessment::security::CoverageState::Complete
+    );
+    let deadline =
+        aos_assessment_runtime::status::profile_freshness_deadline(&input, &data, coverage)?
+            .context("freshness deadline")?;
+    assert_eq!(deadline.unix_seconds(), port.now.unix_seconds() + 3600);
+    assert_eq!(
+        aos_assessment::evaluator::evaluate(&input, &data)?.digest()?,
+        result.digest()?
+    );
+    let expired = data.freeze_selected(profiles.clone(), subjects.clone(), deadline)?;
+    let stale = aos_assessment::evaluator::evaluate(&expired, &data)?;
+    assert_ne!(
+        stale.coverage,
+        aos_assessment::security::CoverageState::Complete
+    );
+    assert_eq!(
+        stale.subject_results[0].versions[0].decision,
+        aos_assessment::result::VersionDecision::Unknown
+    );
+
+    let mut changed = data.clone();
+    changed.upstream[0].page_observations[0].project = "another/project".into();
+    assert!(
+        changed
+            .freeze_selected(profiles.clone(), subjects.clone(), port.now.clone())
+            .is_err()
+    );
+    changed = data.clone();
+    changed.upstream[0].page_observations[0].source_refs[0].digest =
+        Sha256Digest::of_bytes("other source");
+    assert!(
+        changed
+            .freeze_selected(profiles.clone(), subjects.clone(), port.now.clone())
+            .is_err()
+    );
+    changed = data.clone();
+    changed.upstream[0].page_observations[0].validated_at =
+        Timestamp::from_unix_seconds(port.now.unix_seconds() + 1)?;
+    assert!(
+        changed
+            .freeze_selected(profiles, subjects, port.now.clone())
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn all_upstream_pages_constrain_freshness_and_partial_chains_never_renew_it() -> Result<()> {
+    let mut data = common::fixture("1.2.0")?;
+    data.policy.upstream_max_age_seconds = 3600;
+    let subjects = vec!["subject".into()];
+    let profiles = vec![Profile::Updates];
+    let first = (3..23)
+        .map(|minor| json!({"tag_name":format!("v1.{minor}.0")}))
+        .collect::<Vec<_>>();
+    let port = Port::new(vec![json!(first), json!([{"tag_name":"v1.23.0"}])])?;
+    acquire(
+        &port,
+        &port.custody,
+        "fixture",
+        &mut data,
+        &subjects,
+        &profiles,
+    )
+    .await?;
+    assert_eq!(data.upstream[0].page_observations.len(), 2);
+    let mut missing_page = data.clone();
+    missing_page.upstream[0].page_observations.pop();
+    assert!(
+        missing_page
+            .freeze_selected(profiles.clone(), subjects.clone(), port.now.clone())
+            .is_err()
+    );
+    let original = data.upstream[0].validated_at_unix();
+    data.upstream[0].page_observations[1].validated_at =
+        Timestamp::from_unix_seconds(original + 1000)?;
+    data.upstream[0].page_observations[1].expires_at =
+        Timestamp::from_unix_seconds(original + 4600)?;
+    let input = data.freeze_selected(
+        profiles.clone(),
+        subjects.clone(),
+        Timestamp::from_unix_seconds(original + 1000)?,
+    )?;
+    let result = aos_assessment::evaluator::evaluate(&input, &data)?;
+    let coverage = &result.subject_results[0].coverage[0];
+    assert_eq!(
+        coverage.state,
+        aos_assessment::security::CoverageState::Complete
+    );
+    assert_eq!(
+        aos_assessment_runtime::status::profile_freshness_deadline(&input, &data, coverage)?
+            .context("deadline")?
+            .unix_seconds(),
+        original + 3600
+    );
+    let expired = data.freeze_selected(
+        profiles,
+        subjects,
+        Timestamp::from_unix_seconds(original + 3600)?,
+    )?;
+    assert_ne!(
+        aos_assessment::evaluator::evaluate(&expired, &data)?.coverage,
+        aos_assessment::security::CoverageState::Complete
+    );
+    Ok(())
 }
 
 fn osv_record(modified: &str) -> serde_json::Value {

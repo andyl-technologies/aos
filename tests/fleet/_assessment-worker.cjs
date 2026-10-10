@@ -93,13 +93,15 @@ async function main() {
   let sourceStatus = 200;
   let sourceHeaders = {};
   let expectedAuthorization = null;
+  let expectedEtag = null;
   const outboundService = async request => {
     physicalCalls += 1;
     assert.equal(request.method, 'GET');
     assert.equal(request.url, 'https://api.github.com/repos/example/fixture/tags?per_page=20&page=1');
     assert.equal(request.headers.get('accept-encoding'), 'identity');
     assert.equal(request.headers.get('authorization'), expectedAuthorization);
-    return new Response(sourceBody, {
+    assert.equal(request.headers.get('if-none-match'), expectedEtag);
+    return new Response(sourceStatus === 304 ? null : sourceBody, {
       status: sourceStatus, headers: { etag: 'fleet-tags', ...sourceHeaders },
     });
   };
@@ -321,7 +323,67 @@ async function main() {
     );
     assert.equal(throttleReplay.body, throttleReceipts[0].body);
     assert.equal(physicalCalls, 9);
-    console.log(JSON.stringify({ status: 'passed', physicalCalls, concurrentReceipts: receipts.length, throttleReplay: true }));
+
+    // Conditional work carries compact exact observation metadata; the Worker
+    // reads its own partition-scoped R2 body and preserves original retrieval.
+    sourceStatus = 304;
+    sourceHeaders = {};
+    expectedEtag = 'fleet-tags';
+    const prior = observation.object;
+    const priorProjection = receipts[0].document.normalizedObjects.find(projection =>
+      projection.object.kind === 'observation');
+    const conditional = { ...plan(), cacheRef: {
+      evidence: prior.sourceRefs.find(source => source.digest === prior.responseDigest),
+      validators: prior.validators,
+      observationDigest: priorProjection.digest,
+      observation: prior,
+    }};
+    const conditionalReceipt = await receipt(
+      await request(runtime, WORK, conditional, 'aos-provider-plan-v1'), WORK, 'aos-provider-result-v1',
+    );
+    assert.equal(physicalCalls, 10);
+    assert.equal(conditionalReceipt.document.outcome, 'not-modified');
+    assert.equal(conditionalReceipt.document.usage.compressedBytes, 0);
+    const revalidated = conditionalReceipt.document.normalizedObjects.find(projection =>
+      projection.object.kind === 'observation').object.object;
+    assert.equal(revalidated.retrievedAt, prior.retrievedAt);
+    assert.equal(revalidated.responseDigest, prior.responseDigest);
+    assert.ok(Date.parse(revalidated.validatedAt) >= Date.parse(prior.validatedAt));
+    assert.ok(!Object.hasOwn(conditionalReceipt.document, 'rawBody'));
+
+    const wrongQuery = structuredClone(conditional);
+    wrongQuery.planId = randomBytes(16).toString('hex');
+    wrongQuery.operation.page = 2;
+    assert.equal((await request(runtime, WORK, wrongQuery, 'aos-provider-plan-v1')).status, 409);
+    const wrongValidator = structuredClone(conditional);
+    wrongValidator.planId = randomBytes(16).toString('hex');
+    wrongValidator.cacheRef.validators.etag = 'unadmitted-etag';
+    assert.equal((await request(runtime, WORK, wrongValidator, 'aos-provider-plan-v1')).status, 409);
+    assert.equal(physicalCalls, 10);
+
+    const missingCustody = { ...plan(), cacheRef: conditional.cacheRef, authorizationPartition: 'absent-partition' };
+    assert.equal((await request(runtime, WORK, missingCustody, 'aos-provider-plan-v1')).status, 409);
+    assert.equal(physicalCalls, 11);
+    assert.equal((await request(runtime, WORK, missingCustody, 'aos-provider-plan-v1')).status, 409);
+    assert.equal(physicalCalls, 11);
+
+    const conditionalBucket = await runtime.getR2Bucket('ASSESSMENT_EVIDENCE');
+    await conditionalBucket.put(evidenceKey, 'changed source bytes');
+    const corrupted = { ...plan(), cacheRef: conditional.cacheRef };
+    assert.equal((await request(runtime, WORK, corrupted, 'aos-provider-plan-v1')).status, 409);
+    assert.equal(physicalCalls, 12);
+    await conditionalBucket.put(evidenceKey, '[]');
+    assert.equal((await request(runtime, WORK, corrupted, 'aos-provider-plan-v1')).status, 409);
+    assert.equal(physicalCalls, 12);
+
+    await runtime.dispose();
+    runtime = new Miniflare(options);
+    const conditionalReplay = await receipt(
+      await request(runtime, WORK, conditional, 'aos-provider-plan-v1'), WORK, 'aos-provider-result-v1',
+    );
+    assert.equal(conditionalReplay.body, conditionalReceipt.body);
+    assert.equal(physicalCalls, 12);
+    console.log(JSON.stringify({ status: 'passed', physicalCalls, concurrentReceipts: receipts.length, throttleReplay: true, conditionalReplay: true, missingCustody: true }));
   } finally {
     await runtime.dispose();
   }

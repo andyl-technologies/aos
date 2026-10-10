@@ -57,7 +57,10 @@ impl SourceTransport for Response {
             status: self.0,
             transferred_bytes: body.len() as u64,
             body,
-            validators: None,
+            validators: Some(aos_assessment::observation::HttpValidators {
+                etag: Some("fixture-etag".into()),
+                last_modified: None,
+            }),
             throttle: SourceThrottleHeaders {
                 retry_after: self.1.clone(),
                 ..Default::default()
@@ -369,6 +372,115 @@ fn legacy_budget_upgrade_preserves_cooldown_and_refuses_symlinked_state() -> Res
     assert!(
         store
             .claim_assessment_source(&exhausted, &exhausted.issued_at)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn conditional_index_requires_settlement_exact_partition_and_query_and_never_rolls_back()
+-> Result<()> {
+    let (_root, store) = store()?;
+    let work = plan("conditional-old", 100_000)?;
+    let observed = result(&work, 200, None).await?;
+    store.retain_assessment_source(&work.authorization_partition, b"[]")?;
+    store.claim_assessment_source(&work, &work.issued_at)?;
+    assert!(
+        store
+            .retain_local_conditional_response(&work, &observed)
+            .is_err()
+    );
+    store.settle_assessment_source(&work, Some(&observed), &observed.completed_at)?;
+    store.retain_local_conditional_response(&work, &observed)?;
+    let cache = store
+        .local_conditional_response(
+            &work.authorization_partition,
+            &work.operation,
+            &timestamp(100_001)?,
+            1024,
+        )?
+        .context("conditional cache")?;
+    assert_eq!(cache.evidence.digest, Sha256Digest::of_bytes(b"[]"));
+    assert_eq!(cache.validators.etag.as_deref(), Some("fixture-etag"));
+    assert!(
+        store
+            .local_conditional_response(
+                "other-partition",
+                &work.operation,
+                &timestamp(100_001)?,
+                1024
+            )?
+            .is_none()
+    );
+    assert!(
+        store
+            .local_conditional_response(
+                &work.authorization_partition,
+                &work.operation,
+                &timestamp(99_999)?,
+                1024
+            )
+            .is_err()
+    );
+    assert!(
+        store
+            .local_conditional_response(
+                &work.authorization_partition,
+                &work.operation,
+                &timestamp(100_001)?,
+                1
+            )?
+            .is_none()
+    );
+    let different = ProviderOperation::ObserveTags {
+        repository: "example/other".into(),
+        tag_prefix: "v".into(),
+        page: 1,
+    };
+    assert!(
+        store
+            .local_conditional_response(
+                &work.authorization_partition,
+                &different,
+                &timestamp(100_001)?,
+                1024
+            )?
+            .is_none()
+    );
+
+    let newer = plan("conditional-new", 100_100)?;
+    let refreshed = result(&newer, 200, None).await?;
+    store.claim_assessment_source(&newer, &newer.issued_at)?;
+    store.settle_assessment_source(&newer, Some(&refreshed), &refreshed.completed_at)?;
+    store.retain_local_conditional_response(&newer, &refreshed)?;
+    store.retain_local_conditional_response(&work, &observed)?;
+    let head = store
+        .local_conditional_response(
+            &work.authorization_partition,
+            &work.operation,
+            &timestamp(100_101)?,
+            1024,
+        )?
+        .context("newest cache")?;
+    assert_eq!(head.observation.validated_at, newer.issued_at);
+    assert_ne!(head.observation_digest, cache.observation_digest);
+    assert_eq!(head.evidence, cache.evidence);
+
+    let path = store
+        .assessment_source_directory(&work.authorization_partition)?
+        .join("observations")
+        .join(work.operation.digest()?.hex());
+    let mut corrupted = head.observation;
+    corrupted.project = "example/foreign".into();
+    fs::write(path, serde_json::to_vec(&corrupted)?)?;
+    assert!(
+        store
+            .local_conditional_response(
+                &work.authorization_partition,
+                &work.operation,
+                &timestamp(100_101)?,
+                1024
+            )
             .is_err()
     );
     Ok(())

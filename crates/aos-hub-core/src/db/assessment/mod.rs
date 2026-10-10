@@ -65,6 +65,9 @@ mod execution_tests;
 mod provider_state_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod conditional_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod status_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

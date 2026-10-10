@@ -5,7 +5,7 @@
 //! bodies remain with the evidence port; the coordinator receives compact,
 //! digest-bound projections in `aos.provider-work-result/v1`.
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use aos_assessment::observation::{HttpValidators, SourceEvidenceRef};
 use aos_assessment::security::SecurityIdentity;
 use aos_assessment::time::Timestamp;
@@ -165,6 +165,61 @@ pub struct CachedResponse {
     pub observation_digest: Sha256Digest,
     /// Exact admitted compact observation for source, validators and original time.
     pub observation: aos_assessment::observation::ProviderObservationV1,
+}
+
+impl CachedResponse {
+    /// Selects exact admitted GET evidence compatible with the current operation.
+    ///
+    /// Missing validators and nonconditional operations produce no cache. The
+    /// physical executor must still verify partition-scoped byte custody.
+    ///
+    /// # Errors
+    /// Returns an error for invalid or mismatched admitted observation metadata.
+    pub fn from_observation(
+        operation: &ProviderOperation,
+        observation: aos_assessment::observation::ProviderObservationV1,
+        issued_at: &Timestamp,
+        response_limit: u64,
+    ) -> Result<Option<Self>> {
+        observation.validate()?;
+        if observation.provider != operation.provider()
+            || !operation.supports_project(&observation.project)
+            || observation.adapter_version != operation.adapter_version()
+            || observation.request_identity_digest != operation.digest()?
+            || observation.validated_at > *issued_at
+        {
+            bail!("conditional observation differs from the exact admitted operation");
+        }
+        if matches!(operation, ProviderOperation::QueryOsv { .. })
+            || matches!(operation, ProviderOperation::RetrieveAdvisories { ids, .. } if ids.len() != 1)
+        {
+            return Ok(None);
+        }
+        let Some(validators) = observation.validators.clone() else {
+            return Ok(None);
+        };
+        if validators.etag.is_none() && validators.last_modified.is_none() {
+            return Ok(None);
+        }
+        let evidence = observation
+            .source_refs
+            .iter()
+            .find(|source| {
+                source.digest == observation.response_digest
+                    && source.origin == operation.provider()
+            })
+            .context("conditional observation lacks exact raw response custody")?
+            .clone();
+        if evidence.byte_length > response_limit {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            evidence,
+            validators,
+            observation_digest: observation.digest()?,
+            observation,
+        }))
+    }
 }
 
 /// Preserves one positional OSV continuation without null/empty placeholder tokens.

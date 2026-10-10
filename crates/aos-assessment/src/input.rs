@@ -112,6 +112,67 @@ pub struct UpstreamBinding {
     /// Exact original page custody and any retained source-chain manifest.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_refs: Vec<crate::observation::SourceEvidenceRef>,
+    /// Exact admitted page observations, including conditional validation times.
+    /// Empty legacy bindings retain retrieval-based freshness. These records
+    /// describe provenance; their checksums do not independently grant trust.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub page_observations: Vec<crate::observation::ProviderObservationV1>,
+}
+
+impl UpstreamBinding {
+    /// Returns the earliest validation time of the complete retained page set.
+    #[must_use]
+    pub fn validated_at_unix(&self) -> u64 {
+        self.page_observations
+            .iter()
+            .map(|page| page.validated_at.unix_seconds())
+            .min()
+            .unwrap_or(self.observation.retrieved_at_unix)
+    }
+
+    /// Returns the earliest exclusive source expiry when page records exist.
+    #[must_use]
+    pub fn expires_at_unix(&self) -> Option<u64> {
+        self.page_observations
+            .iter()
+            .map(|page| page.expires_at.unix_seconds())
+            .min()
+    }
+
+    fn validate_pages(&self, evaluated_at: &Timestamp) -> Result<()> {
+        if self.page_observations.len() > 128 {
+            bail!("upstream validation exceeds its page ceiling");
+        }
+        let mut identities = BTreeSet::new();
+        let mut questions = BTreeSet::new();
+        let mut proven_sources = BTreeSet::new();
+        for page in &self.page_observations {
+            page.validate()?;
+            if !identities.insert(page.digest()?)
+                || !questions.insert(page.request_identity_digest)
+                || page.provider != self.observation.provider
+                || page.project != self.observation.project
+                || page.adapter_version != self.observation.adapter_version
+                || page.validated_at > *evaluated_at
+                || page
+                    .source_refs
+                    .iter()
+                    .any(|source| !self.source_refs.contains(source))
+            {
+                bail!("upstream validation differs from its retained source scope");
+            }
+            proven_sources.extend(page.source_refs.iter());
+        }
+        if !self.page_observations.is_empty()
+            && self.source_refs.iter().any(|source| {
+                source.digest != self.observation.response_digest
+                    && !proven_sources.contains(source)
+            })
+        {
+            bail!("upstream validation omits retained page evidence");
+        }
+        Ok(())
+    }
 }
 
 /// Retains a source-native first-observation identity independent of HTTP caches.
@@ -377,6 +438,7 @@ impl EvaluationData {
                 bail!("upstream observation differs from the declared primary project");
             }
             binding.observation.validate()?;
+            binding.validate_pages(&evaluated_at)?;
             if binding.response_byte_length > 64 * 1024 * 1024 {
                 bail!("upstream response custody exceeds per-task byte budget");
             }

@@ -155,6 +155,24 @@ or treat every old terminal result as a previously committed profile head.
 Shared status requires a new admission to pin inventory/policy custody when
 reading a legacy journal. Existing immutable receipts remain inspectable.
 
+Conditional refreshes use the exact admitted operation, partition, adapter and
+retained response validators. A `304 Not Modified` preserves original response
+bytes and retrieval time while admitting a new validation record. Frozen update
+inputs retain all page records; the earliest page validation and exclusive source
+expiry constrain freshness. Candidate first-observation history is unchanged.
+An incomplete chain cannot renew a complete/current conclusion. Legacy bindings
+without page records continue to use their original retrieval time.
+
+Native and local execution retain raw evidence privately. Worker execution reads
+its own partition-scoped R2 evidence; Hybrid sends compact observation references
+and validators to the Worker. Missing or changed bytes fail validation, and a
+settled invocation replay makes no further provider call. Conditional requests
+consume the same physical request allowance as other source requests. POST OSV
+batch queries and multi-record retrievals do not use conditional response caches.
+Local conditional metadata requires an exact settled source receipt, retains
+at most 4,096 operation entries per partition, and cannot roll back when an old
+receipt is replayed. A full index returns a capacity error.
+
 ## Native controller
 
 Supply an owner-private JSON file with `aos-hub serve

@@ -5,6 +5,7 @@ use aos_assessment::input::EvaluationData;
 use aos_assessment::result::PackageAssessmentV1;
 
 mod budget;
+mod conditional;
 mod journal;
 
 impl StateStore {

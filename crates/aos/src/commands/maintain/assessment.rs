@@ -447,6 +447,12 @@ impl AcquisitionPort for LocalPort<'_> {
             "nvd" if self.credentials.nvd.is_some() => Some("local-nvd-read".into()),
             _ => None,
         };
+        let cache_ref = self.evidence.store.local_conditional_response(
+            self.evidence.partition,
+            operation,
+            &now,
+            ProviderLimits::default().response_bytes,
+        )?;
         let plan = ProviderWorkPlanV1 {
             schema: PROVIDER_WORK_PLAN_V1.into(),
             deployment_id: "local".into(),
@@ -476,7 +482,7 @@ impl AcquisitionPort for LocalPort<'_> {
                 requests,
                 deadline: expires,
             },
-            cache_ref: None,
+            cache_ref,
             continuation: previous.map(ProviderPageV1::digest).transpose()?,
             continuation_ref: previous.cloned(),
             operation: operation.clone(),
@@ -505,6 +511,9 @@ impl AcquisitionPort for LocalPort<'_> {
                 self.evidence
                     .store
                     .settle_assessment_source(&plan, Some(&result), &settled_at)?;
+                self.evidence
+                    .store
+                    .retain_local_conditional_response(&plan, &result)?;
                 result
             }
             Err(error) => {

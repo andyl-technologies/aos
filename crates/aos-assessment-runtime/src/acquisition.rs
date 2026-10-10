@@ -353,9 +353,12 @@ fn job_is_fresh(data: &EvaluationData, job: &AcquisitionJob, now: &Timestamp) ->
         }) else {
             return Ok(false);
         };
-        let acquired = Timestamp::from_unix_seconds(binding.observation.retrieved_at_unix)?;
+        let acquired = Timestamp::from_unix_seconds(binding.validated_at_unix())?;
         if binding.observation.coverage != ObservationCoverage::Complete
             || now.elapsed_since(&acquired)? >= data.policy.upstream_max_age_seconds
+            || binding
+                .expires_at_unix()
+                .is_some_and(|expires| now.unix_seconds() >= expires)
         {
             return Ok(false);
         }
@@ -961,6 +964,13 @@ async fn install_upstream<E: EvidenceStore>(
         data.upstream
             .retain(|binding| &binding.component_ref != component_ref);
         data.upstream.push(UpstreamBinding {
+            // Partial chains retain candidates for visibility, but cannot renew
+            // a complete/current conclusion from the subset they revalidated.
+            page_observations: if chain.complete {
+                chain.observations.clone()
+            } else {
+                vec![]
+            },
             source_refs: source_refs.clone(),
             component_ref: component_ref.clone(),
             observation: observation.clone(),

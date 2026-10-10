@@ -260,6 +260,7 @@ async fn fresh_complete_evidence_resolves_coverage_and_reopening_creates_an_inde
     let mut data = db.assessment_evaluation_base(registry_id, &claim).await?;
     let now = db.assessment_database_time().await?;
     data.upstream.push(UpstreamBinding {
+        page_observations: vec![],
         source_refs: vec![],
         component_ref: "component".into(),
         response_byte_length: 2,

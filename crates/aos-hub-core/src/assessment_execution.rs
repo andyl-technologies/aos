@@ -490,6 +490,15 @@ impl<A: AssessmentAuthority, T: ProviderTransport, R: AssessmentSourceRoutes>
             ..route.limits
         };
         limits.require_within(&capabilities.limits)?;
+        let cache_ref = self
+            .db
+            .assessment_conditional_response(
+                &self.scan.request.authorization_partition,
+                operation,
+                &now,
+                limits.response_bytes,
+            )
+            .await?;
         self.authority.require_current(self.scan).await?;
         let reservation = self
             .db
@@ -524,7 +533,7 @@ impl<A: AssessmentAuthority, T: ProviderTransport, R: AssessmentSourceRoutes>
             authorization_partition: self.scan.request.authorization_partition.clone(),
             credential_ref: route.credential_ref,
             budget_reservation: reservation.budget,
-            cache_ref: None,
+            cache_ref,
             continuation: previous.map(ProviderPageV1::digest).transpose()?,
             continuation_ref: previous.cloned(),
             operation: operation.clone(),

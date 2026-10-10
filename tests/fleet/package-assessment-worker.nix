@@ -41,6 +41,6 @@ in {
           timeout=180,
       )
       result = json.loads(output.strip().splitlines()[-1])
-      assert result == {"status": "passed", "physicalCalls": 9, "concurrentReceipts": 4, "throttleReplay": True}, result
+      assert result == {"status": "passed", "physicalCalls": 12, "concurrentReceipts": 4, "throttleReplay": True, "conditionalReplay": True, "missingCustody": True}, result
     '';
 }

@@ -4,7 +4,7 @@
 //! objects; matching still reads complete normalized records and exact query
 //! snapshots. An index hit alone cannot establish affected or clean status.
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use aos_assessment::input::CandidateHistory;
 use aos_assessment::observation::{ProviderCoverage, ProviderObservationV1};
 use aos_assessment_runtime::provider::{
@@ -15,10 +15,63 @@ use aos_contract::Sha256Digest;
 use crate::backend::Statement;
 use crate::db::Database;
 
-use super::AssessmentObjectKind;
 use super::objects::encode;
+use super::AssessmentObjectKind;
 
 impl Database {
+    /// Loads a compact conditional response for one exact admitted operation.
+    ///
+    /// Raw evidence remains with the installed physical executor. A missing
+    /// validator produces no cache; indexed corruption fails closed.
+    ///
+    /// # Errors
+    /// Returns an error for ambiguous heads, missing custody or inconsistent scope.
+    pub async fn assessment_conditional_response(
+        &self,
+        partition: &str,
+        operation: &aos_assessment_runtime::provider::ProviderOperation,
+        issued_at: &aos_assessment::time::Timestamp,
+        response_limit: u64,
+    ) -> Result<Option<aos_assessment_runtime::provider::CachedResponse>> {
+        if operation.source_requests()?.len() != 1
+            || matches!(
+                operation,
+                aos_assessment_runtime::provider::ProviderOperation::QueryOsv { .. }
+            )
+        {
+            return Ok(None);
+        }
+        let rows = self
+            .backend
+            .query(
+                "SELECT observation_digest FROM assessment_observation_heads
+             WHERE partition_key = ?1 AND provider = ?2 AND operation_digest = ?3 LIMIT 2",
+                &vals![@slice partition, operation.provider(), operation.digest()?.to_string()],
+            )
+            .await?;
+        if rows.len() > 1 {
+            bail!("conditional operation has ambiguous admitted observation heads");
+        }
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        let digest = Sha256Digest::parse(&row.get::<String>(0)?)?;
+        let bytes = self
+            .assessment_object(partition, AssessmentObjectKind::Observation, digest)
+            .await?
+            .context("conditional observation custody is absent")?;
+        let observation = ProviderObservationV1::from_slice(&bytes)?;
+        if observation.digest()? != digest {
+            bail!("conditional observation differs from its immutable custody");
+        }
+        aos_assessment_runtime::provider::CachedResponse::from_observation(
+            operation,
+            observation,
+            issued_at,
+            response_limit,
+        )
+    }
+
     /// Reads retained revisions for an exact advisory ID or equivalent alias.
     ///
     /// Related and upstream IDs do not create lookup equivalence. The page

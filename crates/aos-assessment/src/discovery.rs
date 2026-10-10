@@ -411,9 +411,37 @@ pub fn select_component_policy(
     now_unix: u64,
     observation_max_age_seconds: u64,
 ) -> Result<ComponentDiscovery> {
+    select_component_validated_policy(
+        component_id,
+        current_version,
+        policy,
+        observation,
+        observation.retrieved_at_unix,
+        now_unix,
+        observation_max_age_seconds,
+    )
+}
+
+/// Selects candidates using an independently admitted source validation time.
+///
+/// Candidate publication and first-observation times remain unchanged. Callers
+/// must bind validation to the exact source evidence before using this selector.
+///
+/// # Errors
+/// Returns an error for malformed observations or unsupported versions.
+#[allow(clippy::too_many_arguments)] // Keeps legacy selector inputs and the explicit admitted validation clock.
+pub fn select_component_validated_policy(
+    component_id: &str,
+    current_version: &ComponentVersion,
+    policy: &ReleasePolicy,
+    observation: &UpstreamObservationV1,
+    validated_at_unix: u64,
+    now_unix: u64,
+    observation_max_age_seconds: u64,
+) -> Result<ComponentDiscovery> {
     observation.validate()?;
-    if now_unix < observation.retrieved_at_unix
-        || now_unix.saturating_sub(observation.retrieved_at_unix) > observation_max_age_seconds
+    if now_unix < validated_at_unix
+        || now_unix.saturating_sub(validated_at_unix) > observation_max_age_seconds
         || !observation
             .coverage
             .is_sufficient(&current_version.upstream_id)

@@ -6,7 +6,9 @@ use anyhow::Result;
 use aos_contract::Sha256Digest;
 
 use crate::definition::PackageScanDefinitionV1;
-use crate::discovery::{ObservationCoverage, select_component_policy, version_is_newer_in_stream};
+use crate::discovery::{
+    ObservationCoverage, select_component_validated_policy, version_is_newer_in_stream,
+};
 use crate::evaluator::declaration;
 use crate::input::{EvaluationData, ScanInputV1, UpstreamBinding};
 use crate::inventory::{Classification, ComponentVersion, ReleaseStrategy, VersionScheme};
@@ -79,11 +81,12 @@ pub(crate) fn evaluate(
         {
             reasons.push("version-unsupported".into());
         } else {
-            match select_component_policy(
+            match select_component_validated_policy(
                 component.component_id.as_str(),
                 &component.current,
                 &declared.release_policy,
                 observation,
+                binding.validated_at_unix(),
                 input.evaluated_at.unix_seconds(),
                 data.policy.upstream_max_age_seconds,
             ) {
@@ -120,9 +123,20 @@ pub(crate) fn evaluate(
         if input
             .evaluated_at
             .unix_seconds()
-            .saturating_sub(observation.retrieved_at_unix)
+            .saturating_sub(binding.validated_at_unix())
             > data.policy.upstream_max_age_seconds
+            || (!binding.page_observations.is_empty()
+                && input
+                    .evaluated_at
+                    .unix_seconds()
+                    .saturating_sub(binding.validated_at_unix())
+                    == data.policy.upstream_max_age_seconds)
+            || binding
+                .expires_at_unix()
+                .is_some_and(|expires| input.evaluated_at.unix_seconds() >= expires)
         {
+            result.decision = VersionDecision::Unknown;
+            result.eligible = None;
             reasons.push("snapshot-stale".into());
         }
         if result.latest_known_provisional {

@@ -52,13 +52,13 @@ pub fn profile_freshness_deadline(
     match profile {
         Profile::Updates => {
             for binding in &data.upstream {
-                deadline = deadline.min(
-                    binding
-                        .observation
-                        .retrieved_at_unix
-                        .checked_add(age)
-                        .ok_or_else(|| anyhow::anyhow!("upstream freshness timestamp overflows"))?,
-                );
+                deadline =
+                    deadline.min(binding.validated_at_unix().checked_add(age).ok_or_else(
+                        || anyhow::anyhow!("upstream freshness timestamp overflows"),
+                    )?);
+                if let Some(expires) = binding.expires_at_unix() {
+                    deadline = deadline.min(expires);
+                }
             }
         }
         Profile::Vulnerabilities => {

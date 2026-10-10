@@ -141,6 +141,26 @@ fn attempt_key(plan: &ProviderWorkPlanV1) -> String {
 }
 
 impl StateStore {
+    pub(super) fn require_settled_source_unlocked(
+        &self,
+        plan: &ProviderWorkPlanV1,
+        result: &ProviderWorkResultV1,
+    ) -> Result<()> {
+        let budget = self.read_source_budget(&budget_filename(plan.operation.provider())?)?;
+        let attempt = budget
+            .attempts
+            .get(&attempt_key(plan))
+            .context("conditional source reservation is absent")?;
+        let receipt = SourceReceipt::Result {
+            digest: Sha256Digest::of_canonical("aos.local-provider-receipt/v1", result)?,
+        };
+        ensure!(
+            attempt.plan_digest == plan.digest()? && attempt.receipt.as_ref() == Some(&receipt),
+            "conditional observation lacks exact durable source settlement"
+        );
+        Ok(())
+    }
+
     fn read_source_budget(&self, filename: &str) -> Result<SourceBudget> {
         let budget: SourceBudget =
             read_optional(&self.root.join(filename), "assessment source budget")?
