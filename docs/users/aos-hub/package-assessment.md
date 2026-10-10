@@ -510,6 +510,23 @@ block later reviews. Rotation records a maintenance attempt, preserving the
 original due slot, scan retry key, configuration revision and authority deadline.
 It neither creates a scan under revoked authority nor enables a disabled review.
 
+Set `configuration.continuous` to `true` in an explicitly reviewed schedule to
+also assess admitted inventory and policy changes. The console exposes the same
+choice. Absence or `false` preserves cadence-only execution. The coordinator
+examines up to ten future reviews per pass, coalesces pending changes, and keeps
+a private admission watermark across restarts. Ordinary scan generations do not
+create another trigger; policy reactivation and inventory changes remain visible.
+Reactive slots have distinct retry identities even in the same UTC second.
+Each admission and later effect still requires current execution authority,
+review revision, inventory, policy, publication and quota fences. Observation
+alone does not dispatch source work or extend any review deadline.
+
+Upgrade Native/Worker Hub readers and clients before enabling continuous
+reviews. Legacy configuration bytes omit the new false flag. Continuous
+inventory and policy admission complements the requested source-refresh cadence;
+provider-wide feed refresh and deadline triggers require their own admission
+integration.
+
 To review recurring execution independently of that session, put the exact
 existing service-account credential UUID in `serviceCredentialId` at the top
 level of the schedule write document. This is the credential identity exposed by

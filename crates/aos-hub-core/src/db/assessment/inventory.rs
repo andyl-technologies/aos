@@ -50,6 +50,10 @@ pub struct AssessmentResource {
     /// Independent authorization fence.
     pub authorization_revision: u64,
     /// Resource compare-and-swap revision.
+    ///
+    /// Scan allocation increases this and `next_generation` together. Their
+    /// checked difference tracks input mutations for continuous reviews, so
+    /// policy reactivation remains observable without scan feedback loops.
     pub resource_version: u64,
 }
 

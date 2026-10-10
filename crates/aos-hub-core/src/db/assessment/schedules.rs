@@ -35,6 +35,10 @@ struct PrivateReview {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     service_authority: Option<ReviewedServiceAuthority>,
     authority_expires_at: Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    observed_input: Option<Sha256Digest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_input: Option<Sha256Digest>,
 }
 
 struct Record {
@@ -209,8 +213,14 @@ impl Database {
             claims: claims.clone(),
             service_authority: service_authority.clone(),
             authority_expires_at: authority_expires_at.clone(),
+            observed_input: None,
+            pending_input: None,
         })?;
         LIMITS.decode::<PrivateReview>(&bytes, "private schedule review")?;
+        ensure!(
+            !request.configuration.continuous || bytes.len() <= LIMITS.max_bytes - 256,
+            "continuous review leaves no bounded watermark capacity"
+        );
         let clock = self.backend.dialect().unix_time_expression();
         let mut checked = fences.to_vec();
         checked.push(
@@ -439,7 +449,7 @@ impl Database {
         &self,
         registry_id: i64,
         scope: &str,
-        record: Record,
+        mut record: Record,
         fences: &[CheckedStatement],
     ) -> Result<AssessmentScanRecord> {
         let now = self.assessment_database_time().await?;
@@ -475,10 +485,17 @@ impl Database {
                 subjects.push(row.get(0)?);
             }
         }
-        let idempotency = Sha256Digest::of_canonical(
-            "aos.assessment-schedule-slot/v1",
-            &(&record.key, record.revision, &record.next_due),
-        )?;
+        let idempotency = if let Some(input) = record.review.pending_input {
+            Sha256Digest::of_canonical(
+                "aos.assessment-reactive-slot/v1",
+                &(&record.key, record.revision, &record.next_due, input),
+            )?
+        } else {
+            Sha256Digest::of_canonical(
+                "aos.assessment-schedule-slot/v1",
+                &(&record.key, record.revision, &record.next_due),
+            )?
+        };
         let previous = self.backend.query_opt("SELECT scan_id FROM assessment_scans WHERE registry_id = ?1 AND actor_ref = ?2 AND idempotency_key = ?3", &vals![@slice registry_id, record.actor, idempotency.to_string()]).await?;
         let request = if let Some(previous) = previous {
             let previous = self
@@ -549,7 +566,42 @@ impl Database {
             .checked_add(u64::from(record.review.configuration.cadence_seconds) + jitter)
             .context("schedule deadline overflowed")?;
         let mut checked = fences.to_vec();
-        checked.push(Statement::new(format!("UPDATE assessment_schedules SET next_due_at = ?4, updated_at = {clock} WHERE registry_id = ?1 AND schedule_id = ?2 AND resource_version = ?3 AND next_due_at = ?5 AND enabled = 1", clock=self.backend.dialect().unix_time_expression()), vals![registry_id, record.key, record.revision, next, record.next_due.unix_seconds()]).expecting(1));
+        // Only a scan pinned to this input acknowledges its continuous trigger.
+        // An interrupted slot may instead refer to a superseded older scan.
+        if record.review.configuration.continuous
+            && scan.request.inventory_revision == resource.inventory_revision
+            && scan.request.inventory_digest == resource.inventory_digest
+            && scan.request.policy_digest == resource.policy_digest
+        {
+            record.review.observed_input = Some(triggers::input_basis(&resource)?);
+        }
+        record.review.pending_input = None;
+        let review_bytes = canonical::to_vec(&record.review)?;
+        LIMITS.decode::<PrivateReview>(&review_bytes, "private schedule advancement")?;
+        checked.push(Statement::new(format!("UPDATE assessment_schedules SET next_due_at = ?4, updated_at = {clock}, configuration_json = ?6 WHERE registry_id = ?1 AND schedule_id = ?2 AND resource_version = ?3 AND next_due_at = ?5 AND enabled = 1", clock=self.backend.dialect().unix_time_expression()), vals![registry_id, record.key, record.revision, next, record.next_due.unix_seconds(), review_bytes]).expecting(1));
+        if record.review.configuration.continuous {
+            checked.push(
+                Statement::new(
+                    "UPDATE assessment_resources SET updated_at = updated_at WHERE registry_id = ?1
+                 AND partition_key = ?2 AND inventory_digest = ?3 AND policy_digest = ?4
+                 AND resource_version - next_generation = ?5 AND authorization_revision = ?6
+                 AND inventory_revision = ?7",
+                    vals![
+                        registry_id,
+                        scope,
+                        resource.inventory_digest.to_string(),
+                        resource.policy_digest.to_string(),
+                        resource
+                            .resource_version
+                            .checked_sub(resource.next_generation)
+                            .context("invalid assessment input revision")?,
+                        resource.authorization_revision,
+                        resource.inventory_revision
+                    ],
+                )
+                .expecting(1),
+            );
+        }
         self.backend.checked_batch(&checked).await?;
         Ok(scan)
     }
@@ -660,6 +712,11 @@ fn decode_record(row: &crate::value::Row) -> Result<Record> {
     canonical::require_canonical(&bytes, "private schedule review")?;
     let review: PrivateReview = LIMITS.decode(&bytes, "private schedule review")?;
     review.configuration.validate()?;
+    ensure!(
+        review.configuration.continuous
+            || (review.observed_input.is_none() && review.pending_input.is_none()),
+        "cadence-only review carries unreviewed continuous state"
+    );
     if let Some(authority) = &review.service_authority {
         authority.validate(&review.claims)?;
     }
@@ -731,6 +788,13 @@ pub(super) mod service_tests;
 #[path = "schedule_queue_tests.rs"]
 pub(super) mod queue_tests;
 
+#[path = "schedule_triggers.rs"]
+mod triggers;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "schedule_trigger_tests.rs"]
+pub(super) mod trigger_tests;
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
@@ -770,6 +834,7 @@ mod tests {
             expected_revision: 0,
             enabled: true,
             configuration: ScheduleConfigurationV1 {
+                continuous: false,
                 schema: "aos.assessment-schedule-configuration/v1".into(),
                 packages: vec!["fixture/example".into()],
                 profiles: vec![Profile::Updates],

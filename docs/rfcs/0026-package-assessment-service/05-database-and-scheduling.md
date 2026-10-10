@@ -169,6 +169,34 @@ policy, and concurrency/budget class. Package metadata defines scan semantics;
 deployment administrators own quota, credentials, cadence, and operational
 limits. Tenants MAY choose only within their granted quota and policy bounds.
 
+The `aos.assessment-schedule-configuration/v1` field `continuous` is an optional
+boolean, defaulting to `false` and omitted when false. An explicit `true`
+reviews the existing bounded selection for admitted inventory and policy
+changes in addition to its cadence. Absence MUST preserve prior serialized
+configuration bytes and cadence-only behavior. All readers MUST support the
+field before writers enable it; deployments MUST NOT downgrade readers while
+such reviews exist.
+
+A coordinator observes at most ten future reviews per registry pass and rotates
+observations using a persisted monotonic attempt clock. A private retained
+input watermark records the last admitted input, including input mutation
+revision: policy A-to-B-to-A and inventory reactivation are changes, whereas
+scan-generation allocation alone is not. Multiple changes while a slot is
+already due MUST coalesce without replacing its admitted retry identity. A
+reactive retry identity MUST use a domain distinct from cadence slots and bind
+the captured input watermark, configuration revision and due time, including
+multiple wakeups in one UTC second.
+
+Only admission against the current input may acknowledge a watermark. The
+watermark and due cursor MUST persist atomically under current resource and
+review fences, without extending credential or review deadlines. Neither
+observation nor a watermark grants execution authority. Every admission and
+subsequent effect MUST still check the existing current principal, credential,
+configuration, inventory, policy, cancellation and quota guards. This inventory
+and policy observation does not itself establish advisory-feed, evidence-expiry
+or disposition-trigger integration; those triggers require their own retained
+input identities and deadline work.
+
 The scheduler uses deterministic jitter derived from schedule identity and
 time window. It persists the next due time and coalesces missed executions
 after downtime. A backlog MUST NOT trigger unbounded catch-up fetches. Priority

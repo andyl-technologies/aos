@@ -214,6 +214,7 @@ mod tests {
                 authority_expires_at: Timestamp::from_unix_seconds(1500).unwrap(),
                 next_due_at: Timestamp::from_unix_seconds(1200).unwrap(),
                 configuration: ScheduleConfigurationV1 {
+                    continuous: false,
                     schema: "aos.assessment-schedule-configuration/v1".into(),
                     packages: vec!["fixture/example".into()],
                     profiles: vec![Profile::Updates],

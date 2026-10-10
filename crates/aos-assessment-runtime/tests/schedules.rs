@@ -10,6 +10,7 @@ use aos_assessment_runtime::schedules::{
 
 fn configuration() -> Result<ScheduleConfigurationV1> {
     Ok(ScheduleConfigurationV1 {
+        continuous: false,
         schema: "aos.assessment-schedule-configuration/v1".into(),
         packages: vec!["fixture/package".into()],
         profiles: vec![Profile::Updates, Profile::Vulnerabilities],
@@ -133,5 +134,19 @@ fn schedule_continuations_require_original_scope_and_opaque_cursor_kind() -> Res
     let mut changed = query;
     changed.schedule_id = Some("daily".into());
     assert!(ScheduleQueryV1::from_slice(&serde_json::to_vec(&changed)?).is_err());
+    Ok(())
+}
+
+#[test]
+fn continuous_admission_is_explicit_and_preserves_legacy_configuration_bytes() -> Result<()> {
+    let mut configuration = configuration()?;
+    let legacy = serde_json::to_value(&configuration)?;
+    assert!(legacy.get("continuous").is_none());
+    assert!(!serde_json::from_value::<ScheduleConfigurationV1>(legacy)?.continuous);
+    configuration.continuous = true;
+    configuration.validate()?;
+    let explicit = serde_json::to_value(&configuration)?;
+    assert_eq!(explicit["continuous"], true);
+    assert!(serde_json::from_value::<ScheduleConfigurationV1>(explicit)?.continuous);
     Ok(())
 }

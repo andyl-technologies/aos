@@ -31,6 +31,7 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
     let identity = RwSignal::new(String::new());
     let packages = RwSignal::new(String::new());
     let cadence = RwSignal::new("3600".to_owned());
+    let continuous = RwSignal::new(false);
     let expiry = RwSignal::new(String::new());
     let use_service = RwSignal::new(false);
     let service_credential = RwSignal::new(String::new());
@@ -144,6 +145,7 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
                 expected_revision: existing.as_ref().map_or(0, |schedule| schedule.revision),
                 enabled: enabled.get_untracked(),
                 configuration: ScheduleConfigurationV1 {
+                    continuous: continuous.get_untracked(),
                     schema: "aos.assessment-schedule-configuration/v1".into(),
                     packages: coordinates,
                     profiles,
@@ -299,6 +301,7 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
                                     {can_review.then(|| view! { <button class="secondary-button" disabled=move || (busy.get() || pending.get().is_some()) on:click=move |_| {
                                         identity.set(schedule.schedule_id.clone()); packages.set(schedule.configuration.packages.join("\n"));
                                         cadence.set(schedule.configuration.cadence_seconds.to_string()); expiry.set(schedule.configuration.review_expires_at.to_string());
+                                        continuous.set(schedule.configuration.continuous);
                                         use_service.set(schedule.service_authority.is_some()); service_credential.set(String::new());
                                         updates.set(schedule.configuration.profiles.contains(&Profile::Updates)); vulnerabilities.set(schedule.configuration.profiles.contains(&Profile::Vulnerabilities));
                                         licenses.set(schedule.configuration.profiles.contains(&Profile::LicenseSignals));
@@ -320,6 +323,7 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
                     <label>"Schedule name"<input prop:value=move || identity.get() disabled=move || (busy.get() || pending.get().is_some()) || selected.get().is_some() on:input=move |event| identity.set(event_target_value(&event))/></label>
                     <label>"Packages (one exact coordinate per line)"<textarea prop:value=move || packages.get() disabled=move || (busy.get() || pending.get().is_some()) on:input=move |event| packages.set(event_target_value(&event))/></label>
                     <label>"Interval in seconds"<input type="number" min="60" max="2592000" prop:value=move || cadence.get() disabled=move || (busy.get() || pending.get().is_some()) on:input=move |event| cadence.set(event_target_value(&event))/></label>
+                    <label><input type="checkbox" prop:checked=move || continuous.get() disabled=move || busy.get() || pending.get().is_some() on:change=move |event| continuous.set(event_target_checked(&event))/>"Also assess admitted inventory and policy changes"</label>
                     <label>"Review expires (UTC)"<input placeholder="2026-10-10T00:00:00Z" prop:value=move || expiry.get() disabled=move || (busy.get() || pending.get().is_some()) on:input=move |event| expiry.set(event_target_value(&event))/></label>
                     <label><input type="checkbox" prop:checked=move || updates.get() disabled=move || (busy.get() || pending.get().is_some()) on:change=move |event| updates.set(event_target_checked(&event))/>"Package updates"</label>
                     <label><input type="checkbox" prop:checked=move || vulnerabilities.get() disabled=move || (busy.get() || pending.get().is_some()) on:change=move |event| vulnerabilities.set(event_target_checked(&event))/>"Vulnerabilities"</label>
@@ -331,7 +335,7 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
                         <p>"Use the credential identity from the registry organization, not its secret. Service reviews expire within thirty days; replacement requires selecting the credential again."</p>
                     })}
                     <button class="primary-button" disabled=move || (busy.get() || pending.get().is_some()) || !polling.get() || scope.get().is_none() on:click=review>"Plan schedule review"</button>
-                    <button class="secondary-button" disabled=move || (busy.get() || pending.get().is_some()) on:click=move |_| { selected.set(None); identity.set(String::new()); use_service.set(false); service_credential.set(String::new()); failure.set(None); }>"New schedule"</button>
+                    <button class="secondary-button" disabled=move || (busy.get() || pending.get().is_some()) on:click=move |_| { selected.set(None); identity.set(String::new()); use_service.set(false); service_credential.set(String::new()); continuous.set(false); failure.set(None); }>"New schedule"</button>
 
                     {move || pending.get().map(|(review, _)| {
                         let effects = review.plan.effects.join("\n");

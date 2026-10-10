@@ -62,6 +62,7 @@ async fn setup(db: Database) -> Result<(Database, i64, Claims, ScheduleWriteV1)>
         enabled: true,
         service_credential_id: Some(credential),
         configuration: ScheduleConfigurationV1 {
+            continuous: false,
             schema: "aos.assessment-schedule-configuration/v1".into(),
             packages: vec!["fixture/example".into()],
             profiles: vec![Profile::Updates],

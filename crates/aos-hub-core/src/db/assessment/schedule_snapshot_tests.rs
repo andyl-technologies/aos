@@ -31,6 +31,7 @@ async fn fixture(
         expected_revision: 0,
         enabled: true,
         configuration: ScheduleConfigurationV1 {
+            continuous: false,
             schema: "aos.assessment-schedule-configuration/v1".into(),
             packages: vec!["fixture/example".into()],
             profiles: vec![Profile::Updates],

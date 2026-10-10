@@ -59,8 +59,11 @@ where
 {
     db.reconcile_assessment_scans(registry_id, after_scan, limit)
         .await?;
+    db.wake_changed_assessment_schedules(registry_id, 10)
+        .await?;
     db.admit_due_assessment_schedules(registry_id, 1).await?;
-    db.reconcile_assessment_notifications(registry_id, 10).await?;
+    db.reconcile_assessment_notifications(registry_id, 10)
+        .await?;
     let scans = db
         .assessment_controller_scan_page(registry_id, after_scan, limit)
         .await?;

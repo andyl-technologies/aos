@@ -26,10 +26,17 @@ pub struct ScheduleConfigurationV1 {
     pub freshness: FreshnessMode,
     /// Requested interval, from one minute through thirty days.
     pub cadence_seconds: u32,
+    /// Wakes the reviewed selection when admitted inventory or policy changes.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub continuous: bool,
     /// Exclusive review deadline, bounded by the selected execution credential.
     pub review_expires_at: Timestamp,
     /// Per-execution limits, independent of the recurring interval.
     pub limits: ScanLimits,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl ScheduleConfigurationV1 {
