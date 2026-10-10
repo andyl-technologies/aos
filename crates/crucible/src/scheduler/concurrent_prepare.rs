@@ -680,9 +680,14 @@ impl SingleScheduler {
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: String::from("control 3 incoming edge lost its actual producer"),
                 })?;
-            let earliest_delivery = self
-                .node_current_time(producer)?
-                .ticks
+            let mut producer_time = self.node_current_time(producer)?.ticks;
+            if producer.campaign_parked {
+                // A parked producer emits nothing until its all-VM join, which
+                // anchors it at or beyond the live frontier. Its frozen clock
+                // would otherwise pin every consumer one latency past the park.
+                producer_time = producer_time.max(self.frontier.ticks);
+            }
+            let earliest_delivery = producer_time
                 .checked_add(edge.minimum_latency.ticks)
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: String::from("control 3 earliest delivery overflowed shared ticks"),

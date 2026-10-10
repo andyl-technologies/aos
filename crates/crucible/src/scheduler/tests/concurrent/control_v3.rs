@@ -430,3 +430,58 @@ fn control_v3_strict_delivery_cap_uses_shared_time_and_rebased_counter_floor() {
         105
     );
 }
+
+#[test]
+fn control_v3_parked_producer_bounds_delivery_from_the_live_frontier() {
+    let nodes = [("a", 7), ("b", 2)]
+        .into_iter()
+        .map(|(name, counter)| {
+            test_scenario_node(
+                name,
+                counter,
+                SchedulerNodeActivity::Runnable,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::TimerDeadline {
+                    virtual_time: SimInstant { ticks: 10 },
+                },
+            )
+        })
+        .collect();
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "control-v3-parked-producer",
+        64,
+        SimInstant { ticks: 64 },
+        nodes,
+        Vec::new(),
+    )
+    .with_effective_topology_edges(vec![SchedulerLookaheadEdge::new(
+        scheduler_node("b", SchedulingNodeKind::Vm),
+        scheduler_node("a", SchedulingNodeKind::Vm),
+        SimDuration { ticks: 6 },
+    )]);
+    let mut scheduler = SingleScheduler::new(scenario)
+        .unwrap_or_else(|error| panic!("parked producer fixture: {error}"));
+    scheduler
+        .park_campaign_marker_node(&NodeId {
+            name: String::from("b"),
+        })
+        .unwrap_or_else(|error| panic!("producer should park: {error}"));
+    assert_eq!(scheduler.frontier(), VirtualTime { ticks: 7 });
+    let request = QuantumRequest {
+        configuration: scheduler.configuration().clone(),
+        control: Vec::new(),
+    };
+
+    // The frozen park at 2 would cap `a` at 2 + 6 - 1 = 7, its current time.
+    let control = scheduler
+        .prepare_host_concurrent_quantum_for_contract(
+            request,
+            2,
+            crate::BackendDispatchContract::BoundedControl,
+        )
+        .unwrap_or_else(|error| panic!("parked producer must not pin its consumer: {error}"));
+
+    assert_eq!(control.runs.len(), 1);
+    assert_eq!(control.runs[0].plan.node.node.name, "a");
+    assert_eq!(control.runs[0].plan.projected_target_time.ticks, 10);
+}
